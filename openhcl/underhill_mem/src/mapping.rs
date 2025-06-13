@@ -10,6 +10,7 @@ use crate::registrar::MemoryRegistrar;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;
+use hcl::GuestVtl;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvVtlLow;
 use hvdef::HvMapGpaFlags;
@@ -20,6 +21,7 @@ use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use thiserror::Error;
+use virt_mshv_vtl::ProtectIsolatedMemory;
 use vm_topology::memory::MemoryLayout;
 
 pub struct GuestPartitionMemoryView<'a> {
@@ -71,20 +73,27 @@ pub enum GuestMemoryViewReadType {
     UserExecute,
 }
 
-#[derive(Debug, Inspect)]
+#[derive(Inspect)]
 pub struct GuestMemoryView {
+    #[inspect(skip)]
+    protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     pub memory_mapping: Arc<GuestMemoryMapping>,
     pub view_type: GuestMemoryViewReadType,
+    vtl: GuestVtl,
 }
 
 impl GuestMemoryView {
     pub fn new(
+        protector: Option<Arc<dyn ProtectIsolatedMemory>>,
         memory_mapping: Arc<GuestMemoryMapping>,
         view_type: GuestMemoryViewReadType,
+        vtl: GuestVtl,
     ) -> Self {
         Self {
+            protector,
             memory_mapping,
             view_type,
+            vtl,
         }
     }
 }
@@ -254,6 +263,21 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
                 // valid access to the page. Retry in that situation.
                 guestmem::PageFaultAction::Retry
             }
+        }
+    }
+
+    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        if let Some(protector) = self.protector.as_ref() {
+            protector.lock_gpns(self.vtl, gpns)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn unlock_gpns(&self, gpns: &[u64]) {
+        if let Some(protector) = self.protector.as_ref() {
+            protector.unlock_gpns(self.vtl, gpns)
         }
     }
 }

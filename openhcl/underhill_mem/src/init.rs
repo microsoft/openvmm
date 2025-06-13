@@ -13,6 +13,7 @@ use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
 use futures::future::try_join_all;
 use guestmem::GuestMemory;
+use hcl::GuestVtl;
 use hcl::ioctl::MshvHvcall;
 use hcl::ioctl::MshvVtlLow;
 use hvdef::HypercallCode;
@@ -352,18 +353,31 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .context("failed to map shared memory")?
         });
 
+        let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
+            encrypted_memory_view.partition_valid_memory().clone(),
+            valid_shared_memory.clone(),
+            encrypted_mapping.clone(),
+            vtl0_mapping.clone(),
+            params.mem_layout.clone(),
+            acceptor.as_ref().unwrap().clone(),
+        )) as Arc<dyn ProtectIsolatedMemory>;
+
         tracing::debug!("Creating VTL0 guest memory");
         let vtl0_gm = GuestMemory::new_multi_region(
             "vtl0",
             vtom,
             vec![
                 Some(GuestMemoryView::new(
+                    Some(protector.clone()),
                     vtl0_mapping.clone(),
                     GuestMemoryViewReadType::Read,
+                    GuestVtl::Vtl0,
                 )),
                 Some(GuestMemoryView::new(
+                    Some(protector.clone()),
                     shared_mapping.clone(),
                     GuestMemoryViewReadType::Read,
+                    GuestVtl::Vtl0,
                 )),
             ],
         )
@@ -382,12 +396,16 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                         vtom,
                         vec![
                             Some(GuestMemoryView::new(
+                                Some(protector.clone()),
                                 encrypted_mapping.clone(),
                                 GuestMemoryViewReadType::Read,
+                                GuestVtl::Vtl1,
                             )),
                             Some(GuestMemoryView::new(
+                                Some(protector.clone()),
                                 shared_mapping.clone(),
                                 GuestMemoryViewReadType::Read,
+                                GuestVtl::Vtl1,
                             )),
                         ],
                     )
@@ -425,12 +443,16 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             vtom,
             vec![
                 Some(GuestMemoryView::new(
+                    Some(protector.clone()),
                     shared_mapping.clone(),
                     GuestMemoryViewReadType::Read,
+                    GuestVtl::Vtl0,
                 )),
                 Some(GuestMemoryView::new(
+                    Some(protector.clone()),
                     shared_mapping.clone(),
                     GuestMemoryViewReadType::Read,
+                    GuestVtl::Vtl0,
                 )),
             ],
         )
@@ -438,17 +460,13 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         let private_vtl0_memory = GuestMemory::new(
             "trusted",
-            GuestMemoryView::new(vtl0_mapping.clone(), GuestMemoryViewReadType::Read),
+            GuestMemoryView::new(
+                Some(protector.clone()),
+                vtl0_mapping.clone(),
+                GuestMemoryViewReadType::Read,
+                GuestVtl::Vtl0,
+            ),
         );
-
-        let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
-            encrypted_memory_view.partition_valid_memory().clone(),
-            valid_shared_memory.clone(),
-            encrypted_mapping.clone(),
-            vtl0_mapping.clone(),
-            params.mem_layout.clone(),
-            acceptor.as_ref().unwrap().clone(),
-        )) as Arc<dyn ProtectIsolatedMemory>;
 
         tracing::debug!("Creating VTL0 guest memory for kernel execute access");
         let vtl0_kx_gm = GuestMemory::new_multi_region(
@@ -456,12 +474,16 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             vtom,
             vec![
                 Some(GuestMemoryView::new(
+                    Some(protector.clone()),
                     vtl0_mapping.clone(),
                     GuestMemoryViewReadType::KernelExecute,
+                    GuestVtl::Vtl0,
                 )),
                 Some(GuestMemoryView::new(
+                    Some(protector.clone()),
                     shared_mapping.clone(),
                     GuestMemoryViewReadType::KernelExecute,
+                    GuestVtl::Vtl0,
                 )),
             ],
         )
@@ -473,12 +495,16 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             vtom,
             vec![
                 Some(GuestMemoryView::new(
+                    Some(protector.clone()),
                     vtl0_mapping.clone(),
                     GuestMemoryViewReadType::UserExecute,
+                    GuestVtl::Vtl0,
                 )),
                 Some(GuestMemoryView::new(
+                    Some(protector.clone()),
                     shared_mapping.clone(),
                     GuestMemoryViewReadType::UserExecute,
+                    GuestVtl::Vtl0,
                 )),
             ],
         )
@@ -515,7 +541,12 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         };
         let vtl0_gm = GuestMemory::new(
             "vtl0",
-            GuestMemoryView::new(vtl0_mapping.clone(), GuestMemoryViewReadType::Read),
+            GuestMemoryView::new(
+                None,
+                vtl0_mapping.clone(),
+                GuestMemoryViewReadType::Read,
+                GuestVtl::Vtl0,
+            ),
         );
 
         let vtl1_mapping = if params.maximum_vtl >= Vtl::Vtl1 {
@@ -560,7 +591,12 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             tracing::info!(CVM_ALLOWED, "VTL 1 memory map created");
             Some(GuestMemory::new(
                 "vtl1",
-                GuestMemoryView::new(vtl1_mapping.clone(), GuestMemoryViewReadType::Read),
+                GuestMemoryView::new(
+                    None,
+                    vtl1_mapping.clone(),
+                    GuestMemoryViewReadType::Read,
+                    GuestVtl::Vtl1,
+                ),
             ))
         } else {
             tracing::info!(CVM_ALLOWED, "Skipping VTL 1 memory map creation");
