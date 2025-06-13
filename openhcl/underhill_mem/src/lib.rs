@@ -15,6 +15,7 @@ pub use init::MemoryMappings;
 pub use init::init;
 
 use cvm_tracing::CVM_ALLOWED;
+use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;
 use guestmem::ranges::PagedRange;
 use hcl::GuestVtl;
@@ -351,6 +352,7 @@ struct HardwareIsolatedMemoryProtectorInner {
     encrypted: Arc<GuestMemoryMapping>,
     default_vtl_permissions: DefaultVtlPermissions,
     overlay_pages: VtlArray<Vec<OverlayPage>, 2>,
+    locked_pages: VtlArray<Vec<u64>, 2>,
 }
 
 struct OverlayPage {
@@ -383,6 +385,7 @@ impl HardwareIsolatedMemoryProtector {
                     vtl1: None,
                 },
                 overlay_pages: VtlArray::from_fn(|_| Vec::new()),
+                locked_pages: VtlArray::from_fn(|_| Vec::new()),
             }),
             layout,
             acceptor,
@@ -475,6 +478,24 @@ impl HardwareIsolatedMemoryProtector {
 
         Ok(res)
     }
+
+    fn check_gpn_not_locked(
+        &self,
+        inner: &MutexGuard<'_, HardwareIsolatedMemoryProtectorInner>,
+        vtl: GuestVtl,
+        gpn: u64,
+    ) -> Result<(), HvError> {
+        // Overlay pages have special handling, being locked does not prevent that.
+        // TODO: When uh_mem implements the returning of overlay pages, rather than
+        // requiring them to also be locked through guestmem, the check for overlay
+        // pages can be removed, as locked and overlay pages will be mutually exclusive.
+        if inner.locked_pages[vtl].contains(&gpn)
+            && !inner.overlay_pages[vtl].iter().any(|p| p.gpn == gpn)
+        {
+            return Err(HvError::OperationDenied);
+        }
+        Ok(())
+    }
 }
 
 impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
@@ -498,7 +519,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 return Err((HvError::OperationDenied, 0));
             }
 
-            // TODO: Don't allow changing visibility of locked pages.
+            // Validate they're not locked.
+            self.check_gpn_not_locked(&inner, vtl, gpn)
+                .map_err(|x| (x, 0))?;
 
             // Don't allow overlay pages to be shared.
             if shared && inner.overlay_pages[vtl].iter().any(|p| p.gpn == gpn) {
@@ -788,7 +811,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // find all accepted memory. When lazy acceptance exists,
                 // this should track all pages that have been accepted and
                 // should be used instead.
-                if !inner.valid_encrypted.check_valid(gpn) {
+                // Also don't attempt to change the permissions of locked pages.
+                if !inner.valid_encrypted.check_valid(gpn) || inner.locked_pages[vtl].contains(&gpn)
+                {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
                         ranges.push(MemoryRange::new(protect_start..end_address));
@@ -836,6 +861,12 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         protections: HvMapGpaFlags,
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), (HvError, usize)> {
+        // Prevent visibility changes while VTL protections are being
+        // applied. This does not need to be synchronized against other
+        // threads performing VTL protection changes; whichever thread
+        // finishes last will control the outcome.
+        let mut inner = self.inner.lock();
+
         // Validate the ranges are RAM.
         for &gpn in gpns {
             if !self
@@ -847,14 +878,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 return Err((HvError::OperationDenied, 0));
             }
 
-            // TODO: Don't allow changing protections of locked pages.
+            // Validate they're not locked.
+            self.check_gpn_not_locked(&inner, vtl, gpn)
+                .map_err(|x| (x, 0))?;
         }
-
-        // Prevent visibility changes while VTL protections are being
-        // applied. This does not need to be synchronized against other
-        // threads performing VTL protection changes; whichever thread
-        // finishes last will control the outcome.
-        let mut inner = self.inner.lock();
 
         // Protections cannot be applied to a host-visible page
         if gpns.iter().any(|&gpn| inner.valid_shared.check_valid(gpn)) {
@@ -919,7 +946,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             return Err(HvError::OperationDenied);
         }
 
-        // TODO: Don't allow changing protections of locked pages.
+        // Or a locked page.
+        self.check_gpn_not_locked(&inner, vtl, gpn)?;
 
         // Everything's validated, change the permissions.
         if let Some(new_perms) = new_perms {
@@ -996,6 +1024,35 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         self.inner.lock().overlay_pages[vtl]
             .iter()
             .any(|p| p.gpn == gpn)
+    }
+
+    fn lock_gpns(&self, vtl: GuestVtl, gpns: &[u64]) -> Result<(), GuestMemoryBackingError> {
+        // Locking a page multiple times is allowed, so no need to check
+        // for duplicates.
+        // We also need to allow locking overlay pages for now.
+        // TODO: We probably don't want to allow locking overlay pages once
+        // we return the pointer for them instead of going through lock.
+        // TODO: other preconditions?
+        self.inner.lock().locked_pages[vtl].extend_from_slice(gpns);
+        Ok(())
+    }
+
+    fn unlock_gpns(&self, vtl: GuestVtl, gpns: &[u64]) {
+        let mut inner = self.inner.lock();
+        let locked_pages = &mut inner.locked_pages[vtl];
+        for (i, w) in locked_pages.windows(gpns.len()).enumerate() {
+            if w == gpns {
+                locked_pages.drain(i..i + gpns.len());
+                return;
+            }
+        }
+
+        // Don't change protections on locked pages to avoid conflicting
+        // with unregister_overlay_page.
+        // TODO: Is this the right decision even after we separate overlay and
+        // locked pages?
+
+        panic!("Tried to unlock pages that were not locked");
     }
 
     fn set_vtl1_protections_enabled(&self) {
