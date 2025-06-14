@@ -5,6 +5,7 @@
 //! provided via a device tree IGVM parameter.
 
 use crate::cmdline::BootCommandLineOptions;
+use crate::host_params::shim_params::IsolationType;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use host_fdt_parser::CpuEntry;
@@ -14,7 +15,6 @@ use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::VmbusInfo;
 use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
-use shim_params::IsolationType;
 
 mod dt;
 mod mmio;

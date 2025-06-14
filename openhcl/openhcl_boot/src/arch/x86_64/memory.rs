@@ -6,6 +6,7 @@
 use super::address_space::LocalMap;
 use super::address_space::init_local_map;
 use crate::ShimParams;
+use crate::arch::TdxHypercallPage;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
 use crate::hypercall::hvcall;
@@ -116,6 +117,15 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
     for (imported_range, already_accepted) in shim_params.imported_regions() {
         if !already_accepted {
             accept_pending_vtl2_memory(shim_params, &mut local_map, ram_buffer, imported_range);
+        }
+    }
+
+    // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for hypercall IO pages
+    if shim_params.isolation_type == IsolationType::Tdx {
+        let free_buffer = ram_buffer.as_mut_ptr() as u64;
+        // SAFETY: The bottom 2MB region of the ram_buffer is unused by the shim
+        unsafe {
+            hvcall().set_tdx_io_page(TdxHypercallPage::new(free_buffer));
         }
     }
 }

@@ -26,6 +26,8 @@ use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
 use memory_range::walk_ranges;
+#[cfg(target_arch = "x86_64")]
+use x86defs::tdx::RESET_VECTOR_PAGE;
 
 /// AArch64 defines
 mod aarch64 {
@@ -158,6 +160,9 @@ pub fn write_dt(
     cmdline: &ArrayString<COMMAND_LINE_SIZE>,
     sidecar: Option<&SidecarConfig<'_>>,
     boot_times: Option<BootTimes>,
+    #[cfg_attr(target_arch = "aarch64", expect(unused_variables))]
+    // isolation_type is unused on aarch64
+    isolation_type: IsolationType,
 ) -> Result<(), DtError> {
     // First, the reservation map is built. That keyes off of the x86 E820 memory map.
     // The `/memreserve/` is used to tell the kernel that the reserved memory is RAM
@@ -235,6 +240,25 @@ pub fn write_dt(
         .start_node("hypervisor")?
         .add_str(p_compatible, "microsoft,hyperv")?;
     root_builder = hypervisor_builder.end_node()?;
+
+    #[cfg(target_arch = "x86_64")]
+    if isolation_type == IsolationType::Tdx {
+        let mut mailbox_builder = root_builder
+            .start_node("reserved-memory")?
+            .add_u32(p_address_cells, 2)?
+            .add_u32(p_size_cells, 1)?
+            .add_null(p_ranges)?;
+
+        let name = format_fixed!(32, "wakeup_table@{:x}", RESET_VECTOR_PAGE);
+        let mailbox_addr_builder = mailbox_builder
+            .start_node(name.as_ref())?
+            .add_str(p_compatible, "intel,wakeup-mailbox")?
+            .add_u32_array(p_reg, &[0x0, RESET_VECTOR_PAGE.try_into().unwrap(), 0x1000])?;
+
+        mailbox_builder = mailbox_addr_builder.end_node()?;
+
+        root_builder = mailbox_builder.end_node()?;
+    }
 
     // For ARM v8, always specify two register cells, which can accommodate
     // higher number of VPs.
