@@ -400,6 +400,32 @@ impl Disk {
     pub fn wait_resize(&self, sector_count: u64) -> impl use<'_> + Future<Output = u64> {
         self.0.disk.wait_resize(sector_count)
     }
+
+    /// The maximum transfer length supported for atomic IOs, if any.
+    pub fn maximum_atomic_transfer_length(&self) -> Option<u32> {
+        self.0.maximum_atomic_transfer_length
+    }
+
+    /// Any required alignment of LBA for atomic IOs.
+    pub fn atomic_alignment(&self) -> Option<u32> {
+        self.0.atomic_alignment
+    }
+
+    /// Required granularity of atomic IOs, if any. If set, IO sizes must be a multiple of this.
+    pub fn atomic_transfer_length_granularity(&self) -> Option<u32> {
+        self.0.atomic_transfer_length_granularity
+    }
+
+    /// Maximum transfer length of atomic IOs when atomic boundary set, if any.
+    pub fn maximum_atomic_transfer_length_with_atomic_boundary(&self) -> Option<u32> {
+        self.0.maximum_atomic_transfer_length_with_atomic_boundary
+    }
+
+    /// The maximum size of atomic IOs when performing multiple atomic IOs in a single request, if any.
+    /// If None and atomic IOs are enabled, only one atomic IO supported per request.
+    pub fn maximum_atomic_boundary_size(&self) -> Option<u32> {
+        self.0.maximum_atomic_boundary_size
+    }
 }
 
 /// The behavior of unmap.

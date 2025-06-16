@@ -173,11 +173,12 @@ impl SimpleScsiDisk {
             }
 
             // Get atomic parameters from backing disk, if supported.
-            let maximum_atomic_transfer_length = None;
-            let atomic_alignment = None;
-            let atomic_transfer_length_granularity = None;
-            let maximum_atomic_transfer_length_with_atomic_boundary = None;
-            let maximum_atomic_boundary_size = None;
+            let maximum_atomic_transfer_length = disk.maximum_atomic_transfer_length();
+            let atomic_alignment = disk.atomic_alignment();
+            let atomic_transfer_length_granularity = disk.atomic_transfer_length_granularity();
+            let maximum_atomic_transfer_length_with_atomic_boundary =
+                disk.maximum_atomic_transfer_length_with_atomic_boundary();
+            let maximum_atomic_boundary_size = disk.maximum_atomic_boundary_size();
 
             // Choose the first non-zero disk ID from the passed in parameters,
             // the disk, or a new random ID.
