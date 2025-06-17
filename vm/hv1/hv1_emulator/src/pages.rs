@@ -16,9 +16,9 @@ pub(crate) struct LockedPage {
 }
 
 impl LockedPage {
-    pub fn new(gpn: u64, page: LockedPages) -> Result<Self, guestmem::GuestMemoryError> {
+    pub fn new(gpn: u64, page: LockedPages) -> Self {
         assert!(page.pages().len() == 1);
-        Ok(Self { page, gpn })
+        Self { page, gpn }
     }
 }
 
@@ -50,7 +50,7 @@ impl OverlayPage {
             HvMapGpaFlags::new().with_readable(true).with_writable(true),
             None,
         )?;
-        let new_page = LockedPage::new(new_gpn, new_page).unwrap();
+        let new_page = LockedPage::new(new_gpn, new_page);
         new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; 4096]>());
 
         self.unlock_prev_gpn(prot_access);

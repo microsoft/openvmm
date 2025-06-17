@@ -38,6 +38,7 @@ use mapping::GuestMemoryMapping;
 use mapping::GuestValidMemory;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
+use parking_lot::MutexGuard;
 use registrar::RegisterMemory;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -394,13 +395,13 @@ impl HardwareIsolatedMemoryProtector {
         range: MemoryRange,
         vtl: GuestVtl,
         protections: HvMapGpaFlags,
-        overlay_pages: &mut [OverlayPage],
+        inner: &mut MutexGuard<'_, HardwareIsolatedMemoryProtectorInner>,
     ) -> Result<(), ApplyVtlProtectionsError> {
         let mut range_queue = VecDeque::new();
         range_queue.push_back(range);
 
         'outer: while let Some(range) = range_queue.pop_front() {
-            for overlay_page in overlay_pages.iter_mut() {
+            for overlay_page in inner.overlay_pages[vtl].iter_mut() {
                 let overlay_addr = overlay_page.gpn * HV_PAGE_SIZE;
                 if range.contains_addr(overlay_addr) {
                     // If the overlay page is within the range, update the
@@ -442,7 +443,15 @@ impl HardwareIsolatedMemoryProtector {
         self.acceptor.apply_protections(range, vtl, protections)
     }
 
-    fn query_protections(&self, vtl: GuestVtl, gpn: u64) -> Result<HvMapGpaFlags, HvError> {
+    /// Get the permissions that the given VTL has to the given GPN.
+    ///
+    /// This function does not check for any protections applied by VTL 2,
+    /// only those applied by lower VTLs.
+    fn query_lower_vtl_permissions(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+    ) -> Result<HvMapGpaFlags, HvError> {
         if !self
             .layout
             .ram()
@@ -780,13 +789,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         }
 
         for range in ranges {
-            self.apply_protections_with_overlay_handling(
-                range,
-                vtl,
-                vtl_protections,
-                &mut inner.overlay_pages[vtl],
-            )
-            .unwrap();
+            self.apply_protections_with_overlay_handling(range, vtl, vtl_protections, &mut inner)
+                .unwrap();
         }
 
         // Flush any threads accessing pages that had their VTL protections
@@ -840,13 +844,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .unwrap(); // Ok to unwrap, we've validated the gpns above.
 
         for range in ranges {
-            self.apply_protections_with_overlay_handling(
-                range,
-                vtl,
-                protections,
-                &mut inner.overlay_pages[vtl],
-            )
-            .unwrap();
+            self.apply_protections_with_overlay_handling(range, vtl, protections, &mut inner)
+                .unwrap();
         }
 
         // Flush any threads accessing pages that had their VTL protections
@@ -879,7 +878,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         }
 
         // Check that the required permissions are present.
-        let current_perms = self.query_protections(vtl, gpn)?;
+        let current_perms = self.query_lower_vtl_permissions(vtl, gpn)?;
         if current_perms.into_bits() | check_perms.into_bits() != current_perms.into_bits() {
             return Err(HvError::OperationDenied);
         }

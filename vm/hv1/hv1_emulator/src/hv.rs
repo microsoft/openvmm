@@ -135,7 +135,7 @@ impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
     }
 
     /// Resets the global (but not per-processor) state.
-    pub fn reset(&self, mut prot_access: VtlArray<&mut dyn VtlProtectAccess, 2>) {
+    pub fn reset(&self, mut prot_access: VtlArray<&mut dyn VtlProtectAccess, VTL_COUNT>) {
         for (state, overlay_access) in self.vtl_mutable_state.iter().zip(prot_access.iter_mut()) {
             state.lock().reset(*overlay_access);
         }
@@ -540,7 +540,7 @@ impl ReadOnlyLockedPage {
                     .with_kernel_executable(exec),
             ),
         )?;
-        let new_page = LockedPage::new(gpn, new_page).unwrap();
+        let new_page = LockedPage::new(gpn, new_page);
 
         // If we got a new page without error we can now unset the previous page, if any.
         self.unmap(prot_access);
