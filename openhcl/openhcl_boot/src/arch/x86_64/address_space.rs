@@ -104,17 +104,20 @@ impl PageTableEntry {
         self.write_pte(0);
     }
 
+    /// Check the TDX shared bit on a page table entry
     pub fn tdx_is_shared(&mut self) -> bool {
         let val = self.read_pte();
         val & TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT == TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT
     }
 
+    /// Set the TDX shared bit on a page table entry
     pub fn tdx_set_shared(&mut self) {
         let mut val = self.read_pte();
         val |= TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
         self.write_pte(val);
     }
 
+    /// Unset the TDX shared bit on a page table entry
     pub fn tdx_set_private(&mut self) {
         let mut val = self.read_pte();
         val &= !TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
@@ -286,7 +289,7 @@ impl TdxHypercallPage {
     /// # Safety
     /// The caller ensures that the input is a virtual address with a valid page table
     pub unsafe fn new(va: u64) -> Self {
-        // SAFETY: See above
+        // SAFETY: Caller has guaranteed the va is a valid pagetable mapping
         unsafe {
             let entry = get_pde_for_va(va);
             assert!(entry.is_present() & entry.is_large_page());
@@ -296,31 +299,18 @@ impl TdxHypercallPage {
         }
     }
 
-    fn check_page(&self) {
-        // SAFETY: The virtual address for this page was guaranteed to be present
-        // in the paging hierarchy in the initialization of the struct
-        unsafe {
-            let entry = get_pde_for_va(self.0);
-            assert!(entry.is_present() & entry.is_large_page());
-            assert!(!entry.tdx_is_shared());
-        }
-    }
-
     /// Returns the VA of the large page containing the I/O buffers
     pub fn base(&self) -> u64 {
-        self.check_page();
         self.0
     }
 
     /// Returns the VA of the hypercall input buffer
     pub fn input(&self) -> u64 {
-        self.check_page();
         self.0
     }
 
     /// Returns the VA of the hypercall output buffer
     pub fn output(&self) -> u64 {
-        self.check_page();
         self.0 + HV_PAGE_SIZE
     }
 }
