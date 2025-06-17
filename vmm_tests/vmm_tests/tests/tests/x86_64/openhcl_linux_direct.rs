@@ -93,6 +93,11 @@ async fn mana_nic_servicing(
     config: PetriVmConfigOpenVmm,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     let (mut vm, agent) = config
         .with_vmbus_redirect()
         .with_nic()
