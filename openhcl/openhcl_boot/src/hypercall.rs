@@ -24,8 +24,8 @@ use zerocopy::IntoBytes;
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
-pub struct HvcallPage {
-    pub buffer: [u8; HV_PAGE_SIZE as usize],
+struct HvcallPage {
+    buffer: [u8; HV_PAGE_SIZE as usize],
 }
 
 impl HvcallPage {
@@ -36,7 +36,7 @@ impl HvcallPage {
     }
 
     /// Address of the hypercall page.
-    pub fn address(&self) -> u64 {
+    fn address(&self) -> u64 {
         let addr = self.buffer.as_ptr() as u64;
 
         // These should be page-aligned
@@ -99,28 +99,33 @@ impl HvCall {
     /// necessary.
     #[cfg(target_arch = "x86_64")]
     pub fn hypercall_page(&mut self) -> u64 {
-        assert!(self.initialized);
+        self.init_if_needed();
         core::ptr::addr_of!(minimal_rt::arch::hypercall::HYPERCALL_PAGE) as u64
+    }
+
+    fn init_if_needed(&mut self) {
+        if !self.initialized {
+            self.initialize();
+        }
     }
 
     /// Hypercall initialization.
     pub fn initialize(&mut self) {
-        if !self.initialized {
-            // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
-            let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+        assert!(!self.initialized);
+        // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
+        let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
 
-            crate::arch::hypercall::initialize(guest_os_id);
-            self.initialized = true;
+        crate::arch::hypercall::initialize(guest_os_id);
+        self.initialized = true;
 
-            self.vtl = self
-                .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
-                .map_or(Vtl::Vtl0, |status| {
-                    hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
-                        .active_vtl()
-                        .try_into()
-                        .unwrap()
-                });
-        }
+        self.vtl = self
+            .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
+            .map_or(Vtl::Vtl0, |status| {
+                hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
+                    .active_vtl()
+                    .try_into()
+                    .unwrap()
+            });
     }
 
     /// Call before jumping to kernel.
@@ -139,7 +144,7 @@ impl HvCall {
 
     /// Returns the environment's VTL.
     pub fn vtl(&mut self) -> Vtl {
-        assert!(self.initialized);
+        self.init_if_needed();
         self.get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
             .map_or(Vtl::Vtl0, |status| {
                 hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
