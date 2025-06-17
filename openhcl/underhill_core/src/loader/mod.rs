@@ -10,6 +10,7 @@ use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guest_emulation_transport::api::platform_settings::General;
 use guestmem::GuestMemory;
+use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader::importer::Register;
@@ -112,6 +113,7 @@ pub fn load(
     config: Config,
     caps: &virt::PartitionCapabilities,
     isolated: bool,
+    azihsm_guid: Option<Guid>,
 ) -> Result<VpContext, Error> {
     let context = match load_kind {
         LoadKind::None => {
@@ -134,6 +136,7 @@ pub fn load(
                 caps,
                 isolated,
                 config.disable_uefi_frontpage,
+                azihsm_guid,
             )?;
             uefi_info.vp_context.clone()
         }
@@ -415,6 +418,7 @@ pub fn write_uefi_config(
     caps: &virt::PartitionCapabilities,
     isolated: bool,
     disable_frontpage: bool,
+    azihsm_guid: Option<Guid>,
 ) -> Result<(), Error> {
     use guest_emulation_transport::api::platform_settings::UefiConsoleMode;
 
@@ -681,6 +685,13 @@ pub fn write_uefi_config(
         });
     }
 
+    cfg.add(&config::AziHsmGuid(
+        // If not set, pass zero guid to UEFI
+        azihsm_guid.unwrap_or_default())
+    );
+
+    tracing::info!("azi hsm guid added to config: {:#?}", azihsm_guid.unwrap_or_default());
+    
     // Finally, with the bios config constructed, we can inject it into guest memory
     gm.write_at(loader::uefi::CONFIG_BLOB_GPA_BASE, &cfg.complete())
         .map_err(Error::GuestMemoryAccess)

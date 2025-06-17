@@ -2618,6 +2618,7 @@ async fn new_underhill_vm(
     let mut vmbus_client = None;
     let mut host_vmbus_relay = None;
     let mut vmbus_filter = None;
+    let mut vpci_relay = crate::vpci_relay::VpciRelay::new();
 
     // VMBus
     if with_vmbus {
@@ -2720,7 +2721,7 @@ async fn new_underhill_vm(
 
             for offer in vpci_filter.take().offers {
                 let instance_id = offer.offer.instance_id;
-                crate::vpci_relay::relay_vpci_bus(
+                vpci_relay.relay_vpci_bus(
                     &mut chipset_builder,
                     &driver_source,
                     offer,
@@ -2736,8 +2737,6 @@ async fn new_underhill_vm(
                 )
                 .await?;
             }
-
-            //crate::vpci_relay::foo(vpci_filter.take());
 
             let mut intercept_list = Vec::new();
             if intercept_shutdown_ic {
@@ -3024,6 +3023,7 @@ async fn new_underhill_vm(
             &dps,
             isolation.is_isolated(),
             env_cfg.disable_uefi_frontpage,
+            vpci_relay.azihsm_guid()
         )
         .instrument(tracing::info_span!("load_firmware", CVM_ALLOWED))
         .await?;
@@ -3307,6 +3307,7 @@ async fn load_firmware(
     dps: &DevicePlatformSettings,
     isolated: bool,
     disable_uefi_frontpage: bool,
+    azihsm_guid: Option<Guid>,
 ) -> Result<(), anyhow::Error> {
     let cmdline_append = match cmdline_append {
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
@@ -3329,6 +3330,7 @@ async fn load_firmware(
         loader_config,
         caps,
         isolated,
+        azihsm_guid,
     )
     .context("failed to load firmware")?;
 

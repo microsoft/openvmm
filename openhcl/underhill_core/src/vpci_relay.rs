@@ -3,10 +3,10 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pci::PciConfigSpace;
 use futures::StreamExt;
+use guid::Guid;
 use hcl::ioctl::MshvHvcall;
 use inspect::InspectMut;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use user_driver::DmaClient;
 use vmbus_client::local_use::Input;
 use vmcore::device_state::ChangeDeviceState;
@@ -101,106 +101,123 @@ impl MemoryAccess for HypercallMmio {
 
 const AZIHSM_VENDOR_ID: u16 = 0x1414;
 const AZIHSM_DEVICE_ID: u16 = 0xC003;
+pub struct VpciRelay {
+    azihsm_guid: Option<Guid>
+}
 
-pub async fn relay_vpci_bus(
-    chipset_builder: &mut ChipsetBuilder<'_>,
-    driver_source: &VmTaskDriverSource,
-    offer_info: vmbus_client::OfferInfo,
-    dma_client: &dyn DmaClient,
-    vmbus: &vmbus_server::VmbusServerControl,
-) -> anyhow::Result<()> {
-    let instance_id = offer_info.offer.instance_id;
+impl VpciRelay {
+    pub fn new() -> Self {
+        Self {
+            azihsm_guid: None,
+        }
+    }
 
-    let mmio = if false {
-        let mshv_hvcall = MshvHvcall::new().context("failed to open mshv_hvcall device")?;
-        mshv_hvcall.set_allowed_hypercalls(&[
-            hvdef::HypercallCode::HvCallMemoryMappedIoRead,
-            hvdef::HypercallCode::HvCallMemoryMappedIoWrite,
-        ]);
-        Box::new(HypercallMmio(mshv_hvcall)) as _
-    } else {
-        let mapping = sparse_mmap::SparseMapping::new(0x2000)
-            .context("failed to create sparse mapping for vpci mmio")?;
-        let dev_mem = fs_err::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/mem")
-            .context("failed to open /dev/mem")?;
-        mapping
-            .map_file(0, 0x2000, &dev_mem, TEMP_GPA, true)
-            .context("failed to map /dev/mem for vpci mmio")?;
+    pub fn azihsm_guid(&self) -> Option<Guid> {
+        self.azihsm_guid
+    }
 
-        Box::new(DirectMmio(mapping)) as _
-    };
+    pub async fn relay_vpci_bus(
+        &mut self,
+        chipset_builder: &mut ChipsetBuilder<'_>,
+        driver_source: &VmTaskDriverSource,
+        offer_info: vmbus_client::OfferInfo,
+        dma_client: &dyn DmaClient,
+        vmbus: &vmbus_server::VmbusServerControl,
+    ) -> anyhow::Result<()> {
+        let instance_id = offer_info.offer.instance_id;
 
-    let channel = vmbus_client::local_use::open_channel(
-        driver_source.simple(),
-        offer_info,
-        Input {
-            ring_pages: 20,
-            ring_offset_in_pages: 10,
-        },
-        dma_client,
-    )
-    .await?;
-    let (devices, mut devices_recv) = mesh::channel();
-    let vpci_client =
-        vpci_client::VpciClient::connect(driver_source.simple(), channel, mmio, devices).await?;
-    // TODO: hang onto this guy, wire him up to the inspect graph at least.
-    vpci_client.detach();
-    let vpci_device = devices_recv.next().await.context("no device")?;
-    let vpci_device = Arc::new(
-        vpci_device
-            .init()
-            .await
-            .context("failed to initialize vpci device")?,
-    );
+        let mmio = if false {
+            let mshv_hvcall = MshvHvcall::new().context("failed to open mshv_hvcall device")?;
+            mshv_hvcall.set_allowed_hypercalls(&[
+                hvdef::HypercallCode::HvCallMemoryMappedIoRead,
+                hvdef::HypercallCode::HvCallMemoryMappedIoWrite,
+            ]);
+            Box::new(HypercallMmio(mshv_hvcall)) as _
+        } else {
+            let mapping = sparse_mmap::SparseMapping::new(0x2000)
+                .context("failed to create sparse mapping for vpci mmio")?;
+            let dev_mem = fs_err::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/mem")
+                .context("failed to open /dev/mem")?;
+            mapping
+                .map_file(0, 0x2000, &dev_mem, TEMP_GPA, true)
+                .context("failed to map /dev/mem for vpci mmio")?;
 
-    tracing::info!(
-        "relaying vpci bus for instance {} with device {:#?}",
-        instance_id,
-        vpci_device.hw_ids()
-    );
+            Box::new(DirectMmio(mapping)) as _
+        };
 
-    if vpci_device.hw_ids().vendor_id == AZIHSM_VENDOR_ID
-        && vpci_device.hw_ids().device_id == AZIHSM_DEVICE_ID
-    {
-        let azihsm_device = AziHsmVpciDevice::new(&vpci_device);
-        tracing::info!(
-            "AZI HSM device detected, GUID: {:#?}",
-            azihsm_device.unique_guid()
+        let channel = vmbus_client::local_use::open_channel(
+            driver_source.simple(),
+            offer_info,
+            Input {
+                ring_pages: 20,
+                ring_offset_in_pages: 10,
+            },
+            dma_client,
         )
-    }
+        .await?;
+        let (devices, mut devices_recv) = mesh::channel();
+        let vpci_client =
+            vpci_client::VpciClient::connect(driver_source.simple(), channel, mmio, devices).await?;
+        // TODO: hang onto this guy, wire him up to the inspect graph at least.
+        vpci_client.detach();
+        let vpci_device = devices_recv.next().await.context("no device")?;
+        let vpci_device = Arc::new(
+            vpci_device
+                .init()
+                .await
+                .context("failed to initialize vpci device")?,
+        );
 
-    let device_name = format!("assigned_device:vpci-{instance_id}");
-    let device = chipset_builder
-        .arc_mutex_device(device_name)
-        .with_external_pci()
-        .add(|_services| RelayedVpciDevice(vpci_device.clone()))?;
+        tracing::info!(
+            "relaying vpci bus for instance {} with device {:#?}",
+            instance_id,
+            vpci_device.hw_ids()
+        );
 
-    let interrupt_mapper = VpciInterruptMapper::new(vpci_device);
+        if vpci_device.hw_ids().vendor_id == AZIHSM_VENDOR_ID
+            && vpci_device.hw_ids().device_id == AZIHSM_DEVICE_ID
+        {
+            let azihsm_device = AziHsmVpciDevice::new(&vpci_device);
+            tracing::info!(
+                "AZI HSM device detected, GUID: {:#?}",
+                azihsm_device.unique_guid()
+            );
+            self.azihsm_guid = Some(azihsm_device.unique_guid());
+        }
 
-    {
-        let vpci_bus_name = format!("vpci:{instance_id}");
-        chipset_builder
-            .arc_mutex_device(vpci_bus_name)
-            .try_add_async(async |services| {
-                let bus = vpci::bus::VpciBus::new(
-                    driver_source,
-                    instance_id,
-                    device,
-                    &mut services.register_mmio(),
-                    vmbus,
-                    interrupt_mapper,
-                )
+        let device_name = format!("assigned_device:vpci-{instance_id}");
+        let device = chipset_builder
+            .arc_mutex_device(device_name)
+            .with_external_pci()
+            .add(|_services| RelayedVpciDevice(vpci_device.clone()))?;
+
+        let interrupt_mapper = VpciInterruptMapper::new(vpci_device);
+
+        {
+            let vpci_bus_name = format!("vpci:{instance_id}");
+            chipset_builder
+                .arc_mutex_device(vpci_bus_name)
+                .try_add_async(async |services| {
+                    let bus = vpci::bus::VpciBus::new(
+                        driver_source,
+                        instance_id,
+                        device,
+                        &mut services.register_mmio(),
+                        vmbus,
+                        interrupt_mapper,
+                    )
+                    .await?;
+
+                    anyhow::Ok(bus)
+                })
                 .await?;
+        }
 
-                anyhow::Ok(bus)
-            })
-            .await?;
+        Ok(())
     }
-
-    Ok(())
 }
 
 #[derive(InspectMut)]

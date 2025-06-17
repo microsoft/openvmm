@@ -5336,7 +5336,6 @@ dependencies = [
  "bitfield-struct 0.10.1",
  "chipset_device",
  "guestmem",
- "guid",
  "inspect",
  "mesh",
  "open_enum",
