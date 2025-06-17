@@ -15,6 +15,7 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::future::join_all;
 use inspect::Inspect;
+use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -26,6 +27,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::collections::HashMap;
 use std::collections::hash_map;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::VfioDevice;
@@ -132,7 +134,7 @@ impl NvmeManager {
         &self.client
     }
 
-    pub async fn shutdown(self, nvme_keepalive: bool) {
+    pub async fn shutdown(self, nvme_keepalive: bool) -> anyhow::Result<()> {
         // Early return is faster way to skip shutdown.
         // but we need to thoroughly test the data integrity.
         // TODO: Enable this once tested and approved.
@@ -142,7 +144,11 @@ impl NvmeManager {
             span: tracing::info_span!("shutdown_nvme_manager"),
             nvme_keepalive,
         });
-        self.task.await;
+        let mut c = CancelContext::new().with_timeout(Duration::from_secs(2));
+        c.until_cancelled(self.task)
+            .await
+            .context("cancelled waiting for nvme shutdown")?;
+        Ok(())
     }
 
     /// Save NVMe manager's state during servicing.
