@@ -1470,6 +1470,7 @@ impl Hv1State {
                     &mut WhpNoVtlProtections(guest_memory)
                         as &mut dyn hv1_emulator::VtlProtectAccess,
                     &mut WhpNoVtlProtections(guest_memory),
+                    &mut WhpNoVtlProtections(guest_memory),
                 ]
                 .into(),
             ),
