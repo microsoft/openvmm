@@ -557,9 +557,10 @@ lto = 'fat'
 [profile.dev]
 panic = 'abort'
 
-[profile.xtask]
+# Used for dev tooling that benefits from some CPU optimizations, but that still
+# wants debug checks
+[profile.light]
 inherits = 'dev'
-# xtask is CPU bound in places, so enable light optimizations
 opt-level = 1
 
 [profile.flowey-ci]

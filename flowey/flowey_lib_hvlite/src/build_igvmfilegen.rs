@@ -3,7 +3,7 @@
 
 //! Build `igvmfilegen` binaries
 
-use crate::run_cargo_build::common::CommonProfile;
+use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ impl Artifact for IgvmfilegenOutput {}
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IgvmfilegenBuildParams {
     pub target: CommonTriple,
-    pub profile: CommonProfile,
+    pub profile: BuildProfile,
 }
 
 flowey_request! {
@@ -67,7 +67,7 @@ impl FlowNode for Node {
                 crate_name: "igvmfilegen".into(),
                 out_name: "igvmfilegen".into(),
                 crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
-                profile: profile.into(),
+                profile,
                 features: Default::default(),
                 target: target.as_triple(),
                 no_split_dbg_info: false,

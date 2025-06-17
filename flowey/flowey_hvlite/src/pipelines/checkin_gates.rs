@@ -300,7 +300,7 @@ impl IntoPipeline for CheckinGatesCli {
                             arch,
                             platform: CommonPlatform::WindowsMsvc,
                         },
-                        profile: CommonProfile::from_release(release),
+                        profile: CommonProfile::from_release(release).into(),
                     },
                     igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
                 })
@@ -486,7 +486,7 @@ impl IntoPipeline for CheckinGatesCli {
                             arch,
                             platform: CommonPlatform::LinuxGnu,
                         },
-                        profile: CommonProfile::from_release(release),
+                        profile: CommonProfile::from_release(release).into(),
                     },
                     igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
                 })
