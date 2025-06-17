@@ -6,6 +6,7 @@
 use super::PartitionInfo;
 use super::shim_params::IsolationType;
 use super::shim_params::ShimParams;
+use crate::alloc::ALLOCATOR;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
@@ -13,7 +14,9 @@ use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
+use crate::host_params::MAX_VTL2_RAM_RANGES;
 use crate::host_params::MAX_VTL2_USED_RANGES;
+use crate::host_params::mmio::select_vtl2_mmio_range;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
@@ -26,10 +29,14 @@ use host_fdt_parser::ParsedDeviceTree;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
+use loader_defs::shim::IgvmMemoryType;
+use loader_defs::shim::MemoryVtlType;
+use loader_defs::shim::PersistedStateHeader;
 use memory_range::MemoryRange;
 use memory_range::flatten_ranges;
 use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
+use zerocopy::FromBytes;
 
 /// Errors when reading the host device tree.
 #[derive(Debug)]
@@ -318,6 +325,269 @@ fn parse_host_vtl2_ram(
     vtl2_ram
 }
 
+type ParsedDt =
+    ParsedDeviceTree<MAX_PARTITION_RAM_RANGES, MAX_CPU_COUNT, COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>;
+
+#[derive(Debug, PartialEq, Eq)]
+struct PartitionTopology {
+    vtl2_ram: &'static [MemoryEntry],
+    vtl2_persisted_state_header: MemoryRange,
+    vtl2_persisted_state: MemoryRange,
+    vtl0_mmio: Option<&'static [MemoryRange]>,
+    vtl2_mmio: Option<&'static [MemoryRange]>,
+    memory_allocation_mode: MemoryAllocationMode,
+    vtl2_pool_memory: Option<MemoryRange>,
+}
+
+fn topology_from_host_dt(
+    params: &ShimParams,
+    parsed: &ParsedDt,
+    cmdline: &str,
+) -> Result<PartitionTopology, DtError> {
+    let mut vtl2_ram =
+        off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
+    let memory_allocation_mode;
+    let mut vtl2_pool_memory = None;
+
+    // TODO: Decide if isolated guests always use VTL2 allocation mode.
+
+    match parsed.memory_allocation_mode {
+        MemoryAllocationMode::Host => {
+            vtl2_ram
+                .try_extend_from_slice(parse_host_vtl2_ram(params, &parsed.memory).as_ref())
+                .expect("vtl2 ram should only be 64 big");
+            memory_allocation_mode = MemoryAllocationMode::Host;
+        }
+        MemoryAllocationMode::Vtl2 {
+            memory_size,
+            mmio_size,
+        } => {
+            vtl2_ram
+                .try_extend_from_slice(
+                    allocate_vtl2_ram(params, &parsed.memory, memory_size).as_ref(),
+                )
+                .expect("vtl2 ram should only be 64 big");
+            memory_allocation_mode = MemoryAllocationMode::Vtl2 {
+                memory_size,
+                mmio_size,
+            };
+        }
+    }
+
+    let vtl2_persisted_state_header =
+        MemoryRange::new(params.memory_start_address..(params.memory_start_address + HV_PAGE_SIZE));
+
+    // If there's no existing persisted state, reserve 512 pages to store it for the first time.
+    const PERSISTED_STATE_REGION_SIZE: u64 = 512 * HV_PAGE_SIZE;
+    let vtl2_persisted_state = MemoryRange::new(
+        params.memory_start_address + params.memory_size - PERSISTED_STATE_REGION_SIZE
+            ..params.memory_start_address + params.memory_size,
+    );
+
+    // Decide if we will reserve memory for a VTL2 private pool. Parse this
+    // from the final command line.
+    let mut parsed_cmdline = BootCommandLineOptions::new();
+    parsed_cmdline.parse(cmdline);
+
+    if let Some(pool_size) = parsed_cmdline.enable_vtl2_gpa_pool {
+        // Reserve the specified number of pages for the pool.
+        //
+        // BUGBUG: Select the range excluding the persisted region at the
+        // top of file memory. Figure out a cleaner way to allocate this.
+        let pool = MemoryRange::new(
+            params.memory_start_address + params.memory_size
+                - (pool_size * HV_PAGE_SIZE)
+                - PERSISTED_STATE_REGION_SIZE
+                ..params.memory_start_address + params.memory_size - PERSISTED_STATE_REGION_SIZE,
+        );
+
+        assert!(
+            !params.used.overlaps(&pool),
+            "specified pool memory {pool} overlaps used shim memory {}",
+            params.used
+        );
+
+        vtl2_pool_memory = Some(pool);
+    }
+
+    // The host is responsible for allocating MMIO ranges for non-isolated
+    // guests when it also provides the ram VTL2 should use.
+    //
+    // For isolated guests, or when VTL2 has been asked to carve out its own
+    // memory, carve out a range from the VTL0 allotment.
+    let (vtl0_mmio, vtl2_mmio) = if params.isolation_type != IsolationType::None
+        || matches!(
+            parsed.memory_allocation_mode,
+            MemoryAllocationMode::Vtl2 { .. }
+        ) {
+        // Decide the amount of mmio VTL2 should allocate. Enforce a minimum
+        // of 128 MB mmio for VTL2.
+        const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
+        let mmio_size = max(
+            match parsed.memory_allocation_mode {
+                MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
+                _ => 0,
+            },
+            MINIMUM_MMIO_SIZE,
+        );
+
+        // Decide what mmio vtl2 should use.
+        let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
+        let selected_vtl2_mmio = select_vtl2_mmio_range(mmio, mmio_size)?;
+        let mut vtl2_mmio = off_stack!(ArrayVec<MemoryRange, 1>, ArrayVec::new_const());
+        vtl2_mmio.push(selected_vtl2_mmio);
+
+        // Update vtl0 mmio to exclude vtl2 mmio.
+        let mut vtl0_mmio = off_stack!(ArrayVec<MemoryRange, 2>, ArrayVec::new_const());
+        vtl0_mmio.extend(subtract_ranges(
+            mmio.iter().cloned(),
+            vtl2_mmio.iter().cloned(),
+        ));
+
+        // TODO: For now, if we have only a single vtl0_mmio range left,
+        // panic. In the future decide if we want to report this as a start
+        // failure in usermode, change allocation strategy, or something
+        // else.
+        assert_eq!(
+            vtl0_mmio.len(),
+            2,
+            "vtl0 mmio ranges are not 2 {:#x?}",
+            vtl0_mmio.as_slice()
+        );
+
+        (
+            Some(OffStackRef::<'_, ArrayVec<MemoryRange, 2>>::leak(vtl0_mmio).as_slice()),
+            Some(OffStackRef::<'_, ArrayVec<MemoryRange, 1>>::leak(vtl2_mmio).as_slice()),
+        )
+    } else {
+        (None, None)
+    };
+
+    Ok(PartitionTopology {
+        vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+        vtl2_persisted_state_header,
+        vtl2_persisted_state,
+        vtl0_mmio,
+        vtl2_mmio,
+        memory_allocation_mode,
+        vtl2_pool_memory,
+    })
+}
+
+fn topology_from_persisted_state(
+    header: PersistedStateHeader,
+    params: &ShimParams,
+    parsed: &ParsedDt,
+) -> Result<PartitionTopology, DtError> {
+    ALLOCATOR.enable_alloc();
+
+    let memory = MemoryRange::new(
+        header.protobuf_offset
+            ..((header.protobuf_offset + header.protobuf_len + HV_PAGE_SIZE - 1)
+                & !(HV_PAGE_SIZE - 1)),
+    );
+
+    let mut local_map = params.local_map.borrow_mut();
+    let mapping = local_map.map_pages(memory, false);
+    let protobuf = &mapping.data;
+
+    let parsed_protobuf: loader_defs::shim::SavedState =
+        mesh_protobuf::decode(protobuf).expect("BUGBUG protobuf payload must be valid");
+
+    ALLOCATOR.disable_alloc();
+
+    let mut vtl2_ram =
+        off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
+    let memory_allocation_mode = parsed.memory_allocation_mode;
+
+    for entry in parsed_protobuf
+        .partition_memory
+        .iter()
+        .filter(|e| e.igvm_type == IgvmMemoryType::from(MemoryMapEntryType::VTL2_PROTECTABLE))
+    {
+        vtl2_ram.push(MemoryEntry {
+            range: entry.range,
+            mem_type: entry.igvm_type.clone().into(),
+            vnode: entry.vnode,
+        });
+    }
+
+    let persisted_state_header =
+        MemoryRange::new(params.memory_start_address..(params.memory_start_address + HV_PAGE_SIZE));
+
+    let persisted_state = parsed_protobuf
+        .partition_memory
+        .iter()
+        .find(|m| m.vtl_type == MemoryVtlType::VTL2_PERSISTED_STATE)
+        .expect("must have persisted state");
+    let vtl2_pool_memory = parsed_protobuf
+        .partition_memory
+        .iter()
+        .find(|m| m.vtl_type == MemoryVtlType::VTL2_GPA_POOL);
+    let vtl0_mmio = parsed_protobuf
+        .partition_mmio
+        .iter()
+        .find(|m| m.vtl_type == MemoryVtlType::VTL0_MMIO);
+    let vtl2_mmio = parsed_protobuf
+        .partition_mmio
+        .iter()
+        .find(|m| m.vtl_type == MemoryVtlType::VTL2_MMIO);
+
+    let vtl0_mmio = if let Some(vtl0) = vtl0_mmio {
+        let mut mmio = off_stack!(ArrayVec<MemoryRange, 2>, ArrayVec::new_const());
+        mmio.push(vtl0.range);
+        Some(OffStackRef::<'_, ArrayVec<MemoryRange, 2>>::leak(mmio).as_slice())
+    } else {
+        None
+    };
+
+    let vtl2_mmio = if let Some(vtl2) = vtl2_mmio {
+        let mut mmio = off_stack!(ArrayVec<MemoryRange, 1>, ArrayVec::new_const());
+        mmio.push(vtl2.range);
+        Some(OffStackRef::<'_, ArrayVec<MemoryRange, 1>>::leak(mmio).as_slice())
+    } else {
+        None
+    };
+
+    Ok(PartitionTopology {
+        vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+        vtl2_persisted_state_header: persisted_state_header,
+        vtl2_persisted_state: persisted_state.range,
+        vtl0_mmio,
+        vtl2_mmio,
+        memory_allocation_mode,
+        vtl2_pool_memory: vtl2_pool_memory.map(|e| e.range),
+    })
+}
+
+fn read_persisted_region_header(
+    params: &ShimParams,
+    persisted_header: MemoryRange,
+) -> Result<Option<PersistedStateHeader>, DtError> {
+    // TODO CVM: On an isolated guest, these pages may not be accepted. We need
+    // to rethink how this will work in order to handle this correctly, as on a
+    // first boot we'd need to accept them early, but subsequent boots should
+    // not accept any pages.
+    if params.isolation_type != IsolationType::None {
+        return Ok(None);
+    }
+
+    // See if a persisted region exists. Start by mapping just 4K at the top
+    // of the end of file memory, where the header should be.
+    let mut local_map = params.local_map.borrow_mut();
+    let mapping = local_map.map_pages(persisted_header, false);
+
+    // Parse the fixed header.
+    let (header, _) =
+        PersistedStateHeader::read_from_prefix(mapping.data).expect("BUGBUG must be big enough");
+
+    if header.magic != PersistedStateHeader::MAGIC {
+        return Ok(None);
+    }
+
+    Ok(Some(header))
+}
+
 impl PartitionInfo {
     // Read the IGVM provided DT for the vtl2 partition info. If no device tree
     // was provided by the host, `None` is returned.
@@ -334,7 +604,7 @@ impl PartitionInfo {
             return Ok(None);
         }
 
-        let mut dt_storage = off_stack!(ParsedDeviceTree<MAX_PARTITION_RAM_RANGES, MAX_CPU_COUNT, COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>, ParsedDeviceTree::new());
+        let mut dt_storage = off_stack!(ParsedDt, ParsedDeviceTree::new());
 
         let parsed = ParsedDeviceTree::parse(dt, &mut *dt_storage).map_err(DtError::DeviceTree)?;
 
@@ -358,81 +628,64 @@ impl PartitionInfo {
                 .map_err(|_| DtError::CommandLineSize)?;
         }
 
-        // TODO: Decide if isolated guests always use VTL2 allocation mode.
-
-        match parsed.memory_allocation_mode {
-            MemoryAllocationMode::Host => {
-                storage.vtl2_ram.clear();
-                storage
-                    .vtl2_ram
-                    .try_extend_from_slice(parse_host_vtl2_ram(params, &parsed.memory).as_ref())
-                    .expect("vtl2 ram should only be 64 big");
-                storage.memory_allocation_mode = MemoryAllocationMode::Host;
-            }
-            MemoryAllocationMode::Vtl2 {
-                memory_size,
-                mmio_size,
-            } => {
-                storage.vtl2_ram.clear();
-                storage
-                    .vtl2_ram
-                    .try_extend_from_slice(
-                        allocate_vtl2_ram(params, &parsed.memory, memory_size).as_ref(),
-                    )
-                    .expect("vtl2 ram should only be 64 big");
-                storage.memory_allocation_mode = MemoryAllocationMode::Vtl2 {
-                    memory_size,
-                    mmio_size,
-                };
-            }
-        }
-
+        // Set the default vmbus info to the info provided by the host dt.
         storage.vmbus_vtl2 = parsed.vmbus_vtl2.clone().ok_or(DtError::Vtl2Vmbus)?;
         storage.vmbus_vtl0 = parsed.vmbus_vtl0.clone().ok_or(DtError::Vtl0Vmbus)?;
 
-        // The host is responsible for allocating MMIO ranges for non-isolated
-        // guests when it also provides the ram VTL2 should use.
+        // Initialize the global allocator with the range specified at file
+        // build time.
         //
-        // For isolated guests, or when VTL2 has been asked to carve out its own
-        // memory, carve out a range from the VTL0 allotment.
-        if params.isolation_type != IsolationType::None
-            || matches!(
-                parsed.memory_allocation_mode,
-                MemoryAllocationMode::Vtl2 { .. }
-            )
+        // SAFETY: The specified range was specified and measured at load time.
+        // This means it is guaranteed to exist and have a valid pagetable
+        // mapping.
+        unsafe {
+            ALLOCATOR.init(params.heap);
+        }
+
+        // The persisted state header is always the first page of VTL2 memory.
+        let vtl2_persisted_state_header = MemoryRange::new(
+            params.memory_start_address..(params.memory_start_address + HV_PAGE_SIZE),
+        );
+
+        let has_persisted_state =
+            read_persisted_region_header(params, vtl2_persisted_state_header)?;
+        let topology = if let Some(persisted_region_header) = has_persisted_state {
+            topology_from_persisted_state(persisted_region_header, params, parsed)?
+        } else {
+            topology_from_host_dt(params, parsed, storage.cmdline.as_str())?
+        };
+
+        // Set topology fields.
         {
-            // Decide the amount of mmio VTL2 should allocate. Enforce a minimum
-            // of 128 MB mmio for VTL2.
-            const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
-            let mmio_size = max(
-                match parsed.memory_allocation_mode {
-                    MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
-                    _ => 0,
-                },
-                MINIMUM_MMIO_SIZE,
-            );
+            let PartitionTopology {
+                vtl2_ram,
+                vtl2_persisted_state_header,
+                vtl2_persisted_state,
+                vtl0_mmio,
+                vtl2_mmio,
+                memory_allocation_mode,
+                vtl2_pool_memory,
+            } = topology;
 
-            // Decide what mmio vtl2 should use.
-            let vtl2_mmio = storage.select_vtl2_mmio_range(mmio_size)?;
+            storage.vtl2_ram.clear();
+            storage.vtl2_ram.extend(vtl2_ram.iter().copied());
 
-            // Update vtl0 mmio to exclude vtl2 mmio.
-            let vtl0_mmio = subtract_ranges(storage.vmbus_vtl0.mmio.iter().cloned(), [vtl2_mmio])
-                .collect::<ArrayVec<MemoryRange, 2>>();
+            storage.vtl2_persisted_state_header = vtl2_persisted_state_header;
+            storage.vtl2_persisted_state = vtl2_persisted_state;
 
-            // TODO: For now, if we have only a single vtl0_mmio range left,
-            // panic. In the future decide if we want to report this as a start
-            // failure in usermode, change allocation strategy, or something
-            // else.
-            assert_eq!(
-                vtl0_mmio.len(),
-                2,
-                "vtl0 mmio ranges are not 2 {:#x?}",
-                vtl0_mmio
-            );
+            if let Some(vtl0_mmio) = vtl0_mmio {
+                storage.vmbus_vtl0.mmio.clear();
+                storage.vmbus_vtl0.mmio.extend(vtl0_mmio.iter().copied());
+            }
 
-            storage.vmbus_vtl2.mmio.clear();
-            storage.vmbus_vtl2.mmio.push(vtl2_mmio);
-            storage.vmbus_vtl0.mmio = vtl0_mmio;
+            if let Some(vtl2_mmio) = vtl2_mmio {
+                storage.vmbus_vtl2.mmio.clear();
+                storage.vmbus_vtl2.mmio.extend(vtl2_mmio.iter().copied());
+            }
+
+            storage.memory_allocation_mode = memory_allocation_mode;
+
+            storage.vtl2_pool_memory = vtl2_pool_memory.unwrap_or(MemoryRange::EMPTY);
         }
 
         // The host provided device tree is marked as normal ram, as the
@@ -453,6 +706,11 @@ impl PartitionInfo {
         let mut used_ranges =
             off_stack!(ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>, ArrayVec::new_const());
         used_ranges.push(params.used);
+        used_ranges.push(storage.vtl2_persisted_state);
+
+        if storage.vtl2_pool_memory != MemoryRange::EMPTY {
+            used_ranges.push(storage.vtl2_pool_memory);
+        }
         used_ranges.sort_unstable_by_key(|r| r.start());
         storage.vtl2_used_ranges.clear();
         storage
@@ -514,6 +772,8 @@ impl PartitionInfo {
             vtl2_full_config_region: vtl2_config_region,
             vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
             vtl2_reserved_region,
+            vtl2_persisted_state: _,
+            vtl2_persisted_state_header: _,
             vtl2_pool_memory: _,
             vtl2_used_ranges,
             partition_ram: _,
