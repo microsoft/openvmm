@@ -1414,16 +1414,25 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), (HvError, usize)>;
 
-    /// Changes the overlay for the hypercall code page for a target VTL.
-    fn change_hypercall_overlay(
+    /// Registers a page as an overlay page by first validating it has the
+    /// required permissions, optionally modifying them, then locking them.
+    fn register_overlay_page(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        check_perms: HvMapGpaFlags,
+        new_perms: Option<HvMapGpaFlags>,
+        tlb_access: &mut dyn TlbFlushLockAccess,
+    ) -> Result<(), HvError>;
+
+    /// Unregisters an overlay page, removing its permission lock and restoring
+    /// the previous permissions.
+    fn unregister_overlay_page(
         &self,
         vtl: GuestVtl,
         gpn: u64,
         tlb_access: &mut dyn TlbFlushLockAccess,
-    );
-
-    /// Disables the overlay for the hypercall code page for a target VTL.
-    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushLockAccess);
+    ) -> Result<(), HvError>;
 
     /// Alerts the memory protector that vtl 1 is ready to set vtl protections
     /// on lower-vtl memory, and that these protections should be enforced.
@@ -1731,7 +1740,6 @@ impl<'a> UhProtoPartition<'a> {
                 &params,
                 late_params.cvm_params.unwrap(),
                 &caps,
-                late_params.gm.clone(),
                 guest_vsm_available,
             )?)
         } else {
@@ -1745,7 +1753,6 @@ impl<'a> UhProtoPartition<'a> {
             &params,
             BackingSharedParams {
                 cvm_state,
-                guest_memory: late_params.gm.clone(),
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: &cpuid,
                 hcl: &hcl,
@@ -1890,7 +1897,6 @@ impl UhProtoPartition<'_> {
         params: &UhPartitionNewParams<'_>,
         late_params: CvmLateParams,
         caps: &PartitionCapabilities,
-        guest_memory: VtlArray<GuestMemory, 2>,
         guest_vsm_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         use vmcore::reference_time::ReferenceTimeSource;
@@ -1929,7 +1935,6 @@ impl UhProtoPartition<'_> {
             tsc_frequency,
             ref_time,
             is_ref_time_backed_by_tsc: true,
-            guest_memory,
         });
 
         Ok(UhCvmPartitionState {

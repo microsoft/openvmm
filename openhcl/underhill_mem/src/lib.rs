@@ -31,7 +31,6 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HypercallCode;
-use hvdef::Vtl;
 use hvdef::hypercall::AcceptMemoryType;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvInputVtl;
@@ -39,7 +38,9 @@ use mapping::GuestMemoryMapping;
 use mapping::GuestValidMemory;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
+use parking_lot::MutexGuard;
 use registrar::RegisterMemory;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use thiserror::Error;
@@ -342,12 +343,6 @@ pub struct HardwareIsolatedMemoryProtector {
     // TODO GUEST VSM: synchronize vtl protection bitmaps
     vtl0: Arc<GuestMemoryMapping>,
     vtl1_protections_enabled: AtomicBool,
-    hypercall_overlay: VtlArray<Arc<Mutex<Option<HypercallOverlay>>>, 2>,
-}
-
-struct HypercallOverlay {
-    gpn: u64,
-    permissions: HvMapGpaFlags,
 }
 
 struct HardwareIsolatedMemoryProtectorInner {
@@ -355,6 +350,12 @@ struct HardwareIsolatedMemoryProtectorInner {
     valid_shared: Arc<GuestValidMemory>,
     encrypted: Arc<GuestMemoryMapping>,
     default_vtl_permissions: DefaultVtlPermissions,
+    overlay_pages: VtlArray<Vec<OverlayPage>, 2>,
+}
+
+struct OverlayPage {
+    gpn: u64,
+    previous_permissions: HvMapGpaFlags,
 }
 
 impl HardwareIsolatedMemoryProtector {
@@ -381,55 +382,51 @@ impl HardwareIsolatedMemoryProtector {
                     vtl0: HV_MAP_GPA_PERMISSIONS_ALL,
                     vtl1: None,
                 },
+                overlay_pages: VtlArray::from_fn(|_| Vec::new()),
             }),
             layout,
             acceptor,
             vtl0,
             vtl1_protections_enabled: AtomicBool::new(false),
-            hypercall_overlay: VtlArray::from_fn(|_| Arc::new(Mutex::new(None))),
         }
     }
 
     fn apply_protections_with_overlay_handling(
         &self,
+        range: MemoryRange,
         vtl: GuestVtl,
-        ranges: &[MemoryRange],
         protections: HvMapGpaFlags,
+        inner: &mut MutexGuard<'_, HardwareIsolatedMemoryProtectorInner>,
     ) -> Result<(), ApplyVtlProtectionsError> {
-        // The overlay page cannot change over the course of this operation
-        let mut overlay_lock = self.hypercall_overlay[vtl].lock();
-        for range in ranges {
-            match overlay_lock.as_mut() {
-                Some(overlay) if range.contains_addr(overlay.gpn * HV_PAGE_SIZE) => {
-                    overlay.permissions = protections;
+        let mut range_queue = VecDeque::new();
+        range_queue.push_back(range);
 
-                    let overlay_address = overlay.gpn * HV_PAGE_SIZE;
-                    let overlay_offset = range.offset_of(overlay_address).unwrap();
-                    let (left, right) = range.split_at_offset(overlay_offset);
-
-                    self.apply_protections(left, vtl, protections)?;
-                    let sub_range = MemoryRange::new((overlay.gpn + 1) * HV_PAGE_SIZE..right.end());
-                    if !sub_range.is_empty() {
-                        self.apply_protections(sub_range, vtl, protections)?;
+        'outer: while let Some(range) = range_queue.pop_front() {
+            for overlay_page in inner.overlay_pages[vtl].iter_mut() {
+                let overlay_addr = overlay_page.gpn * HV_PAGE_SIZE;
+                if range.contains_addr(overlay_addr) {
+                    // If the overlay page is within the range, update the
+                    // permissions that will be restored when it is unlocked.
+                    overlay_page.previous_permissions = protections;
+                    // And split the range around it.
+                    let (left, right_with_overlay) =
+                        range.split_at_offset(range.offset_of(overlay_addr).unwrap());
+                    let (overlay, right) = right_with_overlay.split_at_offset(HV_PAGE_SIZE);
+                    debug_assert_eq!(overlay.start_4k_gpn(), overlay_page.gpn);
+                    debug_assert_eq!(overlay.len(), HV_PAGE_SIZE);
+                    if !left.is_empty() {
+                        range_queue.push_back(left);
                     }
-                }
-                _ => {
-                    self.apply_protections(*range, vtl, protections)?;
+                    if !right.is_empty() {
+                        range_queue.push_back(right);
+                    }
+                    continue 'outer;
                 }
             }
+            // We can only reach here if the range does not contain any overlay
+            // pages, so now we can apply the protections to the range.
+            self.apply_protections(range, vtl, protections)?
         }
-        Ok(())
-    }
-
-    /// Restore the original protections on the page that is overlaid.
-    fn restore_overlay_permissions(
-        &self,
-        vtl: GuestVtl,
-        overlay: &HypercallOverlay,
-    ) -> Result<(), ApplyVtlProtectionsError> {
-        let range = MemoryRange::new(overlay.gpn * HV_PAGE_SIZE..(overlay.gpn + 1) * HV_PAGE_SIZE);
-
-        self.apply_protections(range, vtl, overlay.permissions)?;
 
         Ok(())
     }
@@ -447,6 +444,35 @@ impl HardwareIsolatedMemoryProtector {
         }
         self.acceptor.apply_protections(range, vtl, protections)
     }
+
+    /// Get the permissions that the given VTL has to the given GPN.
+    ///
+    /// This function does not check for any protections applied by VTL 2,
+    /// only those applied by lower VTLs.
+    fn query_lower_vtl_permissions(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+    ) -> Result<HvMapGpaFlags, HvError> {
+        if !self
+            .layout
+            .ram()
+            .iter()
+            .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
+        {
+            return Err(HvError::OperationDenied);
+        }
+
+        let res = match vtl {
+            GuestVtl::Vtl0 => self
+                .vtl0
+                .query_access_permission(gpn)
+                .unwrap_or(HV_MAP_GPA_PERMISSIONS_ALL),
+            GuestVtl::Vtl1 => HV_MAP_GPA_PERMISSIONS_ALL,
+        };
+
+        Ok(res)
+    }
 }
 
 impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
@@ -457,8 +483,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         gpns: &[u64],
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), (HvError, usize)> {
-        // Validate the ranges are RAM.
+        let inner = self.inner.lock();
+
         for &gpn in gpns {
+            // Validate the ranges are RAM.
             if !self
                 .layout
                 .ram()
@@ -468,20 +496,13 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 return Err((HvError::OperationDenied, 0));
             }
 
-            // Don't allow the hypercall overlay to have shared visibility.
-            if shared {
-                for vtl in [Vtl::Vtl1, Vtl::Vtl0] {
-                    let overlay = self.hypercall_overlay[vtl].lock();
-                    if let Some(overlay) = &*overlay {
-                        if overlay.gpn == gpn {
-                            return Err((HvError::OperationDenied, 0));
-                        }
-                    }
-                }
+            // TODO: Don't allow changing visibility of locked pages.
+
+            // Don't allow overlay pages to be shared.
+            if shared && inner.overlay_pages[vtl].iter().any(|p| p.gpn == gpn) {
+                return Err((HvError::OperationDenied, 0));
             }
         }
-
-        let inner = self.inner.lock();
 
         // Filter out the GPNs that are already in the correct state. If the
         // page is becoming shared, make sure the requesting VTL has read/write
@@ -669,10 +690,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         }
 
         if !shared {
-            // Apply vtl protections so that the guest can use them. The
-            // hypercall overlay should not be host visible, so just apply
-            // the default protections directly without handling of the
-            // hypercall overlay.
+            // Apply vtl protections so that the guest can use them. Any
+            // overlay pages won't be host visible, so just apply the default
+            // protections directly without handling them.
             for &range in &ranges {
                 self.apply_protections(range, GuestVtl::Vtl0, inner.default_vtl_permissions.vtl0)
                     .expect("should be able to apply default protections");
@@ -774,8 +794,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             }
         }
 
-        self.apply_protections_with_overlay_handling(vtl, &ranges, vtl_protections)
-            .expect("applying vtl protections should succeed");
+        for range in ranges {
+            self.apply_protections_with_overlay_handling(range, vtl, vtl_protections, &mut inner)
+                .unwrap();
+        }
 
         // Invalidate the entire VTL 0 TLB to ensure that the new permissions
         // are observed.
@@ -801,13 +823,15 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             {
                 return Err((HvError::OperationDenied, 0));
             }
+
+            // TODO: Don't allow changing protections of locked pages.
         }
 
         // Prevent visibility changes while VTL protections are being
         // applied. This does not need to be synchronized against other
         // threads performing VTL protection changes; whichever thread
         // finishes last will control the outcome.
-        let inner = self.inner.lock();
+        let mut inner = self.inner.lock();
 
         // Protections cannot be applied to a host-visible page
         if gpns.iter().any(|&gpn| inner.valid_shared.check_valid(gpn)) {
@@ -821,8 +845,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .collect::<Result<Vec<_>, _>>()
             .unwrap(); // Ok to unwrap, we've validated the gpns above.
 
-        self.apply_protections_with_overlay_handling(vtl, &ranges, protections)
-            .expect("applying vtl protections should succeed");
+        for range in ranges {
+            self.apply_protections_with_overlay_handling(range, vtl, protections, &mut inner)
+                .unwrap();
+        }
 
         // Since page protections were modified, we must invalidate the entire
         // VTL 0 TLB to ensure that the new permissions are observed, and wait for
@@ -834,77 +860,97 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         Ok(())
     }
 
-    fn change_hypercall_overlay(
+    fn register_overlay_page(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        check_perms: HvMapGpaFlags,
+        new_perms: Option<HvMapGpaFlags>,
+        tlb_access: &mut dyn TlbFlushLockAccess,
+    ) -> Result<(), HvError> {
+        let mut inner = self.inner.lock();
+
+        // Check that this isn't already registered.
+        if inner.overlay_pages[vtl].iter().any(|p| p.gpn == gpn) {
+            return Err(HvError::OperationDenied);
+        }
+
+        // Check that the required permissions are present.
+        let current_perms = self.query_lower_vtl_permissions(vtl, gpn)?;
+        if current_perms.into_bits() | check_perms.into_bits() != current_perms.into_bits() {
+            return Err(HvError::OperationDenied);
+        }
+
+        // Protections cannot be applied to a host-visible page.
+        if inner.valid_shared.check_valid(gpn) {
+            return Err(HvError::OperationDenied);
+        }
+
+        // TODO: Don't allow changing protections of locked pages.
+
+        // Everything's validated, change the permissions.
+        if let Some(new_perms) = new_perms {
+            self.apply_protections(MemoryRange::from_4k_gpn_range(gpn..gpn + 1), vtl, new_perms)
+                .map_err(|_| HvError::OperationDenied)?;
+        }
+
+        // Nothing from this point on can fail, so we can safely register the overlay page.
+        inner.overlay_pages[vtl].push(OverlayPage {
+            gpn,
+            previous_permissions: current_perms,
+        });
+
+        // Flush any threads accessing pages that had their VTL protections
+        // changed.
+        guestmem::rcu().synchronize_blocking();
+
+        // Since page protections were modified, we must invalidate the TLB to
+        // ensure that the new permissions are observed, and wait for other CPUs
+        // to release all guest mappings before declaring that the VTL
+        // protection change has completed.
+        tlb_access.flush(vtl);
+        tlb_access.set_wait_for_tlb_locks(vtl);
+
+        Ok(())
+    }
+
+    fn unregister_overlay_page(
         &self,
         vtl: GuestVtl,
         gpn: u64,
         tlb_access: &mut dyn TlbFlushLockAccess,
-    ) {
-        // Should already have written contents to the page via the guest
-        // memory object, confirming that this is a guest page
-        assert!(
-            self.layout
-                .ram()
-                .iter()
-                .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
-        );
+    ) -> Result<(), HvError> {
+        let mut inner = self.inner.lock();
+        let overlay_pages = &mut inner.overlay_pages[vtl];
 
-        // Ensure no host visibility changes while changing protections on the
-        // overlay page.
-        let _lock = self.inner.lock();
+        // Find the overlay page.
+        let index = overlay_pages
+            .iter()
+            .position(|p| p.gpn == gpn)
+            .ok_or(HvError::OperationDenied)?;
 
-        let mut overlay = self.hypercall_overlay[vtl].lock();
-
-        // Restore permissions on the previous overlay
-        if let Some(overlay) = overlay.as_ref() {
-            self.restore_overlay_permissions(vtl, overlay)
-                .expect("applying vtl protections should succeed");
-        }
-
-        let current_permissions = match self.acceptor.isolation {
-            IsolationType::None | IsolationType::Vbs => unreachable!(),
-            IsolationType::Snp | IsolationType::Tdx => {
-                if vtl == GuestVtl::Vtl0 {
-                    self.vtl0
-                        .query_access_permission(gpn)
-                        .unwrap_or(HV_MAP_GPA_PERMISSIONS_ALL)
-                } else {
-                    // The permissions should be the same as when VTL 2
-                    // initialized guest memory.
-                    HV_MAP_GPA_PERMISSIONS_ALL
-                }
-            }
-        };
-
-        *overlay = Some(HypercallOverlay {
-            gpn,
-            permissions: current_permissions,
-        });
-
+        // Restore its permissions.
         self.apply_protections(
-            MemoryRange::new(gpn * HV_PAGE_SIZE..(gpn + 1) * HV_PAGE_SIZE),
+            MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
             vtl,
-            HV_MAP_GPA_PERMISSIONS_ALL.with_writable(false),
+            overlay_pages[index].previous_permissions,
         )
-        .expect("applying vtl protections should succeed");
+        .map_err(|_| HvError::OperationDenied)?;
 
-        // Flush the guest TLB to ensure that the new permissions are observed.
+        // Nothing from this point on can fail, so we can safely unregister the overlay page.
+        overlay_pages.remove(index);
+
+        // Flush any threads accessing pages that had their VTL protections
+        // changed.
+        guestmem::rcu().synchronize_blocking();
+
+        // Since page protections were modified, we must invalidate the TLB to
+        // ensure that the new permissions are observed, and wait for other CPUs
+        // to release all guest mappings before declaring that the VTL
+        // protection change has completed.
         tlb_access.flush(vtl);
-    }
-
-    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushLockAccess) {
-        let _lock = self.inner.lock();
-
-        let mut overlay = self.hypercall_overlay[vtl].lock();
-
-        if let Some(overlay) = overlay.as_ref() {
-            self.restore_overlay_permissions(vtl, overlay)
-                .expect("applying vtl protections should succeed");
-        }
-
-        *overlay = None;
-
-        tlb_access.flush(vtl);
+        tlb_access.set_wait_for_tlb_locks(vtl);
+        Ok(())
     }
 
     fn set_vtl1_protections_enabled(&self) {
