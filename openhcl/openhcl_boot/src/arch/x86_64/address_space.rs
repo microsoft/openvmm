@@ -104,6 +104,11 @@ impl PageTableEntry {
         self.write_pte(0);
     }
 
+    pub fn tdx_is_shared(&mut self) -> bool {
+        let val = self.read_pte();
+        val & TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT == TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT
+    }
+
     pub fn tdx_set_shared(&mut self) {
         let mut val = self.read_pte();
         val |= TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
@@ -270,35 +275,52 @@ pub fn init_local_map(va: u64) -> LocalMap<'static> {
 }
 
 /// A page used for TDX hypercalls
-/// This wrapper assures that the page is a large page, and present in the paging hierarchy
+/// This wrapper assures that the page is a large page, present in the
+/// paging hierarchy, aligned to 2MB, and shared with the hypervisor
 pub struct TdxHypercallPage(u64);
 
 impl TdxHypercallPage {
-    /// Validate that a virtual address is present in the paging hierarchy, and that it is a large page
+    /// Validate that a virtual address is present in the paging hierarchy,
+    /// and that it is a large page
     ///
     /// # Safety
-    /// The caller ensures that the argument is a virtual address
+    /// The caller ensures that the input is a virtual address with a valid page table
     pub unsafe fn new(va: u64) -> Self {
         // SAFETY: See above
         unsafe {
             let entry = get_pde_for_va(va);
             assert!(entry.is_present() & entry.is_large_page());
+            assert!(va % X64_LARGE_PAGE_SIZE == 0);
+            assert!(entry.tdx_is_shared());
             TdxHypercallPage(va)
         }
     }
 
+    fn check_page(&self) {
+        // SAFETY: The virtual address for this page was guaranteed to be present
+        // in the paging hierarchy in the initialization of the struct
+        unsafe {
+            let entry = get_pde_for_va(self.0);
+            assert!(entry.is_present() & entry.is_large_page());
+            assert!(!entry.tdx_is_shared());
+        }
+    }
+
     /// Returns the VA of the large page containing the I/O buffers
-    pub fn large_page(&self) -> u64 {
+    pub fn base(&self) -> u64 {
+        self.check_page();
         self.0
     }
 
     /// Returns the VA of the hypercall input buffer
     pub fn input(&self) -> u64 {
+        self.check_page();
         self.0
     }
 
     /// Returns the VA of the hypercall output buffer
     pub fn output(&self) -> u64 {
+        self.check_page();
         self.0 + HV_PAGE_SIZE
     }
 }
@@ -308,10 +330,10 @@ impl TdxHypercallPage {
 /// # Safety
 /// The va passed in is guaranteed by the type to be a present large page,
 /// the caller must ensure it is safe to share with the hypervisor
-pub unsafe fn tdx_share_large_page(va: &TdxHypercallPage) {
+pub unsafe fn tdx_share_large_page(va: u64) {
     // SAFETY: See above
     unsafe {
-        let entry = get_pde_for_va(va.large_page());
+        let entry = get_pde_for_va(va);
         entry.tdx_set_shared();
     }
 }
@@ -319,8 +341,9 @@ pub unsafe fn tdx_share_large_page(va: &TdxHypercallPage) {
 /// Clear the shared bit in the PDE of the local map for a given VA.
 pub fn tdx_unshare_large_page(va: &TdxHypercallPage) {
     // SAFETY: The va passed in is guaranteed by the type to be a present large page,
+    // which is shared with the hypervisor
     unsafe {
-        let entry = get_pde_for_va(va.large_page());
+        let entry = get_pde_for_va(va.base());
         entry.tdx_set_private();
     }
 }

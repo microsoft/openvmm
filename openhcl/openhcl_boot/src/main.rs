@@ -490,8 +490,9 @@ mod x86_boot {
             }
         }
 
-        // If TDX-isolated, APs start up in the shim. Mark the page tables and
-        // mailbox/reset-vector region of openhcl_boot as E820-reserved,
+        // If TDX-isolated, APs start up in the shim, and then are held in a wait
+        // loop as part of AP mailbox protocol used with the kernel. Mark the page
+        // tables and mailbox/reset-vector region of openhcl_boot as E820-reserved,
         // otherwise the L1 kernel can use the pages while APs are in the reset vector
         //
         // TODO address space management in the shim is getting centralized in
@@ -709,11 +710,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     validate_vp_hw_ids(partition_info);
 
     setup_vtl2_memory(&p, partition_info);
-
-    #[cfg(target_arch = "x86_64")]
-    if p.isolation_type == IsolationType::Tdx {
-        hvcall().initialize_tdx();
-    }
     setup_vtl2_vp(partition_info);
 
     verify_imported_regions_hash(&p);
@@ -835,7 +831,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     rt::verify_stack_cookie();
 
     log!("uninitializing hypercalls, about to jump to kernel");
-    hvcall().uninitialize(p.isolation_type);
+    hvcall().uninitialize();
 
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {

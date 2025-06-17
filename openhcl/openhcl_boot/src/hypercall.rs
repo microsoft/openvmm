@@ -7,7 +7,6 @@
 use crate::arch::TdxHypercallPage;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::invoke_tdcall_hypercall;
-use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
 use core::cell::RefCell;
@@ -58,7 +57,6 @@ static HVCALL_OUTPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
 static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvCall {
     initialized: false,
     vtl: Vtl::Vtl0,
-    isolation_type: None,
     // The hypercall page is 4KB in the standard setting, but we allocate a large page for
     // TDX compatibility. This is because the underlying static page is mapped in the
     // shim's virtual memory hieararchy as a large page, making 2-MB the minimum shareable
@@ -74,7 +72,6 @@ static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvC
 pub struct HvCall {
     initialized: bool,
     vtl: Vtl,
-    isolation_type: Option<IsolationType>,
     #[cfg(target_arch = "x86_64")]
     tdx_io_page: Option<TdxHypercallPage>,
 }
@@ -112,7 +109,7 @@ impl HvCall {
             // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
             let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
 
-            crate::arch::hypercall::initialize(guest_os_id.into());
+            crate::arch::hypercall::initialize(guest_os_id);
             self.initialized = true;
 
             self.vtl = self
@@ -127,21 +124,17 @@ impl HvCall {
     }
 
     /// Call before jumping to kernel.
-    pub fn uninitialize(&mut self, isolation_type: IsolationType) {
+    pub fn uninitialize(&mut self) {
         if self.initialized {
-            match isolation_type {
-                #[cfg(target_arch = "x86_64")]
-                IsolationType::Tdx => {
-                    self.uninitialize_tdx();
-                }
-                #[cfg(target_arch = "x86_64")]
-                IsolationType::Snp => (),
-                _ => {
-                    crate::arch::hypercall::uninitialize();
-                }
+            self.initialized = false;
+
+            #[cfg(target_arch = "x86_64")]
+            if self.tdx_io_page.is_some() {
+                return self.uninitialize_tdx();
             }
+
+            crate::arch::hypercall::uninitialize();
         }
-        self.initialized = false;
     }
 
     /// Returns the environment's VTL.
@@ -169,21 +162,17 @@ impl HvCall {
             .with_code(code.0)
             .with_rep_count(rep_count.unwrap_or_default());
 
-        match self.isolation_type {
-            #[cfg(target_arch = "x86_64")]
-            Some(IsolationType::Tdx) =>
-            // SAFETY: HvCall has been initialized, the IO pages have been shared
-            // with the hypervisor. The IO pages have been borrowed from the bottom of the
-            // ram_buffer, which is unused by the shim elsewhere
-            unsafe { invoke_tdcall_hypercall(control, self.tdx_io_page.as_ref().unwrap()) },
-            // SAFETY: Invoking hypercall per TLFS spec
-            _ => unsafe {
-                invoke_hypercall(
-                    control,
-                    Self::input_page().address(),
-                    Self::output_page().address(),
-                )
-            },
+        #[cfg(target_arch = "x86_64")]
+        if self.tdx_io_page.is_some() {
+            return invoke_tdcall_hypercall(control, self.tdx_io_page.as_ref().unwrap());
+        }
+        // SAFETY: Invoking hypercall per TLFS spec
+        unsafe {
+            invoke_hypercall(
+                control,
+                Self::input_page().address(),
+                Self::output_page().address(),
+            )
         }
     }
 
@@ -425,33 +414,26 @@ impl HvCall {
 // TDX specific hypercall methods
 #[cfg(target_arch = "x86_64")]
 impl HvCall {
-    /// # Safety
-    /// The caller ensures that the va passed in will only be used for hypercalls.
-    pub unsafe fn set_tdx_io_page(&mut self, va: TdxHypercallPage) {
-        self.tdx_io_page = Some(va);
-    }
-
-    pub fn initialize_tdx(&mut self) {
+    /// Initialize HvCall for use in a TDX CVM
+    pub fn initialize_tdx(&mut self, tdx_io_page: TdxHypercallPage) {
         assert!(!self.initialized);
         self.initialized = true;
         self.vtl = Vtl::Vtl2;
-        self.isolation_type = Some(IsolationType::Tdx);
+        self.tdx_io_page = Some(tdx_io_page);
 
         // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
 
-        // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
-        unsafe {
-            crate::arch::tdx::initialize_hypercalls(
-                guest_os_id.into(),
-                self.tdx_io_page.as_ref().unwrap(),
-            );
-        }
+        crate::arch::tdx::initialize_hypercalls(
+            guest_os_id.into(),
+            self.tdx_io_page.as_ref().unwrap(),
+        );
     }
 
+    /// Uninitialize HvCall for TDX, unshare IO pages with the hypervisor
     pub fn uninitialize_tdx(&mut self) {
         assert!(self.initialized);
-        assert!(self.isolation_type == Some(IsolationType::Tdx));
+        assert!(self.tdx_io_page.is_some());
         crate::arch::tdx::uninitialize_hypercalls(self.tdx_io_page.as_ref().unwrap());
     }
 
@@ -468,7 +450,7 @@ impl HvCall {
             vp_vtl_context: zerocopy::FromZeros::new_zeroed(),
         };
         assert!(self.initialized);
-        assert!(self.isolation_type == Some(IsolationType::Tdx));
+        assert!(self.tdx_io_page.is_some());
 
         let input_page_addr = self.tdx_io_page.as_ref().unwrap().input();
         // SAFETY: the input page passed into the initialization of HvCall is a
@@ -487,7 +469,7 @@ impl HvCall {
 
     /// Hypercall to start VP on TDX
     pub fn tdx_start_vp(&mut self, vp_index: u32) -> Result<(), hvdef::HvError> {
-        assert!(self.isolation_type == Some(IsolationType::Tdx));
+        assert!(self.tdx_io_page.is_some());
         let header = StartVirtualProcessorX64 {
             partition_id: hvdef::HV_PARTITION_ID_SELF,
             vp_index,

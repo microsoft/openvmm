@@ -4,7 +4,6 @@
 //! TDX support.
 
 use crate::arch::x86_64::address_space::TdxHypercallPage;
-use crate::arch::x86_64::address_space::tdx_share_large_page;
 use crate::arch::x86_64::address_space::tdx_unshare_large_page;
 use crate::host_params::PartitionInfo;
 use crate::hvcall;
@@ -26,7 +25,7 @@ use x86defs::tdx::RESET_VECTOR_PAGE;
 use x86defs::tdx::TdVmCallR10Result;
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
-pub fn report_os_id(guest_os_id: u64) {
+fn report_os_id(guest_os_id: u64) {
     tdcall_wrmsr(
         &mut TdcallInstruction,
         hvdef::HV_X64_MSR_GUEST_OS_ID,
@@ -36,24 +35,13 @@ pub fn report_os_id(guest_os_id: u64) {
 }
 
 /// Initialize hypercalls for a TDX L1, sharing the hypercall I/O pages with the HV
-///
-/// # Safety
-///
-/// The caller ensures that the I/O pages are valid and not concurrently accessed
-pub unsafe fn initialize_hypercalls(guest_os_id: u64, io: &TdxHypercallPage) {
+pub fn initialize_hypercalls(guest_os_id: u64, io: &TdxHypercallPage) {
     // TODO: We are assuming we are running under a Microsoft hypervisor, so there is
     // no need to check any cpuid leaves.
     report_os_id(guest_os_id);
 
-    // SAFETY: The hypercall i/o pages are large present pages owned by the caller, for
-    // sharing with the hypervisor
-    unsafe {
-        tdx_share_large_page(io);
-    }
-
     // Enable host visibility for hypercall page
-    let hypercall_page_range =
-        MemoryRange::new(io.large_page()..io.large_page() + X64_LARGE_PAGE_SIZE);
+    let hypercall_page_range = MemoryRange::new(io.base()..io.base() + X64_LARGE_PAGE_SIZE);
     change_page_visibility(hypercall_page_range, true);
 }
 
@@ -64,12 +52,11 @@ pub fn uninitialize_hypercalls(io: &TdxHypercallPage) {
     tdx_unshare_large_page(io);
 
     // Disable host visibility for hypercall page
-    let hypercall_page_range =
-        MemoryRange::new(io.large_page()..io.large_page() + X64_LARGE_PAGE_SIZE);
+    let hypercall_page_range = MemoryRange::new(io.base()..io.base() + X64_LARGE_PAGE_SIZE);
     change_page_visibility(hypercall_page_range, false);
-    accept_pages(hypercall_page_range).expect("accepting vtl 2 memory must not fail");
+    accept_pages(hypercall_page_range).expect("pages previously accepted by the bootshim should be reaccepted without failure when sharing permissions are changed");
 
-    // SAFETY: Flushing the TLB is a safe operation
+    // SAFETY: Flushing the TLB has no pre or post conditions required by the caller, and thus is safe
     unsafe {
         asm! {
             "mov rax, cr3",
@@ -164,12 +151,7 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
 }
 
 /// Invokes a hypercall via a TDCALL
-///
-/// # Safety
-///
-/// The caller ensures that it owns the hypercall IO pages, and that they are
-/// shared with the hypervisor
-pub unsafe fn invoke_tdcall_hypercall(
+pub fn invoke_tdcall_hypercall(
     control: hvdef::hypercall::Control,
     io: &TdxHypercallPage,
 ) -> hvdef::hypercall::HypercallOutput {
