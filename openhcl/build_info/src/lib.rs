@@ -13,6 +13,10 @@ pub struct BuildInfo {
     revision: &'static str,
     #[inspect(safe, rename = "scm_branch")]
     branch: &'static str,
+    #[inspect(safe)]
+    internal_scm_revision: &'static str,
+    #[inspect(safe)]
+    internal_scm_branch: &'static str,
 }
 
 impl BuildInfo {
@@ -30,6 +34,16 @@ impl BuildInfo {
             },
             branch: if let Some(b) = option_env!("VERGEN_GIT_BRANCH") {
                 b
+            } else {
+                ""
+            },
+            internal_scm_revision: if let Some(r) = option_env!("INTERNAL_GIT_SHA") {
+                r
+            } else {
+                ""
+            },
+            internal_scm_branch: if let Some(r) = option_env!("INTERNAL_GIT_BRANCH") {
+                r
             } else {
                 ""
             },
