@@ -3,6 +3,7 @@
 
 //! The module includes the definitions of data structures according to TDX specification.
 
+use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -135,12 +136,52 @@ pub struct TdInfo {
 /// Run-time extendable measurement register.
 pub type Rtmr = [u8; 48];
 
+/// See `ATTRIBUTES` in Table 3.9, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TdAttributes {
+    #[bits(1)]
+    pub debug: bool,
+    #[bits(3)]
+    _reserved1: u8,
+    #[bits(1)]
+    pub hgs_plus_prof: bool,
+    #[bits(1)]
+    pub perf_prof: bool,
+    #[bits(1)]
+    pub pmt_prof: bool,
+    #[bits(9)]
+    _reserved2: u16,
+    #[bits(7)]
+    _reserved_p: u8,
+    #[bits(4)]
+    _reserved_n: u8,
+    #[bits(1)]
+    pub lass: bool,
+    #[bits(1)]
+    pub sept_ve_disable: bool,
+    #[bits(1)]
+    pub migratable: bool,
+    #[bits(1)]
+    pub pks: bool,
+    #[bits(1)]
+    pub kl: bool,
+    #[bits(24)]
+    _reserved3: u32,
+    #[bits(6)]
+    _reserved4: u32,
+    #[bits(1)]
+    pub tpa: bool,
+    #[bits(1)]
+    pub perfmon: bool,
+}
+
 /// See `TDINFO_BASE` in Table 3.34, "Intel TDX Module v1.5 ABI specification", March 2024.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdInfoBase {
     /// TD's attributes
-    pub attributes: [u8; 8],
+    pub attributes: TdAttributes,
     /// TD's XFAM
     pub xfam: [u8; 8],
     /// Measurement of the initial contents of the TDX in SHA384

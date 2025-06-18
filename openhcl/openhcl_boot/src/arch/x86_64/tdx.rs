@@ -13,6 +13,8 @@ use tdcall::Tdcall;
 use tdcall::TdcallInput;
 use tdcall::TdcallOutput;
 use tdcall::tdcall_map_gpa;
+use tdx_guest_device::protocol::TdReport;
+use x86defs::tdx::TdCallResult;
 
 /// Perform a tdcall instruction with the specified inputs.
 fn tdcall(input: TdcallInput) -> TdcallOutput {
@@ -118,4 +120,9 @@ pub fn get_tdx_tsc_reftime() -> Option<u64> {
         return Some(count_100ns as u64);
     }
     None
+}
+
+/// Gets the TdReport.
+pub fn get_tdreport(report: &mut TdReport) -> Result<(), TdCallResult> {
+    tdcall::tdcall_mr_report(&mut TdcallInstruction, report)
 }
