@@ -167,7 +167,7 @@ impl<T> SetVpRegisters for HvfHypercallHandler<'_, '_, T> {
 }
 
 struct HvfNoVtlProtections<'a>(&'a guestmem::GuestMemory);
-impl<'a> hv1_emulator::VtlProtectAccess for HvfNoVtlProtections<'a> {
+impl hv1_emulator::VtlProtectAccess for HvfNoVtlProtections<'_> {
     fn check_modify_and_lock_overlay_page(
         &mut self,
         gpn: u64,

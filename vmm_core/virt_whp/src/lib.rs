@@ -1449,7 +1449,7 @@ impl VtlPartition {
 }
 
 struct WhpNoVtlProtections<'a>(&'a GuestMemory);
-impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
+impl hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'_> {
     fn check_modify_and_lock_overlay_page(
         &mut self,
         gpn: u64,
