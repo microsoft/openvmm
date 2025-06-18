@@ -351,10 +351,10 @@ impl OpenhclDmaManager {
             inner: Arc::new(DmaManagerInner {
                 shared_spawner: shared_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 private_spawner: private_pool.as_ref().map(|pool| pool.allocator_spawner()),
-                lower_vtl: if !isolation_type.is_hardware_isolated() {
-                    Some(DmaManagerLowerVtl::new().context("failed to create lower vtl")?)
-                } else {
+                lower_vtl: if isolation_type.is_hardware_isolated() {
                     None
+                } else {
+                    Some(DmaManagerLowerVtl::new().context("failed to create lower vtl")?)
                 },
             }),
             shared_pool,
