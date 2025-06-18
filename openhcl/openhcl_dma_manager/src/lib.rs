@@ -165,7 +165,7 @@ struct DmaManagerInner {
 /// that are constructed before the partition struct which normally implements
 /// this trait.
 ///
-/// This type should never be created on a hardware isoalted VM, as the
+/// This type should never be created on a hardware isolated VM, as the
 /// hypervisor is untrusted.
 struct DmaManagerLowerVtl {
     mshv_hvcall: hcl::ioctl::MshvHvcall,
