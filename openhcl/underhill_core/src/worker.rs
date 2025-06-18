@@ -1523,6 +1523,7 @@ async fn new_underhill_vm(
             .vtom_offset_bit
             .map(|bit| 1 << bit)
             .unwrap_or(0),
+        isolation,
     )
     .context("failed to create global dma manager")?;
 

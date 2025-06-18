@@ -155,7 +155,7 @@ pub struct DmaClientParameters {
 struct DmaManagerInner {
     shared_spawner: Option<PagePoolAllocatorSpawner>,
     private_spawner: Option<PagePoolAllocatorSpawner>,
-    lower_vtl: Arc<DmaManagerLowerVtl>,
+    lower_vtl: Option<Arc<DmaManagerLowerVtl>>,
 }
 
 /// Used by [`OpenhclDmaManager`] to modify VTL permissions via
@@ -164,6 +164,9 @@ struct DmaManagerInner {
 /// This is required due to some users (like the GET or partition struct itself)
 /// that are constructed before the partition struct which normally implements
 /// this trait.
+///
+/// This type should never be created on a hardware isoalted VM, as the
+/// hypervisor is untrusted.
 struct DmaManagerLowerVtl {
     mshv_hvcall: hcl::ioctl::MshvHvcall,
 }
@@ -261,7 +264,12 @@ impl DmaManagerInner {
                             private
                                 .allocator(device_name.into())
                                 .context("failed to create private allocator")?,
-                            self.lower_vtl.clone(),
+                            self.lower_vtl
+                                .as_ref()
+                                .ok_or(anyhow::anyhow!(
+                                    "lower vtl not available on hardware isolated platforms"
+                                ))?
+                                .clone(),
                         ))
                     }
                 },
@@ -290,7 +298,12 @@ impl DmaManagerInner {
                         // lowering VTL permissions is required.
                         DmaClientBacking::LockedMemoryLowerVtl(LowerVtlMemorySpawner::new(
                             LockedMemorySpawner,
-                            self.lower_vtl.clone(),
+                            self.lower_vtl
+                                .as_ref()
+                                .ok_or(anyhow::anyhow!(
+                                    "lower vtl not available on hardware isolated platforms"
+                                ))?
+                                .clone(),
                         ))
                     }
                 },
@@ -308,6 +321,7 @@ impl OpenhclDmaManager {
         shared_ranges: &[MemoryRange],
         private_ranges: &[MemoryRange],
         vtom: u64,
+        isolation_type: virt::IsolationType,
     ) -> anyhow::Result<Self> {
         let shared_pool = if shared_ranges.is_empty() {
             None
@@ -337,7 +351,11 @@ impl OpenhclDmaManager {
             inner: Arc::new(DmaManagerInner {
                 shared_spawner: shared_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 private_spawner: private_pool.as_ref().map(|pool| pool.allocator_spawner()),
-                lower_vtl: DmaManagerLowerVtl::new().context("failed to create lower vtl")?,
+                lower_vtl: if !isolation_type.is_hardware_isolated() {
+                    Some(DmaManagerLowerVtl::new().context("failed to create lower vtl")?)
+                } else {
+                    None
+                },
             }),
             shared_pool,
             private_pool,
