@@ -5430,6 +5430,7 @@ dependencies = [
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
  "pipette_client",
+ "powershell_builder",
  "prost",
  "scsidisk_resources",
  "serde",
@@ -5664,6 +5665,14 @@ name = "powerfmt"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
+
+[[package]]
+name = "powershell_builder"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "jiff",
+]
 
 [[package]]
 name = "prettyplease"
