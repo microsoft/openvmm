@@ -1,0 +1,18 @@
+[package]
+name = "vtpm-mitigation"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+tpm = { workspace = true, features = ["tpm"] }
+ms-tpm-20-ref = { workspace = true }
+getrandom.workspace = true
+tracing.workspace = true
+tracing-subscriber = {workspace = true, features = ["env-filter"]}
+parking_lot.workspace = true
+
+[lints]
+workspace = true

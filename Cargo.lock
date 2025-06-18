@@ -9123,6 +9123,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vtpm-mitigation"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.3.2",
+ "ms-tpm-20-ref",
+ "parking_lot",
+ "tpm",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "w32-error"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
