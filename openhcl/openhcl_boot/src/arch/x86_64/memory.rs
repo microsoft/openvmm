@@ -121,10 +121,14 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
         }
     }
 
-    // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for hypercall IO pages
+    // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for
+    // hypercall IO pages. ram_buffer must not be used again beyond this point
+    // TODO: find an approach that does not require re-using the ram_buffer
     if shim_params.isolation_type == IsolationType::Tdx {
         let free_buffer = ram_buffer.as_mut_ptr() as u64;
+        assert!(free_buffer % X64_LARGE_PAGE_SIZE == 0);
         // SAFETY: The bottom 2MB region of the ram_buffer is unused by the shim
+        // The region is aligned to 2MB, and mapped as a large page
         let tdx_io_page = unsafe {
             tdx_share_large_page(free_buffer);
             TdxHypercallPage::new(free_buffer)

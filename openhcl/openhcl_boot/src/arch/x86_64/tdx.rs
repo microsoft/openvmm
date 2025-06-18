@@ -46,13 +46,13 @@ pub fn initialize_hypercalls(guest_os_id: u64, io: &TdxHypercallPage) {
 }
 
 /// Unitialize hypercalls for a TDX L1, stop sharing the hypercall I/O pages with the HV
-pub fn uninitialize_hypercalls(io: &TdxHypercallPage) {
+pub fn uninitialize_hypercalls(io: TdxHypercallPage) {
     report_os_id(0);
 
+    let hypercall_page_range = MemoryRange::new(io.base()..io.base() + X64_LARGE_PAGE_SIZE);
     tdx_unshare_large_page(io);
 
     // Disable host visibility for hypercall page
-    let hypercall_page_range = MemoryRange::new(io.base()..io.base() + X64_LARGE_PAGE_SIZE);
     change_page_visibility(hypercall_page_range, false);
     accept_pages(hypercall_page_range).expect("pages previously accepted by the bootshim should be reaccepted without failure when sharing permissions are changed");
 

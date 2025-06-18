@@ -329,7 +329,7 @@ pub unsafe fn tdx_share_large_page(va: u64) {
 }
 
 /// Clear the shared bit in the PDE of the local map for a given VA.
-pub fn tdx_unshare_large_page(va: &TdxHypercallPage) {
+pub fn tdx_unshare_large_page(va: TdxHypercallPage) {
     // SAFETY: The va passed in is guaranteed by the type to be a present large page,
     // which is shared with the hypervisor
     unsafe {

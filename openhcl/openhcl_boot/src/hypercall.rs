@@ -437,9 +437,12 @@ impl HvCall {
 
     /// Uninitialize HvCall for TDX, unshare IO pages with the hypervisor
     pub fn uninitialize_tdx(&mut self) {
-        assert!(self.initialized);
         assert!(self.tdx_io_page.is_some());
-        crate::arch::tdx::uninitialize_hypercalls(self.tdx_io_page.as_ref().unwrap());
+        crate::arch::tdx::uninitialize_hypercalls(
+            self.tdx_io_page
+                .take()
+                .expect("an initialized instance of HvCall on TDX must have an io page"),
+        );
     }
 
     /// Hypercall to enable VTL2 on a TDX VP
@@ -459,7 +462,8 @@ impl HvCall {
 
         let input_page_addr = self.tdx_io_page.as_ref().unwrap().input();
         // SAFETY: the input page passed into the initialization of HvCall is a
-        // free buffer that is not concurrently accessed
+        // free buffer that is not concurrently accessed because openhcl_boot
+        // is single threaded
         let input_page = unsafe { &mut *(input_page_addr as *mut [u8; 4096]) };
         header
             .write_to_prefix(input_page)

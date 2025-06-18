@@ -55,7 +55,7 @@ pub struct ShimParamsRaw {
     pub bounce_buffer_size: u64,
     /// The offset to the page_tables start address. This is 0 if unavailable.
     pub page_tables_start: i64,
-    /// The size of the underhill page tables. This is 0 if unavailable.
+    /// The size of the openhcl_boot page tables. This is 0 if unavailable.
     pub page_tables_size: u64,
 }
 

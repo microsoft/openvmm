@@ -495,8 +495,8 @@ mod x86_boot {
         // tables and mailbox/reset-vector region of openhcl_boot as E820-reserved,
         // otherwise the L1 kernel can use the pages while APs are in the reset vector
         //
-        // TODO address space management in the shim is getting centralized in
-        // a refactor: this should be moved somewhere more appropriate when possible
+        // TODO: address space management in the shim is getting centralized in
+        // a refactor, this should be moved somewhere more appropriate when possible
         #[cfg(target_arch = "x86_64")]
         if IsolationType::Tdx == isolation_type {
             add_e820_entry(entries.next(), page_tables.unwrap(), E820_RESERVED)?;
