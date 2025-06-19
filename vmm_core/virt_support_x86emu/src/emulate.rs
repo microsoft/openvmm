@@ -271,10 +271,36 @@ enum EmulationError<E> {
     },
 }
 
+pub struct EmulatorMemoryAccess<'a> {
+    pub gm: &'a GuestMemory,
+    pub kx_gm: &'a GuestMemory,
+    pub ux_gm: &'a GuestMemory,
+}
+
+enum EmulatorMemoryAccessType {
+    ReadWrite,
+    InstructionRead { is_user_mode: bool },
+}
+
+impl EmulatorMemoryAccess<'_> {
+    fn gm(&self, access_type: EmulatorMemoryAccessType) -> &GuestMemory {
+        match access_type {
+            EmulatorMemoryAccessType::ReadWrite => self.gm,
+            EmulatorMemoryAccessType::InstructionRead { is_user_mode } => {
+                if is_user_mode {
+                    self.ux_gm
+                } else {
+                    self.kx_gm
+                }
+            }
+        }
+    }
+}
+
 /// Emulates an instruction.
 pub async fn emulate<T: EmulatorSupport>(
     support: &mut T,
-    gm: &GuestMemory,
+    emu_mem: &EmulatorMemoryAccess<'_>,
     dev: &impl CpuIo,
 ) -> Result<(), VpHaltReason<T::Error>> {
     let vendor = support.vendor();
@@ -315,7 +341,11 @@ pub async fn emulate<T: EmulatorSupport>(
 
     let initial_alignment_check = support.rflags().alignment_check();
 
-    let mut cpu = EmulatorCpu::new(gm, dev, support);
+    let mut cpu = EmulatorCpu::new(
+        emu_mem.gm(EmulatorMemoryAccessType::ReadWrite),
+        dev,
+        support,
+    );
     let result = loop {
         let instruction_bytes = &bytes[..valid_bytes];
         let mut emu = x86emu::Emulator::new(&mut cpu, vendor, instruction_bytes);
@@ -350,6 +380,8 @@ pub async fn emulate<T: EmulatorSupport>(
                     }
                 };
 
+                // TODO: fold this access check into the GuestMemory object for
+                // each of the backings, if possible.
                 if let Err(err) = cpu.check_vtl_access(phys_ip, TranslateMode::Execute) {
                     if inject_memory_access_fault(linear_ip, &err, support) {
                         return Ok(());
@@ -365,9 +397,11 @@ pub async fn emulate<T: EmulatorSupport>(
                 let len = (bytes.len() - valid_bytes)
                     .min((HV_PAGE_SIZE - (phys_ip & (HV_PAGE_SIZE - 1))) as usize);
 
-                if let Err(err) = cpu
-                    .gm
-                    .read_at(phys_ip, &mut bytes[valid_bytes..valid_bytes + len])
+                let instruction_gm =
+                    emu_mem.gm(EmulatorMemoryAccessType::InstructionRead { is_user_mode });
+
+                if let Err(err) =
+                    instruction_gm.read_at(phys_ip, &mut bytes[valid_bytes..valid_bytes + len])
                 {
                     tracing::error!(error = &err as &dyn std::error::Error, "read failed");
                     support.inject_pending_event(gpf_event());

@@ -7,6 +7,7 @@ use crate::TPM_AZURE_AIK_HANDLE;
 use crate::TPM_GUEST_SECRET_HANDLE;
 use crate::TPM_NV_INDEX_AIK_CERT;
 use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
+use crate::TPM_NV_INDEX_MITIGATED;
 use crate::TPM_RSA_SRK_HANDLE;
 use crate::TpmRsa2kPublic;
 use crate::tpm20proto;
@@ -170,6 +171,12 @@ pub enum NvIndexState {
     Unallocated,
     /// The NV index existed but uninitialized
     Uninitialized,
+}
+
+enum AkCertType {
+    None,
+    PlatformOwned(Vec<u8>),
+    OwnerOwned,
 }
 
 impl TpmEngineHelper {
@@ -456,55 +463,34 @@ impl TpmEngineHelper {
         Ok(())
     }
 
-    /// Allocate NV indices under platform hierarchy that are necessary for guest
-    /// attestation.
+    /// Read the existing AK cert and clear the nv index if:
+    ///  - the nv index is present, and is platform owned
+    ///  - the nv index is present, but has no data
     ///
-    /// # Arguments
-    /// * `auth_value`: The password used during the NV indices allocation.
-    /// * `preserve_ak_cert`: Whether to preserve the previous AK cert into newly-create NV index.
-    /// * `support_attestation_report`: Whether to allocate NV index for attestation report.
-    ///
-    pub fn allocate_guest_attestation_nv_indices(
-        &mut self,
-        auth_value: u64,
-        preserve_ak_cert: bool,
-        support_attestation_report: bool,
-    ) -> Result<(), TpmHelperError> {
-        let (define_index, previous_ak_cert) = {
-            let mut output = [0u8; MAX_NV_INDEX_SIZE as usize];
+    /// Owner owned nv index is left as-is.
+    fn take_existing_ak_cert(&mut self) -> Result<AkCertType, TpmHelperError> {
+        let mut output = vec![0; MAX_NV_INDEX_SIZE as usize];
 
-            // If the existing TPM_NV_INDEX_AIK_CERT is platform-defined, delete and recreate it.
-            // Doing so ensures that the NV index is created with the newly-created auth_value (which
-            // does not persist across boots) and consistent index size.
-            //
-            // If the existing TPM_NV_INDEX_AIK_CERT is not platform-defined, the vTPM blob may not
-            // have enough space to recreate the index with a larger size. In that case, don't
-            // change anything.
-            match self.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output)? {
-                NvIndexState::Available => {
-                    tracing::info!("AK cert nv index with available data");
+        // Read the AK cert from the index. If the index is not owner owned, the
+        // index will be removed.
+        match self.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output)? {
+            NvIndexState::Available => {
+                let res = self
+                    .find_nv_index(TPM_NV_INDEX_AIK_CERT)?
+                    .expect("nv index exists");
+                let nv_bits = TpmaNvBits::from(res.nv_public.nv_public.attributes.0.get());
+                let size = res.nv_public.nv_public.data_size.get();
 
-                    let res = self.find_nv_index(TPM_NV_INDEX_AIK_CERT)?.unwrap();
-                    let nv_bits = TpmaNvBits::from(res.nv_public.nv_public.attributes.0.get());
+                // Resize the output vector to match exactly what the nv index
+                // size is.
+                assert!(size <= MAX_NV_INDEX_SIZE);
+                output.resize(size as usize, 0);
 
-                    if nv_bits.nv_platformcreate() {
-                        self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
-                            .map_err(|error| TpmHelperError::TpmCommandError {
-                                command_debug_info: CommandDebugInfo {
-                                    command_code: CommandCodeEnum::NV_UndefineSpace,
-                                    auth_handle: Some(TPM20_RH_PLATFORM),
-                                    nv_index: Some(TPM_NV_INDEX_AIK_CERT),
-                                },
-                                error,
-                            })?;
-                        (true, Some(output))
-                    } else {
-                        (false, Some(output))
-                    }
-                }
-                NvIndexState::Uninitialized => {
-                    tracing::info!("AK cert nv index allocated but uninitialized");
+                let platform_cert = nv_bits.nv_platformcreate();
+                tracing::info!(platform_cert, "AK cert nv index with available data");
 
+                if nv_bits.nv_platformcreate() {
+                    tracing::info!("clearing platform owned AK cert");
                     self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
                         .map_err(|error| TpmHelperError::TpmCommandError {
                             command_debug_info: CommandDebugInfo {
@@ -515,45 +501,180 @@ impl TpmEngineHelper {
                             error,
                         })?;
 
-                    (true, None)
-                }
-                NvIndexState::Unallocated => {
-                    tracing::info!("AK cert nv index not allocated yet");
-                    (true, None)
+                    Ok(AkCertType::PlatformOwned(output))
+                } else {
+                    tracing::info!("Existing AK cert is owner-defined");
+                    Ok(AkCertType::OwnerOwned)
                 }
             }
-        };
+            NvIndexState::Uninitialized => {
+                tracing::info!("AK cert nv index allocated but uninitialized");
 
-        if define_index {
-            tracing::info!(
-                nv_index = format!("{:x}", TPM_NV_INDEX_AIK_CERT),
-                size = MAX_NV_INDEX_SIZE,
-                "Allocate nv index for AK cert"
-            );
+                self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
+                    .map_err(|error| TpmHelperError::TpmCommandError {
+                        command_debug_info: CommandDebugInfo {
+                            command_code: CommandCodeEnum::NV_UndefineSpace,
+                            auth_handle: Some(TPM20_RH_PLATFORM),
+                            nv_index: Some(TPM_NV_INDEX_AIK_CERT),
+                        },
+                        error,
+                    })?;
 
-            self.nv_define_space(
-                TPM20_RH_PLATFORM,
-                auth_value,
-                TPM_NV_INDEX_AIK_CERT,
-                MAX_NV_INDEX_SIZE,
-            )
-            .map_err(|error| TpmHelperError::TpmCommandError {
-                command_debug_info: CommandDebugInfo {
-                    command_code: CommandCodeEnum::NV_DefineSpace,
-                    auth_handle: Some(TPM20_RH_PLATFORM),
-                    nv_index: Some(TPM_NV_INDEX_AIK_CERT),
-                },
-                error,
-            })?;
+                Ok(AkCertType::None)
+            }
+            NvIndexState::Unallocated => {
+                tracing::info!("AK cert nv index not allocated yet");
+                Ok(AkCertType::None)
+            }
+        }
+    }
 
-            if preserve_ak_cert {
-                if let Some(data) = previous_ak_cert {
-                    // For resiliency, write the previous AK cert to the newly created nv index
-                    // in case the following boot-time AK cert request fails.
-                    tracing::info!("Preserve previous AK cert across boot");
+    /// Allocate NV indices under platform hierarchy that are necessary for guest
+    /// attestation.
+    ///
+    /// # Arguments
+    /// * `auth_value`: The password used during the NV indices allocation.
+    /// * `preserve_ak_cert`: Whether to preserve the previous AK cert into newly-create NV index.
+    /// * `support_attestation_report`: Whether to allocate NV index for attestation report.
+    /// * `mitigate_legacy_akcert`: If this VM should be attempted to be mitigated.
+    ///
+    pub fn allocate_guest_attestation_nv_indices(
+        &mut self,
+        auth_value: u64,
+        preserve_ak_cert: bool,
+        support_attestation_report: bool,
+        mitigate_legacy_akcert: bool,
+    ) -> Result<(), TpmHelperError> {
+        if mitigate_legacy_akcert && self.has_mitigation_marker() {
+            // VM has a small-vTPM mitigation marker. Don't touch anything, but
+            // log whether the AK cert exists, as that previous write might have
+            // failed.
+            let mut output = [0u8; MAX_NV_INDEX_SIZE as usize];
+            let r = self.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
+            tracing::warn!("VM has 16k vTPM mitigation marker; not resizing AKCert index");
+            match r {
+                Err(e) => tracing::error!(
+                    err = &e as &dyn std::error::Error,
+                    "error reading AKCert index with mitigation marker"
+                ),
+                Ok(NvIndexState::Available) => {
+                    let res = self
+                        .find_nv_index(TPM_NV_INDEX_AIK_CERT)?
+                        .expect("akcert nv index present");
+                    let nv_bits = TpmaNvBits::from(res.nv_public.nv_public.attributes.0.get());
+                    let size = res.nv_public.nv_public.data_size.get();
 
-                    self.write_to_nv_index(auth_value, TPM_NV_INDEX_AIK_CERT, &data)?;
+                    tracing::info!(?nv_bits, size, "AKCert index exists")
                 }
+                Ok(NvIndexState::Uninitialized) => {
+                    tracing::warn!("AKCert index uninitialized with mitigation marker")
+                }
+                Ok(NvIndexState::Unallocated) => {
+                    tracing::warn!("AKCert index unallocated with mitigation marker")
+                }
+            }
+
+            return Ok(());
+        } else {
+            tracing::info!(
+                "No small-vTPM mitigation marker; proceeding to resize AKCert index if needed"
+            );
+        }
+
+        let previous_ak_cert = self.take_existing_ak_cert()?;
+
+        match previous_ak_cert {
+            AkCertType::None => {
+                let size = MAX_NV_INDEX_SIZE;
+
+                tracing::info!(
+                    nv_index = format!("{:x}", TPM_NV_INDEX_AIK_CERT),
+                    size,
+                    "Allocate nv index for AK cert"
+                );
+
+                self.nv_define_space(TPM20_RH_PLATFORM, auth_value, TPM_NV_INDEX_AIK_CERT, size)
+                    .map_err(|error| TpmHelperError::TpmCommandError {
+                        command_debug_info: CommandDebugInfo {
+                            command_code: CommandCodeEnum::NV_DefineSpace,
+                            auth_handle: Some(TPM20_RH_PLATFORM),
+                            nv_index: Some(TPM_NV_INDEX_AIK_CERT),
+                        },
+                        error,
+                    })?;
+            }
+            AkCertType::PlatformOwned(mut cert) => {
+                let will_mitigate_cert =
+                    mitigate_legacy_akcert && cert.len() == MAX_NV_INDEX_SIZE as usize;
+
+                if will_mitigate_cert {
+                    self.write_mitigation_marker(auth_value);
+                }
+
+                let size = if will_mitigate_cert {
+                    // To save space in the NVRAM, if the AKCert index contents
+                    // look like a DER-encoded X.509 certificate, use its actual
+                    // size (plus 4 bytes for the DER header).
+                    if let &[0x30, 0x82, len0, len1, ..] = cert.as_slice() {
+                        let len = u16::from_be_bytes([len0, len1]);
+                        let parsed_size = len.saturating_add(4).min(MAX_NV_INDEX_SIZE);
+                        tracing::warn!(parsed_size, "redefining AKCert index with limited size");
+                        assert!(parsed_size as usize <= cert.len());
+                        cert.resize(parsed_size as usize, 0);
+                        parsed_size
+                    } else {
+                        MAX_NV_INDEX_SIZE
+                    }
+                } else {
+                    MAX_NV_INDEX_SIZE
+                };
+
+                tracing::info!(
+                    nv_index = format!("{:x}", TPM_NV_INDEX_AIK_CERT),
+                    size,
+                    "allocate nv index for previous platform AK cert"
+                );
+
+                let result = self
+                    .nv_define_space(TPM20_RH_PLATFORM, auth_value, TPM_NV_INDEX_AIK_CERT, size)
+                    .map_err(|error| TpmHelperError::TpmCommandError {
+                        command_debug_info: CommandDebugInfo {
+                            command_code: CommandCodeEnum::NV_DefineSpace,
+                            auth_handle: Some(TPM20_RH_PLATFORM),
+                            nv_index: Some(TPM_NV_INDEX_AIK_CERT),
+                        },
+                        error,
+                    });
+
+                match result {
+                    Err(e) => {
+                        tracing::error!(
+                            error = &e as &dyn std::error::Error,
+                            "Failed to allocate AK cert nv index"
+                        );
+
+                        // Unless this VM was mitigated, bubble this error up to
+                        // the caller.
+                        if !will_mitigate_cert {
+                            return Err(e);
+                        }
+                    }
+                    Ok(_) => {
+                        tracing::info!("Successfully allocated AK cert nv index");
+
+                        if preserve_ak_cert {
+                            // For resiliency, write the previous AK cert to the
+                            // newly created nv index in case the following
+                            // boot-time AK cert request fails.
+                            tracing::info!("Preserve previous AK cert across boot");
+
+                            self.write_to_nv_index(auth_value, TPM_NV_INDEX_AIK_CERT, &cert)?;
+                        }
+                    }
+                }
+            }
+            AkCertType::OwnerOwned => {
+                // Owner owned AK certs are left as-is.
             }
         }
 
@@ -598,6 +719,25 @@ impl TpmEngineHelper {
         }
 
         Ok(())
+    }
+
+    fn has_mitigation_marker(&mut self) -> bool {
+        self.find_nv_index(TPM_NV_INDEX_MITIGATED)
+            .is_ok_and(|v| v.is_some())
+    }
+
+    fn write_mitigation_marker(&mut self, auth_value: u64) {
+        match self.nv_define_space(TPM20_RH_PLATFORM, auth_value, TPM_NV_INDEX_MITIGATED, 1) {
+            Ok(_) => {
+                tracing::warn!(TPM_NV_INDEX_MITIGATED, "wrote tpm mitigation marker");
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = &e as &dyn std::error::Error,
+                    "failed to write mitigation marker"
+                );
+            }
+        }
     }
 
     /// Check if the nv index is present using NV_ReadPublic command.
@@ -1953,8 +2093,8 @@ mod tests {
 
             restart_tpm_engine(&mut tpm_engine_helper, true, true);
 
-            let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false);
+            let result = tpm_engine_helper
+                .allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false, false);
             assert!(result.is_ok());
 
             // Ensure ak cert nv index becomes uninitialized
@@ -1989,8 +2129,8 @@ mod tests {
             );
             assert!(matches!(result.unwrap(), NvIndexState::Unallocated));
 
-            let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false);
+            let result = tpm_engine_helper
+                .allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false, false);
             assert!(result.is_ok());
 
             // Ensure only ak cert index remains present but uninitialized
@@ -2043,8 +2183,8 @@ mod tests {
             );
             assert!(matches!(result.unwrap(), NvIndexState::Unallocated));
 
-            let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false);
+            let result = tpm_engine_helper
+                .allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false, false);
             assert!(result.is_ok());
 
             // Ensure only ak cert index remains available
@@ -2108,8 +2248,8 @@ mod tests {
             );
             assert!(matches!(result.unwrap(), NvIndexState::Unallocated));
 
-            let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, false, false);
+            let result = tpm_engine_helper
+                .allocate_guest_attestation_nv_indices(AUTH_VALUE, false, false, false);
             assert!(result.is_ok());
 
             // Ensure read to fail given that the ak cert index is re-created and data is not preserved
@@ -2162,8 +2302,8 @@ mod tests {
             );
             assert!(matches!(result.unwrap(), NvIndexState::Unallocated));
 
-            let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, false, true);
+            let result = tpm_engine_helper
+                .allocate_guest_attestation_nv_indices(AUTH_VALUE, false, true, false);
             assert!(result.is_ok());
 
             // Ensure read to fail given that the ak cert index is re-created and data is not preserved
@@ -2238,8 +2378,8 @@ mod tests {
             );
             assert!(matches!(result.unwrap(), NvIndexState::Available));
 
-            let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, false, true);
+            let result = tpm_engine_helper
+                .allocate_guest_attestation_nv_indices(AUTH_VALUE, false, true, false);
             assert!(result.is_ok());
 
             // Expect read to return Ok(false) given that the nv index is re-created and data is not preserved
@@ -2262,7 +2402,7 @@ mod tests {
         restart_tpm_engine(&mut tpm_engine_helper, false, true);
 
         let result =
-            tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, true);
+            tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, true, false);
         assert!(result.is_ok());
 
         let result = tpm_engine_helper.find_nv_index(TPM_NV_INDEX_AIK_CERT);
@@ -2496,7 +2636,7 @@ mod tests {
 
         // Ensure allocate_guest_attestation_nv_indices with preserve_ak_cert = true preserves the ak cert data
         let result =
-            tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false);
+            tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false, false);
         assert!(result.is_ok());
 
         // Ensure nv index has the same size

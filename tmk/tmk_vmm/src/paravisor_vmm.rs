@@ -56,6 +56,8 @@ impl RunContext<'_> {
                     m.vtl1().cloned().unwrap_or(GuestMemory::empty()),
                 ]
                 .into(),
+                vtl0_kernel_exec_gm: m.vtl0().clone(),
+                vtl0_user_exec_gm: m.vtl0().clone(),
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: Vec::new(),
                 crash_notification_send: mesh::channel().0,

@@ -1777,8 +1777,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         _gpa: u64,
         _mode: virt_support_x86emu::emulate::TranslateMode,
     ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
-        // TODO GUEST VSM
-        // TODO lock tlb?
+        // Nothing to do here, the guest memory object will handle the check.
         Ok(())
     }
 

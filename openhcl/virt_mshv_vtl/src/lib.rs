@@ -209,6 +209,8 @@ struct UhPartitionInner {
     cpuid: virt::CpuidLeafSet,
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
+    vtl0_kernel_exec_gm: GuestMemory,
+    vtl0_user_exec_gm: GuestMemory,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
     crash_notification_send: mesh::Sender<VtlCrash>,
@@ -1348,6 +1350,10 @@ pub struct UhPartitionNewParams<'a> {
 pub struct UhLateParams<'a> {
     /// Guest memory for lower VTLs.
     pub gm: VtlArray<GuestMemory, 2>,
+    /// Guest memory for VTL 0 kernel execute access.
+    pub vtl0_kernel_exec_gm: GuestMemory,
+    /// Guest memory for VTL 0 user execute access.
+    pub vtl0_user_exec_gm: GuestMemory,
     /// The CPUID leaves to expose to the guest.
     #[cfg(guest_arch = "x86_64")]
     pub cpuid: Vec<CpuidLeaf>,
@@ -1770,6 +1776,8 @@ impl<'a> UhProtoPartition<'a> {
             enter_modes: Mutex::new(enter_modes),
             enter_modes_atomic: u8::from(hcl::protocol::EnterModes::from(enter_modes)).into(),
             gm: late_params.gm,
+            vtl0_kernel_exec_gm: late_params.vtl0_kernel_exec_gm,
+            vtl0_user_exec_gm: late_params.vtl0_user_exec_gm,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
             crash_notification_send: late_params.crash_notification_send,

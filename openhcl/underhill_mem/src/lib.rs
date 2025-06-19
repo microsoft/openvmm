@@ -340,7 +340,6 @@ pub struct HardwareIsolatedMemoryProtector {
     inner: Mutex<HardwareIsolatedMemoryProtectorInner>,
     layout: MemoryLayout,
     acceptor: Arc<MemoryAcceptor>,
-    // TODO GUEST VSM: synchronize vtl protection bitmaps
     vtl0: Arc<GuestMemoryMapping>,
     vtl1_protections_enabled: AtomicBool,
 }
@@ -431,7 +430,6 @@ impl HardwareIsolatedMemoryProtector {
         Ok(())
     }
 
-    // TODO rename
     fn apply_protections(
         &self,
         range: MemoryRange,
@@ -520,7 +518,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                         .query_access_permission(gpn)
                         .expect("vtl 1 protections enabled, vtl permissions should be tracked");
                     if !permissions.readable() || !permissions.writable() {
-                        // TODO GUEST VSM: should this send a memory intercept instead?
                         failed_vtl_permission_index = Some(index);
                         false
                     } else {
@@ -757,9 +754,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // TODO: This does not need to be synchronized against other
         // threads performing VTL protection changes; whichever thread
         // finishes last will control the outcome.
-        //
-        // TODO GUEST VSM: Changes to vtl protections will need to be
-        // synchronized with any checks for VTL protections (e.g. rmpquery)
         let mut inner = self.inner.lock();
 
         inner.default_vtl_permissions.set(vtl, vtl_protections);
@@ -798,6 +792,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             self.apply_protections_with_overlay_handling(range, vtl, vtl_protections, &mut inner)
                 .unwrap();
         }
+
+        // Flush any threads accessing pages that had their VTL protections
+        // changed.
+        guestmem::rcu().synchronize_blocking();
 
         // Invalidate the entire VTL 0 TLB to ensure that the new permissions
         // are observed.
@@ -849,6 +847,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             self.apply_protections_with_overlay_handling(range, vtl, protections, &mut inner)
                 .unwrap();
         }
+
+        // Flush any threads accessing pages that had their VTL protections
+        // changed.
+        guestmem::rcu().synchronize_blocking();
 
         // Since page protections were modified, we must invalidate the entire
         // VTL 0 TLB to ensure that the new permissions are observed, and wait for
@@ -944,12 +946,17 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // changed.
         guestmem::rcu().synchronize_blocking();
 
+        // Flush any threads accessing pages that had their VTL protections
+        // changed.
+        guestmem::rcu().synchronize_blocking();
+      
         // Since page protections were modified, we must invalidate the TLB to
         // ensure that the new permissions are observed, and wait for other CPUs
         // to release all guest mappings before declaring that the VTL
         // protection change has completed.
         tlb_access.flush(vtl);
         tlb_access.set_wait_for_tlb_locks(vtl);
+      
         Ok(())
     }
 

@@ -21,7 +21,7 @@ use vmm_test_macros::openvmm_test;
 
 // TODO: Move this host query logic into common code so that we can instead
 // filter tests based on host capabilities.
-fn host_supports_servicing() -> bool {
+pub(crate) fn host_supports_servicing() -> bool {
     cfg_if::cfg_if! {
         // xtask-fmt allow-target-arch cpu-intrinsic
         if #[cfg(all(target_arch = "x86_64", target_os = "windows"))] {

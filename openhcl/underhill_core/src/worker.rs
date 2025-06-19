@@ -1764,6 +1764,8 @@ async fn new_underhill_vm(
             gm.vtl1().cloned().unwrap_or(GuestMemory::empty()),
         ]
         .into(),
+        vtl0_kernel_exec_gm: gm.vtl0_kernel_execute().clone(),
+        vtl0_user_exec_gm: gm.vtl0_user_execute().clone(),
         #[cfg(guest_arch = "x86_64")]
         cpuid,
         crash_notification_send,

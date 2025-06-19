@@ -1570,7 +1570,12 @@ mod x86 {
         ) -> Result<(), VpHaltReason<WhpRunVpError>> {
             let vp = self.vp;
             let mut state = emu::WhpEmulationState::new(access, self, exit, dev);
-            virt_support_x86emu::emulate::emulate(&mut state, &vp.partition.gm, dev).await
+            let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+                gm: &vp.partition.gm,
+                kx_gm: &vp.partition.gm,
+                ux_gm: &vp.partition.gm,
+            };
+            virt_support_x86emu::emulate::emulate(&mut state, &emu_mem, dev).await
         }
 
         pub(super) fn finish_reset_arch(&mut self, vtl: Vtl) {
