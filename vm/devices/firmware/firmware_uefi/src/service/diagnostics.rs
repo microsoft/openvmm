@@ -18,6 +18,7 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::mem::size_of;
 use thiserror::Error;
@@ -42,6 +43,16 @@ pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000; // 4MB
 
 /// Maximum allowed size of a single message
 pub const MAX_MESSAGE_LENGTH: u16 = 0x1000; // 4KB
+
+// Suppress logs that contain these known error/warning messages.
+// These messages are the result of known issues with our UEFI firmware that do
+// not seem to affect the guest.
+// TODO: Fix UEFI to resolve this errors/warnings
+const SUPPRESS_LOGS: [&str; 3] = [
+    "WARNING: There is mismatch of supported HashMask (0x2 - 0x7) between modules",
+    "that are linking different HashInstanceLib instances!",
+    "ConvertPages: failed to find range",
+];
 
 /// Represents a processed log entry from the EFI diagnostics buffer
 #[derive(Debug, Clone)]
@@ -320,11 +331,7 @@ impl DiagnosticsServices {
         let mut bytes_read: usize = 0;
         let mut entries_processed: usize = 0;
 
-        // Defines how to handle completed messages
-        let mut process_complete_log = |log: EfiDiagnosticsLog<'_>| {
-            log_handler(log);
-            entries_processed += 1;
-        };
+        let mut suppressed_logs = BTreeMap::new();
 
         // Process the buffer slice until all entries are processed
         while !buffer_slice.is_empty() {
@@ -349,13 +356,26 @@ impl DiagnosticsServices {
 
             // Handle completed messages (ending with '\n')
             if !entry.message.is_empty() && entry.message.ends_with('\n') {
-                process_complete_log(EfiDiagnosticsLog {
-                    debug_level,
-                    ticks: time_stamp,
-                    phase,
-                    message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
-                });
+                let mut suppress = false;
+                for log in SUPPRESS_LOGS {
+                    if accumulated_message.contains(log) {
+                        suppressed_logs
+                            .entry(log)
+                            .and_modify(|c| *c += 1)
+                            .or_insert(1);
+                        suppress = true;
+                    }
+                }
+                if !suppress {
+                    log_handler(EfiDiagnosticsLog {
+                        debug_level,
+                        ticks: time_stamp,
+                        phase,
+                        message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
+                    });
+                }
                 is_accumulating = false;
+                entries_processed += 1;
             }
 
             // Update bytes read and move to the next entry
@@ -372,12 +392,17 @@ impl DiagnosticsServices {
 
         // Process any remaining accumulated message
         if is_accumulating && !accumulated_message.is_empty() {
-            process_complete_log(EfiDiagnosticsLog {
+            log_handler(EfiDiagnosticsLog {
                 debug_level,
                 ticks: time_stamp,
                 phase,
                 message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
             });
+            entries_processed += 1;
+        }
+
+        for (substring, count) in suppressed_logs {
+            tracelimit::warn_ratelimited!(substring, count, "suppressed logs")
         }
 
         // Print summary statistics
