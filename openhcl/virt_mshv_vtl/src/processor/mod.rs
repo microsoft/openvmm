@@ -300,7 +300,7 @@ enum InterceptMessageType {
 
 /// Per-arch state required to generate an intercept message.
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-struct InterceptMessageState {
+pub(crate) struct InterceptMessageState {
     instruction_length_and_cr8: u8,
     cpl: u8,
     efer_lma: bool,
@@ -417,7 +417,7 @@ impl InterceptMessageType {
 
 /// Trait for processor backings that have hardware isolation support.
 #[cfg(guest_arch = "x86_64")]
-trait HardwareIsolatedBacking: Backing {
+pub(crate) trait HardwareIsolatedBacking: Backing {
     /// Gets CVM specific VP state.
     fn cvm_state(&self) -> &crate::UhCvmVpState;
     /// Gets CVM specific VP state.
