@@ -104,6 +104,7 @@ impl HvCall {
         core::ptr::addr_of!(minimal_rt::arch::hypercall::HYPERCALL_PAGE) as u64
     }
 
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     fn init_if_needed(&mut self) {
         if !self.initialized {
             self.initialize();
