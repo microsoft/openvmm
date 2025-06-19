@@ -9,6 +9,7 @@ use crate::arch::TdxHypercallPage;
 use crate::arch::tdx::invoke_tdcall_hypercall;
 use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
+use cfg_if::cfg_if;
 use core::cell::RefCell;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
@@ -133,25 +134,31 @@ impl HvCall {
         if self.initialized {
             self.initialized = false;
 
-            #[cfg(target_arch = "x86_64")]
-            if self.tdx_io_page.is_some() {
-                return self.uninitialize_tdx();
+            // TODO: this unintuitive flow is a consequence of isolation-specific code
+            // being conditionally compiled for each architecture
+            //
+            // This should be revisited as more isolation-specific flows are added to
+            // the shim
+            cfg_if! {
+                if #[cfg(target_arch = "x86_64")] {
+                    if self.tdx_io_page.is_some() {
+                        self.uninitialize_tdx()
+                    }
+                    else {
+                        crate::arch::hypercall::uninitialize();
+                    }
+                }
+                else {
+                    crate::arch::hypercall::uninitialize();
+                }
             }
-
-            crate::arch::hypercall::uninitialize();
         }
     }
 
     /// Returns the environment's VTL.
     pub fn vtl(&mut self) -> Vtl {
-        self.init_if_needed();
-        self.get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
-            .map_or(Vtl::Vtl0, |status| {
-                hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
-                    .active_vtl()
-                    .try_into()
-                    .unwrap()
-            })
+        assert!(self.initialized);
+        self.vtl
     }
 
     /// Makes a hypercall.
@@ -437,7 +444,6 @@ impl HvCall {
 
     /// Uninitialize HvCall for TDX, unshare IO pages with the hypervisor
     pub fn uninitialize_tdx(&mut self) {
-        assert!(self.tdx_io_page.is_some());
         crate::arch::tdx::uninitialize_hypercalls(
             self.tdx_io_page
                 .take()
@@ -458,9 +464,12 @@ impl HvCall {
             vp_vtl_context: zerocopy::FromZeros::new_zeroed(),
         };
         assert!(self.initialized);
-        assert!(self.tdx_io_page.is_some());
 
-        let input_page_addr = self.tdx_io_page.as_ref().unwrap().input();
+        let input_page_addr = self
+            .tdx_io_page
+            .as_ref()
+            .expect("an initialized instance of HvCall on TDX must have an io page")
+            .input();
         // SAFETY: the input page passed into the initialization of HvCall is a
         // free buffer that is not concurrently accessed because openhcl_boot
         // is single threaded
@@ -478,7 +487,6 @@ impl HvCall {
 
     /// Hypercall to start VP on TDX
     pub fn tdx_start_vp(&mut self, vp_index: u32) -> Result<(), hvdef::HvError> {
-        assert!(self.tdx_io_page.is_some());
         let header = StartVirtualProcessorX64 {
             partition_id: hvdef::HV_PARTITION_ID_SELF,
             vp_index,
@@ -490,7 +498,11 @@ impl HvCall {
         };
         assert!(self.initialized);
 
-        let input_page_addr = self.tdx_io_page.as_ref().unwrap().input();
+        let input_page_addr = self
+            .tdx_io_page
+            .as_ref()
+            .expect("an initialized instance of HvCall on TDX must have an io page")
+            .input();
         // SAFETY: the input page passed into the initialization of HvCall is a
         // free buffer that is not concurrently accessed
         let input_page = unsafe { &mut *(input_page_addr as *mut [u8; 4096]) };
