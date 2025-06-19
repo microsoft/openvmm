@@ -946,17 +946,13 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // changed.
         guestmem::rcu().synchronize_blocking();
 
-        // Flush any threads accessing pages that had their VTL protections
-        // changed.
-        guestmem::rcu().synchronize_blocking();
-      
         // Since page protections were modified, we must invalidate the TLB to
         // ensure that the new permissions are observed, and wait for other CPUs
         // to release all guest mappings before declaring that the VTL
         // protection change has completed.
         tlb_access.flush(vtl);
         tlb_access.set_wait_for_tlb_locks(vtl);
-      
+
         Ok(())
     }
 
