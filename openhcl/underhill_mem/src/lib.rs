@@ -766,7 +766,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             for gpn in
                 ram_range.range.start() / PAGE_SIZE as u64..ram_range.range.end() / PAGE_SIZE as u64
             {
-                // TODO GUEST_VSM: for now, use the encrypted mapping to
+                // TODO GUEST VSM: for now, use the encrypted mapping to
                 // find all accepted memory. When lazy acceptance exists,
                 // this should track all pages that have been accepted and
                 // should be used instead.

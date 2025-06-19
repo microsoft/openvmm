@@ -1476,7 +1476,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
         }
 
         match virt_support_x86emu::translate::translate_gva_to_gpa(
-            &self.vp.partition.gm[target_vtl], // TODO GUEST VSM: This doesn't have VTL access checks.
+            &self.vp.partition.gm[target_vtl],
             gva,
             &self.vp.backing.translation_registers(self.vp, target_vtl),
             virt_support_x86emu::translate::TranslateFlags::from_hv_flags(control_flags),
@@ -1777,6 +1777,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         )?;
 
         // TODO GUEST VSM: should only be set if enable_vtl_protection is true?
+        // We're not to spec but match the HCL, so good enough for now?
         protector.set_vtl1_protections_enabled();
 
         // Note: Zero memory on reset will happen regardless of this value,
