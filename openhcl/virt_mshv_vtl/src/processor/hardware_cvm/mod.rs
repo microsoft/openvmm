@@ -1449,18 +1449,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
             virt_support_x86emu::translate::TranslateFlags::from_hv_flags(control_flags),
         ) {
             Ok(virt_support_x86emu::translate::TranslateResult { gpa, cache_info }) => {
-                // TODO GUEST VSM: at the moment, the guest is only using this
-                // to check for overlay pages related to drivers and executable
-                // code. Only the hypercall code page overlay matches that
-                // description. However, for full correctness this should be
-                // extended to check for all overlay pages.
-                let overlay_page = hvdef::hypercall::MsrHypercallContents::from(
-                    self.vp.backing.cvm_state_mut().hv[target_vtl]
-                        .msr_read(hvdef::HV_X64_MSR_HYPERCALL)
-                        .unwrap(),
-                )
-                .gpn();
-
                 let cache_type = match cache_info {
                     TranslateCachingInfo::NoPaging => HvCacheType::HvCacheTypeWriteBack.0 as u8,
                     TranslateCachingInfo::Paging { pat_index } => {
@@ -1474,7 +1462,12 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
                     translation_result: hvdef::hypercall::TranslateGvaResult::new()
                         .with_result_code(TranslateGvaResultCode::SUCCESS.0)
-                        .with_overlay_page(gpn == overlay_page)
+                        .with_overlay_page(
+                            self.vp
+                                .cvm_partition()
+                                .isolated_memory_protector
+                                .is_overlay_page(self.intercepted_vtl, gpn),
+                        )
                         .with_cache_type(cache_type),
                     gpa_page: gpn,
                 })

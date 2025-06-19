@@ -917,6 +917,12 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         tlb_access.flush(vtl);
     }
 
+    fn is_overlay_page(&self, vtl: GuestVtl, gpn: u64) -> bool {
+        self.inner.lock().overlay_pages[vtl]
+            .iter()
+            .any(|p| p.gpn == gpn)
+    }
+
     fn set_vtl1_protections_enabled(&self) {
         self.vtl1_protections_enabled
             .store(true, std::sync::atomic::Ordering::Relaxed);
