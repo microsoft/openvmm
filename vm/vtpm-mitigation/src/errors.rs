@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 

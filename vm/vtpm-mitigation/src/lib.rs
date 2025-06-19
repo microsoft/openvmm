@@ -67,7 +67,11 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 // SAFETY: The caller should ensure that the input blob pointer is valid and size is within the bounds
-pub unsafe extern "C" fn IsValidVtpmBlob(blob: *const u8, size: usize, err_offset: *mut u64) -> u64 {
+pub unsafe extern "C" fn IsValidVtpmBlob(
+    blob: *const u8,
+    size: usize,
+    err_offset: *mut u64,
+) -> u64 {
     if blob.is_null() || err_offset.is_null() || size == 0 {
         tracing::error!("Input blob is null");
         return TpmStateValidationError::INVALID_PARAMETER_ERROR;
