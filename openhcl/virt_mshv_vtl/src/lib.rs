@@ -1440,6 +1440,9 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError>;
 
+    /// Checks whether a page is currently registered as an overlay page.
+    fn is_overlay_page(&self, vtl: GuestVtl, gpn: u64) -> bool;
+
     /// Alerts the memory protector that vtl 1 is ready to set vtl protections
     /// on lower-vtl memory, and that these protections should be enforced.
     fn set_vtl1_protections_enabled(&self);
