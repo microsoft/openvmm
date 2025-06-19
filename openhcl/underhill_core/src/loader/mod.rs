@@ -685,12 +685,11 @@ pub fn write_uefi_config(
         });
     }
 
+    tracing::info!("azi hsm guid added to config: {:#?}", azihsm_guid.unwrap_or_default());
     cfg.add(&config::AziHsmGuid(
         // If not set, pass zero guid to UEFI
         azihsm_guid.unwrap_or_default())
     );
-
-    tracing::info!("azi hsm guid added to config: {:#?}", azihsm_guid.unwrap_or_default());
     
     // Finally, with the bios config constructed, we can inject it into guest memory
     gm.write_at(loader::uefi::CONFIG_BLOB_GPA_BASE, &cfg.complete())

@@ -22,7 +22,6 @@ use pci_core::spec::ext_caps::ExtendedCapabilityHeader;
 use pci_core::spec::ext_caps::VendorSpecificHeader;
 use pci_core::spec::ext_caps::EXT_CAPABILITY_VENDOR_SPECIFIC_ID;
 use pci_core::spec::hwid::HardwareIds;
-use std::num::NonZero;
 use std::sync::Arc;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;

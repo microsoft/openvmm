@@ -376,12 +376,16 @@ pub mod caps {
     }
 }
 
+/// Extended capabilities
+#[expect(missing_docs)] // primarily structs with self-explanatory variants
 pub mod ext_caps {
     use bitfield_struct::bitfield;
 
+    /// Start offset for extended capabilities in the PCI configuration space.
     pub const EXT_CAPABILITY_START_OFFSET: u16 = 0x100;
     /// Extended capability IDs
     /// PCI CODE AND ID ASSIGNMENT SPECIFICATION, REV. 1.12 Section 3
+    /// https://pcisig.com/sites/default/files/files/PCI_Code-ID_r_1_11__v24_Jan_2019.pdf
     pub const EXT_CAPABILITY_VENDOR_SPECIFIC_ID: u16 = 0x000B;
     
 
