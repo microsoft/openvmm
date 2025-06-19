@@ -2197,8 +2197,6 @@ impl UhPartitionInner {
             //
             // If it is only for CVM, then it should be moved to the
             // CVM-specific cpuid fixups.
-            //
-            // TODO TDX GUEST VSM: Consider changing TLB hypercall flag too
             let mut features = hvdef::HvFeatures::from_cpuid(r);
             if self.backing_shared.guest_vsm_disabled() {
                 features.set_privileges(features.privileges().with_access_vsm(false));

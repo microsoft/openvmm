@@ -241,8 +241,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         let use_vtl1 = params.maximum_vtl >= Vtl::Vtl1;
 
-        // Start by giving VTL 0 full access to all lower-vtl memory. TODO GUEST
-        // VSM: with lazy acceptance, it should instead be initialized to no
+        // Start by giving VTL 0 full access to all lower-vtl memory.
+        // TODO GUEST VSM: with lazy acceptance, it should instead be initialized to no
         // access.
         tracing::debug!("Building VTL0 memory map");
         let vtl0_mapping = Arc::new({
@@ -441,9 +441,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             params.mem_layout.clone(),
             acceptor.as_ref().unwrap().clone(),
         )) as Arc<dyn ProtectIsolatedMemory>;
-
-        // TODO GUEST VSM: create guest memory objects using execute permissions
-        // for the instruction emulator to use when reading instructions.
 
         tracing::debug!("Creating VTL0 guest memory for kernel execute access");
         let vtl0_kx_gm = GuestMemory::new_multi_region(
