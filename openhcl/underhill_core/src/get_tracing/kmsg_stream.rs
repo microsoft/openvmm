@@ -22,7 +22,6 @@ use std::pin::Pin;
 use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
-use std::task::ready;
 
 /// A stream of trace logging notifications from `/dev/kmsg`.
 pub struct KmsgStream {
