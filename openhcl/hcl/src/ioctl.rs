@@ -3039,8 +3039,6 @@ impl Hcl {
             .expect("check_vtl_access hypercall should not fail")
         };
 
-        // TODO GUEST VSM: for isolated VMs, if the status is operation denied,
-        // return memory unaccepted?
         status.result().map_err(Error::CheckVtlAccess)?;
 
         let access_result = output[0];
