@@ -1216,25 +1216,6 @@ impl virt::DeviceBuilder for UhPartition {
     }
 }
 
-impl virt::VtlMemoryProtection for UhPartition {
-    /// TODO CVM GUEST_VSM:
-    ///     GH954: Review alternatives to dynamically allocating from VTL2 RAM
-    ///     (e.g. reserve pages for this purpose), or constrain it for more
-    ///     safety.  The concern is freeing a page but forgetting to reset
-    ///     permissions. See PagesAccessibleToLowerVtl for a sample wrapper.
-    fn modify_vtl_page_setting(&self, pfn: u64, flags: HvMapGpaFlags) -> anyhow::Result<()> {
-        let address = pfn << hvdef::HV_PAGE_SHIFT;
-        self.inner
-            .hcl
-            .modify_vtl_protection_mask(
-                MemoryRange::new(address..address + HV_PAGE_SIZE),
-                flags,
-                HvInputVtl::CURRENT_VTL,
-            )
-            .context("failed to modify VTL page permissions")
-    }
-}
-
 struct UhInterruptTarget {
     partition: Arc<UhPartitionInner>,
     vtl: GuestVtl,
