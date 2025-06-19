@@ -1012,29 +1012,34 @@ impl virt::Synic for UhPartition {
     }
 
     fn monitor_support(&self) -> Option<&dyn virt::SynicMonitor> {
-        // TODO TDX TODO SNP: Disable monitor support for TDX and SNP as support
-        // for VTL2 protections is needed to emulate this page, which is not
-        // implemented yet.
-        if self.inner.isolation.is_hardware_isolated() {
-            None
-        } else {
-            Some(self)
-        }
+        Some(self)
     }
 }
 
 impl virt::SynicMonitor for UhPartition {
-    fn set_monitor_page(&self, _vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
+
         if let Some(old_gpa) = old_gpa {
-            self.inner
-                .hcl
-                .modify_vtl_protection_mask(
-                    MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
-                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-                    HvInputVtl::CURRENT_VTL,
-                )
-                .context("failed to unregister old monitor page")?;
+            if let Some(cvm) = self.inner.backing_shared.cvm_state() {
+                cvm.isolated_memory_protector
+                    .unregister_overlay_page(
+                        vtl.try_into().unwrap(),
+                        old_gpa.checked_div(HV_PAGE_SIZE).unwrap(),
+                        (),
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))
+            } else {
+                self.inner
+                    .hcl
+                    .modify_vtl_protection_mask(
+                        MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
+                        hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+                        HvInputVtl::CURRENT_VTL,
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
+            .context("failed to unregister old monitor page")?;
 
             tracing::debug!(old_gpa, "unregistered monitor page");
         }
@@ -1042,15 +1047,27 @@ impl virt::SynicMonitor for UhPartition {
         if let Some(gpa) = gpa {
             // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
             // permissions must be enabled or this doesn't work correctly.
-            let result = self
-                .inner
-                .hcl
-                .modify_vtl_protection_mask(
-                    MemoryRange::new(gpa..gpa + HV_PAGE_SIZE),
-                    HvMapGpaFlags::new().with_readable(true),
-                    HvInputVtl::CURRENT_VTL,
-                )
-                .context("failed to register monitor page");
+            let result = if let Some(cvm) = self.inner.backing_shared.cvm_state() {
+                cvm.isolated_memory_protector
+                    .register_overlay_page(
+                        vtl.try_into().unwrap(),
+                        gpa.checked_div(HV_PAGE_SIZE).unwrap(),
+                        HvMapGpaFlags::new().with_readable(true).with_writable(true),
+                        Some(HvMapGpaFlags::new().with_readable(true)),
+                        (),
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))
+            } else {
+                self.inner
+                    .hcl
+                    .modify_vtl_protection_mask(
+                        MemoryRange::new(gpa..gpa + HV_PAGE_SIZE),
+                        HvMapGpaFlags::new().with_readable(true),
+                        HvInputVtl::CURRENT_VTL,
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
+            .context("failed to register monitor page");
 
             if result.is_err() {
                 // Unset the page so trying to remove it later won't fail too.
