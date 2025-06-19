@@ -1,27 +1,24 @@
-
-use std::fmt::{Display, Formatter};
 use std::error::Error;
-
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
 pub enum PlatformError {
     ErrorRngGenerator,
 }
 
-impl Error for PlatformError {
-    fn description(&self) -> &str {
-        match self {
-            PlatformError::ErrorRngGenerator => "Error in Rng Generator",
-        }
-    }
-}
+impl Error for PlatformError {}
 
 impl Display for PlatformError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        let description = match self {
+            PlatformError::ErrorRngGenerator => "Error in Rng Generator",
+        };
+        write!(f, "{}", description)
     }
 }
+// SAFETY: The enum is stateless and should be safe to send
 unsafe impl Send for PlatformError {}
+// SAFETY: The enum is stateless and should be safe to Sync
 unsafe impl Sync for PlatformError {}
 
 #[derive(Debug)]
@@ -38,9 +35,11 @@ impl TpmStateRecoveryError {
     pub const INVALID_PARAMETER_ERROR: u64 = 0x4001;
 }
 
-impl Error for TpmStateRecoveryError {
-    fn description(&self) -> &str {
-        match self.0 {
+impl Error for TpmStateRecoveryError {}
+
+impl Display for TpmStateRecoveryError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let description = match self.0 {
             TpmStateRecoveryError::RECOVERY_FAILED => "vTPM NVRAM Recovery failed",
             TpmStateRecoveryError::INPUT_OUTPUT_BLOB_SIZE_MISMATCH => {
                 "The input and output blob size should be same"
@@ -52,25 +51,20 @@ impl Error for TpmStateRecoveryError {
             TpmStateRecoveryError::NVRAM_SIZE_MISMATCH => "NVRAM size mismatch",
             TpmStateRecoveryError::INVALID_BLOB => "The input blob is not a valid TPM state blob",
             _ => "Unknown error",
-        }
-    }
-}
-
-impl Display for TpmStateRecoveryError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        };
+        write!(f, "{}", description)
     }
 }
 
 impl From<TpmStateRecoveryError> for u64 {
     fn from(err: TpmStateRecoveryError) -> u64 {
-        err.0 as u64
+        err.0
     }
 }
 
 impl From<u64> for TpmStateRecoveryError {
     fn from(err: u64) -> TpmStateRecoveryError {
-        TpmStateRecoveryError(err as u64)
+        TpmStateRecoveryError(err)
     }
 }
 
@@ -88,30 +82,27 @@ impl TpmStateValidationError {
 
 impl From<TpmStateValidationError> for u64 {
     fn from(err: TpmStateValidationError) -> u64 {
-        err.0 as u64
+        err.0
     }
 }
 
 impl From<u64> for TpmStateValidationError {
     fn from(err: u64) -> TpmStateValidationError {
-        TpmStateValidationError(err as u64)
+        TpmStateValidationError(err)
     }
 }
 
-impl Error for TpmStateValidationError {
-    fn description(&self) -> &str {
-        match self.0 {
+impl Error for TpmStateValidationError {}
+
+impl Display for TpmStateValidationError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let description = match self.0 {
             TpmStateValidationError::INVALID_TPM_STATE => {
                 "The input blob is not a valid TPM state blob with the error offset"
             }
             TpmStateValidationError::INVALID_PARAMETER_ERROR => "Invalid pointer error",
             _ => "Unknown error",
-        }
-    }
-}
-
-impl Display for TpmStateValidationError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        };
+        write!(f, "{}", description)
     }
 }

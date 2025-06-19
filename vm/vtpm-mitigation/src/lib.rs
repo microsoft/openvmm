@@ -6,7 +6,7 @@
 //! IsValidVtpmBlob and RecoverVtpmBlob. IsValidVtpmBlob is used to check if the given blob is a valid
 //! TPM blob. RecoverVtpmBlob is used to recover the given blob and return the recovered blob.
 
-// UNSAFETY: We need to use unsafe code to create Error types with Send and Sync markers
+// SAFETY: We need to use unsafe code to create Error types with Send and Sync markers
 #![expect(unsafe_code)]
 
 mod errors;
@@ -20,9 +20,9 @@ use std::time::Instant;
 use tpm::recover::check_blob;
 use tpm::tpm_helper::TpmEngineHelper;
 
+use crate::errors::PlatformError;
 use crate::errors::TpmStateRecoveryError;
 use crate::errors::TpmStateValidationError;
-use crate::errors::PlatformError;
 
 /// STATUS_SUCCESS: The operation completed successfully.
 pub const STATUS_SUCCESS: u64 = 0x0;
@@ -62,9 +62,12 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
 }
 
 /// FFI to check if the given blob is a valid TPM blob
+/// # Safety
+/// The caller should ensure that the input blob pointer is valid and size is within the bounds
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn IsValidVtpmBlob(blob: *const u8, size: usize, err_offset: *mut u64) -> u64 {
+// SAFETY: The caller should ensure that the input blob pointer is valid and size is within the bounds
+pub unsafe extern "C" fn IsValidVtpmBlob(blob: *const u8, size: usize, err_offset: *mut u64) -> u64 {
     if blob.is_null() || err_offset.is_null() || size == 0 {
         tracing::error!("Input blob is null");
         return TpmStateValidationError::INVALID_PARAMETER_ERROR;
@@ -86,9 +89,11 @@ pub extern "C" fn IsValidVtpmBlob(blob: *const u8, size: usize, err_offset: *mut
 }
 
 /// FFI to Recover the given blob and return the recovered blob
+/// # Safety
+/// The caller should ensure that the input and output blob pointers are valid and size is within the bounds
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn RecoverVtpmBlob(
+pub unsafe extern "C" fn RecoverVtpmBlob(
     blob: *mut u8,
     size: usize,
     out_blob: *mut u8,
@@ -191,9 +196,9 @@ fn recover_vtpm_blob(original_blob: &[u8]) -> Result<Vec<u8>, TpmStateRecoveryEr
         let mut pending_nvram = pending_nvram.lock();
         std::mem::take(&mut *pending_nvram)
     };
-    
+
     drop(tpm_engine_helper);
-    
+
     if recovered_state.len() != tpm_state_blob.len() {
         tracing::error!("Recovered blob size is not same as the original blob size");
         return Err(TpmStateRecoveryError::NVRAM_SIZE_MISMATCH.into());
@@ -203,8 +208,8 @@ fn recover_vtpm_blob(original_blob: &[u8]) -> Result<Vec<u8>, TpmStateRecoveryEr
 
 #[cfg(test)]
 mod tests {
-    use tracing_subscriber::EnvFilter;
     use super::*;
+    use tracing_subscriber::EnvFilter;
 
     pub fn setup_logging() {
         tracing_subscriber::fmt()
@@ -218,7 +223,7 @@ mod tests {
     fn test_corrupted_tpm_state_is_recovered() {
         setup_logging();
 
-        let corrupt_state= include_bytes!("../test-data/corrupted_blob.bin");
+        let corrupt_state = include_bytes!("../test-data/corrupted_blob.bin");
 
         let is_ok = is_valid_tpm_blob(corrupt_state.as_slice());
 
