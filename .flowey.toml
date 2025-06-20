@@ -6,6 +6,10 @@ file = ".github/workflows/openvmm-pr.yaml"
 cmd = ["ci", "checkin-gates", "--config=pr"]
 
 [[pipeline.flowey_hvlite.github]]
+file = ".github/workflows/openvmm-pr-release.yaml"
+cmd = ["ci", "checkin-gates", "--config=pr-release"]
+
+[[pipeline.flowey_hvlite.github]]
 file = ".github/workflows/openvmm-ci.yaml"
 cmd = ["ci", "checkin-gates", "--config=ci"]
 
