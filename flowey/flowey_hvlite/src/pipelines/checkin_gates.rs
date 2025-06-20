@@ -22,13 +22,15 @@ use vmm_test_images::KnownTestArtifacts;
 
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {
-    /// Run on all PRs targeting the OpenVMM github repo
+    /// Run on all PRs targeting the OpenVMM GitHub repo.
     Pr,
-    /// Run on all commits that land in OpenVMM's `main` branch.
+    /// Run on all commits that land in a branch.
     ///
     /// The key difference between the CI and PR pipelines is whether things are
     /// being built in `release` mode.
     Ci,
+    /// Release variant of the `Pr` pipeline.
+    PrRelease,
 }
 
 /// A unified pipeline defining all checkin gates required to land a commit in
@@ -56,7 +58,7 @@ impl IntoPipeline for CheckinGatesCli {
         } = self;
 
         let release = match config {
-            PipelineConfig::Ci => true,
+            PipelineConfig::Ci | PipelineConfig::PrRelease => true,
             PipelineConfig::Pr => false,
         };
 
@@ -81,6 +83,14 @@ impl IntoPipeline for CheckinGatesCli {
                             ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("[flowey] OpenVMM PR");
+                }
+                PipelineConfig::PrRelease => {
+                    pipeline
+                        .gh_set_pr_triggers(GhPrTriggers {
+                            branches: vec![], // This workflow is triggered manually.
+                            ..GhPrTriggers::new_draftable()
+                        })
+                        .gh_set_name("[flowey] OpenVMM Release PR");
                 }
             }
         }
