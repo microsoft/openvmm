@@ -1032,7 +1032,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // for duplicates.
         // We also need to allow locking overlay pages for now.
         // TODO: We probably don't want to allow locking overlay pages once
-        // we return the pointer for them instead of going through lock.
+        // we return the pointer for them instead of going through guestmem::lock.
         // TODO: other preconditions?
         self.inner.lock().locked_pages[vtl].push(gpns.to_vec().into_boxed_slice());
         Ok(())
@@ -1043,7 +1043,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         let locked_pages = &mut inner.locked_pages[vtl];
         for (i, w) in locked_pages.iter().enumerate() {
             if **w == *gpns {
-                locked_pages.remove(i);
+                locked_pages.swap_remove(i);
                 return;
             }
         }
