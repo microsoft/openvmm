@@ -290,6 +290,17 @@ pub struct LinuxInfo {
     pub command_line: PageRegionDescriptor,
 }
 
+/// Measured config about ELF loaded into VTL0.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "inspect", derive(Inspect))]
+pub struct ElfInfo {
+    /// The memory the image was loaded into.
+    pub region: PageRegionDescriptor,
+    /// The VP context for the image.
+    pub vp_context: PageRegionDescriptor,
+}
+
 /// Measured config about UEFI loaded into VTL0.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -315,8 +326,11 @@ pub struct SupportedVtl0LoadInfo {
     /// This image supports Linux Direct.
     #[bits(1)]
     pub linux_direct_supported: bool,
+    /// This image supports a static ELF.
+    #[bits(1)]
+    pub static_elf_supported: bool,
     /// Currently reserved.
-    #[bits(61)]
+    #[bits(60)]
     pub reserved: u64,
 }
 
@@ -336,6 +350,8 @@ pub struct ParavisorMeasuredVtl0Config {
     pub uefi_info: UefiInfo,
     /// If Linux is supported, information about Linux for VTL0.
     pub linux_info: LinuxInfo,
+    /// If a static ELF is supported, information about it for VTL0.
+    pub static_elf: ElfInfo,
 }
 
 impl ParavisorMeasuredVtl0Config {
