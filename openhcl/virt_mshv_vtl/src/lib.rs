@@ -47,6 +47,7 @@ use bitvec::boxed::BitBox;
 use bitvec::vec::BitVec;
 use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryBackingError;
 use hcl::GuestVtl;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
@@ -1425,6 +1426,16 @@ pub trait ProtectIsolatedMemory: Send + Sync {
 
     /// Checks whether a page is currently registered as an overlay page.
     fn is_overlay_page(&self, vtl: GuestVtl, gpn: u64) -> bool;
+
+    /// Locks the permissions and mappings for a set of guest pages.
+    fn lock_gpns(&self, vtl: GuestVtl, gpns: &[u64]) -> Result<(), GuestMemoryBackingError>;
+
+    /// Unlocks the permissions and mappings for a set of guest pages.
+    ///
+    /// Panics if asked to unlock a page that was not previously locked. The
+    /// caller must ensure that the given slice has the same ordering as the
+    /// one passed to `lock_gpns`.
+    fn unlock_gpns(&self, vtl: GuestVtl, gpns: &[u64]);
 
     /// Alerts the memory protector that vtl 1 is ready to set vtl protections
     /// on lower-vtl memory, and that these protections should be enforced.
