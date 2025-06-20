@@ -365,18 +365,18 @@ where
     // the kernel will jump to a startup routine in any arbitrary kernel ram
     // range.
     //
-    // For now, describe 4GB of memory identity mapped in the page table used by
-    // the mailbox asssembly stub, so the kernel can start APs. An upcoming
-    // change will instead have the bootshim modify the pagetable at runtime to
-    // guarantee all ranges reported in the E820 map to kernel as ram are
-    // mapped.
+    // For now, describe 3GB of memory identity mapped in the page table used by
+    // the mailbox asssembly stub, so the kernel can start APs regardless of how
+    // large the initial memory size was. An upcoming change will instead have
+    // the bootshim modify the pagetable at runtime to guarantee all ranges
+    // reported in the E820 map to kernel as ram are mapped.
     //
     // FUTURE: A future kernel change could remove this requirement entirely by
     // making the kernel spec compliant, and only require that the reset vector
     // page is identity mapped.
 
     let page_table_mapping_size = if isolation_type == IsolationType::Tdx {
-        4 * 1024 * 1024 * 1024
+        3 * 1024 * 1024 * 1024
     } else {
         memory_size
     };
