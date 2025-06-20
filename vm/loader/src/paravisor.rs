@@ -366,7 +366,7 @@ where
     // range.
     //
     // For now, describe 3GB of memory identity mapped in the page table used by
-    // the mailbox asssembly stub, so the kernel can start APs regardless of how
+    // the mailbox assembly stub, so the kernel can start APs regardless of how
     // large the initial memory size was. An upcoming change will instead have
     // the bootshim modify the pagetable at runtime to guarantee all ranges
     // reported in the E820 map to kernel as ram are mapped.
