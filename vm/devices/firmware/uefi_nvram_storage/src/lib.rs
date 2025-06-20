@@ -11,8 +11,8 @@ pub use uefi_specs::uefi::time::EFI_TIME;
 pub mod in_memory;
 
 use guid::Guid;
-#[cfg(feature = "inspect")]
-pub use inspect_ext::InspectableNvramStorage;
+#[cfg(feature = "save_restore")]
+pub use save_restore::VmmNvramStorage;
 use std::fmt::Debug;
 use thiserror::Error;
 use ucs2::Ucs2LeSlice;
@@ -169,18 +169,18 @@ impl NvramStorage for Box<dyn NvramStorage> {
     }
 }
 
-/// Defines a trait that combines NvramStorage and Inspect
-#[cfg(feature = "inspect")]
-mod inspect_ext {
+/// Defines a trait that combines NvramStorage, Inspect, and SaveRestore
+#[cfg(feature = "save_restore")]
+mod save_restore {
     use super::*;
     use inspect::Inspect;
+    use vmcore::save_restore::ProtobufSaveRestore;
 
-    /// Extends [`NvramStorage`] with a bound on [`Inspect`]
-    pub trait InspectableNvramStorage: NvramStorage + Inspect {}
-    impl<T: NvramStorage + Inspect> InspectableNvramStorage for T {}
+    pub trait VmmNvramStorage: NvramStorage + Inspect + ProtobufSaveRestore {}
+    impl<T> VmmNvramStorage for T where T: NvramStorage + Inspect + ProtobufSaveRestore {}
 
     #[async_trait::async_trait]
-    impl NvramStorage for Box<dyn InspectableNvramStorage> {
+    impl NvramStorage for Box<dyn VmmNvramStorage> {
         async fn get_variable(
             &mut self,
             name: &Ucs2LeSlice,
@@ -227,6 +227,21 @@ mod inspect_ext {
             name_vendor: Option<(&Ucs2LeSlice, Guid)>,
         ) -> Result<NextVariable, NvramStorageError> {
             (**self).next_variable(name_vendor).await
+        }
+    }
+
+    impl ProtobufSaveRestore for Box<dyn VmmNvramStorage> {
+        fn save(
+            &mut self,
+        ) -> Result<vmcore::save_restore::SavedStateBlob, vmcore::save_restore::SaveError> {
+            (**self).save()
+        }
+
+        fn restore(
+            &mut self,
+            state: vmcore::save_restore::SavedStateBlob,
+        ) -> Result<(), vmcore::save_restore::RestoreError> {
+            (**self).restore(state)
         }
     }
 }
