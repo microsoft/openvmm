@@ -1044,10 +1044,10 @@ impl BackingPrivate for TdxBacked {
             let prot_access = &mut UntrustedSynicVtlProts(&this.partition.gm[GuestVtl::Vtl0]);
 
             synic
-                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]), prot_access)
+                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]), prot_access)
                 .unwrap();
             synic
-                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]), prot_access)
+                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]), prot_access)
                 .unwrap();
             // Set the SIEFP in the hypervisor so that the hypervisor can
             // directly signal synic events. Don't set the SIMP, since the
