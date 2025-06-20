@@ -23,9 +23,9 @@ use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::UhProcessor;
 use crate::WakeReason;
-use crate::processor::hardware_cvm::CvmVtlProtectAccess;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
+use guestmem::GuestMemory;
 use hcl::ioctl::ProcessorRunner;
 use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::tdx::TdxPrivateRegs;
@@ -800,6 +800,29 @@ impl TdxBacked {
     }
 }
 
+// The memory used to back the untrusted synic is not guest-visible, but rather
+// is allocated from our shared pool. Therefore it does not need to go through
+// the normal memory protections path.
+struct UntrustedSynicVtlProts<'a>(&'a GuestMemory);
+
+impl hv1_emulator::VtlProtectAccess for UntrustedSynicVtlProts<'_> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, HvError> {
+        self.0
+            .lock_gpns(false, &[gpn])
+            .map_err(|_| HvError::OperationFailed)
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), HvError> {
+        // TODO: call unlock once its added
+        Ok(())
+    }
+}
+
 #[expect(private_interfaces)]
 impl BackingPrivate for TdxBacked {
     type HclBacking<'tdx> = Tdx<'tdx>;
@@ -1017,24 +1040,14 @@ impl BackingPrivate for TdxBacked {
             ),
         ];
 
-        let this_index = this.vp_index();
         let reg_count = if let Some(synic) = &mut this.backing.untrusted_synic {
-            let prot_access = &mut CvmVtlProtectAccess {
-                vtl: GuestVtl::Vtl0,
-                protector: this.shared.cvm.isolated_memory_protector.as_ref(),
-                tlb_access: &mut TdxBacked::tlb_flush_lock_access(
-                    this_index,
-                    this.partition,
-                    this.shared,
-                ),
-                guest_memory: &this.partition.gm[GuestVtl::Vtl0],
-            };
+            let prot_access = &mut UntrustedSynicVtlProts(&this.partition.gm[GuestVtl::Vtl0]);
 
             synic
-                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]), prot_access)
+                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]), prot_access)
                 .unwrap();
             synic
-                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]), prot_access)
+                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]), prot_access)
                 .unwrap();
             // Set the SIEFP in the hypervisor so that the hypervisor can
             // directly signal synic events. Don't set the SIMP, since the
@@ -2657,7 +2670,6 @@ impl UhProcessor<'_, TdxBacked> {
                 // If we get here we must have an untrusted synic, as otherwise
                 // we wouldn't be handling the TDVMCALL that ends up here. Therefore
                 // this is fine to unwrap.
-                let self_index = self.vp_index();
                 self.backing
                     .untrusted_synic
                     .as_mut()
@@ -2665,16 +2677,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .write_nontimer_msr(
                         msr,
                         value,
-                        &mut CvmVtlProtectAccess {
-                            vtl: intercepted_vtl,
-                            protector: self.shared.cvm.isolated_memory_protector.as_ref(),
-                            tlb_access: &mut TdxBacked::tlb_flush_lock_access(
-                                self_index,
-                                self.partition,
-                                self.shared,
-                            ),
-                            guest_memory: &self.partition.gm[intercepted_vtl],
-                        },
+                        &mut UntrustedSynicVtlProts(&self.partition.gm[GuestVtl::Vtl0]),
                     )?;
                 // Propagate sint MSR writes to the hypervisor as well
                 // so that the hypervisor can directly inject events.
