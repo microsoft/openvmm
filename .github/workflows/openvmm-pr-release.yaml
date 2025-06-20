@@ -11,15 +11,6 @@ on:
         default: false
         required: false
         type: boolean
-  pull_request:
-    types:
-    - opened
-    - synchronize
-    - reopened
-    - ready_for_review
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   job0:
     name: xtask fmt (windows)
