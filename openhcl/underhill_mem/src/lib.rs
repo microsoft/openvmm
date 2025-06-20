@@ -352,7 +352,7 @@ struct HardwareIsolatedMemoryProtectorInner {
     encrypted: Arc<GuestMemoryMapping>,
     default_vtl_permissions: DefaultVtlPermissions,
     overlay_pages: VtlArray<Vec<OverlayPage>, 2>,
-    locked_pages: VtlArray<Vec<u64>, 2>,
+    locked_pages: VtlArray<Vec<Box<[u64]>>, 2>,
 }
 
 struct OverlayPage {
@@ -489,7 +489,7 @@ impl HardwareIsolatedMemoryProtector {
         // TODO: When uh_mem implements the returning of overlay pages, rather than
         // requiring them to also be locked through guestmem, the check for overlay
         // pages can be removed, as locked and overlay pages will be mutually exclusive.
-        if inner.locked_pages[vtl].contains(&gpn)
+        if inner.locked_pages[vtl].iter().flatten().any(|x| *x == gpn)
             && !inner.overlay_pages[vtl].iter().any(|p| p.gpn == gpn)
         {
             return Err(HvError::OperationDenied);
@@ -812,7 +812,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // this should track all pages that have been accepted and
                 // should be used instead.
                 // Also don't attempt to change the permissions of locked pages.
-                if !inner.valid_encrypted.check_valid(gpn) || inner.locked_pages[vtl].contains(&gpn)
+                if !inner.valid_encrypted.check_valid(gpn)
+                    || self.check_gpn_not_locked(&inner, vtl, gpn).is_err()
                 {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
@@ -1033,16 +1034,16 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // TODO: We probably don't want to allow locking overlay pages once
         // we return the pointer for them instead of going through lock.
         // TODO: other preconditions?
-        self.inner.lock().locked_pages[vtl].extend_from_slice(gpns);
+        self.inner.lock().locked_pages[vtl].push(gpns.to_vec().into_boxed_slice());
         Ok(())
     }
 
     fn unlock_gpns(&self, vtl: GuestVtl, gpns: &[u64]) {
         let mut inner = self.inner.lock();
         let locked_pages = &mut inner.locked_pages[vtl];
-        for (i, w) in locked_pages.windows(gpns.len()).enumerate() {
-            if w == gpns {
-                locked_pages.drain(i..i + gpns.len());
+        for (i, w) in locked_pages.iter().enumerate() {
+            if **w == *gpns {
+                locked_pages.remove(i);
                 return;
             }
         }
