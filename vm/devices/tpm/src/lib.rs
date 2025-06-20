@@ -14,10 +14,10 @@
 
 pub mod ak_cert;
 pub mod logger;
-mod recover;
+pub mod recover;
 pub mod resolver;
 mod tpm20proto;
-mod tpm_helper;
+pub mod tpm_helper;
 
 use self::io_port_interface::PpiOperation;
 use self::io_port_interface::TpmIoCommand;
