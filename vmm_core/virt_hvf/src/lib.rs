@@ -123,10 +123,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         // SAFETY: no safety requirements.
         unsafe { abi::hv_vm_create(null_mut()) }.chk()?;
 
-        let hv1 = HvfHv1State::new(
-            config.guest_memory.clone(),
-            self.config.processor_topology.vp_count(),
-        );
+        let hv1 = HvfHv1State::new(self.config.processor_topology.vp_count());
         let hv1_vps = self
             .config
             .processor_topology
@@ -462,10 +459,10 @@ struct HvfHv1State {
 }
 
 impl HvfHv1State {
-    fn new(guest_memory: GuestMemory, max_vp_count: u32) -> Self {
+    fn new(max_vp_count: u32) -> Self {
         Self {
             guest_os_id: 0.into(),
-            synic: GlobalSynic::new(guest_memory, max_vp_count),
+            synic: GlobalSynic::new(max_vp_count),
         }
     }
 }

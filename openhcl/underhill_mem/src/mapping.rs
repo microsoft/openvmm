@@ -35,10 +35,11 @@ impl<'a> GuestPartitionMemoryView<'a> {
     /// page.
     pub fn new(
         memory_layout: &'a MemoryLayout,
+        memory_type: GuestValidMemoryType,
         valid_bitmap_state: bool,
     ) -> Result<Self, MappingError> {
         let valid_memory =
-            GuestValidMemory::new(memory_layout, valid_bitmap_state).map(Arc::new)?;
+            GuestValidMemory::new(memory_layout, memory_type, valid_bitmap_state).map(Arc::new)?;
         Ok(Self {
             memory_layout,
             valid_memory,
@@ -86,6 +87,18 @@ impl GuestMemoryView {
             view_type,
         }
     }
+}
+
+#[derive(Error, Debug)]
+#[error("the specified page is not mapped")]
+struct NotMapped;
+
+#[derive(Error, Debug)]
+enum BitmapFailure {
+    #[error("the specified page was accessed using the wrong visibility mapping")]
+    IncorrectHostVisibilityAccess,
+    #[error("the specified page access violates VTL 1 protections")]
+    Vtl1ProtectionsViolation,
 }
 
 /// SAFETY: Implementing the `GuestMemoryAccess` contract, including the
@@ -164,6 +177,91 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
                 .map(|bitmap| bitmap.access_bitmap())
         }
     }
+
+    fn page_fault(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+        bitmap_failure: bool,
+    ) -> guestmem::PageFaultAction {
+        let gpn = address / PAGE_SIZE as u64;
+        if !bitmap_failure {
+            guestmem::PageFaultAction::Fail(guestmem::PageFaultError::other(NotMapped {}))
+        } else {
+            let valid_memory = self
+                .memory_mapping
+                .valid_memory
+                .as_ref()
+                .expect("all backings with bitmaps should have a GuestValidMemory");
+            if !valid_memory.check_valid(gpn) {
+                match valid_memory.memory_type() {
+                    GuestValidMemoryType::Shared => {
+                        tracing::warn!(
+                            ?address,
+                            ?len,
+                            ?write,
+                            "tried to access private page using shared mapping"
+                        );
+                        guestmem::PageFaultAction::Fail(guestmem::PageFaultError::new(
+                            guestmem::GuestMemoryErrorKind::NotShared,
+                            BitmapFailure::IncorrectHostVisibilityAccess,
+                        ))
+                    }
+                    GuestValidMemoryType::Encrypted => {
+                        tracing::warn!(
+                            ?address,
+                            ?len,
+                            ?write,
+                            "tried to access shared page using private mapping"
+                        );
+                        guestmem::PageFaultAction::Fail(guestmem::PageFaultError::new(
+                            guestmem::GuestMemoryErrorKind::NotPrivate,
+                            BitmapFailure::IncorrectHostVisibilityAccess,
+                        ))
+                    }
+                }
+            } else {
+                // Currently, only VTL 1 permissions are tracked, so any
+                // invalid accesses here violate VTL 1 protections.
+                if let Some(permission_bitmaps) = &self.memory_mapping.permission_bitmaps {
+                    let check_bitmap = if write {
+                        &permission_bitmaps.write_bitmap
+                    } else {
+                        match self.view_type {
+                            GuestMemoryViewReadType::Read => &permission_bitmaps.read_bitmap,
+                            GuestMemoryViewReadType::KernelExecute => {
+                                &permission_bitmaps.kernel_execute_bitmap
+                            }
+                            GuestMemoryViewReadType::UserExecute => {
+                                &permission_bitmaps.user_execute_bitmap
+                            }
+                        }
+                    };
+
+                    if !check_bitmap.page_state(gpn) {
+                        tracing::warn!(?address, ?len, ?write, ?self.view_type, "VTL 1 permissions violation");
+
+                        return guestmem::PageFaultAction::Fail(guestmem::PageFaultError::new(
+                            guestmem::GuestMemoryErrorKind::VtlProtected,
+                            BitmapFailure::Vtl1ProtectionsViolation,
+                        ));
+                    }
+                }
+
+                // Possible race condition where the bitmaps are in transition
+                // and while the original check failed, the bitmaps now show
+                // valid access to the page. Retry in that situation.
+                guestmem::PageFaultAction::Retry
+            }
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum GuestValidMemoryType {
+    Shared,
+    Encrypted,
 }
 
 /// Partition-wide (cross-vtl) tracking of valid memory that can be used in
@@ -172,10 +270,15 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
 pub struct GuestValidMemory {
     valid_bitmap: GuestMemoryBitmap,
     valid_bitmap_lock: Mutex<()>,
+    memory_type: GuestValidMemoryType,
 }
 
 impl GuestValidMemory {
-    fn new(memory_layout: &MemoryLayout, valid_bitmap_state: bool) -> Result<Self, MappingError> {
+    fn new(
+        memory_layout: &MemoryLayout,
+        memory_type: GuestValidMemoryType,
+        valid_bitmap_state: bool,
+    ) -> Result<Self, MappingError> {
         let valid_bitmap = {
             let mut bitmap = {
                 // Calculate the total size of the address space by looking at the ending region.
@@ -201,6 +304,7 @@ impl GuestValidMemory {
         Ok(GuestValidMemory {
             valid_bitmap,
             valid_bitmap_lock: Default::default(),
+            memory_type,
         })
     }
 
@@ -213,6 +317,11 @@ impl GuestValidMemory {
     /// Check if the given page is valid.
     pub(crate) fn check_valid(&self, gpn: u64) -> bool {
         self.valid_bitmap.page_state(gpn)
+    }
+
+    /// Returns the type of memory tracked by the bitmap
+    pub(crate) fn memory_type(&self) -> GuestValidMemoryType {
+        self.memory_type
     }
 
     fn access_bitmap(&self) -> guestmem::BitmapInfo {

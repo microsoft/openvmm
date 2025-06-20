@@ -4,9 +4,8 @@
 //! Synthetic interrupt controller emulation.
 
 use crate::RequestInterrupt;
+use crate::VtlProtectAccess;
 use crate::pages::OverlayPage;
-use guestmem::GuestMemory;
-use guestmem::GuestMemoryError;
 use hvdef::HV_MESSAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvAllArchRegisterName;
@@ -43,7 +42,6 @@ pub struct ProcessorSynic {
     shared: Arc<RwLock<SharedProcessorState>>,
     #[inspect(debug)]
     vina: HvRegisterVsmVina,
-    guest_memory: GuestMemory,
 }
 
 #[derive(Inspect)]
@@ -124,7 +122,6 @@ impl SharedProcessorState {
 pub struct GlobalSynic {
     #[inspect(iter_by_index)]
     vps: Vec<Arc<RwLock<SharedProcessorState>>>,
-    guest_memory: GuestMemory,
 }
 
 fn sint_interrupt(request: &mut dyn RequestInterrupt, sint: hvdef::HvSynicSint) {
@@ -214,12 +211,11 @@ pub struct SintProxied;
 
 impl GlobalSynic {
     /// Returns a new instance of the synthetic interrupt controller.
-    pub fn new(guest_memory: GuestMemory, max_vp_count: u32) -> Self {
+    pub fn new(max_vp_count: u32) -> Self {
         Self {
             vps: (0..max_vp_count)
                 .map(|_| Arc::new(RwLock::new(SharedProcessorState::new())))
                 .collect(),
-            guest_memory,
         }
     }
 
@@ -269,7 +265,6 @@ impl GlobalSynic {
             timers: array::from_fn(|_| Timer::default()),
             shared,
             vina: HvRegisterVsmVina::new(),
-            guest_memory: self.guest_memory.clone(),
         }
     }
 }
@@ -282,7 +277,6 @@ impl ProcessorSynic {
             timers,
             shared,
             vina,
-            guest_memory: _,
         } = self;
         *sints = SintState::default();
         *timers = array::from_fn(|_| Timer::default());
@@ -345,7 +339,11 @@ impl ProcessorSynic {
     }
 
     /// Sets the event flags page register.
-    pub fn set_siefp(&mut self, v: u64) -> Result<(), GuestMemoryError> {
+    pub fn set_siefp(
+        &mut self,
+        v: u64,
+        prot_access: &mut dyn VtlProtectAccess,
+    ) -> Result<(), MsrError> {
         let siefp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?siefp, "setting siefp");
         let mut shared = self.shared.write();
@@ -354,16 +352,21 @@ impl ProcessorSynic {
         {
             shared
                 .siefp_page
-                .remap(&self.guest_memory, siefp.base_gpn())?;
+                .remap(siefp.base_gpn(), prot_access)
+                .map_err(|_| MsrError::InvalidAccess)?;
         } else if !siefp.enabled() {
-            shared.siefp_page.unmap();
+            shared.siefp_page.unmap(prot_access);
         }
         self.sints.siefp = siefp;
         Ok(())
     }
 
     /// Sets the message page register.
-    pub fn set_simp(&mut self, v: u64) -> Result<(), GuestMemoryError> {
+    pub fn set_simp(
+        &mut self,
+        v: u64,
+        prot_access: &mut dyn VtlProtectAccess,
+    ) -> Result<(), MsrError> {
         let simp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?simp, "setting simp");
         if simp.enabled()
@@ -371,9 +374,10 @@ impl ProcessorSynic {
         {
             self.sints
                 .simp_page
-                .remap(&self.guest_memory, simp.base_gpn())?;
+                .remap(simp.base_gpn(), prot_access)
+                .map_err(|_| MsrError::InvalidAccess)?;
         } else if !simp.enabled() {
-            self.sints.simp_page.unmap();
+            self.sints.simp_page.unmap(prot_access);
         }
         self.sints.simp = simp;
         Ok(())
@@ -514,7 +518,12 @@ impl ProcessorSynic {
     }
 
     /// Writes a synthetic interrupt controller register.
-    pub fn write_reg(&mut self, reg: HvRegisterName, v: HvRegisterValue) -> HvResult<()> {
+    pub fn write_reg(
+        &mut self,
+        reg: HvRegisterName,
+        v: HvRegisterValue,
+        prot_access: &mut dyn VtlProtectAccess,
+    ) -> HvResult<()> {
         match HvAllArchRegisterName(reg.0) {
             HvAllArchRegisterName::VsmVina => {
                 let v = HvRegisterVsmVina::from(v.as_u64());
@@ -524,14 +533,19 @@ impl ProcessorSynic {
                 self.vina = v;
             }
             _ => self
-                .write_msr(Self::reg_to_msr(reg)?, v.as_u64())
+                .write_msr(Self::reg_to_msr(reg)?, v.as_u64(), prot_access)
                 .map_err(Self::msrerr_to_hverr)?,
         }
         Ok(())
     }
 
     /// Writes an x64 MSR.
-    pub fn write_msr(&mut self, msr: u32, v: u64) -> Result<(), MsrError> {
+    pub fn write_msr(
+        &mut self,
+        msr: u32,
+        v: u64,
+        prot_access: &mut dyn VtlProtectAccess,
+    ) -> Result<(), MsrError> {
         match msr {
             msr @ hvdef::HV_X64_MSR_STIMER0_CONFIG..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
                 let offset = msr - hvdef::HV_X64_MSR_STIMER0_CONFIG;
@@ -543,18 +557,27 @@ impl ProcessorSynic {
                     self.set_stimer_config(timer, v);
                 }
             }
-            _ => self.write_nontimer_msr(msr, v)?,
+            _ => self.write_nontimer_msr(msr, v, prot_access)?,
         }
         Ok(())
     }
 
     /// Writes a non-synthetic-timer x64 MSR.
-    pub fn write_nontimer_msr(&mut self, msr: u32, v: u64) -> Result<(), MsrError> {
+    pub fn write_nontimer_msr(
+        &mut self,
+        msr: u32,
+        v: u64,
+        prot_access: &mut dyn VtlProtectAccess,
+    ) -> Result<(), MsrError> {
         match msr {
             hvdef::HV_X64_MSR_SCONTROL => self.set_scontrol(v),
             hvdef::HV_X64_MSR_SVERSION => return Err(MsrError::InvalidAccess),
-            hvdef::HV_X64_MSR_SIEFP => self.set_siefp(v).map_err(|_| MsrError::InvalidAccess)?,
-            hvdef::HV_X64_MSR_SIMP => self.set_simp(v).map_err(|_| MsrError::InvalidAccess)?,
+            hvdef::HV_X64_MSR_SIEFP => self
+                .set_siefp(v, prot_access)
+                .map_err(|_| MsrError::InvalidAccess)?,
+            hvdef::HV_X64_MSR_SIMP => self
+                .set_simp(v, prot_access)
+                .map_err(|_| MsrError::InvalidAccess)?,
             hvdef::HV_X64_MSR_EOM => self.set_eom(v),
             msr @ hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15 => {
                 self.set_sint((msr - hvdef::HV_X64_MSR_SINT0) as usize, v)

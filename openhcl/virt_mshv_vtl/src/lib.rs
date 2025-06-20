@@ -1216,25 +1216,6 @@ impl virt::DeviceBuilder for UhPartition {
     }
 }
 
-impl virt::VtlMemoryProtection for UhPartition {
-    /// TODO CVM GUEST_VSM:
-    ///     GH954: Review alternatives to dynamically allocating from VTL2 RAM
-    ///     (e.g. reserve pages for this purpose), or constrain it for more
-    ///     safety.  The concern is freeing a page but forgetting to reset
-    ///     permissions. See PagesAccessibleToLowerVtl for a sample wrapper.
-    fn modify_vtl_page_setting(&self, pfn: u64, flags: HvMapGpaFlags) -> anyhow::Result<()> {
-        let address = pfn << hvdef::HV_PAGE_SHIFT;
-        self.inner
-            .hcl
-            .modify_vtl_protection_mask(
-                MemoryRange::new(address..address + HV_PAGE_SIZE),
-                flags,
-                HvInputVtl::CURRENT_VTL,
-            )
-            .context("failed to modify VTL page permissions")
-    }
-}
-
 struct UhInterruptTarget {
     partition: Arc<UhPartitionInner>,
     vtl: GuestVtl,
@@ -1420,16 +1401,25 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), (HvError, usize)>;
 
-    /// Changes the overlay for the hypercall code page for a target VTL.
-    fn change_hypercall_overlay(
+    /// Registers a page as an overlay page by first validating it has the
+    /// required permissions, optionally modifying them, then locking them.
+    fn register_overlay_page(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        check_perms: HvMapGpaFlags,
+        new_perms: Option<HvMapGpaFlags>,
+        tlb_access: &mut dyn TlbFlushLockAccess,
+    ) -> Result<(), HvError>;
+
+    /// Unregisters an overlay page, removing its permission lock and restoring
+    /// the previous permissions.
+    fn unregister_overlay_page(
         &self,
         vtl: GuestVtl,
         gpn: u64,
         tlb_access: &mut dyn TlbFlushLockAccess,
-    );
-
-    /// Disables the overlay for the hypercall code page for a target VTL.
-    fn disable_hypercall_overlay(&self, vtl: GuestVtl, tlb_access: &mut dyn TlbFlushLockAccess);
+    ) -> Result<(), HvError>;
 
     /// Checks whether a page is currently registered as an overlay page.
     fn is_overlay_page(&self, vtl: GuestVtl, gpn: u64) -> bool;
@@ -1740,7 +1730,6 @@ impl<'a> UhProtoPartition<'a> {
                 &params,
                 late_params.cvm_params.unwrap(),
                 &caps,
-                late_params.gm.clone(),
                 guest_vsm_available,
             )?)
         } else {
@@ -1754,7 +1743,6 @@ impl<'a> UhProtoPartition<'a> {
             &params,
             BackingSharedParams {
                 cvm_state,
-                guest_memory: late_params.gm.clone(),
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: &cpuid,
                 hcl: &hcl,
@@ -1901,7 +1889,6 @@ impl UhProtoPartition<'_> {
         params: &UhPartitionNewParams<'_>,
         late_params: CvmLateParams,
         caps: &PartitionCapabilities,
-        guest_memory: VtlArray<GuestMemory, 2>,
         guest_vsm_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         use vmcore::reference_time::ReferenceTimeSource;
@@ -1940,7 +1927,6 @@ impl UhProtoPartition<'_> {
             tsc_frequency,
             ref_time,
             is_ref_time_backed_by_tsc: true,
-            guest_memory,
         });
 
         Ok(UhCvmPartitionState {
@@ -2200,8 +2186,6 @@ impl UhPartitionInner {
             //
             // If it is only for CVM, then it should be moved to the
             // CVM-specific cpuid fixups.
-            //
-            // TODO TDX GUEST VSM: Consider changing TLB hypercall flag too
             let mut features = hvdef::HvFeatures::from_cpuid(r);
             if self.backing_shared.guest_vsm_disabled() {
                 features.set_privileges(features.privileges().with_access_vsm(false));

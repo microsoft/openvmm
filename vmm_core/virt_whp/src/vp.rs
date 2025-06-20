@@ -1322,7 +1322,11 @@ mod x86 {
                     }
                     0x40000000..=0x4fffffff => {
                         if let Some(hv) = &mut self.state.vtls[self.state.active_vtl].hv {
-                            hv.msr_write(msr, v, &mut crate::WhpNoVtlProtections)
+                            hv.msr_write(
+                                msr,
+                                v,
+                                &mut crate::WhpNoVtlProtections(&self.vp.partition.gm),
+                            )
                         } else {
                             match msr {
                                 hvdef::HV_X64_MSR_VP_ASSIST_PAGE
