@@ -15,6 +15,7 @@ use flowey::node::prelude::*;
 use flowey_lib_common::download_gh_artifact;
 use flowey_lib_common::gh_workflow_id;
 use flowey_lib_common::git_merge_commit;
+use crate::_jobs::cfg_versions;
 
 flowey_request! {
     pub struct Request {
@@ -75,7 +76,7 @@ impl SimpleFlowNode for Node {
         let merge_commit = ctx.reqv(|v| git_merge_commit::Request {
             repo_path: openvmm_repo_path.clone(),
             merge_commit: v,
-            base_branch: "main".into(),
+            base_branch: cfg_versions::MAIN_BRANCH.into(),
         });
 
         let merge_run = ctx.reqv(|v| gh_workflow_id::Request {

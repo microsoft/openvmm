@@ -5,6 +5,7 @@
 
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use crate::_jobs::cfg_versions;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpenhclKernelPackageKind {
@@ -81,7 +82,7 @@ impl FlowNode for Node {
             let tag = format!(
                 "rolling-lts/hcl-{}/{}",
                 match kind {
-                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "main",
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => cfg_versions::MAIN_BRANCH,
                     OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => "dev",
                 },
                 version

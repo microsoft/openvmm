@@ -55,6 +55,8 @@ doubts.
 
 ## Existing Release Branches
 
+**Note:** Release branch names are centrally configured in `flowey/flowey_lib_hvlite/src/_jobs/cfg_versions.rs` and `repo_support/branch_config.py`. Update these files when new release branches are created.
+
 | Release | Phase | Notes |
 |--------|-------|-------|
 | release/2411 | Servicing | |

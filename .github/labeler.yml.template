@@ -1,0 +1,9 @@
+Guide:
+ - changed-files:
+   - any-glob-to-any-file: 'Guide/**'
+
+release_2411:
+ - base-branch: '{{CURRENT_RELEASE_BRANCH_2411}}'
+
+release_2505:
+ - base-branch: '{{CURRENT_RELEASE_BRANCH_2505}}'

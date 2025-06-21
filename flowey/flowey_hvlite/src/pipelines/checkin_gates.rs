@@ -16,6 +16,7 @@ use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
 use flowey_lib_hvlite::run_cargo_build::common::CommonProfile;
 use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use flowey_lib_hvlite::_jobs::cfg_versions;
 use std::path::PathBuf;
 use target_lexicon::Triple;
 use vmm_test_images::KnownTestArtifacts;
@@ -64,7 +65,7 @@ impl IntoPipeline for CheckinGatesCli {
 
         // configure pr/ci branch triggers and add gh pipeline name
         {
-            let branches = vec!["main".into(), "release/*".into()];
+            let branches = vec![cfg_versions::MAIN_BRANCH.into(), cfg_versions::RELEASE_BRANCH_PATTERN.into()];
             match config {
                 PipelineConfig::Ci => {
                     pipeline
@@ -111,7 +112,7 @@ impl IntoPipeline for CheckinGatesCli {
 
         pipeline.inject_all_jobs_with(move |job| {
             job.dep_on(&cfg_common_params)
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
+                .dep_on(|_| cfg_versions::Request {})
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                         hvlite_repo_source: openvmm_repo_source.clone(),
