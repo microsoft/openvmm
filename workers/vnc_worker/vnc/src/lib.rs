@@ -12,6 +12,7 @@ use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use std::task::Poll;
 use futures::channel::mpsc;
 use futures::future::OptionFuture;
 use pal_async::socket::PolledSocket;
@@ -173,16 +174,34 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             let mut update_ready = false;
             let mut message_type = 0u8;
             let update_recv = &mut self.update_recv;
-            let mut update: OptionFuture<_> = ready_for_update
+            let update: OptionFuture<_> = ready_for_update
                 .then(|| update_recv.select_next_some())
                 .into();
-            futures::select! { // merge semantics
-                _ = update => update_ready = true,
-                r = socket.read(message_type.as_mut_bytes()).fuse() => {
-                    if r? == 0 {
-                        return Ok(())
+            let update_fut = std::pin::pin!(update);
+            let socket_read_fut = std::pin::pin!(socket.read(message_type.as_mut_bytes()));
+
+            let read_result = std::future::poll_fn(|cx| {
+                // Check for update first if we're ready for it
+                if ready_for_update {
+                    if let Poll::Ready(_) = update_fut.as_mut().poll(cx) {
+                        update_ready = true;
+                        return Poll::Ready(None); // No read result
                     }
+                }
+
+                // Check for socket read
+                if let Poll::Ready(r) = socket_read_fut.as_mut().poll(cx) {
                     socket_ready = true;
+                    return Poll::Ready(Some(r));
+                }
+
+                Poll::Pending
+            }).await;
+
+            // Handle socket read result if needed
+            if let Some(r) = read_result {
+                if r? == 0 {
+                    return Ok(());
                 }
             }
 

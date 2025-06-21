@@ -16,6 +16,7 @@ use futures::Future;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
+use futures_concurrency::future::Race;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use guestmem::ranges::PagedRanges;
@@ -710,49 +711,55 @@ impl TestNicDevice {
             .with_timeout(Duration::from_millis(1000))
             .until_cancelled(async {
                 let restore = std::pin::pin!(self.channel.restore(buffer));
-                let mut restore = restore.fuse();
-                loop {
-                    futures::select! {
-                        result = restore => break result,
-                        request = self.offer_input.server_request_recv.select_next_some() => {
-                            match request {
-                                vmbus_channel::bus::ChannelServerRequest::Restore(rpc) => {
-                                    let gpadls = gpadl_map_contents.iter().map(|(gpadl_id, pages)| {
-                                        let pages = pages.clone();
-                                        vmbus_channel::bus::RestoredGpadl {
-                                            request: GpadlRequest {
-                                                id: *gpadl_id,
-                                                count: 1,
-                                                buf: pages.into_buffer(),
+                let mut request_stream = std::pin::pin!(self.offer_input.server_request_recv);
+                
+                std::future::poll_fn(|cx| {
+                    // First check if restore is ready
+                    if let Poll::Ready(result) = restore.as_mut().poll(cx) {
+                        return Poll::Ready(result);
+                    }
+                    
+                    // Then check for incoming requests
+                    while let Poll::Ready(Some(request)) = request_stream.as_mut().poll_next(cx) {
+                        match request {
+                            vmbus_channel::bus::ChannelServerRequest::Restore(rpc) => {
+                                let gpadls = gpadl_map_contents.iter().map(|(gpadl_id, pages)| {
+                                    let pages = pages.clone();
+                                    vmbus_channel::bus::RestoredGpadl {
+                                        request: GpadlRequest {
+                                            id: *gpadl_id,
+                                            count: 1,
+                                            buf: pages.into_buffer(),
+                                        },
+                                        accepted: true,
+                                    }
+                                }).collect::<Vec<vmbus_channel::bus::RestoredGpadl>>();
+                                rpc.handle_sync(|open| {
+                                    guest_to_host_interrupt = open.map(|open| open.guest_to_host_interrupt);
+                                    Ok(vmbus_channel::bus::RestoreResult {
+                                        open_request: Some(OpenRequest {
+                                            open_data: OpenData {
+                                                target_vp: 0,
+                                                ring_offset: 2,
+                                                ring_gpadl_id,
+                                                event_flag: 1,
+                                                connection_id: 1,
+                                                user_data: UserDefinedData::new_zeroed(),
                                             },
-                                            accepted: true,
-                                        }
-                                    }).collect::<Vec<vmbus_channel::bus::RestoredGpadl>>();
-                                    rpc.handle_sync(|open| {
-                                        guest_to_host_interrupt = open.map(|open| open.guest_to_host_interrupt);
-                                        Ok(vmbus_channel::bus::RestoreResult {
-                                            open_request: Some(OpenRequest {
-                                                open_data: OpenData {
-                                                    target_vp: 0,
-                                                    ring_offset: 2,
-                                                    ring_gpadl_id,
-                                                    event_flag: 1,
-                                                    connection_id: 1,
-                                                    user_data: UserDefinedData::new_zeroed(),
-                                                },
-                                                interrupt: host_to_guest_interrupt.clone(),
-                                                use_confidential_external_memory: false,
-                                                use_confidential_ring: false,
-                                            }),
-                                            gpadls,
-                                        })
+                                            interrupt: host_to_guest_interrupt.clone(),
+                                            use_confidential_external_memory: false,
+                                            use_confidential_ring: false,
+                                        }),
+                                        gpadls,
                                     })
-                                }
-                                vmbus_channel::bus::ChannelServerRequest::Revoke(_) => (),
+                                })
                             }
+                            vmbus_channel::bus::ChannelServerRequest::Revoke(_) => (),
                         }
                     }
-                }
+                    
+                    Poll::Pending
+                }).await
             })
             .await
             .unwrap()?;
@@ -3123,17 +3130,15 @@ async fn remove_vf_with_async_messages(
             .expect("completion message");
     };
 
-    let eject_vf = std::pin::pin!(eject_vf);
-    let mut fused_eject_vf = eject_vf.fuse();
-    // Remove VF
-    let update_id = std::pin::pin!(test_vf_state.update_id(None, None));
-    let mut fused_update_id = update_id.fuse();
-    // futures_concurrency::future::try_join seems promising, but unable to get it to work here
-    loop {
-        futures::select! {
-            _ = fused_eject_vf => {}
-            result = fused_update_id => result?,
-            complete => break,
+    // Run both futures and wait for update_id to complete
+    match (eject_vf, test_vf_state.update_id(None, None)).race().await {
+        futures_concurrency::future::RaceResult::First(_) => {
+            // eject_vf completed first, wait for update_id
+            test_vf_state.update_id(None, None).await?;
+        }
+        futures_concurrency::future::RaceResult::Second(result) => {
+            // update_id completed, return its result
+            result?;
         }
     }
     Ok(())

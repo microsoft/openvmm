@@ -21,6 +21,7 @@ use core::mem::size_of;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
+use std::task::Poll;
 use get_protocol::BatteryStatusFlags;
 use get_protocol::BatteryStatusNotification;
 use get_protocol::GspCleartextContent;
@@ -123,6 +124,11 @@ impl From<task_control::Cancelled> for Error {
     fn from(value: task_control::Cancelled) -> Self {
         Error::Cancelled(value)
     }
+}
+
+enum PipeEvent {
+    Input(usize),
+    GuestRequest(GuestEmulationRequest),
 }
 
 /// Settings to enable in the guest.
@@ -474,16 +480,36 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 }
                 GedState::Ready => {
                     let mut message_buf = [0; get_protocol::MAX_MESSAGE_SIZE];
-                    futures::select! { // merge semantics
-                        pipe_input = self.channel.recv(&mut message_buf).fuse() => {
-                            let bytes_read = pipe_input.map_err(Error::Vmbus)?;
+                    let recv_fut = std::pin::pin!(self.channel.recv(&mut message_buf));
+                    let mut guest_request_recv = std::pin::pin!(state.guest_request_recv.select_next_some());
+                    let stop_fut = std::pin::pin!(stop);
+
+                    let result = std::future::poll_fn(|cx| {
+                        // Check for cancellation first
+                        if let Poll::Ready(_) = stop_fut.as_mut().poll(cx) {
+                            return Poll::Ready(Err(Error::Cancelled(task_control::Cancelled)));
+                        }
+
+                        // Check for pipe input
+                        if let Poll::Ready(pipe_result) = recv_fut.as_mut().poll(cx) {
+                            let bytes_read = pipe_result.map_err(Error::Vmbus)?;
+                            return Poll::Ready(Ok(PipeEvent::Input(bytes_read)));
+                        }
+
+                        // Check for guest request
+                        if let Poll::Ready(guest_request) = guest_request_recv.as_mut().poll(cx) {
+                            return Poll::Ready(Ok(PipeEvent::GuestRequest(guest_request)));
+                        }
+
+                        Poll::Pending
+                    }).await?;
+
+                    match result {
+                        PipeEvent::Input(bytes_read) => {
                             self.handle_pipe_input(&message_buf[..bytes_read], state).await?;
                         },
-                        guest_request = state.guest_request_recv.select_next_some() => {
+                        PipeEvent::GuestRequest(guest_request) => {
                             self.handle_guest_request_input(state, guest_request)?;
-                        }
-                        _ = stop.fuse() => {
-                            return Err(Error::Cancelled(task_control::Cancelled));
                         }
                     }
                 }
