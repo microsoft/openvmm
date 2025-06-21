@@ -1053,7 +1053,7 @@ pub fn create_link(
 
     // This matches the public definition of FILE_LINK_INFORMATION in ntifs.h, with the variable length payload field
     // at the end removed. u8 arrays are used for fields to remove the need for padding and repr(packed).
-    #[allow(non_snake_case, non_camel_case_types)]
+    #[expect(non_snake_case, non_camel_case_types)]
     #[repr(C)]
     #[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
     struct FILE_LINK_INFORMATION {
@@ -1170,7 +1170,7 @@ pub fn rename(
     //
     // TODO: Figure out a way of partially automating this process for Windows
     // structures, as a lot of this code is copied from create_link
-    #[allow(non_camel_case_types)]
+    #[expect(non_camel_case_types)]
     #[derive(Default, Clone, Copy)]
     #[repr(C)]
     struct FILE_RENAME_INFORMATION {
@@ -1182,7 +1182,7 @@ pub fn rename(
     }
 
     // Wrapper around FILE_RENAME_INFORMATION to allow compatibility with FileInformationClass trait
-    #[allow(non_camel_case_types)]
+    #[expect(non_camel_case_types)]
     #[derive(Default, Clone, Copy)]
     #[repr(transparent)]
     struct FILE_RENAME_INFORMATION_EX(FILE_RENAME_INFORMATION);

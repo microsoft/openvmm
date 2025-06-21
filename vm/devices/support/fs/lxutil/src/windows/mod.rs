@@ -939,7 +939,7 @@ impl LxVolume {
 
             /// Only the required header for FSCTL_SET_REPARSE_POINT, with data length of zero.
             /// See ntifs.h REPARSE_DATA_BUFFER.
-            #[allow(non_camel_case_types, non_snake_case)]
+            #[expect(non_camel_case_types, non_snake_case)]
             #[repr(C)]
             #[derive(Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
             struct REPARSE_DATA_BUFFER {

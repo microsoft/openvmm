@@ -1725,7 +1725,7 @@ pub mod steps {
             ado_var: Cow<'static, str>,
         }
 
-        #[allow(non_upper_case_globals)]
+        #[expect(non_upper_case_globals)]
         impl AdoRuntimeVar {
             /// `build.SourceBranch`
             ///

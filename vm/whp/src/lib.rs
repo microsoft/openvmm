@@ -1869,9 +1869,9 @@ macro_rules! set_registers {
     ($vp:expr, [$(($name:expr, $value:expr)),+ $(,)? ] $(,)? ) => {
         {
             let names = [$($crate::RegisterName::as_abi(&($name))),+];
-            #[allow(unused_parens)]
+            #[expect(unused_parens)]
             let values = [$($crate::inject_helper(($name), &($value))),+];
-            #[allow(unused_parens)]
+            #[expect(unused_parens)]
             ($vp).set_registers(&names, &values)
         }
     }
@@ -1885,7 +1885,7 @@ macro_rules! get_registers {
             let mut values = [$($crate::get_registers!(@def $name)),+];
             ($vp).get_registers(&names, &mut values).map(|_| {
                 let mut vs = &values[..];
-                #[allow(unused_assignments)]
+                #[expect(unused_assignments)]
                 ($({
                     let n = $name;
                     let v = &vs[0];
