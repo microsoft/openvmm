@@ -1000,17 +1000,29 @@ mod tests {
         // Test long timeout.
         access.set_timeout(access.now().wrapping_add(Duration::from_secs(1000)));
         let mut timer = PolledTimer::new(&driver);
-        futures::select! {
-            _ = timer.sleep(Duration::from_millis(50)).fuse() => {}
-            _ = poll_fn(|cx| access.poll_timeout(cx)).fuse() => panic!("unexpected wait completion"),
+        match (
+            timer.sleep(Duration::from_millis(50)),
+            poll_fn(|cx| access.poll_timeout(cx)),
+        )
+            .race()
+            .await
+        {
+            futures_concurrency::future::RaceResult::First(_) => {}
+            futures_concurrency::future::RaceResult::Second(_) => panic!("unexpected wait completion"),
         }
 
         // Test short timeout.
         let deadline = access.now().wrapping_add(Duration::from_millis(10));
         access.set_timeout(deadline);
-        futures::select! {
-            _ = timer.sleep(Duration::from_millis(1000)).fuse() => panic!("unexpected timeout"),
-            now = poll_fn(|cx| access.poll_timeout(cx)).fuse() => {
+        match (
+            timer.sleep(Duration::from_millis(1000)),
+            poll_fn(|cx| access.poll_timeout(cx)),
+        )
+            .race()
+            .await
+        {
+            futures_concurrency::future::RaceResult::First(_) => panic!("unexpected timeout"),
+            futures_concurrency::future::RaceResult::Second(now) => {
                 assert!(now.is_after(deadline));
             }
         }
@@ -1025,18 +1037,30 @@ mod tests {
         let now = access.now();
         let deadline = now.wrapping_add(Duration::from_millis(2000));
         access.set_timeout(deadline);
-        futures::select! {
-            _ = timer.sleep(Duration::from_millis(30)).fuse() => {
+        match (
+            timer.sleep(Duration::from_millis(30)),
+            poll_fn(|cx| access.poll_timeout(cx)),
+        )
+            .race()
+            .await
+        {
+            futures_concurrency::future::RaceResult::First(_) => {
                 let deadline = now.wrapping_add(Duration::from_millis(50));
                 access.set_timeout(deadline);
-                futures::select! {
-                    _ = timer.sleep(Duration::from_millis(1000)).fuse() => panic!("unexpected timeout"),
-                    now = poll_fn(|cx| access.poll_timeout(cx)).fuse() => {
+                match (
+                    timer.sleep(Duration::from_millis(1000)),
+                    poll_fn(|cx| access.poll_timeout(cx)),
+                )
+                    .race()
+                    .await
+                {
+                    futures_concurrency::future::RaceResult::First(_) => panic!("unexpected timeout"),
+                    futures_concurrency::future::RaceResult::Second(now) => {
                         assert!(now.is_after(deadline));
                     }
                 }
             }
-            _ = poll_fn(|cx| access.poll_timeout(cx)).fuse() => panic!("unexpected wait completion"),
+            futures_concurrency::future::RaceResult::Second(_) => panic!("unexpected wait completion"),
         }
         keeper.stop().await;
     }

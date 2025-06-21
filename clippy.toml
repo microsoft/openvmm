@@ -14,6 +14,8 @@ disallowed-macros = [
     { path = "futures::ready", reason = "use std::task::ready" },
     { path = "tracing::enabled", reason = "https://github.com/tokio-rs/tracing/issues/2519" },
     { path = "openhcl_boot::boot_logger::debug_log", reason = "only use in local debugging, use log! if you want a production log message"},
+    { path = "futures::select", reason = "use futures_concurrency instead for safer async patterns" },
+    { path = "futures::select_biased", reason = "use futures_concurrency instead for safer async patterns" },
 ]
 
 disallowed-methods = [
