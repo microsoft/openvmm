@@ -5,7 +5,6 @@
 #![no_std]
 // UNSAFETY: Manual pointer manipulation and transmutes to/from atomic types.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
 
 use core::mem;
 use core::sync::atomic;
@@ -125,6 +124,8 @@ impl AtomicSliceOps for [AtomicU8] {
         // copy_nonoverlapping technically relies on there being no concurrent
         // mutator of `src`, and there may be here--consider whether calling
         // memcpy directly might be safer.
+        // SAFETY: The preconditions check that dest is valid for writes of len bytes,
+        // and self.as_ptr() is valid for reads of len bytes. The lengths are asserted equal.
         unsafe { core::ptr::copy_nonoverlapping(self.as_ptr().cast::<u8>(), dest, len) }
     }
 
@@ -138,6 +139,8 @@ impl AtomicSliceOps for [AtomicU8] {
         // copy_nonoverlapping technically relies on there being no other
         // concurrent mutator of `dst`, and there may be here--consider whether
         // calling memcpy directly might be safer.
+        // SAFETY: The preconditions check that src is valid for reads of len bytes,
+        // and self.as_ptr() is valid for writes of len bytes. The lengths are asserted equal.
         unsafe { core::ptr::copy_nonoverlapping(src, self.as_ptr() as *mut u8, len) }
     }
 
@@ -146,6 +149,8 @@ impl AtomicSliceOps for [AtomicU8] {
         // technically relies on there being no other concurrent accessor of
         // `dst`, and there may be here--consider whether calling memset might
         // be safer.
+        // SAFETY: self.as_ptr() is valid for writes of self.len() bytes, and the slice
+        // guarantees the pointer and length are valid.
         unsafe { core::ptr::write_bytes(self.as_ptr() as *mut u8, value, self.len()) }
     }
 
