@@ -7,10 +7,10 @@
 #[cfg(feature = "ioperf")]
 pub mod ioperf;
 
-#[cfg(feature = "fuzz_helpers")]
+#[cfg(feature = "test")]
 pub mod test_helpers;
 
-#[cfg(not(feature = "fuzz_helpers"))]
+#[cfg(not(feature = "test"))]
 mod test_helpers;
 
 pub mod resolver;
