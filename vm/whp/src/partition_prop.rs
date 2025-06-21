@@ -16,7 +16,7 @@ pub trait AssociatedType {
 macro_rules! pp {
     ($($(#[$attr:meta])* ($internal_name:ident, $code:ident, $ty:ty),)*) => {
         $(
-            #[allow(dead_code)]
+            #[expect(dead_code)]
             $(#[$attr])*
             pub struct $internal_name;
 

@@ -1165,7 +1165,7 @@ impl UnixSocket {
 /// ErrorKind::WouldBlock.
 // x86_64-unknown-linux-musl targets have a different type defn for
 // `libc::cmsghdr`, hence why these lints are being suppressed.
-#[allow(clippy::needless_update, clippy::useless_conversion)]
+#[expect(clippy::needless_update, clippy::useless_conversion)]
 fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Result<usize> {
     let mut cmsg = CmsgScmRights {
         hdr: libc::cmsghdr {
@@ -1242,7 +1242,7 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
             // BUGBUG: need to loop: possible to leak fds
             return Err(ErrorKind::InvalidData.into());
         }
-        #[allow(clippy::unnecessary_cast)] // cmsg_len is u32 on musl and usize on gnu.
+        #[expect(clippy::unnecessary_cast)] // cmsg_len is u32 on musl and usize on gnu.
         {
             (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>()
         }

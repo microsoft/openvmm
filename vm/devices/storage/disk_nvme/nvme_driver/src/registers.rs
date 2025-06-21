@@ -71,11 +71,11 @@ pub(crate) struct Bar0<T: Inspect>(#[inspect(flatten)] pub T);
 
 macro_rules! reg32 {
     ($get:ident, $set:ident, $reg:ident, $ty:ty) => {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         pub fn $get(&self) -> $ty {
             <$ty>::from(self.0.read_u32(spec::Register::$reg.0 as usize))
         }
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         pub fn $set(&self, v: $ty) {
             self.0.write_u32(spec::Register::$reg.0 as usize, v.into())
         }
@@ -84,11 +84,11 @@ macro_rules! reg32 {
 
 macro_rules! reg64 {
     ($get:ident, $set:ident, $reg:ident, $ty:ty) => {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         pub fn $get(&self) -> $ty {
             <$ty>::from(self.0.read_u64(spec::Register::$reg.0 as usize))
         }
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         pub fn $set(&self, v: $ty) {
             self.0.write_u64(spec::Register::$reg.0 as usize, v.into())
         }

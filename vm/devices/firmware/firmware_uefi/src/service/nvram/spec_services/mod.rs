@@ -134,7 +134,7 @@ impl SupportedAttrs {
 }
 
 /// Helper struct to collect various properties of a parsed authenticated var
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ParsedAuthVar<'a> {
     pub name: &'a Ucs2LeSlice,

@@ -9,7 +9,7 @@ macro_rules! p9_message_struct {
             // 1. Some operations (e.g. Twrite) need it to access additional data.
             // 2. It allows the lifetime 'a to be there unconditionally; otherwise, only some
             //    messages would need it and the macro can't easily filter on that.
-            #[allow(dead_code)]
+            #[expect(dead_code)]
             pub struct $name<'a> {
                 pub reader: super::SliceReader<'a>,
                 $(pub $field_name: p9_message_struct!(@to_type $field_type),)*

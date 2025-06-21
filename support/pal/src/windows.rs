@@ -1051,7 +1051,7 @@ macro_rules! delayload {
             static FNCELL: AtomicUsize = AtomicUsize::new(0);
             let mut fnval = FNCELL.load(Ordering::Relaxed);
             if fnval == 0 {
-                #[allow(unreachable_code)]
+                #[expect(unreachable_code)]
                 match get_module() {
                     Ok(module) => {
                         fnval = GetProcAddress(
@@ -1067,7 +1067,7 @@ macro_rules! delayload {
                 FNCELL.store(fnval, Ordering::Relaxed);
             }
             if fnval == 1 {
-                #[allow(unreachable_code)]
+                #[expect(unreachable_code)]
                 return $crate::delayload!(@result_from_win32(($result), ERROR_PROC_NOT_FOUND));
             }
             type FnType = unsafe extern "stdcall" fn($($params: $types,)*) -> $result;

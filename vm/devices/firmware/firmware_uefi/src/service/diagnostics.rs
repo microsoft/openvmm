@@ -104,7 +104,7 @@ fn phase_to_string(phase: u16) -> &'static str {
 
 /// Errors that occur when parsing entries
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum EntryParseError {
     #[error("Expected: {0:#x}, got: {1:#x}")]
     SignatureMismatch(u32, u32),
@@ -197,7 +197,7 @@ fn parse_entry(buffer_slice: &[u8]) -> Result<EntryData<'_>, EntryParseError> {
 
 /// Errors that occur during processing
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum DiagnosticsError {
     #[error("Failed to parse entry: {0}")]
     EntryParse(#[from] EntryParseError),

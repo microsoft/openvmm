@@ -17,7 +17,7 @@
 // `const`ants instead of runtime methods...
 macro_rules! defn_nvram_var {
     ($varname:ident = ($guid:expr, $name:literal)) => {
-        #[allow(non_snake_case)]
+        #[expect(non_snake_case)]
         pub fn $varname() -> (Guid, &'static ucs2::Ucs2LeSlice) {
             use ucs2::Ucs2LeSlice;
             use zerocopy::IntoBytes;
