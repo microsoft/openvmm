@@ -2176,6 +2176,7 @@ mod tests {
     use expect_test::Expect;
     use expect_test::expect;
     use futures::FutureExt;
+    use futures_concurrency::future::Race;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::Instant;
@@ -2196,10 +2197,7 @@ mod tests {
         let deadline = Instant::now() + timeout;
         let mut result = InspectionBuilder::new(path).depth(depth).inspect(obj);
         let mut timer = PolledTimer::new(driver);
-        futures::select! { // race semantics
-            _ = result.resolve().fuse() => {}
-            _ = timer.sleep_until(deadline).fuse() => {}
-        };
+        let _ = (result.resolve(), timer.sleep_until(deadline)).race().await;
         result.results()
     }
 

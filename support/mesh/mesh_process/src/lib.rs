@@ -14,6 +14,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::executor::block_on;
 use futures_concurrency::future::Race;
+use std::task::Poll;
 use inspect::Inspect;
 use inspect::SensitivityLevel;
 use mesh::MeshPayload;
@@ -514,10 +515,26 @@ impl MeshInner {
         }
 
         loop {
-            let event = futures::select! { // merge semantics
-                request = self.requests.select_next_some() => Event::Request(request),
-                n = self.waiters.select_next_some() => Event::Done(n.unwrap()),
-                complete => break,
+            let requests_fut = std::pin::pin!(self.requests.select_next_some());
+            let waiters_fut = std::pin::pin!(self.waiters.select_next_some());
+
+            let event = std::future::poll_fn(|cx| {
+                // Check for requests
+                if let Poll::Ready(request) = requests_fut.as_mut().poll(cx) {
+                    return Poll::Ready(Some(Event::Request(request)));
+                }
+
+                // Check for completed waiters
+                if let Poll::Ready(n) = waiters_fut.as_mut().poll(cx) {
+                    return Poll::Ready(Some(Event::Done(n.unwrap())));
+                }
+
+                Poll::Pending
+            }).await;
+
+            let event = match event {
+                Some(e) => e,
+                None => break, // This shouldn't happen with the current polling logic
             };
 
             match event {
