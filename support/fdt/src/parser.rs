@@ -772,7 +772,6 @@ mod test {
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
-    use zerocopy::IntoBytes;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum DtProp {
@@ -825,14 +824,7 @@ mod test {
                             .collect::<Vec<_>>();
 
                         new_builder
-                            .add_prop_array(
-                                $ids.proplist,
-                                big_endians
-                                    .iter()
-                                    .map(|v| v.as_bytes())
-                                    .collect::<Vec<_>>()
-                                    .as_slice(),
-                            )
+                            .add_be_array($ids.proplist, &big_endians)
                             .unwrap()
                     }
                 };

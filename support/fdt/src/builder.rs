@@ -303,10 +303,22 @@ impl<'a, T> Builder<'a, Nest<T>> {
         Ok(self)
     }
 
-    /// Adds an array of properties. The caller must ensure these are Big Endian
-    /// slices.
+    /// Adds an array of raw byte properties. Use this for unstructured byte data
+    /// such as entropy or empty arrays. For structured data that needs proper
+    /// byte ordering, prefer `add_be_array`, `add_u32_array`, or `add_u64_array`.
     pub fn add_prop_array(mut self, name: StringId, data_array: &[&[u8]]) -> Result<Self, Error> {
         self.inner.prop_array_iter(name, data_array.iter())?;
+        Ok(self)
+    }
+
+    /// Adds an array of Big Endian typed properties. This method ensures that
+    /// the data is properly byte-ordered for FDT requirements. Use this for
+    /// structured data types that implement `IntoBytes` and `Immutable`.
+    pub fn add_be_array<U>(mut self, name: StringId, data_array: &[U]) -> Result<Self, Error> 
+    where
+        U: IntoBytes + zerocopy::Immutable,
+    {
+        self.inner.prop_array_iter(name, data_array.iter().map(|item| item.as_bytes()))?;
         Ok(self)
     }
 
@@ -425,6 +437,9 @@ impl<'a> Iterator for StringBytesWithZeroIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+    use alloc::vec;
+    use alloc::vec::Vec;
     use super::*;
 
     fn create_entry(address: u64, size: u64) -> spec::ReserveEntry {
@@ -491,5 +506,70 @@ mod tests {
             BubbleSortValidator::validate_memory_reservations(&reservations),
             Ok(())
         );
+    }
+
+    #[test]
+    fn test_add_be_array() {
+        use zerocopy::byteorder::BigEndian;
+        use zerocopy::U32;
+        
+        let mut buf = vec![0; 1024];
+        let mut builder = Builder::new(BuilderConfig {
+            blob_buffer: buf.as_mut_slice(),
+            string_table_cap: 128,
+            memory_reservations: &[],
+        }).unwrap();
+        
+        let prop_name = builder.add_string("test-prop").unwrap();
+        
+        // Test with BE u32 values
+        let be_values = [
+            U32::<BigEndian>::new(0x12345678),
+            U32::<BigEndian>::new(0xDEADBEEF),
+        ];
+        
+        let result = builder
+            .start_node("test")
+            .unwrap()
+            .add_be_array(prop_name, &be_values)
+            .unwrap()
+            .end_node()
+            .unwrap()
+            .build(0);
+            
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_add_be_array_with_u64() {
+        use zerocopy::byteorder::BigEndian;
+        use zerocopy::U64;
+        
+        let mut buf = vec![0; 1024];
+        let mut builder = Builder::new(BuilderConfig {
+            blob_buffer: buf.as_mut_slice(),
+            string_table_cap: 128,
+            memory_reservations: &[],
+        }).unwrap();
+        
+        let prop_name = builder.add_string("test-prop-u64").unwrap();
+        
+        // Test with BE u64 values - similar to what the parser test was doing
+        let native_values = [0x1122334455667788u64, 0xAABBCCDDEEFF0011u64];
+        let be_values: Vec<U64<BigEndian>> = native_values
+            .iter()
+            .map(|v| U64::<BigEndian>::new(*v))
+            .collect();
+        
+        let result = builder
+            .start_node("test")
+            .unwrap()
+            .add_be_array(prop_name, &be_values)
+            .unwrap()
+            .end_node()
+            .unwrap()
+            .build(0);
+            
+        assert!(result.is_ok());
     }
 }
