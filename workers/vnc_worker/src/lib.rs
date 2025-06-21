@@ -8,6 +8,8 @@
 use anyhow::Context;
 use anyhow::anyhow;
 use futures::FutureExt;
+use futures_concurrency::future::Race;
+use std::task::Poll;
 use input_core::InputData;
 use input_core::KeyboardData;
 use input_core::MouseData;
@@ -45,6 +47,11 @@ enum State<T: Listener> {
         abort: mesh::OneshotSender<()>,
     },
     Invalid,
+}
+
+enum VncServerEvent<T> {
+    ServerCompleted(Result<(), anyhow::Error>),
+    RpcReceived(Result<T, mesh::RecvError>),
 }
 
 impl Worker for VncWorker<TcpListener> {
@@ -119,17 +126,37 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
             };
 
             let rpc = loop {
-                let r = futures::select! { // merge semantics
-                    r = rpc_recv.recv().fuse() => r,
-                    r = server.process(&driver).fuse() => break r.map(|_| None)?,
-                };
+                let recv_fut = std::pin::pin!(rpc_recv.recv());
+                let server_fut = std::pin::pin!(server.process(&driver));
+
+                let r = std::future::poll_fn(|cx| {
+                    // Check if server process completes first
+                    if let Poll::Ready(server_result) = server_fut.as_mut().poll(cx) {
+                        return Poll::Ready(VncServerEvent::ServerCompleted(server_result));
+                    }
+
+                    // Check for RPC messages
+                    if let Poll::Ready(rpc_result) = recv_fut.as_mut().poll(cx) {
+                        return Poll::Ready(VncServerEvent::RpcReceived(rpc_result));
+                    }
+
+                    Poll::Pending
+                }).await;
+
                 match r {
-                    Ok(message) => match message {
-                        WorkerRpc::Stop => break None,
-                        WorkerRpc::Inspect(deferred) => deferred.inspect(&server),
-                        WorkerRpc::Restart(response) => break Some(response),
-                    },
-                    Err(_) => break None,
+                    VncServerEvent::ServerCompleted(server_result) => {
+                        break server_result.map(|_| None)?;
+                    }
+                    VncServerEvent::RpcReceived(rpc_result) => {
+                        match rpc_result {
+                            Ok(message) => match message {
+                                WorkerRpc::Stop => break None,
+                                WorkerRpc::Inspect(deferred) => deferred.inspect(&server),
+                                WorkerRpc::Restart(response) => break Some(response),
+                            },
+                            Err(_) => break None,
+                        }
+                    }
                 }
             };
             if let Some(rpc) = rpc {
@@ -196,10 +223,17 @@ impl<T: Listener> Server<T> {
                                 updater.update();
                             }
                         };
-                        let r = futures::select! { // race semantics
-                            r = vncserver.run().fuse() => r.context("VNC error"),
-                            _ = abort_recv.fuse() => Err(anyhow!("VNC connection aborted")),
-                            _ = update_task.fuse() => unreachable!(),
+                        let r = match (
+                            vncserver.run().map_err(|e| anyhow::Error::from(e).context("VNC error")),
+                            abort_recv.map(|_| Err(anyhow!("VNC connection aborted"))),
+                            update_task.map(|_| Err(anyhow!("unreachable update_task completed"))),
+                        )
+                            .race()
+                            .await
+                        {
+                            futures_concurrency::future::RaceResult::First(result) => result,
+                            futures_concurrency::future::RaceResult::Second(result) => result,
+                            futures_concurrency::future::RaceResult::Third(result) => result,
                         };
                         match r {
                             Ok(_) => {

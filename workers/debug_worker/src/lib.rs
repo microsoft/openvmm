@@ -17,6 +17,8 @@ use debug_worker_defs::DEBUGGER_WORKER;
 use debug_worker_defs::DebuggerParameters;
 use futures::AsyncReadExt;
 use futures::FutureExt;
+use futures_concurrency::future::Race;
+use std::task::Poll;
 use gdb::VmProxy;
 use gdb::targets::TargetArch;
 use gdb::targets::VmTarget;
@@ -57,6 +59,11 @@ enum State<T> {
         abort: mesh::OneshotSender<()>,
     },
     Invalid,
+}
+
+enum ServerEvent<T> {
+    ServerCompleted(Result<(), anyhow::Error>),
+    RpcReceived(Result<T, mesh::RecvError>),
 }
 
 trait GdbListener: 'static + Send + Listener + Sized + MeshField {
@@ -113,49 +120,67 @@ where
             };
 
             loop {
-                let r = futures::select! { // merge semantics
-                    r = rpc_recv.recv().fuse() => r,
-                    r = server.process(&driver).fuse() => {
-                        r?;
-                        return Ok(())
-                    },
-                };
-                match r {
-                    Ok(message) => match message {
-                        WorkerRpc::Stop => return Ok(()),
-                        WorkerRpc::Inspect(deferred) => deferred.inspect(&mut server),
-                        WorkerRpc::Restart(rpc) => {
-                            let vm_proxy = match server.state {
-                                State::Listening { vm_proxy } => vm_proxy,
-                                State::Connected { task, abort, .. } => {
-                                    drop(abort);
-                                    task.await
-                                }
-                                State::Invalid => unreachable!(),
-                            };
+                let recv_fut = std::pin::pin!(rpc_recv.recv());
+                let server_fut = std::pin::pin!(server.process(&driver));
 
-                            let state = {
-                                let (req_chan, vp_count) = vm_proxy.into_params();
-                                DebuggerParameters {
-                                    listener: server.listener.into_inner(),
-                                    req_chan,
-                                    vp_count,
-                                    target_arch: match server.architecture {
-                                        Architecture::X86_64 => {
-                                            debug_worker_defs::TargetArch::X86_64
+                let r = std::future::poll_fn(|cx| {
+                    // Check if server process completes first
+                    if let Poll::Ready(server_result) = server_fut.as_mut().poll(cx) {
+                        return Poll::Ready(ServerEvent::ServerCompleted(server_result));
+                    }
+
+                    // Check for RPC messages
+                    if let Poll::Ready(rpc_result) = recv_fut.as_mut().poll(cx) {
+                        return Poll::Ready(ServerEvent::RpcReceived(rpc_result));
+                    }
+
+                    Poll::Pending
+                }).await;
+
+                match r {
+                    ServerEvent::ServerCompleted(server_result) => {
+                        server_result?;
+                        return Ok(());
+                    }
+                    ServerEvent::RpcReceived(rpc_result) => {
+                        match rpc_result {
+                            Ok(message) => match message {
+                                WorkerRpc::Stop => return Ok(()),
+                                WorkerRpc::Inspect(deferred) => deferred.inspect(&mut server),
+                                WorkerRpc::Restart(rpc) => {
+                                    let vm_proxy = match server.state {
+                                        State::Listening { vm_proxy } => vm_proxy,
+                                        State::Connected { task, abort, .. } => {
+                                            drop(abort);
+                                            task.await
                                         }
-                                        Architecture::I8086 => debug_worker_defs::TargetArch::I8086,
-                                        Architecture::Aarch64 => {
-                                            debug_worker_defs::TargetArch::Aarch64
+                                        State::Invalid => unreachable!(),
+                                    };
+
+                                    let state = {
+                                        let (req_chan, vp_count) = vm_proxy.into_params();
+                                        DebuggerParameters {
+                                            listener: server.listener.into_inner(),
+                                            req_chan,
+                                            vp_count,
+                                            target_arch: match server.architecture {
+                                                Architecture::X86_64 => {
+                                                    debug_worker_defs::TargetArch::X86_64
+                                                }
+                                                Architecture::I8086 => debug_worker_defs::TargetArch::I8086,
+                                                Architecture::Aarch64 => {
+                                                    debug_worker_defs::TargetArch::Aarch64
+                                                }
+                                            },
                                         }
-                                    },
+                                    };
+                                    rpc.complete(Ok(state));
+                                    return Ok(());
                                 }
-                            };
-                            rpc.complete(Ok(state));
-                            return Ok(());
+                            }
                         }
-                    },
-                    Err(_) => return Ok(()),
+                        Err(_) => return Ok(()),
+                    }
                 }
             }
         })
@@ -232,9 +257,9 @@ where
                             }
                         };
 
-                        let res = futures::select! { // race semantics
-                            gdb_res = state_machine_fut.fuse() => Some(gdb_res),
-                            _ = abort_recv.fuse() => None,
+                        let res = match (state_machine_fut, abort_recv).race().await {
+                            futures_concurrency::future::RaceResult::First(gdb_res) => Some(gdb_res),
+                            futures_concurrency::future::RaceResult::Second(_) => None,
                         };
 
                         match res {
@@ -336,12 +361,21 @@ async fn run_state_machine<T: TargetArch>(
                 let mut b = [0];
                 let incoming_data = gdb.borrow_conn().0.read_exact(&mut b);
 
-                let event = futures::select! { // race semantics
-                    r = stop_chan.fuse() => {
-                        let reason = r.map_err(|e| GdbStubError::TargetError(e.into()))?;
-                        Event::HaltReason(reason)
+                let event = match (
+                    async {
+                        let reason = stop_chan.await.map_err(|e| GdbStubError::TargetError(e.into()))?;
+                        Ok(Event::HaltReason(reason))
                     },
-                    _ = incoming_data.fuse() => Event::IncomingData(b[0]),
+                    async {
+                        incoming_data.await;
+                        Ok(Event::IncomingData(b[0]))
+                    },
+                )
+                    .race()
+                    .await
+                {
+                    futures_concurrency::future::RaceResult::First(result) => result?,
+                    futures_concurrency::future::RaceResult::Second(result) => result?,
                 };
 
                 match event {
