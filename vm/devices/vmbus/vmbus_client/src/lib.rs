@@ -15,6 +15,7 @@ use futures::StreamExt;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
 use futures_concurrency::future::Race;
+use std::task::Poll;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::rpc::FailableRpc;
