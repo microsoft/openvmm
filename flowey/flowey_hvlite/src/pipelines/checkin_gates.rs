@@ -29,6 +29,12 @@ enum PipelineConfig {
     /// The key difference between the CI and PR pipelines is whether things are
     /// being built in `release` mode.
     Ci,
+    /// Run release mode checks on PRs when manually triggered.
+    ///
+    /// This provides the same thorough checking as CI but can be triggered
+    /// on-demand for specific PRs when maintainers want to ensure release
+    /// mode behavior is correct.
+    ReleasePr,
 }
 
 /// A unified pipeline defining all checkin gates required to land a commit in
@@ -58,6 +64,7 @@ impl IntoPipeline for CheckinGatesCli {
         let release = match config {
             PipelineConfig::Ci => true,
             PipelineConfig::Pr => false,
+            PipelineConfig::ReleasePr => true,
         };
 
         let mut pipeline = Pipeline::new();
@@ -81,6 +88,11 @@ impl IntoPipeline for CheckinGatesCli {
                             ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("[flowey] OpenVMM PR");
+                }
+                PipelineConfig::ReleasePr => {
+                    // No automatic triggers - this workflow will only be triggered manually
+                    // via workflow_dispatch or through the bot command workflow
+                    pipeline.gh_set_name("[flowey] OpenVMM Release PR Gates");
                 }
             }
         }
