@@ -1,0 +1,93 @@
+name: Queue Release Gates Bot
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  queue-release-gates:
+    name: Queue Release Gates
+    runs-on: ubuntu-latest
+    # Only run on pull request comments and when the comment contains the trigger command
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates')
+    steps:
+      - name: Check if commenter is a maintainer
+        id: check-maintainer
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: collaborators } = await github.rest.repos.listCollaborators({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              affiliation: 'direct'
+            });
+            
+            const maintainerLogins = collaborators
+              .filter(collaborator => collaborator.permissions.maintain || collaborator.permissions.admin)
+              .map(collaborator => collaborator.login);
+            
+            const isMaintainer = maintainerLogins.includes(context.actor);
+            
+            if (!isMaintainer) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `@${context.actor} You need maintainer permissions to queue release gates.`
+              });
+              return false;
+            }
+            
+            return true;
+          result-encoding: string
+
+      - name: Get PR information
+        id: pr-info
+        if: steps.check-maintainer.outputs.result == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            
+            return {
+              head_sha: pr.head.sha,
+              head_ref: pr.head.ref
+            };
+
+      - name: Trigger release gates workflow
+        if: steps.check-maintainer.outputs.result == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prInfo = ${{ steps.pr-info.outputs.result }};
+            
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'openvmm-release-pr.yaml',
+                ref: prInfo.head_ref
+              });
+              
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `🚀 Release gates have been queued for commit ${prInfo.head_sha}. Check the [Actions tab](https://github.com/${context.repo.owner}/${context.repo.repo}/actions) for progress.`
+              });
+            } catch (error) {
+              console.error('Error triggering workflow:', error);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `❌ Failed to queue release gates: ${error.message}`
+              });
+            }
