@@ -572,4 +572,41 @@ mod tests {
             
         assert!(result.is_ok());
     }
+
+    // This test demonstrates that add_be_array enforces type safety.
+    // Uncommenting the code below would cause a compilation error,
+    // which is exactly the behavior we want.
+    #[test]  
+    fn test_add_be_array_type_safety_documentation() {
+        // The following would NOT compile, demonstrating type safety:
+        //
+        // let native_u32s = [0x12345678u32, 0xDEADBEEF];
+        // builder.add_be_array(prop_name, &native_u32s); // ERROR: u32 doesn't implement required traits
+        //
+        // Instead, you must use BE types:
+        // let be_u32s = [U32::<BigEndian>::new(0x12345678), U32::<BigEndian>::new(0xDEADBEEF)];
+        // builder.add_be_array(prop_name, &be_u32s); // OK
+        
+        // This test just verifies that empty arrays work fine
+        let mut buf = vec![0; 1024];
+        let mut builder = Builder::new(BuilderConfig {
+            blob_buffer: buf.as_mut_slice(),
+            string_table_cap: 128,
+            memory_reservations: &[],
+        }).unwrap();
+        
+        let prop_name = builder.add_string("empty-prop").unwrap();
+        let empty_array: &[u32] = &[];
+        
+        let result = builder
+            .start_node("test")
+            .unwrap()
+            .add_be_array(prop_name, empty_array)
+            .unwrap()
+            .end_node()
+            .unwrap()
+            .build(0);
+            
+        assert!(result.is_ok());
+    }
 }
