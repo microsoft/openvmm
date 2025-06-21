@@ -1,3 +1,4 @@
+---
 name: Queue Release Gates Bot
 on:
   issue_comment:
@@ -11,26 +12,31 @@ jobs:
   queue-release-gates:
     name: Queue Release Gates
     runs-on: ubuntu-latest
-    # Only run on pull request comments and when the comment contains the trigger command
-    if: github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates')
+    # Only run on pull request comments and when comment contains trigger
+    if: >
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/queue-release-gates')
     steps:
       - name: Check if commenter is a maintainer
         id: check-maintainer
         uses: actions/github-script@v7
         with:
           script: |
-            const { data: collaborators } = await github.rest.repos.listCollaborators({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              affiliation: 'direct'
-            });
-            
+            const { data: collaborators } = await github.rest.repos
+              .listCollaborators({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                affiliation: 'direct'
+              });
+
             const maintainerLogins = collaborators
-              .filter(collaborator => collaborator.permissions.maintain || collaborator.permissions.admin)
+              .filter(collaborator =>
+                collaborator.permissions.maintain ||
+                collaborator.permissions.admin)
               .map(collaborator => collaborator.login);
-            
+
             const isMaintainer = maintainerLogins.includes(context.actor);
-            
+
             if (!isMaintainer) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -40,7 +46,7 @@ jobs:
               });
               return false;
             }
-            
+
             return true;
           result-encoding: string
 
@@ -55,7 +61,7 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number
             });
-            
+
             return {
               head_sha: pr.head.sha,
               head_ref: pr.head.ref
@@ -67,7 +73,7 @@ jobs:
         with:
           script: |
             const prInfo = ${{ steps.pr-info.outputs.result }};
-            
+
             try {
               await github.rest.actions.createWorkflowDispatch({
                 owner: context.repo.owner,
@@ -75,7 +81,7 @@ jobs:
                 workflow_id: 'openvmm-release-pr.yaml',
                 ref: prInfo.head_ref
               });
-              
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
