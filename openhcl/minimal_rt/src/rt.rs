@@ -4,9 +4,13 @@
 //! Architecture-independent runtime support.
 
 #[cfg(minimal_rt)]
-#[expect(clippy::missing_safety_doc)]
 mod instead_of_builtins {
     /// Implementation cribbed from compiler_builtins.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `dest` and `src` are valid pointers to at least `n` bytes,
+    /// and that the regions may overlap but the caller manages proper ordering.
     #[inline(always)]
     unsafe fn copy_backward_bytes(mut dest: *mut u8, mut src: *const u8, n: usize) {
         // SAFETY: The caller guarantees that the pointers and length are correct.
@@ -25,6 +29,11 @@ mod instead_of_builtins {
     }
 
     /// Implementation cribbed from compiler_builtins.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `dest` and `src` are valid pointers to at least `n` bytes.
+    /// The regions may overlap. This function is safe to use as a libc replacement.
     // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
     // there is no libc for this to conflict with.
     #[unsafe(no_mangle)]
@@ -50,6 +59,11 @@ mod instead_of_builtins {
     /// This implementation is cribbed from compiler_builtins. It would be nice to
     /// use those implementation for all the above functions, but those require
     /// nightly as these are not yet stabilized.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `s1` and `s2` are valid pointers to at least `n` bytes.
+    /// This function is safe to use as a libc replacement.
     // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
     // there is no libc for this to conflict with.
     #[unsafe(no_mangle)]

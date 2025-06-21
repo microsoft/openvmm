@@ -6,7 +6,6 @@
 // UNSAFETY: Manual pointer manipulation, dealing with mmap, and a signal handler.
 #![expect(unsafe_code)]
 #![expect(missing_docs)]
-#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod alloc;
 mod trycopy_windows_arm64;
@@ -38,6 +37,7 @@ pub fn initialize_try_copy() {
     #[cfg(unix)]
     {
         static INIT: std::sync::Once = std::sync::Once::new();
+        // SAFETY: install_signal_handlers is safe to call, and will only be called once due to the Once.
         INIT.call_once(|| unsafe {
             let err = install_signal_handlers();
             if err != 0 {
@@ -186,7 +186,9 @@ impl MemoryError {
 /// This routine is safe to use if the memory pointed to by `src` or `dest` is
 /// being concurrently mutated.
 ///
-/// WARNING: This routine should only be used when you know that `src` and
+/// # Safety
+///
+/// This routine should only be used when you know that `src` and
 /// `dest` are valid, reserved addresses but you do not know if they are mapped
 /// with the appropriate protection. For example, this routine is useful if
 /// `dest` is a sparse mapping where some pages are mapped with
@@ -225,7 +227,9 @@ pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(
 /// This routine is safe to use if the memory pointed to by `dest` is being
 /// concurrently mutated.
 ///
-/// WARNING: This routine should only be used when you know that `dest` is
+/// # Safety
+///
+/// This routine should only be used when you know that `dest` is
 /// valid, reserved addresses but you do not know if they are mapped with the
 /// appropriate protection. For example, this routine is useful if `dest` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
@@ -267,7 +271,9 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
 /// This routine is safe to use if the memory pointed to by `dest` is being
 /// concurrently mutated.
 ///
-/// WARNING: This routine should only be used when you know that `dest` is
+/// # Safety
+///
+/// This routine should only be used when you know that `dest` is
 /// valid, reserved addresses but you do not know if they are mapped with the
 /// appropriate protection. For example, this routine is useful if `dest` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
@@ -336,7 +342,9 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
 /// This routine is safe to use if the memory pointed to by `dest` is being
 /// concurrently mutated.
 ///
-/// WARNING: This routine should only be used when you know that `dest` is
+/// # Safety
+///
+/// This routine should only be used when you know that `dest` is
 /// valid, reserved addresses but you do not know if they are mapped with the
 /// appropriate protection. For example, this routine is useful if `dest` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
@@ -403,7 +411,9 @@ pub unsafe fn try_compare_exchange_ref<
 /// This routine is safe to use if the memory pointed to by `src` is being
 /// concurrently mutated.
 ///
-/// WARNING: This routine should only be used when you know that `src` is
+/// # Safety
+///
+/// This routine should only be used when you know that `src` is
 /// valid, reserved addresses but you do not know if they are mapped with the
 /// appropriate protection. For example, this routine is useful if `src` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
@@ -450,7 +460,9 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
 /// This routine is safe to use if the memory pointed to by `dest` is being
 /// concurrently mutated.
 ///
-/// WARNING: This routine should only be used when you know that `dest` is
+/// # Safety
+///
+/// This routine should only be used when you know that `dest` is
 /// valid, reserved addresses but you do not know if they are mapped with the
 /// appropriate protection. For example, this routine is useful if `dest` is a
 /// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
