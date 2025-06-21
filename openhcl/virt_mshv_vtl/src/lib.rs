@@ -1387,7 +1387,8 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// hardware-isolated VMs, they apply just to the given vtl.
     fn change_default_vtl_protections(
         &self,
-        vtl: GuestVtl,
+        calling_vtl: Vtl,
+        target_vtl: GuestVtl,
         protections: HvMapGpaFlags,
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError>;
@@ -1395,7 +1396,8 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes the vtl protections on a range of guest memory.
     fn change_vtl_protections(
         &self,
-        vtl: GuestVtl,
+        calling_vtl: Vtl,
+        target_vtl: GuestVtl,
         gpns: &[u64],
         protections: HvMapGpaFlags,
         tlb_access: &mut dyn TlbFlushLockAccess,

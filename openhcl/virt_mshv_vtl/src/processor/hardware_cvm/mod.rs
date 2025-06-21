@@ -1210,6 +1210,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
         // 1 can set the protections, the permissions should be changed for VTL
         // 0.
         protector.change_vtl_protections(
+            self.intercepted_vtl.into(),
             GuestVtl::Vtl0,
             gpa_pages,
             map_flags,
@@ -1291,6 +1292,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
         // Grant VTL 1 access to lower VTL memory
         tracing::debug!("Granting VTL 1 access to lower VTL memory");
         protector.change_default_vtl_protections(
+            Vtl::Vtl2,
             GuestVtl::Vtl1,
             hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
             &mut self.vp.tlb_flush_lock_access(),
@@ -1764,6 +1766,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         protector.change_default_vtl_protections(
+            vtl.into(),
             targeted_vtl,
             protections,
             &mut self.tlb_flush_lock_access(),
