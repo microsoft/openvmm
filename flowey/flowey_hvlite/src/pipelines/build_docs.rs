@@ -10,6 +10,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use flowey_lib_hvlite::_jobs::cfg_versions;
 
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {
@@ -42,7 +43,7 @@ impl IntoPipeline for BuildDocsCli {
 
         // The docs pipeline should only run on the main branch.
         {
-            let branches = vec!["main".into()];
+            let branches = vec![cfg_versions::MAIN_BRANCH.into()];
             match config {
                 PipelineConfig::Ci => {
                     pipeline
@@ -89,7 +90,7 @@ impl IntoPipeline for BuildDocsCli {
 
         pipeline.inject_all_jobs_with(move |job| {
             job.dep_on(&cfg_common_params)
-                .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
+                .dep_on(|_| cfg_versions::Request {})
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                         hvlite_repo_source: openvmm_repo_source.clone(),

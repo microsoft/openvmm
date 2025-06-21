@@ -4,8 +4,13 @@
 import click
 import time
 import sys
+import os
 from azure.devops.connection import Connection
 from msrest.authentication import BasicAuthentication
+
+# Add repo_support to path to import branch_config
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'repo_support'))
+import branch_config
 
 @click.command()
 @click.argument('pipeline_id', required=True)
@@ -19,7 +24,7 @@ def main(pipeline_id: str, token: str, organization: str, project: str, debug: b
 
         build = {
                     'definition': {'id': pipeline_id},
-                    'templateParameters': {'branchToMirror': 'main', 'branchToUpdateSubmodule': 'main', 'updateSubmodule': 'true'},
+                    'templateParameters': {'branchToMirror': branch_config.MAIN_BRANCH, 'branchToUpdateSubmodule': branch_config.MAIN_BRANCH, 'updateSubmodule': 'true'},
                 }
         build = client.queue_build(build, project=project)
         print(f'Scheduled build: {build.id}. Url: {organization}/{project}/_build/results?buildId={build.id}&view=results', file=sys.stderr)

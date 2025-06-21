@@ -34,6 +34,12 @@ pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.9.10";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 
+// Branch name constants for consistent reference across pipelines and configurations
+pub const MAIN_BRANCH: &str = "main";
+pub const RELEASE_BRANCH_PATTERN: &str = "release/*";
+pub const CURRENT_RELEASE_BRANCH_2411: &str = "release/2411";
+pub const CURRENT_RELEASE_BRANCH_2505: &str = "release/2505";
+
 flowey_request! {
     pub struct Request {}
 }
