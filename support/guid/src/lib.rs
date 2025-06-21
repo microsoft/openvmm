@@ -266,24 +266,24 @@ mod windows {
     #![cfg(windows)]
     use super::Guid;
 
-    impl From<winapi::shared::guiddef::GUID> for Guid {
-        fn from(guid: winapi::shared::guiddef::GUID) -> Self {
+    impl From<windows::core::GUID> for Guid {
+        fn from(guid: windows::core::GUID) -> Self {
             Self {
-                data1: guid.Data1,
-                data2: guid.Data2,
-                data3: guid.Data3,
-                data4: guid.Data4,
+                data1: guid.data1,
+                data2: guid.data2,
+                data3: guid.data3,
+                data4: guid.data4,
             }
         }
     }
 
-    impl From<Guid> for winapi::shared::guiddef::GUID {
+    impl From<Guid> for windows::core::GUID {
         fn from(guid: Guid) -> Self {
             Self {
-                Data1: guid.data1,
-                Data2: guid.data2,
-                Data3: guid.data3,
-                Data4: guid.data4,
+                data1: guid.data1,
+                data2: guid.data2,
+                data3: guid.data3,
+                data4: guid.data4,
             }
         }
     }
