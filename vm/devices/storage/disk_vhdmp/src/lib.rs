@@ -34,10 +34,10 @@ mod virtdisk {
     )]
 
     use std::os::windows::prelude::*;
-    use winapi::shared::guiddef::GUID;
-    use winapi::shared::minwindef::BOOL;
-    use winapi::um::minwinbase::OVERLAPPED;
-    use winapi::um::winnt::SECURITY_DESCRIPTOR;
+    use windows::core::GUID;
+    use windows::Win32::Foundation::BOOL;
+    use windows::Win32::System::IO::OVERLAPPED;
+    use windows::Win32::Security::SECURITY_DESCRIPTOR;
 
     #[repr(C)]
     #[derive(Copy, Clone)]

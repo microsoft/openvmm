@@ -18,14 +18,14 @@ use std::os::windows::prelude::*;
 use std::ptr::NonNull;
 use std::ptr::null_mut;
 use std::time::Duration;
-use winapi::shared::ntstatus::STATUS_TIMEOUT;
+use windows::Win32::Foundation::STATUS_TIMEOUT;
 
 mod ntlpcapi {
     #![allow(non_snake_case, dead_code, clippy::upper_case_acronyms)]
 
     pub use ntapi::ntlpcapi::*;
-    use winapi::shared::ntdef::HANDLE;
-    use winapi::shared::ntdef::NTSTATUS;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Foundation::NTSTATUS;
 
     // These constants are not defined in ntapi.
     pub const LPC_CONNECTION_REPLY: u32 = 11;

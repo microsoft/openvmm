@@ -1374,7 +1374,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.12",
  "vm_resource",
- "winapi",
+ "windows 0.59.0",
 ]
 
 [[package]]
