@@ -2694,7 +2694,6 @@ dependencies = [
  "inspect",
  "mesh_protobuf",
  "thiserror 2.0.12",
- "winapi",
  "windows 0.59.0",
  "windows-sys 0.59.0",
  "zerocopy 0.8.24",
@@ -6805,7 +6804,7 @@ dependencies = [
  "crossterm",
  "libc",
  "thiserror 2.0.12",
- "winapi",
+ "windows 0.59.0",
 ]
 
 [[package]]
