@@ -627,6 +627,9 @@ unsafe_op_in_unsafe_fn = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
 
 [workspace.lints.clippy]
+# Currently set to allow since there are 270+ expect attributes without reasons.
+# This can be changed to "warn" in a future effort to add reasons to all suppressions.
+allow_attributes_without_reason = "allow"
 dbg_macro = "warn"
 debug_assert_with_mut_call = "warn"
 filter_map_next = "warn"
