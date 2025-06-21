@@ -54,7 +54,6 @@ pub unsafe trait StructMetadata {
 }
 
 #[cfg(test)]
-#[expect(clippy::undocumented_unsafe_blocks)]
 mod tests {
     use super::StructMetadata;
     use super::TableEncoder;
@@ -77,6 +76,8 @@ mod tests {
         x: &'a str,
     }
 
+    // SAFETY: The metadata correctly describes the Foo struct with the correct field numbers,
+    // offsets, and field count.
     unsafe impl<'a> StructMetadata for Foo<'a> {
         const NUMBERS: &'static [u32] = &[1, 2, 3];
         const OFFSETS: &'static [usize] = &[
@@ -85,6 +86,7 @@ mod tests {
             offset_of!(Foo<'a>, x),
         ];
     }
+    // SAFETY: The encoders correspond to the correct types and offsets for the Foo struct.
     unsafe impl<'a, R> StructEncodeMetadata<R> for Foo<'a> {
         const ENCODERS: &'static [ErasedEncoderEntry] = &[
             <VarintField as FieldEncode<u32, R>>::ENTRY.erase(),
@@ -92,6 +94,7 @@ mod tests {
             <StringField as FieldEncode<&'a str, R>>::ENTRY.erase(),
         ];
     }
+    // SAFETY: The decoders correspond to the correct types and offsets for the Foo struct.
     unsafe impl<'de, R> StructDecodeMetadata<'de, R> for Foo<'de> {
         const DECODERS: &'static [ErasedDecoderEntry] = &[
             <VarintField as FieldDecode<'de, u32, R>>::ENTRY.erase(),

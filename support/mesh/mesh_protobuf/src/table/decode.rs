@@ -3,8 +3,6 @@
 
 //! Table-based decoding.
 
-#![expect(clippy::missing_safety_doc)]
-
 use super::StructMetadata;
 use super::TableEncoder;
 use crate::Error;
