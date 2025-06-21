@@ -8,6 +8,7 @@
 use anyhow::Context;
 use futures::future::FutureExt;
 use futures_concurrency::future::RaceOk;
+use std::task::Poll;
 use mesh_remote::PointToPointMesh;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
@@ -75,19 +76,34 @@ impl Agent {
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut tasks = FuturesUnordered::new();
         loop {
-            futures::select! {
-                req = self.request_recv.recv().fuse() => {
+            let recv_fut = std::pin::pin!(self.request_recv.recv());
+            let tasks_next_fut = std::pin::pin!(tasks.next());
+
+            let should_break = std::future::poll_fn(|cx| {
+                // Check for new requests first
+                if let Poll::Ready(req) = recv_fut.as_mut().poll(cx) {
                     match req {
                         Ok(req) => {
                             tasks.push(handle_request(&self.driver, req, self.diag_file_send.clone()));
+                            return Poll::Ready(false); // Continue the loop
                         },
                         Err(e) => {
                             tracing::info!(?e, "request channel closed, shutting down");
-                            break;
+                            return Poll::Ready(true); // Break the loop
                         }
                     }
                 }
-                _ = tasks.next() => {}
+
+                // Check for completed tasks
+                if let Poll::Ready(_) = tasks_next_fut.as_mut().poll(cx) {
+                    return Poll::Ready(false); // Continue the loop
+                }
+
+                Poll::Pending
+            }).await;
+
+            if should_break {
+                break;
             }
         }
         self.watch_send.send(());
