@@ -89,9 +89,9 @@ pub struct AdminState {
     admin_sq: SubmissionQueue,
     admin_cq: CompletionQueue,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
-    io_sqs: Vec<IoSq>,
+    io_sqs: Vec<Option<IoSq>>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
-    io_cqs: Vec<Option<IoCq>>,
+    io_cqs: Vec<IoCq>,
     #[inspect(skip)]
     sq_delete_response: mesh::Receiver<u16>,
     #[inspect(iter_by_index)]
@@ -117,21 +117,16 @@ struct ChangedNamespace {
 
 #[derive(Inspect)]
 struct IoSq {
-    #[inspect(flatten)]
-    task: TaskControl<IoHandler, IoState>,
-    driver: VmTaskDriver,
     pending_delete_cid: Option<u16>,
-    cqid: Option<u16>,
+    sq_idx: usize,
+    cqid: u16,
 }
 
 #[derive(Inspect)]
 struct IoCq {
-    #[inspect(hex)]
-    gpa: u64,
-    #[inspect(hex)]
-    len: u16,
-    interrupt: Option<u16>,
-    sqid: Option<u16>,
+    driver: VmTaskDriver,
+    #[inspect(flatten)]
+    task: TaskControl<IoHandler, IoState>,
 }
 
 impl AdminState {
@@ -156,22 +151,17 @@ impl AdminState {
             })
             .collect();
 
+        let admin_cq = CompletionQueue::new(
+            handler.config.doorbells.clone(),
+            1,
+            handler.config.mem.clone(),
+            Some(handler.config.interrupts[0].clone()),
+            acq,
+            acqs,
+        );
         let mut state = Self {
-            admin_sq: SubmissionQueue::new(
-                handler.config.doorbells.clone(),
-                0,
-                handler.config.mem.clone(),
-                asq,
-                asqs,
-            ),
-            admin_cq: CompletionQueue::new(
-                handler.config.doorbells.clone(),
-                1,
-                handler.config.mem.clone(),
-                Some(handler.config.interrupts[0].clone()),
-                acq,
-                acqs,
-            ),
+            admin_sq: SubmissionQueue::new(&admin_cq, 0, asq, asqs),
+            admin_cq,
             io_sqs: Vec::new(),
             io_cqs: Vec::new(),
             sq_delete_response: Default::default(),
@@ -190,11 +180,11 @@ impl AdminState {
     ///
     /// This future may be dropped and reissued.
     pub async fn drain(&mut self) {
-        for sq in &mut self.io_sqs {
-            sq.task.stop().await;
-            if let Some(state) = sq.task.state_mut() {
+        for cq in &mut self.io_cqs {
+            cq.task.stop().await;
+            if let Some(state) = cq.task.state_mut() {
                 state.drain().await;
-                sq.task.remove();
+                cq.task.remove();
             }
         }
     }
@@ -202,32 +192,28 @@ impl AdminState {
     /// Caller must ensure that no queues are active.
     fn set_max_queues(&mut self, handler: &AdminHandler, num_sqs: u16, num_cqs: u16) {
         self.io_sqs.truncate(num_sqs.into());
-        self.io_sqs
-            .extend((self.io_sqs.len()..num_sqs.into()).map(|i| {
-                // This driver doesn't explicitly do any IO (that's handled by
-                // the storage backends), so the target VP doesn't matter. But
-                // set it anyway as a hint to the backend that this queue needs
-                // its own thread.
-                let driver = handler
-                    .config
-                    .driver_source
-                    .builder()
-                    .run_on_target(false)
-                    .target_vp(0)
-                    .build("nvme");
+        self.io_sqs.resize_with(num_sqs.into(), || None);
+        self.io_cqs.resize_with(num_cqs.into(), || {
+            // This driver doesn't explicitly do any IO (that's handled by
+            // the storage backends), so the target VP doesn't matter. But
+            // set it anyway as a hint to the backend that this queue needs
+            // its own thread.
+            let driver = handler
+                .config
+                .driver_source
+                .builder()
+                .run_on_target(false)
+                .target_vp(0)
+                .build("nvme");
 
-                IoSq {
-                    task: TaskControl::new(IoHandler::new(
-                        handler.config.mem.clone(),
-                        i as u16 + 1,
-                        self.sq_delete_response.sender(),
-                    )),
-                    pending_delete_cid: None,
-                    cqid: None,
-                    driver,
-                }
-            }));
-        self.io_cqs.resize_with(num_cqs.into(), || None);
+            IoCq {
+                driver,
+                task: TaskControl::new(IoHandler::new(
+                    handler.config.mem.clone(),
+                    self.sq_delete_response.sender(),
+                )),
+            }
+        });
     }
 
     fn add_changed_namespace(&mut self, nsid: u32) {
@@ -243,13 +229,13 @@ impl AdminState {
         namespace: &Arc<Namespace>,
     ) {
         // Update the IO queues.
-        for sq in &mut self.io_sqs {
-            let io_running = sq.task.stop().await;
-            if let Some(io_state) = sq.task.state_mut() {
+        for cq in &mut self.io_cqs {
+            let io_running = cq.task.stop().await;
+            if let Some(io_state) = cq.task.state_mut() {
                 io_state.add_namespace(nsid, namespace.clone());
             }
             if io_running {
-                sq.task.start();
+                cq.task.start();
             }
         }
 
@@ -271,13 +257,13 @@ impl AdminState {
 
     async fn remove_namespace(&mut self, nsid: u32) {
         // Update the IO queues.
-        for sq in &mut self.io_sqs {
-            let io_running = sq.task.stop().await;
-            if let Some(io_state) = sq.task.state_mut() {
+        for cq in &mut self.io_cqs {
+            let io_running = cq.task.stop().await;
+            if let Some(io_state) = cq.task.state_mut() {
                 io_state.remove_namespace(nsid);
             }
             if io_running {
-                sq.task.start();
+                cq.task.start();
             }
         }
 
@@ -471,12 +457,15 @@ impl AdminHandler {
                         .map(|()| Some(Default::default())),
                     spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE => self
                         .handle_create_io_submission_queue(state, &command)
+                        .await
                         .map(|()| Some(Default::default())),
                     spec::AdminOpcode::DELETE_IO_COMPLETION_QUEUE => self
                         .handle_delete_io_completion_queue(state, &command)
+                        .await
                         .map(|()| Some(Default::default())),
                     spec::AdminOpcode::DELETE_IO_SUBMISSION_QUEUE => {
                         self.handle_delete_io_submission_queue(state, &command)
+                            .await
                     }
                     spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST => {
                         self.handle_asynchronous_event_request(state, &command)
@@ -515,19 +504,8 @@ impl AdminHandler {
                 (command.cdw0.cid(), result)
             }
             Event::SqDeleteComplete(sqid) => {
-                let sq = &mut state.io_sqs[sqid as usize - 1];
-                let cid = sq.pending_delete_cid.take().unwrap();
-                let cqid = sq.cqid.take().unwrap();
-                sq.task.stop().await;
-                sq.task.remove();
-                assert_eq!(
-                    state.io_cqs[cqid as usize - 1]
-                        .as_mut()
-                        .unwrap()
-                        .sqid
-                        .take(),
-                    Some(sqid)
-                );
+                let sq = state.io_sqs[sqid as usize - 1].take().unwrap();
+                let cid = sq.pending_delete_cid.unwrap();
                 (cid, Default::default())
             }
             Event::NamespaceChange(nsid) => {
@@ -656,8 +634,8 @@ impl AdminHandler {
         // Note that we don't support non-zero cdw10.save, since ONCS.save == 0.
         match spec::Feature(cdw10.fid()) {
             spec::Feature::NUMBER_OF_QUEUES => {
-                if state.io_sqs.iter().any(|sq| sq.task.has_state())
-                    || state.io_cqs.iter().any(|cq| cq.is_some())
+                if state.io_sqs.iter().any(|sq| sq.is_some())
+                    || state.io_cqs.iter().any(|cq| cq.task.has_state())
                 {
                     return Err(spec::Status::COMMAND_SEQUENCE_ERROR.into());
                 }
@@ -741,7 +719,7 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
         }
         let cqid = cdw10.qid();
-        let io_queue = state
+        let cq = state
             .io_cqs
             .get_mut((cqid as usize).wrapping_sub(1))
             .ok_or(InvalidQueueIdentifier {
@@ -749,7 +727,7 @@ impl AdminHandler {
                 reason: InvalidQueueIdentifierReason::Oob,
             })?;
 
-        if io_queue.is_some() {
+        if cq.task.has_state() {
             return Err(InvalidQueueIdentifier {
                 qid: cqid,
                 reason: InvalidQueueIdentifierReason::InUse,
@@ -772,16 +750,25 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_QUEUE_SIZE.into());
         }
 
-        *io_queue = Some(IoCq {
+        let interrupt = interrupt.map(|iv| self.config.interrupts[iv as usize].clone());
+        let namespaces = self.namespaces.clone();
+
+        let state = IoState::new(
+            &self.config.mem,
+            self.config.doorbells.clone(),
             gpa,
-            len: len0 + 1,
+            len0 + 1,
+            cqid,
             interrupt,
-            sqid: None,
-        });
+            namespaces,
+        );
+
+        cq.task.insert(&cq.driver, "nvme-io", state);
+        cq.task.start();
         Ok(())
     }
 
-    fn handle_create_io_submission_queue(
+    async fn handle_create_io_submission_queue(
         &mut self,
         state: &mut AdminState,
         command: &spec::Command,
@@ -800,7 +787,7 @@ impl AdminHandler {
                 reason: InvalidQueueIdentifierReason::Oob,
             })?;
 
-        if sq.task.has_state() {
+        if sq.is_some() {
             return Err(InvalidQueueIdentifier {
                 qid: sqid,
                 reason: InvalidQueueIdentifierReason::InUse,
@@ -812,14 +799,9 @@ impl AdminHandler {
         let cq = state
             .io_cqs
             .get_mut((cqid as usize).wrapping_sub(1))
-            .and_then(|x| x.as_mut())
             .ok_or(spec::Status::COMPLETION_QUEUE_INVALID)?;
 
-        // Don't allow sharing completion queues. This isn't spec compliant
-        // but it simplifies the device significantly and OSes don't seem to
-        // mind. This could be fixed by having a slower path when completion
-        // queues are shared.
-        if cq.sqid.is_some() {
+        if !cq.task.has_state() {
             return Err(spec::Status::COMPLETION_QUEUE_INVALID.into());
         }
 
@@ -829,33 +811,24 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_QUEUE_SIZE.into());
         }
 
-        cq.sqid = Some(sqid);
-        sq.cqid = Some(cqid);
-        let interrupt = cq
-            .interrupt
-            .map(|iv| self.config.interrupts[iv as usize].clone());
-        let namespaces = self.namespaces.clone();
-        let sq_len = len0 + 1;
-        let cq_gpa = cq.gpa;
-        let cq_len = cq.len;
-        let state = IoState::new(
-            &self.config.mem,
-            self.config.doorbells.clone(),
-            sq_gpa,
-            sq_len,
-            sqid,
-            cq_gpa,
-            cq_len,
+        let running = cq.task.stop().await;
+        let sq_idx = cq
+            .task
+            .state_mut()
+            .unwrap()
+            .create_sq(sqid, sq_gpa, len0 + 1);
+        if running {
+            cq.task.start();
+        }
+        *sq = Some(IoSq {
+            sq_idx,
+            pending_delete_cid: None,
             cqid,
-            interrupt,
-            namespaces,
-        );
-        sq.task.insert(&sq.driver, "nvme-io", state);
-        sq.task.start();
+        });
         Ok(())
     }
 
-    fn handle_delete_io_submission_queue(
+    async fn handle_delete_io_submission_queue(
         &self,
         state: &mut AdminState,
         command: &spec::Command,
@@ -868,9 +841,14 @@ impl AdminHandler {
             .ok_or(InvalidQueueIdentifier {
                 qid: sqid,
                 reason: InvalidQueueIdentifierReason::Oob,
+            })?
+            .as_mut()
+            .ok_or(InvalidQueueIdentifier {
+                qid: sqid,
+                reason: InvalidQueueIdentifierReason::NotInUse,
             })?;
 
-        if !sq.task.has_state() || sq.pending_delete_cid.is_some() {
+        if sq.pending_delete_cid.is_some() {
             return Err(InvalidQueueIdentifier {
                 qid: sqid,
                 reason: InvalidQueueIdentifierReason::NotInUse,
@@ -878,13 +856,17 @@ impl AdminHandler {
             .into());
         }
 
-        sq.task
-            .update_with(|sq, sq_state| sq.delete(sq_state.unwrap()));
+        let cq = &mut state.io_cqs[(sq.cqid as usize).wrapping_sub(1)];
+        let running = cq.task.stop().await;
+        cq.task.state_mut().unwrap().delete_sq(sq.sq_idx);
+        if running {
+            cq.task.start();
+        }
         sq.pending_delete_cid = Some(command.cdw0.cid());
         Ok(None)
     }
 
-    fn handle_delete_io_completion_queue(
+    async fn handle_delete_io_completion_queue(
         &self,
         state: &mut AdminState,
         command: &spec::Command,
@@ -899,15 +881,21 @@ impl AdminHandler {
                 reason: InvalidQueueIdentifierReason::Oob,
             })?;
 
-        let active_cq = cq.as_ref().ok_or(InvalidQueueIdentifier {
-            qid: cqid,
-            reason: InvalidQueueIdentifierReason::NotInUse,
-        })?;
-        if active_cq.sqid.is_some() {
+        if !cq.task.has_state() {
+            return Err(InvalidQueueIdentifier {
+                qid: cqid,
+                reason: InvalidQueueIdentifierReason::NotInUse,
+            }
+            .into());
+        }
+        let running = cq.task.stop().await;
+        if cq.task.state().unwrap().has_sqs() {
+            if running {
+                cq.task.start();
+            }
             return Err(spec::Status::INVALID_QUEUE_DELETION.into());
         }
-
-        *cq = None;
+        cq.task.remove();
         Ok(())
     }
 
