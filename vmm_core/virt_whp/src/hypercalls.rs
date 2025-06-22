@@ -1822,7 +1822,12 @@ mod aarch64 {
                 gp_dirty: false,
                 _dummy: &(),
             };
-            let mut this = Self { vp, bus, registers, pending_hypercall: None };
+            let mut this = Self {
+                vp,
+                bus,
+                registers,
+                pending_hypercall: None,
+            };
 
             let mut handler =
                 hv1_hypercall::Arm64RegisterIo::new(&mut this, false, message.immediate == 0);
