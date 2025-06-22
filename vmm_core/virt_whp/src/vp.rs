@@ -1811,7 +1811,7 @@ mod aarch64 {
                             self,
                             dev,
                             message_ref(message),
-                        );
+                        ).await;
                         &mut self.state.exits.hypercall
                     }
                     HvMessageType::HvMessageTypeArm64ResetIntercept => {
