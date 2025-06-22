@@ -1,9 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Client driver for the Hyper-V Virtual Machine Bus (VmBus).
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod driver;
+pub mod filter;
 mod hvsock;
 pub mod saved_state;
 
