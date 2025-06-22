@@ -319,7 +319,8 @@ impl SecurityDescriptor {
 
 #[link(
     name = "api-ms-win-security-base-private-l1-1-1.dll",
-    kind = "raw-dylib"
+    kind = "raw-dylib",
+    modifiers = "+verbatim"
 )]
 unsafe extern "C" {
     fn CreateAppContainerToken(
