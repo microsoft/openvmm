@@ -1809,7 +1809,7 @@ mod aarch64 {
             todo!("TODO-aarch64")
         }
 
-        pub fn handle(
+        pub async fn handle(
             vp: &'a mut WhpProcessor<'b>,
             bus: &'a T,
             message: &hvdef::HvArm64HypercallInterceptMessage,
