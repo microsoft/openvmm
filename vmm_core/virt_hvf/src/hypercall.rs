@@ -4,7 +4,6 @@
 //! Hypercall exit handling.
 
 use crate::HvfProcessor;
-use crate::abi;
 use hv1_hypercall::Arm64RegisterState;
 use hv1_hypercall::GetVpRegisters;
 use hv1_hypercall::HvRepResult;
@@ -41,24 +40,21 @@ impl<'a, 'b, T: CpuIo> HvfHypercallHandler<'a, 'b, T> {
 
 impl<T: CpuIo> Arm64RegisterState for HvfHypercallHandler<'_, '_, T> {
     fn pc(&mut self) -> u64 {
-        self.vp.vcpu.reg(abi::HvReg::PC).expect("cannot fail")
+        self.vp.vcpu.pc()
     }
 
     fn set_pc(&mut self, pc: u64) {
         tracing::trace!(pc, "set pc");
-        self.vp
-            .vcpu
-            .set_reg(abi::HvReg::PC, pc)
-            .expect("cannot fail");
+        self.vp.vcpu.set_pc(pc)
     }
 
     fn x(&mut self, n: u8) -> u64 {
-        self.vp.vcpu.gp(n).expect("cannot fail")
+        self.vp.vcpu.gp(n)
     }
 
     fn set_x(&mut self, n: u8, v: u64) {
         tracing::trace!(n, v, "set x");
-        self.vp.vcpu.set_gp(n, v).expect("cannot fail")
+        self.vp.vcpu.set_gp(n, v)
     }
 }
 

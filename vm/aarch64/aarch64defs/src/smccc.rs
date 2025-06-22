@@ -1,12 +1,28 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Definitions for the Power State Coordination Interface (PSCI).
+//! Definitions for the SMC Calling Convention (SMCCC), including PSCI.
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 
-pub const PSCI: u8 = 0x4;
+open_enum! {
+    pub enum Service: u8 {
+        SMCCC = 0,
+        PSCI = 4,
+        VENDOR_HYP = 6,
+    }
+}
+
+impl Service {
+    const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    const fn into_bits(self) -> u8 {
+        self.0
+    }
+}
 
 #[bitfield(u32)]
 #[derive(PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -16,13 +32,16 @@ pub struct FastCall {
     #[bits(7)]
     pub mbz: u8,
     #[bits(6)]
-    pub service: u8,
+    pub service: Service,
     pub smc64: bool,
     pub fast: bool,
 }
 
 open_enum! {
-    pub enum PsciCall: FastCall {
+    pub enum SmcCall: FastCall {
+        SMCCC_VERSION = FastCall(0x8000_0000),
+        SMCCC_ARCH_FEATURES = FastCall(0x8000_0001),
+
         PSCI_VERSION = FastCall(0x8400_0000),
         CPU_SUSPEND = FastCall(0x8400_0001),
         CPU_OFF = FastCall(0x8400_0002),
@@ -45,6 +64,8 @@ open_enum! {
         PSCI_SET_SUSPEND_MODE = FastCall(0x8400_000f),
         PSCI_STAT_RESIDENCY = FastCall(0x8400_0010),
         PSCI_STAT_COUNT = FastCall(0x8400_0011),
+
+        VENDOR_HYP_UID = FastCall(0x8600_FF01),
     }
 }
 
