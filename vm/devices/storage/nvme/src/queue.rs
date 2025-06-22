@@ -35,17 +35,21 @@ impl DoorbellMemory {
         }
     }
 
+    /// Update the memory used to store the doorbell values. This is used to
+    /// support shadow doorbells, where the values are directly in guest memory.
     pub fn replace_mem(
         &mut self,
         mem: GuestMemory,
         offset: u64,
         event_idx_offset: Option<u64>,
     ) -> Result<(), GuestMemoryError> {
+        // Copy the current doorbell values into the new memory.
         let len = self.wakers.len() << DOORBELL_STRIDE_BITS;
         let mut current = vec![0; len];
         self.mem.read_at(self.offset, &mut current)?;
         mem.write_at(offset, &current)?;
         if let Some(event_idx_offset) = event_idx_offset {
+            // Catch eventidx up to the current doorbell value.
             mem.write_at(event_idx_offset, &current)?;
         }
         self.mem = mem;
@@ -89,11 +93,11 @@ impl DoorbellMemory {
             .ok()
     }
 
-    fn has_evt_idx(&self) -> bool {
+    fn has_event_idx(&self) -> bool {
         self.event_idx_offset.is_some()
     }
 
-    fn write_evt_idx(&self, db_id: u16, val: u32) {
+    fn write_event_idx(&self, db_id: u16, val: u32) {
         if let Err(err) = self.mem.write_plain(
             self.event_idx_offset
                 .unwrap()
@@ -102,12 +106,12 @@ impl DoorbellMemory {
         ) {
             tracelimit::error_ratelimited!(
                 error = &err as &dyn std::error::Error,
-                "failed to read evt_idx memory"
+                "failed to read event_idx memory"
             )
         }
     }
 
-    fn read_evt_idx(&self, db_id: u16) -> Option<u32> {
+    fn read_event_idx(&self, db_id: u16) -> Option<u32> {
         assert!((db_id as usize) < self.wakers.len());
         self.mem
             .read_plain(
@@ -130,7 +134,7 @@ struct DoorbellState {
     #[inspect(hex)]
     current: u32,
     #[inspect(hex)]
-    evt_idx: u32,
+    event_idx: u32,
     db_id: u16,
     db_offset: u64,
     #[inspect(hex)]
@@ -146,10 +150,10 @@ impl DoorbellState {
         resp.field_with("doorbell", || {
             self.doorbells.read().read(self.db_id).map(inspect::AsHex)
         })
-        .field_with("shadow_evt_idx", || {
+        .field_with("shadow_event_idx", || {
             self.doorbells
                 .read()
-                .read_evt_idx(self.db_id)
+                .read_event_idx(self.db_id)
                 .map(inspect::AsHex)
         });
     }
@@ -157,7 +161,7 @@ impl DoorbellState {
     fn new(doorbells: Arc<RwLock<DoorbellMemory>>, db_id: u16, len: u32) -> Self {
         Self {
             current: 0,
-            evt_idx: 0,
+            event_idx: 0,
             len,
             doorbells,
             registered_waker: None,
@@ -166,40 +170,41 @@ impl DoorbellState {
         }
     }
 
-    fn probe_inner(&mut self, update_evt_idx: bool) -> u32 {
+    fn probe_inner(&mut self, update_event_idx: bool) -> Option<u32> {
         // Try to read forward.
         let doorbell = self.doorbells.read();
-        let val = doorbell.read(self.db_id).unwrap_or(self.current);
-        if val != self.current || self.evt_idx == val || !update_evt_idx {
-            return val;
+        let val = doorbell.read(self.db_id)?;
+        if val != self.current {
+            return Some(val);
         }
 
-        if !doorbell.has_evt_idx() {
-            return val;
+        if self.event_idx == val || !update_event_idx || !doorbell.has_event_idx() {
+            return None;
         }
 
         // Update the event index so that the guest will write the real doorbell
         // on the next update.
-        doorbell.write_evt_idx(self.db_id, val);
-        self.evt_idx = val;
+        doorbell.write_event_idx(self.db_id, val);
+        self.event_idx = val;
 
         // Double check after a memory barrier.
         std::sync::atomic::fence(Ordering::SeqCst);
-        doorbell.read(self.db_id).unwrap_or(self.current)
+        let val = doorbell.read(self.db_id)?;
+        if val != self.current { Some(val) } else { None }
     }
 
-    fn probe(&mut self, update_evt_idx: bool) -> Result<bool, QueueError> {
+    fn probe(&mut self, update_event_idx: bool) -> Result<bool, QueueError> {
         // If shadow doorbells are in use, use that instead of what was written to the doorbell
         // register, as it may be more current.
-        let val = self.probe_inner(update_evt_idx);
-        if val >= self.len {
-            return Err(QueueError::InvalidDoorbell { val, len: self.len });
+        if let Some(val) = self.probe_inner(update_event_idx) {
+            if val >= self.len {
+                return Err(QueueError::InvalidDoorbell { val, len: self.len });
+            }
+            self.current = val;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        if val == self.current {
-            return Ok(false);
-        }
-        self.current = val;
-        Ok(true)
     }
 
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), QueueError>> {
