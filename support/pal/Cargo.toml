@@ -11,9 +11,6 @@ rust-version.workspace = true
 ci = []
 sandbox_tests = []
 
-[build-dependencies]
-win_import_lib.workspace = true
-
 [dependencies]
 getrandom.workspace = true
 

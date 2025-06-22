@@ -5160,7 +5160,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "widestring",
- "win_import_lib",
  "winapi",
  "windows 0.59.0",
 ]
@@ -9245,7 +9244,6 @@ name = "whp"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "win_import_lib",
  "winapi",
 ]
 
@@ -9289,14 +9287,6 @@ dependencies = [
  "tracing-subscriber",
  "win_etw_metadata",
  "win_etw_provider",
-]
-
-[[package]]
-name = "win_import_lib"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "cc",
 ]
 
 [[package]]

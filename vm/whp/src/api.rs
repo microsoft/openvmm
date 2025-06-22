@@ -72,7 +72,7 @@ macro_rules! delayload {
 pub const WHV_E_UNKNOWN_CAPABILITY: HRESULT = 0x80370300u32 as HRESULT;
 pub const WHV_E_INSUFFICIENT_BUFFER: HRESULT = 0x80370301u32 as HRESULT;
 
-#[link(name = "WinHvPlatform")]
+#[link(name = "WinHvPlatform.dll", kind = "raw-dylib")]
 unsafe extern "stdcall" {
     pub fn WHvGetCapability(
         CapabilityCode: WHV_CAPABILITY_CODE,
