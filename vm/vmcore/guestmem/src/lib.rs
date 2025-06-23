@@ -518,6 +518,24 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     fn base_iova(&self) -> Option<u64> {
         None
     }
+
+    /// Locks the specified guest physical pages (GPNs), preventing any mapping
+    /// or permission changes until they are unlocked.
+    ///
+    /// Returns a boolean indicating whether unlocking is required.
+    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        let _ = gpns;
+        Ok(false)
+    }
+
+    /// Unlocks the specified guest physical pages (GPNs) after exclusive access.
+    ///
+    /// Panics if asked to unlock a page that was not previously locked. The
+    /// caller must ensure that the given slice has the same ordering as the
+    /// one passed to `lock_gpns`.
+    fn unlock_gpns(&self, gpns: &[u64]) {
+        let _ = gpns;
+    }
 }
 
 trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
@@ -564,6 +582,10 @@ trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
     ) -> Result<bool, GuestMemoryBackingError>;
 
     fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError>;
+
+    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError>;
+
+    fn unlock_gpns(&self, gpns: &[u64]);
 }
 
 impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
@@ -621,6 +643,14 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
 
     fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError> {
         self.expose_va(address, len)
+    }
+
+    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.lock_gpns(gpns)
+    }
+
+    fn unlock_gpns(&self, gpns: &[u64]) {
+        self.unlock_gpns(gpns)
     }
 }
 
@@ -992,6 +1022,22 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for MultiRegionGuestMemoryAccess
                 kind: err.kind,
                 err: err.err,
             }),
+        }
+    }
+
+    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        let mut ret = false;
+        for gpn in gpns {
+            let (region, offset_in_region) = self.region(gpn * PAGE_SIZE64, PAGE_SIZE64)?;
+            ret |= region.lock_gpns(&[offset_in_region / PAGE_SIZE64])?;
+        }
+        Ok(ret)
+    }
+
+    fn unlock_gpns(&self, gpns: &[u64]) {
+        for gpn in gpns {
+            let (region, offset_in_region) = self.region(gpn * PAGE_SIZE64, PAGE_SIZE64).unwrap();
+            region.unlock_gpns(&[offset_in_region / PAGE_SIZE64]);
         }
     }
 }
@@ -1882,9 +1928,11 @@ impl GuestMemory {
                 let page = self.probe_page_for_lock(with_kernel_access, gpa)?;
                 pages.push(PagePtr(page));
             }
+            let store_gpns = self.inner.imp.lock_gpns(gpns)?;
             Ok(LockedPages {
                 pages: pages.into_boxed_slice(),
-                _mem: self.inner.clone(),
+                gpns: store_gpns.then(|| gpns.to_vec().into_boxed_slice()),
+                mem: self.inner.clone(),
             })
         })
     }
@@ -2055,8 +2103,10 @@ impl GuestMemory {
                     self.dangerous_access_pre_locked_memory(range.start, range.len() as usize),
                 );
             }
+            let store_gpns = self.inner.imp.lock_gpns(paged_range.gpns())?;
             Ok(LockedRangeImpl {
-                _mem: self.inner.clone(),
+                mem: self.inner.clone(),
+                gpns: store_gpns.then(|| paged_range.gpns().to_vec().into_boxed_slice()),
                 inner: locked_range,
             })
         })
@@ -2122,8 +2172,17 @@ impl GuestMemoryInner {
 #[derive(Clone)]
 pub struct LockedPages {
     pages: Box<[PagePtr]>,
+    gpns: Option<Box<[u64]>>,
     // maintain a reference to the backing memory
-    _mem: Arc<GuestMemoryInner>,
+    mem: Arc<GuestMemoryInner>,
+}
+
+impl Drop for LockedPages {
+    fn drop(&mut self) {
+        if let Some(gpns) = &self.gpns {
+            self.mem.imp.unlock_gpns(gpns);
+        }
+    }
 }
 
 impl Debug for LockedPages {
@@ -2169,13 +2228,11 @@ impl<'a> AsRef<[&'a Page]> for &'a LockedPages {
 pub trait LockedRange {
     /// Adds a sub-range to this range.
     fn push_sub_range(&mut self, sub_range: &[AtomicU8]);
-
-    /// Removes and returns the last sub range.
-    fn pop_sub_range(&mut self) -> Option<(*const AtomicU8, usize)>;
 }
 
 pub struct LockedRangeImpl<T: LockedRange> {
-    _mem: Arc<GuestMemoryInner>,
+    mem: Arc<GuestMemoryInner>,
+    gpns: Option<Box<[u64]>>,
     inner: T,
 }
 
@@ -2187,11 +2244,9 @@ impl<T: LockedRange> LockedRangeImpl<T> {
 
 impl<T: LockedRange> Drop for LockedRangeImpl<T> {
     fn drop(&mut self) {
-        // FUTURE: Remove and unlock all sub ranges. This is currently
-        // not necessary yet as only fully mapped VMs are supported.
-        // while let Some(sub_range) = self.inner.pop_sub_range() {
-        //     call self._mem to unlock the sub-range, individually or in batches
-        // }
+        if let Some(gpns) = &self.gpns {
+            self.mem.imp.unlock_gpns(gpns);
+        }
     }
 }
 

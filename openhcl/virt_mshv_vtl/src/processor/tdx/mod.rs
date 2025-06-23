@@ -816,7 +816,6 @@ impl hv1_emulator::VtlProtectAccess for UntrustedSynicVtlProts<'_> {
     }
 
     fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), HvError> {
-        // TODO: call unlock once its added
         Ok(())
     }
 }
