@@ -77,6 +77,7 @@ use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
+use tracing::Instrument;
 use vmbus_async::queue;
 use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
@@ -3708,7 +3709,11 @@ impl Coordinator {
                 stop.until_stopped(self.stop_workers()).await?;
                 // The queue restart operation is not restartable, so do not
                 // poll on `stop` here.
-                if let Err(err) = self.restart_queues(state).await {
+                if let Err(err) = self
+                    .restart_queues(state)
+                    .instrument(tracing::info_span!("netvsp_restart_queues"))
+                    .await
+                {
                     tracing::error!(
                         error = &err as &dyn std::error::Error,
                         "failed to restart queues"
@@ -4270,6 +4275,7 @@ impl Coordinator {
             c_state
                 .endpoint
                 .get_queues(queue_config, rss.as_ref(), &mut queues)
+                .instrument(tracing::info_span!("netvsp_get_queues"))
                 .await
                 .map_err(WorkerError::Endpoint)?;
 
