@@ -485,10 +485,10 @@ impl PetriVmConfigHyperV {
                 Some(0),
                 Some(controller_number),
             )?;
-        }
 
-        // Enable/Disable VMBusRedirect if requested in config
-        vm.set_vmbus_redirect(self.vmbus_redirect)?;
+            // Enable/Disable VMBusRedirect if requested in config
+            vm.set_vmbus_redirect(self.vmbus_redirect)?;
+        }
 
         let mut log_tasks = Vec::new();
 
