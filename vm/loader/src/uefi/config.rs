@@ -139,6 +139,7 @@ blobtypes! {
     NvdimmCount,
     VpciInstanceFilter,
     Gic,
+    AziHsmGuid,
 }
 
 /// Config structure types.
@@ -184,6 +185,7 @@ pub enum BlobStructureType {
     Ssdt = 0x25,
     Hmat = 0x26,
     Iort = 0x27,
+    AziHsmGuid = 0x28,
 }
 
 //
@@ -413,6 +415,10 @@ pub struct Gic {
     pub gic_distributor_base: u64,
     pub gic_redistributors_base: u64,
 }
+
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct AziHsmGuid(pub Guid);
 
 #[cfg(test)]
 mod tests {
