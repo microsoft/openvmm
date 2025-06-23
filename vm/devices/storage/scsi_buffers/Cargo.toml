@@ -13,6 +13,7 @@ safeatomic.workspace = true
 smallvec.workspace = true
 zerocopy.workspace = true
 event-listener.workspace = true
+sparse_mmap.workspace = true
 
 [lints]
 workspace = true

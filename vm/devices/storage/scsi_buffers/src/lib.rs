@@ -204,6 +204,37 @@ impl LockedRange for LockedIoVecs {
     }
 }
 
+/// An implementation of [`MemoryWrite`] that provides semantically
+/// correct results. Specifically, it always returns a `ReadOnly` error
+/// when attempting to write to it.
+pub struct PermissionedMemoryWriter<'a> {
+    range: PagedRange<'a>,
+    guest_memory: &'a GuestMemory,
+    is_write: bool,
+}
+
+impl MemoryWrite for PermissionedMemoryWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> Result<(), AccessError> {
+        if self.is_write {
+            self.range.writer(self.guest_memory).write(data)
+        } else {
+            Err(AccessError::ReadOnly)
+        }
+    }
+
+    fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError> {
+        if self.is_write {
+            self.range.writer(self.guest_memory).fill(val, len)
+        } else {
+            Err(AccessError::ReadOnly)
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.range.len()
+    }
+}
+
 /// An accessor for the memory associated with an IO request.
 #[derive(Clone, Debug)]
 pub struct RequestBuffers<'a> {
@@ -255,12 +286,11 @@ impl<'a> RequestBuffers<'a> {
     ///
     /// Returns an empty writer if the buffers are only available for read access.
     pub fn writer(&self) -> impl MemoryWrite + '_ {
-        let range = if self.is_write {
-            self.range
-        } else {
-            PagedRange::empty()
-        };
-        range.writer(self.guest_memory)
+        PermissionedMemoryWriter {
+            range: self.range,
+            guest_memory: self.guest_memory,
+            is_write: self.is_write,
+        }
     }
 
     /// Gets a memory reader for the buffers.
@@ -423,5 +453,27 @@ impl BounceBufferTracker {
             free_pages,
             event,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sparse_mmap::SparseMapping;
+    const SIZE_1MB: usize = 1048576;
+
+    #[test]
+    fn correct_read_only_behavior() {
+        let mapping = SparseMapping::new(SIZE_1MB * 4).unwrap();
+        let guest_memory = GuestMemory::new("test-scsi-buffers", mapping);
+        let range = PagedRange::new(0, 4096, &[0]).unwrap();
+        let buffers = RequestBuffers::new(&guest_memory, range, false);
+
+        let r = buffers.writer().write(&[1; 4096]);
+        assert!(
+            matches!(r, Err(AccessError::ReadOnly)),
+            "Expected read-only error, got {:?}",
+            r
+        );
     }
 }
