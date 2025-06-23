@@ -813,7 +813,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // should be used instead.
                 // Also don't attempt to change the permissions of locked pages.
                 if !inner.valid_encrypted.check_valid(gpn)
-                    || self.check_gpn_not_locked(&inner, vtl, gpn).is_err()
+                    || self.check_gpn_not_locked(&inner, target_vtl, gpn).is_err()
                 {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
@@ -880,7 +880,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             }
 
             // Validate they're not locked.
-            self.check_gpn_not_locked(&inner, vtl, gpn)
+            self.check_gpn_not_locked(&inner, target_vtl, gpn)
                 .map_err(|x| (x, 0))?;
         }
 
