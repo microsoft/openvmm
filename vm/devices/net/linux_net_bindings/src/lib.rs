@@ -28,7 +28,6 @@ pub mod gen_if;
 //
 // bindgen --no-layout-tests --with-derive-default --wrap-unsafe-ops --no-doc-comments /usr/include/linux/if_tun.h
 #[expect(non_camel_case_types)]
-#[expect(non_upper_case_globals)]
 #[expect(clippy::missing_safety_doc)]
 #[expect(clippy::undocumented_unsafe_blocks)]
 #[expect(clippy::ref_as_ptr)]
