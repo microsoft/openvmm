@@ -61,6 +61,8 @@ features = [
     "Win32_System_ErrorReporting",
     "Win32_System_Memory", 
     "Win32_System_SystemServices",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
     "Win32_Networking_WinSock",
     "Win32_Storage_FileSystem"
 ]

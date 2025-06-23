@@ -39,14 +39,10 @@ use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
-use winapi::shared::ntdef;
-use winapi::shared::ntstatus::STATUS_NAME_TOO_LONG;
-use winapi::um::namedpipeapi;
-use winapi::um::namedpipeapi::DisconnectNamedPipe;
-use winapi::um::namedpipeapi::GetNamedPipeInfo;
-use winapi::um::winbase::PIPE_SERVER_END;
-use winapi::um::winioctl;
-use winapi::um::winnt;
+use windows::Wdk::Foundation::STATUS_NAME_TOO_LONG;
+use windows::Win32::System::Pipes::DisconnectNamedPipe;
+use windows::Win32::System::Pipes::GetNamedPipeInfo;
+use windows::Win32::System::Pipes::PIPE_SERVER_END;
 use winnt::FILE_READ_ATTRIBUTES;
 use winnt::FILE_SHARE_READ;
 use winnt::FILE_SHARE_WRITE;
@@ -333,7 +329,7 @@ impl PipeExt for File {
                     null_mut(),
                     0,
                 );
-                if status != winapi::shared::ntstatus::STATUS_NOT_SUPPORTED {
+                if status != windows::Win32::Foundation::STATUS_NOT_SUPPORTED {
                     break;
                 }
             }

@@ -21,7 +21,7 @@ impl Job {
     pub fn new() -> io::Result<Self> {
         // SAFETY: `CreateJobObjectW` returns an owned handle or null.
         unsafe {
-            let job = winapi::um::jobapi2::CreateJobObjectW(null_mut(), null());
+            let job = windows::Win32::System::JobObjects::CreateJobObjectW(null_mut(), null());
             if job.is_null() {
                 return Err(io::Error::last_os_error());
             }
@@ -34,9 +34,9 @@ impl Job {
     pub fn set_terminate_on_close(&self) -> io::Result<()> {
         // SAFETY: It is safe to initialize this C structure using `zeroed`.
         let mut info = unsafe {
-            winapi::um::winnt::JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-                BasicLimitInformation: winapi::um::winnt::JOBOBJECT_BASIC_LIMIT_INFORMATION {
-                    LimitFlags: winapi::um::winnt::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            windows::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+                BasicLimitInformation: windows::Win32::System::JobObjects::JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                    LimitFlags: windows::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
                     ..zeroed()
                 },
                 ..zeroed()
@@ -44,9 +44,9 @@ impl Job {
         };
         // SAFETY: `SetInformationJobObject` is safe to call with a valid handle.
         let r = unsafe {
-            winapi::um::jobapi2::SetInformationJobObject(
+            windows::Win32::System::JobObjects::SetInformationJobObject(
                 self.0.as_raw_handle(),
-                winapi::um::winnt::JobObjectExtendedLimitInformation,
+                windows::Win32::System::JobObjects::JobObjectExtendedLimitInformation,
                 std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info) as u32,
             )

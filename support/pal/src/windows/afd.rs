@@ -16,12 +16,7 @@ use std::fs::File;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
-use winapi::shared::ntdef;
-use winapi::shared::winerror;
-use winapi::um::ioapiset;
-use winapi::um::minwinbase;
-use winapi::um::winnt;
-use winerror::ERROR_IO_PENDING;
+use windows::Win32::Foundation::ERROR_IO_PENDING;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]
