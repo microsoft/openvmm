@@ -85,8 +85,12 @@ impl IntoPipeline for CheckinGatesCli {
                         .gh_set_name("[flowey] OpenVMM PR");
                 }
                 PipelineConfig::PrRelease => {
-                    // This workflow is triggered manually.
-                    pipeline.gh_set_name("[flowey] OpenVMM Release PR");
+                    // This workflow is triggered manually and by issue comments.
+                    pipeline
+                        .gh_set_issue_comment_triggers(GhIssueCommentTriggers {
+                            types: vec!["created".into()],
+                        })
+                        .gh_set_name("[flowey] OpenVMM Release PR");
                 }
             }
         }

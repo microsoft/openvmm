@@ -39,6 +39,7 @@ pub mod user_facing {
     pub use super::AdoResourcesRepositoryType;
     pub use super::AdoScheduleTriggers;
     pub use super::GhCiTriggers;
+    pub use super::GhIssueCommentTriggers;
     pub use super::GhPrTriggers;
     pub use super::GhRunner;
     pub use super::GhRunnerOsLabel;
@@ -252,6 +253,14 @@ pub struct GhCiTriggers {
     pub exclude_tags: Vec<String>,
 }
 
+/// Trigger Github Actions pipelines on issue comments
+#[derive(Debug)]
+pub struct GhIssueCommentTriggers {
+    /// Run the pipeline whenever the comment matches the specified types
+    /// Common values: ["created", "edited", "deleted"]
+    pub types: Vec<String>,
+}
+
 impl GhPrTriggers {
     /// Triggers the pipeline on the default PR events plus when a draft is marked as ready for review.
     pub fn new_draftable() -> Self {
@@ -381,6 +390,7 @@ pub struct Pipeline {
     gh_schedule_triggers: Vec<GhScheduleTriggers>,
     gh_ci_triggers: Option<GhCiTriggers>,
     gh_pr_triggers: Option<GhPrTriggers>,
+    gh_issue_comment_triggers: Option<GhIssueCommentTriggers>,
     gh_bootstrap_template: String,
 }
 
@@ -567,6 +577,13 @@ impl Pipeline {
     /// overwrite any previously set triggers.
     pub fn gh_set_ci_triggers(&mut self, triggers: GhCiTriggers) -> &mut Self {
         self.gh_ci_triggers = Some(triggers);
+        self
+    }
+
+    /// (GitHub Actions only) Set an issue comment trigger. Calling this method multiple times will
+    /// overwrite any previously set triggers.
+    pub fn gh_set_issue_comment_triggers(&mut self, triggers: GhIssueCommentTriggers) -> &mut Self {
+        self.gh_issue_comment_triggers = Some(triggers);
         self
     }
 
@@ -1353,6 +1370,7 @@ pub mod internal {
         pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
         pub gh_ci_triggers: Option<GhCiTriggers>,
         pub gh_pr_triggers: Option<GhPrTriggers>,
+        pub gh_issue_comment_triggers: Option<GhIssueCommentTriggers>,
         pub gh_bootstrap_template: String,
     }
 
@@ -1385,6 +1403,7 @@ pub mod internal {
                 gh_schedule_triggers,
                 gh_ci_triggers,
                 gh_pr_triggers,
+                gh_issue_comment_triggers,
                 gh_bootstrap_template,
                 // not relevant to consumer code
                 dummy_done_idx: _,
@@ -1418,6 +1437,7 @@ pub mod internal {
                 gh_schedule_triggers,
                 gh_ci_triggers,
                 gh_pr_triggers,
+                gh_issue_comment_triggers,
                 gh_bootstrap_template,
             }
         }

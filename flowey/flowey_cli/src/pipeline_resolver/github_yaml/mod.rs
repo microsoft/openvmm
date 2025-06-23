@@ -56,6 +56,7 @@ pub fn github_yaml(
         gh_schedule_triggers,
         gh_ci_triggers,
         gh_pr_triggers,
+        gh_issue_comment_triggers,
         gh_bootstrap_template,
         parameters,
         ado_name: _,
@@ -656,6 +657,12 @@ EOF
                 cron: s.cron.clone(),
             })
             .collect(),
+        issue_comment: match gh_issue_comment_triggers {
+            Some(gh_issue_comment_triggers) => Some(github_yaml_defs::IssueCommentTrigger {
+                types: gh_issue_comment_triggers.types.clone(),
+            }),
+            None => None,
+        },
     };
 
     let github_pipeline = github_yaml_defs::Pipeline {

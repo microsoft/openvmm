@@ -63,6 +63,7 @@ fn viz_pipeline_generic(
         gh_schedule_triggers: _,
         gh_ci_triggers: _,
         gh_pr_triggers: _,
+        gh_issue_comment_triggers: _,
         gh_bootstrap_template: _,
     } = pipeline;
 
@@ -235,6 +236,7 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
         gh_schedule_triggers: _,
         gh_ci_triggers: _,
         gh_pr_triggers: _,
+        gh_issue_comment_triggers: _,
         gh_bootstrap_template: _,
     } = pipeline;
 

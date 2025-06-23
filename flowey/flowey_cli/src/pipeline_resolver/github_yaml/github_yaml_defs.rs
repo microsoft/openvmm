@@ -90,6 +90,13 @@ pub struct Cron {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub struct IssueCommentTrigger {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct Concurrency {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
@@ -108,6 +115,8 @@ pub struct Triggers {
     pub push: Option<CiTrigger>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub schedule: Vec<Cron>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue_comment: Option<IssueCommentTrigger>,
 }
 
 #[derive(Serialize, Deserialize)]
