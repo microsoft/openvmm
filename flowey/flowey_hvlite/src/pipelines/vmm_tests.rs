@@ -98,7 +98,9 @@ impl IntoPipeline for VmmTestsCli {
 
         let mut pipeline = Pipeline::new();
 
-        let target = if target.is_none() {
+        let target = if let Some(t) = target {
+            t
+        } else {
             match (
                 FlowArch::host(backend_hint),
                 FlowPlatform::host(backend_hint),
@@ -108,8 +110,6 @@ impl IntoPipeline for VmmTestsCli {
                 (FlowArch::X86_64, FlowPlatform::Linux(_)) => VmmTestTargetCli::LinuxX64,
                 _ => anyhow::bail!("unsupported host"),
             }
-        } else {
-            target.unwrap()
         };
 
         let target = match target {
