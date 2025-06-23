@@ -497,7 +497,7 @@ impl<T: AsRef<[AtomicU8]>> SingleMappedRingMem<T> {
 
 impl<T: AsRef<[AtomicU8]> + Send> RingMem for SingleMappedRingMem<T> {
     fn read_at(&self, mut addr: usize, data: &mut [u8]) {
-        if addr > self.len() {
+        if addr >= self.len() {
             addr -= self.len();
         }
         let this_data = self.data();
