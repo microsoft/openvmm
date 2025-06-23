@@ -994,17 +994,15 @@ unsafe impl Sync for Overlapped {}
 #[macro_export]
 macro_rules! delayload {
     {$dll:literal {$($($idents:ident)+ ($($params:ident : $types:ty),* $(,)?) -> $result:ty;)*}} => {
-        fn get_module() -> Result<::winapi::shared::minwindef::HINSTANCE, u32> {
+        fn get_module() -> Result<::windows::Win32::Foundation::HINSTANCE, u32> {
             use ::std::ptr::null_mut;
             use ::std::sync::atomic::{AtomicPtr, Ordering};
-            use ::winapi::{
-                um::{
-                    errhandlingapi::GetLastError,
-                    libloaderapi::{FreeLibrary, LoadLibraryA},
-                },
+            use ::windows::Win32::{
+                Foundation::GetLastError,
+                System::LibraryLoader::{FreeLibrary, LoadLibraryA},
             };
 
-            static MODULE: AtomicPtr<::winapi::shared::minwindef::HINSTANCE__> = AtomicPtr::new(null_mut());
+            static MODULE: AtomicPtr<::windows::Win32::Foundation::HINSTANCE> = AtomicPtr::new(null_mut());
             let mut module = MODULE.load(Ordering::Relaxed);
             if module.is_null() {
                 module = unsafe { LoadLibraryA(concat!($dll, "\0").as_ptr() as *const i8) };
@@ -1040,9 +1038,9 @@ macro_rules! delayload {
 
     (@body $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
         {
-            use ::winapi::{
-                shared::winerror::ERROR_PROC_NOT_FOUND,
-                um::libloaderapi::GetProcAddress,
+            use ::windows::Win32::{
+                Foundation::ERROR_PROC_NOT_FOUND,
+                System::LibraryLoader::GetProcAddress,
             };
             use ::std::concat;
             use ::std::sync::atomic::{AtomicUsize, Ordering};
@@ -1075,10 +1073,10 @@ macro_rules! delayload {
         }
     };
 
-    (@result_from_win32((i32), $val:expr)) => { ::winapi::shared::winerror::HRESULT_FROM_WIN32($val) };
+    (@result_from_win32((i32), $val:expr)) => { ::windows::Win32::Foundation::HRESULT::from_win32($val) };
     (@result_from_win32((u32), $val:expr)) => { $val };
     (@result_from_win32((DWORD), $val:expr)) => { $val };
-    (@result_from_win32((HRESULT), $val:expr)) => { ::winapi::shared::winerror::HRESULT_FROM_WIN32($val) };
+    (@result_from_win32((HRESULT), $val:expr)) => { ::windows::Win32::Foundation::HRESULT::from_win32($val) };
     (@result_from_win32(($t:tt), $val:expr)) => { panic!("could not load: {}", $val) };
 }
 
