@@ -137,6 +137,11 @@ async fn basic_mov() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -155,7 +160,7 @@ async fn basic_mov() {
         interruption_pending: false,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
@@ -166,6 +171,11 @@ async fn not_enough_bytes() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -187,7 +197,7 @@ async fn not_enough_bytes() {
 
     gm.write_at(support.state.rip, &instruction_bytes).unwrap();
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
@@ -199,6 +209,11 @@ async fn trap_from_interrupt() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -217,7 +232,7 @@ async fn trap_from_interrupt() {
         interruption_pending: true,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 }
 
 #[async_test]
@@ -227,6 +242,11 @@ async fn trap_from_debug() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -248,5 +268,5 @@ async fn trap_from_debug() {
         interruption_pending: false,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 }

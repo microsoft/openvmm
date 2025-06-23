@@ -16,9 +16,9 @@ use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use igvmfilegen_config::ResourceType;
@@ -464,17 +464,15 @@ impl SimpleFlowNode for Node {
             arch => anyhow::bail!("unsupported arch {arch}"),
         };
 
-        let igvmfilegen = ctx.reqv(|v| {
-            crate::build_igvmfilegen::Request {
-                build_params: crate::build_igvmfilegen::IgvmfilegenBuildParams {
-                    target: CommonTriple::Common {
-                        arch: igvmfilegen_arch,
-                        platform: CommonPlatform::LinuxGnu,
-                    },
-                    profile: CommonProfile::Release, // debug igvmfilegen is real slow
+        let igvmfilegen = ctx.reqv(|v| crate::build_igvmfilegen::Request {
+            build_params: crate::build_igvmfilegen::IgvmfilegenBuildParams {
+                target: CommonTriple::Common {
+                    arch: igvmfilegen_arch,
+                    platform: CommonPlatform::LinuxGnu,
                 },
-                igvmfilegen: v,
-            }
+                profile: BuildProfile::Light,
+            },
+            igvmfilegen: v,
         });
 
         // build openhcl_boot

@@ -17,8 +17,11 @@ use pal_async::timer::PolledTimer;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
 use std::time::Duration;
 use tempfile::TempDir;
+use thiserror::Error;
 use tracing::Level;
 
 /// A Hyper-V VM
@@ -119,6 +122,14 @@ impl HyperVVM {
             },
         )?;
 
+        // Disable secure boot for generation 2 VMs
+        if generation == powershell::HyperVGeneration::Two {
+            powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
+                vmid: &vmid,
+                secure_boot_template: None,
+            })?;
+        }
+
         Ok(this)
     }
 
@@ -186,6 +197,9 @@ impl HyperVVM {
                 powershell::EVENT_ID_BOOT_FAILURE => Ok(FirmwareEvent::BootFailed),
                 powershell::EVENT_ID_NO_BOOT_DEVICE => Ok(FirmwareEvent::NoBootDevice),
                 powershell::EVENT_ID_BOOT_ATTEMPT => Ok(FirmwareEvent::BootAttempt),
+                powershell::EVENT_ID_BOOT_FAILURE_SECURE_BOOT_FAILED => {
+                    Ok(FirmwareEvent::BootFailed)
+                }
                 id => anyhow::bail!("Unexpected event id: {id}"),
             })
             .transpose()
@@ -409,12 +423,8 @@ impl HyperVVM {
     }
 
     /// Enable VMBusRelay
-    pub fn set_vmbus_relay(&self, enable: bool) -> anyhow::Result<()> {
-        if enable {
-            powershell::run_enable_vmbus_relay(&self.vmid, &self.ps_mod)
-        } else {
-            powershell::run_disable_vmbus_relay(&self.vmid, &self.ps_mod)
-        }
+    pub fn set_vmbus_redirect(&self, enable: bool) -> anyhow::Result<()> {
+        powershell::set_vmbus_redirect(&self.vmid, &self.ps_mod, enable)
     }
 }
 
@@ -427,4 +437,46 @@ impl Drop for HyperVVM {
             let _ = self.remove_inner();
         }
     }
+}
+
+/// Error running command
+#[derive(Error, Debug)]
+pub(crate) enum CommandError {
+    /// failed to launch command
+    #[error("failed to launch command")]
+    Launch(#[from] std::io::Error),
+    /// command exited with non-zero status
+    #[error("command exited with non-zero status ({0}): {1}")]
+    Command(std::process::ExitStatus, String),
+    /// command output is not utf-8
+    #[error("command output is not utf-8")]
+    Utf8(#[from] std::string::FromUtf8Error),
+}
+
+/// Run the PowerShell script and return the output
+pub(crate) fn run_cmd(mut cmd: Command) -> Result<String, CommandError> {
+    cmd.stderr(Stdio::piped()).stdin(Stdio::null());
+
+    tracing::debug!(?cmd, "executing command");
+
+    let start = Timestamp::now();
+    let output = cmd.output()?;
+    let time_elapsed = Timestamp::now() - start;
+
+    let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+    tracing::debug!(
+        ?cmd,
+        stdout_str,
+        stderr_str,
+        "command exited in {:.3}s with status {}",
+        time_elapsed.total(jiff::Unit::Second).unwrap(),
+        output.status
+    );
+
+    if !output.status.success() {
+        return Err(CommandError::Command(output.status, stderr_str));
+    }
+
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }

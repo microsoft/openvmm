@@ -403,6 +403,7 @@ mod x86_boot {
     use crate::PageAlign;
     use crate::ReservedMemoryType;
     use crate::host_params::PartitionInfo;
+    use crate::host_params::shim_params::IsolationType;
     use crate::single_threaded::OffStackRef;
     use crate::single_threaded::off_stack;
     use crate::zeroed;
@@ -456,6 +457,11 @@ mod x86_boot {
         ext: &mut E820Ext,
         partition_info: &PartitionInfo,
         reserved: &[(MemoryRange, ReservedMemoryType)],
+        // The following params are only used when TDX Isolated
+        #[cfg_attr(target_arch = "aarch64", expect(unused_variables))]
+        isolation_type: IsolationType,
+        #[cfg_attr(target_arch = "aarch64", expect(unused_variables))] //
+        page_tables: Option<MemoryRange>,
     ) -> Result<bool, BuildE820MapError> {
         boot_params.e820_entries = 0;
         let mut entries = boot_params
@@ -484,8 +490,30 @@ mod x86_boot {
             }
         }
 
+        // If TDX-isolated, APs start up in the shim, and then are held in a wait
+        // loop as part of AP mailbox protocol used with the kernel. Mark the page
+        // tables and mailbox/reset-vector region of openhcl_boot as E820-reserved,
+        // otherwise the L1 kernel can use the pages while APs are in the reset vector
+        //
+        // TODO: address space management in the shim is getting centralized in
+        // a refactor, this should be moved somewhere more appropriate when possible
+        #[cfg(target_arch = "x86_64")]
+        if IsolationType::Tdx == isolation_type {
+            add_e820_entry(entries.next(), page_tables.unwrap(), E820_RESERVED)?;
+            n += 1;
+            add_e820_entry(
+                entries.next(),
+                MemoryRange::new(
+                    x86defs::tdx::RESET_VECTOR_PAGE..x86defs::tdx::RESET_VECTOR_PAGE + 0x1000,
+                ),
+                E820_RESERVED,
+            )?;
+            n += 1;
+        }
+
         let base = n.min(boot_params.e820_map.len());
         boot_params.e820_entries = base as u8;
+
         if base < n {
             ext.header.len = ((n - base) * size_of::<e820entry>()) as u32;
             Ok(true)
@@ -501,6 +529,8 @@ mod x86_boot {
         cmdline: &str,
         setup_data_head: *const setup_data,
         setup_data_tail: &mut &mut setup_data,
+        isolation_type: IsolationType,
+        page_tables: Option<MemoryRange>,
     ) -> OffStackRef<'static, PageAlign<boot_params>> {
         let mut boot_params_storage = off_stack!(PageAlign<boot_params>, zeroed());
         let boot_params = &mut boot_params_storage.0;
@@ -525,8 +555,15 @@ mod x86_boot {
 
         let e820_ext = OffStackRef::leak(off_stack!(E820Ext, zeroed()));
 
-        let used_ext = build_e820_map(boot_params, e820_ext, partition_info, reserved_memory)
-            .expect("building e820 map must succeed");
+        let used_ext = build_e820_map(
+            boot_params,
+            e820_ext,
+            partition_info,
+            reserved_memory,
+            isolation_type,
+            page_tables,
+        )
+        .expect("building e820 map must succeed");
 
         if used_ext {
             e820_ext.header.ty = SETUP_E820_EXT;
@@ -539,6 +576,7 @@ mod x86_boot {
         boot_params.ext_cmd_line_ptr = (cmd_line_addr >> 32) as u32;
 
         boot_params.hdr.setup_data = (setup_data_head as u64).into();
+
         boot_params_storage
     }
 }
@@ -593,13 +631,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Thus the fast hypercalls will fail as the the Guest ID has
     // to be set first hence initialize hypercall support
     // explicitly.
-    //
-    // In the hardware-isolated case, the hypervisor cannot
-    // access the guest registers so the fast hypercalls and
-    // any other methods of passing data to/from the hypervisor
-    // via the CPU registers (e.g. CPUID, hypercall call code or
-    // status) do not work, and the `hvcall()` doesn't have
-    // provisions for the hardware-isolated case.
     if !p.isolation_type.is_hardware_isolated() {
         hvcall().initialize();
     }
@@ -678,8 +709,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_vp(partition_info);
     setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_vp(partition_info);
+
     verify_imported_regions_hash(&p);
 
     let mut sidecar_params = off_stack!(PageAlign<SidecarParams>, zeroed());
@@ -743,6 +775,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         setup_data_head,
         &mut setup_data_tail,
+        p.isolation_type,
+        p.page_tables,
     );
 
     // Compute the ending boot time. This has to be before writing to device
@@ -790,6 +824,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         sidecar.as_ref(),
         boot_times,
+        p.isolation_type,
     )
     .unwrap();
 
@@ -983,6 +1018,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
     }
@@ -1056,6 +1092,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
@@ -1084,6 +1121,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
@@ -1161,6 +1199,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_ok()
         );
@@ -1191,6 +1231,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_ok()
         );
@@ -1223,6 +1265,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_ok()
         );
@@ -1263,6 +1307,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_ok()
         );
@@ -1297,6 +1343,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1314,6 +1362,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1331,6 +1381,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1348,6 +1400,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1368,6 +1422,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1389,7 +1445,15 @@ mod test {
             })
             .collect::<Vec<_>>();
 
-        build_e820_map(&mut boot_params, &mut ext, &partition_info, &reserved).unwrap();
+        build_e820_map(
+            &mut boot_params,
+            &mut ext,
+            &partition_info,
+            &reserved,
+            partition_info.isolation,
+            None,
+        )
+        .unwrap();
 
         assert!(ext.header.len > 0);
 

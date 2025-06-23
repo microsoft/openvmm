@@ -38,7 +38,6 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
-use thiserror::Error;
 use vm::HyperVVM;
 use vmm_core_defs::HaltReason;
 
@@ -61,7 +60,7 @@ pub struct PetriVmConfigHyperV {
     openhcl_igvm: Option<ResolvedArtifact>,
     openhcl_command_line: String,
     disable_frontpage: bool,
-    vmbus_relay: bool,
+    vmbus_redirect: bool,
 
     driver: DefaultDriver,
     agent_image: AgentImage,
@@ -91,8 +90,16 @@ impl PetriVmConfig for PetriVmConfigHyperV {
         Ok((Box::new(vm), client))
     }
 
+    fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_secure_boot(*self))
+    }
+
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_windows_secure_boot_template(*self))
+    }
+
+    fn with_uefi_ca_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_uefi_ca_secure_boot_template(*self))
     }
 
     fn with_processor_topology(
@@ -130,8 +137,12 @@ impl PetriVmConfig for PetriVmConfigHyperV {
         Box::new(Self::with_uefi_frontpage(*self, enable))
     }
 
-    fn with_vmbus_relay(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_vmbus_relay(*self, enable))
+    fn with_vmbus_redirect(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_vmbus_redirect(*self, enable))
+    }
+
+    fn os_flavor(&self) -> OsFlavor {
+        self.os_flavor
     }
 }
 
@@ -283,16 +294,7 @@ impl PetriVmConfigHyperV {
             memory: 0x1_0000_0000,
             proc_topology: ProcessorTopology::default(),
             vhd_paths,
-            secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
-                .then_some(match firmware.os_flavor() {
-                    OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,
-                    OsFlavor::Linux => {
-                        powershell::HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority
-                    }
-                    OsFlavor::FreeBsd | OsFlavor::Uefi => {
-                        powershell::HyperVSecureBootTemplate::SecureBootDisabled
-                    }
-                }),
+            secure_boot_template: None,
             openhcl_igvm,
             agent_image,
             openhcl_agent_image,
@@ -302,7 +304,7 @@ impl PetriVmConfigHyperV {
             temp_dir,
             log_source: params.logger.clone(),
             disable_frontpage: true,
-            vmbus_relay: false,
+            vmbus_redirect: false,
             openhcl_command_line: String::new(),
         })
     }
@@ -485,8 +487,8 @@ impl PetriVmConfigHyperV {
             )?;
         }
 
-        // Enable/Disable VMBusRelay if requested in config
-        let _ = vm.set_vmbus_relay(self.vmbus_relay);
+        // Enable/Disable VMBusRedirect if requested in config
+        vm.set_vmbus_redirect(self.vmbus_redirect)?;
 
         let mut log_tasks = Vec::new();
 
@@ -544,12 +546,35 @@ impl PetriVmConfigHyperV {
         self
     }
 
+    /// Set the VM to enable secure boot and inject the templates per OS flavor.
+    pub fn with_secure_boot(self) -> Self {
+        if !matches!(self.generation, powershell::HyperVGeneration::Two) {
+            panic!("Secure boot is only supported for UEFI firmware.");
+        }
+
+        match self.os_flavor {
+            OsFlavor::Windows => self.with_windows_secure_boot_template(),
+            OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(),
+            _ => panic!("Secure boot unsupported for OS flavor {:?}", self.os_flavor),
+        }
+    }
+
     /// Inject Windows secure boot templates into the VM's UEFI.
     pub fn with_windows_secure_boot_template(mut self) -> Self {
         if !matches!(self.generation, powershell::HyperVGeneration::Two) {
-            panic!("Secure boot templates are only supported for UEFI firmware.");
+            panic!("Secure boot is only supported for UEFI firmware.");
         }
         self.secure_boot_template = Some(powershell::HyperVSecureBootTemplate::MicrosoftWindows);
+        self
+    }
+
+    /// Inject UEFI CA secure boot templates into the VM's UEFI.
+    pub fn with_uefi_ca_secure_boot_template(mut self) -> Self {
+        if !matches!(self.generation, powershell::HyperVGeneration::Two) {
+            panic!("Secure boot is only supported for UEFI firmware.");
+        }
+        self.secure_boot_template =
+            Some(powershell::HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority);
         self
     }
 
@@ -589,8 +614,8 @@ impl PetriVmConfigHyperV {
     }
 
     /// Enables VMBus relay for the VM
-    pub fn with_vmbus_relay(mut self, enable: bool) -> Self {
-        self.vmbus_relay = enable;
+    pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
+        self.vmbus_redirect = enable;
         self
     }
 }
@@ -730,20 +755,6 @@ impl PetriVmHyperV {
 
         Ok(())
     }
-}
-
-/// Error running command
-#[derive(Error, Debug)]
-pub enum CommandError {
-    /// failed to launch command
-    #[error("failed to launch command")]
-    Launch(#[from] std::io::Error),
-    /// command exited with non-zero status
-    #[error("command exited with non-zero status ({0}): {1}")]
-    Command(std::process::ExitStatus, String),
-    /// command output is not utf-8
-    #[error("command output is not utf-8")]
-    Utf8(#[from] std::string::FromUtf8Error),
 }
 
 fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {

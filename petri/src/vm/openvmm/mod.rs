@@ -152,8 +152,16 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
         Ok((Box::new(vm), client))
     }
 
+    fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_secure_boot(*self))
+    }
+
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_windows_secure_boot_template(*self))
+    }
+
+    fn with_uefi_ca_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_uefi_ca_secure_boot_template(*self))
     }
 
     fn with_processor_topology(
@@ -191,8 +199,12 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
         Box::new(Self::with_uefi_frontpage(*self, enable))
     }
 
-    fn with_vmbus_relay(self: Box<Self>, _: bool) -> Box<dyn PetriVmConfig> {
+    fn with_vmbus_redirect(self: Box<Self>, _: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_vmbus_redirect(*self))
+    }
+
+    fn os_flavor(&self) -> OsFlavor {
+        self.firmware.os_flavor()
     }
 }
 

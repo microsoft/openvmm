@@ -18,6 +18,15 @@ pub enum NextestProfile {
     Ci,
 }
 
+impl NextestProfile {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NextestProfile::Default => "default",
+            NextestProfile::Ci => "ci",
+        }
+    }
+}
+
 flowey_request! {
     pub struct Request {
         /// Friendly name for this test group that will be displayed in logs.
@@ -115,10 +124,7 @@ impl FlowNode for Node {
                     working_dir,
                     config_file,
                     tool_config_files: Vec::new(),
-                    nextest_profile: match nextest_profile {
-                        NextestProfile::Default => "default".into(),
-                        NextestProfile::Ci => "ci".into(),
-                    },
+                    nextest_profile: nextest_profile.as_str().to_owned(),
                     extra_env: Some(extra_env),
                     with_rlimit_unlimited_core_size: true,
                     nextest_filter_expr,

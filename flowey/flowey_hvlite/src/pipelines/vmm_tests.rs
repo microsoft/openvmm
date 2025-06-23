@@ -3,9 +3,9 @@
 
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
-use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelectionFlags;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
+use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
 use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
 use std::path::PathBuf;
 use vmm_test_images::KnownTestArtifacts;
@@ -31,13 +31,13 @@ pub struct VmmTestsCli {
 
     /// Directory for the output artifacts
     #[clap(long)]
-    dir: Option<PathBuf>,
+    dir: PathBuf,
 
     /// Custom test filter
     #[clap(long, conflicts_with("flags"))]
     filter: Option<String>,
     /// Custom list of artifacts to download
-    #[clap(long, conflicts_with("flags"))]
+    #[clap(long, conflicts_with("flags"), requires("filter"))]
     artifacts: Vec<KnownTestArtifacts>,
     /// Flags used to generate the VMM test filter
     ///
@@ -113,6 +113,7 @@ impl IntoPipeline for VmmTestsCli {
             VmmTestTargetCli::WindowsX64 => CommonTriple::X86_64_WINDOWS_MSVC,
             VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
         };
+        let target_os = target.as_triple().operating_system;
 
         pipeline
             .new_job(
@@ -146,10 +147,25 @@ impl IntoPipeline for VmmTestsCli {
                         VmmTestSelections::Custom {
                             filter,
                             artifacts,
-                            build: BuildSelections::default(),
+                            // TODO: add a way to manually specify these
+                            // For now, just build and install everything.
+                            build: Default::default(),
+                            deps: match target_os {
+                                target_lexicon::OperatingSystem::Windows => {
+                                    VmmTestsDepSelections::Windows {
+                                        hyperv: true,
+                                        whp: true,
+                                        hardware_isolation: true,
+                                    }
+                                }
+                                target_lexicon::OperatingSystem::Linux => {
+                                    VmmTestsDepSelections::Linux
+                                }
+                                _ => unreachable!(),
+                            },
                         }
                     } else {
-                        VmmTestSelections::Flags(flags.unwrap())
+                        VmmTestSelections::Flags(flags.unwrap_or_default())
                     },
                     unstable_whp,
                     release,

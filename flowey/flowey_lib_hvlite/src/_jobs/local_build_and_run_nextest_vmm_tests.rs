@@ -7,11 +7,14 @@ use crate::_jobs::local_build_igvm::non_production_build_igvm_tool_out_name;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
 use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::gen_cargo_nextest_run_cmd::CommandShell;
+use flowey_lib_common::gen_cargo_nextest_run_cmd::RunKindDeps;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use vmm_test_images::KnownTestArtifacts;
@@ -25,6 +28,8 @@ pub enum VmmTestSelections {
         artifacts: Vec<KnownTestArtifacts>,
         /// Custom list of artifacts to build
         build: BuildSelections,
+        /// Dependencies to install
+        deps: VmmTestsDepSelections,
     },
     Flags(VmmTestSelectionFlags),
 }
@@ -125,7 +130,7 @@ flowey_request! {
     pub struct Params {
         pub target: CommonTriple,
 
-        pub test_content_dir: Option<PathBuf>,
+        pub test_content_dir: PathBuf,
 
         pub selections: VmmTestSelections,
 
@@ -162,6 +167,8 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
+        ctx.import::<flowey_lib_common::gen_cargo_nextest_run_cmd::Node>();
+        ctx.import::<crate::install_vmm_tests_deps::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -176,12 +183,13 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
+        let target_triple = target.as_triple();
         let arch = target.common_arch().unwrap();
         let arch_tag = match arch {
             CommonArch::X86_64 => "x64",
             CommonArch::Aarch64 => "aarch64",
         };
-        let platform_tag = match target.as_triple().operating_system {
+        let platform_tag = match target_triple.operating_system {
             target_lexicon::OperatingSystem::Windows => "windows",
             target_lexicon::OperatingSystem::Linux => "linux",
             _ => unreachable!(),
@@ -194,12 +202,13 @@ impl SimpleFlowNode for Node {
         let mut copy_to_dir = Vec::new();
         let extras_dir = Path::new("extras");
 
-        let (nextest_filter_expr, test_artifacts, mut build) = match selections {
+        let (nextest_filter_expr, test_artifacts, mut build, deps) = match selections {
             VmmTestSelections::Custom {
                 filter,
                 artifacts,
                 build,
-            } => (filter, artifacts, build),
+                deps,
+            } => (filter, artifacts, build, deps),
             VmmTestSelections::Flags(VmmTestSelectionFlags {
                 tdx,
                 hyperv_vbs,
@@ -226,7 +235,7 @@ impl SimpleFlowNode for Node {
 
                 // VTL2 not supported on Linux
                 if !matches!(
-                    target.as_triple().operating_system,
+                    target_triple.operating_system,
                     target_lexicon::OperatingSystem::Windows
                 ) {
                     openhcl = false;
@@ -323,7 +332,17 @@ impl SimpleFlowNode for Node {
                     }
                 };
 
-                (filter, artifacts, build)
+                let deps = match target_triple.operating_system {
+                    target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
+                        hyperv,
+                        whp: openvmm,
+                        hardware_isolation: tdx,
+                    },
+                    target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
+                    _ => unreachable!(),
+                };
+
+                (filter, artifacts, build, deps)
             }
         };
 
@@ -402,6 +421,10 @@ impl SimpleFlowNode for Node {
                             read_built_sidecar.map(ctx, |x| x.map(|y| y.dbg)),
                         ),
                     ]);
+                } else {
+                    read_built_openvmm_hcl.claim_unused(ctx);
+                    read_built_openhcl_boot.claim_unused(ctx);
+                    read_built_sidecar.claim_unused(ctx);
                 }
             }
             let register_openhcl_igvm_files: ReadVar<
@@ -558,43 +581,34 @@ impl SimpleFlowNode for Node {
             output
         });
 
-        let nextest_archive_file = ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
+        let nextest_archive = ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
             target: target.as_triple(),
             profile: CommonProfile::from_release(release),
             build_mode: crate::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(v),
         });
-        let nextest_archive_path = Path::new("vmm-tests-archive.tar.zst");
+        let nextest_archive_file = Path::new("vmm-tests-archive.tar.zst");
         copy_to_dir.push((
-            nextest_archive_path.to_owned(),
-            nextest_archive_file.map(ctx, |x| Some(x.archive_file)),
+            nextest_archive_file.to_owned(),
+            nextest_archive.map(ctx, |x| Some(x.archive_file)),
         ));
 
-        if let Some(dir) = &test_content_dir {
-            let vmm_test_artifacts_dir = dir.join("images");
-            fs_err::create_dir_all(&vmm_test_artifacts_dir)?;
-            ctx.req(
-                crate::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
-                    vmm_test_artifacts_dir,
-                ),
-            );
-        }
+        let vmm_test_artifacts_dir = test_content_dir.join("images");
+        fs_err::create_dir_all(&vmm_test_artifacts_dir)?;
+        ctx.req(
+            crate::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
+                vmm_test_artifacts_dir,
+            ),
+        );
+
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
         let test_artifacts_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
-        let test_content_dir = test_content_dir
-            .map(|x| ReadVar::from_static(x))
-            .unwrap_or_else(|| {
-                ctx.emit_rust_stepv("creating new test content dir", |_| {
-                    |_| Ok(std::env::current_dir()?.absolute()?)
-                })
-            });
+        ctx.req(crate::install_vmm_tests_deps::Request::Select(deps));
+        let dep_install_cmds = ctx.reqv(crate::install_vmm_tests_deps::Request::GetCommands);
 
         // use the copied archive file
-        let nextest_archive_path = nextest_archive_path.to_owned();
-        let nextest_archive_file = test_content_dir.map(ctx, |dir| NextestVmmTestsArchive {
-            archive_file: dir.join(nextest_archive_path),
-        });
+        let nextest_archive_file = test_content_dir.join(nextest_archive_file);
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
@@ -603,8 +617,7 @@ impl SimpleFlowNode for Node {
             Some(p.join(".config").join(nextest_config_file))
         });
         copy_to_dir.push((nextest_config_file.to_owned(), nextest_config_file_src));
-        let nextest_config_file =
-            test_content_dir.map(ctx, move |dir| dir.join(nextest_config_file));
+        let nextest_config_file = test_content_dir.join(nextest_config_file);
 
         let cargo_toml_file = Path::new("Cargo.toml");
         let repo_cargo_toml_file_src =
@@ -633,10 +646,10 @@ impl SimpleFlowNode for Node {
             })
             .map(ctx, Some);
         copy_to_dir.push((nextest_bin.to_owned(), nextest_bin_src));
-        let nextest_bin = test_content_dir.map(ctx, move |dir| dir.join(nextest_bin));
+        let nextest_bin = test_content_dir.join(nextest_bin);
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
-            test_content_dir: test_content_dir.clone(),
+            test_content_dir: ReadVar::from_static(test_content_dir.clone()),
             vmm_tests_target: target.clone(),
             register_openvmm,
             register_pipette_windows,
@@ -649,62 +662,120 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,
+            use_relative_paths: build_only,
         });
 
-        let copied_files = ctx.emit_rust_step("copy additional files to test content dir", |ctx| {
-            let copy_to_dir = copy_to_dir
-                .into_iter()
-                .map(|(dst, src)| (dst, src.claim(ctx)))
-                .collect::<Vec<_>>();
-            let test_content_dir = test_content_dir.clone().claim(ctx);
+        let mut side_effects = Vec::new();
+
+        side_effects.push(
+            ctx.emit_rust_step("copy additional files to test content dir", |ctx| {
+                let copy_to_dir = copy_to_dir
+                    .into_iter()
+                    .map(|(dst, src)| (dst, src.claim(ctx)))
+                    .collect::<Vec<_>>();
+                let test_content_dir = test_content_dir.clone();
+
+                move |rt| {
+                    for (dst, src) in copy_to_dir {
+                        let src = rt.read(src);
+
+                        if let Some(src) = src {
+                            // TODO: specify files names for everything
+                            let dst = if dst.starts_with("extras") {
+                                test_content_dir
+                                    .join(dst)
+                                    .join(src.file_name().context("no file name")?)
+                            } else {
+                                test_content_dir.join(dst)
+                            };
+
+                            fs_err::create_dir_all(dst.parent().context("no parent")?)?;
+                            fs_err::copy(src, dst)?;
+                        }
+                    }
+
+                    Ok(())
+                }
+            }),
+        );
+
+        side_effects.push(ctx.emit_rust_step("write dep install script", |ctx| {
+            let dep_install_cmds = dep_install_cmds.claim(ctx);
+            let test_content_dir = test_content_dir.clone();
 
             move |rt| {
-                let test_content_dir = rt.read(test_content_dir);
+                let dep_install_cmds = rt.read(dep_install_cmds);
 
-                for (dst, src) in copy_to_dir {
-                    let src = rt.read(src);
+                for cmd in &dep_install_cmds {
+                    log::info!("$ {cmd}");
+                }
 
-                    if let Some(src) = src {
-                        // TODO: specify files names for everything
-                        let dst = if dst.starts_with("extras") {
-                            test_content_dir
-                                .join(dst)
-                                .join(src.file_name().context("no file name")?)
-                        } else {
-                            test_content_dir.join(dst)
-                        };
-
-                        fs_err::create_dir_all(dst.parent().context("no parent")?)?;
-                        fs_err::copy(src, dst)?;
-                    }
+                if !dep_install_cmds.is_empty() {
+                    let script_contents = dep_install_cmds.join("\n");
+                    fs_err::write(test_content_dir.join("install_deps.ps1"), script_contents)?;
                 }
 
                 Ok(())
             }
+        }));
+
+        let nextest_profile = crate::run_cargo_nextest_run::NextestProfile::Default;
+
+        let nextest_run_cmd = ctx.reqv(|v| flowey_lib_common::gen_cargo_nextest_run_cmd::Request {
+            run_kind_deps: RunKindDeps::RunFromArchive {
+                archive_file: ReadVar::from_static(nextest_archive_file.clone()),
+                nextest_bin: ReadVar::from_static(nextest_bin.clone()),
+                target: ReadVar::from_static(target.clone()),
+            },
+            working_dir: ReadVar::from_static(test_content_dir.clone()),
+            config_file: ReadVar::from_static(nextest_config_file.clone()),
+            tool_config_files: Vec::new(),
+            nextest_profile: nextest_profile.as_str().to_owned(),
+            nextest_filter_expr: Some(nextest_filter_expr.clone()),
+            run_ignored: false,
+            fail_fast: None,
+            extra_env: Some(extra_env.clone()),
+            portable: true,
+            command: v,
         });
 
+        side_effects.push(ctx.emit_rust_step("write test command script", |ctx| {
+            let nextest_run_cmd = nextest_run_cmd.claim(ctx);
+            let test_content_dir = test_content_dir.clone();
+
+            move |rt| {
+                let cmd = rt.read(nextest_run_cmd);
+
+                log::info!("$ {cmd}");
+
+                let (script_name, script_contents) = match cmd.shell {
+                    CommandShell::Powershell => ("run.ps1", cmd.to_string()),
+                    CommandShell::Bash => ("run.sh", format!("#!/bin/sh\n{cmd}")),
+                };
+
+                fs_err::write(test_content_dir.join(script_name), script_contents)?;
+
+                Ok(())
+            }
+        }));
+
         if build_only {
-            ctx.emit_side_effect_step(
-                [
-                    nextest_archive_file.into_side_effect(),
-                    nextest_config_file.into_side_effect(),
-                    nextest_bin.into_side_effect(),
-                    extra_env.into_side_effect(),
-                    copied_files.into_side_effect(),
-                ],
-                [done],
-            );
+            ctx.emit_side_effect_step(side_effects, [done]);
         } else {
+            side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
+
             let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
-                nextest_archive_file,
-                nextest_profile: crate::run_cargo_nextest_run::NextestProfile::Default,
+                nextest_archive_file: ReadVar::from_static(NextestVmmTestsArchive {
+                    archive_file: nextest_archive_file,
+                }),
+                nextest_profile,
                 nextest_filter_expr: Some(nextest_filter_expr),
-                nextest_working_dir: Some(test_content_dir.clone()),
-                nextest_config_file: Some(nextest_config_file),
-                nextest_bin: Some(nextest_bin),
+                nextest_working_dir: Some(ReadVar::from_static(test_content_dir.clone())),
+                nextest_config_file: Some(ReadVar::from_static(nextest_config_file)),
+                nextest_bin: Some(ReadVar::from_static(nextest_bin)),
                 target: Some(ReadVar::from_static(target)),
                 extra_env,
-                pre_run_deps: vec![copied_files],
+                pre_run_deps: side_effects,
                 results: v,
             });
 
@@ -714,7 +785,7 @@ impl SimpleFlowNode for Node {
                     junit_xml,
                     test_label,
                     attachments: BTreeMap::new(), // the logs are already there
-                    output_dir: Some(test_content_dir),
+                    output_dir: Some(ReadVar::from_static(test_content_dir)),
                     done: v,
                 });
 

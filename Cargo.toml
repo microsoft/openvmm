@@ -8,7 +8,6 @@ members = [
   # openvmm
   "openvmm/openvmm",
   # repo tooling
-  "flowey/flowey_trampoline",
   "flowey/flowey_hvlite",
   "xtask",
   # openhcl
@@ -34,6 +33,7 @@ members = [
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
+  "vm/devices/storage/storage_tests",
   "vm/devices/storage/storvsp/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
@@ -134,6 +134,7 @@ pal_async = { path = "support/pal/pal_async" }
 pal_async_test = { path = "support/pal/pal_async_test" }
 pal_event = { path = "support/pal/pal_event" }
 pal_uring = { path = "support/pal/pal_uring" }
+powershell_builder = { path = "support/powershell_builder" }
 safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
@@ -150,7 +151,6 @@ ucs2 = { path = "support/ucs2" }
 uevent = { path = "support/uevent" }
 unix_socket = { path = "support/unix_socket" }
 vmsocket = { path = "support/vmsocket" }
-win_import_lib = { path = "support/win_import_lib" }
 
 azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
 bootloader_fdt_parser = { path = "openhcl/bootloader_fdt_parser" }
@@ -557,15 +557,11 @@ lto = 'fat'
 [profile.dev]
 panic = 'abort'
 
-[profile.xtask]
+# Used for dev tooling that benefits from some CPU optimizations, but that still
+# wants debug checks
+[profile.light]
 inherits = 'dev'
-# xtask is CPU bound in places, so enable light optimizations
 opt-level = 1
-
-[profile.flowey]
-# This exists to support the use of flowey_trampoline, which overrides part of
-# the profile definition via environment variables.
-inherits = 'dev'
 
 [profile.flowey-ci]
 inherits = 'dev'

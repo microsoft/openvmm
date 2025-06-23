@@ -35,6 +35,7 @@ getrandom.workspace = true
 openssl = { optional = true, features = ["vendored"], workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
+cvm_tracing.workspace = true
 zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true

@@ -3,12 +3,14 @@
 
 //! Wrappers for Hyper-V Powershell Cmdlets
 
-use self::ps::PowerShellBuilder;
-use super::CommandError;
+use super::vm::CommandError;
+use super::vm::run_cmd;
 use anyhow::Context;
 use core::str;
 use guid::Guid;
 use jiff::Timestamp;
+use powershell_builder as ps;
+use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::ffi::OsStr;
@@ -66,8 +68,6 @@ impl ps::AsVal for HyperVGuestStateIsolationType {
 /// Hyper-V Secure Boot Template
 #[derive(Clone, Copy)]
 pub enum HyperVSecureBootTemplate {
-    /// Secure Boot Disabled
-    SecureBootDisabled,
     /// Windows Secure Boot Template
     MicrosoftWindows,
     /// Microsoft UEFI Certificate Authority Template
@@ -79,7 +79,6 @@ pub enum HyperVSecureBootTemplate {
 impl ps::AsVal for HyperVSecureBootTemplate {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         match self {
-            HyperVSecureBootTemplate::SecureBootDisabled => "SecureBootDisabled",
             HyperVSecureBootTemplate::MicrosoftWindows => "MicrosoftWindows",
             HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority => {
                 "MicrosoftUEFICertificateAuthority"
@@ -107,40 +106,44 @@ pub struct HyperVNewVMArgs<'a> {
 
 /// Runs New-VM with the given arguments.
 pub fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
-    let vmid = PowerShellBuilder::new()
-        .cmdlet("New-VM")
-        .arg("Name", args.name)
-        .arg_opt("Generation", args.generation)
-        .arg_opt("GuestStateIsolationType", args.guest_state_isolation_type)
-        .arg_opt("MemoryStartupBytes", args.memory_startup_bytes)
-        .arg_opt("Path", args.path)
-        .arg_opt("VHDPath", args.vhd_path)
-        .flag("Force")
-        .pipeline()
-        .cmdlet("Select-Object")
-        .arg("ExpandProperty", "Id")
-        .pipeline()
-        .cmdlet("Select-Object")
-        .arg("ExpandProperty", "Guid")
-        .finish()
-        .output(true)
-        .context("new_vm")?;
+    let vmid = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("New-VM")
+            .arg("Name", args.name)
+            .arg_opt("Generation", args.generation)
+            .arg_opt("GuestStateIsolationType", args.guest_state_isolation_type)
+            .arg_opt("MemoryStartupBytes", args.memory_startup_bytes)
+            .arg_opt("Path", args.path)
+            .arg_opt("VHDPath", args.vhd_path)
+            .flag("Force")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "Id")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "Guid")
+            .finish()
+            .build(),
+    )
+    .context("new_vm")?;
 
     Guid::from_str(&vmid).context("invalid vmid")
 }
 
 /// Runs New-VM with the given arguments.
 pub fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Remove-VM")
-        .flag("Force")
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("remove_vm")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Remove-VM")
+            .flag("Force")
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("remove_vm")
 }
 
 /// Arguments for the Set-VMProcessor powershell cmdlet
@@ -183,19 +186,21 @@ impl ps::AsVal for HyperVApicMode {
 
 /// Runs Set-VMProcessor with the given arguments.
 pub fn run_set_vm_processor(vmid: &Guid, args: &HyperVSetVMProcessorArgs) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Set-VMProcessor")
-        .arg_opt("Count", args.count)
-        .arg_opt("ApicMode", args.apic_mode)
-        .arg_opt("HwThreadCountPerCore", args.hw_thread_count_per_core)
-        .arg_opt("MaximumCountPerNumaNode", args.maximum_count_per_numa_node)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("set_vm_processor")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VMProcessor")
+            .arg_opt("Count", args.count)
+            .arg_opt("ApicMode", args.apic_mode)
+            .arg_opt("HwThreadCountPerCore", args.hw_thread_count_per_core)
+            .arg_opt("MaximumCountPerNumaNode", args.maximum_count_per_numa_node)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_vm_processor")
 }
 
 /// Arguments for the Set-VMMemory powershell cmdlet.
@@ -216,19 +221,21 @@ pub struct HyperVSetVMMemoryArgs {
 
 /// Runs Set-VMMemory with the given arguments.
 pub fn run_set_vm_memory(vmid: &Guid, args: &HyperVSetVMMemoryArgs) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Set-VMMemory")
-        .arg_opt("DynamicMemoryEnabled", args.dynamic_memory_enabled)
-        .arg_opt("MaximumBytes", args.maximum_bytes)
-        .arg_opt("MinimumBytes", args.minimum_bytes)
-        .arg_opt("StartupBytes", args.startup_bytes)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("set_vm_memory")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VMMemory")
+            .arg_opt("DynamicMemoryEnabled", args.dynamic_memory_enabled)
+            .arg_opt("MaximumBytes", args.maximum_bytes)
+            .arg_opt("MinimumBytes", args.minimum_bytes)
+            .arg_opt("StartupBytes", args.startup_bytes)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_vm_memory")
 }
 
 /// Arguments for the Add-VMHardDiskDrive powershell cmdlet
@@ -276,19 +283,21 @@ impl ps::AsVal for ControllerType {
 
 /// Runs Add-VMHardDiskDrive with the given arguments.
 pub fn run_add_vm_hard_disk_drive(args: HyperVAddVMHardDiskDriveArgs<'_>) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", args.vmid)
-        .pipeline()
-        .cmdlet("Add-VMHardDiskDrive")
-        .arg("ControllerType", args.controller_type)
-        .arg_opt("ControllerLocation", args.controller_location)
-        .arg_opt("ControllerNumber", args.controller_number)
-        .arg_opt("Path", args.path)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("add_vm_hard_disk_drive")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", args.vmid)
+            .pipeline()
+            .cmdlet("Add-VMHardDiskDrive")
+            .arg("ControllerType", args.controller_type)
+            .arg_opt("ControllerLocation", args.controller_location)
+            .arg_opt("ControllerNumber", args.controller_number)
+            .arg_opt("Path", args.path)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("add_vm_hard_disk_drive")
 }
 
 /// Arguments for the Add-VMDvdDrive powershell cmdlet
@@ -310,36 +319,40 @@ pub struct HyperVAddVMDvdDriveArgs<'a> {
 
 /// Runs Add-VMDvdDrive with the given arguments.
 pub fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", args.vmid)
-        .pipeline()
-        .cmdlet("Add-VMDvdDrive")
-        .arg_opt("ControllerLocation", args.controller_location)
-        .arg_opt("ControllerNumber", args.controller_number)
-        .arg_opt("Path", args.path)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("add_vm_dvd_drive")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", args.vmid)
+            .pipeline()
+            .cmdlet("Add-VMDvdDrive")
+            .arg_opt("ControllerLocation", args.controller_location)
+            .arg_opt("ControllerNumber", args.controller_number)
+            .arg_opt("Path", args.path)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("add_vm_dvd_drive")
 }
 
 /// Runs Add-VMScsiController with the given arguments.
 ///
 /// Returns the controller number.
 pub fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
-    let output = PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Add-VMScsiController")
-        .flag("Passthru")
-        .pipeline()
-        .cmdlet("Select-Object")
-        .arg("ExpandProperty", "ControllerNumber")
-        .finish()
-        .output(true)
-        .context("add_vm_scsi_controller")?;
+    let output = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Add-VMScsiController")
+            .flag("Passthru")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "ControllerNumber")
+            .finish()
+            .build(),
+    )
+    .context("add_vm_scsi_controller")?;
     Ok(output.trim().parse::<u32>()?)
 }
 
@@ -350,44 +363,50 @@ pub fn run_set_vm_scsi_controller_target_vtl(
     controller_number: u32,
     target_vtl: u32,
 ) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Import-Module")
-        .positional(ps_mod)
-        .next()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Set-VMScsiControllerTargetVtl")
-        .arg("ControllerNumber", controller_number)
-        .arg("TargetVtl", target_vtl)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("set_vm_scsi_controller_target_vtl")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VMScsiControllerTargetVtl")
+            .arg("ControllerNumber", controller_number)
+            .arg("TargetVtl", target_vtl)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_vm_scsi_controller_target_vtl")
 }
 
 /// Create a new differencing VHD with the provided parent.
 pub fn create_child_vhd(path: &Path, parent_path: &Path) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("New-VHD")
-        .arg("Path", path)
-        .arg("ParentPath", parent_path)
-        .flag("Differencing")
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("create_child_vhd")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("New-VHD")
+            .arg("Path", path)
+            .arg("ParentPath", parent_path)
+            .flag("Differencing")
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("create_child_vhd")
 }
 
 /// Runs Dismount-VHD with the given arguments.
 pub fn run_dismount_vhd(path: &Path) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Dismount-VHD")
-        .arg("Path", path)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("dismount_vhd")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Dismount-VHD")
+            .arg("Path", path)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("dismount_vhd")
 }
 
 /// Arguments for the Set-VMFirmware powershell cmdlet
@@ -409,7 +428,7 @@ pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<
         .pipeline();
 
     builder = match args.secure_boot_template {
-        Some(HyperVSecureBootTemplate::SecureBootDisabled) | None => builder
+        None => builder
             .cmdlet("Set-VMFirmware")
             .arg("EnableSecureBoot", ps::RawVal::new("Off"))
             .finish(),
@@ -420,7 +439,9 @@ pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<
             .finish(),
     };
 
-    builder.output(true).map(|_| ()).context("set_vm_firmware")
+    run_cmd(builder.build())
+        .map(|_| ())
+        .context("set_vm_firmware")
 }
 
 /// Runs Set-VMFirmware with the given arguments.
@@ -430,20 +451,22 @@ pub fn run_set_openhcl_firmware(
     igvm_file: &Path,
     increase_vtl2_memory: bool,
 ) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Import-Module")
-        .positional(ps_mod)
-        .next()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Set-OpenHCLFirmware")
-        .arg("IgvmFile", igvm_file)
-        .flag_opt(increase_vtl2_memory.then_some("IncreaseVtl2Memory"))
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("set_openhcl_firmware")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-OpenHCLFirmware")
+            .arg("IgvmFile", igvm_file)
+            .flag_opt(increase_vtl2_memory.then_some("IncreaseVtl2Memory"))
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_openhcl_firmware")
 }
 
 /// Runs Set-VmCommandLine with the given arguments.
@@ -452,19 +475,21 @@ pub fn run_set_vm_command_line(
     ps_mod: &Path,
     command_line: &str,
 ) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Import-Module")
-        .positional(ps_mod)
-        .next()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Set-VmCommandLine")
-        .arg("CommandLine", command_line)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("set_vm_command_line")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VmCommandLine")
+            .arg("CommandLine", command_line)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_vm_command_line")
 }
 
 /// Sets the initial machine configuration for a VM
@@ -473,38 +498,42 @@ pub fn run_set_initial_machine_configuration(
     ps_mod: &Path,
     imc_hive: &Path,
 ) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Import-Module")
-        .positional(ps_mod)
-        .next()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Set-InitialMachineConfiguration")
-        .arg("ImcHive", imc_hive)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("set_initial_machine_configuration")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-InitialMachineConfiguration")
+            .arg("ImcHive", imc_hive)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_initial_machine_configuration")
 }
 
 /// Enables the specified vm com port and binds it to the named pipe path
 pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Set-VMComPort")
-        .arg("Number", port)
-        .arg("Path", path)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("set_vm_com_port")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VMComPort")
+            .arg("Number", port)
+            .arg("Path", path)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_vm_com_port")
 }
 
-/// Run Enable-VmBusRelay commandlet
-pub fn run_enable_vmbus_relay(vmid: &Guid, ps_mod: &Path) -> anyhow::Result<()> {
+/// Run Set-VMBusRelay commandlet
+pub fn set_vmbus_redirect(vmid: &Guid, ps_mod: &Path, enable: bool) -> anyhow::Result<()> {
     PowerShellBuilder::new()
         .cmdlet("Import-Module")
         .positional(ps_mod)
@@ -512,27 +541,12 @@ pub fn run_enable_vmbus_relay(vmid: &Guid, ps_mod: &Path) -> anyhow::Result<()> 
         .cmdlet("Get-VM")
         .arg("Id", vmid)
         .pipeline()
-        .cmdlet("Enable-VmBusRelay")
+        .cmdlet("Set-VMBusRedirect")
+        .arg("Enable", enable)
         .finish()
         .output(true)
         .map(|_| ())
-        .context("enable_vmbus_relay")
-}
-
-/// Run Disable-VmBusRelay commandlet
-pub fn run_disable_vmbus_relay(vmid: &Guid, ps_mod: &Path) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Import-Module")
-        .positional(ps_mod)
-        .next()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Disable-VmBusRelay")
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("disable_vmbus_relay")
+        .context("set_vmbus_redirect")
 }
 
 /// Windows event log as retrieved by `run_get_winevent`
@@ -600,14 +614,16 @@ pub fn run_get_winevent(
         ps::Value::new("Message"),
     ]);
 
-    let output = builder
-        .cmdlet("Select-Object")
-        .positional(props)
-        .next()
-        .cmdlet("ConvertTo-Json")
-        .arg("InputObject", ps::Array::new([&output_var]))
-        .finish()
-        .output(false);
+    let output = run_cmd(
+        builder
+            .cmdlet("Select-Object")
+            .positional(props)
+            .next()
+            .cmdlet("ConvertTo-Json")
+            .arg("InputObject", ps::Array::new([&output_var]))
+            .finish()
+            .build(),
+    );
 
     match output {
         Ok(logs) => serde_json::from_str(&logs).context("parsing winevents"),
@@ -673,18 +689,20 @@ pub fn hyperv_boot_events(vmid: &Guid, start_time: &Timestamp) -> anyhow::Result
 
 /// Get the IDs of the VM(s) with the specified name
 pub fn vm_id_from_name(name: &str) -> anyhow::Result<Vec<Guid>> {
-    let output = PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Name", name)
-        .pipeline()
-        .cmdlet("Select-Object")
-        .arg("ExpandProperty", "Id")
-        .pipeline()
-        .cmdlet("Select-Object")
-        .arg("ExpandProperty", "Guid")
-        .finish()
-        .output(true)
-        .context("vm_id_from_name")?;
+    let output = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Name", name)
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "Id")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "Guid")
+            .finish()
+            .build(),
+    )
+    .context("vm_id_from_name")?;
     let mut vmids = Vec::new();
     for s in output.lines() {
         vmids.push(Guid::from_str(s)?);
@@ -712,18 +730,20 @@ pub enum VmShutdownIcStatus {
 
 /// Get the VM's shutdown IC status
 pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> {
-    let status = PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Get-VMIntegrationService")
-        .arg("Name", "Shutdown")
-        .pipeline()
-        .cmdlet("Select-Object")
-        .arg("ExpandProperty", "PrimaryStatusDescription")
-        .finish()
-        .output(true)
-        .context("vm_shutdown_ic_status")?;
+    let status = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Get-VMIntegrationService")
+            .arg("Name", "Shutdown")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "PrimaryStatusDescription")
+            .finish()
+            .build(),
+    )
+    .context("vm_shutdown_ic_status")?;
 
     Ok(match status.as_str() {
         "" => VmShutdownIcStatus::Off,
@@ -738,356 +758,33 @@ pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> 
 
 /// Runs Remove-VmNetworkAdapter to remove all network adapters from a VM.
 pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Remove-VMNetworkAdapter")
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("remove_vm_network_adapters")
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Remove-VMNetworkAdapter")
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("remove_vm_network_adapters")
 }
 
 /// Runs Remove-VMScsiController with the given arguments.
 pub fn run_remove_vm_scsi_controller(vmid: &Guid, controller_number: u32) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", vmid)
-        .pipeline()
-        .cmdlet("Get-VMScsiController")
-        .arg("ControllerNumber", controller_number)
-        .pipeline()
-        .cmdlet("Remove-VMScsiController")
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("remove_vm_scsi_controller")
-}
-
-mod ps {
-    use crate::hyperv::CommandError;
-    use std::ffi::OsStr;
-    use std::ffi::OsString;
-    use std::path::Path;
-    use std::path::PathBuf;
-    use std::process::Command;
-    use std::process::Stdio;
-
-    /// A PowerShell script builder
-    pub struct PowerShellBuilder(Command);
-
-    impl PowerShellBuilder {
-        /// Create a new PowerShell command
-        pub fn new() -> Self {
-            PowerShellCmdletBuilder(Command::new("powershell.exe"))
-                .flag("NoProfile")
-                .finish()
-        }
-
-        /// Start a new Cmdlet
-        pub fn cmdlet<S: AsRef<str>>(self, cmdlet: S) -> PowerShellCmdletBuilder {
-            PowerShellCmdletBuilder(self.0).positional(RawVal::new(cmdlet.as_ref()))
-        }
-
-        /// Assign the output of the cmdlet to a variable
-        pub fn cmdlet_to_var<S: AsRef<str>>(
-            self,
-            cmdlet: S,
-            varname: &Variable,
-        ) -> PowerShellCmdletBuilder {
-            PowerShellCmdletBuilder(self.0)
-                .positional(varname)
-                .positional(RawVal::new("="))
-                .finish()
-                .cmdlet(cmdlet)
-        }
-
-        /// Run the PowerShell script and return the output
-        pub fn output(mut self, log_stdout: bool) -> Result<String, CommandError> {
-            self.0.stderr(Stdio::piped()).stdin(Stdio::null());
-
-            let ps_cmd = self.cmd();
-            tracing::debug!(ps_cmd, "executing powershell command");
-
-            let start = jiff::Timestamp::now();
-            let output = self.0.output()?;
-            let time_elapsed = jiff::Timestamp::now() - start;
-
-            let ps_stdout = (log_stdout || !output.status.success())
-                .then(|| String::from_utf8_lossy(&output.stdout).to_string());
-            let ps_stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            tracing::debug!(
-                ps_cmd,
-                ps_stdout,
-                ps_stderr,
-                "powershell command exited in {:.3}s with status {}",
-                time_elapsed.total(jiff::Unit::Second).unwrap_or(-1.0),
-                output.status
-            );
-
-            if !output.status.success() {
-                return Err(CommandError::Command(output.status, ps_stderr));
-            }
-
-            Ok(String::from_utf8(output.stdout)?.trim().to_owned())
-        }
-
-        /// Get the command to be run
-        pub fn cmd(&self) -> String {
-            format!(
-                "{} {}",
-                self.0.get_program().to_string_lossy(),
-                self.0
-                    .get_args()
-                    .collect::<Vec<_>>()
-                    .join(OsStr::new(" "))
-                    .to_string_lossy()
-            )
-        }
-    }
-
-    /// A PowerShell Cmdlet builder
-    pub struct PowerShellCmdletBuilder(Command);
-
-    impl PowerShellCmdletBuilder {
-        /// Add a flag to the cmdlet
-        pub fn flag<S: AsRef<OsStr>>(mut self, flag: S) -> Self {
-            let mut arg = OsString::from("-");
-            arg.push(flag);
-            self.0.arg(arg);
-            self
-        }
-
-        /// Optionally add a flag to the cmdlet
-        pub fn flag_opt<S: AsRef<OsStr>>(self, flag: Option<S>) -> Self {
-            if let Some(flag) = flag {
-                self.flag(flag)
-            } else {
-                self
-            }
-        }
-
-        /// Add a positional argument to the cmdlet
-        pub fn positional<S: AsVal>(mut self, positional: S) -> Self {
-            self.0.arg(positional.as_val());
-            self
-        }
-
-        /// Optionally add a positional argument to the cmdlet
-        #[expect(dead_code)]
-        pub fn positional_opt<S: AsVal>(self, positional: Option<S>) -> Self {
-            if let Some(positional) = positional {
-                self.positional(positional)
-            } else {
-                self
-            }
-        }
-
-        /// Add a named argument to the cmdlet
-        pub fn arg<S: AsRef<OsStr>, T: AsVal>(self, name: S, value: T) -> Self {
-            self.flag(name).positional(value)
-        }
-
-        /// Optionally add a named argument to the cmdlet
-        pub fn arg_opt<S: AsRef<OsStr>, T: AsVal>(self, name: S, value: Option<T>) -> Self {
-            if let Some(value) = value {
-                self.arg(name, value)
-            } else {
-                self
-            }
-        }
-
-        /// Finish the cmdlet
-        pub fn finish(self) -> PowerShellBuilder {
-            PowerShellBuilder(self.0)
-        }
-
-        /// Finish the cmdlet with a pipeline operator
-        pub fn pipeline(mut self) -> PowerShellBuilder {
-            self.0.arg("|");
-            self.finish()
-        }
-
-        /// Finish the cmdlet with a semicolon
-        pub fn next(mut self) -> PowerShellBuilder {
-            self.0.arg(";");
-            self.finish()
-        }
-    }
-
-    pub struct Value(OsString);
-
-    impl Value {
-        pub fn new(val: impl AsVal) -> Self {
-            Self(val.as_val().as_ref().to_owned())
-        }
-    }
-
-    impl AsVal for Value {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-            &self.0
-        }
-    }
-
-    pub trait AsVal {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr>;
-    }
-
-    impl<T: AsVal + ?Sized> AsVal for &T {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-            (*self).as_val()
-        }
-    }
-
-    fn quote_str(s: &OsStr) -> OsString {
-        let mut quoted = OsString::new();
-        quoted.push("\"");
-        // TODO: escape this properly.
-        quoted.push(s);
-        quoted.push("\"");
-        quoted
-    }
-
-    macro_rules! str {
-        ($($ty:ty),* $(,)?) => {
-            $(
-                impl AsVal for $ty {
-                    fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-                        quote_str(self.as_ref())
-                    }
-                }
-            )*
-        }
-    }
-
-    str!(&str, String, Path, PathBuf);
-
-    macro_rules! disp_str {
-        ($($ty:ty),* $(,)?) => {
-            $(
-                impl AsVal for $ty {
-                    fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-                        quote_str(self.to_string().as_ref())
-                    }
-                }
-            )*
-        }
-    }
-
-    disp_str!(jiff::Timestamp, guid::Guid);
-
-    impl AsVal for bool {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-            if *self { "$true" } else { "$false" }
-        }
-    }
-
-    macro_rules! disp {
-        ($($ty:ty),* $(,)?) => {
-            $(
-                impl AsVal for $ty {
-                    fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-                        self.to_string()
-                    }
-                }
-            )*
-        }
-    }
-
-    disp!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
-
-    pub struct RawVal<T>(T);
-
-    impl<T: AsRef<OsStr>> RawVal<T> {
-        pub fn new(arg: T) -> Self {
-            Self(arg)
-        }
-    }
-
-    impl<T: AsRef<OsStr>> AsVal for RawVal<T> {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-            &self.0
-        }
-    }
-
-    pub struct Variable(String);
-
-    impl Variable {
-        pub fn new(name: impl AsRef<str>) -> Self {
-            Self(format!("${}", name.as_ref()))
-        }
-    }
-
-    impl AsVal for Variable {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-            &self.0
-        }
-    }
-
-    pub struct Array(OsString);
-
-    impl Array {
-        pub fn new<T: AsVal>(v: impl IntoIterator<Item = T>) -> Self {
-            let mut args = OsString::new();
-            args.push("@(");
-            let mut first = true;
-            for arg in v {
-                if !first {
-                    args.push("; ");
-                }
-                args.push(arg.as_val());
-                first = false;
-            }
-            args.push(")");
-            Self(args)
-        }
-    }
-
-    impl AsVal for Array {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-            &self.0
-        }
-    }
-
-    pub struct HashTable<K, V>(Vec<(K, V)>);
-
-    impl<K: AsRef<str>, V: AsVal> HashTable<K, V> {
-        pub fn new(v: impl IntoIterator<Item = (K, V)>) -> Self {
-            Self(v.into_iter().collect())
-        }
-    }
-
-    impl<K: AsRef<str>, V: AsVal> AsVal for HashTable<K, V> {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-            let mut args = OsString::new();
-            args.push("@{");
-            let mut first = true;
-            for (k, v) in &self.0 {
-                if !first {
-                    args.push("; ");
-                }
-                args.push(k.as_ref());
-                args.push("=");
-                args.push(v.as_val());
-                first = false;
-            }
-            args.push("}");
-            args
-        }
-    }
-
-    pub struct Script(String);
-
-    impl Script {
-        pub fn new(script: impl AsRef<str>) -> Self {
-            Self(format!("{{ {} }}", script.as_ref()))
-        }
-    }
-
-    impl AsVal for Script {
-        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
-            &self.0
-        }
-    }
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Get-VMScsiController")
+            .arg("ControllerNumber", controller_number)
+            .pipeline()
+            .cmdlet("Remove-VMScsiController")
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("remove_vm_scsi_controller")
 }

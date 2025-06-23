@@ -667,8 +667,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             let cpsr: Cpsr64 = self
                 .vp
                 .runner
-                // TODO GUEST VSM
-                .get_vp_register(GuestVtl::Vtl0, HvArm64RegisterName::SpsrEl2)
+                .get_vp_register(self.vtl, HvArm64RegisterName::SpsrEl2)
                 .map_err(UhRunVpError::EmulationState)?
                 .as_u64()
                 .into();
@@ -683,7 +682,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
                 .vp
                 .partition
                 .hcl
-                .check_vtl_access(gpa, GuestVtl::Vtl0, flags)
+                .check_vtl_access(gpa, self.vtl, flags)
                 .map_err(|e| EmuCheckVtlAccessError::Hypervisor(UhRunVpError::VtlAccess(e)))?;
 
             if let Some(ioctl::CheckVtlAccessResult { vtl, denied_flags }) = access_result {

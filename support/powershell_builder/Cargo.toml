@@ -2,13 +2,13 @@
 # Licensed under the MIT License.
 
 [package]
-name = "win_import_lib"
+name = "powershell_builder"
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
-anyhow.workspace = true
-cc.workspace = true
+[target.'cfg(windows)'.dependencies]
+guid.workspace = true
+jiff.workspace = true
 
 [lints]
 workspace = true

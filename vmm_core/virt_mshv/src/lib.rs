@@ -455,6 +455,12 @@ impl MshvProcessor<'_> {
         interruption_pending: bool,
     ) -> Result<(), VpHaltReason<MshvError>> {
         let cache = self.emulation_cache().map_err(VpHaltReason::Hypervisor)?;
+        let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+            gm: &self.partition.gm,
+            kx_gm: &self.partition.gm,
+            ux_gm: &self.partition.gm,
+        };
+
         let mut support = MshvEmulationState {
             partition: self.partition,
             processor: self.inner,
@@ -463,7 +469,7 @@ impl MshvProcessor<'_> {
             interruption_pending,
             cache,
         };
-        virt_support_x86emu::emulate::emulate(&mut support, &self.partition.gm, devices).await
+        virt_support_x86emu::emulate::emulate(&mut support, &emu_mem, devices).await
     }
 
     async fn handle_io_port_intercept(

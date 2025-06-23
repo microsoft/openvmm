@@ -6,6 +6,7 @@
 use std::fs::File;
 use std::io::Write;
 
+use crate::x86_64::openhcl_servicing::host_supports_servicing;
 use anyhow::Context;
 use disk_backend_resources::FileDiskHandle;
 use disk_backend_resources::LayeredDiskHandle;
@@ -93,6 +94,11 @@ async fn mana_nic_servicing(
     config: PetriVmConfigOpenVmm,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     let (mut vm, agent) = config
         .with_vmbus_redirect()
         .with_nic()

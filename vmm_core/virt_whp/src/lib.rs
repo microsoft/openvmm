@@ -29,7 +29,6 @@ use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
-use hv1_structs::VtlArray;
 use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvMessage;
@@ -451,7 +450,7 @@ impl virt::ResetPartition for WhpPartition {
                 .reset(true);
         }
 
-        self.inner.hvstate.reset();
+        self.inner.hvstate.reset(&self.inner.gm);
 
         Ok(())
     }
@@ -1038,7 +1037,6 @@ impl WhpPartitionInner {
                     tsc_frequency,
                     ref_time,
                     is_ref_time_backed_by_tsc: false,
-                    guest_memory: VtlArray::from_fn(|_| config.guest_memory.clone()),
                 }))
             }
         } else {
@@ -1156,6 +1154,8 @@ impl VtlPartition {
     fn new(config: &ProtoPartitionConfig<'_>, vtl: Vtl) -> Result<Self, Error> {
         let mut hypervisor_enlightened = false;
 
+        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
+
         let user_mode_apic = config.user_mode_apic
             || config
                 .hv_config
@@ -1168,6 +1168,10 @@ impl VtlPartition {
                 config.processor_topology.apic_mode(),
                 vm_topology::processor::x86::ApicMode::XApic
             );
+            if x2apic_capable {
+                // Needed to set the x2apic bit.
+                extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
+            }
             let lapic = virt_support_apic::LocalApicSet::builder()
                 .x2apic_capable(x2apic_capable)
                 .hyperv_enlightenments(config.hv_config.is_some())
@@ -1187,7 +1191,6 @@ impl VtlPartition {
             ))
             .for_op("set processor count")?;
 
-        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
         #[cfg(guest_arch = "x86_64")]
         {
             use vm_topology::processor::x86::ApicMode;
@@ -1443,20 +1446,31 @@ impl VtlPartition {
     }
 }
 
-struct WhpNoVtlProtections;
-impl hv1_emulator::hv::VtlProtectHypercallOverlay for WhpNoVtlProtections {
-    fn change_overlay(&mut self, _gpn: u64) {}
-    fn disable_overlay(&mut self) {}
+struct WhpNoVtlProtections<'a>(&'a GuestMemory);
+impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, hvdef::HvError> {
+        Ok(self.0.lock_gpns(false, &[gpn]).unwrap())
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {
+        Ok(())
+    }
 }
 
 impl Hv1State {
-    fn reset(&self) {
+    fn reset(&self, guest_memory: &GuestMemory) {
         match self {
             Hv1State::Emulated(hv) => hv.reset(
                 [
-                    &mut WhpNoVtlProtections
-                        as &mut dyn hv1_emulator::hv::VtlProtectHypercallOverlay,
-                    &mut WhpNoVtlProtections,
+                    &mut WhpNoVtlProtections(guest_memory)
+                        as &mut dyn hv1_emulator::VtlProtectAccess,
+                    &mut WhpNoVtlProtections(guest_memory),
+                    &mut WhpNoVtlProtections(guest_memory),
                 ]
                 .into(),
             ),

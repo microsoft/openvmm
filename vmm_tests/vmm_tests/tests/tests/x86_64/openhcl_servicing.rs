@@ -19,6 +19,45 @@ use vm_resource::IntoResource;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 
+// TODO: Move this host query logic into common code so that we can instead
+// filter tests based on host capabilities.
+pub(crate) fn host_supports_servicing() -> bool {
+    cfg_if::cfg_if! {
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        if #[cfg(all(target_arch = "x86_64", target_os = "windows"))] {
+            // Check if this is a nested host and AMD. WHP partition scrub has a bug
+            // on AMD nested which can result in flakey tests. Query this via CPUID.
+            !is_amd_nested_via_cpuid()
+        } else {
+            true
+        }
+    }
+}
+
+// xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
+fn is_amd_nested_via_cpuid() -> bool {
+    let is_nested = {
+        let result =
+            safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+        hvdef::HvEnlightenmentInformation::from(
+            result.eax as u128
+                | (result.ebx as u128) << 32
+                | (result.ecx as u128) << 64
+                | (result.edx as u128) << 96,
+        )
+        .nested()
+    };
+
+    let vendor = {
+        let result =
+            safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
+        x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
+    };
+
+    is_nested && vendor.is_amd_compatible()
+}
+
 async fn openhcl_servicing_core(
     config: PetriVmConfigOpenVmm,
     openhcl_cmdline: &str,
@@ -56,6 +95,11 @@ async fn openhcl_servicing(
     config: PetriVmConfigOpenVmm,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     openhcl_servicing_core(config, "", igvm_file, OpenHclServicingFlags::default()).await
 }
 
@@ -66,6 +110,11 @@ async fn openhcl_servicing_keepalive(
     config: PetriVmConfigOpenVmm,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     openhcl_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
@@ -82,6 +131,11 @@ async fn openhcl_servicing_shutdown_ic(
     config: PetriVmConfigOpenVmm,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     let (mut vm, agent) = config
         .with_vmbus_redirect()
         .with_custom_config(|c| {

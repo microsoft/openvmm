@@ -3,16 +3,68 @@
 
 //! TDX support.
 
+use crate::arch::x86_64::address_space::TdxHypercallPage;
+use crate::arch::x86_64::address_space::tdx_unshare_large_page;
+use crate::host_params::PartitionInfo;
+use crate::hvcall;
 use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
+use loader_defs::shim::TdxTrampolineContext;
 use memory_range::MemoryRange;
 use safe_intrinsics::cpuid;
 use tdcall::AcceptPagesError;
 use tdcall::Tdcall;
 use tdcall::TdcallInput;
 use tdcall::TdcallOutput;
+use tdcall::tdcall_hypercall;
 use tdcall::tdcall_map_gpa;
+use tdcall::tdcall_wrmsr;
+use x86defs::X64_LARGE_PAGE_SIZE;
+use x86defs::tdx::RESET_VECTOR_PAGE;
+use x86defs::tdx::TdVmCallR10Result;
+
+/// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
+fn report_os_id(guest_os_id: u64) {
+    tdcall_wrmsr(
+        &mut TdcallInstruction,
+        hvdef::HV_X64_MSR_GUEST_OS_ID,
+        guest_os_id,
+    )
+    .unwrap();
+}
+
+/// Initialize hypercalls for a TDX L1, sharing the hypercall I/O pages with the HV
+pub fn initialize_hypercalls(guest_os_id: u64, io: &TdxHypercallPage) {
+    // TODO: We are assuming we are running under a Microsoft hypervisor, so there is
+    // no need to check any cpuid leaves.
+    report_os_id(guest_os_id);
+
+    // Enable host visibility for hypercall page
+    let hypercall_page_range = MemoryRange::new(io.base()..io.base() + X64_LARGE_PAGE_SIZE);
+    change_page_visibility(hypercall_page_range, true);
+}
+
+/// Unitialize hypercalls for a TDX L1, stop sharing the hypercall I/O pages with the HV
+pub fn uninitialize_hypercalls(io: TdxHypercallPage) {
+    report_os_id(0);
+
+    let hypercall_page_range = MemoryRange::new(io.base()..io.base() + X64_LARGE_PAGE_SIZE);
+    tdx_unshare_large_page(io);
+
+    // Disable host visibility for hypercall page
+    change_page_visibility(hypercall_page_range, false);
+    accept_pages(hypercall_page_range).expect("pages previously accepted by the bootshim should be reaccepted without failure when sharing permissions are changed");
+
+    // SAFETY: Flushing the TLB has no pre or post conditions required by the caller, and thus is safe
+    unsafe {
+        asm! {
+            "mov rax, cr3",
+            "mov cr3, rax",
+            out("rax") _,
+        }
+    }
+}
 
 /// Perform a tdcall instruction with the specified inputs.
 fn tdcall(input: TdcallInput) -> TdcallOutput {
@@ -98,6 +150,21 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
     }
 }
 
+/// Invokes a hypercall via a TDCALL
+pub fn invoke_tdcall_hypercall(
+    control: hvdef::hypercall::Control,
+    io: &TdxHypercallPage,
+) -> hvdef::hypercall::HypercallOutput {
+    let result = tdcall_hypercall(&mut TdcallInstruction, control, io.input(), io.output());
+    match result {
+        Ok(()) => 0.into(),
+        Err(val) => {
+            let TdVmCallR10Result(return_code) = val;
+            return_code.into()
+        }
+    }
+}
+
 /// Global variable to store tsc frequency.
 static TSC_FREQUENCY: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
@@ -118,4 +185,37 @@ pub fn get_tdx_tsc_reftime() -> Option<u64> {
         return Some(count_100ns as u64);
     }
     None
+}
+
+/// Update the TdxTrampolineContext, setting the necessary control registers for AP startup,
+/// and ensuring that LGDT will be skipped, so the GDT page does not need to be added to the
+/// e820 entries
+pub fn tdx_prepare_ap_trampoline() {
+    let context_ptr: *mut TdxTrampolineContext = RESET_VECTOR_PAGE as *mut TdxTrampolineContext;
+    // SAFETY: The TdxTrampolineContext is known to be stored at the architectural reset vector address
+    let tdxcontext: &mut TdxTrampolineContext = unsafe { context_ptr.as_mut().unwrap() };
+    tdxcontext.gdtr_limit = 0;
+    tdxcontext.idtr_limit = 0;
+    tdxcontext.code_selector = 0;
+    tdxcontext.task_selector = 0;
+    tdxcontext.cr0 |= x86defs::X64_CR0_PG | x86defs::X64_CR0_PE | x86defs::X64_CR0_NE;
+    tdxcontext.cr4 |= x86defs::X64_CR4_PAE | x86defs::X64_CR4_MCE;
+}
+
+pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
+    for cpu in 1..partition_info.cpus.len() {
+        hvcall()
+            .tdx_enable_vp_vtl2(cpu as u32)
+            .expect("enabling vp should not fail");
+    }
+
+    // Start VPs on Tdx-isolated VMs by sending TDVMCALL-based hypercall HvCallStartVirtualProcessor
+    for cpu in 1..partition_info.cpus.len() {
+        hvcall()
+            .tdx_start_vp(cpu as u32)
+            .expect("start vp should not fail");
+    }
+
+    // Update the TDX Trampoline Context for AP Startup
+    tdx_prepare_ap_trampoline();
 }

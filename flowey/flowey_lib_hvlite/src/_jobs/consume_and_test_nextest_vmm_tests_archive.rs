@@ -9,6 +9,7 @@ use crate::build_openvmm::OpenvmmOutput;
 use crate::build_pipette::PipetteOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
+use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -61,7 +62,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
-        ctx.import::<crate::init_hyperv_tests::Node>();
+        ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
@@ -111,7 +112,19 @@ impl SimpleFlowNode for Node {
         let disk_images_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
-        let pre_run_deps = vec![ctx.reqv(crate::init_hyperv_tests::Request)];
+        ctx.req(crate::install_vmm_tests_deps::Request::Select(
+            match target.operating_system {
+                target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
+                    hyperv: true,
+                    whp: true,
+                    hardware_isolation: false,
+                },
+                target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
+                os => anyhow::bail!("unsupported target operating system: {os}"),
+            },
+        ));
+
+        let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
 
@@ -129,6 +142,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
+            use_relative_paths: false,
         });
 
         let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {

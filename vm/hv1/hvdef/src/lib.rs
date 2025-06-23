@@ -49,6 +49,9 @@ pub const VS1_PARTITION_PROPERTIES_EAX_DEBUG_DEVICE_PRESENT: u32 = 0x000000002;
 /// Extended I/O APIC RTEs are supported for the current partition.
 pub const VS1_PARTITION_PROPERTIES_EAX_EXTENDED_IOAPIC_RTE: u32 = 0x000000004;
 
+/// SMCCC UID for the Microsoft Hypervisor.
+pub const VENDOR_HYP_UID_MS_HYPERVISOR: [u32; 4] = [0x4d32ba58, 0xcd244764, 0x8eef6c75, 0x16597024];
+
 #[bitfield(u64)]
 pub struct HvPartitionPrivilege {
     // access to virtual msrs
