@@ -11,6 +11,9 @@ on:
         default: false
         required: false
         type: boolean
+  issue_comment:
+    types:
+    - created
 jobs:
   job0:
     name: xtask fmt (windows)
@@ -20,7 +23,7 @@ jobs:
       id-token: write
     needs:
     - job1
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -179,7 +182,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -348,7 +351,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -570,6 +573,9 @@ jobs:
         flowey.exe e 10 flowey_lib_hvlite::init_cross_build 2
         flowey.exe e 10 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 10 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
         flowey.exe e 10 flowey_lib_common::run_cargo_nextest_run 0
@@ -609,7 +615,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -870,6 +876,9 @@ jobs:
         flowey e 11 flowey_lib_hvlite::init_cross_build 2
         flowey e 11 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
+    - name: generate nextest command
+      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
         flowey e 11 flowey_lib_common::run_cargo_nextest_run 0
@@ -909,7 +918,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -1173,6 +1182,9 @@ jobs:
         flowey e 12 flowey_lib_hvlite::init_cross_build 5
         flowey e 12 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
+    - name: generate nextest command
+      run: flowey e 12 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
         flowey e 12 flowey_lib_common::run_cargo_nextest_run 0
@@ -1213,7 +1225,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -1390,16 +1402,19 @@ jobs:
         flowey.exe e 13 flowey_lib_hvlite::build_xtask 0
       shell: bash
     - name: determine unit test exclusions
-      run: flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
+      run: |-
+        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
+        flowey.exe e 13 flowey_lib_hvlite::init_cross_build 0
+        flowey.exe e 13 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: unpack Microsoft.WSL.LxUtil.AARCH64.zip
       run: flowey.exe e 13 flowey_lib_hvlite::download_lxutil 0
       shell: bash
     - name: move lxutil.dll into its magic folder
-      run: |-
-        flowey.exe e 13 flowey_lib_hvlite::init_openvmm_magicpath_lxutil 0
-        flowey.exe e 13 flowey_lib_hvlite::init_cross_build 0
-        flowey.exe e 13 flowey_lib_hvlite::run_cargo_nextest_run 0
+      run: flowey.exe e 13 flowey_lib_hvlite::init_openvmm_magicpath_lxutil 0
       shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
@@ -1450,7 +1465,7 @@ jobs:
     - job5
     - job5
     - job5
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -1588,9 +1603,6 @@ jobs:
         flowey.exe e 14 flowey_lib_common::cache 6
         flowey.exe e 14 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: init hyperv tests
-      run: flowey.exe e 14 flowey_lib_hvlite::init_hyperv_tests 0
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 14 flowey_lib_common::git_checkout 0
@@ -1616,6 +1628,12 @@ jobs:
         flowey.exe e 14 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 14 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 14 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (windows)
+      run: flowey.exe e 14 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -1683,7 +1701,7 @@ jobs:
     - job5
     - job5
     - job5
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -1821,9 +1839,6 @@ jobs:
         flowey.exe e 15 flowey_lib_common::cache 6
         flowey.exe e 15 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: init hyperv tests
-      run: flowey.exe e 15 flowey_lib_hvlite::init_hyperv_tests 0
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 15 flowey_lib_common::git_checkout 0
@@ -1849,6 +1864,12 @@ jobs:
         flowey.exe e 15 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 15 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (windows)
+      run: flowey.exe e 15 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -1914,7 +1935,7 @@ jobs:
     - job5
     - job5
     - job5
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -2052,9 +2073,6 @@ jobs:
         flowey.exe e 16 flowey_lib_common::cache 6
         flowey.exe e 16 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: init hyperv tests
-      run: flowey.exe e 16 flowey_lib_hvlite::init_hyperv_tests 0
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 16 flowey_lib_common::git_checkout 0
@@ -2080,6 +2098,12 @@ jobs:
         flowey.exe e 16 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 16 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 16 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (windows)
+      run: flowey.exe e 16 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -2143,7 +2167,7 @@ jobs:
     - job7
     - job5
     - job7
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -2310,6 +2334,12 @@ jobs:
         flowey e 17 flowey_core::pipeline::artifact::resolve 4
         flowey e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
       shell: bash
+    - name: generate nextest command
+      run: flowey e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (linux)
+      run: flowey e 17 flowey_lib_hvlite::install_vmm_tests_deps 0
+      shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
         flowey e 17 flowey_lib_common::run_cargo_nextest_run 0
@@ -2375,7 +2405,7 @@ jobs:
     - job3
     - job3
     - job3
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -2562,9 +2592,6 @@ jobs:
         flowey.exe e 18 flowey_lib_common::cache 6
         flowey.exe e 18 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: init hyperv tests
-      run: flowey.exe e 18 flowey_lib_hvlite::init_hyperv_tests 0
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 18 flowey_lib_common::git_checkout 0
@@ -2590,6 +2617,12 @@ jobs:
         flowey.exe e 18 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 18 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 18 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (windows)
+      run: flowey.exe e 18 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -2645,7 +2678,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -2757,7 +2790,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -3000,7 +3033,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -3239,7 +3272,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -3486,7 +3519,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -3732,7 +3765,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -4035,7 +4068,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -4394,7 +4427,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x
@@ -4718,7 +4751,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: github.event.pull_request.draft == false
+    if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/queue-release-gates') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
     - run: |
         set -x

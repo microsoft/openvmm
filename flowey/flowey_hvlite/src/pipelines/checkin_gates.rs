@@ -120,7 +120,7 @@ impl IntoPipeline for CheckinGatesCli {
         )?;
 
         pipeline.inject_all_jobs_with(move |job| {
-            job.dep_on(&cfg_common_params)
+            let job = job.dep_on(&cfg_common_params)
                 .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
@@ -134,7 +134,24 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_grant_permissions::<flowey_lib_common::gh_task_azure_login::Node>([(
                     GhPermission::IdToken,
                     GhPermissionValue::Write,
-                )])
+                )]);
+            
+            // Add custom conditional logic for PrRelease configuration
+            match config {
+                PipelineConfig::PrRelease => {
+                    job.gh_dangerous_override_if(
+                        "(github.event_name == 'workflow_dispatch') || \
+                         (github.event_name == 'pull_request' && github.event.pull_request.draft == false) || \
+                         (github.event_name == 'issue_comment' && \
+                          github.event.issue.pull_request && \
+                          contains(github.event.comment.body, '/queue-release-gates') && \
+                          (github.event.comment.author_association == 'OWNER' || \
+                           github.event.comment.author_association == 'MEMBER' || \
+                           github.event.comment.author_association == 'COLLABORATOR'))"
+                    )
+                },
+                _ => job
+            }
         });
 
         let openhcl_musl_target = |arch: CommonArch| -> Triple {
