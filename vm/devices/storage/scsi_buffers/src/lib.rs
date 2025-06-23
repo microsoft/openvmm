@@ -14,6 +14,7 @@ use guestmem::LockedRangeImpl;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use guestmem::ranges::PagedRange;
+use guestmem::ranges::PagedRangeWriter;
 use safeatomic::AsAtomicBytes;
 use smallvec::SmallVec;
 use std::marker::PhantomData;
@@ -209,14 +210,29 @@ impl LockedRange for LockedIoVecs {
 /// when attempting to write to it.
 pub struct PermissionedMemoryWriter<'a> {
     range: PagedRange<'a>,
-    guest_memory: &'a GuestMemory,
+    writer: PagedRangeWriter<'a>,
     is_write: bool,
+}
+
+impl PermissionedMemoryWriter<'_> {
+    /// Creates a new memory writer with the given range and guest memory.
+    pub fn new<'a>(
+        range: PagedRange<'a>,
+        guest_memory: &'a GuestMemory,
+        is_write: bool,
+    ) -> PermissionedMemoryWriter<'a> {
+        PermissionedMemoryWriter {
+            range,
+            writer: range.writer(guest_memory),
+            is_write,
+        }
+    }
 }
 
 impl MemoryWrite for PermissionedMemoryWriter<'_> {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError> {
         if self.is_write {
-            self.range.writer(self.guest_memory).write(data)
+            self.writer.write(data)
         } else {
             Err(AccessError::ReadOnly)
         }
@@ -224,7 +240,7 @@ impl MemoryWrite for PermissionedMemoryWriter<'_> {
 
     fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError> {
         if self.is_write {
-            self.range.writer(self.guest_memory).fill(val, len)
+            self.writer.fill(val, len)
         } else {
             Err(AccessError::ReadOnly)
         }
@@ -286,11 +302,7 @@ impl<'a> RequestBuffers<'a> {
     ///
     /// Returns an empty writer if the buffers are only available for read access.
     pub fn writer(&self) -> impl MemoryWrite + '_ {
-        PermissionedMemoryWriter {
-            range: self.range,
-            guest_memory: self.guest_memory,
-            is_write: self.is_write,
-        }
+        PermissionedMemoryWriter::new(self.range, self.guest_memory, self.is_write)
     }
 
     /// Gets a memory reader for the buffers.
