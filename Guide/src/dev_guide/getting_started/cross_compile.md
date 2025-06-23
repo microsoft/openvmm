@@ -22,9 +22,6 @@ being used in WSL. This can be added by doing the following:
 rustup target add x86_64-pc-windows-msvc
 ```
 
-Note that today this is only supported with the external, public toolchain, not
-msrustup.
-
 Additional build tools must be installed as well. If your distro has LLVM 14
 available (Ubuntu 22.04 or newer):
 ```bash

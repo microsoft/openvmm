@@ -98,17 +98,21 @@ impl IntoPipeline for VmmTestsCli {
 
         let mut pipeline = Pipeline::new();
 
-        let host_target = match (
-            FlowArch::host(backend_hint),
-            FlowPlatform::host(backend_hint),
-        ) {
-            (FlowArch::Aarch64, FlowPlatform::Windows) => VmmTestTargetCli::WindowsAarch64,
-            (FlowArch::X86_64, FlowPlatform::Windows) => VmmTestTargetCli::WindowsX64,
-            (FlowArch::X86_64, FlowPlatform::Linux(_)) => VmmTestTargetCli::LinuxX64,
-            _ => anyhow::bail!("unsupported host"),
+        let target = if let Some(t) = target {
+            t
+        } else {
+            match (
+                FlowArch::host(backend_hint),
+                FlowPlatform::host(backend_hint),
+            ) {
+                (FlowArch::Aarch64, FlowPlatform::Windows) => VmmTestTargetCli::WindowsAarch64,
+                (FlowArch::X86_64, FlowPlatform::Windows) => VmmTestTargetCli::WindowsX64,
+                (FlowArch::X86_64, FlowPlatform::Linux(_)) => VmmTestTargetCli::LinuxX64,
+                _ => anyhow::bail!("unsupported host"),
+            }
         };
 
-        let target = match target.unwrap_or(host_target) {
+        let target = match target {
             VmmTestTargetCli::WindowsAarch64 => CommonTriple::AARCH64_WINDOWS_MSVC,
             VmmTestTargetCli::WindowsX64 => CommonTriple::X86_64_WINDOWS_MSVC,
             VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
