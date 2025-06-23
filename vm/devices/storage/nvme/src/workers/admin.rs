@@ -485,10 +485,13 @@ impl AdminHandler {
                     spec::AdminOpcode::GET_LOG_PAGE => self
                         .handle_get_log_page(state, &command)
                         .map(|()| Some(Default::default())),
-                    spec::AdminOpcode::DOORBELL_BUFFER_CONFIG => self
-                        .handle_doorbell_buffer_config(state, &command)
-                        .await
-                        .map(|()| Some(Default::default())),
+                    spec::AdminOpcode::DOORBELL_BUFFER_CONFIG
+                        if self.supports_shadow_doorbells(state) =>
+                    {
+                        self.handle_doorbell_buffer_config(state, &command)
+                            .await
+                            .map(|()| Some(Default::default()))
+                    }
                     opcode => {
                         tracelimit::warn_ratelimited!(?opcode, "unsupported opcode");
                         Err(spec::Status::INVALID_COMMAND_OPCODE.into())
@@ -1001,13 +1004,11 @@ impl AdminHandler {
         state: &mut AdminState,
         command: &spec::Command,
     ) -> Result<(), NvmeError> {
+        // Validated by caller.
+        assert!(self.supports_shadow_doorbells(state));
+
         let shadow_db_gpa = command.dptr[0];
         let event_idx_gpa = command.dptr[1];
-
-        // The spec only allows a single shadow doorbell page.
-        if !self.supports_shadow_doorbells(state) {
-            return Err(NvmeError::from(spec::Status::INVALID_COMMAND_OPCODE));
-        }
         if (shadow_db_gpa | event_idx_gpa) & !PAGE_MASK != 0 {
             return Err(NvmeError::from(spec::Status::INVALID_FIELD_IN_COMMAND));
         }
