@@ -46,12 +46,12 @@ impl IntoPipeline for OpenvmmPipelines {
     fn into_pipeline(self, pipeline_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         match self {
             OpenvmmPipelines::Regen { args } => {
-                std::process::Command::new("cargo")
+                let status = std::process::Command::new("cargo")
                     .args(["run", "-p", "flowey_hvlite", "--", "regen"])
                     .args(args)
                     .spawn()?
                     .wait()?;
-                std::process::exit(0)
+                std::process::exit(status.code().unwrap_or(-1));
             }
             OpenvmmPipelines::BuildIgvm(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::CustomVmfirmwareigvmDll(cmd) => cmd.into_pipeline(pipeline_hint),
