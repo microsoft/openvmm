@@ -116,6 +116,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -275,6 +276,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -455,6 +457,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -754,6 +757,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -1022,6 +1026,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -1361,6 +1366,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -1627,6 +1633,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -1863,6 +1870,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -2097,6 +2105,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -2253,6 +2262,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -2616,6 +2626,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -2771,6 +2782,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -2906,6 +2918,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -3143,6 +3156,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -3388,6 +3402,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -3655,6 +3670,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -3915,6 +3931,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -4220,6 +4237,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -4571,6 +4589,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -4895,6 +4914,7 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
+        ref: ${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories

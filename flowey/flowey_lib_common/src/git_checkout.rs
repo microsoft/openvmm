@@ -510,9 +510,19 @@ impl Node {
                     .with("fetch-depth", depth.unwrap_or(0).to_string())
                     .with("persist-credentials", persist_credentials_str)
                     .requires_permission(GhPermission::Contents, GhPermissionValue::Read);
-                if let RepoSource::GithubRepo { owner, name } = repo_src {
-                    step = step.with("repository", format!("{owner}/{name}"))
+                
+                // Handle repository and ref parameters based on repo source
+                match &repo_src {
+                    RepoSource::GithubRepo { owner, name } => {
+                        step = step.with("repository", format!("{owner}/{name}"));
+                    }
+                    RepoSource::GithubSelf => {
+                        // For issue comment triggers on pull requests, checkout the PR head ref
+                        step = step.with("ref", "${{ github.event_name == 'issue_comment' && github.event.pull_request.head.sha || github.ref }}");
+                    }
+                    _ => {}
                 }
+                
                 did_checkouts.push(step.finish(ctx));
             } else if !matches!(repo_src, RepoSource::ExistingClone(_)) {
                 anyhow::bail!(
