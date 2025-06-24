@@ -8426,9 +8426,11 @@ dependencies = [
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
+ "user_driver",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_core",
+ "vmbus_ring",
  "vmcore",
  "zerocopy 0.8.24",
 ]
