@@ -576,11 +576,14 @@ fn do_main() -> anyhow::Result<()> {
     }
 
     // Start loading modules in parallel.
-    std::thread::spawn(|| {
+    let thread = std::thread::spawn(|| {
         if let Err(err) = load_modules("/lib/modules") {
             panic!("failed to load modules: {:#}", err);
         }
     });
+    if std::env::var("OPENHCL_WAIT_FOR_MODULES").as_deref() == Ok("1") {
+        thread.join().unwrap();
+    }
 
     run(&options, new_env)
 }

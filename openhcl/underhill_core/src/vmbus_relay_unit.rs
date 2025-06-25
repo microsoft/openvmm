@@ -65,8 +65,4 @@ impl StateUnit for &'_ VmbusRelayUnit {
             .await
             .map_err(RestoreError::Other)
     }
-
-    async fn post_restore(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
 }

@@ -48,9 +48,7 @@ impl Printer {
 impl<T: rustyline::ExternalPrinter + ?Sized> Write for PrinterInner<T> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let s = String::from_utf8_lossy(buf).into_owned();
-        self.0
-            .print(s)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        self.0.print(s).map_err(std::io::Error::other)?;
 
         Ok(buf.len())
     }

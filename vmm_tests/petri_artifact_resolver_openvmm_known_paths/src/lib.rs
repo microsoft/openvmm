@@ -67,6 +67,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_vhd::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Vhd),
             _ if id == test_vhd::UBUNTU_2204_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2204ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd),
+            _ if id == test_vhd::WINDOWS_11_ENTERPRISE_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx),
 
             _ if id == test_iso::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Iso),
 
@@ -418,25 +419,10 @@ fn test_log_directory_path(test_name: &str) -> anyhow::Result<PathBuf> {
 }
 
 const VMM_TESTS_DIR_ENV_VAR: &str = "VMM_TESTS_CONTENT_DIR";
-const VMM_TESTS_REPO_ROOT_ENV_VAR: &str = "VMM_TESTS_REPO_ROOT";
 
 /// Gets a path to the root of the repo.
 pub fn get_repo_root() -> anyhow::Result<PathBuf> {
-    if let Ok(env_dir) = std::env::var(VMM_TESTS_REPO_ROOT_ENV_VAR) {
-        let repo_root = PathBuf::from(&env_dir);
-
-        if repo_root.exists() {
-            Ok(repo_root)
-        } else {
-            anyhow::bail!(
-                "{} from {} does not exist",
-                repo_root.display(),
-                VMM_TESTS_REPO_ROOT_ENV_VAR
-            )
-        }
-    } else {
-        Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-    }
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
 /// Attempts to find the given file, first checking for it relative to the test
@@ -465,8 +451,7 @@ pub fn get_path(
 
     if let Ok(env_dir) = std::env::var(VMM_TESTS_DIR_ENV_VAR) {
         let full_path = Path::new(&env_dir).join(file_name);
-
-        if full_path.exists() {
+        if full_path.try_exists()? {
             return Ok(full_path);
         }
     }

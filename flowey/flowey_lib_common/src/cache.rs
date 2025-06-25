@@ -50,15 +50,6 @@ pub enum CacheHit {
     PartialHit,
 }
 
-/// How the result of the cache task should be reported.
-#[derive(Serialize, Deserialize)]
-pub enum CacheResult {
-    /// Don't care about the details, only care that the task was run.
-    SideEffect(WriteVar<SideEffect>),
-    /// Get details on the result of the cache restore.
-    HitVar(WriteVar<CacheHit>),
-}
-
 flowey_request! {
     pub struct Request {
         /// Friendly label for the directory being cached
@@ -74,13 +65,8 @@ flowey_request! {
         /// sequentially in the order provided to find and restore a cache.
         pub restore_keys: Option<ReadVar<Vec<String>>>,
         /// Variable to write the result of trying to restore the cache.
-        pub hitvar: CacheResult,
+        pub hitvar: WriteVar<CacheHit>,
     }
-}
-
-enum ClaimedCacheResult {
-    SideEffect,
-    HitVar(ClaimedWriteVar<CacheHit>),
 }
 
 new_flow_node!(struct Node);
@@ -99,24 +85,11 @@ impl FlowNode for Node {
                     ctx.emit_minor_rust_step("Reporting cache misses", |ctx| {
                         let hitvars = requests
                             .into_iter()
-                            .map(|v| match v.hitvar {
-                                CacheResult::SideEffect(v) => {
-                                    v.claim(ctx);
-                                    ClaimedCacheResult::SideEffect
-                                }
-                                CacheResult::HitVar(v) => ClaimedCacheResult::HitVar(v.claim(ctx)),
-                            })
+                            .map(|v| v.hitvar.claim(ctx))
                             .collect::<Vec<_>>();
 
                         |rt| {
-                            for var in hitvars {
-                                match var {
-                                    ClaimedCacheResult::SideEffect => {}
-                                    ClaimedCacheResult::HitVar(var) => {
-                                        rt.write(var, &CacheHit::Miss)
-                                    }
-                                }
-                            }
+                            rt.write_all(hitvars, &CacheHit::Miss);
                         }
                     });
 
@@ -135,33 +108,29 @@ impl FlowNode for Node {
                     // culling...
                     let persistent_dir = ctx.persistent_dir().unwrap();
 
-                    // regardless if we're reporting the hit back to the user, we'll
-                    // want to record the hit status so we can efficiently skip
-                    // saving to the cache in the post-job step
-                    let (side_effect, (hitvar_reader, hitvar)) = match hitvar {
-                        CacheResult::HitVar(hitvar) => (None, (hitvar.new_reader(), hitvar)),
-                        CacheResult::SideEffect(var) => (Some(var), ctx.new_var()),
-                    };
+                    // Needed for saving the cache result.
+                    let (hitvar_reader, hitvar2) = ctx.new_var();
 
                     let (resolve_post_job, require_post_job) = ctx.new_post_job_side_effect();
 
                     ctx.emit_rust_step(format!("Restore cache: {label}"), |ctx| {
                         require_post_job.claim(ctx);
-                        side_effect.claim(ctx);
                         let persistent_dir = persistent_dir.clone().claim(ctx);
                         let dir = dir.clone().claim(ctx);
                         let key = key.clone().claim(ctx);
                         let restore_keys = restore_keys.claim(ctx);
                         let hitvar = hitvar.claim(ctx);
+                        let hitvar2 = hitvar2.claim(ctx);
                         |rt| {
                             let persistent_dir = rt.read(persistent_dir);
                             let dir = rt.read(dir);
                             let key = rt.read(key);
-                            let restore_keys = restore_keys.map(|x| rt.read(x));
+                            let restore_keys = rt.read(restore_keys);
 
                             let set_hitvar = move |val| {
                                 log::info!("cache status: {val:?}");
                                 rt.write(hitvar, &val);
+                                rt.write(hitvar2, &val);
                             };
 
                             // figure out what cache entries are available to us
@@ -328,13 +297,7 @@ impl FlowNode for Node {
                         (processed_dir, processed_key, processed_keys)
                     };
 
-                    let (hitvar_str_reader, hitvar_str_writer) =
-                        if matches!(hitvar, CacheResult::HitVar(..)) {
-                            let (r, w) = ctx.new_var();
-                            (Some(r), Some(w))
-                        } else {
-                            (None, None)
-                        };
+                    let (hitvar_str_reader, hitvar_str_writer) = ctx.new_var();
 
                     ctx.emit_ado_step(format!("Restore cache: {label}"), |ctx| {
                         let dir_string = dir_string.clone().claim(ctx);
@@ -353,19 +316,12 @@ impl FlowNode for Node {
                                 String::new()
                             };
 
-                            let hitvar_input = if let Some(hitvar_str_writer) = hitvar_str_writer {
-                                let hitvar_ado = AdoRuntimeVar::dangerous_from_global(
-                                    "FLOWEY_CACHE_HITVAR",
-                                    false,
-                                );
-                                // note the _lack_ of $() around the var!
-                                let input =
-                                    format!("cacheHitVar: {}", hitvar_ado.as_raw_var_name());
-                                rt.set_var(hitvar_str_writer, hitvar_ado);
-                                input
-                            } else {
-                                String::new()
-                            };
+                            let hitvar_ado =
+                                AdoRuntimeVar::dangerous_from_global("FLOWEY_CACHE_HITVAR", false);
+                            // note the _lack_ of $() around the var!
+                            let hitvar_input =
+                                format!("cacheHitVar: {}", hitvar_ado.as_raw_var_name());
+                            rt.set_var(hitvar_str_writer, hitvar_ado);
 
                             format!(
                                 r#"
@@ -380,14 +336,9 @@ impl FlowNode for Node {
                         }
                     });
 
-                    if let Some(hitvar_str_reader) = hitvar_str_reader {
-                        ctx.emit_rust_step("map ADO hitvar to flowey", |ctx| {
+                    ctx.emit_rust_step("map ADO hitvar to flowey", |ctx| {
                         let label = label.clone();
                         let dir = dir.clone().claim(ctx);
-
-                        let CacheResult::HitVar(hitvar) = hitvar else {
-                            unreachable!()
-                        };
 
                         let hitvar = hitvar.claim(ctx);
                         let hitvar_str_reader = hitvar_str_reader.claim(ctx);
@@ -417,7 +368,6 @@ impl FlowNode for Node {
                             Ok(())
                         }
                     });
-                    }
 
                     ctx.emit_rust_step(format!("validate cache entry: {label}"), |ctx| {
                         resolve_post_job.claim(ctx);
@@ -509,13 +459,7 @@ impl FlowNode for Node {
                         (processed_dir, processed_key, processed_keys)
                     };
 
-                    let (hitvar_str_reader, hitvar_str_writer) =
-                        if matches!(hitvar, CacheResult::HitVar(..)) {
-                            let (r, w) = ctx.new_var();
-                            (Some(r), Some(w))
-                        } else {
-                            (None, None)
-                        };
+                    let (hitvar_str_reader, hitvar_str_writer) = ctx.new_var();
 
                     let mut step = ctx
                         .emit_gh_step(format!("Restore cache: {label}"), "actions/cache@v4")
@@ -524,33 +468,24 @@ impl FlowNode for Node {
                     if let Some(restore_keys) = restore_keys {
                         step = step.with("restore-keys", restore_keys);
                     }
-                    if let Some(hitvar_str_writer) = hitvar_str_writer {
-                        step = step.output("cache-hit", hitvar_str_writer);
-                    }
-                    step.finish(ctx);
+                    step.output("cache-hit", hitvar_str_writer).finish(ctx);
 
-                    if let Some(hitvar_str_reader) = hitvar_str_reader {
-                        ctx.emit_minor_rust_step("map Github cache-hit to flowey", |ctx| {
-                            let CacheResult::HitVar(hitvar) = hitvar else {
-                                unreachable!()
+                    ctx.emit_minor_rust_step("map Github cache-hit to flowey", |ctx| {
+                        let hitvar = hitvar.claim(ctx);
+                        let hitvar_str_reader = hitvar_str_reader.claim(ctx);
+                        // TODO: How do we distinguish between a partial hit and a miss?
+                        move |rt| {
+                            let hitvar_str = rt.read(hitvar_str_reader);
+                            // Github's cache action brilliantly only reports "false" if missing a cache key that exists,
+                            // and leaves it blank if its a miss in other cases.
+                            let var = match hitvar_str.as_str() {
+                                "true" => CacheHit::Hit,
+                                _ => CacheHit::Miss,
                             };
 
-                            let hitvar = hitvar.claim(ctx);
-                            let hitvar_str_reader = hitvar_str_reader.claim(ctx);
-                            // TODO: How do we distinguish between a partial hit and a miss?
-                            move |rt| {
-                                let hitvar_str = rt.read(hitvar_str_reader);
-                                // Github's cache action brilliantly only reports "false" if missing a cache key that exists,
-                                // and leaves it blank if its a miss in other cases.
-                                let var = match hitvar_str.as_str() {
-                                    "true" => CacheHit::Hit,
-                                    _ => CacheHit::Miss,
-                                };
-
-                                rt.write(hitvar, &var);
-                            }
-                        });
-                    }
+                            rt.write(hitvar, &var);
+                        }
+                    });
 
                     ctx.emit_rust_step(format!("validate cache entry: {label}"), |ctx| {
                         resolve_post_job.claim(ctx);

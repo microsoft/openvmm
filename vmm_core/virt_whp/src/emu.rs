@@ -197,7 +197,9 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         }
     }
 
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         if let WhpVpRefEmulation::MemoryAccessContext(access) = self.access {
             if !(access.AccessInfo.GvaValid()) {
                 return None;

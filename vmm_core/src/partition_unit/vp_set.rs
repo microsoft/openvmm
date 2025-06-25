@@ -138,12 +138,12 @@ where
             VpHaltReason::TripleFault { vtl } => {
                 let registers = self.vp.access_state(vtl).registers().ok().map(Arc::new);
 
+                tracing::error!(?vtl, vp = self.vp_index.index(), "triple fault");
                 self.trace_fault(
                     vtl,
                     vtl_guest_memory[vtl as usize].as_ref(),
                     registers.as_deref(),
                 );
-                tracing::error!(?vtl, "triple fault");
                 Err(HaltReason::TripleFault {
                     vp: self.vp_index.index(),
                     registers,
@@ -260,8 +260,8 @@ where
 {
     fn inspect_vtl(&mut self, gm: Option<&GuestMemory>, req: inspect::Request<'_>, vtl: Vtl) {
         let mut resp = req.respond();
-        resp.field("enabled", true);
-        self.vp.access_state(vtl).inspect_all(resp.request());
+        resp.field("enabled", true)
+            .merge(self.vp.access_state(vtl).inspect_all());
 
         let _ = gm;
         #[cfg(all(guest_arch = "x86_64", feature = "gdb"))]
@@ -293,6 +293,8 @@ where
         guest_memory: Option<&GuestMemory>,
         registers: Option<&virt::x86::vp::Registers>,
     ) {
+        use cvm_tracing::CVM_CONFIDENTIAL;
+
         #[cfg(not(feature = "gdb"))]
         let _ = (guest_memory, vtl);
 
@@ -337,10 +339,33 @@ where
             efer,
         } = *registers;
         tracing::error!(
-            rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15, rip,
+            CVM_CONFIDENTIAL,
+            vp = self.vp_index.index(),
+            ?vtl,
+            rax,
+            rcx,
+            rdx,
+            rbx,
+            rsp,
+            rbp,
+            rsi,
+            rdi,
+            r8,
+            r9,
+            r10,
+            r11,
+            r12,
+            r13,
+            r14,
+            r15,
+            rip,
             rflags,
+            "triple fault register state",
         );
         tracing::error!(
+            CVM_CONFIDENTIAL,
+            ?vtl,
+            vp = self.vp_index.index(),
             ?cs,
             ?ds,
             ?es,
@@ -357,6 +382,7 @@ where
             cr4,
             cr8,
             efer,
+            "triple fault system register state",
         );
 
         #[cfg(feature = "gdb")]
@@ -365,6 +391,7 @@ where
                 vp_state::next_instruction(guest_memory, self, vtl, registers)
             {
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     instruction = instr.to_string(),
                     ?bytes,
                     "faulting instruction"
@@ -708,10 +735,12 @@ struct Vp {
 
 impl Inspect for Vp {
     fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        resp.merge(&self.vp_info);
-        self.send
-            .send(VpEvent::State(StateEvent::Inspect(resp.request().defer())));
+        req.respond()
+            .merge(&self.vp_info)
+            .merge(inspect::adhoc(|req| {
+                self.send
+                    .send(VpEvent::State(StateEvent::Inspect(req.defer())))
+            }));
     }
 }
 
@@ -1032,7 +1061,15 @@ impl RunnerCanceller {
 
 /// Error returned when a VP run is cancelled.
 #[derive(Debug)]
-pub struct RunCancelled;
+pub struct RunCancelled(bool);
+
+impl RunCancelled {
+    /// Returns `true` if the run was cancelled by the user, or `false` if it was
+    /// cancelled by the VP itself.
+    pub fn is_user_cancelled(&self) -> bool {
+        self.0
+    }
+}
 
 struct RunnerInner {
     vp: VpIndex,
@@ -1079,7 +1116,7 @@ impl VpRunner {
                 let r = (self.recv.next().map(Ok), self.cancel_recv.next().map(Err))
                     .race()
                     .await
-                    .map_err(|_| RunCancelled)?;
+                    .map_err(|_| RunCancelled(true))?;
                 match r {
                     Some(VpEvent::Start) => {
                         assert_eq!(self.inner.state, VpState::Stopped);
@@ -1104,7 +1141,7 @@ impl VpRunner {
 
             let mut stop_complete = None;
             let mut state_requests = Vec::new();
-            let mut cancelled = false;
+            let mut cancelled_by_user = None;
             {
                 enum Event {
                     Vp(VpEvent),
@@ -1171,7 +1208,7 @@ impl VpRunner {
                         Event::Cancel => {
                             tracing::debug!("run cancelled externally");
                             stop.stop();
-                            cancelled = true;
+                            cancelled_by_user = Some(true);
                         }
                         Event::Teardown => {
                             tracing::debug!("tearing down");
@@ -1185,7 +1222,7 @@ impl VpRunner {
                                 }
                                 Ok(StopReason::Cancel) => {
                                     tracing::debug!("run cancelled internally");
-                                    cancelled = true;
+                                    cancelled_by_user = Some(false);
                                 }
                                 Err(halt_reason) => {
                                     tracing::debug!("VP halted");
@@ -1206,8 +1243,8 @@ impl VpRunner {
                 send.send(());
             }
 
-            if cancelled {
-                return Err(RunCancelled);
+            if let Some(by_user) = cancelled_by_user {
+                return Err(RunCancelled(by_user));
             }
         }
     }
@@ -1218,8 +1255,10 @@ impl RunnerInner {
         match event {
             StateEvent::Inspect(deferred) => {
                 deferred.respond(|resp| {
-                    resp.field("state", self.state);
-                    vp.inspect_vp(&self.inner.vtl_guest_memory, resp.request());
+                    resp.field("state", self.state)
+                        .merge(inspect::adhoc_mut(|req| {
+                            vp.inspect_vp(&self.inner.vtl_guest_memory, req)
+                        }));
                 });
             }
             StateEvent::SetInitialRegs(rpc) => {

@@ -26,6 +26,7 @@
   - [Building OpenHCL](./dev_guide/getting_started/build_openhcl.md)
     - [Building a Custom Kernel](./dev_guide/getting_started/build_ohcl_kernel.md)
   - [Suggested Dev Environment](./dev_guide/getting_started/suggested_dev_env.md)
+  - [Cross Compiling for Windows](./dev_guide/getting_started/cross_compile.md)
 - [Testing](./dev_guide/tests.md)
   - [Unit Tests](./dev_guide/tests/unit.md)
   - [VMM Tests](./dev_guide/tests/vmm.md)
@@ -43,8 +44,10 @@
   - [hypestv](./dev_guide/dev_tools/hypestv.md)
 - [Contributing](./dev_guide/contrib.md)
   - [Coding Conventions](./dev_guide/contrib/code.md)
+  - [Save State](./dev_guide/contrib/save-state.md)
   - [Releases & Code Flow](./dev_guide/contrib/release.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)
+  - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
 
 # Reference

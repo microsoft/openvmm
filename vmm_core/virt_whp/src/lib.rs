@@ -29,7 +29,6 @@ use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
-use hv1_structs::VtlArray;
 use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvMessage;
@@ -174,7 +173,7 @@ struct RunState {
     active_vtl: Vtl,
     enabled_vtls: VtlSet,
     runnable_vtls: VtlSet,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     vtl2_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     vtl2_wakeup_vmtime: Option<VmTimeAccess>,
     #[inspect(skip)]
@@ -202,7 +201,7 @@ struct PerVtlRunState {
     #[cfg(guest_arch = "x86_64")]
     lapic: Option<apic::ApicState>,
     hv: Option<ProcessorVtlHv>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     // Only used when `hv` is `None`.
     vp_assist_page: u64,
@@ -451,7 +450,7 @@ impl virt::ResetPartition for WhpPartition {
                 .reset(true);
         }
 
-        self.inner.hvstate.reset();
+        self.inner.hvstate.reset(&self.inner.gm);
 
         Ok(())
     }
@@ -463,6 +462,8 @@ impl virt::ScrubVtl for WhpPartition {
     fn scrub(&self, vtl: Vtl) -> Result<(), Error> {
         assert!(!self.inner.isolation.is_isolated());
         assert_eq!(vtl, Vtl::Vtl2);
+
+        tracing::info!(?vtl, "scrubbing partition");
 
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
 
@@ -622,8 +623,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 .vtl2
                 .as_ref()
                 .map(|vtl2| &vtl2.vplcs[self.index.index() as usize]),
-
-            tlb_lock: false,
         };
 
         let vp_info = &vp.inner.vp_info;
@@ -675,11 +674,6 @@ pub struct WhpProcessor<'a> {
     state: RunState,
     vplc0: &'a Vplc,
     vplc2: Option<&'a Vplc>,
-
-    /// Whether the VTL 0 TLB is locked by VTL 2 or not.
-    // TODO: This doesn't actually control anything, we just
-    // track it so we can report it back correctly when asked.
-    tlb_lock: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -1043,7 +1037,6 @@ impl WhpPartitionInner {
                     tsc_frequency,
                     ref_time,
                     is_ref_time_backed_by_tsc: false,
-                    guest_memory: VtlArray::from_fn(|_| config.guest_memory.clone()),
                 }))
             }
         } else {
@@ -1161,6 +1154,8 @@ impl VtlPartition {
     fn new(config: &ProtoPartitionConfig<'_>, vtl: Vtl) -> Result<Self, Error> {
         let mut hypervisor_enlightened = false;
 
+        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
+
         let user_mode_apic = config.user_mode_apic
             || config
                 .hv_config
@@ -1173,6 +1168,10 @@ impl VtlPartition {
                 config.processor_topology.apic_mode(),
                 vm_topology::processor::x86::ApicMode::XApic
             );
+            if x2apic_capable {
+                // Needed to set the x2apic bit.
+                extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
+            }
             let lapic = virt_support_apic::LocalApicSet::builder()
                 .x2apic_capable(x2apic_capable)
                 .hyperv_enlightenments(config.hv_config.is_some())
@@ -1192,7 +1191,6 @@ impl VtlPartition {
             ))
             .for_op("set processor count")?;
 
-        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
         #[cfg(guest_arch = "x86_64")]
         {
             use vm_topology::processor::x86::ApicMode;
@@ -1448,20 +1446,31 @@ impl VtlPartition {
     }
 }
 
-struct WhpNoVtlProtections;
-impl hv1_emulator::hv::VtlProtectHypercallOverlay for WhpNoVtlProtections {
-    fn change_overlay(&mut self, _gpn: u64) {}
-    fn disable_overlay(&mut self) {}
+struct WhpNoVtlProtections<'a>(&'a GuestMemory);
+impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, hvdef::HvError> {
+        Ok(self.0.lock_gpns(false, &[gpn]).unwrap())
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {
+        Ok(())
+    }
 }
 
 impl Hv1State {
-    fn reset(&self) {
+    fn reset(&self, guest_memory: &GuestMemory) {
         match self {
             Hv1State::Emulated(hv) => hv.reset(
                 [
-                    &mut WhpNoVtlProtections
-                        as &mut dyn hv1_emulator::hv::VtlProtectHypercallOverlay,
-                    &mut WhpNoVtlProtections,
+                    &mut WhpNoVtlProtections(guest_memory)
+                        as &mut dyn hv1_emulator::VtlProtectAccess,
+                    &mut WhpNoVtlProtections(guest_memory),
+                    &mut WhpNoVtlProtections(guest_memory),
                 ]
                 .into(),
             ),

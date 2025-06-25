@@ -1531,8 +1531,8 @@ mod x86 {
                         return Err(HvError::AccessDenied);
                     }
 
-                    u64::from(HvRegisterVsmVpSecureVtlConfig::new().with_tlb_locked(self.tlb_lock))
-                        .into()
+                    // WHP locks the TLB on every exit, so this is already locked.
+                    u64::from(HvRegisterVsmVpSecureVtlConfig::new().with_tlb_locked(true)).into()
                 }
                 reg => {
                     if let Ok(name) = regs::hv_register_to_whp(reg) {
@@ -1629,8 +1629,11 @@ mod x86 {
                         return Err(HvError::AccessDenied);
                     }
 
-                    self.tlb_lock =
-                        HvRegisterVsmVpSecureVtlConfig::from(value.as_u64()).tlb_locked();
+                    // WHP locks the TLB on every exit, so this is already locked.
+                    // Make sure the guest isn't trying to unlock.
+                    if !HvRegisterVsmVpSecureVtlConfig::from(value.as_u64()).tlb_locked() {
+                        return Err(HvError::InvalidParameter);
+                    }
                 }
 
                 reg => {

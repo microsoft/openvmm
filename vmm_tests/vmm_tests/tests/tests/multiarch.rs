@@ -4,16 +4,20 @@
 //! Integration tests that run on more than one architecture.
 
 use anyhow::Context;
+use futures::StreamExt;
 use get_resources::ged::FirmwareEvent;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
 use petri::PetriVmConfig;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::PetriVmConfigOpenVmm;
+use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
@@ -41,6 +45,7 @@ async fn frontpage(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     openvmm_openhcl_linux_direct_x64,
     openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
@@ -48,9 +53,11 @@ async fn frontpage(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
@@ -60,6 +67,118 @@ async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
+}
+
+/// Basic boot test with secure boot enabled and a valid template.
+#[vmm_test(
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn secure_boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let (vm, agent) = config.with_secure_boot().run().await?;
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Verify that secure boot fails with a mismatched template.
+/// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
+#[vmm_test(
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    // hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    // hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    // hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn secure_boot_mismatched_template(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = match config.os_flavor() {
+        OsFlavor::Windows => {
+            config
+                .with_secure_boot()
+                .with_uefi_ca_secure_boot_template()
+                .with_uefi_frontpage(false)
+                .run_without_agent()
+                .await?
+        }
+        OsFlavor::Linux => {
+            config
+                .with_secure_boot()
+                .with_windows_secure_boot_template()
+                .with_uefi_frontpage(false)
+                .run_without_agent()
+                .await?
+        }
+        _ => anyhow::bail!("Unsupported OS flavor for test: {:?}", config.os_flavor()),
+    };
+    assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Basic boot test for guests that are expected to reboot
+// TODO: Remove this test and other enable Windows 11 ARM OpenVMM tests
+// once we figure out how to get the guest to not reboot via IMC or other
+// means. At that point, we can also use Windows Server 2025 for x64 tests.
+// Hyper-V VMs work for now since we don't notice that they reboot
+#[openvmm_test(openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)))]
+async fn boot_reset_expected(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let mut vm = config.run_with_lazy_pipette().await?;
+    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+    vm.reset().await?;
+    let agent = vm.wait_for_agent().await?;
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Test EFI diagnostics with no boot devices on OpenVMM.
+/// TODO:
+///   - kmsg support in Hyper-V
+///   - openhcl_uefi_aarch64 support
+///   - uefi_x64 + uefi_aarch64 trace searching support
+#[openvmm_test(openhcl_uefi_x64(none))]
+async fn efi_diagnostics_no_boot(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let mut vm = config.with_uefi_frontpage(true).run_without_agent().await?;
+
+    // Boot the VM first
+    vm.wait_for_successful_boot_event().await?;
+
+    // Expected no-boot message.
+    const NO_BOOT_MSG: &str = "[Bds] Unable to boot!";
+
+    // Get kmsg stream
+    let mut kmsg = vm.kmsg().await?;
+
+    // Search for the message
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data)?;
+        let raw = msg.message.as_raw();
+        if raw.contains(NO_BOOT_MSG) {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Did not find expected message in kmsg");
 }
 
 /// Test the KVP IC.
@@ -147,6 +266,7 @@ async fn kvp_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 #[openvmm_test(
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2204_server_x64)),
+    // uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     linux_direct_x64
 )]
@@ -191,6 +311,7 @@ async fn timesync_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     openvmm_openhcl_linux_direct_x64,
     // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     // openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
@@ -226,6 +347,7 @@ async fn reboot(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     openvmm_pcat_x64(iso(freebsd_13_2_x64)),
     openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
@@ -233,6 +355,7 @@ async fn reboot(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     // hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
@@ -247,6 +370,20 @@ async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Test for vmbus relay
+// TODO: VBS isolation was failing and other targets too
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Basic boot test without agent and with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
@@ -255,7 +392,13 @@ async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 async fn boot_no_agent_single_proc(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
-    let mut vm = config.with_processors(1).run_without_agent().await?;
+    let mut vm = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 1,
+            ..Default::default()
+        })
+        .run_without_agent()
+        .await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -269,6 +412,7 @@ async fn boot_no_agent_single_proc(config: Box<dyn PetriVmConfig>) -> anyhow::Re
     openvmm_openhcl_linux_direct_x64,
     // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     // openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
@@ -302,13 +446,14 @@ async fn guest_test_uefi(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
         .with_windows_secure_boot_template()
         .run_without_agent()
         .await?;
+    let arch = vm.arch();
     // No boot event check, UEFI watchdog gets fired before ExitBootServices
     let halt_reason = vm.wait_for_teardown().await?;
     tracing::debug!("vm halt reason: {halt_reason:?}");
-    #[cfg(guest_arch = "x86_64")]
-    assert!(matches!(halt_reason, HaltReason::TripleFault { .. }));
-    #[cfg(guest_arch = "aarch64")]
-    assert!(matches!(halt_reason, HaltReason::Reset));
+    match arch {
+        MachineArch::X86_64 => assert!(matches!(halt_reason, HaltReason::TripleFault { .. })),
+        MachineArch::Aarch64 => assert!(matches!(halt_reason, HaltReason::Reset)),
+    }
     Ok(())
 }
 
@@ -316,11 +461,13 @@ async fn guest_test_uefi(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
 #[vmm_test(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
@@ -381,6 +528,7 @@ async fn five_gb(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
 /// Verify that UEFI default boots even if invalid boot entries exist
 /// when `default_boot_always_attempt` is enabled.
 #[openvmm_test(
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
@@ -392,8 +540,33 @@ async fn default_boot(
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
-        .with_vmgs(initial_vmgs)
+        .with_vmgs(petri::PetriVmgsResource::Disk(initial_vmgs))
         .with_default_boot_always_attempt(true)
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
+}
+
+/// Verify that UEFI successfully boots an operating system after reprovisioning
+/// the VMGS when invalid boot entries existed initially.
+#[openvmm_test(
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
+)]
+async fn clear_vmgs(
+    config: PetriVmConfigOpenVmm,
+    (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
+) -> Result<(), anyhow::Error> {
+    let (vm, agent) = config
+        .with_vmgs(petri::PetriVmgsResource::Reprovision(initial_vmgs))
         .run()
         .await?;
 
@@ -406,19 +579,23 @@ async fn default_boot(
 /// Verify that UEFI fails to boot if invalid boot entries exist
 ///
 /// This test exists to ensure we are not getting a false positive for
-/// the `default_boot` test above.
+/// the `default_boot` and `clear_vmgs` test above.
 #[openvmm_test(
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
 )]
-async fn no_default_boot(
+async fn boot_expect_fail(
     config: PetriVmConfigOpenVmm,
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
 ) -> Result<(), anyhow::Error> {
-    let mut vm = config.with_vmgs(initial_vmgs).run_without_agent().await?;
+    let mut vm = config
+        .with_vmgs(petri::PetriVmgsResource::Disk(initial_vmgs))
+        .run_without_agent()
+        .await?;
 
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

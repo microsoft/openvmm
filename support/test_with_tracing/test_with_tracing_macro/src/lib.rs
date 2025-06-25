@@ -3,6 +3,8 @@
 
 //! Test attribute macro for `test_with_tracing` crate.
 
+#![forbid(unsafe_code)]
+
 use quote::quote;
 use syn::Error;
 use syn::ItemFn;

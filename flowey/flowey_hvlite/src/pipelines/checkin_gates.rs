@@ -22,13 +22,15 @@ use vmm_test_images::KnownTestArtifacts;
 
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {
-    /// Run on all PRs targeting the OpenVMM github repo
+    /// Run on all PRs targeting the OpenVMM GitHub repo.
     Pr,
-    /// Run on all commits that land in OpenVMM's `main` branch.
+    /// Run on all commits that land in a branch.
     ///
     /// The key difference between the CI and PR pipelines is whether things are
     /// being built in `release` mode.
     Ci,
+    /// Release variant of the `Pr` pipeline.
+    PrRelease,
 }
 
 /// A unified pipeline defining all checkin gates required to land a commit in
@@ -56,7 +58,7 @@ impl IntoPipeline for CheckinGatesCli {
         } = self;
 
         let release = match config {
-            PipelineConfig::Ci => true,
+            PipelineConfig::Ci | PipelineConfig::PrRelease => true,
             PipelineConfig::Pr => false,
         };
 
@@ -81,6 +83,10 @@ impl IntoPipeline for CheckinGatesCli {
                             ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("[flowey] OpenVMM PR");
+                }
+                PipelineConfig::PrRelease => {
+                    // This workflow is triggered manually.
+                    pipeline.gh_set_name("[flowey] OpenVMM Release PR");
                 }
             }
         }
@@ -165,95 +171,6 @@ impl IntoPipeline for CheckinGatesCli {
         // There's more info in the following discussion:
         // <https://github.com/orgs/community/discussions/12395>
         let mut all_jobs = Vec::new();
-
-        // emit mdbook guide build job
-        let (pub_guide, use_guide) = pipeline.new_artifact("guide");
-        let job = pipeline
-            .new_job(
-                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                FlowArch::X86_64,
-                "build mdbook guide",
-            )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-            ))
-            .dep_on(
-                |ctx| flowey_lib_hvlite::_jobs::build_and_publish_guide::Params {
-                    artifact_dir: ctx.publish_artifact(pub_guide),
-                    done: ctx.new_done_handle(),
-                },
-            )
-            .finish();
-
-        all_jobs.push(job);
-
-        // emit rustdoc jobs
-        let (pub_rustdoc_linux, use_rustdoc_linux) = pipeline.new_artifact("x64-linux-rustdoc");
-        let (pub_rustdoc_win, use_rustdoc_win) = pipeline.new_artifact("x64-windows-rustdoc");
-        for (target, platform, pub_rustdoc) in [
-            (
-                CommonTriple::X86_64_WINDOWS_MSVC,
-                FlowPlatform::Windows,
-                pub_rustdoc_win,
-            ),
-            (
-                CommonTriple::X86_64_LINUX_GNU,
-                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                pub_rustdoc_linux,
-            ),
-        ] {
-            let job = pipeline
-                .new_job(
-                    platform,
-                    FlowArch::X86_64,
-                    format!("build and check docs [x64-{platform}]"),
-                )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    platform,
-                ))
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_rustdoc::Params {
-                        target_triple: target.as_triple(),
-                        artifact_dir: ctx.publish_artifact(pub_rustdoc),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .finish();
-
-            all_jobs.push(job);
-        }
-
-        // emit consolidated gh pages publish job
-        if matches!(config, PipelineConfig::Ci) {
-            let artifact_dir = if matches!(backend_hint, PipelineBackendHint::Local) {
-                let (publish, _use) = pipeline.new_artifact("gh-pages");
-                Some(publish)
-            } else {
-                None
-            };
-
-            let job = pipeline
-                .new_job(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu), FlowArch::X86_64, "publish openvmm.dev")
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Params {
-                        rustdoc_linux: ctx.use_artifact(&use_rustdoc_linux),
-                        rustdoc_windows: ctx.use_artifact(&use_rustdoc_win),
-                        guide: ctx.use_artifact(&use_guide),
-                        artifact_dir: artifact_dir.map(|x| ctx.publish_artifact(x)),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .gh_grant_permissions::<flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Node>([
-                    (GhPermission::IdToken, GhPermissionValue::Write),
-                    (GhPermission::Pages, GhPermissionValue::Write),
-                ])
-                .finish();
-
-            all_jobs.push(job);
-        }
 
         // emit xtask fmt job
         {
@@ -389,7 +306,7 @@ impl IntoPipeline for CheckinGatesCli {
                             arch,
                             platform: CommonPlatform::WindowsMsvc,
                         },
-                        profile: CommonProfile::from_release(release),
+                        profile: CommonProfile::from_release(release).into(),
                     },
                     igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
                 })
@@ -575,7 +492,7 @@ impl IntoPipeline for CheckinGatesCli {
                             arch,
                             platform: CommonPlatform::LinuxGnu,
                         },
-                        profile: CommonProfile::from_release(release),
+                        profile: CommonProfile::from_release(release).into(),
                     },
                     igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
                 })
@@ -1006,11 +923,8 @@ impl IntoPipeline for CheckinGatesCli {
                 label: "x64-linux",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
-                // - OpenHCL is not supported on KVM
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                nextest_filter_expr: format!(
-                    "{standard_filter} & !test(openhcl) & !test(pcat_x64)"
-                ),
+                nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts,
             },
             VmmTestJobParams {
@@ -1023,6 +937,7 @@ impl IntoPipeline for CheckinGatesCli {
                 nextest_filter_expr: "all()".to_string(),
                 test_artifacts: vec![
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
+                    KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
                     KnownTestArtifacts::VmgsWithBootEntry,
                 ],
             },

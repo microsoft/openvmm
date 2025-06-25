@@ -3,6 +3,8 @@
 
 //! Emulator for 16550 serial UART.
 
+#![forbid(unsafe_code)]
+
 pub mod resolver;
 mod spec;
 

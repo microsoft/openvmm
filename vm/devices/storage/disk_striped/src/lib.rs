@@ -125,7 +125,7 @@ enum IoError {
 
 impl From<IoError> for DiskError {
     fn from(err: IoError) -> Self {
-        DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+        DiskError::Io(std::io::Error::other(err))
     }
 }
 

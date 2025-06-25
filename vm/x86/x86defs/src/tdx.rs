@@ -13,6 +13,7 @@ use zerocopy::KnownLayout;
 
 pub const TDX_SHARED_GPA_BOUNDARY_BITS: u8 = 47;
 pub const TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT: u64 = 1 << TDX_SHARED_GPA_BOUNDARY_BITS;
+pub const RESET_VECTOR_PAGE: u64 = 0xfffff000;
 
 open_enum! {
     /// TDCALL instruction leafs that are passed into the tdcall instruction

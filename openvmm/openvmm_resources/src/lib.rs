@@ -95,7 +95,3 @@ mesh_worker::register_workers! {
     #[cfg(feature = "gdb")]
     debug_worker::DebuggerWorker<std::net::TcpListener>,
 }
-
-/// Call this to ensure the resolvers get linked on macos.
-/// <https://github.com/dtolnay/linkme/issues/61>
-pub fn ensure_linked_on_macos() {}

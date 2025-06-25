@@ -10,9 +10,11 @@
 
 #![cfg(feature = "tpm")]
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod ak_cert;
 pub mod logger;
+mod recover;
 pub mod resolver;
 mod tpm20proto;
 mod tpm_helper;
@@ -26,6 +28,8 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -86,6 +90,7 @@ const TPM_GUEST_SECRET_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PER
 
 // Reserved handles for Microsoft (Component OEM) ranges from 0x01c101c0 to 0x01c101ff
 const TPM_NV_INDEX_AIK_CERT: u32 = NV_INDEX_RANGE_BASE_TCG_ASSIGNED + 0x000101d0;
+const TPM_NV_INDEX_MITIGATED: u32 = NV_INDEX_RANGE_BASE_TCG_ASSIGNED + 0x000101d2;
 const TPM_NV_INDEX_ATTESTATION_REPORT: u32 = NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER + 0x1;
 const TPM_NV_INDEX_GUEST_ATTESTATION_INPUT: u32 = NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER + 0x2;
 
@@ -97,6 +102,9 @@ const ATTESTATION_REPORT_DATA_SIZE: usize = 0x40;
 const AK_CERT_RENEW_PERIOD: std::time::Duration = std::time::Duration::new(24 * 60 * 60, 0);
 // 2 seconds
 const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
+
+// 16kB: vtpmservice provisions a 16kB blob for the vTPM; HCL/OpenHCL provisions a 32k blob
+const LEGACY_VTPM_SIZE: usize = 16384;
 
 #[derive(Debug, Copy, Clone, Inspect)]
 #[repr(C)]
@@ -438,6 +446,7 @@ impl Tpm {
 
     async fn on_first_boot(&mut self, guest_secret_key: Option<Vec<u8>>) -> Result<(), TpmError> {
         use ms_tpm_20_ref::NvError;
+        let fixup_16k_ak_cert;
 
         // Check whether or not we need to pave-over the blank TPM with our
         // existing nvmem state.
@@ -447,7 +456,13 @@ impl Tpm {
                 .await
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
-            if let Some(blob) = existing_nvmem_blob {
+            if let Some(mut blob) = existing_nvmem_blob {
+                // Previous versions before this code had a bug where sizes
+                // smaller than 32K would be reported as 32K. Fixup the blob so
+                // that the TPM nvram is consistent - this code can be removed
+                // once the fix for reporting the NVRAM size correctly is
+                // everywhere.
+                recover::recover_blob(&mut blob);
                 if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
                     if let ms_tpm_20_ref::Error::NvMem(NvError::MismatchedBlobSize) = e {
                         self.logger
@@ -457,6 +472,12 @@ impl Tpm {
 
                     return Err(TpmErrorKind::ResetTpmWithState(e).into());
                 }
+
+                // If this is a small vTPM blob, potentially fixup the AK cert.
+                fixup_16k_ak_cert = blob.len() == LEGACY_VTPM_SIZE;
+            } else {
+                // No fixup is required, because there is no existing NVRAM blob.
+                fixup_16k_ak_cert = false;
             }
         }
 
@@ -542,11 +563,16 @@ impl Tpm {
                     auth_value,
                     !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
                     matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)),
+                    fixup_16k_ak_cert,
                 )
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
 
             // Initialize `TPM_NV_INDEX_AIK_CERT` and `TPM_NV_INDEX_ATTESTATION_REPORT`
-            self.renew_ak_cert()?;
+            //
+            // Only renew AK cert if hardware isolated.
+            if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)) {
+                self.renew_ak_cert()?;
+            }
         }
 
         // If guest secret key is passed in, import the key into TPM.
@@ -558,7 +584,9 @@ impl Tpm {
                 .initialize_guest_secret_key(&guest_secret_key)
             {
                 // Failures are non-fatal as the feature is not necessary for booting.
+                tracing::error!(CVM_ALLOWED, "Failed to initialize guest secret key");
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     error = &e as &dyn std::error::Error,
                     "Failed to initialize guest secret key"
                 );
@@ -590,7 +618,10 @@ impl Tpm {
             let io_command = match self.current_io_command {
                 Some(cmd) => cmd,
                 None => {
-                    tracelimit::warn_ratelimited!("Invalid tpm IO data port read (no command set)");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        "Invalid tpm IO data port read (no command set)"
+                    );
                     return IoResult::Ok;
                 }
             };
@@ -606,7 +637,11 @@ impl Tpm {
                     io_port_interface::TcgProtocol::Tcg2 as u32
                 }
                 _ => {
-                    tracelimit::warn_ratelimited!(?io_command, "Invalid tpm IO data read");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        ?io_command,
+                        "Invalid tpm IO data read"
+                    );
                     return IoResult::Ok;
                 }
             }
@@ -641,6 +676,7 @@ impl Tpm {
                 Some(cmd) => cmd,
                 None => {
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         "Invalid tpm IO data port write (no command set)"
                     );
                     return IoResult::Ok;
@@ -670,7 +706,11 @@ impl Tpm {
                     self.ppi_state.tpm_capability_hash_alg_bitmap = val;
                 }
                 other => {
-                    tracelimit::warn_ratelimited!(?other, "unimplemented TpmIoCommand");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        ?other,
+                        "unimplemented TpmIoCommand"
+                    );
                     update_ppi = false;
                 }
             };
@@ -682,6 +722,11 @@ impl Tpm {
                 );
                 if let Err(e) = res {
                     tracing::warn!(
+                        CVM_ALLOWED,
+                        "could not persist ppi state to non-volatile store"
+                    );
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
                         error = &e as &dyn std::error::Error,
                         "could not persist ppi state to non-volatile store"
                     );
@@ -712,7 +757,7 @@ impl Tpm {
                 self.ppi_state.ppi_set_operation_arg3_integer2,
             )?,
             other => {
-                tracelimit::warn_ratelimited!(?other, "unknown pending PPI operation");
+                tracelimit::warn_ratelimited!(CVM_ALLOWED, ?other, "unknown pending PPI operation");
                 0
             }
         };
@@ -734,6 +779,7 @@ impl Tpm {
             Err(error) => {
                 if let TpmCommandError::TpmCommandFailed { response_code } = error {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         err = &error as &dyn std::error::Error,
                         "tpm PcrAllocateCmd failed"
                     );
@@ -769,7 +815,7 @@ impl Tpm {
             self.tpm_engine_helper
                 .initialize_tpm_engine()
                 .map_err(TpmErrorKind::InitializeTpmEngine)?;
-            tracelimit::info_ratelimited!("tpm reset after sending PcrAllocateCmd");
+            tracelimit::info_ratelimited!(CVM_ALLOWED, "tpm reset after sending PcrAllocateCmd");
         }
 
         Ok(response_code)
@@ -865,30 +911,40 @@ impl Tpm {
             if let Poll::Ready(result) = async_ak_cert_request.as_mut().poll(cx) {
                 // Once the received the response, update the renew time using `SystemTime::now`.
                 // DEVNOTE: The system time may not reflect the real time when suspension and resumption occur.
-                // See more details in `refresh_ak_cert_on_nv_read`.
+                // See more details in `refresh_device_attestation_data_on_nv_read`.
                 let now = std::time::SystemTime::now();
-
-                // Set the renew time regardless whether AK cert is successfully updated or not, avoiding
-                // retrying on each nv read in the case of host agent being unavailable.
-                // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
-                // `refresh_ak_cert_on_nv_read` is triggered.
-                self.ak_cert_renew_time = Some(now);
 
                 // Clear `async_ak_cert_request` to allow the next renewal request.
                 self.async_ak_cert_request = None;
 
-                // Parse the response. Empty response or errors indicate that the host agent is unavailable.
+                // Parse the response. Empty response indicates that the host agent is unavailable.
                 let response = match result {
-                    Ok(data) if !data.is_empty() => data,
+                    Ok(data) if !data.is_empty() => {
+                        // Set the renew time if successfully receiving the data.
+                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
+                        // `refresh_device_attestation_data_on_nv_read` is triggered.
+                        self.ak_cert_renew_time = Some(now);
+
+                        data
+                    }
                     Ok(_data) => {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             "The requested TPM AK cert is empty - now: {:?}",
                             now.duration_since(std::time::UNIX_EPOCH),
                         );
+
+                        // Set the renew time if the ak cert is empty, avoiding retrying on each nv read
+                        // in the case of host agent being unavailable.
+                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
+                        // `refresh_device_attestation_data_on_nv_read` is triggered.
+                        self.ak_cert_renew_time = Some(now);
+
                         return;
                     }
                     Err(error) => {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             error,
                             "Failed to request new TPM AK cert - now: {:?}",
                             now.duration_since(std::time::UNIX_EPOCH),
@@ -908,6 +964,7 @@ impl Tpm {
                     &response,
                 ) {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         error = &e as &dyn std::error::Error,
                         "Failed write new TPM AK cert to NV index"
                     );
@@ -971,6 +1028,7 @@ impl Tpm {
                     Ok(ak_cert_request) => {
                         if let Err(e) = self.renew_attestation_report(&ak_cert_request) {
                             tracelimit::error_ratelimited!(
+                                CVM_ALLOWED,
                                 error = &e as &dyn std::error::Error,
                                 "Error while renewing the attestation report on NvRead"
                             );
@@ -978,6 +1036,7 @@ impl Tpm {
                     }
                     Err(e) => {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Error while creating ak cert request for renewing the attestation report"
                         );
@@ -991,11 +1050,15 @@ impl Tpm {
             // and past hardware renewal period.
             let renew_cert_needed = (self.ak_cert_renew_time.is_none()
                 || ak_cert_renew_elapsed > AK_CERT_RENEW_PERIOD)
-                && attestation_report_renew_elapsed > REPORT_TIMER_PERIOD;
+                && (attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
+                    || self.attestation_report_renew_time.is_none());
+
+            tracing::debug!(renew_cert_needed, ak_cert_renew_time =? self.ak_cert_renew_time, "tpm: cert renew check");
 
             if renew_cert_needed {
                 if let Err(e) = self.renew_ak_cert() {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         error = &e as &dyn std::error::Error,
                         "Error while renewing AK cert on NvRead"
                     );
@@ -1189,6 +1252,7 @@ impl MmioIntercept for Tpm {
 
                     if let Err(e) = res {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Failed to read TPM command from guest memory"
                         );
@@ -1206,10 +1270,7 @@ impl MmioIntercept for Tpm {
                         "executing guest tpm cmd",
                     );
 
-                    if matches!(
-                        self.ak_cert_type,
-                        TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_)
-                    ) {
+                    if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)) {
                         if let Some(CommandCodeEnum::NV_Read) = cmd_header {
                             self.refresh_device_attestation_data_on_nv_read()
                         }
@@ -1220,6 +1281,7 @@ impl MmioIntercept for Tpm {
                         &mut self.tpm_engine_helper.reply_buffer,
                     ) {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Error while executing TPM command"
                         );
@@ -1241,6 +1303,7 @@ impl MmioIntercept for Tpm {
 
                     if let Err(e) = res {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Failed to write TPM reply into guest memory"
                         );
@@ -1255,7 +1318,9 @@ impl MmioIntercept for Tpm {
 
         let res = pal_async::local::block_on(self.flush_pending_nvram());
         if let Err(e) = res {
+            tracing::warn!(CVM_ALLOWED, "could not commit nvram to non-volatile store");
             tracing::warn!(
+                CVM_CONFIDENTIAL,
                 error = &e as &dyn std::error::Error,
                 "could not commit nvram to non-volatile store"
             );

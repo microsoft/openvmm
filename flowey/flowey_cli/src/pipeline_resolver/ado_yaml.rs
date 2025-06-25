@@ -11,6 +11,7 @@ use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
+use crate::cli::var_db::VarDbRequestBuilder;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
@@ -235,18 +236,13 @@ echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
 
         let mut flowey_bootstrap_bash = String::new();
 
+        let var_db = VarDbRequestBuilder::new("$FLOWEY_BIN", job_idx.index());
+
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
-            crate::cli::var_db::construct_var_db_cli(
-                "$FLOWEY_BIN",
-                job_idx.index(),
-                var,
-                false,
-                true,
-                None,
-                is_raw_string,
-                None,
-                None,
-            )
+            var_db
+                .update_from_stdin(var, false)
+                .raw_string(is_raw_string)
+                .to_string()
         };
 
         // and now use those vars to do some flowey bootstrap
@@ -807,6 +803,8 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
     let output_order = petgraph::algo::toposort(&output_graph, None)
         .expect("runtime variables cannot introduce a DAG cycle");
 
+    let var_db = VarDbRequestBuilder::new("$FLOWEY_BIN", job_idx);
+
     let mut bash_commands = BashCommands::new_ado();
     for idx in output_order.into_iter().rev() {
         let OutputGraphEntry { node_handle, step } = output_graph[idx].1.take().unwrap();
@@ -841,50 +839,23 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                 code_idx,
                 code,
             } => {
-                let var_db_cmd =
-                    |var: &str, is_secret, update_from_stdin, is_raw_string, condvar| {
-                        crate::cli::var_db::construct_var_db_cli(
-                            "$(FLOWEY_BIN)",
-                            job_idx,
-                            var,
-                            is_secret,
-                            update_from_stdin,
-                            None,
-                            is_raw_string,
-                            None,
-                            condvar,
-                        )
-                    };
-
-                for (rust_var, ado_var, is_secret) in rust_to_ado {
-                    let mut cmd = String::new();
-
+                for (rust_var, ado_var) in rust_to_ado {
                     // flowey considers all ADO vars to be typed as raw strings
-                    let read_rust_var =
-                        var_db_cmd(&rust_var, is_secret, false, true, condvar.as_deref());
-                    writeln!(cmd, r#"rust_var=$({read_rust_var})"#)?;
-                    writeln!(
-                        cmd,
-                        r###"printf "##vso[task.setvariable variable={ado_var};issecret={is_secret}]%s\n" "$rust_var""###
-                    )?;
+                    let read_rust_var = var_db
+                        .write_to_ado_env(&rust_var, &ado_var)
+                        .raw_string(true)
+                        .condvar(condvar.as_deref());
 
-                    bash_commands.push_minor(cmd);
+                    bash_commands.push_minor(format!("{read_rust_var}\n"));
                 }
 
                 if !raw_yaml.is_empty() {
                     if let Some(condvar) = &condvar {
-                        let mut cmd = String::new();
-
                         // guaranteed to be a bare bool `true`/`false`, hence
                         // is_raw_string = false
-                        let read_condvar = var_db_cmd(condvar, false, false, false, None);
-                        writeln!(cmd, r#"rust_var=$({read_condvar})"#)?;
-                        writeln!(
-                            cmd,
-                            r###"echo "##vso[task.setvariable variable=FLOWEY_CONDITION;issecret=false]$rust_var""###
-                        )?;
+                        let read_condvar = var_db.write_to_ado_env(condvar, "FLOWEY_CONDITION");
 
-                        bash_commands.push_minor(cmd);
+                        bash_commands.push_minor(format!("{read_condvar}\n"));
                     }
 
                     let raw_yaml = if code.lock().is_some() {
@@ -945,8 +916,11 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
 
                 for (ado_var, rust_var, is_secret) in ado_to_rust {
                     // flowey considers all ADO vars to be typed as raw strings
-                    let write_rust_var =
-                        var_db_cmd(&rust_var, is_secret, true, true, condvar.as_deref());
+                    let write_rust_var = var_db
+                        .update_from_stdin(&rust_var, is_secret)
+                        .raw_string(true)
+                        .condvar(condvar.as_deref())
+                        .env_source(Some(&ado_var));
 
                     let cmd = format!(
                         r#"

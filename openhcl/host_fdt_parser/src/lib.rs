@@ -1077,11 +1077,11 @@ mod inspect_helpers {
         // TODO: inspect::AsDebug would work here once
         // https://github.com/kupiakos/open-enum/pull/13 is merged.
         inspect::adhoc(|req| match *typ {
-            MemoryMapEntryType::MEMORY => req.value("MEMORY".into()),
-            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT".into()),
-            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED".into()),
-            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE".into()),
-            _ => req.value(typ.0.into()),
+            MemoryMapEntryType::MEMORY => req.value("MEMORY"),
+            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT"),
+            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED"),
+            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE"),
+            _ => req.value(typ.0),
         })
     }
 

@@ -341,7 +341,7 @@ impl GdtrOrIdtrInstruction {
         self as u8
     }
 
-    pub const fn is_write(self) -> bool {
+    pub const fn is_load(self) -> bool {
         match self {
             GdtrOrIdtrInstruction::Lgdt | GdtrOrIdtrInstruction::Lidt => true,
             GdtrOrIdtrInstruction::Sgdt | GdtrOrIdtrInstruction::Sidt => false,
@@ -358,6 +358,7 @@ pub struct LdtrOrTrInstructionInfo {
     pub register_1: u8,
     #[bits(3)]
     pub address_size: u8,
+    /// 0 - Memory, 1 - Register
     pub memory_or_register: bool,
     #[bits(4)]
     _reserved2: u8,
@@ -398,7 +399,7 @@ impl LdtrOrTrInstruction {
         self as u8
     }
 
-    pub const fn is_write(self) -> bool {
+    pub const fn is_load(self) -> bool {
         match self {
             LdtrOrTrInstruction::Lldt | LdtrOrTrInstruction::Ltr => true,
             LdtrOrTrInstruction::Sldt | LdtrOrTrInstruction::Str => false,

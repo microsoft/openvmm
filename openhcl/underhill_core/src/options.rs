@@ -121,10 +121,6 @@ pub struct Options {
     /// hardware isolated platforms, but can be enabled for testing.
     pub enable_shared_visibility_pool: bool,
 
-    /// (OPENHCL_CVM_GUEST_VSM=1)
-    /// Enable support for guest vsm in CVMs. This is disabled by default.
-    pub cvm_guest_vsm: bool,
-
     /// (OPENHCL_HIDE_ISOLATION=1)
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
@@ -231,7 +227,6 @@ impl Options {
         let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
         let enable_shared_visibility_pool =
             parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
-        let cvm_guest_vsm = parse_legacy_env_bool("OPENHCL_CVM_GUEST_VSM");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
@@ -300,7 +295,6 @@ impl Options {
             nvme_vfio,
             mcr,
             enable_shared_visibility_pool,
-            cvm_guest_vsm,
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,

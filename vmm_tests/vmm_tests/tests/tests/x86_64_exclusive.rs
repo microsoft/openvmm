@@ -3,6 +3,7 @@
 
 //! Integration tests for x86_64 guests.
 
+use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::X2ApicConfig;
 use hvlite_defs::config::X86TopologyConfig;
@@ -14,7 +15,12 @@ use vmm_test_macros::openvmm_test;
 #[openvmm_test(linux_direct_x64)]
 async fn apicid_offset(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
-        .with_custom_config(|c| c.processor_topology.arch.apic_id_offset = 16)
+        .with_custom_config(|c| {
+            let Some(ArchTopologyConfig::X86(arch)) = &mut c.processor_topology.arch else {
+                unreachable!()
+            };
+            arch.apic_id_offset = 16;
+        })
         .run()
         .await?;
 
@@ -35,10 +41,10 @@ async fn legacy_xapic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error>
                 proc_count: 2,
                 vps_per_socket: Some(1),
                 enable_smt: None,
-                arch: X86TopologyConfig {
+                arch: Some(ArchTopologyConfig::X86(X86TopologyConfig {
                     x2apic: X2ApicConfig::Unsupported,
                     apic_id_offset: 253,
-                },
+                })),
             }
         })
         .run()

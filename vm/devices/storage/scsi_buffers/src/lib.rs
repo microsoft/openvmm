@@ -202,10 +202,6 @@ impl LockedRange for LockedIoVecs {
     fn push_sub_range(&mut self, sub_range: &[AtomicU8]) {
         self.0.push(sub_range.into());
     }
-
-    fn pop_sub_range(&mut self) -> Option<(*const AtomicU8, usize)> {
-        self.0.pop().map(|buffer| (buffer.address, buffer.len))
-    }
 }
 
 /// An accessor for the memory associated with an IO request.

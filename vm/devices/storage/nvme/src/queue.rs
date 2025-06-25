@@ -18,7 +18,7 @@ pub const ILLEGAL_DOORBELL_VALUE: u32 = 0xffffffff;
 #[derive(Default, Inspect)]
 #[inspect(transparent)]
 pub struct DoorbellRegister {
-    #[inspect(with = "|x| inspect::AsHex(x.load(Ordering::Relaxed))")]
+    #[inspect(hex)]
     value: AtomicU32,
     #[inspect(skip)]
     event: event_listener::Event,

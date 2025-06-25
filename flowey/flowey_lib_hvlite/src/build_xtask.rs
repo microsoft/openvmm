@@ -37,7 +37,7 @@ impl SimpleFlowNode for Node {
             crate_name: "xtask".into(),
             out_name: "xtask".into(),
             crate_type: CargoCrateType::Bin,
-            profile: BuildProfile::Xtask,
+            profile: BuildProfile::Light,
             features: [].into(),
             target: target.as_triple(),
             no_split_dbg_info: false,

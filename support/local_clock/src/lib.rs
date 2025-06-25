@@ -29,6 +29,8 @@
 //!
 //! [`Inspect`]: inspect::Inspect
 
+#![forbid(unsafe_code)]
+
 mod clock_impls;
 
 pub use clock_impls::MockLocalClock;

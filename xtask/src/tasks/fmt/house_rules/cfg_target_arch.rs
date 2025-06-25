@@ -14,6 +14,8 @@ const SUPPRESS_REASON_CPU_INTRINSIC: &str = "cpu-intrinsic";
 /// Using `target_arch` in order to implement a '*-sys'-like crate (where the
 /// structure changes depending on the host-arch)
 const SUPPRESS_REASON_SYS_CRATE: &str = "sys-crate";
+/// A dependency of this crate will not build on other target architectures
+const SUPPRESS_REASON_DEPENDENCY: &str = "dependency";
 /// One off - support for the auto-arch selection logic in
 /// `build_rs_guest_arch`.
 const SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL: &str = "oneoff-guest-arch-impl";
@@ -24,6 +26,8 @@ const SUPPRESS_REASON_ONEOFF_VIRT_HVF: &str = "oneoff-virt-hvf";
 const SUPPRESS_REASON_ONEOFF_FLOWEY: &str = "oneoff-flowey";
 /// One off - used by petri to select native test dependencies
 const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS: &str = "oneoff-petri-native-test-deps";
+/// Onee off - used by petri to return the host architecture for test filtering
+const SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH: &str = "oneoff-petri-host-arch";
 
 fn has_suppress(s: &str) -> bool {
     let Some((_, after)) = s.split_once(SUPPRESS) else {
@@ -37,10 +41,12 @@ fn has_suppress(s: &str) -> bool {
         justification,
         SUPPRESS_REASON_CPU_INTRINSIC
             | SUPPRESS_REASON_SYS_CRATE
+            | SUPPRESS_REASON_DEPENDENCY
             | SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL
             | SUPPRESS_REASON_ONEOFF_VIRT_HVF
             | SUPPRESS_REASON_ONEOFF_FLOWEY
             | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS
+            | SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH
     );
 
     if !ok {

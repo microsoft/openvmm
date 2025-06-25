@@ -56,6 +56,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "address_filter"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -188,6 +196,16 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "atomic_ringbuf"
+version = "0.0.0"
+dependencies = [
+ "cfg-if",
+ "inspect",
+ "loom",
+ "parking_lot",
+]
 
 [[package]]
 name = "autocfg"
@@ -1053,6 +1071,7 @@ dependencies = [
  "anyhow",
  "azure_profiler_proto",
  "build_rs_guest_arch",
+ "cvm_tracing",
  "diag_proto",
  "fs-err",
  "futures",
@@ -1832,6 +1851,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
 ]
 
 [[package]]
@@ -1887,10 +1907,6 @@ dependencies = [
  "which 7.0.3",
  "xshell",
 ]
-
-[[package]]
-name = "flowey_trampoline"
-version = "0.0.0"
 
 [[package]]
 name = "fnv"
@@ -2424,6 +2440,7 @@ dependencies = [
  "mesh",
  "thiserror 2.0.12",
  "vm_resource",
+ "vmgs_resources",
 ]
 
 [[package]]
@@ -2576,6 +2593,7 @@ dependencies = [
  "vmbus_channel",
  "vmbus_ring",
  "vmcore",
+ "vmgs_resources",
  "zerocopy 0.8.24",
 ]
 
@@ -2661,6 +2679,7 @@ name = "guestmem"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "minircu",
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.12",
@@ -2734,7 +2753,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bitfield-struct 0.10.1",
+ "bitvec",
  "build_rs_guest_arch",
+ "cvm_tracing",
  "fs-err",
  "getrandom 0.3.2",
  "hv1_structs",
@@ -2764,6 +2785,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "cvm_tracing",
  "guid",
  "inspect",
  "open_enum",
@@ -3013,6 +3035,7 @@ dependencies = [
  "vmcore",
  "vmgs",
  "vmgs_broker",
+ "vmgs_resources",
  "vmm_core",
  "vmm_core_defs",
  "vmotherboard",
@@ -3028,7 +3051,6 @@ name = "hvlite_defs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build_rs_guest_arch",
  "firmware_uefi_custom_vars",
  "floppy_resources",
  "framebuffer",
@@ -3047,6 +3069,7 @@ dependencies = [
  "virt_whp",
  "vm_resource",
  "vmbus_proxy",
+ "vmgs_resources",
  "vmm_core_defs",
  "vmotherboard",
 ]
@@ -3527,9 +3550,9 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "jiff"
-version = "0.2.10"
+version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a064218214dc6a10fbae5ec5fa888d80c45d611aba169222fc272072bf7aef6"
+checksum = "a194df1107f33c79f4f93d02c80798520551949d59dfad22b6157048a88cca93"
 dependencies = [
  "jiff-static",
  "jiff-tzdb-platform",
@@ -3542,9 +3565,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.10"
+version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "199b7932d97e325aff3a7030e141eafe7f2c6268e1d1b24859b753a627f45254"
+checksum = "6c6e1db7ed32c6c71b759497fae34bf7933636f75a251b9e736555da426f6442"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4089,6 +4112,7 @@ dependencies = [
 name = "mesh_remote"
 version = "0.0.0"
 dependencies = [
+ "event-listener",
  "futures",
  "futures-concurrency",
  "libc",
@@ -4194,6 +4218,19 @@ name = "minimal_rt_build"
 version = "0.0.0"
 
 [[package]]
+name = "minircu"
+version = "0.0.0"
+dependencies = [
+ "event-listener",
+ "libc",
+ "pal_async",
+ "parking_lot",
+ "test_with_tracing",
+ "tracelimit",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4239,7 +4276,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#92fdd699015cb7b168c3f58aa78ca87979a14ff5"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#c7433fb1a74e47cea5daf13d3aac24cd0ccac1f4"
 dependencies = [
  "cc",
  "once_cell",
@@ -4314,6 +4351,7 @@ dependencies = [
  "net_backend_resources",
  "pal_async",
  "parking_lot",
+ "thiserror 2.0.12",
  "tracing",
  "vm_resource",
  "vm_topology",
@@ -4901,7 +4939,6 @@ dependencies = [
  "dirs",
  "disk_backend_resources",
  "disk_crypt_resources",
- "disk_vhd1",
  "firmware_uefi_custom_vars",
  "floppy_resources",
  "framebuffer",
@@ -5123,7 +5160,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "widestring",
- "win_import_lib",
  "winapi",
  "windows 0.59.0",
 ]
@@ -5389,6 +5425,7 @@ dependencies = [
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
  "pipette_client",
+ "powershell_builder",
  "prost",
  "scsidisk_resources",
  "serde",
@@ -5413,6 +5450,7 @@ dependencies = [
  "vmbus_serial_resources",
  "vmcore",
  "vmgs_format",
+ "vmgs_resources",
  "vmm_core_defs",
  "vmotherboard",
  "vmsocket",
@@ -5622,6 +5660,14 @@ name = "powerfmt"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
+
+[[package]]
+name = "powershell_builder"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "jiff",
+]
 
 [[package]]
 name = "prettyplease"
@@ -6086,6 +6132,7 @@ dependencies = [
  "scsi_defs",
  "scsidisk_resources",
  "stackfuture",
+ "test_with_tracing",
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
@@ -6564,6 +6611,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "storage_tests"
+version = "0.0.0"
+dependencies = [
+ "chipset_device",
+ "disk_backend",
+ "disk_nvme",
+ "disklayer_ram",
+ "guestmem",
+ "guid",
+ "nvme",
+ "nvme_driver",
+ "page_pool_alloc",
+ "pal_async",
+ "pci_core",
+ "scsi_buffers",
+ "scsi_core",
+ "scsi_defs",
+ "scsidisk",
+ "test_with_tracing",
+ "tracing",
+ "user_driver_emulated_mock",
+ "vmcore",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
 name = "storvsp"
 version = "0.0.0"
 dependencies = [
@@ -6686,6 +6759,7 @@ version = "0.0.0"
 dependencies = [
  "hvdef",
  "memory_range",
+ "thiserror 2.0.12",
  "tracing",
  "x86defs",
 ]
@@ -6887,11 +6961,11 @@ name = "tmk_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build_rs_guest_arch",
  "pal_async",
  "petri",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "tracing",
 ]
 
 [[package]]
@@ -7015,6 +7089,7 @@ dependencies = [
  "bitfield-struct 0.10.1",
  "chipset_device",
  "chipset_device_resources",
+ "cvm_tracing",
  "getrandom 0.3.2",
  "guestmem",
  "inspect",
@@ -7392,6 +7467,7 @@ dependencies = [
  "guest_emulation_transport",
  "guestmem",
  "guid",
+ "hcl",
  "hcl_compat_uefi_nvram_storage",
  "hvdef",
  "hyperv_ic_guest",
@@ -7564,6 +7640,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "cvm_tracing",
  "futures",
  "guestmem",
  "hcl",
@@ -7587,6 +7664,7 @@ dependencies = [
 name = "underhill_threadpool"
 version = "0.0.0"
 dependencies = [
+ "cvm_tracing",
  "fs-err",
  "inspect",
  "loan_cell",
@@ -7932,10 +8010,12 @@ dependencies = [
  "aarch64defs",
  "aarch64emu",
  "anyhow",
+ "atomic_ringbuf",
  "bitfield-struct 0.10.1",
  "bitvec",
  "build_rs_guest_arch",
  "cfg-if",
+ "cvm_tracing",
  "fs-err",
  "guestmem",
  "hcl",
@@ -7948,6 +8028,7 @@ dependencies = [
  "libc",
  "memory_range",
  "mesh",
+ "minircu",
  "pal",
  "pal_async",
  "pal_uring",
@@ -8359,9 +8440,11 @@ dependencies = [
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
+ "user_driver",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_core",
+ "vmbus_ring",
  "vmcore",
  "zerocopy 0.8.24",
 ]
@@ -8405,6 +8488,7 @@ dependencies = [
  "bitfield-struct 0.10.1",
  "futures",
  "guestmem",
+ "guid",
  "mesh",
  "pal",
  "pal_async",
@@ -8413,6 +8497,7 @@ dependencies = [
  "vmbus_core",
  "widestring",
  "windows 0.59.0",
+ "windows-sys 0.59.0",
  "zerocopy 0.8.24",
 ]
 
@@ -8638,6 +8723,7 @@ dependencies = [
  "async-trait",
  "cfg-if",
  "crc32fast",
+ "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
  "getrandom 0.3.2",
@@ -8752,6 +8838,7 @@ dependencies = [
  "build_rs_guest_arch",
  "cache_topology",
  "chipset",
+ "cvm_tracing",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -8820,11 +8907,12 @@ name = "vmm_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build_rs_guest_arch",
+ "cfg-if",
  "disk_backend_resources",
  "futures",
  "get_resources",
  "guid",
+ "hvdef",
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",
  "hyperv_ic_resources",
@@ -8839,6 +8927,7 @@ dependencies = [
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "safe_intrinsics",
  "scsidisk_resources",
  "storvsp_resources",
  "tempfile",
@@ -8849,12 +8938,14 @@ dependencies = [
  "vmm_core_defs",
  "vmm_test_macros",
  "vtl2_settings_proto",
+ "x86defs",
 ]
 
 [[package]]
 name = "vmotherboard"
 version = "0.0.0"
 dependencies = [
+ "address_filter",
  "anyhow",
  "arc_cyclic_builder",
  "async-trait",
@@ -8864,6 +8955,7 @@ dependencies = [
  "chipset_legacy",
  "chipset_resources",
  "closeable_mutex",
+ "cvm_tracing",
  "firmware_pcat",
  "firmware_uefi",
  "floppy",
@@ -8973,7 +9065,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.10.1",
  "chipset_arc_mutex_device",
  "chipset_device",
  "closeable_mutex",
@@ -8983,7 +9074,6 @@ dependencies = [
  "hvdef",
  "inspect",
  "mesh",
- "open_enum",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -8996,6 +9086,17 @@ dependencies = [
  "vmbus_channel",
  "vmbus_ring",
  "vmcore",
+ "vpci_protocol",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "vpci_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.10.1",
+ "guid",
+ "open_enum",
  "zerocopy 0.8.24",
 ]
 
@@ -9145,7 +9246,6 @@ name = "whp"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "win_import_lib",
  "winapi",
 ]
 
@@ -9179,9 +9279,9 @@ dependencies = [
 
 [[package]]
 name = "win_etw_tracing"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c09b28bd20c0c93f3695b62bb14fa06cfc75599aa0ed7dc71e47ec9ddb0eca9"
+checksum = "2a60a107937401ac1aa48839f0c7f2e5bdf774d862fd39ef3ba8224980e1b1c9"
 dependencies = [
  "bytes",
  "tracing",
@@ -9189,14 +9289,6 @@ dependencies = [
  "tracing-subscriber",
  "win_etw_metadata",
  "win_etw_provider",
-]
-
-[[package]]
-name = "win_import_lib"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "cc",
 ]
 
 [[package]]

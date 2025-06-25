@@ -43,7 +43,7 @@ where
                 error = err.as_ref() as &dyn std::error::Error,
                 "gdb nonfatal error"
             );
-            TargetError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+            TargetError::Io(std::io::Error::other(err))
         })
     }
 }

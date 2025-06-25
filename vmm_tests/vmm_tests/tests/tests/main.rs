@@ -25,8 +25,7 @@ mod ttrpc;
 // any architecture. As our ARM64 support improves these tests should be able to
 // someday run on both x86-64 and ARM64, and be moved into a multi-arch module.
 mod x86_64;
-// Tests that will only ever compile and run when targeting x86-64.
-#[cfg(guest_arch = "x86_64")]
+// Tests that will only ever run when targeting x86-64.
 mod x86_64_exclusive;
 
 pub fn main() {

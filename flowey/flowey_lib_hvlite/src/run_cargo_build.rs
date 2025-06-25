@@ -270,7 +270,7 @@ pub enum BuildProfile {
     UnderhillShip,
     BootDev,
     BootRelease,
-    Xtask,
+    Light,
 }
 
 flowey_request! {
@@ -414,7 +414,7 @@ impl FlowNode for Node {
                     }
                     BuildProfile::BootDev => CargoBuildProfile::Custom("boot-dev".into()),
                     BuildProfile::BootRelease => CargoBuildProfile::Custom("boot-release".into()),
-                    BuildProfile::Xtask => CargoBuildProfile::Custom("xtask".into()),
+                    BuildProfile::Light => CargoBuildProfile::Custom("light".into()),
                 },
                 features,
                 output_kind: crate_type,

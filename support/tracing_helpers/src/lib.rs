@@ -10,6 +10,8 @@
 //! Hopefully this crate will be short lived as `tracing` ergonomics continue
 //! to improve.
 
+#![forbid(unsafe_code)]
+
 pub mod formatter;
 
 /// Extension trait to make it easy to trace anyhow errors.

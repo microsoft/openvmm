@@ -4,10 +4,11 @@
 //! ARM64 type and constant definitions.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 pub mod gic;
-pub mod psci;
+pub mod smccc;
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;

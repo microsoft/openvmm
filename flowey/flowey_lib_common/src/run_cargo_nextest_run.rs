@@ -3,11 +3,9 @@
 
 //! Run cargo-nextest tests.
 
-use crate::run_cargo_build::CargoBuildProfile;
+use crate::gen_cargo_nextest_run_cmd::RunKindDeps;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-use std::ffi::OsString;
-
 #[derive(Serialize, Deserialize)]
 pub struct TestResults {
     pub all_tests_passed: bool,
@@ -62,9 +60,9 @@ pub mod build_params {
         pub no_default_features: bool,
         /// Whether to build tests with unstable `-Zpanic-abort-tests` flag
         pub unstable_panic_abort_tests: Option<PanicAbortTests>,
-        /// Build unit tests for the specified target
+        /// Build tests for the specified target
         pub target: target_lexicon::Triple,
-        /// Build unit tests with the specified cargo profile
+        /// Build tests with the specified cargo profile
         pub profile: CargoBuildProfile,
         /// Additional env vars set when building the tests
         pub extra_env: ReadVar<BTreeMap<String, String>, C>,
@@ -77,7 +75,11 @@ pub enum NextestRunKind {
     /// Build and run tests in a single step.
     BuildAndRun(build_params::NextestBuildParams),
     /// Run tests from pre-built nextest archive file.
-    RunFromArchive(ReadVar<PathBuf>),
+    RunFromArchive {
+        archive_file: ReadVar<PathBuf>,
+        target: Option<ReadVar<target_lexicon::Triple>>,
+        nextest_bin: Option<ReadVar<PathBuf>>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -123,19 +125,6 @@ flowey_request! {
     }
 }
 
-enum RunKindDeps<C = VarNotClaimed> {
-    BuildAndRun {
-        params: build_params::NextestBuildParams<C>,
-        nextest_installed: ReadVar<SideEffect, C>,
-        rust_toolchain: ReadVar<Option<String>, C>,
-        cargo_flags: ReadVar<crate::cfg_cargo_common_flags::Flags, C>,
-    },
-    RunFromArchive {
-        archive_file: ReadVar<PathBuf, C>,
-        nextest_bin: ReadVar<PathBuf, C>,
-    },
-}
-
 new_flow_node!(struct Node);
 
 impl FlowNode for Node {
@@ -144,7 +133,9 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_cargo_common_flags::Node>();
         ctx.import::<crate::download_cargo_nextest::Node>();
+        ctx.import::<crate::install_cargo_nextest::Node>();
         ctx.import::<crate::install_rust::Node>();
+        ctx.import::<crate::gen_cargo_nextest_run_cmd::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -185,8 +176,7 @@ impl FlowNode for Node {
                 NextestRunKind::BuildAndRun(params) => {
                     let cargo_flags = ctx.reqv(crate::cfg_cargo_common_flags::Request::GetFlags);
 
-                    let nextest_installed =
-                        ctx.reqv(crate::download_cargo_nextest::Request::InstallWithCargo);
+                    let nextest_installed = ctx.reqv(crate::install_cargo_nextest::Request);
 
                     let rust_toolchain = ctx.reqv(crate::install_rust::Request::GetRustupToolchain);
 
@@ -201,16 +191,39 @@ impl FlowNode for Node {
                         cargo_flags,
                     }
                 }
-                NextestRunKind::RunFromArchive(archive_file) => {
-                    let nextest_bin =
-                        ctx.reqv(crate::download_cargo_nextest::Request::InstallStandalone);
+                NextestRunKind::RunFromArchive {
+                    archive_file,
+                    target,
+                    nextest_bin,
+                } => {
+                    let target =
+                        target.unwrap_or(ReadVar::from_static(target_lexicon::Triple::host()));
+
+                    let nextest_bin = nextest_bin.unwrap_or_else(|| {
+                        ctx.reqv(|v| crate::download_cargo_nextest::Request::Get(target.clone(), v))
+                    });
 
                     RunKindDeps::RunFromArchive {
                         archive_file,
                         nextest_bin,
+                        target,
                     }
                 }
             };
+
+            let cmd = ctx.reqv(|v| crate::gen_cargo_nextest_run_cmd::Request {
+                run_kind_deps,
+                working_dir: working_dir.clone(),
+                config_file: config_file.clone(),
+                tool_config_files,
+                nextest_profile: nextest_profile.clone(),
+                nextest_filter_expr,
+                run_ignored,
+                fail_fast,
+                extra_env,
+                portable: false,
+                command: v,
+            });
 
             let (all_tests_passed_read, all_tests_passed_write) = ctx.new_var();
             let (junit_xml_read, junit_xml_write) = ctx.new_var();
@@ -218,20 +231,16 @@ impl FlowNode for Node {
             ctx.emit_rust_step(format!("run '{friendly_name}' nextest tests"), |ctx| {
                 pre_run_deps.claim(ctx);
 
-                let run_kind_deps = run_kind_deps.claim(ctx);
                 let working_dir = working_dir.claim(ctx);
                 let config_file = config_file.claim(ctx);
-                let tool_config_files = tool_config_files
-                    .into_iter()
-                    .map(|(a, b)| (a, b.claim(ctx)))
-                    .collect::<Vec<_>>();
-                let extra_env = extra_env.claim(ctx);
                 let all_tests_passed_var = all_tests_passed_write.claim(ctx);
                 let junit_xml_write = junit_xml_write.claim(ctx);
+                let cmd = cmd.claim(ctx);
+
                 move |rt| {
                     let working_dir = rt.read(working_dir);
                     let config_file = rt.read(config_file);
-                    let mut with_env = extra_env.map(|x| rt.read(x)).unwrap_or_default();
+                    let cmd = rt.read(cmd);
 
                     // first things first - determine if junit is supported by
                     // the profile, and if so, where the output if going to be.
@@ -254,167 +263,6 @@ impl FlowNode for Node {
                             None
                         }
                     };
-
-                    enum NextestInvocation {
-                        // when tests are already built and provided via archive
-                        Standalone { nextest_bin: PathBuf },
-                        // when tests need to be compiled first
-                        WithCargo { rust_toolchain: Option<String> },
-                    }
-
-                    // the invocation of `nextest run` is quite different
-                    // depending on whether this is an archived run or not, as
-                    // archives don't require passing build args (after all -
-                    // those were passed when the archive was built), nor do
-                    // they require having cargo installed.
-                    let (nextest_invocation, build_args, build_env) = match run_kind_deps {
-                        RunKindDeps::BuildAndRun {
-                            params:
-                                build_params::NextestBuildParams {
-                                    packages,
-                                    features,
-                                    no_default_features,
-                                    unstable_panic_abort_tests,
-                                    target,
-                                    profile,
-                                    extra_env,
-                                },
-                            nextest_installed: _, // side-effect
-                            rust_toolchain,
-                            cargo_flags,
-                        } => {
-                            let (mut build_args, build_env) = cargo_nextest_build_args_and_env(
-                                rt.read(cargo_flags),
-                                profile,
-                                target,
-                                rt.read(packages),
-                                features,
-                                unstable_panic_abort_tests,
-                                no_default_features,
-                                rt.read(extra_env),
-                            );
-
-                            let nextest_invocation = NextestInvocation::WithCargo {
-                                rust_toolchain: rt.read(rust_toolchain),
-                            };
-
-                            // nextest also requires explicitly specifying the
-                            // path to a cargo-metadata.json file when running
-                            // using --workspace-remap (which do we below).
-                            let cargo_metadata_path = std::env::current_dir()?
-                                .absolute()?
-                                .join("cargo_metadata.json");
-
-                            let sh = xshell::Shell::new()?;
-                            sh.change_dir(&working_dir);
-                            let output =
-                                xshell::cmd!(sh, "cargo metadata --format-version 1").output()?;
-                            let cargo_metadata = String::from_utf8(output.stdout)?;
-                            fs_err::write(&cargo_metadata_path, cargo_metadata)?;
-
-                            build_args.push("--cargo-metadata".into());
-                            build_args.push(cargo_metadata_path.display().to_string());
-
-                            (nextest_invocation, build_args, build_env)
-                        }
-                        RunKindDeps::RunFromArchive {
-                            archive_file,
-                            nextest_bin,
-                        } => {
-                            let build_args = vec![
-                                "--archive-file".into(),
-                                rt.read(archive_file).display().to_string(),
-                            ];
-
-                            let nextest_invocation = NextestInvocation::Standalone {
-                                nextest_bin: rt.read(nextest_bin),
-                            };
-
-                            (nextest_invocation, build_args, BTreeMap::default())
-                        }
-                    };
-
-                    let mut args: Vec<OsString> = Vec::new();
-
-                    let argv0: OsString = match nextest_invocation {
-                        NextestInvocation::Standalone { nextest_bin } => nextest_bin.into(),
-                        NextestInvocation::WithCargo { rust_toolchain } => {
-                            if let Some(rust_toolchain) = rust_toolchain {
-                                args.extend(["run".into(), rust_toolchain.into(), "cargo".into()]);
-                                "rustup".into()
-                            } else {
-                                "cargo".into()
-                            }
-                        }
-                    };
-
-                    args.extend([
-                        "nextest".into(),
-                        "run".into(),
-                        "--profile".into(),
-                        (&nextest_profile).into(),
-                        "--config-file".into(),
-                        config_file.into(),
-                        "--workspace-remap".into(),
-                        (&working_dir).into(),
-                    ]);
-
-                    for (tool, config_file) in tool_config_files {
-                        args.extend([
-                            "--tool-config-file".into(),
-                            format!("{}:{}", tool, rt.read(config_file).display()).into(),
-                        ]);
-                    }
-
-                    args.extend(build_args.into_iter().map(Into::into));
-
-                    if let Some(nextest_filter_expr) = nextest_filter_expr {
-                        args.push("--filter-expr".into());
-                        args.push(nextest_filter_expr.into());
-                    }
-
-                    if run_ignored {
-                        args.push("--run-ignored".into());
-                        args.push("all".into());
-                    }
-
-                    if let Some(fail_fast) = fail_fast {
-                        if fail_fast {
-                            args.push("--fail-fast".into());
-                        } else {
-                            args.push("--no-fail-fast".into());
-                        }
-                    }
-
-                    // useful default to have
-                    if !with_env.contains_key("RUST_BACKTRACE") {
-                        with_env.insert("RUST_BACKTRACE".into(), "1".into());
-                    }
-
-                    // if running in CI, no need to waste time with incremental
-                    // build artifacts
-                    if !matches!(rt.backend(), FlowBackend::Local) {
-                        with_env.insert("CARGO_INCREMENTAL".into(), "0".into());
-                    }
-
-                    // also update WSLENV in cases where we're running windows tests via WSL2
-                    if crate::_util::running_in_wsl(rt) {
-                        let old_wslenv = std::env::var("WSLENV");
-                        let new_wslenv = with_env.keys().cloned().collect::<Vec<_>>().join(":");
-                        with_env.insert(
-                            "WSLENV".into(),
-                            format!(
-                                "{}{}",
-                                old_wslenv.map(|s| s + ":").unwrap_or_default(),
-                                new_wslenv
-                            ),
-                        );
-                    }
-
-                    // the build_env vars don't need to be mirrored to WSLENV,
-                    // and so they are only injected after the WSLENV code has
-                    // run.
-                    with_env.extend(build_env);
 
                     // allow unlimited coredump sizes
                     //
@@ -452,18 +300,7 @@ impl FlowNode for Node {
                     #[cfg(not(unix))]
                     let _ = with_rlimit_unlimited_core_size;
 
-                    let arg_string = || {
-                        args.iter()
-                            .map(|v| v.to_string_lossy().to_string())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    };
-
-                    let env_string = with_env
-                        .iter()
-                        .map(|(k, v)| format!("{k}='{v}'"))
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    log::info!("$ {cmd}");
 
                     // nextest has meaningful exit codes that we want to parse.
                     // <https://github.com/nextest-rs/nextest/blob/main/nextest-metadata/src/exit_codes.rs#L12>
@@ -473,21 +310,14 @@ impl FlowNode for Node {
                     // exit code of the process.
                     //
                     // So we have to use the raw process API instead.
-                    log::info!(
-                        "$ {} {} {}",
-                        env_string,
-                        argv0.to_string_lossy(),
-                        arg_string()
-                    );
-                    let mut command = std::process::Command::new(&argv0);
-                    command.args(&args).envs(with_env).current_dir(&working_dir);
+                    let mut command = std::process::Command::new(&cmd.argv0);
+                    command
+                        .args(&cmd.args)
+                        .envs(&cmd.env)
+                        .current_dir(&working_dir);
 
                     let mut child = command.spawn().with_context(|| {
-                        format!(
-                            "failed to spawn '{} {}'",
-                            argv0.to_string_lossy(),
-                            arg_string()
-                        )
+                        format!("failed to spawn '{}'", cmd.argv0.to_string_lossy())
                     })?;
 
                     let status = child.wait()?;
@@ -567,100 +397,6 @@ impl FlowNode for Node {
     }
 }
 
-// shared with `cargo_nextest_archive`
-pub(crate) fn cargo_nextest_build_args_and_env(
-    cargo_flags: crate::cfg_cargo_common_flags::Flags,
-    cargo_profile: CargoBuildProfile,
-    target: target_lexicon::Triple,
-    packages: build_params::TestPackages,
-    features: build_params::FeatureSet,
-    unstable_panic_abort_tests: Option<build_params::PanicAbortTests>,
-    no_default_features: bool,
-    mut extra_env: BTreeMap<String, String>,
-) -> (Vec<String>, BTreeMap<String, String>) {
-    let locked = cargo_flags.locked.then_some("--locked");
-    let verbose = cargo_flags.verbose.then_some("--verbose");
-    let cargo_profile = match &cargo_profile {
-        CargoBuildProfile::Debug => "dev",
-        CargoBuildProfile::Release => "release",
-        CargoBuildProfile::Custom(s) => s,
-    };
-    let target = target.to_string();
-
-    let packages: Vec<String> = {
-        // exclude benches
-        let mut v = vec!["--tests".into(), "--bins".into()];
-
-        match packages {
-            build_params::TestPackages::Workspace { exclude } => {
-                v.push("--workspace".into());
-                for crate_name in exclude {
-                    v.push("--exclude".into());
-                    v.push(crate_name);
-                }
-            }
-            build_params::TestPackages::Crates { crates } => {
-                for crate_name in crates {
-                    v.push("-p".into());
-                    v.push(crate_name);
-                }
-            }
-        }
-
-        v
-    };
-
-    let features: Vec<String> = {
-        let mut v = Vec::new();
-
-        if no_default_features {
-            v.push("--no-default-features".into())
-        }
-
-        match features {
-            build_params::FeatureSet::All => v.push("--all-features".into()),
-            build_params::FeatureSet::Specific(features) => {
-                if !features.is_empty() {
-                    v.push("--features".into());
-                    v.push(features.join(","));
-                }
-            }
-        }
-
-        v
-    };
-
-    let (z_panic_abort_tests, use_rustc_bootstrap) = match unstable_panic_abort_tests {
-        Some(kind) => (
-            Some("-Zpanic-abort-tests"),
-            match kind {
-                build_params::PanicAbortTests::UsingNightly => false,
-                build_params::PanicAbortTests::UsingRustcBootstrap => true,
-            },
-        ),
-        None => (None, false),
-    };
-
-    let mut args = Vec::new();
-    args.extend(locked.map(Into::into));
-    args.extend(verbose.map(Into::into));
-    args.push("--cargo-profile".into());
-    args.push(cargo_profile.into());
-    args.extend(z_panic_abort_tests.map(Into::into));
-    args.push("--target".into());
-    args.push(target);
-    args.extend(packages);
-    args.extend(features);
-
-    let mut env = BTreeMap::new();
-    if use_rustc_bootstrap {
-        env.insert("RUSTC_BOOTSTRAP".into(), "1".into());
-    }
-    env.append(&mut extra_env);
-
-    (args, env)
-}
-
 // FUTURE: this seems like something a proc-macro can help with...
 impl build_params::NextestBuildParams {
     pub fn claim(self, ctx: &mut StepCtx<'_>) -> build_params::NextestBuildParams<VarClaimed> {
@@ -682,32 +418,6 @@ impl build_params::NextestBuildParams {
             target,
             profile,
             extra_env: extra_env.claim(ctx),
-        }
-    }
-}
-
-// FUTURE: this seems like something a proc-macro can help with...
-impl RunKindDeps {
-    pub fn claim(self, ctx: &mut StepCtx<'_>) -> RunKindDeps<VarClaimed> {
-        match self {
-            RunKindDeps::BuildAndRun {
-                params,
-                nextest_installed,
-                rust_toolchain,
-                cargo_flags,
-            } => RunKindDeps::BuildAndRun {
-                params: params.claim(ctx),
-                nextest_installed: nextest_installed.claim(ctx),
-                rust_toolchain: rust_toolchain.claim(ctx),
-                cargo_flags: cargo_flags.claim(ctx),
-            },
-            RunKindDeps::RunFromArchive {
-                archive_file,
-                nextest_bin,
-            } => RunKindDeps::RunFromArchive {
-                archive_file: archive_file.claim(ctx),
-                nextest_bin: nextest_bin.claim(ctx),
-            },
         }
     }
 }

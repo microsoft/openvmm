@@ -4,6 +4,7 @@
 //! Provides constants and types derived from Linux without requiring libc.
 
 #![expect(missing_docs)]
+
 #[macro_use]
 mod macros;
 mod string;

@@ -83,10 +83,7 @@ where
         M: FlowNodeBase,
     {
         let backing_var = self.backend.new_side_effect_var();
-        let req = f(crate::node::thin_air_write_runtime_var(
-            backing_var.clone(),
-            false,
-        ));
+        let req = f(crate::node::thin_air_write_runtime_var(backing_var.clone()));
 
         self.backend.on_patch_event(PatchEvent::InjectSideEffect {
             from_old_node: NodeHandle::from_type::<N>(),

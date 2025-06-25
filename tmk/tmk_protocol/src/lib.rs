@@ -4,6 +4,7 @@
 //! Definitions for the protocol between `tmk_vmm` and the test microkernel.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 use zerocopy::FromBytes;
 use zerocopy::Immutable;

@@ -51,9 +51,9 @@ pub mod ged {
     use thiserror::Error;
     use vm_resource::Resource;
     use vm_resource::ResourceId;
-    use vm_resource::kind::DiskHandleKind;
     use vm_resource::kind::FramebufferHandleKind;
     use vm_resource::kind::VmbusDeviceHandleKind;
+    use vmgs_resources::VmgsResource;
 
     /// A resource handle for a guest emulation device.
     #[derive(MeshPayload)]
@@ -71,9 +71,7 @@ pub mod ged {
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
         /// The disk to back the GET's VMGS interface.
-        ///
-        /// If `None`, then VMGS services will not be provided to the guest.
-        pub vmgs_disk: Option<Resource<DiskHandleKind>>,
+        pub vmgs: VmgsResource,
         /// Framebuffer device control.
         pub framebuffer: Option<Resource<FramebufferHandleKind>>,
         /// Access to VTL2 functionality.
@@ -88,6 +86,8 @@ pub mod ged {
         pub enable_battery: bool,
         /// Suppress attestation and disable TPM state persistence.
         pub no_persistent_secrets: bool,
+        /// Test configuration for IGVM Attest message.
+        pub igvm_attest_test_config: Option<IgvmAttestTestConfig>,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -219,5 +219,15 @@ pub mod ged {
         NoBootDevice,
         /// A boot attempt was made.
         BootAttempt,
+    }
+
+    /// Configuration to the GED's IGVM Attest request handler
+    /// for test scenarios.
+    #[derive(Debug, MeshPayload, Copy, Clone)]
+    pub enum IgvmAttestTestConfig {
+        /// Config for testing AK cert retry after failure.
+        AkCertRequestFailureAndRetry,
+        /// Config for testing AK cert persistency across boots.
+        AkCertPersistentAcrossBoot,
     }
 }

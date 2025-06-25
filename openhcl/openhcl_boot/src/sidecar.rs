@@ -64,12 +64,20 @@ pub fn start_sidecar<'a>(
     sidecar_params: &'a mut SidecarParams,
     sidecar_output: &'a mut SidecarOutput,
 ) -> Option<SidecarConfig<'a>> {
-    if !cfg!(target_arch = "x86_64")
-        || p.isolation_type != IsolationType::None
-        || p.sidecar_size == 0
-    {
+    if !cfg!(target_arch = "x86_64") || p.isolation_type != IsolationType::None {
         return None;
     }
+
+    if p.sidecar_size == 0 {
+        log!("sidecar: not present in image");
+        return None;
+    }
+
+    if !partition_info.boot_options.sidecar {
+        log!("sidecar: disabled via command line");
+        return None;
+    }
+
     let image = MemoryRange::new(p.sidecar_base..p.sidecar_base + p.sidecar_size);
 
     // Ensure the host didn't provide an out-of-bounds NUMA node.
@@ -147,10 +155,7 @@ pub fn start_sidecar<'a>(
         {
             *hypercall_page = crate::hypercall::hvcall().hypercall_page();
         }
-        *enable_logging = partition_info
-            .cmdline
-            .split_whitespace()
-            .any(|s| s == "SIDECAR_LOGGING=1");
+        *enable_logging = partition_info.boot_options.sidecar_logging;
 
         let mut base_vp = 0;
         total_ram = 0;

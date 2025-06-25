@@ -31,6 +31,7 @@ libc.workspace = true
 socket2.workspace = true
 
 [dev-dependencies]
+event-listener.workspace = true
 test_with_tracing.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]

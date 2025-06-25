@@ -136,13 +136,15 @@ mod macros {
                 }
 
                 #[allow(unused_variables, unused_mut)]
-                fn inspect_all(&mut self, req: ::inspect::Request<'_>) {
-                    let mut resp = req.respond();
-                    $(
-                        if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
-                            resp.field_with($id, || self.$get().ok());
-                        }
-                    )*
+                fn inspect_all(&mut self) -> impl ::inspect::InspectMut {
+                    inspect::adhoc_mut(|req| {
+                        let mut resp = req.respond();
+                        $(
+                            if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
+                                resp.field_with($id, || self.$get().ok());
+                            }
+                        )*
+                    })
                 }
             }
 

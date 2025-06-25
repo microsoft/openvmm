@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <style type="text/css">
+        body {
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        #filterBar {
+            position: sticky;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            display: flex;
+            justify-content: space-between;
+            /* left + right */
+            align-items: center;
+            padding: 8px 16px;
+            border-bottom: 1px solid #ccc;
+            z-index: 10;
+            box-sizing: border-box;
+        }
+
+        #testName {
+            font-weight: bold;
+            font-size: 16px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 50%;
+        }
+
+
+        #filterWrapper {
+            position: relative;
+            display: inline-block;
+        }
+
+        #search {
+            font-size: 14px;
+            padding: 6px 28px 6px 10px;
+            /* leave space for the X */
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-family: monospace;
+            min-width: 200px;
+        }
+
+        #clearFilter {
+            position: absolute;
+            right: 6px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            font-size: 16px;
+            color: #888;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+
+        #clearFilter:hover {
+            color: #000;
+        }
+
+        .tree-key {
+            font-weight: bold;
+        }
+
+        .tree-node {
+            position: relative;
+            padding-left: 2em;
+            line-height: 1.5;
+        }
+
+        .tree-children {
+            margin-left: 1em;
+        }
+
+        .tree-expander {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 2em;
+            cursor: pointer;
+        }
+
+        .highlight {
+            background: yellow;
+            color: black;
+        }
+
+        .selected {
+            background: #fffaaf;
+        }
+    </style>
+    <script src="common.js"></script>
+    <script>
+        function parseInspectNode(input) {
+            let i = 0;
+
+            function skipWhitespace() {
+                while (/\s/.test(input[i])) i++;
+            }
+
+            function parseKey() {
+                skipWhitespace();
+                const match = /^\S*:/.exec(input.slice(i));
+                if (!match) throw new Error(`Invalid key at position ${i}: '${input.slice(i, i + 10)}'`);
+                i += match[0].length;
+                return match[0].slice(0, -1); // Remove the trailing ':'
+            }
+
+            function parseString() {
+                i++; // skip opening quote
+                let str = '';
+                while (i < input.length && input[i] !== '"') {
+                    if (input[i] === '\\') {
+                        str += input[i++];
+                    }
+                    str += input[i++];
+                }
+                if (input[i] !== '"') throw new Error('Unterminated string');
+                i++; // skip closing quote
+                return str;
+            }
+
+            function parseValue() {
+                skipWhitespace();
+
+                if (input[i] === '{') return parseObject();
+                if (input[i] === '"') return { type: 'string', value: parseString() };
+                if (input[i] === '<') {
+                    const start = i;
+                    while (i < input.length && input[i] !== '>') i++;
+                    i++; // skip '>'
+                    return { type: 'bytes', value: input.slice(start, i) };
+                }
+                if (input[i] === '_') return { type: 'unevaluated' };
+                if (input[i] === 't') {
+                    if (input.slice(i, i + 4) !== 'true') {
+                        throw new Error(`Expected 'true' at position ${i}`);
+                    }
+                    i += 4; // skip 'true'
+                    return { type: 'boolean', value: true };
+                }
+                if (input[i] === 'f') {
+                    if (input.slice(i, i + 5) !== 'false') {
+                        throw new Error(`Expected 'false' at position ${i}`);
+                    }
+                    i += 5; // skip 'false'
+                    return { type: 'boolean', value: false };
+                }
+                if (input[i] === 'e') {
+                    if (input.slice(i, i + 7) !== 'error (') {
+                        throw new Error(`Expected 'error (' at position ${i}`);
+                    }
+                    i += 7; // skip 'error ('
+                    const start = i;
+                    const parens = 1;
+                    // If the error contains mismatched parens, then we're in trouble.
+                    while (i < input.length && parens > 0) {
+                        if (input[i] === '(') {
+                            parens++;
+                        } else if (input[i] === ')') {
+                            parens--;
+                        }
+                        i++;
+                    }
+                    if (input[i - 1] !== ')') throw new Error('Unterminated error');
+                    const errorText = input.slice(start, i - 1);
+                    return { type: 'error', value: errorText };
+                }
+
+                // Try to match a number or hex or binary (0b)
+                const match = /^[+-]?((0x[0-9a-fA-F]+)|(0b[01]+)|([0-9]+(\.[0-9]*)?))/.exec(input.slice(i));
+                if (match) {
+                    i += match[0].length;
+                    return { type: 'number', value: match[0] };
+                }
+
+                throw new Error(`Unexpected token at position ${i}: '${input.slice(i, i + 10)}'`);
+            }
+
+            function parseObject() {
+                if (input[i] !== '{') throw new Error(`Expected '{' at position ${i}`);
+                i++; // skip '{'
+                skipWhitespace();
+
+                const children = [];
+
+                while (i < input.length && input[i] !== '}') {
+                    const key = parseKey();
+                    skipWhitespace();
+                    const value = parseValue();
+                    children.push({ key, value });
+
+                    skipWhitespace();
+                    if (input[i] === ',') {
+                        i++;
+                        skipWhitespace();
+                    } else if (input[i] !== '}') {
+                        const valueAsStr = JSON.stringify(value);
+                        throw new Error(`Expected ',' or '}' at position ${i}, key '${key}', value '${valueAsStr}', got '${input[i]}'`);
+                    }
+                }
+
+                if (input[i] !== '}') throw new Error(`Unterminated object at position ${i}`);
+                i++; // skip '}'
+
+                return { type: 'object', children };
+            }
+
+            skipWhitespace();
+            const result = parseObject();
+            skipWhitespace();
+            if (i < input.length) throw new Error(`Unexpected trailing characters at position ${i}`);
+            return result;
+        }
+
+        function renderInspectNode(nodeData, filter, path = '', alreadyMatched = false, depth = 0) {
+            if (nodeData.type !== 'object') return null;
+
+            const container = node('div', { class: 'tree-children' });
+
+            for (const child of nodeData.children) {
+                const key = child.key;
+                const valNode = child.value;
+                const keyMatch = key.toLowerCase().includes(filter);
+                const valText = valNode.type === 'object' ? '' : String(valNode.value || '');
+                const valMatch = valText.toLowerCase().includes(filter);
+                const indent = `${depth * 1.2}em`;
+                const fullPath = path ? `${path}.${key}` : key;
+
+                if (valNode.type === 'object') {
+                    const subtree = renderInspectNode(valNode, filter, fullPath, keyMatch || alreadyMatched, depth + 1);
+                    if (subtree) {
+                        const toggle = node('span',
+                            {
+                                class: 'tree-expander',
+                                style: { cursor: 'pointer' }
+                            }, '[-]');
+
+                        const header = node('div',
+                            {
+                                class: 'tree-node',
+                                style: { marginLeft: indent },
+                                "data-path": fullPath,
+                            },
+                            toggle,
+                            node('span', { class: 'tree-key' }, highlightMatch(`${key}`, filter))
+                        );
+
+                        let expanded = true;
+                        toggle.addEventListener('click', () => {
+                            expanded = !expanded;
+                            toggle.textContent = expanded ? '[-]' : '[+]';
+                            subtree.style.display = expanded ? '' : 'none';
+                        });
+
+                        container.append(header, subtree);
+                    }
+                } else if (!filter || keyMatch || valMatch || alreadyMatched) {
+                    container.append(
+                        node('div',
+                            {
+                                class: 'tree-node',
+                                style: { marginLeft: indent },
+                                "data-path": fullPath,
+                            },
+                            node('span', { class: 'tree-key' }, highlightMatch(`${key}: `, filter)),
+                            node('span', {}, highlightMatch(formatValue(valNode), filter))
+                        )
+                    );
+                }
+            }
+
+            return container.children.length > 0 ? container : null;
+        }
+
+        function formatValue(v) {
+            if (v.type === 'string' || v.type === 'boolean' || v.type === 'number' || v.type === 'bytes') {
+                return String(v.value);
+            } else if (v.type === 'unevaluated') {
+                return '⏳'; // Hourglass
+            } else if (v.type === 'error') {
+                // Prefix the value with a unicode red X.
+                return `❌ ${v.value}`;
+            } else {
+                throw new Error(`Unknown value type: ${v.type}`);
+            }
+        }
+
+        function highlightMatch(str, filter) {
+            if (!filter) return str;
+
+            const lowerStr = str.toLowerCase();
+            const lowerFilter = filter.toLowerCase();
+            const index = lowerStr.indexOf(lowerFilter);
+
+            if (index === -1) return str;
+
+            return node('span', {},
+                str.slice(0, index),
+                node('span', { class: 'highlight' }, str.slice(index, index + filter.length)),
+                str.slice(index + filter.length)
+            );
+        }
+
+        function init(text) {
+            const inspectNode = parseInspectNode(text);
+
+            const filter = document.getElementById('search');
+
+            let selectedPath = document.location.hash;
+            if (selectedPath) {
+                selectedPath = decodeURIComponent(selectedPath.slice(1));
+            } else {
+                selectedPath = '';
+            }
+
+            function updateFilteredTree() {
+                const f = filter.value.trim().toLowerCase();
+                const filtered = renderInspectNode(inspectNode, f);
+                const container = document.getElementById('contents');
+                container.replaceChildren(filtered || node('div', {}, 'No matches'));
+                if (selectedPath) {
+                    const anchor = container.querySelector(`.tree-node[data-path="${selectedPath}"]`);
+                    if (anchor) {
+                        anchor.classList.add('selected');
+                        requestAnimationFrame(() => {
+                            if (anchor) {
+                                anchor.scrollIntoView({ block: 'center' });
+                            }
+                        });
+                    }
+                }
+            }
+
+            function clearFilter() {
+                filter.value = '';
+                updateFilteredTree();
+            }
+
+            document.addEventListener('click', (e) => {
+                const target = e.target;
+                const n = target.closest('.tree-node');
+                if (n) {
+                    const path = n.getAttribute('data-path');
+                    if (selectedPath) {
+                        const prevSelected = document.querySelector(`.tree-node[data-path="${selectedPath}"]`);
+                        if (prevSelected) {
+                            prevSelected.classList.remove('selected');
+                        }
+                    }
+                    selectedPath = path;
+                    n.classList.add('selected');
+                    window.location.hash = encodeURIComponent(path);
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+                const isF = e.key === 'f' || e.key === 'F';
+                const isFind = (isMac && e.metaKey && isF) || (!isMac && e.ctrlKey && isF);
+
+                // Use our find if we're not showing the text modal and our find
+                // is not already selected.
+                if (isFind && filter !== document.activeElement) {
+                    e.preventDefault();
+                    filter.focus();
+                    filter.select();
+                    return;
+                }
+
+                if (e.key === 'Escape') {
+                    if (filter.value) {
+                        clearFilter();
+                    } else if (filter === document.activeElement) {
+                        filter.blur();
+                    }
+                }
+            });
+
+            filter.addEventListener('input', () => {
+                updateFilteredTree();
+            });
+
+            document.getElementById('clearFilter').addEventListener('click', clearFilter);
+
+            updateFilteredTree();
+        }
+
+        window.onload = function () {
+            const urlParams = new URLSearchParams(window.location.search);
+            const blobFile = urlParams.get('file');
+            if (!blobFile) {
+                document.body.textContent = "No blob file provided.";
+                return;
+            }
+
+            const blobUrl = new URL(blobFile, baseUrl);
+            fetch(blobUrl)
+                .then(response => response.text())
+                .then(text => {
+                    document.getElementById('testName').textContent = `${blobFile.split('/').pop()}`;
+                    init(text);
+                })
+                .catch(error => {
+                    document.body.textContent = `Error fetching ${blobUrl}: ${error.message}`;
+                });
+        };
+    </script>
+</head>
+
+<body>
+    <div id="filterBar">
+        <div id="testName"></div>
+        <div id="filterWrapper">
+            <input type="text" id="search" placeholder="Filter logs…" />
+            <button id="clearFilter" title="Clear filter">&times;</button>
+        </div>
+    </div>
+    <div id="contents">Loading...</div>
+</body>
+
+</html>

@@ -42,6 +42,7 @@ use page_table::x64::align_up_to_page_size;
 use page_table::x64::calculate_pde_table_count;
 use thiserror::Error;
 use x86defs::GdtEntry;
+use x86defs::SegmentSelector;
 use x86defs::X64_BUSY_TSS_SEGMENT_ATTRIBUTES;
 use x86defs::X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES;
 use x86defs::X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES;
@@ -359,10 +360,31 @@ where
         _ => None,
     };
 
+    // HACK: On TDX, the kernel uses the ACPI AP Mailbox protocol to start APs.
+    // However, the kernel assumes that all kernel ram is identity mapped, as
+    // the kernel will jump to a startup routine in any arbitrary kernel ram
+    // range.
+    //
+    // For now, describe 3GB of memory identity mapped in the page table used by
+    // the mailbox assembly stub, so the kernel can start APs regardless of how
+    // large the initial memory size was. An upcoming change will instead have
+    // the bootshim modify the pagetable at runtime to guarantee all ranges
+    // reported in the E820 map to kernel as ram are mapped.
+    //
+    // FUTURE: A future kernel change could remove this requirement entirely by
+    // making the kernel spec compliant, and only require that the reset vector
+    // page is identity mapped.
+
+    let page_table_mapping_size = if isolation_type == IsolationType::Tdx {
+        3 * 1024 * 1024 * 1024
+    } else {
+        memory_size
+    };
+
     let page_table_base_page_count = 5;
     let page_table_dynamic_page_count = {
         // Double the count to allow for simpler reconstruction.
-        calculate_pde_table_count(memory_start_address, memory_size) * 2
+        calculate_pde_table_count(memory_start_address, page_table_mapping_size) * 2
             + local_map.map_or(0, |v| calculate_pde_table_count(v.0, v.1))
     };
     let page_table_isolation_page_count = match isolation_type {
@@ -383,7 +405,7 @@ where
     tracing::debug!(page_table_region_start, page_table_region_size);
 
     let mut page_table_builder = PageTableBuilder::new(page_table_region_start)
-        .with_mapped_region(memory_start_address, memory_size);
+        .with_mapped_region(memory_start_address, page_table_mapping_size);
 
     if let Some((local_map_start, size)) = local_map {
         page_table_builder = page_table_builder.with_local_map(local_map_start, size);
@@ -467,6 +489,8 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
+        page_tables_start: calculate_shim_offset(page_table_region_start),
+        page_tables_size: page_table_region_size,
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -494,19 +518,27 @@ where
     // ds, es, fs, gs, ss are linearSelector
     // cs is linearCode64Selector
 
-    // GDT is laid out as:
-    // [null_selector, null_selector, linearCode64Selector, linearSelector]
+    // GDT is laid out as (counting by the small entries):
+    //  0: null descriptor,
+    //  1: null descriptor,
+    //  2: linear code64 descriptor,
+    //  3. linear descriptor for data
+    //  4: here you can add more descriptors.
+
     let default_data_attributes: u16 = X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES.into();
-    let default_code_attributes: u16 = X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES.into();
+    let default_code64_attributes: u16 = X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES.into();
     let gdt = [
+        // A large null descriptor.
         GdtEntry::new_zeroed(),
         GdtEntry::new_zeroed(),
+        // Code descriptor for the long mode.
         GdtEntry {
             limit_low: 0xffff,
-            attr_low: default_code_attributes as u8,
-            attr_high: (default_code_attributes >> 8) as u8,
+            attr_low: default_code64_attributes as u8,
+            attr_high: (default_code64_attributes >> 8) as u8,
             ..GdtEntry::new_zeroed()
         },
+        // Data descriptor.
         GdtEntry {
             limit_low: 0xffff,
             attr_low: default_data_attributes as u8,
@@ -514,9 +546,15 @@ where
             ..GdtEntry::new_zeroed()
         },
     ];
-    let gdt_entry_size = size_of::<GdtEntry>();
-    let linear_selector_offset = 3 * gdt_entry_size;
-    let linear_code64_selector_offset = 2 * gdt_entry_size;
+
+    const LINEAR_CODE64_DESCRIPTOR_INDEX: usize = 2;
+    const LINEAR_DATA_DESCRIPTOR_INDEX: usize = 3;
+    const RPL: u8 = 0x00; // requested priviledge level: the highest
+
+    let linear_code64_descriptor_selector =
+        SegmentSelector::from_gdt_index(LINEAR_CODE64_DESCRIPTOR_INDEX as u16, RPL);
+    let linear_data_descriptor_selector =
+        SegmentSelector::from_gdt_index(LINEAR_DATA_DESCRIPTOR_INDEX as u16, RPL);
 
     importer.import_pages(
         gdt_base_address / HV_PAGE_SIZE,
@@ -535,11 +573,11 @@ where
     // Import GDTR and selectors.
     import_reg(X86Register::Gdtr(TableRegister {
         base: gdt_base_address,
-        limit: (size_of::<GdtEntry>() * 4 - 1) as u16,
+        limit: (size_of_val(&gdt) - 1) as u16,
     }))?;
 
     let ds = SegmentRegister {
-        selector: linear_selector_offset as u16,
+        selector: linear_data_descriptor_selector.into_bits(),
         base: 0,
         limit: 0xffffffff,
         attributes: default_data_attributes,
@@ -551,10 +589,10 @@ where
     import_reg(X86Register::Ss(ds))?;
 
     let cs = SegmentRegister {
-        selector: linear_code64_selector_offset as u16,
+        selector: linear_code64_descriptor_selector.into_bits(),
         base: 0,
         limit: 0xffffffff,
-        attributes: default_code_attributes,
+        attributes: default_code64_attributes,
     };
     import_reg(X86Register::Cs(cs))?;
 
@@ -1043,6 +1081,8 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
+        page_tables_start: 0,
+        page_tables_size: 0,
     };
 
     importer

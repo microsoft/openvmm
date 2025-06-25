@@ -44,6 +44,7 @@ vmcore.workspace = true
 vm_manifest_builder.workspace = true
 vm_resource.workspace = true
 vmgs_format.workspace = true
+vmgs_resources.workspace = true
 vmm_core_defs.workspace = true
 vmotherboard.workspace = true
 vmsocket.workspace = true
@@ -56,6 +57,7 @@ mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal.workspace = true
+powershell_builder.workspace = true
 unix_socket.workspace = true
 sparse_mmap.workspace = true
 

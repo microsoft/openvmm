@@ -6,9 +6,9 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::OpenHclServicingFlags;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::PetriVmConfigOpenVmm;
-#[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
@@ -20,7 +20,10 @@ async fn nvme_relay_test_core(
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect()
-        .with_processors(1)
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 1,
+            ..Default::default()
+        })
         .run()
         .await?;
 
@@ -49,7 +52,7 @@ async fn nvme_relay_servicing_core(
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
 
-    vm.restart_openhcl(new_openhcl, flags).await?;
+    vm.restart_openhcl(&new_openhcl, flags).await?;
 
     agent.ping().await?;
 
@@ -99,7 +102,7 @@ async fn nvme_keepalive(
 ) -> Result<(), anyhow::Error> {
     nvme_relay_servicing_core(
         config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,

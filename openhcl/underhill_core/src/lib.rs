@@ -206,7 +206,11 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
 
     let r = run_control(driver, &mesh, opt, &mut tracing).await;
     if let Err(err) = &r {
-        tracing::error!(error = err.as_ref() as &dyn std::error::Error, "VM failure");
+        tracing::error!(
+            CVM_ALLOWED,
+            error = err.as_ref() as &dyn std::error::Error,
+            "VM failure"
+        );
     }
 
     // Wait a few seconds for child processes to terminate and tracing to finish.
@@ -238,6 +242,7 @@ fn log_boot_times() -> anyhow::Result<()> {
         sidecar_end,
     } = BootTimes::new().context("failed to parse boot times")?;
     tracing::info!(
+        CVM_ALLOWED,
         start,
         end,
         sidecar_start,
@@ -313,7 +318,6 @@ async fn launch_workers(
         nvme_vfio: opt.nvme_vfio,
         mcr: opt.mcr,
         enable_shared_visibility_pool: opt.enable_shared_visibility_pool,
-        cvm_guest_vsm: opt.cvm_guest_vsm,
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
@@ -707,10 +711,10 @@ async fn run_control(
             Event::Worker(event) => match event {
                 WorkerEvent::Started => {
                     if let Some(response) = restart_rpc.take() {
-                        tracing::info!("restart complete");
+                        tracing::info!(CVM_ALLOWED, "restart complete");
                         response.complete(Ok(()));
                     } else {
-                        tracing::info!("vm worker started");
+                        tracing::info!(CVM_ALLOWED, "vm worker started");
                     }
                     state = ControlState::Started;
                 }
@@ -721,7 +725,11 @@ async fn run_control(
                     return Err(anyhow::Error::from(err)).context("vm worker failed");
                 }
                 WorkerEvent::RestartFailed(err) => {
-                    tracing::error!(error = &err as &dyn std::error::Error, "restart failed");
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        error = &err as &dyn std::error::Error,
+                        "restart failed"
+                    );
                     restart_rpc.take().unwrap().complete(Err(err));
                     state = ControlState::Started;
                 }
@@ -729,7 +737,7 @@ async fn run_control(
             Event::Control(req) => match req {
                 ControlRequest::FlushLogs(rpc) => {
                     rpc.handle(async |mut ctx| {
-                        tracing::info!("flushing logs");
+                        tracing::info!(CVM_ALLOWED, "flushing logs");
                         ctx.until_cancelled(tracing.flush()).await?;
                         Ok(())
                     })
@@ -743,7 +751,7 @@ async fn run_control(
 }
 
 async fn signal_vtl0_started(driver: &DefaultDriver) -> anyhow::Result<()> {
-    tracing::info!("signaling vtl0 started early");
+    tracing::info!(CVM_ALLOWED, "signaling vtl0 started early");
     let (client, task) = guest_emulation_transport::spawn_get_worker(driver.clone())
         .await
         .context("failed to spawn GET")?;
@@ -751,7 +759,7 @@ async fn signal_vtl0_started(driver: &DefaultDriver) -> anyhow::Result<()> {
     // Disconnect the GET so that it can be reused.
     drop(client);
     task.await.unwrap();
-    tracing::info!("signaled vtl0 start");
+    tracing::info!(CVM_ALLOWED, "signaled vtl0 start");
     Ok(())
 }
 

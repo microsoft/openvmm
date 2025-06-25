@@ -3,11 +3,9 @@
 
 //! Functions for interacting with Hyper-V VMs.
 
-use super::CommandError;
+use super::vm::CommandError;
 use anyhow::Context;
 use guid::Guid;
-use std::ffi::OsStr;
-use std::process::Stdio;
 
 pub fn hvc_start(vmid: &Guid) -> Result<(), CommandError> {
     hvc_output(|cmd| cmd.arg("start").arg(vmid.to_string())).map(|_| ())
@@ -94,26 +92,7 @@ fn hvc_output(
     f: impl FnOnce(&mut std::process::Command) -> &mut std::process::Command,
 ) -> Result<String, CommandError> {
     let mut cmd = std::process::Command::new("hvc.exe");
-    cmd.stderr(Stdio::piped()).stdin(Stdio::null());
     f(&mut cmd);
 
-    let output = cmd.output()?;
-
-    let hvc_cmd = format!(
-        "{} {}",
-        cmd.get_program().to_string_lossy(),
-        cmd.get_args()
-            .collect::<Vec<_>>()
-            .join(OsStr::new(" "))
-            .to_string_lossy()
-    );
-    let hvc_stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let hvc_stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    tracing::debug!(hvc_cmd, hvc_stdout, hvc_stderr);
-    if !output.status.success() {
-        return Err(CommandError::Command(output.status, hvc_stderr));
-    }
-
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    super::vm::run_cmd(cmd)
 }

@@ -5,6 +5,7 @@
 
 #![cfg(windows)]
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod resolver;
 
@@ -18,6 +19,7 @@ use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
 use net_backend::next_packet;
@@ -191,7 +193,7 @@ impl Queue for DioQueue {
         Ok((true, n))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         Ok(0)
     }
 

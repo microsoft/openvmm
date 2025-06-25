@@ -12,6 +12,7 @@ use hvdef::Vtl;
 use inspect::Inspect;
 pub use saved_state::RestoreError;
 pub use saved_state::SavedState;
+pub use saved_state::SavedStateData;
 use slab::Slab;
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -984,9 +985,11 @@ impl ChannelList {
                     // Merge in the inspection state from outside. Skip this if
                     // the channel is revoked (and not reoffered) since in that
                     // case the caller won't recognize the channel ID.
-                    if !matches!(channel.state, ChannelState::Revoked) {
-                        notifier.inspect(version, offer_id, resp.request());
-                    }
+                    resp.merge(inspect::adhoc(|req| {
+                        if !matches!(channel.state, ChannelState::Revoked) {
+                            notifier.inspect(version, offer_id, req);
+                        }
+                    }));
                 },
             );
         }

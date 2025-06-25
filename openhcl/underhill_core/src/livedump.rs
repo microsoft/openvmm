@@ -6,7 +6,7 @@ use std::process::Stdio;
 pub(crate) async fn livedump() {
     // If a livedump fails we don't want to panic, just log the error.
     match livedump_core().await {
-        Err(e) => tracing::error!(?e, "livedump failed"),
+        Err(e) => tracing::error!(e = e.as_ref() as &dyn std::error::Error, "livedump failed"),
         Ok(()) => tracing::info!("livedump succeeded"),
     }
 }

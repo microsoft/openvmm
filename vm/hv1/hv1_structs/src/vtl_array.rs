@@ -3,9 +3,6 @@
 
 //! Container data structures indexable by [`Vtl`].
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-
 use bitvec::array::BitArray;
 use core::ops::Deref;
 use core::ops::DerefMut;

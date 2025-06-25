@@ -4,9 +4,11 @@
 //! Common TDCALL handling for issuing tdcalls and functionality using tdcalls.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
+use thiserror::Error;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
@@ -75,6 +77,48 @@ pub struct TdcallOutput {
 pub trait Tdcall {
     /// Perform a tdcall instruction with the specified inputs.
     fn tdcall(&mut self, input: TdcallInput) -> TdcallOutput;
+}
+
+/// Perform a tdcall based Hypercall. This is done by issuing a TDG.VP.VMCALL.
+pub fn tdcall_hypercall(
+    call: &mut impl Tdcall,
+    control: hvdef::hypercall::Control,
+    input_gpa: u64,
+    output_gpa: u64,
+) -> Result<(), TdVmCallR10Result> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VP_VMCALL,
+        rcx: 0x0d04, // pass RDX, R8, R10, R11
+        rdx: input_gpa,
+        r8: output_gpa,
+        r9: 0,
+        r10: u64::from(control), // hypercall control code
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    if output.rax.code() != TdCallResultCode::SUCCESS {
+        // This means something has gone horribly wrong with the TDX module, as
+        // this call should always succeed with hypercall errors returned in
+        // r11.
+        panic!(
+            "unexpected nonzero rax {:x} on tdcall_hypercall",
+            u64::from(output.rax)
+        );
+    }
+
+    // TD.VMCALL for Hypercall passes return code in r11
+    let result = TdVmCallR10Result(output.r11);
+
+    match result {
+        TdVmCallR10Result::SUCCESS => Ok(()),
+        val => Err(val),
+    }
 }
 
 /// Perform a tdcall based MSR read. This is done by issuing a TDG.VP.VMCALL.
@@ -393,15 +437,21 @@ fn set_page_attr(
 }
 
 /// The error returned by [`accept_pages`].
-#[derive(Debug)]
+// TODO: why is this an enum with multiple variants--callers don't seem to care.
+// Collapse into a struct, or at least collapse some of the variants?
+#[derive(Debug, Error)]
 pub enum AcceptPagesError {
     /// Unknown error type.
+    #[error("unknown error: {0:?}")]
     Unknown(TdCallResultCode),
     /// Setting page attributes failed after accepting,
+    #[error("setting page attributes failed after accepting: {0:?}")]
     Attributes(TdCallResultCode),
     /// Invalid operand
+    #[error("invalid operand: {0:?}")]
     Invalid(TdCallResultCode),
     /// Busy Operand
+    #[error("operand busy: {0:?}")]
     Busy(TdCallResultCode),
 }
 
