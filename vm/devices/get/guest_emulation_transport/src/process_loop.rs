@@ -860,8 +860,8 @@ impl<T: RingMem> ProcessLoop<T> {
                             .unwrap()
                             .try_recv()
                         {
-                            let id =  get_protocol::HeaderRaw::read_from_prefix(&resp).map(|head| head.0.message_id).unwrap_or(0);
-                            return FatalError::NoPendingRequest(HostRequests(id));
+                            let id =  get_protocol::HeaderRaw::read_from_prefix(&resp).map(|head| HostRequests(head.0.message_id)).unwrap_or(HostRequests::INVALID);
+                            return FatalError::NoPendingRequest(id);
                         }
                     }
                     pending().await
