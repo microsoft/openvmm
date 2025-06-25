@@ -304,7 +304,7 @@ enum InterceptMessageType {
 
 /// Per-arch state required to generate an intercept message.
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-struct InterceptMessageState {
+pub(crate) struct InterceptMessageState {
     instruction_length_and_cr8: u8,
     cpl: u8,
     efer_lma: bool,
@@ -421,7 +421,7 @@ impl InterceptMessageType {
 
 /// Trait for processor backings that have hardware isolation support.
 #[cfg(guest_arch = "x86_64")]
-trait HardwareIsolatedBacking: Backing {
+pub(crate) trait HardwareIsolatedBacking: Backing {
     /// Gets CVM specific VP state.
     fn cvm_state(&self) -> &crate::UhCvmVpState;
     /// Gets CVM specific VP state.
@@ -430,8 +430,14 @@ trait HardwareIsolatedBacking: Backing {
     fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;
     /// Gets a struct that can be used to interact with TLB flushing and
     /// locking.
+    ///
+    /// If a `vp_index` is provided, it will be used to cause the specified VP
+    /// to wait for all TLB locks to be released before returning to a lower VTL.
+    //
+    // FUTURE: This probably shouldn't be optional, but right now MNF doesn't know
+    // what VP it's set from and probably doesn't need it?
     fn tlb_flush_lock_access<'a>(
-        vp_index: VpIndex,
+        vp_index: Option<VpIndex>,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a;
