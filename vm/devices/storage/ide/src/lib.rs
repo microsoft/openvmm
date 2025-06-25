@@ -2504,4 +2504,387 @@ mod tests {
         };
         assert_eq!(features.as_bytes(), ex_features.as_bytes());
     }
+
+    // DMA Engine Unit Tests
+    
+    // Test DMA read operation with multiple PRD entries
+    #[async_test]
+    async fn test_dma_read_multiple_prds() {
+        const SECTORS_PER_PRD: u16 = 2;
+        const PRD_COUNT: usize = 3;
+        const TOTAL_SECTORS: u16 = SECTORS_PER_PRD * PRD_COUNT as u16;
+        const BYTES_PER_PRD: u16 = SECTORS_PER_PRD * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let test_guest_mem = GuestMemory::allocate(32768);
+        let table_gpa = 0x1000_u32;
+        let data_base_gpa = 0x2000_u32;
+
+        // Set up multiple PRD entries, each for 2 sectors
+        for i in 0..PRD_COUNT {
+            let data_gpa = data_base_gpa + (i as u32 * BYTES_PER_PRD as u32);
+            let is_last = i == PRD_COUNT - 1;
+            
+            test_guest_mem
+                .write_plain(
+                    (table_gpa + (i as u32 * size_of::<BusMasterDmaDesc>() as u32)).into(),
+                    &BusMasterDmaDesc {
+                        mem_physical_base: data_gpa,
+                        byte_count: BYTES_PER_PRD,
+                        unused: 0,
+                        end_of_table: if is_last { 0x80 } else { 0x00 },
+                    },
+                )
+                .unwrap();
+        }
+
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_DMA_EXT,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: TOTAL_SECTORS,
+            byte_count: 0,
+            data_buffer: table_gpa,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, file_contents, _geometry) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // Execute enlightened READ DMA command
+        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes());
+
+        match r {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            _ => panic!("{:?}", r),
+        }
+
+        // Verify data was transferred correctly to all memory regions
+        for i in 0..PRD_COUNT {
+            let data_gpa = data_base_gpa + (i as u32 * BYTES_PER_PRD as u32);
+            let mut buffer = vec![0u8; BYTES_PER_PRD as usize];
+            test_guest_mem
+                .read_at(data_gpa.into(), &mut buffer)
+                .unwrap();
+            
+            let file_offset = i * BYTES_PER_PRD as usize;
+            let expected_data = &file_contents.as_bytes()[file_offset..file_offset + BYTES_PER_PRD as usize];
+            assert_eq!(buffer, expected_data);
+        }
+    }
+
+    // Test DMA write operation with multiple PRD entries
+    #[async_test]
+    async fn test_dma_write_multiple_prds() {
+        const SECTORS_PER_PRD: u16 = 2;
+        const PRD_COUNT: usize = 2;
+        const TOTAL_SECTORS: u16 = SECTORS_PER_PRD * PRD_COUNT as u16;
+        const BYTES_PER_PRD: u16 = SECTORS_PER_PRD * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let test_guest_mem = GuestMemory::allocate(32768);
+        let table_gpa = 0x1000_u32;
+        let data_base_gpa = 0x2000_u32;
+
+        // Prepare test data for each PRD
+        let mut all_test_data = Vec::new();
+        for i in 0..PRD_COUNT {
+            let data_gpa = data_base_gpa + (i as u32 * BYTES_PER_PRD as u32);
+            let test_data = vec![0xAA + i as u8; BYTES_PER_PRD as usize];
+            test_guest_mem
+                .write_at(data_gpa.into(), &test_data)
+                .unwrap();
+            all_test_data.extend_from_slice(&test_data);
+        }
+
+        // Set up multiple PRD entries
+        for i in 0..PRD_COUNT {
+            let data_gpa = data_base_gpa + (i as u32 * BYTES_PER_PRD as u32);
+            let is_last = i == PRD_COUNT - 1;
+            
+            test_guest_mem
+                .write_plain(
+                    (table_gpa + (i as u32 * size_of::<BusMasterDmaDesc>() as u32)).into(),
+                    &BusMasterDmaDesc {
+                        mem_physical_base: data_gpa,
+                        byte_count: BYTES_PER_PRD,
+                        unused: 0,
+                        end_of_table: if is_last { 0x80 } else { 0x00 },
+                    },
+                )
+                .unwrap();
+        }
+
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::WRITE_DMA_EXT,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: TOTAL_SECTORS,
+            byte_count: 0,
+            data_buffer: table_gpa,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, mut disk, _file_contents, _geometry) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // Execute enlightened WRITE DMA command
+        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes());
+
+        match r {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            _ => panic!("{:?}", r),
+        }
+
+        // Verify data was written to disk
+        let mut disk_buffer = vec![0u8; all_test_data.len()];
+        disk.read_exact(&mut disk_buffer).unwrap();
+        assert_eq!(disk_buffer, all_test_data);
+    }
+
+    // Test DMA operation with zero-byte count (should be interpreted as 64KB)
+    #[async_test]
+    async fn test_dma_read_zero_byte_count() {
+        const SECTOR_COUNT: u16 = 4; // Request only 4 sectors (2KB)
+        const BYTE_COUNT: u16 = SECTOR_COUNT * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let test_guest_mem = GuestMemory::allocate(70000); // Large enough for 64KB
+        let table_gpa = 0x1000_u32;
+        let data_gpa = 0x2000_u32;
+
+        // Set up PRD with zero byte count (should be interpreted as 64KB)
+        test_guest_mem
+            .write_plain(
+                table_gpa.into(),
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: 0, // Zero means 64KB
+                    unused: 0,
+                    end_of_table: 0x80,
+                },
+            )
+            .unwrap();
+
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_DMA_EXT,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: SECTOR_COUNT, // Only request 4 sectors, not 64KB worth
+            byte_count: 0,
+            data_buffer: table_gpa,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, file_contents, _geometry) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // Execute enlightened READ DMA command
+        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes());
+
+        match r {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            _ => panic!("{:?}", r),
+        }
+
+        // Verify only the requested sectors were transferred, not the full 64KB
+        let mut buffer = vec![0u8; BYTE_COUNT as usize];
+        test_guest_mem
+            .read_at(data_gpa.into(), &mut buffer)
+            .unwrap();
+        assert_eq!(buffer, file_contents.as_bytes()[..buffer.len()]);
+
+        // Verify that memory beyond the IDE buffer wasn't touched
+        let mut untouched_buffer = vec![0xFF_u8; 1024];
+        test_guest_mem
+            .read_at((data_gpa + BYTE_COUNT as u32).into(), &mut untouched_buffer)
+            .unwrap();
+        assert_eq!(untouched_buffer, vec![0u8; 1024]); // Should be initialized to zero
+    }
+
+    // Test DMA descriptor read error handling
+    #[async_test]
+    async fn test_dma_descriptor_read_error() {
+        const SECTOR_COUNT: u16 = 2;
+
+        let test_guest_mem = GuestMemory::allocate(16384);
+        let invalid_table_gpa = 0xFFFFF000_u32; // Invalid/unmapped address
+
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_DMA_EXT,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: SECTOR_COUNT,
+            byte_count: 0,
+            data_buffer: invalid_table_gpa, // Point to invalid memory
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, _file_contents, _geometry) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // Execute enlightened READ DMA command with invalid table
+        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes());
+
+        match r {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            _ => panic!("{:?}", r),
+        }
+
+        // The operation should complete without hanging, even with invalid table
+        // The DMA engine should handle the error gracefully
+        let drive_status = get_status(&mut ide_device, &dev_path);
+        assert!(!drive_status.bsy()); // Should not be stuck in busy state
+    }
+
+    // Test PRD table boundary handling - this tests the core DMA engine logic
+    #[async_test]
+    async fn test_dma_prd_boundary_handling() {
+        const SECTOR_COUNT: u16 = 6;
+        const SECTORS_IN_FIRST_PRD: u16 = 2;
+        const SECTORS_IN_SECOND_PRD: u16 = 4;
+        const BYTES_IN_FIRST_PRD: u16 = SECTORS_IN_FIRST_PRD * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+        const BYTES_IN_SECOND_PRD: u16 = SECTORS_IN_SECOND_PRD * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let test_guest_mem = GuestMemory::allocate(32768);
+        let table_gpa = 0x1000_u32;
+        let data_gpa_1 = 0x2000_u32;
+        let data_gpa_2 = 0x3000_u32;
+
+        // Set up two PRD entries with different sizes
+        test_guest_mem
+            .write_plain(
+                table_gpa.into(),
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa_1,
+                    byte_count: BYTES_IN_FIRST_PRD,
+                    unused: 0,
+                    end_of_table: 0x00, // Not the end
+                },
+            )
+            .unwrap();
+
+        test_guest_mem
+            .write_plain(
+                (table_gpa + size_of::<BusMasterDmaDesc>() as u32).into(),
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa_2,
+                    byte_count: BYTES_IN_SECOND_PRD,
+                    unused: 0,
+                    end_of_table: 0x80, // End of table
+                },
+            )
+            .unwrap();
+
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_DMA_EXT,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: SECTOR_COUNT,
+            byte_count: 0,
+            data_buffer: table_gpa,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, file_contents, _geometry) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // Execute enlightened READ DMA command
+        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes());
+
+        match r {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            _ => panic!("{:?}", r),
+        }
+
+        // Verify data was transferred correctly to both memory regions
+        let mut buffer1 = vec![0u8; BYTES_IN_FIRST_PRD as usize];
+        test_guest_mem
+            .read_at(data_gpa_1.into(), &mut buffer1)
+            .unwrap();
+        assert_eq!(buffer1, &file_contents.as_bytes()[0..BYTES_IN_FIRST_PRD as usize]);
+
+        let mut buffer2 = vec![0u8; BYTES_IN_SECOND_PRD as usize];
+        test_guest_mem
+            .read_at(data_gpa_2.into(), &mut buffer2)
+            .unwrap();
+        assert_eq!(buffer2, &file_contents.as_bytes()[BYTES_IN_FIRST_PRD as usize..(BYTES_IN_FIRST_PRD + BYTES_IN_SECOND_PRD) as usize]);
+    }
 }
