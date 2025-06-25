@@ -933,7 +933,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         let mut inner = self.inner.lock();
 
         // If the page is already registered as an overlay page, just check
-        // the permissions are adequate.
+        // the permissions are adequate. If the permissions requested are
+        // different from the ones already registered just do best effort,
+        // there is no spec-guarantee of which one "wins".
         if let Some(registered) = inner.overlay_pages[vtl].iter().find(|p| p.gpn == gpn) {
             let needed_perms = new_perms.unwrap_or(check_perms);
             if registered.overlay_permissions.into_bits() | needed_perms.into_bits()
