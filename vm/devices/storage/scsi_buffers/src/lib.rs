@@ -208,7 +208,7 @@ impl LockedRange for LockedIoVecs {
 /// An implementation of [`MemoryWrite`] that provides semantically
 /// correct results. Specifically, it always returns a `ReadOnly` error
 /// when attempting to write to it.
-pub struct PermissionedMemoryWriter<'a> {
+struct PermissionedMemoryWriter<'a> {
     range: PagedRange<'a>,
     writer: PagedRangeWriter<'a>,
     is_write: bool,
@@ -216,11 +216,13 @@ pub struct PermissionedMemoryWriter<'a> {
 
 impl PermissionedMemoryWriter<'_> {
     /// Creates a new memory writer with the given range and guest memory.
-    pub fn new<'a>(
+    fn new<'a>(
         range: PagedRange<'a>,
         guest_memory: &'a GuestMemory,
         is_write: bool,
     ) -> PermissionedMemoryWriter<'a> {
+        // Simply create an empty range here to avoid branching on hot paths (`write`, `fill`, etc.)
+        let range = if is_write { range } else { PagedRange::empty() };
         PermissionedMemoryWriter {
             range,
             writer: range.writer(guest_memory),
@@ -231,19 +233,23 @@ impl PermissionedMemoryWriter<'_> {
 
 impl MemoryWrite for PermissionedMemoryWriter<'_> {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError> {
-        if self.is_write {
-            self.writer.write(data)
-        } else {
-            Err(AccessError::ReadOnly)
-        }
+        self.writer.write(data).map_err(|e| {
+            if self.is_write {
+                e
+            } else {
+                AccessError::ReadOnly
+            }
+        })
     }
 
     fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError> {
-        if self.is_write {
-            self.writer.fill(val, len)
-        } else {
-            Err(AccessError::ReadOnly)
-        }
+        self.writer.fill(val, len).map_err(|e| {
+            if self.is_write {
+                e
+            } else {
+                AccessError::ReadOnly
+            }
+        })
     }
 
     fn len(&self) -> usize {
@@ -486,6 +492,18 @@ mod tests {
             matches!(r, Err(AccessError::ReadOnly)),
             "Expected read-only error, got {:?}",
             r
+        );
+
+        let r = buffers.writer().fill(1, 4096);
+        assert!(
+            matches!(r, Err(AccessError::ReadOnly)),
+            "Expected read-only error, got {:?}",
+            r
+        );
+
+        assert!(
+            buffers.writer().len() == 0,
+            "Length should be 0 for read-only writer"
         );
     }
 }
