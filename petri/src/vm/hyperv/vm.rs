@@ -410,6 +410,11 @@ impl HyperVVM {
     pub fn set_vm_firmware_command_line(&self, openhcl_command_line: &str) -> anyhow::Result<()> {
         powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line)
     }
+
+    /// Enable VMBusRelay
+    pub fn set_vmbus_redirect(&self, enable: bool) -> anyhow::Result<()> {
+        powershell::set_vmbus_redirect(&self.vmid, &self.ps_mod, enable)
+    }
 }
 
 impl Drop for HyperVVM {

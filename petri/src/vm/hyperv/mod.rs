@@ -60,6 +60,7 @@ pub struct PetriVmConfigHyperV {
     openhcl_igvm: Option<ResolvedArtifact>,
     openhcl_command_line: String,
     disable_frontpage: bool,
+    vmbus_redirect: bool,
 
     driver: DefaultDriver,
     agent_image: AgentImage,
@@ -126,6 +127,14 @@ impl PetriVmConfig for PetriVmConfigHyperV {
 
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_uefi_frontpage(*self, enable))
+    }
+
+    fn with_vmbus_redirect(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_vmbus_redirect(*self, enable))
+    }
+
+    fn os_flavor(&self) -> OsFlavor {
+        self.os_flavor
     }
 }
 
@@ -296,6 +305,7 @@ impl PetriVmConfigHyperV {
             temp_dir,
             log_source: params.logger.clone(),
             disable_frontpage: true,
+            vmbus_redirect: false,
             openhcl_command_line: String::new(),
         })
     }
@@ -476,6 +486,9 @@ impl PetriVmConfigHyperV {
                 Some(0),
                 Some(controller_number),
             )?;
+
+            // Enable/Disable VMBusRedirect if requested in config
+            vm.set_vmbus_redirect(self.vmbus_redirect)?;
         }
 
         let mut log_tasks = Vec::new();
@@ -575,6 +588,12 @@ impl PetriVmConfigHyperV {
     /// Set whether to disable the UEFI frontpage.
     pub fn with_uefi_frontpage(mut self, enable: bool) -> Self {
         self.disable_frontpage = !enable;
+        self
+    }
+
+    /// Enables VMBus relay for the VM
+    pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
+        self.vmbus_redirect = enable;
         self
     }
 }
