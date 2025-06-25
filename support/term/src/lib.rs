@@ -21,21 +21,18 @@ pub enum Error {
 pub fn enable_vt_and_utf8() {
     use windows::Win32::Foundation::GetStdHandle;
     use windows::Win32::Foundation::STD_OUTPUT_HANDLE;
+    use windows::Win32::System::Console::CP_UTF8;
+    use windows::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_PROCESSING;
     use windows::Win32::System::Console::GetConsoleMode;
     use windows::Win32::System::Console::SetConsoleMode;
     use windows::Win32::System::Console::SetConsoleOutputCP;
-    use windows::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-    use windows::Win32::System::Console::CP_UTF8;
     // SAFETY: calling Windows APIs as documented.
     unsafe {
         let conout = GetStdHandle(STD_OUTPUT_HANDLE);
         let mut mode = 0;
         if GetConsoleMode(conout, &mut mode) != 0 {
             if mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING.0 == 0 {
-                SetConsoleMode(
-                    conout,
-                    mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING.0,
-                );
+                SetConsoleMode(conout, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING.0);
             }
             SetConsoleOutputCP(CP_UTF8);
         }

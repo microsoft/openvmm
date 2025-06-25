@@ -17,6 +17,8 @@ pub mod security;
 pub mod tp;
 
 use self::security::SecurityDescriptor;
+use ntapi::ntdef::ANSI_STRING;
+use ntapi::ntdef::UNICODE_STRING;
 use ntapi::ntioapi::FILE_COMPLETION_INFORMATION;
 use ntapi::ntioapi::FileReplaceCompletionInformation;
 use ntapi::ntioapi::IO_STATUS_BLOCK;
@@ -27,8 +29,6 @@ use ntapi::ntioapi::NtSetInformationFile;
 use ntapi::ntobapi::NtCreateDirectoryObject;
 use ntapi::ntobapi::NtOpenDirectoryObject;
 use ntapi::ntrtl;
-use ntdef::ANSI_STRING;
-use ntdef::UNICODE_STRING;
 use ntrtl::RtlAllocateHeap;
 use ntrtl::RtlDosPathNameToNtPathName_U_WithStatus;
 use ntrtl::RtlFreeUnicodeString;
@@ -54,32 +54,32 @@ use std::time::Duration;
 use widestring::U16CString;
 use widestring::Utf16Str;
 use windows::Win32::Foundation::CloseHandle;
-use windows::Win32::Foundation::DuplicateHandle;
 use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
+use windows::Win32::Foundation::DuplicateHandle;
 use windows::Win32::Foundation::ERROR_BAD_PATHNAME;
 use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Foundation::STATUS_PENDING;
-use windows::Win32::Foundation::INFINITE;
-use windows::Win32::System::ErrorReporting::GetErrorMode;
-use windows::Win32::System::ErrorReporting::SetErrorMode;
-use windows::Win32::System::ErrorReporting::SEM_FAILCRITICALERRORS;
+use windows::Win32::Networking::WinSock::IOC_IN;
+use windows::Win32::Networking::WinSock::IOC_VENDOR;
+use windows::Win32::Storage::FileSystem::SetFileCompletionNotificationModes;
+use windows::Win32::System::Console::STD_OUTPUT_HANDLE;
+use windows::Win32::System::Console::SetStdHandle;
 use windows::Win32::System::IO::CreateIoCompletionPort;
 use windows::Win32::System::IO::GetQueuedCompletionStatusEx;
-use windows::Win32::System::IO::PostQueuedCompletionStatus;
 use windows::Win32::System::IO::OVERLAPPED;
 use windows::Win32::System::IO::OVERLAPPED_ENTRY;
+use windows::Win32::System::IO::PostQueuedCompletionStatus;
 use windows::Win32::System::Memory::GetProcessHeap;
+use windows::Win32::System::SystemServices::GetErrorMode;
+use windows::Win32::System::SystemServices::SEM_FAILCRITICALERRORS;
+use windows::Win32::System::SystemServices::SetErrorMode;
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::Threading::GetExitCodeProcess;
 use windows::Win32::System::Threading::GetProcessId;
-use windows::Win32::System::Threading::SetStdHandle;
+use windows::Win32::System::Threading::INFINITE;
 use windows::Win32::System::Threading::TerminateProcess;
-use windows::Win32::System::Threading::STD_OUTPUT_HANDLE;
 use windows::Win32::System::Threading::WaitForSingleObject;
-use windows::Win32::Storage::FileSystem::SetFileCompletionNotificationModes;
-use windows::Win32::Networking::WinSock::IOC_IN;
-use windows::Win32::Networking::WinSock::IOC_VENDOR;
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -98,7 +98,7 @@ impl BorrowedHandleExt for BorrowedHandle<'_> {
         let options = if access.is_some() {
             0
         } else {
-            DUPLICATE_SAME_ACCESS
+            DUPLICATE_SAME_ACCESS.0
         };
         unsafe {
             let process = GetCurrentProcess();

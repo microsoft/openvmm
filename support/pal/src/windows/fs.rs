@@ -86,7 +86,8 @@ pub fn is_unix_socket(path: &Path) -> io::Result<bool> {
 
     let data = find_first_file_data(path)?;
     Ok(
-        data.dwFileAttributes & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT != 0
+        data.dwFileAttributes & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
             && data.dwReserved0 == IO_REPARSE_TAG_AF_UNIX,
     )
 }

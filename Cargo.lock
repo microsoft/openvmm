@@ -5159,7 +5159,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "widestring",
- "win_import_lib",
  "windows 0.59.0",
 ]
 

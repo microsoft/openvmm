@@ -8,15 +8,15 @@
 use super::SendSyncRawHandle;
 use super::UnicodeString;
 use super::chk_status;
-use ioapiset::DeviceIoControl;
-use minwinbase::OVERLAPPED;
+use ntapi::ntdef::OBJECT_ATTRIBUTES;
 use ntapi::ntioapi::NtOpenFile;
-use ntdef::OBJECT_ATTRIBUTES;
 use std::fs::File;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
 use windows::Win32::Foundation::ERROR_IO_PENDING;
+use windows::Win32::System::IO::DeviceIoControl;
+use windows::Win32::System::IO::OVERLAPPED;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Default)]

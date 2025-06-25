@@ -20,8 +20,8 @@ use windows::Win32::Foundation::LocalFree;
 use windows::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-use windows::Win32::Security::DeriveCapabilitySidsFromName;
 use windows::Win32::Security::DACL_SECURITY_INFORMATION;
+use windows::Win32::Security::DeriveCapabilitySidsFromName;
 use windows::Win32::Security::GROUP_SECURITY_INFORMATION;
 use windows::Win32::Security::LABEL_SECURITY_INFORMATION;
 use windows::Win32::Security::LPSECURITY_CAPABILITIES;
@@ -30,10 +30,10 @@ use windows::Win32::Security::PHANDLE;
 use windows::Win32::Security::PSECURITY_DESCRIPTOR;
 use windows::Win32::Security::PSID;
 use windows::Win32::Security::SACL_SECURITY_INFORMATION;
+use windows::Win32::Security::SDDL_REVISION_1;
 use windows::Win32::Security::SE_GROUP_ENABLED;
 use windows::Win32::Security::SECURITY_CAPABILITIES;
 use windows::Win32::Security::SID_AND_ATTRIBUTES;
-use windows::Win32::Security::SDDL_REVISION_1;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
 

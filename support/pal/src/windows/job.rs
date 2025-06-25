@@ -35,10 +35,12 @@ impl Job {
         // SAFETY: It is safe to initialize this C structure using `zeroed`.
         let mut info = unsafe {
             windows::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-                BasicLimitInformation: windows::Win32::System::JobObjects::JOBOBJECT_BASIC_LIMIT_INFORMATION {
-                    LimitFlags: windows::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                    ..zeroed()
-                },
+                BasicLimitInformation:
+                    windows::Win32::System::JobObjects::JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                        LimitFlags:
+                            windows::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                        ..zeroed()
+                    },
                 ..zeroed()
             }
         };
