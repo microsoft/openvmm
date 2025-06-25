@@ -936,6 +936,8 @@ impl ActiveState {
                 // This shouldn't be referenced, but set it in case it is in the future.
                 active.pending_tx_packets[id.0 as usize].transaction_id = transaction_id;
             }
+            // Save/Restore does not preserve the status of pending tx completions,
+            // completing any pending completions with 'success' to avoid making changes to saved_state.
             active
                 .pending_tx_completions
                 .push_back(PendingTxCompletion {
