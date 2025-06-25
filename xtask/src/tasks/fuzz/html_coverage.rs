@@ -71,7 +71,7 @@ pub(super) fn generate_html_coverage_report(
 
     if which::which("lcov").is_err() {
         anyhow::bail!(
-            "could not find `lcov` on your $PATH! make sure it's installed (e.g: `apt install lcov`)"
+            "could not find `lcov` on your $PATH! Run `xflowey restore` to auto-install it, or install manually (e.g: `apt install lcov`)"
         )
     }
 
