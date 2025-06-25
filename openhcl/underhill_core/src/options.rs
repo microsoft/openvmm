@@ -187,6 +187,10 @@ pub struct Options {
     /// (HCL_ATTEMPT_AK_CERT_CALLBACK=1) Attempt to renew the AK cert.
     /// If not specified, use the configuration in DPSv2 ManagementVtlFeatures.
     pub attempt_ak_cert_callback: Option<bool>,
+
+    /// (OPENHCL_STORVSC_USERMODE=1)
+    /// Use the user-mode storvsc driver instead of the Linux driver.
+    pub storvsc_usermode: bool,
 }
 
 impl Options {
@@ -322,6 +326,7 @@ impl Options {
             .map_err(|e| tracing::warn!("failed to parse HCL_ATTEMPT_AK_CERT_CALLBACK: {:#}", e))
             .ok()
             .flatten();
+        let storvsc_usermode = parse_env_bool("OPENHCL_STORVSC_USERMODE");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -381,6 +386,7 @@ impl Options {
             disable_uefi_frontpage,
             guest_state_encryption_policy,
             attempt_ak_cert_callback,
+            storvsc_usermode,
         })
     }
 

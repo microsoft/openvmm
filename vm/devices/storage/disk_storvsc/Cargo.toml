@@ -2,22 +2,27 @@
 # Licensed under the MIT License.
 
 [package]
-name = "storvsp_protocol"
+name = "disk_storvsc"
 edition.workspace = true
 rust-version.workspace = true
 
 [features]
-# Enable generating arbitrary values of types useful for fuzzing.
-arbitrary = ["dep:arbitrary", "scsi_defs/arbitrary"]
+test = []
 
 [dependencies]
-arbitrary = { workspace = true, optional = true, features = ["derive"] }
-scsi_defs.workspace = true
+disk_backend.workspace = true
+storvsc_driver.workspace = true
 
-guid.workspace = true
+scsi_buffers.workspace = true
+scsi_defs.workspace = true
+vmbus_user_channel.workspace = true
+
+storvsp_protocol.workspace = true
 inspect.workspace = true
-open_enum.workspace = true
+futures.workspace = true
+tracing.workspace = true
 zerocopy.workspace = true
+
 [dev-dependencies]
 
 [lints]

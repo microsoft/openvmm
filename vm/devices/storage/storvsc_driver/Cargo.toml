@@ -21,11 +21,14 @@ storvsp_protocol.workspace = true
 
 guestmem.workspace = true
 inspect.workspace = true
+mesh.workspace = true
 mesh_channel.workspace = true
 pal_async.workspace = true
 task_control.workspace = true
+user_driver.workspace = true
 vmcore.workspace = true
 
+anyhow.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 slab.workspace = true

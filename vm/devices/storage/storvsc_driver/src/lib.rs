@@ -9,21 +9,27 @@ pub mod test_helpers;
 #[cfg(not(feature = "test"))]
 mod test_helpers;
 
+use crate::save_restore::StorvscDriverSavedState;
 use futures::FutureExt;
+use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::ranges::PagedRange;
+use inspect::Inspect;
 use mesh_channel::Receiver;
 use mesh_channel::RecvError;
 use mesh_channel::Sender;
 use slab::Slab;
+use std::sync::Arc;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
+use user_driver::DmaClient;
+use user_driver::memory::MemoryBlock;
 use vmbus_async::queue;
 use vmbus_async::queue::CompletionPacket;
 use vmbus_async::queue::DataPacket;
@@ -43,19 +49,22 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 /// Storvsc to provide a backend for SCSI devices over VMBus.
+#[derive(Inspect)]
 pub struct StorvscDriver<T: Send + Sync + RingMem> {
-    storvsc: TaskControl<StorvscState, Storvsc<T>>,
-    version: storvsp_protocol::ProtocolVersion,
-    driver_source: VmTaskDriverSource,
+    #[inspect(skip)] // TODO: See how to inspect this
+    storvsc: Mutex<TaskControl<StorvscState, Storvsc<T>>>,
+    #[inspect(skip)]
     new_request_sender: Option<Sender<StorvscRequest>>,
+    #[inspect(skip)]
+    dma_client: Arc<dyn DmaClient>,
 }
 
 /// Storvsc backend for SCSI devices.
 struct Storvsc<T: Send + Sync + RingMem> {
-    inner: StorvscInner,
+    pub(crate) inner: StorvscInner,
     version: storvsp_protocol::ProtocolVersion,
     queue: Queue<T>,
-    num_sub_channels: Option<u16>,
+    pub(crate) num_sub_channels: Option<u16>,
     has_negotiated: bool,
 }
 
@@ -71,8 +80,20 @@ struct StorvscRequest {
     completion_sender: Sender<StorvscCompletion>,
 }
 
+/// Indicates the reason a storvsc operation was completed.
+#[derive(Clone)]
+pub enum StorvscCompleteReason {
+    /// Completion received.
+    CompletionReceived,
+    /// Cancelled due to shutdown.
+    Shutdown,
+    /// Cancelled due to save/restore.
+    SaveRestore,
+}
+
 /// Result of a Storvsc operation. If None, then operation was cancelled.
 pub struct StorvscCompletion {
+    reason: StorvscCompleteReason,
     completion: Option<storvsp_protocol::ScsiRequest>,
 }
 
@@ -87,13 +108,17 @@ impl PendingOperation {
 
     fn complete(&mut self, result: storvsp_protocol::ScsiRequest) {
         self.sender.send(StorvscCompletion {
+            reason: StorvscCompleteReason::CompletionReceived,
             completion: Some(result),
         })
     }
 
-    fn cancel(&mut self) {
+    fn cancel(&mut self, reason: StorvscCompleteReason) {
         // Sending completion with an empty result indicates cancellation or other error.
-        self.sender.send(StorvscCompletion { completion: None });
+        self.sender.send(StorvscCompletion {
+            reason,
+            completion: None,
+        });
     }
 }
 
@@ -101,6 +126,32 @@ impl PendingOperation {
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct StorvscError(StorvscErrorInner);
+
+/// The kind of storvsc error as visible from components sending requests.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum StorvscErrorKind {
+    /// Error waiting for completion of operation.
+    CompletionError,
+    /// Pending operation cancelled.
+    Cancelled,
+    /// Pending operation cancelled, but can be retried.
+    CancelledRetry,
+    /// Another error kind not covered by the above.
+    Other,
+}
+
+impl StorvscError {
+    /// Returns the kind of storvsc error that occurred.
+    pub fn kind(&self) -> StorvscErrorKind {
+        match self.0 {
+            StorvscErrorInner::CompletionError(_) => StorvscErrorKind::CompletionError,
+            StorvscErrorInner::Cancelled => StorvscErrorKind::Cancelled,
+            StorvscErrorInner::CancelledRetry => StorvscErrorKind::CancelledRetry,
+            _ => StorvscErrorKind::Other,
+        }
+    }
+}
 
 /// Inner errors from storvsc.
 #[derive(Debug, Error)]
@@ -132,6 +183,9 @@ pub(crate) enum StorvscErrorInner {
     /// Operation cancelled.
     #[error("pending operation cancelled")]
     Cancelled,
+    /// Operation cancelled, but can be retried.
+    #[error("pending operation cancelled, but can be retried")]
+    CancelledRetry,
     /// Storvsc driver not fully initialized.
     #[error("driver not initialized")]
     Uninitialized,
@@ -168,49 +222,113 @@ pub(crate) enum PacketError {
 
 impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
     /// Create a new driver instance connected to storvsp over VMBus.
-    pub fn new(
-        driver_source: &VmTaskDriverSource,
-        version: storvsp_protocol::ProtocolVersion,
-    ) -> Self {
+    pub fn new(dma_client: Arc<dyn DmaClient>) -> Self {
         Self {
-            storvsc: TaskControl::new(StorvscState),
-            version,
-            driver_source: driver_source.clone(),
+            storvsc: Mutex::new(TaskControl::new(StorvscState)),
             new_request_sender: None,
+            dma_client,
         }
     }
 
     /// Start Storvsc.
     pub async fn run(
         &mut self,
+        driver_source: &VmTaskDriverSource,
         channel: RawAsyncChannel<T>,
+        version: storvsp_protocol::ProtocolVersion,
         target_vp: u32,
     ) -> Result<(), StorvscError> {
-        let driver = self
-            .driver_source
+        let driver = driver_source
             .builder()
             .target_vp(target_vp)
             .run_on_target(true)
             .build("storvsc");
         let (new_request_sender, new_request_receiver) = mesh_channel::channel::<StorvscRequest>();
-        let mut storvsc = Storvsc::new(channel, self.version, new_request_receiver)?;
+        let mut storvsc = Storvsc::new(channel, version, new_request_receiver)?;
         storvsc.negotiate().await.unwrap();
         self.new_request_sender = Some(new_request_sender);
 
-        self.storvsc.insert(&driver, "storvsc", storvsc);
-        self.storvsc.start();
+        {
+            let mut s = self.storvsc.lock().await;
+            s.insert(&driver, "storvsc", storvsc);
+            s.start();
+        }
         Ok(())
     }
 
     /// Stop Storvsc.
-    pub async fn stop(&mut self) {
-        self.storvsc.stop().await;
-        self.storvsc.remove();
+    pub async fn stop(&self) {
+        let mut s = self.storvsc.lock().await;
+        s.stop().await;
+        s.remove();
+    }
+
+    /// Saves the current state during servicing.
+    pub async fn save(&self) -> Result<StorvscDriverSavedState, StorvscError> {
+        let mut s = self.storvsc.lock().await;
+        if s.stop().await {
+            let state = s.state_mut().unwrap();
+
+            // Cancel pending operations with save/restore reason.
+            for mut transaction in state.inner.transactions.drain() {
+                transaction.cancel(StorvscCompleteReason::SaveRestore);
+            }
+
+            Ok(StorvscDriverSavedState {
+                version: state.version.major_minor,
+                num_sub_channels: state.num_sub_channels,
+                has_negotiated: state.has_negotiated,
+            })
+        } else {
+            // Task was not running, so not state to save
+            Ok(StorvscDriverSavedState {
+                version: 0,
+                num_sub_channels: None,
+                has_negotiated: false,
+            })
+        }
+    }
+
+    /// Restore the state during servicing.
+    pub async fn restore(
+        state: &StorvscDriverSavedState,
+        driver_source: &VmTaskDriverSource,
+        channel: RawAsyncChannel<T>,
+        target_vp: u32,
+        dma_client: Arc<dyn DmaClient>,
+    ) -> Result<Self, StorvscError> {
+        let driver = driver_source
+            .builder()
+            .target_vp(target_vp)
+            .run_on_target(true)
+            .build("storvsc");
+        let (new_request_sender, new_request_receiver) = mesh_channel::channel::<StorvscRequest>();
+        let storvsc = Storvsc::new(
+            channel,
+            storvsp_protocol::ProtocolVersion {
+                major_minor: state.version,
+                reserved: 0,
+            },
+            new_request_receiver,
+        )?;
+        let storvsc_driver = Self {
+            storvsc: Mutex::new(TaskControl::new(StorvscState)),
+            new_request_sender: Some(new_request_sender),
+            dma_client,
+        };
+
+        {
+            let mut s = storvsc_driver.storvsc.lock().await;
+            s.insert(&driver, "storvsc", storvsc);
+            s.start();
+        }
+
+        Ok(storvsc_driver)
     }
 
     /// Send a SCSI request to storvsp over VMBus.
     pub async fn send_request(
-        &mut self,
+        &self,
         request: &storvsp_protocol::ScsiRequest,
         buf_gpa: u64,
         byte_len: usize,
@@ -235,11 +353,21 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             .await
             .map_err(|err| StorvscError(StorvscErrorInner::CompletionError(err)))?;
 
-        if resp.completion.is_some() {
-            Ok(resp.completion.unwrap())
-        } else {
-            Err(StorvscError(StorvscErrorInner::Cancelled))
+        match resp.reason {
+            StorvscCompleteReason::CompletionReceived => match resp.completion {
+                Some(completion) => Ok(completion),
+                None => Err(StorvscError(StorvscErrorInner::Cancelled)),
+            },
+            StorvscCompleteReason::Shutdown => Err(StorvscError(StorvscErrorInner::Cancelled)),
+            StorvscCompleteReason::SaveRestore => {
+                Err(StorvscError(StorvscErrorInner::CancelledRetry))
+            }
         }
+    }
+
+    /// Allocates a DMA buffer for use by clients to this driver.
+    pub fn allocate_dma_buffer(&self, size: usize) -> Result<MemoryBlock, anyhow::Error> {
+        self.dma_client.allocate_dma_buffer(size)
     }
 }
 
@@ -373,7 +501,9 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
             Err(StorvscError(StorvscErrorInner::Queue(err2))) => {
                 if err2.is_closed_error() {
                     // This is expected, cancel any pending completions
-                    self.inner.cancel_pending_completions().await;
+                    self.inner
+                        .cancel_pending_completions(StorvscCompleteReason::Shutdown)
+                        .await;
                     Ok(())
                 } else {
                     Err(StorvscError(StorvscErrorInner::Queue(err2)))
@@ -460,9 +590,9 @@ impl StorvscInner {
         )
     }
 
-    async fn cancel_pending_completions(&mut self) {
+    async fn cancel_pending_completions(&mut self, reason: StorvscCompleteReason) {
         for transaction in self.transactions.iter_mut() {
-            transaction.1.cancel();
+            transaction.1.cancel(reason.clone());
         }
         self.transactions.clear();
     }
@@ -728,6 +858,26 @@ fn parse_data<T: RingMem>(packet: &DataPacket<'_, T>) -> Result<Packet, PacketEr
         status,
         data,
     }))
+}
+
+/// Save/restore states for storvsc driver and associated components.
+pub mod save_restore {
+    use mesh::payload::Protobuf;
+
+    /// Save/restore state for storvsc driver.
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "storvsc_driver")]
+    pub struct StorvscDriverSavedState {
+        /// Protocol version (major_minor).
+        #[mesh(1)]
+        pub version: u16,
+        /// Number of sub channels.
+        #[mesh(2)]
+        pub num_sub_channels: Option<u16>,
+        /// Whether negotiation has completed.
+        #[mesh(3)]
+        pub has_negotiated: bool,
+    }
 }
 
 #[cfg(test)]

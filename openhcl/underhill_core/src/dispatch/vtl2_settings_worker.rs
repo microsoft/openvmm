@@ -5,6 +5,7 @@
 
 use super::LoadedVm;
 use crate::nvme_manager::manager::NvmeDiskConfig;
+use crate::storvsc_manager::StorvscDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
@@ -243,6 +244,7 @@ pub struct DeviceInterfaces {
     scsi_dvds: HashMap<StorageDevicePath, mesh::Sender<SimpleScsiDvdRequest>>,
     scsi_request: HashMap<Guid, mesh::Sender<ScsiControllerRequest>>,
     use_nvme_vfio: bool,
+    use_storvsc_usermode: bool,
 }
 
 impl Vtl2SettingsWorker {
@@ -376,6 +378,7 @@ impl Vtl2SettingsWorker {
                         &StorageContext {
                             uevent_listener,
                             use_nvme_vfio: self.interfaces.use_nvme_vfio,
+                            use_storvsc_usermode: self.interfaces.use_storvsc_usermode,
                         },
                         &disk,
                         false,
@@ -394,6 +397,7 @@ impl Vtl2SettingsWorker {
                         &StorageContext {
                             uevent_listener,
                             use_nvme_vfio: self.interfaces.use_nvme_vfio,
+                            use_storvsc_usermode: self.interfaces.use_storvsc_usermode,
                         },
                         &disk,
                         false,
@@ -957,6 +961,7 @@ async fn make_disk_type_from_physical_devices(
 struct StorageContext<'a> {
     uevent_listener: &'a UeventListener,
     use_nvme_vfio: bool,
+    use_storvsc_usermode: bool,
 }
 
 #[instrument(skip_all, fields(CVM_ALLOWED))]
@@ -997,6 +1002,36 @@ async fn make_disk_type_from_physical_device(
         return Ok(Resource::new(NvmeDiskConfig {
             pci_id,
             nsid: sub_device_path,
+        }));
+    }
+
+    // Special case for VScsi when using usermode storvsc.
+    if storage_context.use_storvsc_usermode
+        && matches!(
+            single_device.device_type,
+            underhill_config::DeviceType::VScsi
+        )
+    {
+        // Wait for the SCSI controller to arrive.
+        let devpath = uio_path(&controller_instance_id);
+        async {
+            ctx.until_cancelled(storage_context.uevent_listener.wait_for_devpath(&devpath))
+                .await??;
+            Ok(())
+        }
+        .await
+        .map_err(|err| Error::StorageCannotFindVtl2Device {
+            device_type: single_device.device_type,
+            instance_id: controller_instance_id,
+            sub_device_path,
+            source: err,
+        })?;
+
+        // Cannot validate device actually exists yet. Check this later
+        // TODO: Is this true?
+        return Ok(Resource::new(StorvscDiskConfig {
+            instance_guid: controller_instance_id,
+            lun: sub_device_path as u8,
         }));
     }
 
@@ -1428,6 +1463,7 @@ pub async fn create_storage_controllers_from_vtl2_settings(
     ctx: &mut CancelContext,
     uevent_listener: &UeventListener,
     use_nvme_vfio: bool,
+    use_storvsc_usermode: bool,
     settings: &Vtl2SettingsDynamic,
     sub_channels: u16,
     is_restoring: bool,
@@ -1443,6 +1479,7 @@ pub async fn create_storage_controllers_from_vtl2_settings(
     let storage_context = StorageContext {
         uevent_listener,
         use_nvme_vfio,
+        use_storvsc_usermode,
     };
     let ide_controller =
         make_ide_controller_config(ctx, &storage_context, settings, is_restoring).await?;
@@ -1643,6 +1680,11 @@ fn vpci_path(instance_id: &Guid) -> (String, PathBuf) {
     (pci_id, devpath)
 }
 
+fn uio_path(instance_id: &Guid) -> PathBuf {
+    // TODO: Is this enough?
+    PathBuf::from(format!("/sys/bus/vmbus/devices/{instance_id}/uio"))
+}
+
 /// Waits for the PCI path to get populated. The PCI path is just a symlink to the actual
 /// device path. This should be called once the device path is available.
 pub async fn wait_for_pci_path(pci_id: &String) {
@@ -1782,6 +1824,7 @@ impl InitialControllers {
         uevent_listener: &UeventListener,
         dps: &DevicePlatformSettings,
         use_nvme_vfio: bool,
+        use_storvsc_usermode: bool,
         is_restoring: bool,
         default_io_queue_depth: u32,
     ) -> anyhow::Result<Self> {
@@ -1801,6 +1844,7 @@ impl InitialControllers {
                 &mut context,
                 uevent_listener,
                 use_nvme_vfio,
+                use_storvsc_usermode,
                 dynamic,
                 fixed.scsi_sub_channels,
                 is_restoring,
@@ -1851,6 +1895,7 @@ impl InitialControllers {
                 scsi_dvds,
                 scsi_request,
                 use_nvme_vfio,
+                use_storvsc_usermode,
             },
         };
 

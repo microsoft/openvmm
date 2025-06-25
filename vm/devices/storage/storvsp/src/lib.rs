@@ -1660,6 +1660,7 @@ impl VmbusDevice for StorageDevice {
                 interface_name: "scsi".to_owned(),
                 instance_id: self.instance_id,
                 interface_id: storvsp_protocol::SCSI_INTERFACE_ID,
+                channel_type: ChannelType::Pipe { message_mode: true },
                 ..Default::default()
             }
         }

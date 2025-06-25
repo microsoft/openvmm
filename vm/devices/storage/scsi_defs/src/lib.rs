@@ -771,6 +771,60 @@ pub struct ModeSenseFlags {
 
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ModeControlPage {
+    /*
+        UCHAR PageCode : 6;
+        UCHAR SPFBit : 1;
+        UCHAR PSBit : 1;
+    */
+    pub page_code: u8,
+    pub page_length: u8,
+    /*
+        UCHAR RLECBit : 1;
+        UCHAR GLTSDBit : 1;
+        UCHAR D_SENSEBit : 1;
+        UCHAR Reserved1 : 1;
+        UCHAR TMF_ONLYBit : 1;
+        UCHAR TST : 3;
+    */
+    pub flags1: u8,
+    /*
+        UCHAR Reserved2 : 1;
+        UCHAR QERR : 2;
+        UCHAR Reserved3 : 1;
+        UCHAR QueueAlgorithmModifier : 4;
+    */
+    pub flags2: u8,
+    pub flags3: ModeControlPageFlags3,
+    /*
+        UCHAR AutoloadMode : 3;
+        UCHAR Reserved5 : 3;
+        UCHAR TASBit : 1;
+        UCHAR ATOBit : 1;
+    */
+    pub flags4: u8,
+    pub reserved6: [u8; 2],
+    pub busy_timeout_period: [u8; 2],
+    pub extended_self_test_completion_time: [u8; 2],
+}
+
+#[bitfield(u8)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ModeControlPageFlags3 {
+    #[bits(3)]
+    pub reserved: u8,
+    #[bits(1)]
+    pub swp: bool,
+    #[bits(2)]
+    pub ua_intlck_ctrl: u8,
+    #[bits(1)]
+    pub rac: bool,
+    #[bits(1)]
+    pub vs: bool,
+}
+
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeReadWriteRecoveryPage {
     /*
         UCHAR PageCode : 6;
