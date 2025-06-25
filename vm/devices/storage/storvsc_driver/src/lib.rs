@@ -102,8 +102,9 @@ impl PendingOperation {
 #[error(transparent)]
 pub struct StorvscError(StorvscErrorInner);
 
+/// Inner errors from storvsc.
 #[derive(Debug, Error)]
-pub(crate) enum StorvscErrorInner {
+pub enum StorvscErrorInner {
     /// Packet error.
     #[error("packet error")]
     PacketError(#[source] PacketError),

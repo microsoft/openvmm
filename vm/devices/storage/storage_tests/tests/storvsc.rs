@@ -83,10 +83,10 @@ fn generate_read_packet(
 async fn test_request_response(driver: DefaultDriver) {
     let (host, guest) = connected_async_channels(16 * 1024);
 
-    let test_guest_mem = GuestMemory::allocate(16384);
+    let mut test_guest_mem = GuestMemory::allocate(0x4000);
     let controller = ScsiController::new();
     let disk = scsidisk::SimpleScsiDisk::new(
-        disklayer_ram::ram_disk(16 * 1024 * 1024, false).unwrap(),
+        disklayer_ram::ram_disk(0x4000, false).unwrap(),
         Default::default(),
     );
     controller
@@ -99,6 +99,23 @@ async fn test_request_response(driver: DefaultDriver) {
             ScsiControllerDisk::new(Arc::new(disk)),
         )
         .unwrap();
+
+    // Fill memory with pattern for write.
+    let pattern = {
+        let mut acc = 3u32;
+        (0..0x4000)
+            .map(|_| {
+                acc = acc.wrapping_mul(7);
+                acc as u8
+            })
+            .collect::<Vec<_>>()
+    };
+    test_guest_mem
+        .inner_buf_mut()
+        .unwrap()
+        .copy_from_slice(&pattern);
+    // Clear destination memory to make sure read works
+    test_guest_mem.inner_buf_mut().unwrap()[..4096].fill(0u8);
 
     let storvsp = TestWorker::start(
         controller,
@@ -119,8 +136,6 @@ async fn test_request_response(driver: DefaultDriver) {
         .await;
 
     // Send SCSI write request
-    let write_buf = [7u8; 4096];
-    test_guest_mem.write_at(4096, &write_buf).unwrap();
     let write_response = storvsc
         .send_request(&generate_write_packet(0, 0, 0, 1, 4096), 4096, 4096)
         .await
@@ -129,11 +144,13 @@ async fn test_request_response(driver: DefaultDriver) {
 
     // Send SCSI read request
     let read_response = storvsc
-        .send_request(&generate_read_packet(0, 0, 0, 1, 4096), 4096, 4096)
+        .send_request(&generate_read_packet(0, 0, 0, 1, 4096), 8192, 4096)
         .await
         .unwrap();
     assert_eq!(read_response.scsi_status, ScsiStatus::GOOD);
-
+    let mut read_data = [0u8; 4096];
+    test_guest_mem.read_at(8192, &mut read_data).unwrap();
+    assert_eq!(&read_data, &pattern[4096..8192]);
     storvsc.teardown().await;
     storvsp.teardown_or_panic().await;
 }
