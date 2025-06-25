@@ -1019,7 +1019,6 @@ impl virt::Synic for UhPartition {
 
 impl virt::SynicMonitor for UhPartition {
     fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
-        let vp_index = VpIndex::BSP; // TODO
         let vtl = GuestVtl::try_from(vtl).unwrap();
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
 
@@ -1034,7 +1033,7 @@ impl virt::SynicMonitor for UhPartition {
                         vtl,
                         old_gpn,
                         &mut SnpBacked::tlb_flush_lock_access(
-                            vp_index,
+                            None,
                             self.inner.as_ref(),
                             snp_backed_shared,
                         ),
@@ -1047,7 +1046,7 @@ impl virt::SynicMonitor for UhPartition {
                         vtl,
                         old_gpn,
                         &mut TdxBacked::tlb_flush_lock_access(
-                            vp_index,
+                            None,
                             self.inner.as_ref(),
                             tdx_backed_shared,
                         ),
@@ -1087,7 +1086,7 @@ impl virt::SynicMonitor for UhPartition {
                         check_perms,
                         Some(new_perms),
                         &mut SnpBacked::tlb_flush_lock_access(
-                            vp_index,
+                            None,
                             self.inner.as_ref(),
                             snp_backed_shared,
                         ),
@@ -1102,7 +1101,7 @@ impl virt::SynicMonitor for UhPartition {
                         check_perms,
                         Some(new_perms),
                         &mut TdxBacked::tlb_flush_lock_access(
-                            vp_index,
+                            None,
                             self.inner.as_ref(),
                             tdx_backed_shared,
                         ),
