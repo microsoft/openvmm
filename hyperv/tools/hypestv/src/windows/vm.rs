@@ -346,6 +346,27 @@ impl Vm {
                 .context("failed to update vssd")?;
                 println!("{}", output.trim());
             }
+            ParavisorCommand::Reload => {
+                let output = powershell_script(
+                    r#"
+                    param([string]$id)
+                    $ErrorActionPreference = "Stop"
+                    $guestManagementService = Get-CimInstance -namespace "root\virtualization\v2" -ClassName "Msvm_VirtualSystemGuestManagementService"
+                    $options = 1; # Override version checks
+                    $TimeoutHintSecs = (New-TimeSpan -Minutes 15).TotalSeconds; # Keep less than 30 minutes to avoid a separate failfast path
+                    $result = $guestManagementService | Invoke-CimMethod -name "ReloadManagementVtl" -Arguments @{
+                        "VmId"            = $id
+                        "Options"         = $options
+                        "TimeoutHintSecs" = $TimeoutHintSecs
+                    }
+                    "#,
+                    &[&self.inner.id.to_string()],
+                )
+                .context("failed to reload paravisor")?;
+                // TODO: the result here is a Msvm_ConcreteJob, which this code should inspect to wait for completion and check for success.
+                // For now, we just print the output.
+                println!("{}", output.trim());
+            }
         }
         Ok(())
     }
