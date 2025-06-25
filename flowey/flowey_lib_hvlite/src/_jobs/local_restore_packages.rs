@@ -26,6 +26,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
+        ctx.import::<flowey_lib_common::download_cargo_fuzz::Node>();
         ctx.import::<flowey_lib_common::install_lcov::Node>();
     }
 
@@ -34,8 +35,9 @@ impl SimpleFlowNode for Node {
 
         let mut deps = vec![ctx.reqv(crate::init_openvmm_magicpath_protoc::Request)];
 
-        // Install lcov for fuzzing coverage reports
+        // Install tools for fuzzing
         deps.push(ctx.reqv(|done| flowey_lib_common::install_lcov::Request::EnsureInstalled(done)));
+        deps.push(ctx.reqv(flowey_lib_common::download_cargo_fuzz::Request::InstallWithCargo));
 
         match arch {
             CommonArch::X86_64 => {
