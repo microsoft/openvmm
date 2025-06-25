@@ -358,6 +358,7 @@ struct HardwareIsolatedMemoryProtectorInner {
 struct OverlayPage {
     gpn: u64,
     previous_permissions: HvMapGpaFlags,
+    overlay_permissions: HvMapGpaFlags,
 }
 
 impl HardwareIsolatedMemoryProtector {
@@ -931,9 +932,18 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     ) -> Result<(), HvError> {
         let mut inner = self.inner.lock();
 
-        // Check that this isn't already registered.
-        if inner.overlay_pages[vtl].iter().any(|p| p.gpn == gpn) {
-            return Err(HvError::OperationDenied);
+        // If the page is already registered as an overlay page, just check
+        // the permissions are adequate. If the permissions requested are
+        // different from the ones already registered just do best effort,
+        // there is no spec-guarantee of which one "wins".
+        if let Some(registered) = inner.overlay_pages[vtl].iter().find(|p| p.gpn == gpn) {
+            let needed_perms = new_perms.unwrap_or(check_perms);
+            if registered.overlay_permissions.into_bits() | needed_perms.into_bits()
+                != registered.overlay_permissions.into_bits()
+            {
+                return Err(HvError::OperationDenied);
+            }
+            return Ok(());
         }
 
         // Check that the required permissions are present.
@@ -965,6 +975,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         inner.overlay_pages[vtl].push(OverlayPage {
             gpn,
             previous_permissions: current_perms,
+            overlay_permissions: new_perms.unwrap_or(current_perms),
         });
 
         // Flush any threads accessing pages that had their VTL protections
