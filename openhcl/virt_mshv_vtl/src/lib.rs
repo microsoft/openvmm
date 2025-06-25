@@ -12,15 +12,16 @@ mod devmsr;
 cfg_if::cfg_if!(
     if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
         mod cvm_cpuid;
+        pub use processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
-        pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
-        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
         use devmsr::MsrDevice;
         use hv1_emulator::hv::ProcessorVtlHv;
+        use processor::HardwareIsolatedBacking;
         use processor::LapicState;
+        use processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use processor::snp::SnpBackedShared;
         use processor::tdx::TdxBackedShared;
         use std::arch::x86_64::CpuidResult;
@@ -31,9 +32,9 @@ cfg_if::cfg_if!(
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
-        pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
-        use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
+        pub use processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
         use hvdef::HvArm64RegisterName;
+        use processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
     }
 );
 
@@ -41,7 +42,6 @@ mod processor;
 pub use processor::Backing;
 pub use processor::UhProcessor;
 
-use crate::processor::HardwareIsolatedBacking;
 use anyhow::Context as AnyhowContext;
 use bitfield_struct::bitfield;
 use bitvec::boxed::BitBox;
@@ -1019,18 +1019,19 @@ impl virt::Synic for UhPartition {
 
 impl virt::SynicMonitor for UhPartition {
     fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
-        let vtl = GuestVtl::try_from(vtl).unwrap();
+        let _vtl = GuestVtl::try_from(vtl).unwrap();
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
 
         if let Some(old_gpa) = old_gpa {
             let old_gpn = old_gpa.checked_div(HV_PAGE_SIZE).unwrap();
 
             match &self.inner.backing_shared {
+                #[cfg(guest_arch = "x86_64")]
                 BackingShared::Snp(snp_backed_shared) => snp_backed_shared
                     .cvm
                     .isolated_memory_protector
                     .unregister_overlay_page(
-                        vtl,
+                        _vtl,
                         old_gpn,
                         &mut SnpBacked::tlb_flush_lock_access(
                             None,
@@ -1039,11 +1040,12 @@ impl virt::SynicMonitor for UhPartition {
                         ),
                     )
                     .map_err(|e| anyhow::anyhow!(e)),
+                #[cfg(guest_arch = "x86_64")]
                 BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
                     .cvm
                     .isolated_memory_protector
                     .unregister_overlay_page(
-                        vtl,
+                        _vtl,
                         old_gpn,
                         &mut TdxBacked::tlb_flush_lock_access(
                             None,
@@ -1069,7 +1071,7 @@ impl virt::SynicMonitor for UhPartition {
 
         if let Some(gpa) = gpa {
             let gpn = gpa.checked_div(HV_PAGE_SIZE).unwrap();
-            let check_perms = HvMapGpaFlags::new().with_readable(true).with_writable(true);
+            let _check_perms = HvMapGpaFlags::new().with_readable(true).with_writable(true);
             // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
             // permissions must be enabled or this doesn't work correctly.
             let new_perms = HvMapGpaFlags::new()
@@ -1077,13 +1079,14 @@ impl virt::SynicMonitor for UhPartition {
                 .with_writable(false);
 
             let result = match &self.inner.backing_shared {
+                #[cfg(guest_arch = "x86_64")]
                 BackingShared::Snp(snp_backed_shared) => snp_backed_shared
                     .cvm
                     .isolated_memory_protector
                     .register_overlay_page(
-                        vtl,
+                        _vtl,
                         gpn,
-                        check_perms,
+                        _check_perms,
                         Some(new_perms),
                         &mut SnpBacked::tlb_flush_lock_access(
                             None,
@@ -1092,13 +1095,14 @@ impl virt::SynicMonitor for UhPartition {
                         ),
                     )
                     .map_err(|e| anyhow::anyhow!(e)),
+                #[cfg(guest_arch = "x86_64")]
                 BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
                     .cvm
                     .isolated_memory_protector
                     .register_overlay_page(
-                        vtl,
+                        _vtl,
                         gpn,
-                        check_perms,
+                        _check_perms,
                         Some(new_perms),
                         &mut TdxBacked::tlb_flush_lock_access(
                             None,
