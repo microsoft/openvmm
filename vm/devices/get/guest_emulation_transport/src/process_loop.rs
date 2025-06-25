@@ -81,8 +81,8 @@ pub(crate) enum FatalError {
     VersionNegotiationFailed,
     #[error("control receive failed")]
     VersionNegotiationTryRecvFailed(#[source] RecvError),
-    #[error("received response with no pending request")]
-    NoPendingRequest,
+    #[error("received response id {0:?} with no pending request")]
+    NoPendingRequest(HostRequests),
     #[error("failed to serialize VTL2 settings error info")]
     Vtl2SettingsErrorInfoJson(#[source] serde_json::error::Error),
     #[error("received too many guest notifications of kind {0:?} prior to downstream worker init")]
@@ -854,14 +854,14 @@ impl<T: RingMem> ProcessLoop<T> {
                         request_queue.pop_front();
 
                         // Ensure there are no extra response messages that this request failed to pick up.
-                        if response_recv
+                        if let Ok(resp) = response_recv
                             .lock()
                             .as_mut()
                             .unwrap()
                             .try_recv()
-                            .is_ok()
                         {
-                            return FatalError::NoPendingRequest;
+                            let id =  get_protocol::HeaderRaw::read_from_prefix(&resp).map(|head| head.0.message_id).unwrap_or(0);
+                            return FatalError::NoPendingRequest(HostRequests(id));
                         }
                     }
                     pending().await
@@ -1316,7 +1316,7 @@ impl<T: RingMem> ProcessLoop<T> {
         buf: &[u8],
     ) -> Result<(), FatalError> {
         if self.primary_host_requests.is_empty() && self.secondary_host_requests.is_empty() {
-            return Err(FatalError::NoPendingRequest);
+            return Err(FatalError::NoPendingRequest(header.message_id()));
         }
         validate_response(header)?;
 
