@@ -16,6 +16,8 @@ use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::NvmeSavedState;
 use crate::servicing::ServicingState;
+use crate::servicing::StorvscSavedState;
+use crate::storvsc_manager::StorvscManager;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
@@ -142,6 +144,7 @@ pub(crate) struct LoadedVm {
     pub uevent_listener: Arc<UeventListener>,
     pub resolver: ResourceResolver,
     pub nvme_manager: Option<NvmeManager>,
+    pub storvsc_manager: Option<StorvscManager>,
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
     pub vmbus_client: Option<vmbus_client::VmbusClient>,
@@ -305,6 +308,7 @@ impl LoadedVm {
                         resp.field("vmgs", self.vmgs.as_ref().map(|x| &x.0));
                         resp.field("network", &self.network_settings);
                         resp.field("nvme", &self.nvme_manager);
+                        resp.field("storvsc", &self.storvsc_manager);
                         resp.field("resolver", &self.resolver);
                         resp.field(
                             "vtl0_memory_map",
@@ -538,6 +542,13 @@ impl LoadedVm {
                 }
             };
 
+            // Reset all user-mode storvsc devices.
+            let shutdown_storvsc = async {
+                if let Some(storvsc_manager) = self.storvsc_manager.take() {
+                    storvsc_manager.shutdown().instrument(tracing::info_span!("shutdown_storvsc", CVM_ALLOWED, %correlation_id)).await;
+                }
+            };
+
             // Unbind drivers from the PCI devices to prepare for a kernel
             // restart.
             let shutdown_pci = async {
@@ -546,7 +557,7 @@ impl LoadedVm {
                     .await
             };
 
-            let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
+            let (r, (), (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme, shutdown_storvsc).join().await;
             r?;
 
             Ok(state)
@@ -692,6 +703,17 @@ impl LoadedVm {
             None
         };
 
+        let storvsc_state = if let Some(s) = &self.storvsc_manager {
+            s.save()
+                .instrument(tracing::info_span!("storvsc_manager_save", CVM_ALLOWED))
+                .await
+                .map(|state| StorvscSavedState {
+                    storvsc_state: state,
+                })
+        } else {
+            None
+        };
+
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
             Some((
@@ -731,6 +753,7 @@ impl LoadedVm {
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,
+                storvsc_state,
             },
             units,
         };

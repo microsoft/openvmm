@@ -10,6 +10,7 @@ rust-version.workspace = true
 chipset_device.workspace = true
 disk_backend.workspace = true
 disk_nvme.workspace = true
+disk_storvsc.workspace = true
 disklayer_ram.workspace = true
 guestmem.workspace = true
 guid = { workspace = true, features = ["mesh", "inspect"] }

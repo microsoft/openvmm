@@ -20,6 +20,7 @@ mod nvme_manager;
 mod options;
 mod reference_time;
 mod servicing;
+mod storvsc_manager;
 mod threadpool_vm_task_backend;
 mod vmbus_relay_unit;
 mod vmgs_logger;
@@ -325,6 +326,7 @@ async fn launch_workers(
         nvme_keep_alive: opt.nvme_keep_alive,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
+        storvsc_usermode: opt.storvsc_usermode,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =

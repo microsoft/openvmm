@@ -147,6 +147,10 @@ pub struct Options {
     /// will result in UEFI terminating, shutting down the guest instead of
     /// showing the frontpage.
     pub disable_uefi_frontpage: bool,
+
+    /// (OPENHCL_STORVSC_USERMODE=1)
+    /// Use the user-mode storvsc driver instead of the Linux driver.
+    pub storvsc_usermode: bool,
 }
 
 impl Options {
@@ -246,6 +250,7 @@ impl Options {
         });
         let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
         let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
+        let storvsc_usermode = parse_env_bool("OPENHCL_STORVSC_USERMODE");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -301,6 +306,7 @@ impl Options {
             nvme_keep_alive,
             test_configuration,
             disable_uefi_frontpage,
+            storvsc_usermode,
         })
     }
 

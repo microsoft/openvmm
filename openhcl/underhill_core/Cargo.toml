@@ -48,6 +48,7 @@ disk_backend_resources.workspace = true
 disk_blockdevice.workspace = true
 disk_get_vmgs.workspace = true
 disk_nvme.workspace = true
+disk_storvsc.workspace = true
 firmware_uefi.workspace = true
 firmware_uefi_custom_vars.workspace = true
 hyperv_ic_guest.workspace = true
@@ -79,7 +80,9 @@ scsidisk.workspace = true
 scsidisk_resources.workspace = true
 serial_16550_resources.workspace = true
 storage_string.workspace = true
+storvsc_driver.workspace = true
 storvsp.workspace = true
+storvsp_protocol.workspace = true
 storvsp_resources.workspace = true
 tpm_resources.workspace = true
 tpm = { workspace = true, features = ["tpm"] }

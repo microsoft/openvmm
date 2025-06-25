@@ -1336,6 +1336,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk_storvsc"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "disk_backend",
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "guid",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "scsi_buffers",
+ "scsi_defs",
+ "storvsc_driver",
+ "storvsp_protocol",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing_helpers",
+ "vm_resource",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_core",
+ "vmbus_relay_intercept_device",
+ "vmbus_ring",
+ "vmbus_user_channel",
+ "vmcore",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
 name = "disk_striped"
 version = "0.0.0"
 dependencies = [
@@ -6636,6 +6670,7 @@ dependencies = [
  "chipset_device",
  "disk_backend",
  "disk_nvme",
+ "disk_storvsc",
  "disklayer_ram",
  "guestmem",
  "guid",
@@ -6664,10 +6699,12 @@ dependencies = [
 name = "storvsc_driver"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "futures",
  "futures-concurrency",
  "guestmem",
  "inspect",
+ "mesh",
  "mesh_channel",
  "pal_async",
  "scsi_buffers",
@@ -6679,6 +6716,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "tracing_helpers",
+ "user_driver",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_ring",
@@ -6734,6 +6772,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "guid",
+ "inspect",
  "open_enum",
  "scsi_defs",
  "zerocopy 0.8.24",
@@ -7507,6 +7546,7 @@ dependencies = [
  "disk_blockdevice",
  "disk_get_vmgs",
  "disk_nvme",
+ "disk_storvsc",
  "firmware_pcat",
  "firmware_uefi",
  "firmware_uefi_custom_vars",
@@ -7573,7 +7613,9 @@ dependencies = [
  "sparse_mmap",
  "state_unit",
  "storage_string",
+ "storvsc_driver",
  "storvsp",
+ "storvsp_protocol",
  "storvsp_resources",
  "tee_call",
  "thiserror 2.0.12",

@@ -485,6 +485,11 @@ fn do_main() -> anyhow::Result<()> {
             "427b03e7-4ceb-4286-b5fc-486f4a1dd439",
         ),
         (
+            "/sys/bus/vmbus/drivers/uio_hv_generic/new_id",
+            // SCSI
+            "ba6163d9-04a1-4d29-b605-72e2ffb1dc7f",
+        ),
+        (
             "/proc/sys/kernel/core_pattern",
             if underhill_confidentiality::confidential_filtering_enabled() {
                 // Disable the processing of dumps for CVMs.

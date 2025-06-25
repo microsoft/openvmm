@@ -2194,8 +2194,7 @@ impl Debug for LockedPages {
 }
 
 #[derive(Copy, Clone, Debug)]
-// Field is read via slice transmute and pointer casts, not actually dead.
-struct PagePtr(#[expect(dead_code)] *const AtomicU8);
+struct PagePtr(*const AtomicU8);
 
 // SAFETY: PagePtr is just a pointer with no methods and has no inherent safety
 // constraints.
@@ -2212,6 +2211,10 @@ impl LockedPages {
         // the reference in _mem, and the lifetimes here ensure the LockedPages outlives
         // the slice.
         unsafe { std::slice::from_raw_parts(self.pages.as_ptr().cast::<&Page>(), self.pages.len()) }
+    }
+
+    pub fn va(&self) -> u64 {
+        self.pages.first().unwrap().0 as u64
     }
 }
 

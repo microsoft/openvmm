@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "storvsc_driver"
+name = "disk_storvsc"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -10,28 +10,34 @@ rust-version.workspace = true
 test = []
 
 [dependencies]
+disk_backend.workspace = true
+storvsc_driver.workspace = true
+
 scsi_buffers.workspace = true
 scsi_defs.workspace = true
 
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
+vmbus_core.workspace = true
+vmbus_relay_intercept_device.workspace = true
 vmbus_ring.workspace = true
+vmbus_user_channel.workspace = true
 
 storvsp_protocol.workspace = true
 
 guestmem.workspace = true
+guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
-mesh_channel.workspace = true
 pal_async.workspace = true
 task_control.workspace = true
-user_driver.workspace = true
 vmcore.workspace = true
+vm_resource.workspace = true
 
 anyhow.workspace = true
+async-trait.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
-slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing_helpers.workspace = true
