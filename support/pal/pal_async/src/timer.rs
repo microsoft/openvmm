@@ -49,6 +49,12 @@ impl Instant {
                 .saturating_add(duration.as_nanos().try_into().unwrap_or(u64::MAX)),
         )
     }
+
+    /// Calculate the duration between this instant and another instant,
+    /// saturating at zero if the other instant is later than this one.
+    pub fn saturating_sub(self, rhs: Instant) -> Duration {
+        Duration::from_nanos(self.0.saturating_sub(rhs.0))
+    }
 }
 
 impl std::ops::Sub for Instant {
