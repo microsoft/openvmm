@@ -690,3 +690,5 @@ box_default = "allow"
 # doesn't provide value. If a developer gets their type wrong they'll notice and fix it.
 # Sometimes you do want a list of a single range.
 single_range_in_vec_init = "allow"
+# This lint is purely style, and we are ok with inlined and uninlined format args.
+uninlined_format_args = "allow"
