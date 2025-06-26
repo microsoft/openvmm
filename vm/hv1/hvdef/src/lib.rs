@@ -2306,6 +2306,8 @@ registers! {
 
         // AMD SEV configuration MSRs
         SevControl = 0x00090040,
+        SevGhcbGpa = 0x00090041,
+        SevAvicGpa = 0x00090043,
 
         CrInterceptControl = 0x000E0000,
         CrInterceptCr0Mask = 0x000E0001,
@@ -3155,11 +3157,37 @@ pub struct HvRegisterVsmPartitionStatus {
     pub reserved: u64,
 }
 
+open_enum! {
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum HvSnpInterruptInjection : u8  {
+        #![allow(non_upper_case_globals)]
+        HvSnpRestricted = 0x0,
+        HvSnpNormal = 0x1,
+        HvSnpAlternate = 0x2,
+        HvSnpSecureAvic = 0x3,
+    }
+}
+
+// Support for bitfield structures.
+impl HvSnpInterruptInjection {
+    const fn from_bits(val: u8) -> Self {
+        HvSnpInterruptInjection(val)
+    }
+
+    const fn into_bits(self) -> u8 {
+        self.0
+    }
+}
+
 #[bitfield(u64)]
 pub struct HvRegisterGuestVsmPartitionConfig {
     #[bits(4)]
     pub maximum_vtl: u8,
-    #[bits(60)]
+    #[bits(2)]
+    pub vtl0_interrupt_injection: HvSnpInterruptInjection,
+    #[bits(2)]
+    pub vtl1_interrupt_injection: HvSnpInterruptInjection,
+    #[bits(56)]
     pub reserved: u64,
 }
 
@@ -3620,6 +3648,16 @@ pub struct HvX64RegisterSevControl {
     _rsvd1: u64,
     #[bits(52)]
     pub vmsa_gpa_page_number: u64,
+}
+
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvX64RegisterSevAvic {
+    pub enable_secure_apic: bool,
+    #[bits(11)]
+    _rsvd1: u64,
+    #[bits(52)]
+    pub avic_gpa_page_number: u64,
 }
 
 #[bitfield(u64)]

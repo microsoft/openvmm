@@ -3,7 +3,9 @@
 
 //! AMD SEV-SNP specific definitions.
 
+use crate::ApicRegister;
 use bitfield_struct::bitfield;
+use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -116,12 +118,16 @@ pub struct SevFeatures {
     pub vmgexit_param: bool,
     pub pmc_virt: bool,
     pub ibs_virt: bool,
-    rsvd: bool,
+    pub guest_intercept_control: bool,
     pub vmsa_reg_prot: bool,
     pub smt_prot: bool,
     pub secure_avic: bool,
-    #[bits(47)]
-    _unused: u64,
+    #[bits(4)]
+    _reserved0: u64,
+    pub ibpb_on_entry: bool,
+    #[bits(41)]
+    _reserved1: u64,
+    pub allowed_sev_features_enable: bool,
 }
 
 #[bitfield(u64)]
@@ -202,6 +208,162 @@ pub struct SevNpfInfo {
     pub npt_supervisor_shadow_stack: bool,
     #[bits(26)]
     rsvd38_63: u64,
+}
+
+/// SEV secure AVIC control register
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+pub struct SecureAvicControl {
+    #[bits(1)]
+    pub secure_avic_en: u64,
+    #[bits(1)]
+    pub allowed_nmi: u64,
+    #[bits(10)]
+    _rsvd: u64,
+    #[bits(52)]
+    pub guest_apic_backing_page_ptr: u64,
+}
+
+/// AVIC exit info1 for the incopmplete IPI exit
+#[bitfield(u64)]
+pub struct SevAvicIncompleteIpiInfo1 {
+    pub icr_low: u32,
+    pub icr_high: u32,
+}
+
+open_enum::open_enum! {
+    pub enum SevAvicIpiFailure: u32 {
+        INVALID_TYPE = 0,
+        NOT_RUNNING = 1,
+        INVALID_TARGET = 2,
+        INVALID_BACKING_PAGE = 3,
+        INVALID_VECTOR = 4,
+        UNACCELERATED_IPI = 5,
+    }
+}
+
+impl SevAvicIpiFailure {
+    const fn into_bits(self) -> u32 {
+        self.0
+    }
+
+    const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+}
+
+/// AVIC exit info2 for the incopmplete IPI exit
+#[bitfield(u64)]
+pub struct SevAvicIncompleteIpiInfo2 {
+    #[bits(8)]
+    pub index: u32,
+    #[bits(24)]
+    _mbz: u32,
+    #[bits(32)]
+    pub failure: SevAvicIpiFailure,
+}
+
+open_enum::open_enum! {
+    pub enum SevAvicRegisterNumber: u32 {
+        /// APIC ID Register.
+        APIC_ID = 0x2,
+        /// APIC Version Register.
+        VERSION = 0x3,
+        /// Task Priority Register
+        TPR = 0x8,
+        /// Arbitration Priority Register.
+        APR = 0x9,
+        /// Processor Priority Register.
+        PPR = 0xA,
+        /// End Of Interrupt Register.
+        EOI = 0xB,
+        /// Remote Read Register
+        REMOTE_READ = 0xC,
+        /// Logical Destination Register.
+        LDR = 0xD,
+        /// Destination Format Register.
+        DFR = 0xE,
+        /// Spurious Interrupt Vector.
+        SPURIOUS = 0xF,
+        /// In-Service Registers.
+        ISR0 = 0x10,
+        ISR1 = 0x11,
+        ISR2 = 0x12,
+        ISR3 = 0x13,
+        ISR4 = 0x14,
+        ISR5 = 0x15,
+        ISR6 = 0x16,
+        ISR7 = 0x17,
+        /// Trigger Mode Registers.
+        TMR0 = 0x18,
+        TMR1 = 0x19,
+        TMR2 = 0x1A,
+        TMR3 = 0x1B,
+        TMR4 = 0x1C,
+        TMR5 = 0x1D,
+        TMR6 = 0x1E,
+        TMR7 = 0x1F,
+        /// Interrupt Request Registers.
+        IRR0 = 0x20,
+        IRR1 = 0x21,
+        IRR2 = 0x22,
+        IRR3 = 0x23,
+        IRR4 = 0x24,
+        IRR5 = 0x25,
+        IRR6 = 0x26,
+        IRR7 = 0x27,
+        /// Error Status Register.
+        ERROR = 0x28,
+        /// ICR Low.
+        ICR_LOW = 0x30,
+        /// ICR High.
+        ICR_HIGH = 0x31,
+        /// LVT Timer Register.
+        TIMER_LVT = 0x32,
+        /// LVT Thermal Register.
+        THERMAL_LVT = 0x33,
+        /// LVT Performance Monitor Register.
+        PERFMON_LVT = 0x34,
+        /// LVT Local Int0 Register.
+        LINT0_LVT = 0x35,
+        /// LVT Local Int1 Register.
+        LINT1_LVT = 0x36,
+        /// LVT Error Register.
+        ERROR_LVT = 0x37,
+        /// Initial count Register.
+        INITIAL_COUNT = 0x38,
+        /// R/O Current count Register.
+        CURRENT_COUNT = 0x39,
+        /// Divide configuration Register.
+        DIVIDER = 0x3e,
+        /// Self IPI register, only present in x2APIC.
+        SELF_IPI = 0x3f,
+    }
+}
+
+impl SevAvicRegisterNumber {
+    const fn into_bits(self) -> u32 {
+        self.0
+    }
+
+    const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+}
+
+/// AVIC SEV exit info1 for the no acceleration exit
+#[bitfield(u64)]
+pub struct SevAvicNoAccelInfo {
+    #[bits(4)]
+    _rsvd1: u64,
+    #[bits(8)]
+    pub apic_register_number: SevAvicRegisterNumber,
+    #[bits(20)]
+    _rsvd2: u64,
+    #[bits(1)]
+    pub write_access: bool,
+    #[bits(31)]
+    _rsvd3: u64,
 }
 
 /// SEV VMSA structure representing CPU state
@@ -342,7 +504,7 @@ pub struct SevVmsa {
     pub rcx: u64,
     pub rdx: u64,
     pub rbx: u64,
-    pub vmsa_reserved8: u64, // MBZ
+    pub secure_avic_control: SecureAvicControl,
     pub rbp: u64,
     pub rsi: u64,
     pub rdi: u64,
@@ -413,6 +575,65 @@ pub struct SevVmsa {
     // YMM high registers
     pub ymm_registers: [SevXmmRegister; 16],
 }
+
+#[repr(C)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+/// Structure representing the SEV-ES AVIC IRR register.
+///
+/// If the UpdateIRR bit is set in the VMCB, the guest-controlled AllowedIRR mask
+/// is logically AND-ed with the host-controlled RequestedIRR and then is logically
+/// OR-ed into the IRR field in the Guest APIC Backing page.
+pub struct SevAvicIrrRegister {
+    pub value: u32,
+    pub allowed: u32,
+    _reserved: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+/// Structure representing the SEV-ES AVIC backing page.
+/// Specification: "AMD64 PPR Vol3 System Programming", 15.29.3  AVIC Backing Page.
+pub struct SevAvicPage {
+    pub reserved_0: [ApicRegister; 2],
+    pub id: ApicRegister,
+    pub version: ApicRegister,
+    pub reserved_4: [ApicRegister; 4],
+    pub tpr: ApicRegister,
+    pub apr: ApicRegister,
+    pub ppr: ApicRegister,
+    pub eoi: ApicRegister,
+    pub rrd: ApicRegister,
+    pub ldr: ApicRegister,
+    pub dfr: ApicRegister,
+    pub svr: ApicRegister,
+    pub isr: [ApicRegister; 8],
+    pub tmr: [ApicRegister; 8],
+    pub irr: [SevAvicIrrRegister; 8],
+    pub esr: ApicRegister,
+    pub reserved_29: [ApicRegister; 6],
+    pub lvt_cmci: ApicRegister,
+    pub icr: [ApicRegister; 2],
+    pub lvt_timer: ApicRegister,
+    pub lvt_thermal: ApicRegister,
+    pub lvt_pmc: ApicRegister,
+    pub lvt_lint0: ApicRegister,
+    pub lvt_lint1: ApicRegister,
+    pub lvt_error: ApicRegister,
+    pub timer_icr: ApicRegister,
+    pub timer_ccr: ApicRegister,
+    pub reserved_3a: [ApicRegister; 4],
+    pub timer_dcr: ApicRegister,
+    pub self_ipi: ApicRegister,
+    pub eafr: ApicRegister,
+    pub eacr: ApicRegister,
+    pub seoi: ApicRegister,
+    pub reserved_44: [ApicRegister; 0x5],
+    pub ier: [ApicRegister; 8],
+    pub ei_lv_tr: [ApicRegister; 3],
+    pub reserved_54: [ApicRegister; 0xad],
+}
+
+const_assert_eq!(size_of::<SevAvicPage>(), 4096);
 
 // Info codes for the GHCB MSR protocol.
 open_enum::open_enum! {
@@ -768,14 +989,16 @@ pub struct SevStatusMsr {
     pub debug_swap: bool,
     pub prevent_host_ibs: bool,
     pub snp_btb_isolation: bool,
-    pub _rsvd1: bool,
+    pub vmpl_sss: bool,
     pub secure_tsc: bool,
-    pub _rsvd2: bool,
+    pub vmgexit_param: bool,
     pub _rsvd3: bool,
-    pub _rsvd4: bool,
+    pub ibs_virt: bool,
     pub _rsvd5: bool,
     pub vmsa_reg_prot: bool,
-    #[bits(47)]
+    pub smt_prot: bool,
+    pub secure_avic: bool,
+    #[bits(45)]
     _unused: u64,
 }
 
