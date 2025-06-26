@@ -5088,15 +5088,19 @@ impl<T: 'static + RingMem> NetChannel<T> {
 
             did_some_work = true;
             match packet.data {
-                PacketData::RndisPacket(_) => {
+                PacketData::RndisPacket(pkt) => {
                     assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
-                    let result =
+                    let result: Result<usize, WorkerError> =
                         self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments);
                     let num_packets = match result {
                         Ok(num_packets) => num_packets,
                         Err(err) => {
-                            tracing::error!(%err, "failed to handle RNDIS packet");
+                            tracelimit::error_ratelimited!(%err,
+                                packet_data_channel_type = pkt.channel_type,
+                                packet_data_section_index = pkt.send_buffer_section_index,
+                                packet_data_section_size = pkt.send_buffer_section_size,
+                                "failed to handle RNDIS packet");
                             self.complete_failed_tx_packet(state, id)?;
                             continue;
                         }
