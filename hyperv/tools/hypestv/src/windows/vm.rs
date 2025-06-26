@@ -353,7 +353,7 @@ impl Vm {
                     $ErrorActionPreference = "Stop"
                     $guestManagementService = Get-CimInstance -namespace "root\virtualization\v2" -ClassName "Msvm_VirtualSystemGuestManagementService"
                     $options = 1; # Override version checks
-                    $TimeoutHintSecs = (New-TimeSpan -Minutes 15).TotalSeconds; # Keep less than 30 minutes to avoid a separate failfast path
+                    $TimeoutHintSecs = 15; # Ends up as the deadline in GuestSaveRequest (see the handling of SaveGuestVtl2StateNotification in guest_emulation_transport). Keep O(15 seconds).
                     $result = $guestManagementService | Invoke-CimMethod -name "ReloadManagementVtl" -Arguments @{
                         "VmId"            = $id
                         "Options"         = $options
