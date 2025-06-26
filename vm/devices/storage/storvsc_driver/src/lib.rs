@@ -104,7 +104,7 @@ pub struct StorvscError(StorvscErrorInner);
 
 /// Inner errors from storvsc.
 #[derive(Debug, Error)]
-pub enum StorvscErrorInner {
+pub(crate) enum StorvscErrorInner {
     /// Packet error.
     #[error("packet error")]
     PacketError(#[source] PacketError),
@@ -139,7 +139,7 @@ pub enum StorvscErrorInner {
 
 /// Errors with packet parsing between storvsc and storvsp.
 #[derive(Debug, Error)]
-pub enum PacketError {
+pub(crate) enum PacketError {
     /// Not transactional.
     #[error("Not transactional")]
     NotTransactional,
