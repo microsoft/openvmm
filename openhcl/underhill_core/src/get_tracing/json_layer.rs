@@ -438,7 +438,7 @@ where
             // bigger than the current time.
             let time = pal_async::timer::Instant::now();
             if let Some(enter) = span_data.enter_time.take() {
-                span_data.active_time += time - enter;
+                span_data.active_time += time.saturating_sub(enter);
             }
         }
     }
