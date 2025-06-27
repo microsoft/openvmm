@@ -10,6 +10,7 @@ use vmsocket::VmSocket;
 use super::ProcessorTopology;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::OpenHclServicingFlags;
 use crate::PetriLogSource;
 use crate::PetriTestParams;
 use crate::PetriVm;
@@ -194,6 +195,14 @@ impl PetriVm for PetriVmHyperV {
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
         Self::send_enlightened_shutdown(self, kind).await
+    }
+
+    async fn restart_openhcl_petrivm(
+        &mut self,
+        new_openhcl: &ResolvedArtifact,
+        flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        Self::restart_openhcl(self, new_openhcl, flags).await
     }
 }
 
@@ -689,6 +698,16 @@ impl PetriVmHyperV {
         }
 
         Ok(())
+    }
+
+    /// Restart the OpenHCL firmware in the VM. (Run OpenHCL servicing)
+    pub async fn restart_openhcl(
+        &mut self,
+        new_openhcl: &ResolvedArtifact,
+        flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        self.vm.set_openhcl_firmware(new_openhcl.get(), false)?;
+        self.vm.restart_openhcl(flags).await
     }
 
     async fn wait_for_agent_core(&self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {

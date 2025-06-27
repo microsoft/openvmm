@@ -6,6 +6,7 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::OpenHclServicingFlags;
+use petri::PetriVm;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::PetriVmConfigOpenVmm;
@@ -52,7 +53,8 @@ async fn nvme_relay_servicing_core(
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
 
-    vm.restart_openhcl(&new_openhcl, flags).await?;
+    vm.restart_openhcl_petrivm(&new_openhcl.erase(), flags)
+        .await?;
 
     agent.ping().await?;
 
