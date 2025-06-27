@@ -160,7 +160,7 @@ impl IntoPipeline for VmmTestsCli {
                                     VmmTestsDepSelections::Windows {
                                         hyperv: true,
                                         whp: true,
-                                        // No hardware isolation support on Aarch64, so don't default to needing in when the
+                                        // No hardware isolation support on Aarch64, so don't default to needing it when the
                                         // user specifies a custom filter.
                                         hardware_isolation: match target_architecture {
                                             target_lexicon::Architecture::Aarch64(_) => false,
