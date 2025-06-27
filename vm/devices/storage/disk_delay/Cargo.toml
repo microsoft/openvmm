@@ -1,10 +1,19 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 [package]
 name = "disk_delay"
-version = "0.1.0"
-rust-version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+anyhow.workspace = true
+disk_backend.workspace = true
+disk_backend_resources.workspace = true
+inspect.workspace = true
+scsi_buffers.workspace = true
+vm_resource.workspace = true
 
 [lints]
 workspace = true
