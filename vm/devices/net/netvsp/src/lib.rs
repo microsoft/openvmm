@@ -5358,9 +5358,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         status: protocol::Status,
     ) -> Result<(), WorkerError> {
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-        if status == protocol::Status::SUCCESS {
-            assert_eq!(tx_packet.pending_packet_count, 0);
-        }
+        assert_eq!(tx_packet.pending_packet_count, 0);
         if self.pending_send_size == 0
             && self.try_send_tx_packet(tx_packet.transaction_id, status)?
         {
