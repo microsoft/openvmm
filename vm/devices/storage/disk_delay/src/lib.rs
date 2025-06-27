@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A disk device wrapper that provides configurable storage delay on I/O operations.
+//! A disk device wrapper that provides configurable storage delay on Read/Write I/O operations to a disk.
 
 #![forbid(unsafe_code)]
 
@@ -40,36 +40,42 @@ impl DiskIo for DelayDisk {
         "delay"
     }
 
+    /// Passthrough
     fn sector_count(&self) -> u64 {
         self.inner.sector_count()
     }
 
+    /// Passthrough
     fn sector_size(&self) -> u32 {
         self.inner.sector_size()
     }
 
+    /// Passthrough
     fn disk_id(&self) -> Option<[u8; 16]> {
         self.inner.disk_id()
     }
 
+    /// Passthrough
     fn physical_sector_size(&self) -> u32 {
         self.inner.physical_sector_size()
     }
 
+    /// Passthrough
     fn is_fua_respected(&self) -> bool {
         self.inner.is_fua_respected()
     }
 
+    /// Passthrough
     fn is_read_only(&self) -> bool {
         self.inner.is_read_only()
     }
 
-    /// Optionally returns a trait object to issue persistent reservation
-    /// requests.
+    /// Passthrough
     fn pr(&self) -> Option<&dyn disk_backend::pr::PersistentReservation> {
         self.inner.pr()
     }
 
+    /// Delay and then Passthrough
     async fn read_vectored(
         &self,
         buffers: &RequestBuffers<'_>,
@@ -80,6 +86,7 @@ impl DiskIo for DelayDisk {
         self.inner.read_vectored(buffers, sector).await
     }
 
+    /// Delay and then Passthrough
     async fn write_vectored(
         &self,
         buffers: &RequestBuffers<'_>,
@@ -93,15 +100,17 @@ impl DiskIo for DelayDisk {
             .await
     }
 
+    /// Passthrough
     async fn sync_cache(&self) -> Result<(), DiskError> {
         self.inner.sync_cache().await
     }
 
-    /// Waits for the disk sector size to be different than the specified value.
+    /// Passthrough
     async fn wait_resize(&self, sector_count: u64) -> u64 {
         self.inner.wait_resize(sector_count).await
     }
 
+    /// Passthrough
     fn unmap(
         &self,
         sector: u64,
@@ -111,10 +120,12 @@ impl DiskIo for DelayDisk {
         self.inner.unmap(sector, count, block_level_only)
     }
 
+    /// Passthrough
     fn unmap_behavior(&self) -> UnmapBehavior {
         self.inner.unmap_behavior()
     }
 
+    /// Passthrough
     fn optimal_unmap_sectors(&self) -> u32 {
         self.inner.optimal_unmap_sectors()
     }
