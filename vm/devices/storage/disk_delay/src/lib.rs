@@ -7,7 +7,6 @@
 
 mod resolver;
 
-use async_trait::async_trait;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -24,14 +23,8 @@ pub struct DelayDisk {
 
 impl DelayDisk {
     /// Creates a new disk with a specified delay on I/O operations.
-    pub fn new(
-        delay: u64,
-        inner: Disk,
-    ) -> Self {
-        Self {
-            delay,
-            inner,
-        }
+    pub fn new(delay: u64, inner: Disk) -> Self {
+        Self { delay, inner }
     }
 }
 
@@ -95,9 +88,7 @@ impl DiskIo for DelayDisk {
     ) -> Result<(), DiskError> {
         // Write the encrypted data.
         std::thread::sleep(std::time::Duration::from_millis(self.delay));
-        self.inner
-            .write_vectored(buffers, sector, fua)
-            .await
+        self.inner.write_vectored(buffers, sector, fua).await
     }
 
     /// Passthrough
