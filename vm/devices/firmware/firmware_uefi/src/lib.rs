@@ -74,7 +74,7 @@ use std::convert::TryInto;
 use std::ops::RangeInclusive;
 use std::task::Context;
 use thiserror::Error;
-use uefi_nvram_storage::InspectableNvramStorage;
+use uefi_nvram_storage::VmmNvramStorage;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::vmtime::VmTimeSource;
 use watchdog_core::platform::WatchdogPlatform;
@@ -129,7 +129,7 @@ pub struct UefiConfig {
 /// Various runtime objects used by the UEFI device + underlying services.
 pub struct UefiRuntimeDeps<'a> {
     pub gm: GuestMemory,
-    pub nvram_storage: Box<dyn InspectableNvramStorage>,
+    pub nvram_storage: Box<dyn VmmNvramStorage>,
     pub logger: Box<dyn UefiLogger>,
     pub vmtime: &'a VmTimeSource,
     pub watchdog_platform: Box<dyn WatchdogPlatform>,

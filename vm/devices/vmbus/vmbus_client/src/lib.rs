@@ -1503,7 +1503,7 @@ impl ClientTask {
             // avoid a deadlock with the host. The host can always DoS the
             // guest, so this is not an attack vector.
             let host_backed_up = !self.inner.messages.is_empty();
-            let mut flush_messages = OptionFuture::from(
+            let flush_messages = OptionFuture::from(
                 (self.running && host_backed_up)
                     .then(|| self.inner.messages.flush_messages().fuse()),
             );
