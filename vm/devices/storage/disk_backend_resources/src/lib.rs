@@ -33,6 +33,19 @@ impl ResourceId<DiskHandleKind> for DiskWithReservationsHandle {
     const ID: &'static str = "prwrap";
 }
 
+/// Disk handle for a delay disk
+#[derive(MeshPayload)]
+pub struct DelayDiskHandle{
+    /// The underlying disk resource.
+    pub disk: Resource<DiskHandleKind>,
+    /// The delay to add to each I/O operation, in milliseconds.
+    pub delay: u64,
+}
+
+impl ResourceId<DiskHandleKind> for DelayDiskHandle {
+    const ID: &'static str = "delay";
+}
+
 /// Disk handle for a fixed VHD1 disk.
 #[derive(MeshPayload)]
 pub struct FixedVhd1DiskHandle(pub std::fs::File);
