@@ -7,9 +7,12 @@ pub mod hyperv;
 /// OpenVMM VM management
 pub mod openvmm;
 
+use crate::PetriLogSource;
 use crate::ShutdownKind;
+use crate::disk_image::AgentImage;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
+use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
@@ -70,6 +73,28 @@ pub trait PetriVmConfig: Send {
 
     /// Get the OS that the VM will boot into.
     fn os_flavor(&self) -> OsFlavor;
+}
+
+/// Common Petri VM configuration
+pub struct PetriVmConfigCommon {
+    /// The name of the VM
+    name: String,
+    /// The architecture of the VM
+    arch: MachineArch,
+    /// Firmware and/or OS to load into the VM and associated settings
+    firmware: Firmware,
+    /// The amount of memory, in bytes, to assign to the VM
+    memory: u64,
+    /// The processor tology for the VM
+    proc_topology: ProcessorTopology,
+}
+
+/// Common resources used by a Petri VM
+pub struct PetriVmResourcesCommon {
+    driver: DefaultDriver,
+    agent_image: AgentImage,
+    openhcl_agent_image: Option<AgentImage>,
+    log_source: PetriLogSource,
 }
 
 /// Common processor topology information for the VM.
@@ -187,6 +212,88 @@ pub enum Firmware {
         vtl2_nvme_boot: bool,
         /// The path to the IGVM file to use.
         igvm_path: ResolvedArtifact,
+    },
+}
+
+/// UEFI firmware configuration
+#[derive(Debug, Default)]
+pub struct UefiConfig {
+    /// Secure boot template
+    pub secure_boot_template: Option<SecureBootTemplate>,
+    /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
+    pub disable_frontpage: bool,
+}
+
+/// OpenHCL configuration
+#[derive(Debug, Default)]
+pub struct OpenHclConfig {
+    /// Emulate SCSI via NVME to VTL2, with the provided namespace ID on
+    /// the controller with `BOOT_NVME_INSTANCE`.
+    pub vtl2_nvme_boot: bool,
+    /// Whether to enable VMBus redirection
+    pub vmbus_redirect: bool,
+    /// Command line to pass to OpenHCL
+    pub command_line: Option<String>,
+}
+
+/// Firmware to load into the test VM.
+#[derive(Debug)]
+pub enum FirmwareConfig {
+    /// Boot Linux directly, without any firmware.
+    LinuxDirect {
+        /// The kernel to boot.
+        kernel: ResolvedArtifact,
+        /// The initrd to use.
+        initrd: ResolvedArtifact,
+    },
+    /// Boot Linux directly, without any firmware, with OpenHCL in VTL2.
+    OpenhclLinuxDirect {
+        /// The path to the IGVM file to use.
+        igvm_path: ResolvedArtifact,
+    },
+    /// Boot a PCAT-based VM.
+    Pcat {
+        /// The guest OS the VM will boot into.
+        guest: PcatGuest,
+        /// The firmware to use.
+        bios_firmware: ResolvedOptionalArtifact,
+        /// The SVGA firmware to use.
+        svga_firmware: ResolvedOptionalArtifact,
+    },
+    /// Boot a UEFI-based VM with OpenHCL in VTL2.
+    OpenhclPcat {
+        /// The guest OS the VM will boot into.
+        guest: PcatGuest,
+        /// The path to the IGVM file to use.
+        igvm_path: ResolvedArtifact,
+        /// The firmware to use.
+        bios_firmware: ResolvedOptionalArtifact,
+        /// The SVGA firmware to use.
+        svga_firmware: ResolvedOptionalArtifact,
+        /// OpenHCL configuration
+        openhcl_config: OpenHclConfig,
+    },
+    /// Boot a UEFI-based VM.
+    Uefi {
+        /// The guest OS the VM will boot into.
+        guest: UefiGuest,
+        /// The firmware to use.
+        uefi_firmware: ResolvedArtifact,
+        /// UEFI configuration
+        uefi_config: UefiConfig,
+    },
+    /// Boot a UEFI-based VM with OpenHCL in VTL2.
+    OpenhclUefi {
+        /// The guest OS the VM will boot into.
+        guest: UefiGuest,
+        /// The isolation type of the VM.
+        isolation: Option<IsolationType>,
+        /// The path to the IGVM file to use.
+        igvm_path: ResolvedArtifact,
+        /// UEFI configuration
+        uefi_config: UefiConfig,
+        /// OpenHCL configuration
+        openhcl_config: OpenHclConfig,
     },
 }
 
@@ -517,4 +624,13 @@ pub enum PetriVmgsResource<T: IsTestVmgs> {
     Reprovision(ResolvedArtifact<T>),
     /// Store guest state in memory
     Ephemeral,
+}
+
+/// UEFI secure boot template
+#[derive(Debug, Clone, Copy)]
+pub enum SecureBootTemplate {
+    /// The Microsoft Windows template.
+    MicrosoftWindows,
+    /// The Microsoft UEFI certificate authority template.
+    MicrosoftUefiCertificateAuthoritiy,
 }
