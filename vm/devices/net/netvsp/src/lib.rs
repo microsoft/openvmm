@@ -5088,7 +5088,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
 
             did_some_work = true;
             match packet.data {
-                PacketData::RndisPacket(pkt) => {
+                PacketData::RndisPacket(_) => {
                     assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
                     let result: Result<usize, WorkerError> =
@@ -5096,11 +5096,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     let num_packets = match result {
                         Ok(num_packets) => num_packets,
                         Err(err) => {
-                            tracelimit::error_ratelimited!(%err,
-                                packet_data_channel_type = pkt.channel_type,
-                                packet_data_section_index = pkt.send_buffer_section_index,
-                                packet_data_section_size = pkt.send_buffer_section_size,
-                                "failed to handle RNDIS packet");
+                            tracelimit::error_ratelimited!(%err, "failed to handle RNDIS packet");
                             self.complete_failed_tx_packet(state, id)?;
                             continue;
                         }
