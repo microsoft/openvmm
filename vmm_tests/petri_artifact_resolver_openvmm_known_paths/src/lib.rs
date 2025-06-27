@@ -369,7 +369,7 @@ fn openhcl_bin_path(
             },
         ),
         (MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel) => (
-            "flowey-out/artifacts/build-igvm/debug/aarch64",
+            "flowey-out/artifacts/build-igvm/debug/aarch64-devkern",
             "openhcl-aarch64-devkern.bin",
             MissingCommand::XFlowey {
                 description: "OpenHCL IGVM file",
