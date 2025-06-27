@@ -165,7 +165,10 @@ impl IntoPipeline for VmmTestsCli {
                                         hardware_isolation: match target_architecture {
                                             target_lexicon::Architecture::Aarch64(_) => false,
                                             target_lexicon::Architecture::X86_64 => true,
-                                            _ => false,
+                                            _ => panic!(
+                                                "Unhandled architecture: {:?}",
+                                                target_architecture
+                                            ),
                                         },
                                     }
                                 }
