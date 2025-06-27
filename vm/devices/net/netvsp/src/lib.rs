@@ -4976,7 +4976,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     assert!(tx_packet.pending_packet_count > 0);
                     tx_packet.pending_packet_count -= 1;
                     if tx_packet.pending_packet_count == 0 {
-                        self.complete_tx_packet(state, id)?;
+                        self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
                     }
                 }
 
@@ -5096,8 +5096,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     let num_packets = match result {
                         Ok(num_packets) => num_packets,
                         Err(err) => {
-                            tracelimit::error_ratelimited!(%err, "failed to handle RNDIS packet");
-                            self.complete_failed_tx_packet(state, id)?;
+                            tracelimit::error_ratelimited!(
+                                err = &err as &dyn std::error::Error,
+                                "failed to handle RNDIS packet"
+                            );
+                            self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
                             continue;
                         }
                     };
@@ -5111,7 +5114,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             state.stats.tx_stalled.increment();
                         }
                     } else {
-                        self.complete_tx_packet(state, id)?;
+                        self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
                     }
                 }
                 PacketData::RndisPacketComplete(_completion) => {
@@ -5251,7 +5254,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         }
 
         if state.pending_tx_packets[id.0 as usize].pending_packet_count == 0 {
-            self.complete_tx_packet(state, id)?;
+            self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
         }
 
         Ok(packets_sent)
@@ -5348,33 +5351,18 @@ impl<T: 'static + RingMem> NetChannel<T> {
         Ok(did_some_work)
     }
 
-    fn complete_tx_packet(&mut self, state: &mut ActiveState, id: TxId) -> Result<(), WorkerError> {
-        let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-        assert_eq!(tx_packet.pending_packet_count, 0);
-        if self.pending_send_size == 0
-            && self.try_send_tx_packet(tx_packet.transaction_id, protocol::Status::SUCCESS)?
-        {
-            tracing::trace!(id = id.0, "sent tx completion");
-            state.free_tx_packets.push(id);
-        } else {
-            tracing::trace!(id = id.0, "pended tx completion");
-            state.pending_tx_completions.push_back(PendingTxCompletion {
-                transaction_id: tx_packet.transaction_id,
-                tx_id: Some(id),
-                status: protocol::Status::SUCCESS,
-            });
-        }
-        Ok(())
-    }
-
-    fn complete_failed_tx_packet(
+    fn complete_tx_packet(
         &mut self,
         state: &mut ActiveState,
         id: TxId,
+        status: protocol::Status,
     ) -> Result<(), WorkerError> {
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
+        if status == protocol::Status::SUCCESS {
+            assert_eq!(tx_packet.pending_packet_count, 0);
+        }
         if self.pending_send_size == 0
-            && self.try_send_tx_packet(tx_packet.transaction_id, protocol::Status::FAILURE)?
+            && self.try_send_tx_packet(tx_packet.transaction_id, status)?
         {
             tracing::trace!(id = id.0, "sent tx completion");
             state.free_tx_packets.push(id);
@@ -5383,7 +5371,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             state.pending_tx_completions.push_back(PendingTxCompletion {
                 transaction_id: tx_packet.transaction_id,
                 tx_id: Some(id),
-                status: protocol::Status::FAILURE,
+                status,
             });
         }
         Ok(())
