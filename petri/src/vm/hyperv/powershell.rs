@@ -532,6 +532,25 @@ pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result
     .context("set_vm_com_port")
 }
 
+/// Run Set-VMBusRelay commandlet
+pub fn set_vmbus_redirect(vmid: &Guid, ps_mod: &Path, enable: bool) -> anyhow::Result<()> {
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-VMBusRedirect")
+            .arg("Enable", enable)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_vmbus_redirect")
+}
+
 /// Windows event log as retrieved by `run_get_winevent`
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]

@@ -197,3 +197,23 @@ function Set-VmScsiControllerTargetVtl
     $rasd.TargetVtl = $TargetVtl
     $rasd | Set-VmResourceSettings
 }
+
+function Set-VMBusRedirect
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
+        [Parameter(Mandatory = $true)]
+        [bool] $Enable
+    )
+
+    $vssd = Get-Vssd $Vm
+    $vssd | ForEach-Object {
+            $_.VMBusMessageRedirection = [int]$Enable
+            $_
+        }
+    Set-VmSystemSettings $vssd
+}

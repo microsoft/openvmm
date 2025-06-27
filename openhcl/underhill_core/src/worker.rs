@@ -127,6 +127,7 @@ use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
 use underhill_attestation::AttestationType;
+use underhill_confidentiality::confidential_debug_enabled;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use virt::Partition;
@@ -1589,6 +1590,10 @@ async fn new_underhill_vm(
         );
     }
 
+    if confidential_debug_enabled() {
+        tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
+    }
+
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
     // - stateless mode (isolated VM with attestation suppressed)
@@ -1997,14 +2002,25 @@ async fn new_underhill_vm(
             use vmm_core::emuplat::hcl_compat_uefi_nvram_storage::VmgsStorageBackendAdapter;
 
             // map the GET's template enum onto the hardcoded secureboot template type
-            // TODO: will need to update this code for underhill on ARM
             let base_vars = match dps.general.secure_boot_template {
                 SecureBootTemplateType::None => CustomVars::default(),
                 SecureBootTemplateType::MicrosoftWindows => {
-                    hyperv_secure_boot_templates::x64::microsoft_windows()
+                    if cfg!(guest_arch = "x86_64") {
+                        hyperv_secure_boot_templates::x64::microsoft_windows()
+                    } else if cfg!(guest_arch = "aarch64") {
+                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                    } else {
+                        anyhow::bail!("no secure boot template for current guest_arch")
+                    }
                 }
                 SecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
-                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                    if cfg!(guest_arch = "x86_64") {
+                        hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                    } else if cfg!(guest_arch = "aarch64") {
+                        hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                    } else {
+                        anyhow::bail!("no secure boot template for current guest_arch")
+                    }
                 }
             };
 
@@ -2056,16 +2072,20 @@ async fn new_underhill_vm(
                 logger: Box::new(UnderhillLogger {
                     get: get_client.clone(),
                 }),
-                nvram_storage: Box::new(HclCompatNvram::new(
-                    VmgsStorageBackendAdapter(
-                        vmgs_client
-                            .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
-                            .context("failed to instantiate UEFI NVRAM store")?,
-                    ),
-                    Some(HclCompatNvramQuirks {
-                        skip_corrupt_vars_with_missing_null_term: true,
-                    }),
-                )),
+                nvram_storage: Box::new(
+                    HclCompatNvram::new(
+                        VmgsStorageBackendAdapter(
+                            vmgs_client
+                                .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
+                                .context("failed to instantiate UEFI NVRAM store")?,
+                        ),
+                        Some(HclCompatNvramQuirks {
+                            skip_corrupt_vars_with_missing_null_term: true,
+                        }),
+                        is_restoring,
+                    )
+                    .await?,
+                ),
                 generation_id_recv: get_client
                     .take_generation_id_recv()
                     .await

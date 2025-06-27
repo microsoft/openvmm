@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Saved state support for the vmbus client.
+
 use crate::ConnectResult;
 use crate::OfferInfo;
 use crate::RestoreError;

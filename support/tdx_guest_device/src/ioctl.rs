@@ -3,6 +3,7 @@
 
 //! The module implements the Linux TDX Guest APIs based on ioctl.
 
+#![cfg(feature = "std")]
 // UNSAFETY: unsafe needed to make ioctl calls.
 #![expect(unsafe_code)]
 

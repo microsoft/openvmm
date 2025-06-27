@@ -199,6 +199,10 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
         Box::new(Self::with_uefi_frontpage(*self, enable))
     }
 
+    fn with_vmbus_redirect(self: Box<Self>, _: bool) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_vmbus_redirect(*self))
+    }
+
     fn os_flavor(&self) -> OsFlavor {
         self.firmware.os_flavor()
     }

@@ -570,6 +570,9 @@ jobs:
         flowey.exe e 10 flowey_lib_hvlite::init_cross_build 2
         flowey.exe e 10 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 10 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
         flowey.exe e 10 flowey_lib_common::run_cargo_nextest_run 0
@@ -869,6 +872,9 @@ jobs:
         flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 0
         flowey e 11 flowey_lib_hvlite::init_cross_build 2
         flowey e 11 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
@@ -1173,6 +1179,9 @@ jobs:
         flowey e 12 flowey_lib_hvlite::init_cross_build 5
         flowey e 12 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
+    - name: generate nextest command
+      run: flowey e 12 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
         flowey e 12 flowey_lib_common::run_cargo_nextest_run 0
@@ -1390,16 +1399,19 @@ jobs:
         flowey.exe e 13 flowey_lib_hvlite::build_xtask 0
       shell: bash
     - name: determine unit test exclusions
-      run: flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
+      run: |-
+        flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
+        flowey.exe e 13 flowey_lib_hvlite::init_cross_build 0
+        flowey.exe e 13 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 0
       shell: bash
     - name: unpack Microsoft.WSL.LxUtil.AARCH64.zip
       run: flowey.exe e 13 flowey_lib_hvlite::download_lxutil 0
       shell: bash
     - name: move lxutil.dll into its magic folder
-      run: |-
-        flowey.exe e 13 flowey_lib_hvlite::init_openvmm_magicpath_lxutil 0
-        flowey.exe e 13 flowey_lib_hvlite::init_cross_build 0
-        flowey.exe e 13 flowey_lib_hvlite::run_cargo_nextest_run 0
+      run: flowey.exe e 13 flowey_lib_hvlite::init_openvmm_magicpath_lxutil 0
       shell: bash
     - name: run 'unit-tests' nextest tests
       run: |-
@@ -1588,9 +1600,6 @@ jobs:
         flowey.exe e 14 flowey_lib_common::cache 6
         flowey.exe e 14 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: init hyperv tests
-      run: flowey.exe e 14 flowey_lib_hvlite::init_hyperv_tests 0
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 14 flowey_lib_common::git_checkout 0
@@ -1616,6 +1625,12 @@ jobs:
         flowey.exe e 14 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 14 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 14 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (windows)
+      run: flowey.exe e 14 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -1821,9 +1836,6 @@ jobs:
         flowey.exe e 15 flowey_lib_common::cache 6
         flowey.exe e 15 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: init hyperv tests
-      run: flowey.exe e 15 flowey_lib_hvlite::init_hyperv_tests 0
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 15 flowey_lib_common::git_checkout 0
@@ -1849,6 +1861,12 @@ jobs:
         flowey.exe e 15 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 15 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (windows)
+      run: flowey.exe e 15 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -2052,9 +2070,6 @@ jobs:
         flowey.exe e 16 flowey_lib_common::cache 6
         flowey.exe e 16 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: init hyperv tests
-      run: flowey.exe e 16 flowey_lib_hvlite::init_hyperv_tests 0
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 16 flowey_lib_common::git_checkout 0
@@ -2080,6 +2095,12 @@ jobs:
         flowey.exe e 16 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 16 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 16 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (windows)
+      run: flowey.exe e 16 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -2309,6 +2330,12 @@ jobs:
         flowey e 17 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey e 17 flowey_core::pipeline::artifact::resolve 4
         flowey e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
+      shell: bash
+    - name: generate nextest command
+      run: flowey e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (linux)
+      run: flowey e 17 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-
@@ -2562,9 +2589,6 @@ jobs:
         flowey.exe e 18 flowey_lib_common::cache 6
         flowey.exe e 18 flowey_lib_common::download_cargo_nextest 4
       shell: bash
-    - name: init hyperv tests
-      run: flowey.exe e 18 flowey_lib_hvlite::init_hyperv_tests 0
-      shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 18 flowey_lib_common::git_checkout 0
@@ -2590,6 +2614,12 @@ jobs:
         flowey.exe e 18 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 18 flowey_core::pipeline::artifact::resolve 7
         flowey.exe e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: generate nextest command
+      run: flowey.exe e 18 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+      shell: bash
+    - name: install vmm tests deps (windows)
+      run: flowey.exe e 18 flowey_lib_hvlite::install_vmm_tests_deps 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
       run: |-

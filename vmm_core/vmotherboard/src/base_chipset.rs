@@ -1318,7 +1318,7 @@ pub mod options {
             /// Interface to log UEFI BIOS events
             pub logger: Box<dyn firmware_uefi::platform::logger::UefiLogger>,
             /// Interface for storing/retrieving UEFI NVRAM variables
-            pub nvram_storage: Box<dyn uefi_nvram_storage::InspectableNvramStorage>,
+            pub nvram_storage: Box<dyn uefi_nvram_storage::VmmNvramStorage>,
             /// Channel to receive updated generation ID values
             pub generation_id_recv: mesh::Receiver<[u8; 16]>,
             /// Device-specific functions the platform must provide in order

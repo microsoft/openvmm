@@ -144,7 +144,7 @@ async fn dump_nvram(
     truncate: bool,
 ) -> Result<(), Error> {
     let mut count = 0;
-    for entry in nvram_storage.iter().await? {
+    for entry in nvram_storage.iter() {
         let meta = NvramEntryMetadata {
             vendor: entry.vendor.to_string(),
             name: entry.name.to_string(),
@@ -343,17 +343,20 @@ async fn vmgs_file_open_nvram(
     let vmgs = vmgs_file_open(file_path, key_path, open_mode).await?;
     let encrypted = vmgs.is_encrypted();
 
-    open_nvram(vmgs, encrypted)
+    open_nvram(vmgs, encrypted).await
 }
 
-fn open_nvram(vmgs: Vmgs, encrypted: bool) -> Result<HclCompatNvram<VmgsStorageBackend>, Error> {
-    let nvram_storage = HclCompatNvram::new(
+async fn open_nvram(
+    vmgs: Vmgs,
+    encrypted: bool,
+) -> Result<HclCompatNvram<VmgsStorageBackend>, Error> {
+    Ok(HclCompatNvram::new(
         VmgsStorageBackend::new(vmgs, vmgs::FileId::BIOS_NVRAM, encrypted)
             .map_err(Error::VmgsStorageBackend)?,
         None,
-    );
-
-    Ok(nvram_storage)
+        false,
+    )
+    .await?)
 }
 
 /// Delete all boot entries in the BIOS NVRAM VMGS file in an attempt to repair a VM that is failing to boot.
