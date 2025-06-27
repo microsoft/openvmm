@@ -118,6 +118,7 @@ impl IntoPipeline for VmmTestsCli {
             VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
         };
         let target_os = target.as_triple().operating_system;
+        let target_architecture = target.as_triple().architecture;
 
         pipeline
             .new_job(
@@ -159,7 +160,13 @@ impl IntoPipeline for VmmTestsCli {
                                     VmmTestsDepSelections::Windows {
                                         hyperv: true,
                                         whp: true,
-                                        hardware_isolation: true,
+                                        // No hardware isolation support on Aarch64, so don't default to needing in when the
+                                        // user specifies a custom filter.
+                                        hardware_isolation: match target_architecture {
+                                            target_lexicon::Architecture::Aarch64(_) => false,
+                                            target_lexicon::Architecture::X86_64 => true,
+                                            _ => false,
+                                        },
                                     }
                                 }
                                 target_lexicon::OperatingSystem::Linux => {
