@@ -84,6 +84,7 @@ storvsp_resources.workspace = true
 tpm_resources.workspace = true
 tpm = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true
+uefi_nvram_storage.workspace = true
 uidevices_resources.workspace = true
 underhill_attestation.workspace = true
 underhill_confidentiality = { workspace = true, features = ["std"] }
