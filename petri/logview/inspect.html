@@ -108,12 +108,18 @@
                 while (/\s/.test(input[i])) i++;
             }
 
+            /**
+             * Parses a key from the input string.
+             * A key is defined as a sequence of characters followed by a colon and whitespace.
+             * Of note: a key can contain any character (including spaces and colons).
+             * Throws an error if the key is invalid.
+             */
             function parseKey() {
                 skipWhitespace();
-                const match = /.*:\s/.exec(input.slice(i));
+                const match = /^(.+?):\s/.exec(input.slice(i));
                 if (!match) throw new Error(`Invalid key at position ${i}: '${input.slice(i, i + 10)}'`);
                 i += match[0].length;
-                return match[0].slice(0, -2); // Remove the trailing ': '
+                return match[1];
             }
 
             function parseString() {
