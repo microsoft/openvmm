@@ -145,6 +145,8 @@ pub mod artifacts {
             LATEST_LINUX_DIRECT_TEST_X64,
             /// OpenHCL IGVM (standard AARCH64)
             LATEST_STANDARD_AARCH64,
+            /// OpenHCL IGVM (standard AARCH64, with VTL2 dev kernel)
+            LATEST_STANDARD_DEV_KERNEL_AARCH64
         }
 
         impl IsLoadable for LATEST_STANDARD_X64 {
@@ -171,6 +173,11 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_AARCH64 {}
+
+        impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_AARCH64 {
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+        impl IsOpenhclIgvm for LATEST_STANDARD_DEV_KERNEL_AARCH64 {}
 
         /// OpenHCL usermode binary
         pub mod um_bin {
