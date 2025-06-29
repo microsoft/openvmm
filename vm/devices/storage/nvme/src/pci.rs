@@ -226,15 +226,15 @@ impl NvmeController {
         if addr >= 0x1000 {
             // Doorbell write.
             let base = addr - 0x1000;
-            let index = base >> DOORBELL_STRIDE_BITS;
-            if (index << DOORBELL_STRIDE_BITS) != base {
+            let db_id = base >> DOORBELL_STRIDE_BITS;
+            if (db_id << DOORBELL_STRIDE_BITS) != base {
                 return IoResult::Err(InvalidRegister);
             }
             let Ok(data) = data.try_into() else {
                 return IoResult::Err(IoError::InvalidAccessSize);
             };
-            let data = u32::from_ne_bytes(data);
-            self.workers.doorbell(index, data);
+            let value = u32::from_ne_bytes(data);
+            self.workers.doorbell(db_id, value);
             return IoResult::Ok;
         }
 

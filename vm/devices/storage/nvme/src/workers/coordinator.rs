@@ -9,6 +9,7 @@ use super::admin::AdminHandler;
 use super::admin::AdminState;
 use super::admin::NsidConflict;
 use crate::queue::DoorbellMemory;
+use crate::queue::InvalidDoorbell;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -99,8 +100,10 @@ impl NvmeWorkers {
         }
     }
 
-    pub fn doorbell(&self, index: u16, value: u32) {
-        self.doorbells.read().write(index, value);
+    pub fn doorbell(&self, db_id: u16, value: u32) {
+        if let Err(InvalidDoorbell) = self.doorbells.read().try_write(db_id, value) {
+            tracelimit::error_ratelimited!(db_id, "write to invalid doorbell index");
+        }
     }
 
     pub fn enable(&mut self, asq: u64, asqs: u16, acq: u64, acqs: u16) {

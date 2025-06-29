@@ -25,6 +25,8 @@ pub struct DoorbellMemory {
     wakers: Vec<Option<Waker>>,
 }
 
+pub struct InvalidDoorbell;
+
 impl DoorbellMemory {
     pub fn new(num_qids: u16) -> Self {
         Self {
@@ -58,11 +60,16 @@ impl DoorbellMemory {
         Ok(())
     }
 
-    pub fn write(&self, db_id: u16, value: u32) {
-        if db_id as usize >= self.wakers.len() {
-            tracelimit::warn_ratelimited!(db_id, "db id out of range");
-            return;
+    pub fn try_write(&self, db_id: u16, value: u32) -> Result<(), InvalidDoorbell> {
+        if (db_id as usize) >= self.wakers.len() {
+            return Err(InvalidDoorbell);
         }
+        self.write(db_id, value);
+        Ok(())
+    }
+
+    fn write(&self, db_id: u16, value: u32) {
+        assert!((db_id as usize) < self.wakers.len());
         let addr = self
             .offset
             .wrapping_add((db_id as u64) << DOORBELL_STRIDE_BITS);
@@ -98,6 +105,7 @@ impl DoorbellMemory {
     }
 
     fn write_event_idx(&self, db_id: u16, val: u32) {
+        assert!((db_id as usize) < self.wakers.len());
         if let Err(err) = self.mem.write_plain(
             self.event_idx_offset
                 .unwrap()
