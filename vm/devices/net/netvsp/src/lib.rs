@@ -3746,16 +3746,46 @@ impl Coordinator {
                 PendingVfStateComplete,
                 TimerExpired,
             }
-            let timer_sleep = async {
-                if let Some(sleep_duration) = sleep_duration {
-                    let mut timer = PolledTimer::new(&state.adapter.driver);
-                    timer.sleep_until(sleep_duration).await;
-                } else {
-                    pending::<()>().await;
+            let message = if matches!(
+                state.pending_vf_state,
+                CoordinatorStatePendingVfState::Pending
+            ) {
+                // The primary worker is allowed to run, but as no
+                // notifications are being processed, if it is waiting for an
+                // action then it should remain stopped until this completes
+                // and the regular message processing logic resumes. Currently
+                // the only message that requires processing is
+                // DataPathSwitchPending, so check for that here.
+                if !self.workers[0].is_running()
+                    && self.primary_mut().is_none_or(|primary| {
+                        !matches!(
+                            primary.guest_vf_state,
+                            PrimaryChannelGuestVfState::DataPathSwitchPending { result: None, .. }
+                        )
+                    })
+                {
+                    self.workers[0].start();
                 }
-                Message::TimerExpired
-            };
-            let message = {
+
+                // guest_ready_for_device is not restartable, so do not poll on
+                // stop.
+                state
+                    .virtual_function
+                    .as_mut()
+                    .expect("Pending requires a VF")
+                    .guest_ready_for_device()
+                    .await;
+                Message::PendingVfStateComplete
+            } else {
+                let timer_sleep = async {
+                    if let Some(sleep_duration) = sleep_duration {
+                        let mut timer = PolledTimer::new(&state.adapter.driver);
+                        timer.sleep_until(sleep_duration).await;
+                    } else {
+                        pending::<()>().await;
+                    }
+                    Message::TimerExpired
+                };
                 let wait_for_message = async {
                     let internal_msg = self
                         .recv
@@ -3791,21 +3821,7 @@ impl Coordinator {
                                     .race()
                                     .await
                             }
-                            CoordinatorStatePendingVfState::Pending => {
-                                // Allow the network workers to continue while
-                                // waiting for the Vf add/remove call to
-                                // complete, but block any other notifications
-                                // while it is running. This is necessary to
-                                // support Vf removal, which may trigger the
-                                // guest to send a switch data path request and
-                                // wait for a completion message as part of
-                                // its eject handling. The switch data path
-                                // request won't send a message here because
-                                // the Vf is not available -- it will be a
-                                // no-op.
-                                vf.guest_ready_for_device().await;
-                                Message::PendingVfStateComplete
-                            }
+                            CoordinatorStatePendingVfState::Pending => unreachable!(),
                         }
                     } else {
                         (internal_msg, endpoint_restart, timer_sleep).race().await
@@ -3984,12 +4000,13 @@ impl Coordinator {
                         _ => (true, None),
                     };
                     // Cancel any outstanding delay timers for VF offers if the data path is
-                    // getting switched. Those timers are essentially no-op at this point.
+                    // getting switched, since the guest is already issuing
+                    // commands assuming a VF.
                     if matches!(
                         c_state.pending_vf_state,
                         CoordinatorStatePendingVfState::Delay { .. }
                     ) {
-                        c_state.pending_vf_state = CoordinatorStatePendingVfState::Ready;
+                        c_state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
                     }
                     let result = c_state.endpoint.set_data_path_to_guest_vf(to_guest).await;
                     let result = if let Err(err) = result {
