@@ -2393,7 +2393,7 @@ mod node_luts {
     pub(super) fn modpath_by_node_typeid() -> &'static HashMap<NodeHandle, &'static str> {
         static TYPEID_TO_MODPATH: OnceLock<HashMap<NodeHandle, &'static str>> = OnceLock::new();
 
-        let lookup = TYPEID_TO_MODPATH.get_or_init(|| {
+        TYPEID_TO_MODPATH.get_or_init(|| {
             let mut lookup = HashMap::new();
             for crate::node::private::FlowNodeMeta {
                 module_path,
@@ -2413,9 +2413,7 @@ mod node_luts {
             }
 
             lookup
-        });
-
-        lookup
+        })
     }
 
     pub(super) fn erased_node_by_typeid()
@@ -2424,7 +2422,7 @@ mod node_luts {
             HashMap<NodeHandle, fn() -> Box<dyn FlowNodeBase<Request = Box<[u8]>>>>,
         > = OnceLock::new();
 
-        let lookup = LOOKUP.get_or_init(|| {
+        LOOKUP.get_or_init(|| {
             let mut lookup = HashMap::new();
             for crate::node::private::FlowNodeMeta {
                 module_path: _,
@@ -2439,9 +2437,7 @@ mod node_luts {
             }
 
             lookup
-        });
-
-        lookup
+        })
     }
 
     pub(super) fn erased_node_by_modpath() -> &'static HashMap<
@@ -2461,7 +2457,7 @@ mod node_luts {
             >,
         > = OnceLock::new();
 
-        let lookup = MODPATH_LOOKUP.get_or_init(|| {
+        MODPATH_LOOKUP.get_or_init(|| {
             let mut lookup = HashMap::new();
             for crate::node::private::FlowNodeMeta { module_path, ctor, get_typeid } in crate::node::private::FLOW_NODES {
                 let existing = lookup.insert(module_path.strip_suffix("::_only_one_call_to_flowey_node_per_module").unwrap(), (NodeHandle(get_typeid()), *ctor));
@@ -2470,9 +2466,7 @@ mod node_luts {
                 }
             }
             lookup
-        });
-
-        lookup
+        })
     }
 }
 
