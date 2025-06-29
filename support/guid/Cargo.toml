@@ -21,11 +21,5 @@ zerocopy.workspace = true
 windows-sys.workspace = true
 windows.workspace = true
 
-[target.'cfg(windows)'.dependencies.winapi]
-workspace = true
-features = [
-    "guiddef",
-]
-
 [lints]
 workspace = true
