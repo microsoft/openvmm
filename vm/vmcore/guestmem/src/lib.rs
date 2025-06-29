@@ -2297,12 +2297,15 @@ pub trait MemoryRead {
     }
 }
 
+/// A trait for sequentially updating a region of memory.
 pub trait MemoryWrite {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError>;
     fn zero(&mut self, len: usize) -> Result<(), AccessError> {
         self.fill(0, len)
     }
     fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError>;
+
+    /// The space remaining in the memory region.
     fn len(&self) -> usize;
 
     fn limit(self, len: usize) -> Limit<Self>

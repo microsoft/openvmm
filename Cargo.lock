@@ -6085,6 +6085,7 @@ dependencies = [
  "guestmem",
  "safeatomic",
  "smallvec",
+ "sparse_mmap",
  "zerocopy 0.8.24",
 ]
 
