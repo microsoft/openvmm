@@ -1950,7 +1950,6 @@ pub mod protocol {
 
     // === Startup === //
 
-    #[expect(dead_code)]
     pub enum StartupType {
         Clear,
         State,

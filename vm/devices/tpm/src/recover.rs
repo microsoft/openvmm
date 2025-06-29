@@ -9,7 +9,7 @@ use crate::LEGACY_VTPM_SIZE;
 ///
 /// This can return false if the blob was incorrectly truncated (by a previous
 /// bug that reported a 32KB blob size for a 16KB blob).
-fn check_blob(blob: &[u8]) -> Result<(), usize> {
+pub fn check_blob(blob: &[u8]) -> Result<(), usize> {
     const NV_USER_DYNAMIC: usize = 3508; // from the TPM reference implementation
     let mut i = NV_USER_DYNAMIC;
     loop {

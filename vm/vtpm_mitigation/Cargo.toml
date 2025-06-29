@@ -1,0 +1,21 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vtpm-mitigation"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+getrandom.workspace = true
+ms-tpm-20-ref.workspace = true
+parking_lot.workspace = true
+tpm = { workspace = true, features = ["tpm"] }
+tracing.workspace = true
+tracing-subscriber = {workspace = true, features = ["env-filter"]}
+
+[lints]
+workspace = true
