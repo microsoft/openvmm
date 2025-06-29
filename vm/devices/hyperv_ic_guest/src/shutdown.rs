@@ -54,7 +54,7 @@ pub struct ShutdownGuestIc {
     recv_shutdown_notification: Option<mesh::Receiver<Rpc<ShutdownParams, ShutdownResult>>>,
 }
 
-#[derive(Inspect)]
+#[derive(Debug, Inspect)]
 #[inspect(tag = "channel_state")]
 enum ShutdownGuestChannelState {
     NegotiateVersion,
@@ -136,9 +136,11 @@ impl ShutdownGuestChannel {
             }
         };
         match header.message_type {
-            hyperv_ic_protocol::MessageType::VERSION_NEGOTIATION
-                if matches!(self.state, ShutdownGuestChannelState::NegotiateVersion) =>
-            {
+            hyperv_ic_protocol::MessageType::VERSION_NEGOTIATION => {
+                // Version negotiation can happen multiple times due to various
+                // state changes on the host. This message triggers a reset
+                // of the current state.
+                self.state = ShutdownGuestChannelState::NegotiateVersion;
                 if let Err(err) = self.handle_version_negotiation(&header, rest).await {
                     tracelimit::error_ratelimited!(
                         err = &err as &dyn std::error::Error,
@@ -157,7 +159,7 @@ impl ShutdownGuestChannel {
                 }
             }
             _ => {
-                tracelimit::error_ratelimited!(r#type = ?header.message_type, "Unrecognized packet");
+                tracelimit::error_ratelimited!(r#type = ?header.message_type, state = ?self.state, "Unrecognized packet");
             }
         }
     }
