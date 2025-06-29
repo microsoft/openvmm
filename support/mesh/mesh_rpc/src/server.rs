@@ -24,7 +24,9 @@ use futures::Stream;
 use futures::StreamExt;
 use futures::stream::FusedStream;
 use futures_concurrency::future::TryJoin;
+use futures_concurrency::future::Race;
 use futures_concurrency::stream::Merge;
+use std::task::Poll;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::local_node::Port;
@@ -101,6 +103,12 @@ impl GenericRpc {
     }
 }
 
+enum ServerEvent<T, E> {
+    Cancel,
+    TaskCompleted,
+    Connection(Result<T, E>),
+}
+
 impl Server {
     /// Creates a new ttrpc server.
     pub fn new() -> Self {
@@ -126,12 +134,34 @@ impl Server {
     ) -> anyhow::Result<()> {
         let mut listener = PolledSocket::new(driver, listener)?;
         let mut tasks = FuturesUnordered::new();
-        let mut cancel = cancel.fuse();
         loop {
-            let conn = futures::select! { // merge semantics
-                r = listener.accept().fuse() => r,
-                _ = tasks.next() => continue,
-                _ = cancel => break,
+            let accept_fut = std::pin::pin!(listener.accept());
+            let tasks_next_fut = std::pin::pin!(tasks.next());
+            let cancel_fut = std::pin::pin!(cancel);
+
+            let result = std::future::poll_fn(|cx| {
+                // Check for cancellation first
+                if let Poll::Ready(_) = cancel_fut.as_mut().poll(cx) {
+                    return Poll::Ready(ServerEvent::Cancel);
+                }
+
+                // Check for completed tasks
+                if let Poll::Ready(_) = tasks_next_fut.as_mut().poll(cx) {
+                    return Poll::Ready(ServerEvent::TaskCompleted);
+                }
+
+                // Check for new connections
+                if let Poll::Ready(r) = accept_fut.as_mut().poll(cx) {
+                    return Poll::Ready(ServerEvent::Connection(r));
+                }
+
+                Poll::Pending
+            }).await;
+
+            let conn = match result {
+                ServerEvent::Cancel => break,
+                ServerEvent::TaskCompleted => continue,
+                ServerEvent::Connection(r) => r,
             };
             if let Ok(conn) = conn.and_then(|(conn, _)| PolledSocket::new(driver, conn)) {
                 tasks.push(async {
@@ -342,12 +372,34 @@ mod grpc {
         ) -> anyhow::Result<()> {
             let mut listener = PolledSocket::new(driver, listener)?;
             let mut tasks = FuturesUnordered::new();
-            let mut cancel = cancel.fuse();
             loop {
-                let conn = futures::select! { // merge semantics
-                    r = listener.accept().fuse() => r,
-                    _ = tasks.next() => continue,
-                    _ = cancel => break,
+                let accept_fut = std::pin::pin!(listener.accept());
+                let tasks_next_fut = std::pin::pin!(tasks.next());
+                let cancel_fut = std::pin::pin!(cancel);
+
+                let result = std::future::poll_fn(|cx| {
+                    // Check for cancellation first
+                    if let Poll::Ready(_) = cancel_fut.as_mut().poll(cx) {
+                        return Poll::Ready(ServerEvent::Cancel);
+                    }
+
+                    // Check for completed tasks
+                    if let Poll::Ready(_) = tasks_next_fut.as_mut().poll(cx) {
+                        return Poll::Ready(ServerEvent::TaskCompleted);
+                    }
+
+                    // Check for new connections
+                    if let Poll::Ready(r) = accept_fut.as_mut().poll(cx) {
+                        return Poll::Ready(ServerEvent::Connection(r));
+                    }
+
+                    Poll::Pending
+                }).await;
+
+                let conn = match result {
+                    ServerEvent::Cancel => break,
+                    ServerEvent::TaskCompleted => continue,
+                    ServerEvent::Connection(r) => r,
                 };
                 if let Ok(conn) = conn.and_then(|(conn, _)| PolledSocket::new(driver, conn)) {
                     tasks.push(async {

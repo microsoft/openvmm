@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures::Stream;
 use futures::StreamExt;
+use futures_concurrency::future::Race;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -400,11 +401,15 @@ impl VirtioQueueWorker {
                 }
             }
             VirtioQueueStateInner::Running { queue, exit_event } => {
-                let mut exit = exit_event.fuse();
-                let mut queue_ready = queue.next().fuse();
-                let work = futures::select_biased! {
-                    _ = exit => return false,
-                    work = queue_ready => work.expect("queue will never complete").map_err(anyhow::Error::from),
+                let work = match (
+                    exit_event,
+                    queue.next().map(|work| work.expect("queue will never complete").map_err(anyhow::Error::from)),
+                )
+                    .race()
+                    .await
+                {
+                    futures_concurrency::future::RaceResult::First(_) => return false,
+                    futures_concurrency::future::RaceResult::Second(work) => work,
                 };
                 self.context.process_work(work).await
             }
