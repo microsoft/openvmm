@@ -13,12 +13,8 @@ tracing = ["dep:tracing"]
 [dependencies]
 hvdef.workspace = true
 memory_range.workspace = true
-tdx_guest_device.workspace = true
 thiserror.workspace = true
 x86defs.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-tdx_guest_device = { workspace = true, features = ["std"] }
 
 tracing = { workspace = true, optional = true }
 

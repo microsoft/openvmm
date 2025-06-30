@@ -26,6 +26,7 @@ vmotherboard = { workspace = true, features = [
     "dev_underhill_vga_proxy",
     "dev_winbond_super_io_and_floppy_stub",
 ] }
+
 build_info.workspace = true
 cvm_tracing.workspace = true
 diag_proto.workspace = true
