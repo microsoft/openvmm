@@ -30,7 +30,6 @@ zerocopy.workspace = true
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 safe_intrinsics.workspace = true
 tdcall.workspace = true
-tdx_guest_device.workspace = true
 x86defs.workspace = true
 
 [build-dependencies]

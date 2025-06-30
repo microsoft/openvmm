@@ -3399,6 +3399,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
+ "underhill_confidentiality",
  "vbs_defs",
  "x86defs",
  "zerocopy 0.8.24",
@@ -4827,7 +4828,6 @@ dependencies = [
  "sha2",
  "sidecar_defs",
  "tdcall",
- "tdx_guest_device",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.24",
@@ -6728,7 +6728,6 @@ version = "0.0.0"
 dependencies = [
  "hvdef",
  "memory_range",
- "tdx_guest_device",
  "thiserror 2.0.12",
  "tracing",
  "x86defs",
@@ -6738,7 +6737,6 @@ dependencies = [
 name = "tdx_guest_device"
 version = "0.0.0"
 dependencies = [
- "bitfield-struct 0.10.1",
  "nix 0.27.1",
  "static_assertions",
  "thiserror 2.0.12",

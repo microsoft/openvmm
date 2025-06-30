@@ -73,7 +73,6 @@ fn build_kernel_command_line(
     cmdline: &mut ArrayString<COMMAND_LINE_SIZE>,
     partition_info: &PartitionInfo,
     can_trust_host: bool,
-    is_confidential_debug: bool,
     sidecar: Option<&SidecarConfig<'_>>,
 ) -> Result<(), CommandLineTooLong> {
     // For reference:
@@ -252,14 +251,6 @@ fn build_kernel_command_line(
             cmdline,
             "{}=1 ",
             underhill_confidentiality::OPENHCL_CONFIDENTIAL_ENV_VAR_NAME
-        )?;
-    }
-
-    if is_confidential_debug {
-        write!(
-            cmdline,
-            "{}=1 ",
-            underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
         )?;
     }
 
@@ -590,29 +581,6 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
     }
 }
 
-fn get_hw_debug_bit(isolation: IsolationType) -> bool {
-    match isolation {
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Tdx => {
-            use tdx_guest_device::protocol::TdReport;
-
-            use crate::arch::tdx::get_tdreport;
-
-            let mut report = off_stack!(PageAlign<TdReport>, zeroed());
-            match get_tdreport(&mut report.0) {
-                Ok(()) => report.0.td_info.td_info_base.attributes.debug(),
-                Err(_) => false,
-            }
-        }
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Snp => {
-            // Not implemented yet for SNP.
-            false
-        }
-        _ => false,
-    }
-}
-
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
     if p.isolation_type == IsolationType::None {
@@ -647,10 +615,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         log!("openhcl_boot: early debugging enabled");
     }
 
-    let hw_debug_bit = get_hw_debug_bit(p.isolation_type);
-    let can_trust_host = p.isolation_type == IsolationType::None
-        || static_options.confidential_debug
-        || hw_debug_bit;
+    let can_trust_host =
+        p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
     let boot_reftime = get_ref_time(p.isolation_type);
 
@@ -661,12 +627,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
             Ok(None) => panic!("host did not provide a device tree"),
             Err(e) => panic!("unable to read device tree params {}", e),
         };
-
-    // Confidential debug will show up in boot_options only if included in the
-    // static command line, or if can_trust_host is true (so the dynamic command
-    // line has been parsed).
-    let is_confidential_debug = (can_trust_host && p.isolation_type != IsolationType::None)
-        || partition_info.boot_options.confidential_debug;
 
     // Fill out the non-devicetree derived parts of PartitionInfo.
     if !p.isolation_type.is_hardware_isolated()
@@ -737,7 +697,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &mut cmdline,
         partition_info,
         can_trust_host,
-        is_confidential_debug,
         sidecar.as_ref(),
     )
     .unwrap();

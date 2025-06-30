@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 sev_guest_device.workspace = true
-tdx_guest_device = { workspace = true, features = ["std"] }
+tdx_guest_device.workspace = true
 
 static_assertions.workspace = true
 thiserror.workspace = true
