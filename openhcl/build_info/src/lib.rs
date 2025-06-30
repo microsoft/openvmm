@@ -17,6 +17,8 @@ pub struct BuildInfo {
     internal_scm_revision: &'static str,
     #[inspect(safe)]
     internal_scm_branch: &'static str,
+    #[inspect(safe)]
+    openhcl_version: &'static str,
 }
 
 impl BuildInfo {
@@ -43,6 +45,11 @@ impl BuildInfo {
                 ""
             },
             internal_scm_branch: if let Some(r) = option_env!("INTERNAL_GIT_BRANCH") {
+                r
+            } else {
+                ""
+            },
+            openhcl_version: if let Some(r) = option_env!("OPENHCL_VERSION") {
                 r
             } else {
                 ""
