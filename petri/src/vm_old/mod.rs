@@ -8,7 +8,6 @@ pub mod hyperv;
 pub mod openvmm;
 
 use crate::PetriLogSource;
-use crate::PetriTestParams;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
@@ -26,13 +25,65 @@ use pipette_client::PipetteClient;
 use std::path::PathBuf;
 use vmm_core_defs::HaltReason;
 
+/// Configuration state for a test VM.
+///
+/// R is the type of the struct used to interact with the VM once it is created
+#[async_trait]
+pub trait PetriVmConfig: Send {
+    /// Build and boot the requested VM. Does not configure and start pipette.
+    /// Should only be used for testing platforms that pipette does not support.
+    async fn run_without_agent(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>>;
+    /// Run the VM, configuring pipette to automatically start, but do not wait
+    /// for it to connect. This is useful for tests where the first boot attempt
+    /// is expected to not succeed, but pipette functionality is still desired.
+    async fn run_with_lazy_pipette(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>>;
+    /// Run the VM, launching pipette and returning a client to it.
+    async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)>;
+
+    /// Set the VM to enable secure boot and inject the templates per OS flavor.
+    fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig>;
+    /// Inject Windows secure boot templates into the VM's UEFI.
+    fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
+    /// Inject UEFI CA secure boot templates into the VM's UEFI.
+    fn with_uefi_ca_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
+    /// Set the VM to use the specified processor topology.
+    fn with_processor_topology(
+        self: Box<Self>,
+        topology: ProcessorTopology,
+    ) -> Box<dyn PetriVmConfig>;
+
+    /// Sets a custom OpenHCL IGVM file to use.
+    fn with_custom_openhcl(self: Box<Self>, artifact: ResolvedArtifact) -> Box<dyn PetriVmConfig>;
+    /// Sets the command line for the paravisor.
+    fn with_openhcl_command_line(self: Box<Self>, command_line: &str) -> Box<dyn PetriVmConfig>;
+    /// Adds a file to the VM's pipette agent image.
+    fn with_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig>;
+    /// Adds a file to the paravisor's pipette agent image.
+    fn with_openhcl_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig>;
+    /// Sets whether UEFI frontpage is enabled.
+    fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+    /// Run the VM with Enable VMBus relay enabled
+    fn with_vmbus_redirect(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+
+    /// Get the OS that the VM will boot into.
+    fn os_flavor(&self) -> OsFlavor;
+}
+
 /// The set of artifacts and resources needed to instantiate a
 /// [`PetriVmBuilder`].
-pub struct PetriVmArtifacts<T: PetriVmmBackend> {
-    /// Artifacts needed to launch the host VMM used for the test
-    pub host_vmm: T::VmmArtifacts,
+pub struct PetriVmArtifacts {
+    /// The host VMM used for the test
+    pub host_vmm: HostVmm,
     /// Firmware and/or OS to load into the VM and associated settings
-    pub firmware: Firmware,
+    pub firmware: FirmwareConfig,
     /// The architecture of the VM
     pub arch: MachineArch,
     /// Agent to run in the guest
@@ -42,320 +93,53 @@ pub struct PetriVmArtifacts<T: PetriVmmBackend> {
 }
 
 /// Petri VM builder
-pub struct PetriVmBuilder<T: PetriVmmBackend> {
-    /// Artifacts needed to launch the host VMM used for the test
-    host_vmm: T::VmmArtifacts,
+pub struct PetriVmBuilder<T: PetriVmmResources> {
     /// VM configuration
-    config: PetriVmConfig,
-    /// VMM-agnostic resources
-    resources: PetriVmResources,
+    config: PetriVmConfigNew,
+    /// VM resources
+    resources: PetriVmResources<T>,
 }
 
 /// Petri VM configuration
-pub struct PetriVmConfig {
+pub struct PetriVmConfigNew {
     /// The name of the VM
-    pub name: String,
+    name: String,
+    /// The host VMM used for the test
+    host_vmm: HostVmm,
     /// The architecture of the VM
-    pub arch: MachineArch,
+    arch: MachineArch,
     /// Firmware and/or OS to load into the VM and associated settings
-    pub firmware: Firmware,
+    firmware: FirmwareConfig,
     /// The amount of memory, in bytes, to assign to the VM
-    pub memory: MemoryTopology,
+    memory: u64,
     /// The processor tology for the VM
-    pub proc_topology: ProcessorTopology,
+    proc_topology: ProcessorTopology,
     /// Agent to run in the guest
-    pub agent_image: Option<AgentImage>,
+    agent_image: Option<AgentImage>,
     /// Agent to run in OpenHCL
-    pub openhcl_agent_image: Option<AgentImage>,
+    openhcl_agent_image: Option<AgentImage>,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
-pub struct PetriVmResources {
+pub struct PetriVmResources<T: PetriVmmResources> {
     driver: DefaultDriver,
     output_dir: PathBuf,
     log_source: PetriLogSource,
+    openhcl_diag_handler: Option<OpenHclDiagHandler>,
+    vmm_resources: T,
 }
 
 /// Trait for VMM-specific contruction and runtime resources
-pub trait PetriVmmBackend {
-    type VmmArtifacts;
-    type VmRuntime: PetriVmRuntime;
-
-    /// Create and start VM from the generic config using the VMM backend
-    async fn run(
-        vmm_artifacts: &Self::VmmArtifacts,
-        config: &PetriVmConfig,
-        resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime>;
+pub trait PetriVmmResources {
+    type VmmRuntimeResources;
 }
 
 /// A constructed Petri VM
-pub struct PetriVm<T: PetriVmmBackend> {
+pub struct PetriVmNew<T: PetriVmmResources> {
     arch: MachineArch,
     quirks: GuestQuirks,
-    openhcl_diag_handler: Option<OpenHclDiagHandler>,
-    resources: PetriVmResources,
-    runtime: T::VmRuntime,
-}
-
-impl<T: PetriVmmBackend> PetriVmBuilder<T> {
-    /// Create a new VM configuration.
-    pub fn new(
-        params: &PetriTestParams<'_>,
-        artifacts: PetriVmArtifacts<T>,
-        driver: &DefaultDriver,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            host_vmm: artifacts.host_vmm,
-            config: PetriVmConfig {
-                name: params.test_name.to_owned(),
-                arch: artifacts.arch,
-                firmware: artifacts.firmware,
-                memory: Default::default(),
-                proc_topology: Default::default(),
-                agent_image: artifacts.agent_image,
-                openhcl_agent_image: artifacts.openhcl_agent_image,
-            },
-            resources: PetriVmResources {
-                driver: driver.clone(),
-                output_dir: params.output_dir.to_owned(),
-                log_source: params.logger.clone(),
-            },
-        })
-    }
-}
-
-impl<T: PetriVmmBackend> PetriVmBuilder<T> {
-    /// Build and boot the requested VM. Does not configure and start pipette.
-    /// Should only be used for testing platforms that pipette does not support.
-    pub async fn run_without_agent(mut self) -> anyhow::Result<PetriVm<T>> {
-        self.config.agent_image = None;
-        self.config.openhcl_agent_image = None;
-        self.run_core().await
-    }
-
-    /// Run the VM, configuring pipette to automatically start, but do not wait
-    /// for it to connect. This is useful for tests where the first boot attempt
-    /// is expected to not succeed, but pipette functionality is still desired.
-    pub async fn run_with_lazy_pipette(self) -> anyhow::Result<PetriVm<T>> {
-        assert!(self.config.agent_image.is_some());
-        self.run_core().await
-    }
-
-    /// Run the VM, launching pipette and returning a client to it.
-    pub async fn run(self) -> anyhow::Result<(PetriVm<T>, PipetteClient)> {
-        assert!(self.config.agent_image.is_some());
-        let mut vm = self.run_core().await?;
-        let client = vm.runtime.wait_for_agent().await?;
-        Ok((vm, client))
-    }
-
-    async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
-        let runtime = T::run(&self.host_vmm, &self.config, &self.resources).await?;
-        Ok(PetriVm {
-            arch: self.config.arch,
-            quirks: self.config.firmware.quirks(),
-            openhcl_diag_handler: None,
-            resources: self.resources,
-            runtime,
-        })
-    }
-
-    /// Set the VM to enable secure boot and inject the templates per OS flavor.
-    pub fn with_secure_boot(self) -> Self {
-        match self.os_flavor() {
-            OsFlavor::Windows => self.with_windows_secure_boot_template(),
-            OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(),
-            _ => panic!(
-                "Secure boot unsupported for OS flavor {:?}",
-                self.os_flavor()
-            ),
-        }
-    }
-
-    /// Inject Windows secure boot templates into the VM's UEFI.
-    pub fn with_windows_secure_boot_template(mut self) -> Self {
-        match &mut self.config.firmware {
-            Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
-                uefi_config.secure_boot_template = Some(SecureBootTemplate::MicrosoftWindows);
-            }
-            Firmware::LinuxDirect { .. }
-            | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::OpenhclPcat { .. } => {
-                panic!("Secure boot is only supported for UEFI firmware.")
-            }
-        }
-
-        self
-    }
-
-    /// Inject UEFI CA secure boot templates into the VM's UEFI.
-    pub fn with_uefi_ca_secure_boot_template(mut self) -> Self {
-        match &mut self.config.firmware {
-            Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
-                uefi_config.secure_boot_template =
-                    Some(SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy);
-            }
-            Firmware::LinuxDirect { .. }
-            | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::OpenhclPcat { .. } => {
-                panic!("Secure boot is only supported for UEFI firmware.")
-            }
-        }
-        self
-    }
-
-    /// Set the VM to use the specified processor topology.
-    pub fn with_processor_topology(mut self, topology: ProcessorTopology) -> Self {
-        self.config.proc_topology = topology;
-        self
-    }
-
-    /// Sets a custom OpenHCL IGVM file to use.
-    pub fn with_custom_openhcl(mut self, artifact: ResolvedArtifact) -> Self {
-        match &mut self.config.firmware {
-            Firmware::OpenhclLinuxDirect { igvm_path, .. }
-            | Firmware::OpenhclPcat { igvm_path, .. }
-            | Firmware::OpenhclUefi { igvm_path, .. } => {
-                *igvm_path = artifact;
-            }
-            Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
-                panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
-            }
-        }
-        self
-    }
-
-    /// Sets the command line for the paravisor.
-    pub fn with_openhcl_command_line(mut self, command_line: &str) -> Self {
-        match &mut self.config.firmware {
-            Firmware::OpenhclLinuxDirect { openhcl_config, .. }
-            | Firmware::OpenhclPcat { openhcl_config, .. }
-            | Firmware::OpenhclUefi { openhcl_config, .. } => {
-                openhcl_config.command_line = Some(command_line.to_owned());
-            }
-            Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
-                panic!("OpenHCL command line is only supported for OpenHCL firmware.")
-            }
-        }
-        self
-    }
-
-    /// Adds a file to the VM's pipette agent image.
-    pub fn with_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
-        self.config
-            .agent_image
-            .as_mut()
-            .expect("no guest pipette")
-            .add_file(name, artifact);
-        self
-    }
-
-    /// Adds a file to the paravisor's pipette agent image.
-    pub fn with_openhcl_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
-        self.config
-            .openhcl_agent_image
-            .as_mut()
-            .expect("no openhcl pipette")
-            .add_file(name, artifact);
-        self
-    }
-
-    /// Sets whether UEFI frontpage is enabled.
-    pub fn with_uefi_frontpage(mut self, enable: bool) -> Self {
-        match &mut self.config.firmware {
-            Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
-                uefi_config.disable_frontpage = !enable;
-            }
-            Firmware::LinuxDirect { .. }
-            | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::OpenhclPcat { .. } => {
-                panic!("UEFI frontpage is only supported for UEFI firmware.")
-            }
-        }
-        self
-    }
-
-    /// Run the VM with Enable VMBus relay enabled
-    pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
-        match &mut self.config.firmware {
-            Firmware::OpenhclLinuxDirect { openhcl_config, .. }
-            | Firmware::OpenhclPcat { openhcl_config, .. }
-            | Firmware::OpenhclUefi { openhcl_config, .. } => {
-                openhcl_config.vmbus_redirect = enable;
-            }
-            Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
-                panic!("VMBus redirection is only supported for OpenHCL firmware.")
-            }
-        }
-        self
-    }
-
-    /// Get VM's guest OS flavor
-    pub fn os_flavor(&self) -> OsFlavor {
-        self.config.firmware.os_flavor()
-    }
-}
-
-impl<T: PetriVmmBackend> PetriVm<T> {
-    /// Wait for the VM to halt, returning the reason for the halt,
-    /// and cleanly tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
-        let halt_reason = self.runtime.wait_for_halt().await?;
-        self.runtime.teardown().await?;
-        Ok(halt_reason)
-    }
-    /// Test that we are able to inspect OpenHCL.
-    pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
-        self.openhcl_diag()?.test_inspect().await
-    }
-    /// Wait for VTL 2 to report that it is ready to respond to commands.
-    /// Will fail if the VM is not running OpenHCL.
-    ///
-    /// This should only be necessary if you're doing something manual. All
-    /// Petri-provided methods will wait for VTL 2 to be ready automatically.
-    pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
-        self.openhcl_diag()?.wait_for_vtl2().await
-    }
-
-    fn openhcl_diag(&self) -> anyhow::Result<&OpenHclDiagHandler> {
-        if let Some(ohd) = &self.openhcl_diag_handler {
-            Ok(ohd)
-        } else {
-            anyhow::bail!("VM is not configured with OpenHCL")
-        }
-    }
-}
-
-/// A running VM that tests can interact with.
-#[async_trait]
-pub trait PetriVmRuntime {
-    /// Cleanly tear down the VM immediately.
-    async fn teardown(&mut self) -> anyhow::Result<()>;
-    /// Wait for the VM to halt, returning the reason for the halt.
-    async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason>;
-    /// Wait for a connection from a pipette agent running in the guest.
-    /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
-    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>;
-    /// Wait for a connection from a pipette agent running in VTL 2.
-    /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
-    /// Will fail if the VM is not running OpenHCL.
-    async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient>;
-    /// Waits for an event emitted by the firmware about its boot status, and
-    /// verifies that it is the expected success value.
-    ///
-    /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
-    /// * PCAT guests may not emit an event depending on the PCAT version, this
-    /// method is best effort for them.
-    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>;
-    /// Waits for an event emitted by the firmware about its boot status, and
-    /// returns that status.
-    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>;
-    /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
-    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>;
+    vmm_resources: PetriVmResources<T>,
+    runtime: T::VmmRuntimeResources,
 }
 
 /// Common processor topology information for the VM.
@@ -392,24 +176,88 @@ pub enum ApicMode {
     X2apicEnabled,
 }
 
-/// Common memory topology information for the VM.
-pub struct MemoryTopology {
-    /// Specifies the amount of memory, in bytes, to assign to the
-    /// virtual machine.
-    pub startup_bytes: u64,
-    /// Specifies the minimum and maximum amount of dynamic memory, in bytes.
+/// A running VM that tests can interact with.
+#[async_trait]
+pub trait PetriVm: Send {
+    /// Returns the guest architecture.
+    fn arch(&self) -> MachineArch;
+    /// Wait for the VM to halt, returning the reason for the halt.
+    async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason>;
+    /// Wait for the VM to halt, returning the reason for the halt,
+    /// and cleanly tear down the VM.
+    async fn wait_for_teardown(self: Box<Self>) -> anyhow::Result<HaltReason>;
+    /// Test that we are able to inspect OpenHCL.
+    async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()>;
+    /// Wait for a connection from a pipette agent running in the guest.
+    /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
+    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>;
+    /// Wait for a connection from a pipette agent running in VTL 2.
+    /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
+    /// Will fail if the VM is not running OpenHCL.
+    async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient>;
+    /// Wait for VTL 2 to report that it is ready to respond to commands.
+    /// Will fail if the VM is not running OpenHCL.
     ///
-    /// Dynamic memory will be disabled if this is `None`.
-    pub dynamic_memory_range: Option<(u64, u64)>,
+    /// This should only be necessary if you're doing something manual. All
+    /// Petri-provided methods will wait for VTL 2 to be ready automatically.
+    async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>;
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// verifies that it is the expected success value.
+    ///
+    /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
+    /// * PCAT guests may not emit an event depending on the PCAT version, this
+    /// method is best effort for them.
+    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>;
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// returns that status.
+    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>;
+    /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
+    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>;
 }
 
-impl Default for MemoryTopology {
-    fn default() -> Self {
-        Self {
-            startup_bytes: 0x1_0000_0000,
-            dynamic_memory_range: None,
-        }
-    }
+/// Firmware to load into the test VM.
+#[derive(Debug)]
+pub enum Firmware {
+    /// Boot Linux directly, without any firmware.
+    LinuxDirect {
+        /// The kernel to boot.
+        kernel: ResolvedArtifact,
+        /// The initrd to use.
+        initrd: ResolvedArtifact,
+    },
+    /// Boot Linux directly, without any firmware, with OpenHCL in VTL2.
+    OpenhclLinuxDirect {
+        /// The path to the IGVM file to use.
+        igvm_path: ResolvedArtifact,
+    },
+    /// Boot a PCAT-based VM.
+    Pcat {
+        /// The guest OS the VM will boot into.
+        guest: PcatGuest,
+        /// The firmware to use.
+        bios_firmware: ResolvedOptionalArtifact,
+        /// The SVGA firmware to use.
+        svga_firmware: ResolvedOptionalArtifact,
+    },
+    /// Boot a UEFI-based VM.
+    Uefi {
+        /// The guest OS the VM will boot into.
+        guest: UefiGuest,
+        /// The firmware to use.
+        uefi_firmware: ResolvedArtifact,
+    },
+    /// Boot a UEFI-based VM with OpenHCL in VTL2.
+    OpenhclUefi {
+        /// The guest OS the VM will boot into.
+        guest: UefiGuest,
+        /// The isolation type of the VM.
+        isolation: Option<IsolationType>,
+        /// Emulate SCSI via NVME to VTL2, with the provided namespace ID on
+        /// the controller with `BOOT_NVME_INSTANCE`.
+        vtl2_nvme_boot: bool,
+        /// The path to the IGVM file to use.
+        igvm_path: ResolvedArtifact,
+    },
 }
 
 /// UEFI firmware configuration
@@ -435,7 +283,7 @@ pub struct OpenHclConfig {
 
 /// Firmware to load into the test VM.
 #[derive(Debug)]
-pub enum Firmware {
+pub enum FirmwareConfig {
     /// Boot Linux directly, without any firmware.
     LinuxDirect {
         /// The kernel to boot.
@@ -447,8 +295,6 @@ pub enum Firmware {
     OpenhclLinuxDirect {
         /// The path to the IGVM file to use.
         igvm_path: ResolvedArtifact,
-        /// OpenHCL configuration
-        openhcl_config: OpenHclConfig,
     },
     /// Boot a PCAT-based VM.
     Pcat {
@@ -522,7 +368,6 @@ impl Firmware {
         match arch {
             MachineArch::X86_64 => Firmware::OpenhclLinuxDirect {
                 igvm_path: resolver.require(LATEST_LINUX_DIRECT_TEST_X64).erase(),
-                openhcl_config: Default::default(),
             },
             MachineArch::Aarch64 => todo!("Linux direct not yet supported on aarch64"),
         }
@@ -548,8 +393,6 @@ impl Firmware {
         Firmware::Uefi {
             guest,
             uefi_firmware,
-            vmgs_file: None,
-            uefi_config: Default::default(),
         }
     }
 
@@ -559,6 +402,7 @@ impl Firmware {
         arch: MachineArch,
         guest: UefiGuest,
         isolation: Option<IsolationType>,
+        vtl2_nvme_boot: bool,
     ) -> Self {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
         let igvm_path = match arch {
@@ -569,18 +413,14 @@ impl Firmware {
         Firmware::OpenhclUefi {
             guest,
             isolation,
+            vtl2_nvme_boot,
             igvm_path,
-            vmgs_file: None,
-            uefi_config: Default::default(),
-            openhcl_config: Default::default(),
         }
     }
 
     fn is_openhcl(&self) -> bool {
         match self {
-            Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::OpenhclUefi { .. }
-            | Firmware::OpenhclPcat { .. } => true,
+            Firmware::OpenhclLinuxDirect { .. } | Firmware::OpenhclUefi { .. } => true,
             Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => false,
         }
     }
@@ -591,18 +431,14 @@ impl Firmware {
             Firmware::LinuxDirect { .. }
             | Firmware::Pcat { .. }
             | Firmware::Uefi { .. }
-            | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::OpenhclPcat { .. } => None,
+            | Firmware::OpenhclLinuxDirect { .. } => None,
         }
     }
 
     fn is_linux_direct(&self) -> bool {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => true,
-            Firmware::Pcat { .. }
-            | Firmware::Uefi { .. }
-            | Firmware::OpenhclUefi { .. }
-            | Firmware::OpenhclPcat { .. } => false,
+            Firmware::Pcat { .. } | Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => false,
         }
     }
 
@@ -611,8 +447,7 @@ impl Firmware {
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => true,
             Firmware::LinuxDirect { .. }
             | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::OpenhclPcat { .. } => false,
+            | Firmware::Pcat { .. } => false,
         }
     }
 
@@ -631,10 +466,6 @@ impl Firmware {
                 guest: PcatGuest::Vhd(cfg),
                 ..
             }
-            | Firmware::OpenhclPcat {
-                guest: PcatGuest::Vhd(cfg),
-                ..
-            }
             | Firmware::Uefi {
                 guest: UefiGuest::Vhd(cfg),
                 ..
@@ -644,10 +475,6 @@ impl Firmware {
                 ..
             } => cfg.os_flavor,
             Firmware::Pcat {
-                guest: PcatGuest::Iso(cfg),
-                ..
-            }
-            | Firmware::OpenhclPcat {
                 guest: PcatGuest::Iso(cfg),
                 ..
             } => cfg.os_flavor,
@@ -679,7 +506,7 @@ impl Firmware {
     fn expected_boot_event(&self) -> Option<FirmwareEvent> {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
-            Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => {
+            Firmware::Pcat { .. } => {
                 // TODO: Handle older PCAT versions that don't fire the event
                 Some(FirmwareEvent::BootAttempt)
             }
@@ -855,4 +682,13 @@ pub enum SecureBootTemplate {
     MicrosoftWindows,
     /// The Microsoft UEFI certificate authority template.
     MicrosoftUefiCertificateAuthoritiy,
+}
+
+/// Host VMM under test
+#[derive(Debug, Clone)]
+pub enum HostVmm {
+    /// OpenVMM
+    OpenVMM(ResolvedArtifact),
+    /// Hyper-V
+    HyperV,
 }
