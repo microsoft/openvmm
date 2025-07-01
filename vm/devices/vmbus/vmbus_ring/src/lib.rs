@@ -1203,27 +1203,16 @@ impl<M: RingMem> Inspect for InnerRing<M> {
 
 /// Inspects ring buffer state without creating an IncomingRing or OutgoingRing
 /// structure.
-pub fn inspect_ring<M: RingMem>(mem: M, req: inspect::Request<'_>) {
-    let _ = InnerRing::new(mem).map(|ring| ring.inspect(req));
-}
-
-pub fn inspect_ring_control(
-    size: u64,
-    control_gpn: u64,
-    mem: &guestmem::GuestMemory,
-    req: inspect::Request<'_>,
-) -> Result<(), guestmem::GuestMemoryError> {
-    let pages = mem.lock_gpns(false, &[control_gpn])?;
-    let control = pages.pages()[0].as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
+///
+/// # Panics
+///
+/// Panics if control_page is not aligned.
+pub fn inspect_ring(control_page: &guestmem::Page, response: &mut inspect::Response<'_>) {
+    let control = control_page.as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
         .try_into()
         .unwrap();
 
-    let control = Control(control);
-    req.respond()
-        .hex("ring_size", size)
-        .field("control", control);
-
-    Ok(())
+    response.field("control", Control(control));
 }
 
 /// Returns whether a ring buffer is in a state where the receiving end might
