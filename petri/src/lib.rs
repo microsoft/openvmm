@@ -14,6 +14,7 @@ mod openhcl_diag;
 mod test;
 mod tracing;
 mod vm;
+mod vm2;
 mod worker;
 
 pub use petri_artifacts_core::ArtifactHandle;
