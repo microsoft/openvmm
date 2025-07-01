@@ -23,6 +23,7 @@ use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::ScsiDeviceHandleKind;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// A resolver for [`SimpleScsiDiskHandle`] and [`SimpleScsiDvdHandle`].
 pub struct SimpleScsiResolver;
@@ -48,7 +49,7 @@ impl AsyncResolveResource<ScsiDeviceHandleKind, SimpleScsiDiskHandle> for Simple
         &self,
         resolver: &ResourceResolver,
         resource: SimpleScsiDiskHandle,
-        _: ResolveScsiDeviceHandleParams<'_>,
+        input: ResolveScsiDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let disk = resolver
             .resolve(
@@ -56,6 +57,7 @@ impl AsyncResolveResource<ScsiDeviceHandleKind, SimpleScsiDiskHandle> for Simple
                 ResolveDiskParameters {
                     read_only: resource.read_only,
                     _async_trait_workaround: &(),
+                    driver_source: input.driver_source,
                 },
             )
             .await
@@ -85,6 +87,7 @@ impl AsyncResolveResource<ScsiDeviceHandleKind, SimpleScsiDvdHandle> for SimpleS
                         ResolveDiskParameters {
                             read_only: true,
                             _async_trait_workaround: &(),
+                            driver_source: input.driver_source,
                         },
                     )
                     .await
@@ -103,7 +106,12 @@ impl AsyncResolveResource<ScsiDeviceHandleKind, SimpleScsiDvdHandle> for SimpleS
                 .simple()
                 .spawn(
                     "dvd-requests",
-                    handle_dvd_requests(Arc::downgrade(&dvd), resolver.clone(), requests),
+                    handle_dvd_requests(
+                        Arc::downgrade(&dvd),
+                        resolver.clone(),
+                        input.driver_source.clone(),
+                        requests,
+                    ),
                 )
                 .detach();
         }
@@ -115,6 +123,7 @@ impl AsyncResolveResource<ScsiDeviceHandleKind, SimpleScsiDvdHandle> for SimpleS
 async fn handle_dvd_requests(
     dvd: Weak<SimpleScsiDvd>,
     resolver: ResourceResolver,
+    driver_source: VmTaskDriverSource,
     mut requests: mesh::Receiver<SimpleScsiDvdRequest>,
 ) {
     while let Some(req) = requests.next().await {
@@ -129,6 +138,7 @@ async fn handle_dvd_requests(
                                     ResolveDiskParameters {
                                         read_only: true,
                                         _async_trait_workaround: &(),
+                                        driver_source: &driver_source,
                                     },
                                 )
                                 .await

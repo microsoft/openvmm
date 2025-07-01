@@ -241,6 +241,7 @@ async fn open_simple_disk(
     resolver: &ResourceResolver,
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
+    driver_source: &VmTaskDriverSource,
 ) -> anyhow::Result<Disk> {
     let disk = resolver
         .resolve(
@@ -248,6 +249,7 @@ async fn open_simple_disk(
             ResolveDiskParameters {
                 read_only,
                 _async_trait_workaround: &(),
+                driver_source,
             },
         )
         .await?;
@@ -968,7 +970,7 @@ impl InitializedVm {
         let vmgs = match cfg.vmgs {
             Some(VmgsResource::Disk(disk)) => Some(
                 vmgs::Vmgs::try_open(
-                    open_simple_disk(&resolver, disk, false).await?,
+                    open_simple_disk(&resolver, disk, false, &driver_source).await?,
                     None,
                     true,
                     false,
@@ -978,7 +980,7 @@ impl InitializedVm {
             ),
             Some(VmgsResource::ReprovisionOnFailure(disk)) => Some(
                 vmgs::Vmgs::try_open(
-                    open_simple_disk(&resolver, disk, false).await?,
+                    open_simple_disk(&resolver, disk, false, &driver_source).await?,
                     None,
                     true,
                     true,
@@ -987,9 +989,12 @@ impl InitializedVm {
                 .context("failed to open vmgs file")?,
             ),
             Some(VmgsResource::Reprovision(disk)) => Some(
-                vmgs::Vmgs::format_new(open_simple_disk(&resolver, disk, false).await?, None)
-                    .await
-                    .context("failed to format vmgs file")?,
+                vmgs::Vmgs::format_new(
+                    open_simple_disk(&resolver, disk, false, &driver_source).await?,
+                    None,
+                )
+                .await
+                .context("failed to format vmgs file")?,
             ),
             Some(VmgsResource::Ephemeral) => None,
             // TODO: make sure we don't need a VMGS
@@ -1284,9 +1289,10 @@ impl InitializedVm {
                         read_only,
                         disk_parameters,
                     } => {
-                        let disk = open_simple_disk(&resolver, disk_type, read_only)
-                            .await
-                            .context("failed to open IDE disk")?;
+                        let disk =
+                            open_simple_disk(&resolver, disk_type, read_only, &driver_source)
+                                .await
+                                .context("failed to open IDE disk")?;
 
                         // Only disks get accelerator channels. DVDs dont.
                         let scsi_disk = ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(
@@ -1392,7 +1398,7 @@ impl InitializedVm {
                     read_only,
                 } = disk_cfg;
 
-                let disk = open_simple_disk(&resolver, disk_type, read_only)
+                let disk = open_simple_disk(&resolver, disk_type, read_only, &driver_source)
                     .await
                     .context("failed to open floppy disk")?;
                 tracing::trace!("floppy opened based on config into DriveRibbon");

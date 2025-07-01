@@ -8,6 +8,7 @@ use crate::DiskIo;
 use crate::InvalidDisk;
 use vm_resource::CanResolveTo;
 use vm_resource::kind::DiskHandleKind;
+use vmcore::vm_task::VmTaskDriverSource;
 
 impl CanResolveTo<ResolvedDisk> for DiskHandleKind {
     type Input<'a> = ResolveDiskParameters<'a>;
@@ -23,6 +24,8 @@ pub struct ResolveDiskParameters<'a> {
     // with missing lifetimes. Remove once we stop using async_trait for async
     // resolvers.
     pub _async_trait_workaround: &'a (),
+    /// The task driver source for the VM.
+    pub driver_source: &'a VmTaskDriverSource,
 }
 
 /// A resolved [`Disk`].

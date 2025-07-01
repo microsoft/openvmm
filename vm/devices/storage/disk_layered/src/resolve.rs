@@ -7,6 +7,7 @@ use super::DiskLayer;
 use crate::LayerAttach;
 use vm_resource::CanResolveTo;
 use vm_resource::kind::DiskLayerHandleKind;
+use vmcore::vm_task::VmTaskDriverSource;
 
 impl CanResolveTo<ResolvedDiskLayer> for DiskLayerHandleKind {
     type Input<'a> = ResolveDiskLayerParameters<'a>;
@@ -22,6 +23,8 @@ pub struct ResolveDiskLayerParameters<'a> {
     // with missing lifetimes. Remove once we stop using async_trait for async
     // resolvers.
     pub _async_trait_workaround: &'a (),
+    /// The task driver source for the VM.
+    pub driver_source: &'a VmTaskDriverSource,
 }
 
 /// A resolved [`DiskLayer`].

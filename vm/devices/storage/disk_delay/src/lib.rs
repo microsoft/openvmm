@@ -19,12 +19,17 @@ use scsi_buffers::RequestBuffers;
 pub struct DelayDisk {
     delay: u64,
     inner: Disk,
+    driver_source: &VmTaskDriverSource,
 }
 
 impl DelayDisk {
     /// Creates a new disk with a specified delay on I/O operations.
-    pub fn new(delay: u64, inner: Disk) -> Self {
-        Self { delay, inner }
+    pub fn new(delay: u64, inner: Disk, driver_source: &VmTaskDriverSource) -> Self {
+        Self {
+            delay,
+            inner,
+            driver_source,
+        }
     }
 }
 
