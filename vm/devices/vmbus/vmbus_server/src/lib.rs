@@ -1925,14 +1925,42 @@ fn inspect_rings(
         .view()
         .map(GpadlId(open_data.ring_gpadl_id.0))
         .ok()?;
+
     let aligned = AlignedGpadlView::new(gpadl).ok()?;
     let (in_gpadl, out_gpadl) = aligned.split(open_data.ring_offset).ok()?;
-    if let Ok(incoming_mem) = GpadlRingMem::new(in_gpadl, gm) {
-        resp.child("incoming_ring", |req| ring::inspect_ring(incoming_mem, req));
+
+    if let Ok(incoming_mem) =
+        gm.lockable_subrange(in_gpadl.gpns()[0] * PAGE_SIZE as u64, PAGE_SIZE as u64)
+    {
+        resp.child("incoming_ring", |req| {
+            tracing::info!("inspecting ring");
+            if let Err(e) = ring::inspect_ring_control(
+                ((in_gpadl.gpns().len() - 1) * PAGE_SIZE) as u64,
+                0,
+                &incoming_mem,
+                req,
+            ) {
+                tracing::error!(
+                    error = &e as &dyn std::error::Error,
+                    "failed to inspect incoming ring"
+                );
+            }
+        });
     }
-    if let Ok(outgoing_mem) = GpadlRingMem::new(out_gpadl, gm) {
-        resp.child("outgoing_ring", |req| ring::inspect_ring(outgoing_mem, req));
+
+    if let Ok(outgoing_mem) =
+        gm.lockable_subrange(out_gpadl.gpns()[0] * PAGE_SIZE as u64, PAGE_SIZE as u64)
+    {
+        resp.child("outgoing_ring", |req| {
+            let _ = ring::inspect_ring_control(
+                ((in_gpadl.gpns().len() - 1) * PAGE_SIZE) as u64,
+                0,
+                &outgoing_mem,
+                req,
+            );
+        });
     }
+
     Some(())
 }
 

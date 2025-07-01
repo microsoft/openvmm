@@ -1207,6 +1207,25 @@ pub fn inspect_ring<M: RingMem>(mem: M, req: inspect::Request<'_>) {
     let _ = InnerRing::new(mem).map(|ring| ring.inspect(req));
 }
 
+pub fn inspect_ring_control(
+    size: u64,
+    control_gpn: u64,
+    mem: &guestmem::GuestMemory,
+    req: inspect::Request<'_>,
+) -> Result<(), guestmem::GuestMemoryError> {
+    let pages = mem.lock_gpns(false, &[control_gpn])?;
+    let control = pages.pages()[0].as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
+        .try_into()
+        .unwrap();
+
+    let control = Control(control);
+    req.respond()
+        .hex("ring_size", size)
+        .field("control", control);
+
+    Ok(())
+}
+
 /// Returns whether a ring buffer is in a state where the receiving end might
 /// need a signal.
 pub fn reader_needs_signal<M: RingMem>(mem: M) -> bool {
