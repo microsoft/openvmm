@@ -33,7 +33,6 @@ cfg_if::cfg_if!(
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         pub use processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
-        use hvdef::HvArm64RegisterName;
         use processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
     }
 );
@@ -1940,19 +1939,14 @@ impl UhProtoPartition<'_> {
         #[cfg(guest_arch = "x86_64")]
         let privs = {
             let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
-            result.eax as u64 | ((result.ebx as u64) << 32)
+            let num = result.eax as u64 | ((result.ebx as u64) << 32);
+            hvdef::HvPartitionPrivilege::from(num)
         };
 
         #[cfg(guest_arch = "aarch64")]
-        let privs = hcl
-            .get_vp_register(
-                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
-                HvInputVtl::CURRENT_VTL,
-            )
-            .map_err(Error::Hcl)?
-            .as_u64();
+        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
 
-        if !hvdef::HvPartitionPrivilege::from(privs).access_vsm() {
+        if !privs.access_vsm() {
             return Ok(false);
         }
         let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;

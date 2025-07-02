@@ -2940,6 +2940,18 @@ impl Hcl {
         ))
     }
 
+    #[cfg(guest_arch = "aarch64")]
+    /// Get the [`hvdef::HvPartitionPrivilege`] register
+    pub fn get_privileges_and_features_info(&self) -> Result<hvdef::HvPartitionPrivilege, Error> {
+        Ok(hvdef::HvPartitionPrivilege::from(
+            self.get_vp_register(
+                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
+                HvInputVtl::CURRENT_VTL,
+            )?
+            .as_u64(),
+        ))
+    }
+
     /// Get the [`hvdef::HvGuestOsId`] register for the given VTL.
     pub fn get_guest_os_id(&self, vtl: Vtl) -> Result<hvdef::hypercall::HvGuestOsId, Error> {
         Ok(hvdef::hypercall::HvGuestOsId::from(
