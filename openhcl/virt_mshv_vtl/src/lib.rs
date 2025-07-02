@@ -59,7 +59,6 @@ use hv1_emulator::synic::SintProxied;
 use hv1_structs::VtlArray;
 use hvdef::GuestCrashCtl;
 use hvdef::HV_PAGE_SIZE;
-use hvdef::HvAllArchRegisterName;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterName;
@@ -962,11 +961,7 @@ impl UhPartitionInner {
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn vsm_status(&self) -> Result<HvRegisterVsmPartitionStatus, hcl::ioctl::Error> {
         // TODO: It might be possible to cache VsmPartitionStatus.
-        let reg = self.hcl.get_vp_register(
-            HvAllArchRegisterName::VsmPartitionStatus,
-            HvInputVtl::CURRENT_VTL,
-        )?;
-        Ok(reg.as_u64().into())
+        self.hcl.get_vsm_partition_status()
     }
 }
 
@@ -1902,13 +1897,10 @@ impl UhPartition {
             hv.guest_os_id(Vtl::Vtl0)
         } else {
             // Ask the hypervisor for this value.
-            let reg_value = self
-                .inner
+            self.inner
                 .hcl
-                .get_vp_register(HvAllArchRegisterName::GuestOsId, Vtl::Vtl0.into())
-                .map_err(Error::Hcl)?;
-
-            HvGuestOsId::from(reg_value.as_u64())
+                .get_guest_os_id(Vtl::Vtl0)
+                .map_err(Error::Hcl)?
         };
         Ok(id)
     }

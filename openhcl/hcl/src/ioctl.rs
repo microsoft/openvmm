@@ -1431,7 +1431,7 @@ impl MshvHvcall {
     /// Get a single VP register for the given VTL via hypercall. Only a select
     /// set of registers are supported; others will cause a panic.
     #[cfg(guest_arch = "x86_64")]
-    pub fn get_vp_register_for_vtl(
+    fn get_vp_register_for_vtl(
         &self,
         vtl: HvInputVtl,
         name: HvX64RegisterName,
@@ -1473,7 +1473,7 @@ impl MshvHvcall {
     /// Get a single VP register for the given VTL via hypercall. Only a select
     /// set of registers are supported; others will cause a panic.
     #[cfg(guest_arch = "aarch64")]
-    pub fn get_vp_register_for_vtl(
+    fn get_vp_register_for_vtl(
         &self,
         vtl: HvInputVtl,
         name: HvArm64RegisterName,
@@ -1796,9 +1796,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             actions.flush();
         }
     }
-}
 
-impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     // Registers that are shared between VTLs need to be handled by the kernel
     // as they may require special handling there. set_reg and get_reg will
     // handle these registers using a dedicated ioctl, instead of the general-
@@ -2040,9 +2038,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     pub fn is_sidecar(&self) -> bool {
         self.sidecar.is_some()
     }
-}
 
-impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     fn get_vp_registers_inner<R: Copy + Into<HvRegisterName>>(
         &mut self,
         vtl: GuestVtl,
@@ -2565,7 +2561,7 @@ impl Hcl {
     /// Get a single VP register for the given VTL via hypercall. Only a select
     /// set of registers are supported; others will cause a panic.
     #[cfg(guest_arch = "x86_64")]
-    pub fn get_vp_register(
+    fn get_vp_register(
         &self,
         name: impl Into<HvX64RegisterName>,
         vtl: HvInputVtl,
@@ -2576,7 +2572,7 @@ impl Hcl {
     /// Get a single VP register for the given VTL via hypercall. Only a select
     /// set of registers are supported; others will cause a panic.
     #[cfg(guest_arch = "aarch64")]
-    pub fn get_vp_register(
+    fn get_vp_register(
         &self,
         name: impl Into<HvArm64RegisterName>,
         vtl: HvInputVtl,
@@ -2930,6 +2926,25 @@ impl Hcl {
                 HvInputVtl::CURRENT_VTL,
             )?
             .as_u64(),
+        ))
+    }
+
+    /// Get the [`hvdef::HvRegisterVsmPartitionStatus`] register
+    pub fn get_vsm_partition_status(&self) -> Result<hvdef::HvRegisterVsmPartitionStatus, Error> {
+        Ok(hvdef::HvRegisterVsmPartitionStatus::from(
+            self.get_vp_register(
+                HvAllArchRegisterName::VsmPartitionStatus,
+                HvInputVtl::CURRENT_VTL,
+            )?
+            .as_u64(),
+        ))
+    }
+
+    /// Get the [`hvdef::HvGuestOsId`] register for the given VTL.
+    pub fn get_guest_os_id(&self, vtl: Vtl) -> Result<hvdef::hypercall::HvGuestOsId, Error> {
+        Ok(hvdef::hypercall::HvGuestOsId::from(
+            self.get_vp_register(HvAllArchRegisterName::GuestOsId, vtl.into())?
+                .as_u64(),
         ))
     }
 
