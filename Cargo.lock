@@ -1249,6 +1249,7 @@ dependencies = [
  "disk_backend",
  "disk_backend_resources",
  "inspect",
+ "mesh",
  "pal_async",
  "scsi_buffers",
  "vm_resource",
