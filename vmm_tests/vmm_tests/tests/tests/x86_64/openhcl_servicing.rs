@@ -3,7 +3,6 @@
 
 //! Integration tests for x86_64 OpenHCL servicing.
 
-use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use hvlite_defs::config::DeviceVtl;
@@ -137,8 +136,6 @@ async fn openhcl_servicing_shutdown_ic(
         return Ok(());
     }
 
-    let delay_cell = mesh::Cell<u64>::new(100);
-
     let (mut vm, agent) = config
         .with_vmbus_redirect()
         .with_custom_config(|c| {
@@ -156,11 +153,8 @@ async fn openhcl_servicing_shutdown_ic(
                             lun: 0,
                         },
                         device: SimpleScsiDiskHandle {
-                            disk: LayeredDiskHandle::single_layer(DelayDiskHandle {
-                                delay: delay_cell.clone(), // 100ms delay for testing
-                                inner: RamDiskLayerHandle {
-                                    len: Some(256 * 1024),
-                                },
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(256 * 1024),
                             })
                             .into_resource(),
                             read_only: false,
