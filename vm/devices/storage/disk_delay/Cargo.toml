@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+pal_async.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true
 disk_backend.workspace = true
@@ -14,6 +15,7 @@ disk_backend_resources.workspace = true
 inspect.workspace = true
 scsi_buffers.workspace = true
 vm_resource.workspace = true
+vmcore.workspace = true
 
 [lints]
 workspace = true

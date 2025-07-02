@@ -28,11 +28,7 @@ impl AsyncResolveResource<DiskHandleKind, DelayDiskHandle> for DelayDiskResolver
     ) -> Result<Self::Output, Self::Error> {
         let inner = resolver.resolve(rsrc.disk, input).await?;
 
-        ResolvedDisk::new(DelayDisk::new(
-            rsrc.delay,
-            inner.0,
-            inner.task_driver_source,
-        ))
-        .map_err(|e| anyhow::anyhow!("failed to create delay disk: {}", e))
+        ResolvedDisk::new(DelayDisk::new(rsrc.delay, inner.0, inner.0.ta))
+            .map_err(|e| anyhow::anyhow!("failed to create delay disk: {}", e))
     }
 }

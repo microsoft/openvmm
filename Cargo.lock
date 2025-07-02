@@ -1144,6 +1144,7 @@ dependencies = [
  "stackfuture",
  "thiserror 2.0.12",
  "vm_resource",
+ "vmcore",
 ]
 
 [[package]]
@@ -1248,8 +1249,10 @@ dependencies = [
  "disk_backend",
  "disk_backend_resources",
  "inspect",
+ "pal_async",
  "scsi_buffers",
  "vm_resource",
+ "vmcore",
 ]
 
 [[package]]
@@ -1299,6 +1302,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tracelimit",
  "vm_resource",
+ "vmcore",
 ]
 
 [[package]]

@@ -12,7 +12,10 @@ use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::UnmapBehavior;
 use inspect::Inspect;
+use pal_async::timer::PolledTimer;
 use scsi_buffers::RequestBuffers;
+use std::time::Duration;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// A disk with delay on every I/O operation.
 #[derive(Inspect)]
@@ -80,7 +83,7 @@ impl DiskIo for DelayDisk {
         sector: u64,
     ) -> Result<(), DiskError> {
         // Introduce a delay before reading the data.
-        std::thread::sleep(std::time::Duration::from_millis(self.delay));
+        PolledTimer::new(self.driver_source).sleep(Duration::from_millis(self.delay));
         self.inner.read_vectored(buffers, sector).await
     }
 
@@ -92,7 +95,7 @@ impl DiskIo for DelayDisk {
         fua: bool,
     ) -> Result<(), DiskError> {
         // Write the encrypted data.
-        std::thread::sleep(std::time::Duration::from_millis(self.delay));
+        PolledTimer::new(self.driver_source).sleep(Duration::from_millis(self.delay));
         self.inner.write_vectored(buffers, sector, fua).await
     }
 
