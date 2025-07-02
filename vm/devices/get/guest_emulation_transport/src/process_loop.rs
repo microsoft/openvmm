@@ -77,8 +77,6 @@ pub(crate) enum FatalError {
     VersionNegotiationFailed,
     #[error("control receive failed")]
     VersionNegotiationTryRecvFailed(#[source] RecvError),
-    #[error("received response with no pending request")]
-    NoPendingRequest,
     #[error("failed to serialize VTL2 settings error info")]
     Vtl2SettingsErrorInfoJson(#[source] serde_json::error::Error),
     #[error("received too many guest notifications of kind {0:?} prior to downstream worker init")]
@@ -94,8 +92,6 @@ pub(crate) enum FatalError {
         response_size: usize,
         maximum_size: usize,
     },
-    #[error("received an `IGVM_ATTEST` response with no pending `IGVM_ATTEST` request")]
-    NoPendingIgvmAttestRequest,
 }
 
 /// Validates the response packet received from the host. This function is only
@@ -812,16 +808,18 @@ impl<T: RingMem> ProcessLoop<T> {
                         self.host_requests.pop_front();
 
                         // Ensure there are no extra response messages that this request failed to pick up.
-                        if self
+                        if let Ok(resp) = self
                             .pipe_channels
                             .response_message_recv
                             .lock()
                             .as_mut()
                             .unwrap()
                             .try_recv()
-                            .is_ok()
                         {
-                            return FatalError::NoPendingRequest;
+                            let id = get_protocol::HeaderRaw::read_from_prefix(&resp)
+                                    .map(|head| HostRequests(head.0.message_id))
+                                    .unwrap_or(HostRequests::INVALID);
+                                tracing::warn!(?id, "received extra response after processing request");
                         }
                     }
                     pending().await
@@ -1269,20 +1267,22 @@ impl<T: RingMem> ProcessLoop<T> {
         header: get_protocol::HeaderHostResponse,
         buf: &[u8],
     ) -> Result<(), FatalError> {
-        if self.host_requests.is_empty() && self.igvm_attest_requests.is_empty() {
-            return Err(FatalError::NoPendingRequest);
-        }
         validate_response(header)?;
 
         if header.message_id == HostRequests::IGVM_ATTEST {
-            if !self.igvm_attest_requests.is_empty() {
-                self.igvm_attest_read_send.send(buf.to_vec());
+            if self.igvm_attest_requests.is_empty() {
+                tracing::warn!(id = ?header.message_id(), "received secondary host response with no pending request");
                 return Ok(());
             }
-            return Err(FatalError::NoPendingIgvmAttestRequest);
+            self.igvm_attest_read_send.send(buf.to_vec());
+        } else {
+            if self.primary_host_requests.is_empty() {
+                tracing::warn!(id = ?header.message_id(), "received primary host response with no pending request");
+                return Ok(());
+            }
+            self.read_send.send(buf.to_vec());
         }
 
-        self.read_send.send(buf.to_vec());
         Ok(())
     }
 
