@@ -450,9 +450,34 @@ mod tests {
         assert_eq!(result.utc, 1);
         assert_eq!(result.time_zone, 2);
 
-        let _host_result = get.guest_task.await;
+        // The GET can tolerate extraneous responses, ensure it doesn't crash
+        assert!(futures::poll!(get.guest_task).is_pending());
+    }
 
-        assert!(matches!(FatalError::NoPendingRequest, _host_result));
+    #[async_test]
+    async fn host_send_mismatched_multiple_response(driver: DefaultDriver) {
+        let responses = TestGetResponses::new(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::TimeResponse::new(0, 1, 2, false)
+                .as_bytes()
+                .to_vec(),
+        ));
+
+        let ged_responses = vec![responses];
+
+        let get =
+            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+
+        let result = get.client.host_time().await;
+
+        assert_eq!(result.utc, 1);
+        assert_eq!(result.time_zone, 2);
     }
 
     #[async_test]
