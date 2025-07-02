@@ -388,11 +388,23 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             anyhow::bail!("VM is not configured with OpenHCL")
         }
     }
+
+    pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
+        self.runtime.wait_for_successful_boot_event().await
+    }
+
+    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        self.runtime.wait_for_boot_event().await
+    }
+
+    pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        self.runtime.send_enlightened_shutdown(kind).await
+    }
 }
 
 /// A running VM that tests can interact with.
 #[async_trait]
-pub trait PetriVmRuntime {
+pub(crate) trait PetriVmRuntime {
     /// Cleanly tear down the VM immediately.
     async fn teardown(self) -> anyhow::Result<()>;
     /// Wait for the VM to halt, returning the reason for the halt.
@@ -616,6 +628,7 @@ impl Firmware {
         arch: MachineArch,
         guest: UefiGuest,
         isolation: Option<IsolationType>,
+        _nvme: bool,
     ) -> Self {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
         let igvm_path = match arch {

@@ -9,7 +9,9 @@ mod openhcl_uefi;
 
 use anyhow::Context;
 use petri::ApicMode;
+use petri::PetriVmBuilder;
 use petri::PetriVmConfig;
+use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
@@ -326,7 +328,9 @@ fn configure_for_sidecar(
 //
 // Sidecar isn't supported on aarch64 yet.
 #[vmm_test(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
-async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+async fn sidecar_aps_unused<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
     let proc_count = 4;
     let mut vm = configure_for_sidecar(config, proc_count, 1)
         .with_uefi_frontpage(true)
@@ -360,7 +364,7 @@ async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn sidecar_boot(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

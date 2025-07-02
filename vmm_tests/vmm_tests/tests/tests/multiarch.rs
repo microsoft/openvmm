@@ -9,7 +9,9 @@ use get_resources::ged::FirmwareEvent;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
+use petri::PetriVmBuilder;
 use petri::PetriVmConfig;
+use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::SIZE_1_GB;
@@ -32,7 +34,7 @@ use vmm_test_macros::vmm_test;
     hyperv_openhcl_uefi_aarch64(none),
     hyperv_openhcl_uefi_x64(none)
 )]
-async fn frontpage(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -62,7 +64,7 @@ async fn frontpage(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -85,7 +87,7 @@ async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn secure_boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config.with_secure_boot().run().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -109,7 +111,9 @@ async fn secure_boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn secure_boot_mismatched_template(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
     let mut vm = match config.os_flavor() {
         OsFlavor::Windows => {
             config
@@ -362,7 +366,7 @@ async fn reboot(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
-async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -413,7 +417,7 @@ async fn boot_no_agent_heavy(config: Box<dyn PetriVmConfig>) -> anyhow::Result<(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -449,7 +453,9 @@ async fn vmbus_relay_heavy(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()>
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
-async fn boot_no_agent_single_proc(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn boot_no_agent_single_proc<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
     let mut vm = config
         .with_processor_topology(ProcessorTopology {
             vp_count: 1,
@@ -499,7 +505,7 @@ async fn reboot_no_agent(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     openvmm_uefi_aarch64(guest_test_uefi_aarch64),
     openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
 )]
-async fn guest_test_uefi(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config
         .with_windows_secure_boot_template()
         .run_without_agent()
@@ -530,7 +536,9 @@ async fn guest_test_uefi(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn file_transfer_test(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+async fn file_transfer_test<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
     const TEST_CONTENT: &str = "hello world!";
     const FILE_NAME: &str = "test.txt";
 
