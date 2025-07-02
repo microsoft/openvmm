@@ -30,7 +30,7 @@ use vmm_core_defs::HaltReason;
 /// [`PetriVmBuilder`].
 pub struct PetriVmArtifacts<T: PetriVmmBackend> {
     /// Artifacts needed to launch the host VMM used for the test
-    pub host_vmm: T::VmmArtifacts,
+    pub backend: T,
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
     /// The architecture of the VM
@@ -41,10 +41,36 @@ pub struct PetriVmArtifacts<T: PetriVmmBackend> {
     pub openhcl_agent_image: Option<AgentImage>,
 }
 
+impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
+    /// Resolves the artifacts needed to instantiate a [`PetriVmBuilder`].
+    ///
+    /// Returns `None` if the supplied configuration is not supported on this platform.
+    pub fn new(
+        resolver: &ArtifactResolver<'_>,
+        firmware: Firmware,
+        arch: MachineArch,
+    ) -> Option<Self> {
+        if arch != MachineArch::host() {
+            return None;
+        }
+        Some(Self {
+            backend: T::new(resolver),
+            arch,
+            agent_image: Some(AgentImage::new(resolver, arch, firmware.os_flavor())),
+            openhcl_agent_image: if firmware.is_openhcl() {
+                Some(AgentImage::new(resolver, arch, OsFlavor::Linux))
+            } else {
+                None
+            },
+            firmware,
+        })
+    }
+}
+
 /// Petri VM builder
 pub struct PetriVmBuilder<T: PetriVmmBackend> {
     /// Artifacts needed to launch the host VMM used for the test
-    host_vmm: T::VmmArtifacts,
+    backend: T,
     /// VM configuration
     config: PetriVmConfig,
     /// VMM-agnostic resources
@@ -77,24 +103,26 @@ pub struct PetriVmResources {
 }
 
 /// Trait for VMM-specific contruction and runtime resources
+#[async_trait]
 pub trait PetriVmmBackend {
-    type VmmArtifacts;
+    /// Runtime object
     type VmRuntime: PetriVmRuntime;
+
+    /// Resolve any artifacts needed to use this backend
+    fn new(resolver: &ArtifactResolver<'_>) -> Self;
 
     /// Create and start VM from the generic config using the VMM backend
     async fn run(
-        vmm_artifacts: &Self::VmmArtifacts,
-        config: &PetriVmConfig,
+        self,
+        config: PetriVmConfig,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime>;
 }
 
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
-    arch: MachineArch,
-    quirks: GuestQuirks,
-    openhcl_diag_handler: Option<OpenHclDiagHandler>,
-    resources: PetriVmResources,
+    _arch: MachineArch,
+    _resources: PetriVmResources,
     runtime: T::VmRuntime,
 }
 
@@ -106,7 +134,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            host_vmm: artifacts.host_vmm,
+            backend: artifacts.backend,
             config: PetriVmConfig {
                 name: params.test_name.to_owned(),
                 arch: artifacts.arch,
@@ -130,7 +158,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Should only be used for testing platforms that pipette does not support.
     pub async fn run_without_agent(mut self) -> anyhow::Result<PetriVm<T>> {
         self.config.agent_image = None;
-        self.config.openhcl_agent_image = None;
         self.run_core().await
     }
 
@@ -144,19 +171,17 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Run the VM, launching pipette and returning a client to it.
     pub async fn run(self) -> anyhow::Result<(PetriVm<T>, PipetteClient)> {
-        assert!(self.config.agent_image.is_some());
-        let mut vm = self.run_core().await?;
-        let client = vm.runtime.wait_for_agent().await?;
+        let mut vm = self.run_with_lazy_pipette().await?;
+        let client = vm.wait_for_agent().await?;
         Ok((vm, client))
     }
 
     async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
-        let runtime = T::run(&self.host_vmm, &self.config, &self.resources).await?;
+        let arch = self.config.arch;
+        let runtime = self.backend.run(self.config, &self.resources).await?;
         Ok(PetriVm {
-            arch: self.config.arch,
-            quirks: self.config.firmware.quirks(),
-            openhcl_diag_handler: None,
-            resources: self.resources,
+            _arch: arch,
+            _resources: self.resources,
             runtime,
         })
     }
@@ -321,8 +346,43 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.openhcl_diag()?.wait_for_vtl2().await
     }
 
+    /// Wait for a connection from a pipette agent running in the guest.
+    /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
+    pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
+        self.runtime.connect_to_agent(false).await
+    }
+
+    /// Wait for a connection from a pipette agent running in VTL 2.
+    /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
+    /// Will fail if the VM is not running OpenHCL.
+    pub async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient> {
+        // VTL 2's pipette doesn't auto launch, only launch it on demand
+        self.launch_vtl2_pipette().await?;
+        self.runtime.connect_to_agent(true).await
+    }
+
+    async fn launch_vtl2_pipette(&self) -> anyhow::Result<()> {
+        // Start pipette through DiagClient
+        let res = self
+            .openhcl_diag()?
+            .run_vtl2_command(
+                "sh",
+                &[
+                    "-c",
+                    "mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'",
+                ],
+            )
+            .await?;
+
+        if !res.exit_status.success() {
+            anyhow::bail!("Failed to start VTL 2 pipette: {:?}", res);
+        }
+
+        Ok(())
+    }
+
     fn openhcl_diag(&self) -> anyhow::Result<&OpenHclDiagHandler> {
-        if let Some(ohd) = &self.openhcl_diag_handler {
+        if let Some(ohd) = self.runtime.openhcl_diag() {
             Ok(ohd)
         } else {
             anyhow::bail!("VM is not configured with OpenHCL")
@@ -334,16 +394,13 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 #[async_trait]
 pub trait PetriVmRuntime {
     /// Cleanly tear down the VM immediately.
-    async fn teardown(&mut self) -> anyhow::Result<()>;
+    async fn teardown(self) -> anyhow::Result<()>;
     /// Wait for the VM to halt, returning the reason for the halt.
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason>;
-    /// Wait for a connection from a pipette agent running in the guest.
-    /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
-    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>;
-    /// Wait for a connection from a pipette agent running in VTL 2.
-    /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
-    /// Will fail if the VM is not running OpenHCL.
-    async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient>;
+    /// Wait for a connection from a pipette agent
+    async fn connect_to_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>;
+    /// Get an OpenHCL diagnostics handler for the VM
+    fn openhcl_diag(&self) -> Option<&OpenHclDiagHandler>;
     /// Waits for an event emitted by the firmware about its boot status, and
     /// verifies that it is the expected success value.
     ///
@@ -422,7 +479,7 @@ pub struct UefiConfig {
 }
 
 /// OpenHCL configuration
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct OpenHclConfig {
     /// Emulate SCSI via NVME to VTL2, with the provided namespace ID on
     /// the controller with `BOOT_NVME_INSTANCE`.

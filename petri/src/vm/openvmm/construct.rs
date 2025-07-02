@@ -7,16 +7,18 @@
 use super::BOOT_NVME_INSTANCE;
 use super::BOOT_NVME_LUN;
 use super::BOOT_NVME_NSID;
-use super::PetriVmArtifactsOpenVmm;
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use super::SCSI_INSTANCE;
 use super::memdiff_disk_from_artifact;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::MemoryTopology;
+use crate::OpenHclConfig;
 use crate::PcatGuest;
 use crate::PetriLogSource;
-use crate::PetriTestParams;
+use crate::PetriVmConfig;
+use crate::PetriVmResources;
 use crate::ProcessorTopology;
 use crate::SIZE_1_GB;
 use crate::UefiGuest;
@@ -62,6 +64,7 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PIPETTE_VSOCK_PORT;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
@@ -91,23 +94,31 @@ use vtl2_settings_proto::Vtl2Settings;
 impl PetriVmConfigOpenVmm {
     /// Create a new VM configuration.
     pub fn new(
-        params: &PetriTestParams<'_>,
-        artifacts: PetriVmArtifactsOpenVmm,
-        driver: &DefaultDriver,
+        openvmm_path: &ResolvedArtifact,
+        petri_vm_config: PetriVmConfig,
+        resources: &PetriVmResources,
     ) -> anyhow::Result<Self> {
-        let PetriVmArtifactsOpenVmm {
-            firmware,
+        let PetriVmConfig {
+            name: _,
             arch,
-            agent_image,
-            openhcl_agent_image,
-            openvmm_path,
-        } = artifacts;
+            firmware,
+            memory,
+            proc_topology,
+            agent_image: _,
+            openhcl_agent_image: _,
+        } = &petri_vm_config;
+
+        let PetriVmResources {
+            driver,
+            output_dir,
+            log_source,
+        } = resources;
 
         let setup = PetriVmConfigSetupCore {
-            arch,
-            firmware: &firmware,
+            arch: *arch,
+            firmware,
             driver,
-            logger: params.logger,
+            logger: log_source,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -121,6 +132,7 @@ impl PetriVmConfigOpenVmm {
                 Firmware::OpenhclUefi { .. } => vm_manifest_builder::BaseChipsetType::HclHost,
                 Firmware::Pcat { .. } => vm_manifest_builder::BaseChipsetType::HypervGen1,
                 Firmware::Uefi { .. } => vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
+                Firmware::OpenhclPcat { .. } => todo!("OpenVMM OpenHCL PCAT"),
             },
             match arch {
                 MachineArch::X86_64 => vm_manifest_builder::MachineArch::X86_64,
@@ -134,7 +146,7 @@ impl PetriVmConfigOpenVmm {
             mut emulated_serial_config,
             serial_tasks: log_stream_tasks,
             linux_direct_serial_agent,
-        } = setup.configure_serial(params.logger)?;
+        } = setup.configure_serial(log_source)?;
 
         let (video_dev, framebuffer, framebuffer_access) = match setup.config_video()? {
             Some((v, fb, fba)) => {
@@ -267,18 +279,18 @@ impl PetriVmConfigOpenVmm {
             .build()
             .context("failed to build chipset configuration")?;
 
-        let config = Config {
-            // Firmware
-            load_mode,
-            firmware_event_send: Some(firmware_event_send),
+        let memory = {
+            let MemoryTopology {
+                startup_bytes,
+                dynamic_memory_range,
+            } = memory;
 
-            // CPU and RAM
-            memory: MemoryConfig {
-                mem_size: if firmware.is_openhcl() {
-                    4 * SIZE_1_GB
-                } else {
-                    SIZE_1_GB
-                },
+            if dynamic_memory_range.is_some() {
+                anyhow::bail!("dynamic memory not supported in OpenVMM");
+            }
+
+            MemoryConfig {
+                mem_size: *startup_bytes,
                 mmio_gaps: if firmware.is_openhcl() {
                     match arch {
                         MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
@@ -291,13 +303,33 @@ impl PetriVmConfigOpenVmm {
                     }
                 },
                 prefetch_memory: false,
-            },
-            processor_topology: ProcessorTopologyConfig {
-                proc_count: 2,
-                vps_per_socket: None,
-                enable_smt: None,
+            }
+        };
+
+        let processor_topology = {
+            let ProcessorTopology {
+                vp_count,
+                enable_smt,
+                vps_per_socket,
+                apic_mode: _, // TODO
+            } = proc_topology;
+
+            ProcessorTopologyConfig {
+                proc_count: *vp_count,
+                vps_per_socket: *vps_per_socket,
+                enable_smt: *enable_smt,
                 arch: None,
-            },
+            }
+        };
+
+        let config = Config {
+            // Firmware
+            load_mode,
+            firmware_event_send: Some(firmware_event_send),
+
+            // CPU and RAM
+            memory,
+            processor_topology,
 
             // Base chipset
             chipset: chipset.chipset,
@@ -380,8 +412,8 @@ impl PetriVmConfigOpenVmm {
         };
 
         Ok(Self {
-            firmware,
-            arch,
+            firmware: petri_vm_config.firmware,
+            arch: petri_vm_config.arch,
             config,
 
             resources: PetriVmResourcesOpenVmm {
@@ -396,16 +428,16 @@ impl PetriVmConfigOpenVmm {
                 openhcl_diag_handler,
                 linux_direct_serial_agent,
                 driver: driver.clone(),
-                output_dir: params.output_dir.to_owned(),
-                agent_image,
-                openhcl_agent_image,
-                openvmm_path,
-                log_source: params.logger.clone(),
+                output_dir: output_dir.to_owned(),
+                agent_image: petri_vm_config.agent_image,
+                openhcl_agent_image: petri_vm_config.openhcl_agent_image,
+                openvmm_path: openvmm_path.clone(),
+                log_source: log_source.clone(),
                 vtl2_vsock_path,
                 _vmbus_vsock_path: vmbus_vsock_path,
             },
 
-            openvmm_log_file: params.logger.log_file("openvmm")?,
+            openvmm_log_file: log_source.log_file("openvmm")?,
 
             ged,
             vtl2_settings,
@@ -445,7 +477,7 @@ impl PetriVmConfigSetupCore<'_> {
 
         let serial0_log_file = logger.log_file(match self.firmware {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => "linux",
-            Firmware::Pcat { .. } => "pcat",
+            Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => "pcat",
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => "uefi",
         })?;
 
@@ -651,7 +683,7 @@ impl PetriVmConfigSetupCore<'_> {
             } => {
                 // Nothing to do, no guest
             }
-            Firmware::Pcat { guest, .. } => {
+            Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
                 let disk_path = guest.artifact();
                 let guest_media = match guest {
                     PcatGuest::Vhd(_) => GuestMedia::Disk {
@@ -678,7 +710,11 @@ impl PetriVmConfigSetupCore<'_> {
             Firmware::Uefi { guest, .. }
             | Firmware::OpenhclUefi {
                 guest,
-                vtl2_nvme_boot: false,
+                openhcl_config:
+                    OpenHclConfig {
+                        vtl2_nvme_boot: false,
+                        ..
+                    },
                 ..
             } => {
                 let disk_path = guest.artifact();
@@ -710,7 +746,11 @@ impl PetriVmConfigSetupCore<'_> {
             }
             Firmware::OpenhclUefi {
                 guest,
-                vtl2_nvme_boot: true,
+                openhcl_config:
+                    OpenHclConfig {
+                        vtl2_nvme_boot: true,
+                        ..
+                    },
                 ..
             } => {
                 let disk_path = guest.artifact();
@@ -852,10 +892,12 @@ impl PetriVmConfigSetupCore<'_> {
         }
 
         let video_dev = match self.firmware {
-            Firmware::Pcat { svga_firmware, .. } => Some(VideoDevice::Vga(
-                hvlite_pcat_locator::find_svga_bios(svga_firmware.get())
-                    .context("Failed to load VGA BIOS")?,
-            )),
+            Firmware::Pcat { svga_firmware, .. } | Firmware::OpenhclPcat { svga_firmware, .. } => {
+                Some(VideoDevice::Vga(
+                    hvlite_pcat_locator::find_svga_bios(svga_firmware.get())
+                        .context("Failed to load VGA BIOS")?,
+                ))
+            }
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => Some(VideoDevice::Synth(
                 DeviceVtl::Vtl0,
                 SynthVideoHandle {

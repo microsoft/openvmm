@@ -15,12 +15,12 @@ mod start;
 
 pub use runtime::PetriVmOpenVmm;
 
-use super::ProcessorTopology;
 use crate::Firmware;
 use crate::PetriLogFile;
 use crate::PetriLogSource;
-use crate::PetriVm;
 use crate::PetriVmConfig;
+use crate::PetriVmResources;
+use crate::PetriVmmBackend;
 use crate::disk_image::AgentImage;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
@@ -45,7 +45,6 @@ use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
-use pipette_client::PipetteClient;
 use std::path::PathBuf;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
@@ -72,49 +71,30 @@ pub(crate) const BOOT_NVME_LUN: u32 = 1;
 /// The MAC address used by the NIC assigned with [`PetriVmConfigOpenVmm::with_nic`].
 pub const NIC_MAC_ADDRESS: MacAddress = MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
 
-/// The set of artifacts and resources needed to instantiate a
-/// [`PetriVmConfigOpenVmm`].
-pub struct PetriVmArtifactsOpenVmm {
-    firmware: Firmware,
-    arch: MachineArch,
-    agent_image: AgentImage,
-    openhcl_agent_image: Option<AgentImage>,
+/// OpenVMM Petri Backend
+pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
 
-impl PetriVmArtifactsOpenVmm {
-    /// Resolves the artifacts needed to instantiate a [`PetriVmConfigOpenVmm`].
-    ///
-    /// Returns `None` if the supplied configuration is not supported on this platform.
-    pub fn new(
-        resolver: &ArtifactResolver<'_>,
-        firmware: Firmware,
-        arch: MachineArch,
-    ) -> Option<Self> {
-        if arch != MachineArch::host() {
-            return None;
-        }
-        if firmware.is_openhcl() {
-            // Only limited support for using OpenHCL on OpenVMM.
-            if !cfg!(windows) || arch != MachineArch::X86_64 {
-                return None;
-            }
-        }
-        let agent_image = AgentImage::new(resolver, arch, firmware.os_flavor());
-        let openhcl_agent_image = if firmware.is_openhcl() {
-            Some(AgentImage::new(resolver, arch, OsFlavor::Linux))
-        } else {
-            None
-        };
-        Some(Self {
-            firmware,
-            arch,
-            agent_image,
-            openhcl_agent_image,
+#[async_trait]
+impl PetriVmmBackend for OpenVmmPetriBackend {
+    type VmRuntime = PetriVmOpenVmm;
+
+    fn new(resolver: &ArtifactResolver<'_>) -> Self {
+        OpenVmmPetriBackend {
             openvmm_path: resolver
                 .require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
                 .erase(),
-        })
+        }
+    }
+
+    async fn run(
+        self,
+        config: PetriVmConfig,
+        resources: &PetriVmResources,
+    ) -> anyhow::Result<Self::VmRuntime> {
+        let openvmm_vm_config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
+        openvmm_vm_config.run_with_lazy_pipette().await
     }
 }
 
@@ -136,78 +116,6 @@ pub struct PetriVmConfigOpenVmm {
     vtl2_settings: Option<Vtl2Settings>,
     framebuffer_access: Option<FramebufferAccess>,
 }
-
-#[async_trait]
-impl PetriVmConfig for PetriVmConfigOpenVmm {
-    async fn run_without_agent(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>> {
-        Ok(Box::new(Self::run_without_agent(*self).await?))
-    }
-
-    async fn run_with_lazy_pipette(mut self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>> {
-        Ok(Box::new(Self::run_with_lazy_pipette(*self).await?))
-    }
-
-    async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)> {
-        let (vm, client) = Self::run(*self).await?;
-        Ok((Box::new(vm), client))
-    }
-
-    fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_secure_boot(*self))
-    }
-
-    fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_windows_secure_boot_template(*self))
-    }
-
-    fn with_uefi_ca_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_uefi_ca_secure_boot_template(*self))
-    }
-
-    fn with_processor_topology(
-        self: Box<Self>,
-        topology: ProcessorTopology,
-    ) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_processor_topology(*self, topology))
-    }
-
-    fn with_custom_openhcl(self: Box<Self>, artifact: ResolvedArtifact) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_custom_openhcl(*self, artifact))
-    }
-
-    fn with_openhcl_command_line(self: Box<Self>, command_line: &str) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_openhcl_command_line(*self, command_line))
-    }
-
-    fn with_agent_file(
-        self: Box<Self>,
-        name: &str,
-        artifact: ResolvedArtifact,
-    ) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_agent_file(*self, name, artifact))
-    }
-
-    fn with_openhcl_agent_file(
-        self: Box<Self>,
-        name: &str,
-        artifact: ResolvedArtifact,
-    ) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_openhcl_agent_file(*self, name, artifact))
-    }
-
-    fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_uefi_frontpage(*self, enable))
-    }
-
-    fn with_vmbus_redirect(self: Box<Self>, _: bool) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_vmbus_redirect(*self))
-    }
-
-    fn os_flavor(&self) -> OsFlavor {
-        self.firmware.os_flavor()
-    }
-}
-
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
     log_stream_tasks: Vec<Task<anyhow::Result<()>>>,
@@ -223,7 +131,7 @@ struct PetriVmResourcesOpenVmm {
 
     // Externally injected management stuff also needed at runtime.
     driver: DefaultDriver,
-    agent_image: AgentImage,
+    agent_image: Option<AgentImage>,
     openhcl_agent_image: Option<AgentImage>,
     openvmm_path: ResolvedArtifact,
     output_dir: PathBuf,
