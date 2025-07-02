@@ -817,9 +817,9 @@ impl<T: RingMem> ProcessLoop<T> {
                             .try_recv()
                         {
                             let id = get_protocol::HeaderRaw::read_from_prefix(&resp)
-                                    .map(|head| HostRequests(head.0.message_id))
-                                    .unwrap_or(HostRequests::INVALID);
-                                tracing::warn!(?id, "received extra response after processing request");
+                                .map(|head| HostRequests(head.0.message_id))
+                                .unwrap_or(HostRequests::INVALID);
+                            tracing::warn!(?id, "received extra response after processing request");
                         }
                     }
                     pending().await
