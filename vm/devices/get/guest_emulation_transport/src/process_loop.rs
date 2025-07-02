@@ -81,8 +81,8 @@ pub(crate) enum FatalError {
     VersionNegotiationFailed,
     #[error("control receive failed")]
     VersionNegotiationTryRecvFailed(#[source] RecvError),
-    #[error("received response with no pending request")]
-    NoPendingRequest,
+    #[error("received response id {0:?} with no pending request")]
+    NoPendingRequest(HostRequests),
     #[error("failed to serialize VTL2 settings error info")]
     Vtl2SettingsErrorInfoJson(#[source] serde_json::error::Error),
     #[error("received too many guest notifications of kind {0:?} prior to downstream worker init")]
@@ -845,27 +845,25 @@ impl<T: RingMem> ProcessLoop<T> {
                 .map(Event::Failure);
 
                 // Closure to share code between the primary and secondary host request queue.
-                let run_host_request_queue = async | request_queue: &mut HostRequestQueue, response_recv: &ExclusiveHostRequestResponseReceiverAccess | {
-                    while let Some(request) = request_queue.front_mut() {
-                        if let Err(e) = request.as_mut().await {
-                            return e;
-                        }
+                let run_host_request_queue =
+                    async |request_queue: &mut HostRequestQueue, response_recv: &ExclusiveHostRequestResponseReceiverAccess| {
+                        while let Some(request) = request_queue.front_mut() {
+                            if let Err(e) = request.as_mut().await {
+                                return e;
+                            }
 
-                        request_queue.pop_front();
+                            request_queue.pop_front();
 
-                        // Ensure there are no extra response messages that this request failed to pick up.
-                        if response_recv
-                            .lock()
-                            .as_mut()
-                            .unwrap()
-                            .try_recv()
-                            .is_ok()
-                        {
-                            return FatalError::NoPendingRequest;
+                            // Ensure there are no extra response messages that this request failed to pick up.
+                            if let Ok(resp) = response_recv.lock().as_mut().unwrap().try_recv() {
+                                let id = get_protocol::HeaderRaw::read_from_prefix(&resp)
+                                    .map(|head| HostRequests(head.0.message_id))
+                                    .unwrap_or(HostRequests::INVALID);
+                                return FatalError::NoPendingRequest(id);
+                            }
                         }
-                    }
-                    pending().await
-                };
+                        pending().await
+                    };
 
                 // Run the next host request in the primary queue. These host
                 // requests are expected to be generally fast and independent
@@ -1316,7 +1314,7 @@ impl<T: RingMem> ProcessLoop<T> {
         buf: &[u8],
     ) -> Result<(), FatalError> {
         if self.primary_host_requests.is_empty() && self.secondary_host_requests.is_empty() {
-            return Err(FatalError::NoPendingRequest);
+            return Err(FatalError::NoPendingRequest(header.message_id()));
         }
         validate_response(header)?;
 
