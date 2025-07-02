@@ -65,6 +65,8 @@ pub trait PetriVmConfig: Send {
     ) -> Box<dyn PetriVmConfig>;
     /// Sets whether UEFI frontpage is enabled.
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+    /// Run the VM with Enable VMBus relay enabled
+    fn with_vmbus_redirect(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
 
     /// Get the OS that the VM will boot into.
     fn os_flavor(&self) -> OsFlavor;

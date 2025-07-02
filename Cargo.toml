@@ -281,6 +281,7 @@ scsi_core = { path = "vm/devices/storage/scsi_core" }
 scsi_defs = { path = "vm/devices/storage/scsi_defs" }
 scsidisk = { path = "vm/devices/storage/scsidisk" }
 scsidisk_resources = { path = "vm/devices/storage/scsidisk_resources" }
+storvsc_driver = { path = "vm/devices/storage/storvsc_driver" }
 storvsp = { path = "vm/devices/storage/storvsp" }
 storvsp_protocol = { path = "vm/devices/storage/storvsp_protocol" }
 storvsp_resources = { path = "vm/devices/storage/storvsp_resources" }
@@ -690,3 +691,5 @@ box_default = "allow"
 # doesn't provide value. If a developer gets their type wrong they'll notice and fix it.
 # Sometimes you do want a list of a single range.
 single_range_in_vec_init = "allow"
+# This lint is purely style, and we are ok with inlined and uninlined format args.
+uninlined_format_args = "allow"

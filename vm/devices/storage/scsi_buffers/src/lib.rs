@@ -14,6 +14,7 @@ use guestmem::LockedRangeImpl;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use guestmem::ranges::PagedRange;
+use guestmem::ranges::PagedRangeWriter;
 use safeatomic::AsAtomicBytes;
 use smallvec::SmallVec;
 use std::marker::PhantomData;
@@ -204,6 +205,58 @@ impl LockedRange for LockedIoVecs {
     }
 }
 
+/// An implementation of [`MemoryWrite`] that provides semantically
+/// correct results. Specifically, it always returns a `ReadOnly` error
+/// when attempting to write to it.
+struct PermissionedMemoryWriter<'a> {
+    range: PagedRange<'a>,
+    writer: PagedRangeWriter<'a>,
+    is_write: bool,
+}
+
+impl PermissionedMemoryWriter<'_> {
+    /// Creates a new memory writer with the given range and guest memory.
+    fn new<'a>(
+        range: PagedRange<'a>,
+        guest_memory: &'a GuestMemory,
+        is_write: bool,
+    ) -> PermissionedMemoryWriter<'a> {
+        // Simply create an empty range here to avoid branching on hot paths (`write`, `fill`, etc.)
+        let range = if is_write { range } else { PagedRange::empty() };
+        PermissionedMemoryWriter {
+            range,
+            writer: range.writer(guest_memory),
+            is_write,
+        }
+    }
+}
+
+impl MemoryWrite for PermissionedMemoryWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> Result<(), AccessError> {
+        self.writer.write(data).map_err(|e| {
+            if self.is_write {
+                e
+            } else {
+                AccessError::ReadOnly
+            }
+        })
+    }
+
+    fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError> {
+        self.writer.fill(val, len).map_err(|e| {
+            if self.is_write {
+                e
+            } else {
+                AccessError::ReadOnly
+            }
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.range.len()
+    }
+}
+
 /// An accessor for the memory associated with an IO request.
 #[derive(Clone, Debug)]
 pub struct RequestBuffers<'a> {
@@ -255,12 +308,7 @@ impl<'a> RequestBuffers<'a> {
     ///
     /// Returns an empty writer if the buffers are only available for read access.
     pub fn writer(&self) -> impl MemoryWrite + '_ {
-        let range = if self.is_write {
-            self.range
-        } else {
-            PagedRange::empty()
-        };
-        range.writer(self.guest_memory)
+        PermissionedMemoryWriter::new(self.range, self.guest_memory, self.is_write)
     }
 
     /// Gets a memory reader for the buffers.
@@ -423,5 +471,39 @@ impl BounceBufferTracker {
             free_pages,
             event,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sparse_mmap::SparseMapping;
+    const SIZE_1MB: usize = 1048576;
+
+    #[test]
+    fn correct_read_only_behavior() {
+        let mapping = SparseMapping::new(SIZE_1MB * 4).unwrap();
+        let guest_memory = GuestMemory::new("test-scsi-buffers", mapping);
+        let range = PagedRange::new(0, 4096, &[0]).unwrap();
+        let buffers = RequestBuffers::new(&guest_memory, range, false);
+
+        let r = buffers.writer().write(&[1; 4096]);
+        assert!(
+            matches!(r, Err(AccessError::ReadOnly)),
+            "Expected read-only error, got {:?}",
+            r
+        );
+
+        let r = buffers.writer().fill(1, 4096);
+        assert!(
+            matches!(r, Err(AccessError::ReadOnly)),
+            "Expected read-only error, got {:?}",
+            r
+        );
+
+        assert!(
+            buffers.writer().len() == 0,
+            "Length should be 0 for read-only writer"
+        );
     }
 }

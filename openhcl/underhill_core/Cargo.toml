@@ -26,7 +26,6 @@ vmotherboard = { workspace = true, features = [
     "dev_underhill_vga_proxy",
     "dev_winbond_super_io_and_floppy_stub",
 ] }
-
 build_info.workspace = true
 cvm_tracing.workspace = true
 diag_proto.workspace = true
@@ -56,7 +55,7 @@ hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
 hyperv_uefi_custom_vars_json.workspace = true
 framebuffer.workspace = true
-hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect"] }
+hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
 get_helpers.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true

@@ -455,6 +455,7 @@ struct QueueStats {
 struct PendingTxCompletion {
     transaction_id: u64,
     tx_id: Option<TxId>,
+    status: protocol::Status,
 }
 
 #[derive(Clone, Copy)]
@@ -935,11 +936,14 @@ impl ActiveState {
                 // This shouldn't be referenced, but set it in case it is in the future.
                 active.pending_tx_packets[id.0 as usize].transaction_id = transaction_id;
             }
+            // Save/Restore does not preserve the status of pending tx completions,
+            // completing any pending completions with 'success' to avoid making changes to saved_state.
             active
                 .pending_tx_completions
                 .push_back(PendingTxCompletion {
                     transaction_id,
                     tx_id,
+                    status: protocol::Status::SUCCESS,
                 });
         }
         Ok(active)
@@ -4989,7 +4993,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     assert!(tx_packet.pending_packet_count > 0);
                     tx_packet.pending_packet_count -= 1;
                     if tx_packet.pending_packet_count == 0 {
-                        self.complete_tx_packet(state, id)?;
+                        self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
                     }
                 }
 
@@ -5007,6 +5011,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             Some(PendingTxCompletion {
                                 transaction_id: inflight.transaction_id,
                                 tx_id: Some(TxId(id as u32)),
+                                status: protocol::Status::SUCCESS,
                             })
                         } else {
                             None
@@ -5103,8 +5108,19 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 PacketData::RndisPacket(_) => {
                     assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
-                    let num_packets =
-                        self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments)?;
+                    let result: Result<usize, WorkerError> =
+                        self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments);
+                    let num_packets = match result {
+                        Ok(num_packets) => num_packets,
+                        Err(err) => {
+                            tracelimit::error_ratelimited!(
+                                err = &err as &dyn std::error::Error,
+                                "failed to handle RNDIS packet"
+                            );
+                            self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
+                            continue;
+                        }
+                    };
                     total_packets += num_packets as u64;
                     state.pending_tx_packets[id.0 as usize].pending_packet_count += num_packets;
 
@@ -5115,7 +5131,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             state.stats.tx_stalled.increment();
                         }
                     } else {
-                        self.complete_tx_packet(state, id)?;
+                        self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
                     }
                 }
                 PacketData::RndisPacketComplete(_completion) => {
@@ -5255,7 +5271,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         }
 
         if state.pending_tx_packets[id.0 as usize].pending_packet_count == 0 {
-            self.complete_tx_packet(state, id)?;
+            self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
         }
 
         Ok(packets_sent)
@@ -5309,12 +5325,14 @@ impl<T: 'static + RingMem> NetChannel<T> {
         Ok(num_packets)
     }
 
-    fn try_send_tx_packet(&mut self, transaction_id: u64) -> Result<bool, WorkerError> {
+    fn try_send_tx_packet(
+        &mut self,
+        transaction_id: u64,
+        status: protocol::Status,
+    ) -> Result<bool, WorkerError> {
         let message = self.message(
             protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
-            protocol::Message1SendRndisPacketComplete {
-                status: protocol::Status::SUCCESS,
-            },
+            protocol::Message1SendRndisPacketComplete { status },
         );
         let result = self.queue.split().1.try_write(&queue::OutgoingPacket {
             transaction_id,
@@ -5335,7 +5353,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
     fn send_pending_packets(&mut self, state: &mut ActiveState) -> Result<bool, WorkerError> {
         let mut did_some_work = false;
         while let Some(pending) = state.pending_tx_completions.front() {
-            if !self.try_send_tx_packet(pending.transaction_id)? {
+            if !self.try_send_tx_packet(pending.transaction_id, pending.status)? {
                 return Ok(did_some_work);
             }
             did_some_work = true;
@@ -5350,10 +5368,17 @@ impl<T: 'static + RingMem> NetChannel<T> {
         Ok(did_some_work)
     }
 
-    fn complete_tx_packet(&mut self, state: &mut ActiveState, id: TxId) -> Result<(), WorkerError> {
+    fn complete_tx_packet(
+        &mut self,
+        state: &mut ActiveState,
+        id: TxId,
+        status: protocol::Status,
+    ) -> Result<(), WorkerError> {
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
         assert_eq!(tx_packet.pending_packet_count, 0);
-        if self.pending_send_size == 0 && self.try_send_tx_packet(tx_packet.transaction_id)? {
+        if self.pending_send_size == 0
+            && self.try_send_tx_packet(tx_packet.transaction_id, status)?
+        {
             tracing::trace!(id = id.0, "sent tx completion");
             state.free_tx_packets.push(id);
         } else {
@@ -5361,6 +5386,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             state.pending_tx_completions.push_back(PendingTxCompletion {
                 transaction_id: tx_packet.transaction_id,
                 tx_id: Some(id),
+                status,
             });
         }
         Ok(())

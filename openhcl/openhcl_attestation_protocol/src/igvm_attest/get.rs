@@ -345,6 +345,8 @@ pub mod runtime_claims {
         pub tpm_enabled: bool,
         /// Whether the TPM states is persisted
         pub tpm_persisted: bool,
+        /// Whether certain vPCI devices are allowed through the device filter
+        pub filtered_vpci_devices_allowed: bool,
         /// VM id
         #[serde(rename = "vmUniqueId")]
         pub vm_unique_id: String,

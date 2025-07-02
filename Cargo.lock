@@ -2795,6 +2795,7 @@ dependencies = [
  "tracing",
  "ucs2 0.0.0",
  "uefi_nvram_storage",
+ "vmcore",
  "wchar",
  "zerocopy 0.8.24",
 ]
@@ -3395,7 +3396,6 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
- "underhill_confidentiality",
  "vbs_defs",
  "x86defs",
  "zerocopy 0.8.24",
@@ -4825,6 +4825,7 @@ dependencies = [
  "sha2",
  "sidecar_defs",
  "tdcall",
+ "tdx_guest_device",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.24",
@@ -6085,6 +6086,7 @@ dependencies = [
  "guestmem",
  "safeatomic",
  "smallvec",
+ "sparse_mmap",
  "zerocopy 0.8.24",
 ]
 
@@ -6630,9 +6632,40 @@ dependencies = [
  "scsi_core",
  "scsi_defs",
  "scsidisk",
+ "storvsc_driver",
+ "storvsp",
+ "storvsp_protocol",
+ "storvsp_resources",
  "test_with_tracing",
  "tracing",
  "user_driver_emulated_mock",
+ "vmbus_channel",
+ "vmcore",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "storvsc_driver"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "inspect",
+ "mesh_channel",
+ "pal_async",
+ "scsi_buffers",
+ "scsi_defs",
+ "slab",
+ "storvsp_protocol",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing_helpers",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_ring",
  "vmcore",
  "zerocopy 0.8.24",
 ]
@@ -6760,6 +6793,7 @@ version = "0.0.0"
 dependencies = [
  "hvdef",
  "memory_range",
+ "tdx_guest_device",
  "thiserror 2.0.12",
  "tracing",
  "x86defs",
@@ -6769,6 +6803,7 @@ dependencies = [
 name = "tdx_guest_device"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct 0.10.1",
  "nix 0.27.1",
  "static_assertions",
  "thiserror 2.0.12",
@@ -7297,10 +7332,12 @@ dependencies = [
  "async-trait",
  "guid",
  "inspect",
+ "mesh_protobuf",
  "pal_async",
  "thiserror 2.0.12",
  "ucs2 0.0.0",
  "uefi_specs",
+ "vmcore",
  "wchar",
  "zerocopy 0.8.24",
 ]
@@ -8441,9 +8478,11 @@ dependencies = [
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
+ "user_driver",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_core",
+ "vmbus_ring",
  "vmcore",
  "zerocopy 0.8.24",
 ]
