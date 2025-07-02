@@ -359,6 +359,7 @@ struct OverlayPage {
     gpn: u64,
     previous_permissions: HvMapGpaFlags,
     overlay_permissions: HvMapGpaFlags,
+    ref_count: u16,
 }
 
 impl HardwareIsolatedMemoryProtector {
@@ -936,13 +937,14 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // the permissions are adequate. If the permissions requested are
         // different from the ones already registered just do best effort,
         // there is no spec-guarantee of which one "wins".
-        if let Some(registered) = inner.overlay_pages[vtl].iter().find(|p| p.gpn == gpn) {
+        if let Some(registered) = inner.overlay_pages[vtl].iter_mut().find(|p| p.gpn == gpn) {
             let needed_perms = new_perms.unwrap_or(check_perms);
             if registered.overlay_permissions.into_bits() | needed_perms.into_bits()
                 != registered.overlay_permissions.into_bits()
             {
                 return Err(HvError::OperationDenied);
             }
+            registered.ref_count += 1;
             return Ok(());
         }
 
@@ -976,6 +978,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             gpn,
             previous_permissions: current_perms,
             overlay_permissions: new_perms.unwrap_or(current_perms),
+            ref_count: 1,
         });
 
         // Flush any threads accessing pages that had their VTL protections
@@ -1006,6 +1009,15 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .iter()
             .position(|p| p.gpn == gpn)
             .ok_or(HvError::OperationDenied)?;
+
+        // If this overlay page has been registered multiple times, just
+        // decrement the reference count and return. We don't implement
+        // full handling of multiple registrations with different permissions,
+        // since it's best effort anyways.
+        if overlay_pages[index].ref_count > 1 {
+            overlay_pages[index].ref_count -= 1;
+            return Ok(());
+        }
 
         // Restore its permissions.
         self.apply_protections(
