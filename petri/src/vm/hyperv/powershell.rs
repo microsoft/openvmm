@@ -577,7 +577,7 @@ pub fn run_restart_openhcl(
             .arg_opt("TimeoutHintSeconds", flags.stop_timeout_hint_secs)
             .flag_opt(
                 flags
-                    .skip_if_same_version
+                    .override_version_checks
                     .unwrap_or(false)
                     .then_some("OverrideVersionChecks"),
             )

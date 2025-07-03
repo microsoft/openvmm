@@ -14,8 +14,11 @@ use petri::PetriVmConfig;
 use petri::ResolvedArtifact;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use storvsp_resources::ScsiControllerHandle;
@@ -110,7 +113,16 @@ async fn basic(
         return Ok(());
     }
 
-    openhcl_servicing_core(config, "", igvm_file, OpenHclServicingFlags::default()).await
+    openhcl_servicing_core(
+        config,
+        "",
+        igvm_file,
+        OpenHclServicingFlags {
+            override_version_checks: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
