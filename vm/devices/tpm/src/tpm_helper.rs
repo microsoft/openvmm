@@ -1895,13 +1895,15 @@ pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         .with_restricted(true)
         .with_decrypt(true);
 
+    let mut unique: [u8; 102] = [0; 102]; // Initialize the unique field with zeros
+    unique[0] = 0x01; // Set the first byte to 1 to indicate a valid unique value, required for Ubuntu.
     let in_public = TpmtPublic::new(
         AlgIdEnum::RSA.into(),
         AlgIdEnum::SHA256.into(),
         object_attributes,
         &[],
         rsa_params,
-        &[0u8; crate::RSA_2K_MODULUS_SIZE],
+        unique.as_ref(),
     )
     .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
 
