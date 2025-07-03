@@ -164,9 +164,11 @@ pub(crate) struct LoadedVm {
         mesh::Sender<ShutdownRpc>,
     )>,
 
-    pub vmgs_thin_client: vmgs_broker::VmgsThinClient,
-    pub vmgs_disk_metadata: disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
-    pub _vmgs_handle: Task<()>,
+    pub vmgs: Option<(
+        vmgs_broker::VmgsThinClient,
+        disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
+        Task<()>,
+    )>,
 
     // dependencies of the vtl2 settings service
     pub get_client: guest_emulation_transport::GuestEmulationTransportClient,
@@ -300,7 +302,7 @@ impl LoadedVm {
                         });
                         resp.field("runtime_params", &self.runtime_params);
                         resp.field("get", &self.get_client);
-                        resp.field("vmgs", &self.vmgs_thin_client);
+                        resp.field("vmgs", self.vmgs.as_ref().map(|x| &x.0));
                         resp.field("network", &self.network_settings);
                         resp.field("nvme", &self.nvme_manager);
                         resp.field("resolver", &self.resolver);
@@ -691,11 +693,14 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
-        let vmgs = self
-            .vmgs_thin_client
-            .save()
-            .await
-            .context("vmgs save failed")?;
+        let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
+            Some((
+                vmgs_thin_client.save().await.context("vmgs save failed")?,
+                vmgs_disk_metadata.clone(),
+            ))
+        } else {
+            None
+        };
 
         // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
@@ -721,7 +726,7 @@ impl LoadedVm {
                 correlation_id: None,
                 emuplat,
                 flush_logs_result: None,
-                vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
+                vmgs,
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
                 dma_manager_state,

@@ -7568,6 +7568,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing_helpers",
+ "uefi_nvram_storage",
  "uevent",
  "uidevices_resources",
  "underhill_attestation",
