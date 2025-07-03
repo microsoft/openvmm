@@ -2293,6 +2293,132 @@ async fn initialize_rndis_with_prev_vf_switch_data_path(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn rndis_handle_packet_errors(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    // Not expecting an association packet because virtual function is not present
+    assert!(channel
+        .read_with(|_| panic!("No packet expected"))
+        .await
+        .is_err());
+
+    assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
+
+    // Send a packet with an invalid data offset.
+    // Expecting the channel to handle WorkerError::RndisMessageTooSmall
+    channel
+        .send_rndis_control_message_no_completion(
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            rndisprot::Packet {
+                data_offset: 7777,
+                data_length: 0,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset: 0,
+                per_packet_info_length: 0,
+                vc_handle: 0,
+                reserved: 0,
+            },
+            &[],
+        )
+        .await;
+
+    // Expect a completion message with failure status.
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE
+                );
+                let completion_data: protocol::Message1SendRndisPacketComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::FAILURE);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
+
+    // Verify the channel is still processing packets by sending another (also invalid).
+    channel
+        .send_rndis_control_message_no_completion(
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            rndisprot::Packet {
+                data_offset: 8888,
+                data_length: 0,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset: 0,
+                per_packet_info_length: 0,
+                vc_handle: 0,
+                reserved: 0,
+            },
+            &[],
+        )
+        .await;
+
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE
+                );
+                let completion_data: protocol::Message1SendRndisPacketComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::FAILURE);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
+}
+
+#[async_test]
 async fn stop_start_with_vf(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
