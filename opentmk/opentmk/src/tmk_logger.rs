@@ -42,7 +42,7 @@ pub(crate) fn format_log_string_to_json(
     if terminate_new_line {
         out.push('\n');
     }
-    return out;
+    out
 }
 
 pub struct TmkLogger<T> {
@@ -109,7 +109,7 @@ type SerialPortWriter = Serial<InstrIoAccess>;
 pub static LOGGER: TmkLogger<Mutex<Option<SerialPortWriter>>> = TmkLogger::new();
 
 pub fn init() -> Result<(), SetLoggerError> {
-    let serial = SerialPortWriter::new(SerialPort::COM2.into());
+    let serial = SerialPortWriter::new(SerialPort::COM2);
     LOGGER.set_writer(serial);
     
     log::set_logger(&LOGGER)

@@ -81,7 +81,7 @@ impl MemoryAllocator {
             self.locked_heap.lock().init(ptr, size);
         }
         *self.use_locked_heap.lock().borrow_mut() = true;
-        return true;
+        true
     }
 
     #[allow(dead_code)]
@@ -95,7 +95,6 @@ impl MemoryAllocator {
         if mem.is_err() {
             return core::ptr::null_mut();
         }
-        let ptr = mem.unwrap().as_ptr();
-        return ptr;
+        mem.unwrap().as_ptr()
     }
 }

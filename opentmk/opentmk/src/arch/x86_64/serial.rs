@@ -3,7 +3,7 @@
 
 //! Serial output for debugging.
 
-use core::{arch::asm, fmt};
+use core::fmt;
 use super::io;
 
 use sync_nostd::Mutex;

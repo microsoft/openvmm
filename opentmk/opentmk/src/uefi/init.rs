@@ -30,7 +30,7 @@ fn enable_uefi_vtl_protection() {
 
     let os_loader_indications = os_loader_indications.to_le_bytes();
 
-    let _ = uefi::runtime::set_variable(
+    uefi::runtime::set_variable(
         os_loader_indications_key,
         &uefi::runtime::VariableVendor(EFI_GUID),
         os_loader_indications_result.1,
@@ -50,7 +50,7 @@ fn enable_uefi_vtl_protection() {
 
 pub fn init() -> Result<(), Status> {
     let r: bool = ALLOCATOR.init(2048);
-    if r == false {
+    if !r {
         return Err(Status::ABORTED);
     }
     crate::tmk_logger::init().expect("Failed to init logger");

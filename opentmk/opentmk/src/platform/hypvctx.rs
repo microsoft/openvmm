@@ -3,7 +3,7 @@ use alloc::{
     boxed::Box,
     collections::{btree_map::BTreeMap, btree_set::BTreeSet, linked_list::LinkedList},
 };
-use core::{alloc::Layout, arch::asm, ops::Range};
+use core::{alloc::Layout, ops::Range};
 
 use hvdef::{
     hypercall::{HvInputVtl, InitialVpContextX64},
@@ -55,14 +55,13 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     /// hypervisor side notifications back to the guest.  
     /// Returns [`TmkResult::Err`] if the allocation of the SIMP buffer fails.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
-        let layout = Layout::from_size_align(4096, ALIGNMENT)
-            .or_else(|_| Err(TmkError(TmkErrorType::AllocationFailed)))?;
+        let layout = Layout::from_size_align(4096, ALIGNMENT).map_err(|_| TmkError(TmkErrorType::AllocationFailed))?;
 
         let ptr = unsafe { alloc(layout) };
         let gpn = (ptr as u64) >> 12;
         let reg = (gpn << 12) | 0x1;
 
-        unsafe { write_msr(hvdef::HV_X64_MSR_SIMP, reg.into()) };
+        unsafe { write_msr(hvdef::HV_X64_MSR_SIMP, reg) };
         log::info!("Successfuly set the SIMP register.");
 
         let reg = unsafe { read_msr(hvdef::HV_X64_MSR_SINT0) };
@@ -163,7 +162,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     /// here – we simply enqueue.
     fn queue_command_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, cmd) = cmd.get();
-        let cmd = cmd.ok_or_else(|| TmkError(TmkErrorType::QueueCommandFailed))?;
+        let cmd = cmd.ok_or(TmkError(TmkErrorType::QueueCommandFailed))?;
         cmdt()
             .lock()
             .get_mut(&vp_index)
@@ -183,7 +182,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     /// spins in `exec_handler` waiting for work.
     fn start_on_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, cmd) = cmd.get();
-        let cmd = cmd.ok_or_else(|| TmkError(TmkErrorType::InvalidParameter))?;
+        let cmd = cmd.ok_or(TmkError(TmkErrorType::InvalidParameter))?;
         if vtl >= Vtl::Vtl2 {
             return Err(TmkError(TmkErrorType::InvalidParameter));
         }
@@ -427,7 +426,7 @@ impl HvTestCtx {
     /// Capture the current VP context, patch the entry point and stack
     /// so that the new VP starts in `exec_handler`.
     fn get_default_context(&mut self) -> Result<InitialVpContextX64, TmkError> {
-        return self.run_fn_with_current_context(HvTestCtx::exec_handler);
+        self.run_fn_with_current_context(HvTestCtx::exec_handler)
     }
 
     #[cfg(target_arch = "x86_64")]

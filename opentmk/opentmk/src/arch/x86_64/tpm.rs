@@ -18,14 +18,13 @@
 
 extern crate alloc;
 
-use core::convert::TryFrom;
 use core::fmt;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, Ordering};
 use log::{error, warn, info, debug, trace};
 use alloc::vec::Vec;
 
-use crate::arch::rtc::{self, delay_sec};
+use crate::arch::rtc::delay_sec;
 
 /// TPM command codes as defined in the TPM 2.0 specification
 #[repr(u32)]
@@ -118,7 +117,7 @@ impl fmt::Display for TpmError {
             TpmError::UnsupportedCommand => write!(f, "Command not supported by TPM"),
             TpmError::HardwareFailure => write!(f, "TPM hardware failure"),
             TpmError::AuthFailure => write!(f, "TPM authorization failure"),
-            TpmError::TpmResponseError(code) => write!(f, "TPM response error: 0x{:08X}", code),
+            TpmError::TpmResponseError(code) => write!(f, "TPM response error: 0x{code:08X}"),
             TpmError::NotInitialized => write!(f, "TPM driver not initialized"),
             TpmError::AllocationFailure => write!(f, "Memory allocation failure"),
         }
@@ -343,7 +342,7 @@ impl TpmDriver {
                 error!("Timeout waiting for locality {} access", self.current_locality);
                 return Err(TpmError::Timeout);
             }
-            super::rtc::delay_sec(2);
+            delay_sec(2);
         }
         
         // Check if TPM is valid
@@ -473,7 +472,7 @@ impl TpmDriver {
         buffer.write(&startup_cmd)
             .map(|written| {
                 debug!("TPM_CC_Startup command built, size: {} bytes", written);
-                ()
+                
             })
             .map_err(|err| {
                 error!("Failed to build TPM_CC_Startup command: {}", err);
@@ -567,7 +566,7 @@ impl TpmDriver {
         debug!("TPM response size: {} bytes", response_size);
         
         // Validate response size
-        if response_size < 10 || response_size > 4096 {
+        if !(10..=4096).contains(&response_size) {
             error!("Invalid TPM response size: {}", response_size);
             return Err(TpmError::CommunicationFailure);
         }
@@ -672,7 +671,7 @@ impl TpmDriver {
         debug!("TPM CRB response size: {} bytes", response_size);
         
         // Validate response size
-        if response_size < 10 || response_size > 4096 {
+        if !(10..=4096).contains(&response_size) {
             error!("Invalid TPM CRB response size: {}", response_size);
             return Err(TpmError::CommunicationFailure);
         }
@@ -916,7 +915,7 @@ impl TpmDriver {
         
         // Use unsafe for direct hardware access
         let value = unsafe {
-            read_volatile((addr as *const u8))
+            read_volatile(addr as *const u8)
         };
         
         trace!("TIS register 0x{:X} value: 0x{:02X}", reg_offset, value);
@@ -931,7 +930,7 @@ impl TpmDriver {
             
         // Use unsafe for direct hardware access
         unsafe {
-            write_volatile((addr as *mut u8), value);
+            write_volatile(addr as *mut u8, value);
         }
         Ok(())
     }
@@ -943,7 +942,7 @@ impl TpmDriver {
         
         // Use unsafe for direct hardware access
         let value = unsafe {
-            read_volatile((addr as *const u32))
+            read_volatile(addr as *const u32)
         };
         
         trace!("CRB register 0x{:X} value: 0x{:08X}", reg_offset, value);
@@ -958,7 +957,7 @@ impl TpmDriver {
             
         // Use unsafe for direct hardware access
         unsafe {
-            write_volatile((addr as *mut u32), value);
+            write_volatile(addr as *mut u32, value);
         }
         Ok(())
     }
@@ -970,7 +969,7 @@ impl TpmDriver {
         
         // Use unsafe for direct hardware access
         let value = unsafe {
-            read_volatile((addr as *const u8))
+            read_volatile(addr as *const u8)
         };
         
         trace!("MMIO byte 0x{:X} value: 0x{:02X}", offset, value);
@@ -985,7 +984,7 @@ impl TpmDriver {
             
         // Use unsafe for direct hardware access
         unsafe {
-            write_volatile((addr as *mut u8), value);
+            write_volatile(addr as *mut u8, value);
         }
         Ok(())
     }

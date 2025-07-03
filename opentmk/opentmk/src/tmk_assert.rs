@@ -57,7 +57,7 @@ where
     if terminate_new_line {
         out.push('\n');
     }
-    return out;
+    out
 }
 
 pub(crate) fn write_str(s: &str) {

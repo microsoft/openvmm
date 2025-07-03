@@ -1,5 +1,3 @@
-use core::panic::PanicInfo;
-use core::ptr::{read_volatile, write_volatile};
 use super::io::{inb, outb};
 // CMOS/RTC I/O ports
 const CMOS_ADDRESS: u16 = 0x70;

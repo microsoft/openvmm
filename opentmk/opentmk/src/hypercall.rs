@@ -479,7 +479,7 @@ impl HvCall {
                 Some(hw_ids.len()),
             );
 
-            let n = r.elements_processed() as usize;
+            let n = r.elements_processed();
 
             output.extend(
                 <[u32]>::ref_from_bytes(&mut self.output_page().buffer[..n * 4])
