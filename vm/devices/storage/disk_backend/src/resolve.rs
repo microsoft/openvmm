@@ -19,11 +19,6 @@ impl CanResolveTo<ResolvedDisk> for DiskHandleKind {
 pub struct ResolveDiskParameters<'a> {
     /// Whether the disk is being opened for read-only use.
     pub read_only: bool,
-    #[doc(hidden)]
-    // Workaround for async_trait not working well with GAT input parameters
-    // with missing lifetimes. Remove once we stop using async_trait for async
-    // resolvers.
-    pub _async_trait_workaround: &'a (),
     /// The task driver source for the VM.
     pub driver_source: &'a VmTaskDriverSource,
 }

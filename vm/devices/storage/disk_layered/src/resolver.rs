@@ -74,7 +74,6 @@ impl AsyncResolveResource<DiskHandleKind, LayeredDiskHandle> for LayeredDiskReso
                             desc.layer,
                             ResolveDiskLayerParameters {
                                 read_only: this_read_only,
-                                _async_trait_workaround: &(),
                                 driver_source: input.driver_source,
                             },
                         )
@@ -115,7 +114,6 @@ impl AsyncResolveResource<DiskLayerHandleKind, DiskLayerHandle> for LayeredDiskR
                 resource.0,
                 ResolveDiskParameters {
                     read_only: input.read_only,
-                    _async_trait_workaround: &(),
                     driver_source: input.driver_source,
                 },
             )

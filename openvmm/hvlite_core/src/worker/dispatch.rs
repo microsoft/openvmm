@@ -248,7 +248,6 @@ async fn open_simple_disk(
             disk_type,
             ResolveDiskParameters {
                 read_only,
-                _async_trait_workaround: &(),
                 driver_source,
             },
         )

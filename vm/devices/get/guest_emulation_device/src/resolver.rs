@@ -88,7 +88,6 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                         disk,
                         ResolveDiskParameters {
                             read_only: false,
-                            _async_trait_workaround: &(),
                             driver_source: input.driver_source,
                         },
                     )
