@@ -647,7 +647,7 @@ impl UhVmNetworkSettings {
         vf_managers: &mut Vec<(Guid, Arc<HclNetworkVFManager>)>,
         remove_vtl0_vf: bool,
         keep_vf_alive: bool,
-    ) {
+    ) -> anyhow::Result<()> {
         // Notify VF managers of shutdown so that the subsequent teardown of
         // the NICs does not modify VF state.
         let mut vf_managers = vf_managers
@@ -690,16 +690,30 @@ impl UhVmNetworkSettings {
         }
 
         // Close vmbus channels and drop all of the NICs.
-        let mut endpoints: Vec<_> =
-            join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
-                async {
-                    let nic = channel.remove().await.revoke().await;
-                    nic.shutdown()
-                }
-                .instrument(tracing::info_span!("nic_shutdown", CVM_ALLOWED, %instance_id))
-                .await
-            }))
-            .await;
+        // If vmbus channel shutdown fails, the error is preserved and VF Manager shutdown proceeds.
+        let mut endpoints: Vec<_> = Vec::new();
+        let mut error: Option<anyhow::Error> = None;
+        match CancelContext::new()
+            .with_timeout(Duration::from_secs(2))
+            .until_cancelled(join_all(nic_channels.drain(..).map(
+                async |(instance_id, channel)| {
+                    async {
+                        let nic = channel.remove().await.revoke().await;
+                        nic.shutdown()
+                    }
+                    .instrument(tracing::info_span!("nic_shutdown", CVM_ALLOWED, %instance_id))
+                    .await
+                },
+            )))
+            .await
+            .context("cancelled waiting for vmbus channel close")
+        {
+            Ok(result) => endpoints = result,
+            Err(e) => {
+                tracing::error!("Error closing vmbus channels: {:?}", e);
+                error = Some(e);
+            }
+        };
 
         let shutdown_vfs = join_all(vf_managers.drain(..).map(
             async |(instance_id, mut manager)| {
@@ -711,7 +725,7 @@ impl UhVmNetworkSettings {
                     .await
             },
         ));
-        let run_endpoints = async {
+        let run_endpoints = async move {
             loop {
                 let _ = endpoints
                     .iter_mut()
@@ -721,9 +735,24 @@ impl UhVmNetworkSettings {
                     .await;
             }
         };
-        // Complete shutdown on the VFs. Process events on the endpoints to
-        // allow for proper shutdown.
-        let _ = (shutdown_vfs, run_endpoints).race().await;
+
+        if error.is_some() {
+            // If there was an error closing vmbus channels, complete VF shutdown.
+            shutdown_vfs.await;
+        } else {
+            // Complete shutdown on the VFs. Process events on the endpoints to
+            // allow for proper shutdown.
+            // run_endpoints is a loop, so the race completes when shutdown_vfs completes.
+            // Also, run_endpoints races wait_for_endpoint_action() so it doesn't guarentee
+            // all endpoints will close their channels before shutdown_vfs completes.
+            let _ = (shutdown_vfs, run_endpoints).race().await;
+        }
+
+        if let Some(e) = error {
+            return Err(e);
+        }
+
+        Ok(())
     }
 
     async fn new_underhill_nic(
@@ -931,15 +960,14 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             .ok_or(NetworkSettingsError::VFManagerMissing(instance_id));
 
         self.shutdown_vf_devices(&mut vec![vf_manager.unwrap()], true, false)
-            .await;
-        Ok(())
+            .await
     }
 
-    async fn unload_for_servicing(&mut self) {
+    async fn unload_for_servicing(&mut self) -> anyhow::Result<()> {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
         self.shutdown_vf_devices(&mut vf_managers, false, true)
-            .await;
+            .await
     }
 
     async fn prepare_for_hibernate(&self, rollback: bool) {
