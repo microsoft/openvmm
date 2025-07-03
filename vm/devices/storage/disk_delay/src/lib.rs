@@ -84,7 +84,8 @@ impl DiskIo for DelayDisk {
         sector: u64,
     ) -> Result<(), DiskError> {
         // Introduce a delay before reading the data.
-        PolledTimer::new(self.driver_source).sleep(Duration::from_millis(self.delay.get()));
+        PolledTimer::new(&self.driver_source.simple())
+            .sleep(Duration::from_millis(self.delay.get()));
         self.inner.read_vectored(buffers, sector).await
     }
 
@@ -96,7 +97,8 @@ impl DiskIo for DelayDisk {
         fua: bool,
     ) -> Result<(), DiskError> {
         // Write the encrypted data.
-        PolledTimer::new(self.driver_source).sleep(Duration::from_millis(self.delay.get()));
+        PolledTimer::new(&self.driver_source.simple())
+            .sleep(Duration::from_millis(self.delay.get()));
         self.inner.write_vectored(buffers, sector, fua).await
     }
 
