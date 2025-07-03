@@ -239,7 +239,7 @@ impl PetriVmConfigOpenVmm {
     pub fn with_nic(mut self) -> Self {
         let endpoint =
             net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
-        if self.vtl2_settings.is_some() {
+        if self.resources.vtl2_settings.is_some() {
             self.config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
                 instance_id: MANA_INSTANCE,
@@ -252,7 +252,8 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             });
 
-            self.vtl2_settings
+            self.resources
+                .vtl2_settings
                 .as_mut()
                 .unwrap()
                 .dynamic
@@ -404,6 +405,7 @@ impl PetriVmConfigOpenVmm {
     // with_nic, etc. methods.
     pub fn with_custom_vtl2_settings(mut self, f: impl FnOnce(&mut Vtl2Settings)) -> Self {
         f(self
+            .resources
             .vtl2_settings
             .as_mut()
             .expect("Custom VTL 2 settings are only supported with OpenHCL."));

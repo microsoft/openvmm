@@ -50,7 +50,6 @@ impl PetriVmConfigOpenVmm {
             openvmm_log_file,
 
             ged,
-            vtl2_settings,
             framebuffer_access,
         } = self;
 
@@ -93,7 +92,9 @@ impl PetriVmConfigOpenVmm {
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
-            ged.vtl2_settings = Some(prost::Message::encode_to_vec(&vtl2_settings.unwrap()));
+            ged.vtl2_settings = Some(prost::Message::encode_to_vec(
+                resources.vtl2_settings.as_ref().unwrap(),
+            ));
             config
                 .vmbus_devices
                 .push((DeviceVtl::Vtl2, ged.into_resource()));
@@ -126,7 +127,6 @@ impl PetriVmConfigOpenVmm {
 
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
-                arch,
                 resources,
                 mesh,
                 worker,

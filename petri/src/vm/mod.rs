@@ -73,6 +73,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     backend: T,
     /// VM configuration
     config: PetriVmConfig,
+    /// VMM-specific configuration
+    vmm_config: Option<Box<dyn FnOnce(T::VmmConfig) -> T::VmmConfig + Send>>,
     /// VMM-agnostic resources
     resources: PetriVmResources,
 }
@@ -105,6 +107,9 @@ pub struct PetriVmResources {
 /// Trait for VMM-specific contruction and runtime resources
 #[async_trait]
 pub trait PetriVmmBackend {
+    /// VMM-specific configuration
+    type VmmConfig;
+
     /// Runtime object
     type VmRuntime: PetriVmRuntime;
 
@@ -115,13 +120,14 @@ pub trait PetriVmmBackend {
     async fn run(
         self,
         config: PetriVmConfig,
+        vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime>;
 }
 
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
-    _arch: MachineArch,
+    arch: MachineArch,
     _resources: PetriVmResources,
     runtime: T::VmRuntime,
 }
@@ -144,6 +150,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 agent_image: artifacts.agent_image,
                 openhcl_agent_image: artifacts.openhcl_agent_image,
             },
+            vmm_config: None,
             resources: PetriVmResources {
                 driver: driver.clone(),
                 output_dir: params.output_dir.to_owned(),
@@ -178,13 +185,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
         let arch = self.config.arch;
-        let runtime = self.backend.run(self.config, &self.resources).await?;
+        let runtime = self
+            .backend
+            .run(self.config, self.vmm_config, &self.resources)
+            .await?;
         Ok(PetriVm {
-            _arch: arch,
+            arch,
             _resources: self.resources,
             runtime,
         })
     }
+
+    // TODO: Make sure all of the below are parsed in openvmm construct
 
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
     pub fn with_secure_boot(self) -> Self {
@@ -254,12 +266,17 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Sets the command line for the paravisor.
-    pub fn with_openhcl_command_line(mut self, command_line: &str) -> Self {
+    pub fn with_openhcl_command_line(mut self, additional_command_line: &str) -> Self {
         match &mut self.config.firmware {
             Firmware::OpenhclLinuxDirect { openhcl_config, .. }
             | Firmware::OpenhclPcat { openhcl_config, .. }
             | Firmware::OpenhclUefi { openhcl_config, .. } => {
-                openhcl_config.command_line = Some(command_line.to_owned());
+                if let Some(cmd) = openhcl_config.command_line.as_mut() {
+                    cmd.push(' ');
+                    cmd.push_str(additional_command_line);
+                } else {
+                    openhcl_config.command_line = Some(additional_command_line.to_string());
+                }
             }
             Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
                 panic!("OpenHCL command line is only supported for OpenHCL firmware.")
@@ -319,13 +336,43 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Use the specified VMGS file
+    pub fn with_vmgs<V: IsTestVmgs>(mut self, vmgs: PetriVmgsResource<V>) -> Self {
+        match &mut self.config.firmware {
+            Firmware::Uefi { vmgs_file, .. } | Firmware::OpenhclUefi { vmgs_file, .. } => {
+                *vmgs_file = vmgs.erase()
+            }
+            Firmware::LinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::Pcat { .. }
+            | Firmware::OpenhclPcat { .. } => {
+                panic!("UEFI frontpage is only supported for UEFI firmware.")
+            }
+        }
+        self
+    }
+
     /// Get VM's guest OS flavor
     pub fn os_flavor(&self) -> OsFlavor {
         self.config.firmware.os_flavor()
     }
+
+    /// Get the backend-specific config builder
+    pub fn modify_backend(
+        mut self,
+        f: impl FnOnce(T::VmmConfig) -> T::VmmConfig + 'static + Send,
+    ) -> Self {
+        self.vmm_config = Some(Box::new(f));
+        self
+    }
 }
 
 impl<T: PetriVmmBackend> PetriVm<T> {
+    /// Wait for the VM to halt, returning the reason for the halt.
+    pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
+        self.runtime.wait_for_halt().await
+    }
+
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and cleanly tear down the VM.
     pub async fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
@@ -361,6 +408,37 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime.connect_to_agent(true).await
     }
 
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// verifies that it is the expected success value.
+    ///
+    /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
+    /// * PCAT guests may not emit an event depending on the PCAT version, this
+    ///   method is best effort for them.
+    pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
+        self.runtime.wait_for_successful_boot_event().await
+    }
+
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// returns that status.
+    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        self.runtime.wait_for_boot_event().await
+    }
+
+    /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
+    pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        self.runtime.send_enlightened_shutdown(kind).await
+    }
+
+    /// Get VM's guest OS flavor
+    pub fn arch(&self) -> MachineArch {
+        self.arch
+    }
+
+    /// Get the inner runtime backend to make backend-specific calls
+    pub fn backend(&mut self) -> &mut T::VmRuntime {
+        &mut self.runtime
+    }
+
     async fn launch_vtl2_pipette(&self) -> anyhow::Result<()> {
         // Start pipette through DiagClient
         let res = self
@@ -388,23 +466,11 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             anyhow::bail!("VM is not configured with OpenHCL")
         }
     }
-
-    pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
-        self.runtime.wait_for_successful_boot_event().await
-    }
-
-    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.runtime.wait_for_boot_event().await
-    }
-
-    pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
-        self.runtime.send_enlightened_shutdown(kind).await
-    }
 }
 
 /// A running VM that tests can interact with.
 #[async_trait]
-pub(crate) trait PetriVmRuntime {
+pub trait PetriVmRuntime {
     /// Cleanly tear down the VM immediately.
     async fn teardown(self) -> anyhow::Result<()>;
     /// Wait for the VM to halt, returning the reason for the halt.
@@ -418,7 +484,7 @@ pub(crate) trait PetriVmRuntime {
     ///
     /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
     /// * PCAT guests may not emit an event depending on the PCAT version, this
-    /// method is best effort for them.
+    ///   method is best effort for them.
     async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>;
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
@@ -548,7 +614,7 @@ pub enum Firmware {
         /// The firmware to use.
         uefi_firmware: ResolvedArtifact,
         /// The VMGS file to use
-        vmgs_file: Option<ResolvedArtifact>,
+        vmgs_file: PetriVmgsResource,
         /// UEFI configuration
         uefi_config: UefiConfig,
     },
@@ -561,7 +627,7 @@ pub enum Firmware {
         /// The path to the IGVM file to use.
         igvm_path: ResolvedArtifact,
         /// The VMGS file to use
-        vmgs_file: Option<ResolvedArtifact>,
+        vmgs_file: PetriVmgsResource,
         /// UEFI configuration
         uefi_config: UefiConfig,
         /// OpenHCL configuration
@@ -617,7 +683,7 @@ impl Firmware {
         Firmware::Uefi {
             guest,
             uefi_firmware,
-            vmgs_file: None,
+            vmgs_file: PetriVmgsResource::Ephemeral,
             uefi_config: Default::default(),
         }
     }
@@ -640,7 +706,7 @@ impl Firmware {
             guest,
             isolation,
             igvm_path,
-            vmgs_file: None,
+            vmgs_file: PetriVmgsResource::Ephemeral,
             uefi_config: Default::default(),
             openhcl_config: Default::default(),
         }
@@ -907,7 +973,8 @@ pub struct OpenHclServicingFlags {
 }
 
 /// Virtual machine guest state resource
-pub enum PetriVmgsResource<T: IsTestVmgs> {
+#[derive(Debug)]
+pub enum PetriVmgsResource<T = ()> {
     /// Use disk to store guest state
     Disk(ResolvedArtifact<T>),
     /// Use disk to store guest state, reformatting if corrupted.
@@ -916,6 +983,19 @@ pub enum PetriVmgsResource<T: IsTestVmgs> {
     Reprovision(ResolvedArtifact<T>),
     /// Store guest state in memory
     Ephemeral,
+}
+
+impl<T> PetriVmgsResource<T> {
+    fn erase(self) -> PetriVmgsResource {
+        match self {
+            PetriVmgsResource::Disk(a) => PetriVmgsResource::Disk(a.erase()),
+            PetriVmgsResource::ReprovisionOnFailure(a) => {
+                PetriVmgsResource::ReprovisionOnFailure(a.erase())
+            }
+            PetriVmgsResource::Reprovision(a) => PetriVmgsResource::Reprovision(a.erase()),
+            PetriVmgsResource::Ephemeral => PetriVmgsResource::Ephemeral,
+        }
+    }
 }
 
 /// UEFI secure boot template

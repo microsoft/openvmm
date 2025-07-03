@@ -435,12 +435,12 @@ impl PetriVmConfigOpenVmm {
                 log_source: log_source.clone(),
                 vtl2_vsock_path,
                 _vmbus_vsock_path: vmbus_vsock_path,
+                vtl2_settings,
             },
 
             openvmm_log_file: log_source.log_file("openvmm")?,
 
             ged,
-            vtl2_settings,
             framebuffer_access,
         }
         .with_processor_topology(ProcessorTopology::default()))

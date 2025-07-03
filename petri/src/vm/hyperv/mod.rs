@@ -56,6 +56,7 @@ pub struct HyperVPetriRuntime {
 
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
+    type VmmConfig = ();
     type VmRuntime = HyperVPetriRuntime;
 
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
@@ -65,6 +66,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
     async fn run(
         self,
         config: PetriVmConfig,
+        _vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime> {
         let PetriVmConfig {

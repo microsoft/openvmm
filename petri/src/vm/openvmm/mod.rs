@@ -78,6 +78,7 @@ pub struct OpenVmmPetriBackend {
 
 #[async_trait]
 impl PetriVmmBackend for OpenVmmPetriBackend {
+    type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
 
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
@@ -91,10 +92,16 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     async fn run(
         self,
         config: PetriVmConfig,
+        vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime> {
-        let openvmm_vm_config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
-        openvmm_vm_config.run_with_lazy_pipette().await
+        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
+
+        if let Some(f) = vmm_config {
+            config = f(config);
+        }
+
+        config.run_with_lazy_pipette().await
     }
 }
 
@@ -113,7 +120,6 @@ pub struct PetriVmConfigOpenVmm {
 
     // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
-    vtl2_settings: Option<Vtl2Settings>,
     framebuffer_access: Option<FramebufferAccess>,
 }
 /// Various channels and resources used to interact with the VM while it is running.
@@ -140,6 +146,8 @@ struct PetriVmResourcesOpenVmm {
     // TempPaths that cannot be dropped until the end.
     vtl2_vsock_path: Option<TempPath>,
     _vmbus_vsock_path: TempPath,
+
+    vtl2_settings: Option<Vtl2Settings>,
 }
 
 impl PetriVmConfigOpenVmm {

@@ -198,7 +198,7 @@ fn resolve_openhcl_tmks<T: PetriVmmBackend>(
             guest: petri::UefiGuest::None,
             isolation: None,
             igvm_path,
-            vmgs_file: None,
+            vmgs_file: petri::PetriVmgsResource::Ephemeral,
             uefi_config: Default::default(),
             openhcl_config: Default::default(),
         },

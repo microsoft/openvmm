@@ -28,7 +28,6 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::GuestQuirks;
-use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::future::Future;
@@ -37,6 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use unix_socket::UnixListener;
 use vmm_core_defs::HaltReason;
+use vtl2_settings_proto::Vtl2Settings;
 
 /// A running VM that tests can interact with.
 // DEVNOTE: Really the PetriVmInner is the actual VM and channels that we interact
@@ -79,7 +79,6 @@ impl PetriVmRuntime for PetriVmOpenVmm {
 }
 
 pub(super) struct PetriVmInner {
-    pub(super) arch: MachineArch,
     pub(super) resources: PetriVmResourcesOpenVmm,
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
@@ -252,7 +251,7 @@ impl PetriVmOpenVmm {
     );
     petri_vm_fn!(
         /// Modifies OpenHCL VTL2 settings.
-        pub async fn modify_vtl2_settings(&mut self, settings: &vtl2_settings_proto::Vtl2Settings) -> anyhow::Result<()>
+        pub async fn modify_vtl2_settings(&mut self, f: impl FnOnce(&mut Vtl2Settings)) -> anyhow::Result<()>
     );
 
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
@@ -443,9 +442,11 @@ impl PetriVmInner {
     }
 
     async fn modify_vtl2_settings(
-        &self,
-        settings: &vtl2_settings_proto::Vtl2Settings,
+        &mut self,
+        f: impl FnOnce(&mut Vtl2Settings),
     ) -> anyhow::Result<()> {
+        f(self.resources.vtl2_settings.as_mut().unwrap());
+
         let ged_send = self
             .resources
             .ged_send
@@ -455,7 +456,7 @@ impl PetriVmInner {
         ged_send
             .call_failable(
                 get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
-                prost::Message::encode_to_vec(settings),
+                prost::Message::encode_to_vec(self.resources.vtl2_settings.as_ref().unwrap()),
             )
             .await?;
 

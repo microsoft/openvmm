@@ -10,7 +10,8 @@
 
 pub mod disk_image;
 mod linux_direct_serial_agent;
-mod openhcl_diag;
+#[allow(missing_docs)] // TODO: Docs
+pub mod openhcl_diag;
 mod test;
 mod tracing;
 mod vm;
