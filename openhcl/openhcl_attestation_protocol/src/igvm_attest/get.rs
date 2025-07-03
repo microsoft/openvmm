@@ -19,7 +19,7 @@ const ATTESTATION_REPORT_SIZE_MAX: usize = SNP_VM_REPORT_SIZE;
 
 pub const VBS_VM_REPORT_SIZE: usize = 0x230;
 pub const SNP_VM_REPORT_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_SIZE;
-pub const TDX_VM_REPORT_SIZE: usize = tdx_guest_device::protocol::TDX_REPORT_SIZE;
+pub const TDX_VM_REPORT_SIZE: usize = x86defs::tdx::TDX_REPORT_SIZE;
 /// No TEE attestation report for TVM
 pub const TVM_REPORT_SIZE: usize = 0;
 

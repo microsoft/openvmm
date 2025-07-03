@@ -22,9 +22,9 @@ pub enum Error {
     #[error("got all-zeros key")]
     AllZeroKey,
     #[error("failed to open /dev/tdx_guest")]
-    OpenDevTdxGuest(#[source] tdx_guest_device::ioctl::Error),
+    OpenDevTdxGuest(#[source] tdx_guest_device::Error),
     #[error("failed to get a TDX report via /dev/tdx_guest")]
-    GetTdxReport(#[source] tdx_guest_device::ioctl::Error),
+    GetTdxReport(#[source] tdx_guest_device::Error),
 }
 
 /// Use the SNP-defined derived key size for now.
@@ -37,7 +37,7 @@ pub const REPORT_DATA_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_DATA_
 // TDX and SNP report data size are equal so we can use either of them
 static_assertions::const_assert_eq!(
     sev_guest_device::protocol::SNP_REPORT_DATA_SIZE,
-    tdx_guest_device::protocol::TDX_REPORT_DATA_SIZE
+    x86defs::tdx::TDX_REPORT_DATA_SIZE
 );
 
 /// Type of the TEE
@@ -150,8 +150,7 @@ impl TeeCall for TdxCall {
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<GetAttestationReportResult, Error> {
-        let dev =
-            tdx_guest_device::ioctl::TdxGuestDevice::open().map_err(Error::OpenDevTdxGuest)?;
+        let dev = tdx_guest_device::TdxGuestDevice::open().map_err(Error::OpenDevTdxGuest)?;
         let report = dev
             .get_report(*report_data, 0)
             .map_err(Error::GetTdxReport)?;
