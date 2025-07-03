@@ -17,8 +17,8 @@ use mesh::Cell;
 use pal_async::timer::PolledTimer;
 use scsi_buffers::RequestBuffers;
 use std::time::Duration;
-use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vm_task::VmTaskDriver;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// A disk with delay on every I/O operation.
 #[derive(Inspect)]
@@ -88,7 +88,8 @@ impl DiskIo for DelayDisk {
     ) -> Result<(), DiskError> {
         // Introduce a delay before reading the data.
         PolledTimer::new(&self.driver)
-            .sleep(Duration::from_millis(self.delay.get())).await;
+            .sleep(Duration::from_millis(self.delay.get()))
+            .await;
         self.inner.read_vectored(buffers, sector).await
     }
 
@@ -101,7 +102,8 @@ impl DiskIo for DelayDisk {
     ) -> Result<(), DiskError> {
         // Write the encrypted data.
         PolledTimer::new(&self.driver)
-            .sleep(Duration::from_millis(self.delay.get())).await;
+            .sleep(Duration::from_millis(self.delay.get()))
+            .await;
         self.inner.write_vectored(buffers, sector, fua).await
     }
 
