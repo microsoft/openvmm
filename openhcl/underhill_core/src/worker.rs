@@ -1608,6 +1608,9 @@ async fn new_underhill_vm(
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
         tpm_persisted: !dps.general.suppress_attestation.unwrap_or(false),
+        filtered_vpci_devices_allowed: with_vmbus_relay
+            && dps.general.vpci_boot_enabled
+            && isolation.is_isolated(),
         vm_unique_id: dps.general.bios_guid.to_string(),
     };
 
@@ -3065,6 +3068,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         com2_vmbus_redirector: _,
         suppress_attestation: _,
         bios_guid: _,
+        vpci_boot_enabled: _,
 
         // Validated below
         battery_enabled,
@@ -3099,7 +3103,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         generation_id: _,
         pause_after_boot_failure: _,
         disable_frontpage: _,
-        vpci_boot_enabled: _,
         num_lock_enabled: _,
         pcat_boot_device_order: _,
         vpci_instance_filter: _,
