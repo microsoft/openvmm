@@ -4,22 +4,19 @@
 //! Hypercall infrastructure.
 
 #![allow(dead_code)]
+use core::{
+    mem::size_of,
+    sync::atomic::{AtomicU16, Ordering},
+};
+
 use arrayvec::ArrayVec;
-use core::mem::size_of;
-use core::sync::atomic::AtomicBool;
-use core::sync::atomic::Ordering;
-use hvdef::hypercall::EnablePartitionVtlFlags;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::InitialVpContextX64;
-use hvdef::HvRegisterValue;
-use hvdef::HvRegisterVsmPartitionConfig;
-use hvdef::HvX64RegisterName;
-use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE;
+use hvdef::{
+    hypercall::{EnablePartitionVtlFlags, HvInputVtl, InitialVpContextX64},
+    HvRegisterValue, HvRegisterVsmPartitionConfig, HvX64RegisterName, Vtl, HV_PAGE_SIZE,
+};
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::{invoke_hypercall, HYPERCALL_PAGE};
-use zerocopy::FromBytes;
-use zerocopy::IntoBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
@@ -120,7 +117,7 @@ pub struct HvCall {
     output_page: HvcallPage,
 }
 
-static HV_PAGE_INIT_STATUS: AtomicBool = AtomicBool::new(false);
+static HV_PAGE_INIT_STATUS: AtomicU16 = AtomicU16::new(0);
 
 #[expect(unsafe_code)]
 impl HvCall {
@@ -302,14 +299,8 @@ impl HvCall {
     }
 
     /// Enables VTL protection for the specified VTL.
-    pub fn enable_vtl_protection(
-        &mut self,
-        vtl: HvInputVtl,
-    ) -> Result<(), hvdef::HvError> {
-        let hvreg = self.get_register(
-            HvX64RegisterName::VsmPartitionConfig.into(),
-            Some(vtl),
-        )?;
+    pub fn enable_vtl_protection(&mut self, vtl: HvInputVtl) -> Result<(), hvdef::HvError> {
+        let hvreg = self.get_register(HvX64RegisterName::VsmPartitionConfig.into(), Some(vtl))?;
         let mut hvreg: HvRegisterVsmPartitionConfig =
             HvRegisterVsmPartitionConfig::from_bits(hvreg.as_u64());
         hvreg.set_enable_vtl_protection(true);
@@ -377,8 +368,8 @@ impl HvCall {
     #[cfg(target_arch = "x86_64")]
     /// Hypercall to get the current VTL VP context
     pub fn get_current_vtl_vp_context(&mut self) -> Result<InitialVpContextX64, hvdef::HvError> {
-        use HvX64RegisterName;
         use zerocopy::FromZeros;
+        use HvX64RegisterName;
         let mut context: InitialVpContextX64 = FromZeros::new_zeroed();
         context.cr0 = self
             .get_register(HvX64RegisterName::Cr0.into(), None)?
@@ -478,7 +469,8 @@ impl HvCall {
 
         for hw_ids in hw_ids.chunks(MAX_PER_CALL) {
             let _ = header.write_to_prefix(self.input_page().buffer.as_mut_slice());
-            let _ = hw_ids.write_to_prefix(&mut self.input_page().buffer[header.as_bytes().len()..]);
+            let _ =
+                hw_ids.write_to_prefix(&mut self.input_page().buffer[header.as_bytes().len()..]);
 
             // SAFETY: The input header and rep slice are the correct types for this hypercall.
             //         The hypercall output is validated right after the hypercall is issued.
@@ -504,15 +496,14 @@ impl HvCall {
 
     /// Initializes the hypercall interface.
     pub fn initialize(&mut self) {
-        let init = HV_PAGE_INIT_STATUS.load(Ordering::SeqCst);
-        if init {
-            return;
-        }
         // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+        // This is an idempotent operation, so we can call it multiple times.
+        // we proceed and initialize the hypercall interface because we don't know the current vtl
+        // This prohibit us to call this selectively for new VTLs
         crate::arch::hypercall::initialize(guest_os_id.into());
-        
-        HV_PAGE_INIT_STATUS.swap(true, Ordering::SeqCst);
+
+        HV_PAGE_INIT_STATUS.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Returns a mutable reference to the hypercall input page.
@@ -623,30 +614,12 @@ impl HvCall {
             HvX64RegisterName::Rflags.into(),
             vp_context.unwrap().rflags.into(),
         );
-        write_reg(
-            HvX64RegisterName::Cs.into(),
-            vp_context.unwrap().cs.into(),
-        );
-        write_reg(
-            HvX64RegisterName::Ss.into(),
-            vp_context.unwrap().ss.into(),
-        );
-        write_reg(
-            HvX64RegisterName::Ds.into(),
-            vp_context.unwrap().ds.into(),
-        );
-        write_reg(
-            HvX64RegisterName::Es.into(),
-            vp_context.unwrap().es.into(),
-        );
-        write_reg(
-            HvX64RegisterName::Fs.into(),
-            vp_context.unwrap().fs.into(),
-        );
-        write_reg(
-            HvX64RegisterName::Gs.into(),
-            vp_context.unwrap().gs.into(),
-        );
+        write_reg(HvX64RegisterName::Cs.into(), vp_context.unwrap().cs.into());
+        write_reg(HvX64RegisterName::Ss.into(), vp_context.unwrap().ss.into());
+        write_reg(HvX64RegisterName::Ds.into(), vp_context.unwrap().ds.into());
+        write_reg(HvX64RegisterName::Es.into(), vp_context.unwrap().es.into());
+        write_reg(HvX64RegisterName::Fs.into(), vp_context.unwrap().fs.into());
+        write_reg(HvX64RegisterName::Gs.into(), vp_context.unwrap().gs.into());
         write_reg(
             HvX64RegisterName::Gdtr.into(),
             vp_context.unwrap().gdtr.into(),
@@ -659,10 +632,7 @@ impl HvCall {
             HvX64RegisterName::Ldtr.into(),
             vp_context.unwrap().ldtr.into(),
         );
-        write_reg(
-            HvX64RegisterName::Tr.into(),
-            vp_context.unwrap().tr.into(),
-        );
+        write_reg(HvX64RegisterName::Tr.into(), vp_context.unwrap().tr.into());
         write_reg(
             HvX64RegisterName::Efer.into(),
             vp_context.unwrap().efer.into(),
@@ -703,17 +673,12 @@ impl HvCall {
 
     /// Call before jumping to kernel.
     pub fn uninitialize(&mut self) {
-        let init = HV_PAGE_INIT_STATUS.load(Ordering::SeqCst);
-        if init {
-            crate::arch::hypercall::uninitialize();
-            HV_PAGE_INIT_STATUS.swap(false, Ordering::SeqCst);
-        }
+        crate::arch::hypercall::uninitialize();
     }
 
     /// Returns the environment's VTL.
     pub fn vtl(&mut self) -> Vtl {
-        self
-            .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into(), None)
+        self.get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into(), None)
             .map_or(Vtl::Vtl0, |status| {
                 hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
                     .active_vtl()
@@ -748,3 +713,12 @@ pub type HwId = u32;
 /// MPIDR on ARM64.
 #[cfg(target_arch = "aarch64")]
 pub type HwId = u64;
+
+impl Drop for HvCall {
+    fn drop(&mut self) {
+        let seq = HV_PAGE_INIT_STATUS.fetch_sub(1, Ordering::SeqCst);
+        if seq == 0 {
+            self.uninitialize();
+        }
+    }
+}

@@ -1,17 +1,18 @@
-use core::fmt::Write;
-
 use alloc::{
     fmt::format,
     string::{String, ToString},
 };
-use log::SetLoggerError;
-use sync_nostd::{Mutex, MutexGuard};
+use core::fmt::Write;
 
-use crate::arch::serial::{InstrIoAccess, Serial};
+use log::SetLoggerError;
 use serde::Serialize;
+use sync_nostd::{Mutex, MutexGuard};
+use anyhow::Result;
+use crate::arch::serial::{InstrIoAccess, Serial, SerialPort};
 
 #[derive(Serialize)]
 struct LogEntry {
+    #[serde(rename = "type")]
     log_type: &'static str,
     level: String,
     message: String,
@@ -29,7 +30,7 @@ impl LogEntry {
     }
 }
 
-pub fn format_log_string_to_json(
+pub(crate) fn format_log_string_to_json(
     message: &String,
     line: &String,
     terminate_new_line: bool,
@@ -45,28 +46,40 @@ pub fn format_log_string_to_json(
 }
 
 pub struct TmkLogger<T> {
-    pub writter: T,
+    pub writer: T,
 }
 
-impl<T> TmkLogger<Mutex<T>>
+impl<T> TmkLogger<Mutex<Option<T>>>
 where
     T: Write + Send,
 {
-    pub const fn new(provider: T) -> Self {
+    pub fn new_provider(provider: T) -> Self {
         TmkLogger {
-            writter: Mutex::new(provider),
+            writer: Mutex::new(Some(provider)),
         }
     }
 
-    pub fn get_writter(&self) -> MutexGuard<'_, T>
+    pub const fn new() -> Self {
+        TmkLogger {
+            writer: Mutex::new(None),
+        }
+    }
+
+    pub fn set_writer(&self, writter: T) {
+        self.writer
+            .lock()
+            .replace(writter);
+    }
+
+    pub fn get_writer(&self) -> MutexGuard<'_, Option<T>>
     where
         T: Write + Send,
     {
-        self.writter.lock()
+        self.writer.lock()
     }
 }
 
-impl<T> log::Log for TmkLogger<Mutex<T>>
+impl<T> log::Log for TmkLogger<Mutex<Option<T>>>
 where
     T: Write + Send,
 {
@@ -82,15 +95,23 @@ where
             record.line().unwrap_or_default()
         );
         let str = format_log_string_to_json(&str, &line, true, record.level());
-        _ = self.writter.lock().write_str(str.as_str());
+        self.get_writer()
+            .as_mut()
+            .map(|writer| {
+                writer.write_str(&str)
+            });
     }
 
     fn flush(&self) {}
 }
 
-pub static LOGGER: TmkLogger<Mutex<Serial<InstrIoAccess>>> =
-    TmkLogger::new(Serial::new(InstrIoAccess {}));
+type SerialPortWriter = Serial<InstrIoAccess>;
+pub static LOGGER: TmkLogger<Mutex<Option<SerialPortWriter>>> = TmkLogger::new();
 
 pub fn init() -> Result<(), SetLoggerError> {
-    log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Debug))
+    let serial = SerialPortWriter::new(SerialPort::COM2.into());
+    LOGGER.set_writer(serial);
+    
+    log::set_logger(&LOGGER)
+        .map(|()| log::set_max_level(log::LevelFilter::Debug))
 }

@@ -81,9 +81,9 @@ pub type TmkResult<T> = Result<T, TmkError>;
 impl core::error::Error for TmkError {}
 
 impl core::fmt::Display for TmkError {
-	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		write!(f, "TmkError({:?})", self.0)
-	}
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "TmkError({:?})", self.0)
+    }
 }
 
 impl From<TmkErrorType> for TmkError {

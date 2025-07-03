@@ -1,4 +1,18 @@
-use crate::uefi::alloc::ALLOCATOR;
+use alloc::{
+    alloc::alloc,
+    boxed::Box,
+    collections::{btree_map::BTreeMap, btree_set::BTreeSet, linked_list::LinkedList},
+};
+use core::{alloc::Layout, arch::asm, ops::Range};
+
+use hvdef::{
+    hypercall::{HvInputVtl, InitialVpContextX64},
+    Vtl,
+};
+use memory_range::MemoryRange;
+use minimal_rt::arch::msr::{read_msr, write_msr};
+use sync_nostd::Mutex;
+
 use crate::{
     context::{
         InterruptPlatformTrait, MsrPlatformTrait, SecureInterceptPlatformTrait,
@@ -7,18 +21,6 @@ use crate::{
     hypercall::HvCall,
     tmkdefs::{TmkError, TmkErrorType, TmkResult},
 };
-
-use alloc::boxed::Box;
-use alloc::collections::linked_list::LinkedList;
-use alloc::collections::{btree_map::BTreeMap, btree_set::BTreeSet};
-use core::alloc::{GlobalAlloc, Layout};
-use core::arch::asm;
-use core::ops::Range;
-use hvdef::hypercall::{HvInputVtl, InitialVpContextX64};
-use hvdef::Vtl;
-use memory_range::MemoryRange;
-use minimal_rt::arch::msr::{read_msr, write_msr};
-use sync_nostd::Mutex;
 
 const ALIGNMENT: usize = 4096;
 
@@ -56,7 +58,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
         let layout = Layout::from_size_align(4096, ALIGNMENT)
             .or_else(|_| Err(TmkError(TmkErrorType::AllocationFailed)))?;
 
-        let ptr = unsafe { ALLOCATOR.alloc(layout) };
+        let ptr = unsafe { alloc(layout) };
         let gpn = (ptr as u64) >> 12;
         let reg = (gpn << 12) | 0x1;
 
@@ -145,20 +147,8 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     fn get_vp_count(&self) -> TmkResult<u32> {
         #[cfg(target_arch = "x86_64")]
         {
-            let mut result: u32;
-            unsafe {
-                asm!(
-                    "push rbx",
-                    "cpuid",
-                    "mov {result:r}, rbx",
-                    "pop rbx",
-                    in("eax") 1u32,
-                    out("ecx") _,
-                    out("edx") _,
-                    result = out(reg) result,
-                    options(nomem, nostack)
-                );
-            }
+            let cpuid = unsafe { core::arch::x86_64::__cpuid(1) };
+            let result = cpuid.ebx;
             Ok((result >> 16) & 0xFF)
         }
 
@@ -216,28 +206,38 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                 self.vp_runing.insert(vp_index);
             } else {
                 let (tx, rx) = sync_nostd::Channel::<TmkResult<()>>::new().split();
-                cmdt().lock().get_mut(&self.my_vp_idx).unwrap().push_back((
+                let self_vp_idx = self.my_vp_idx;
+                cmdt().lock().get_mut(&self_vp_idx).unwrap().push_back((
                     Box::new(move |ctx| {
+                        log::debug!("starting VP{} in VTL1 of vp{}", vp_index, self_vp_idx);
                         let r = ctx.enable_vp_vtl_with_default_context(vp_index, Vtl::Vtl1);
                         if r.is_err() {
+                            log::error!("failed to enable VTL1 for VP{}: {:?}", vp_index, r);
                             let _ = tx.send(r);
                             return;
                         }
+                        log::debug!("successfully enabled VTL1 for VP{}", vp_index);
                         let r = ctx.start_running_vp_with_default_context(VpExecutor::new(
                             vp_index,
                             Vtl::Vtl0,
                         ));
                         if r.is_err() {
+                            log::error!("failed to start VP{}: {:?}", vp_index, r);
                             let _ = tx.send(r);
                             return;
                         }
+                        log::debug!("successfully started VP{}", vp_index);
                         let _ = tx.send(Ok(()));
                         ctx.switch_to_low_vtl();
                     }),
                     Vtl::Vtl1,
                 ));
                 self.switch_to_high_vtl();
-                log::debug!("VP{} waiting for start confirmation for vp from VTL1: {}", self.my_vp_idx, vp_index);
+                log::debug!(
+                    "VP{} waiting for start confirmation for vp from VTL1: {}",
+                    self.my_vp_idx,
+                    vp_index
+                );
                 let rx = rx.recv();
                 if let Ok(r) = rx {
                     r?;
@@ -373,6 +373,12 @@ impl HvTestCtx {
             register_command_queue(i);
         }
         self.my_vtl = self.hvcall.vtl();
+        let reg = self
+            .hvcall
+            .get_register(hvdef::HvAllArchRegisterName::VpIndex.into(), None)
+            .expect("error: failed to get vp index");
+        let reg = reg.as_u64();
+        self.my_vp_idx = reg as u32;
         Ok(())
     }
 
@@ -382,12 +388,6 @@ impl HvTestCtx {
     fn exec_handler() {
         let mut ctx = HvTestCtx::new();
         ctx.init().expect("error: failed to init on a VP");
-        let reg = ctx
-            .hvcall
-            .get_register(hvdef::HvAllArchRegisterName::VpIndex.into(), None)
-            .expect("error: failed to get vp index");
-        let reg = reg.as_u64();
-        ctx.my_vp_idx = reg as u32;
 
         loop {
             let mut vtl: Option<Vtl> = None;
@@ -396,9 +396,7 @@ impl HvTestCtx {
             {
                 let mut cmdt = cmdt().lock();
                 let d = cmdt.get_mut(&ctx.my_vp_idx);
-                if d.is_some() {
-                    log::info!("vp: {} has commands to execute", ctx.my_vp_idx);
-                    let d = d.unwrap();
+                if let Some(d) = d {
                     if !d.is_empty() {
                         let (_c, v) = d.front().unwrap();
                         if *v == ctx.my_vtl {
@@ -436,15 +434,13 @@ impl HvTestCtx {
     /// Helper to wrap an arbitrary function inside a captured VP context
     /// that can later be used to start a new VP/VTL instance.
     fn run_fn_with_current_context(&mut self, func: fn()) -> Result<InitialVpContextX64, TmkError> {
-        use super::alloc::SIZE_1MB;
-
         let mut vp_context: InitialVpContextX64 = self
             .hvcall
             .get_current_vtl_vp_context()
             .expect("Failed to get VTL1 context");
-        let stack_layout = Layout::from_size_align(SIZE_1MB, 16)
+        let stack_layout = Layout::from_size_align(1024 * 1024, 16)
             .expect("Failed to create layout for stack allocation");
-        let allocated_stack_ptr = unsafe { ALLOCATOR.alloc(stack_layout) };
+        let allocated_stack_ptr = unsafe { alloc(stack_layout) };
         if allocated_stack_ptr.is_null() {
             return Err(TmkErrorType::AllocationFailed.into());
         }

@@ -4785,6 +4785,7 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "arrayvec",
  "bitfield-struct",
  "cfg-if",

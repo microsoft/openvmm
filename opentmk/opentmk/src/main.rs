@@ -3,10 +3,7 @@
 #![no_std]
 #![allow(unsafe_code)]
 #![feature(abi_x86_interrupt)]
-#![feature(naked_functions)]
-
 #![doc = include_str!("../README.md")]
-
 #![cfg_attr(all(not(test), target_os = "uefi"), no_main)]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_std)]
 
@@ -17,10 +14,12 @@ fn main() {}
 #[macro_use]
 extern crate alloc;
 
-mod uefi;
 pub mod arch;
+pub mod context;
+pub mod hypercall;
+pub mod platform;
+pub mod tests;
 pub mod tmk_assert;
 pub mod tmk_logger;
-pub mod hypercall;
-pub mod context;
 pub mod tmkdefs;
+mod uefi;

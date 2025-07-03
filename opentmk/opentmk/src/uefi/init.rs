@@ -1,9 +1,12 @@
-use uefi::{boot::{exit_boot_services, MemoryType}, guid, CStr16, Status};
+use uefi::{
+    boot::{exit_boot_services, MemoryType},
+    guid, CStr16, Status,
+};
 
 use super::alloc::ALLOCATOR;
 
 const EFI_GUID: uefi::Guid = guid!("610b9e98-c6f6-47f8-8b47-2d2da0d52a91");
-const OS_LOADER_INDICATIONS: &'static str = "OsLoaderIndications";
+const OS_LOADER_INDICATIONS: &str = "OsLoaderIndications";
 
 fn enable_uefi_vtl_protection() {
     let mut buf = vec![0u8; 1024];

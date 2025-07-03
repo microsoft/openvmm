@@ -1,4 +1,7 @@
 pub mod hypercall;
-pub mod serial;
 pub mod interrupt;
 mod interrupt_handler_register;
+pub mod serial;
+mod io;
+pub mod tpm;
+pub mod rtc;

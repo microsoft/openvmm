@@ -1,14 +1,15 @@
 use hvdef::Vtl;
 use sync_nostd::Channel;
 
-use crate::{context::{VirtualProcessorPlatformTrait, VpExecutor, VtlPlatformTrait}, tmk_assert};
+use crate::{
+    context::{VirtualProcessorPlatformTrait, VpExecutor, VtlPlatformTrait},
+    tmk_assert,
+};
 
 pub fn exec<T>(ctx: &mut T)
 where
-    T: VtlPlatformTrait
-        + VirtualProcessorPlatformTrait<T>,
+    T: VtlPlatformTrait + VirtualProcessorPlatformTrait<T>,
 {
-
     // Skiping VTL setup for now to test the negitive case
 
     let vp_count = ctx.get_vp_count();
@@ -20,7 +21,7 @@ where
     // Testing BSP VTL1 Bringup
     {
         let (tx, _rx) = Channel::new().split();
-        
+
         let result = ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
             let vp = ctx.get_current_vp();
             tmk_assert!(vp.is_ok(), "vp should be valid");
@@ -39,9 +40,12 @@ where
                 .expect("Failed to send message through the channel");
             ctx.switch_to_low_vtl();
         }));
-        
+
         tmk_assert!(result.is_err(), "start_on_vp should fail");
-        tmk_assert!(result.unwrap_err() == crate::tmkdefs::TmkErrorType::InvalidVtlState.into(), "start_on_vp should fail with InvalidVtlState");
+        tmk_assert!(
+            result.unwrap_err() == crate::tmkdefs::TmkErrorType::InvalidVtlState.into(),
+            "start_on_vp should fail with InvalidVtlState"
+        );
         log::info!("result on start_on_vp: {:?}", result);
     }
 }

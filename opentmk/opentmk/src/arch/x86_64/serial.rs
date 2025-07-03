@@ -2,47 +2,33 @@
 // Licensed under the MIT License.
 
 //! Serial output for debugging.
-#![allow(static_mut_refs)]
-use core::arch::asm;
-use core::fmt;
+
+use core::{arch::asm, fmt};
+use super::io;
+
 use sync_nostd::Mutex;
 
-const COM4: u16 = 0x2E8;
-static mut MUTEX : Mutex<()> = Mutex::new(());
-
-/// Write a byte to a port.
-///
-/// # Safety
-///
-/// The caller must be sure that the given port is safe to write to, and that the
-/// given value is safe for it.
-unsafe fn outb(port: u16, data: u8) {
-    // SAFETY: The caller has assured us this is safe.
-    unsafe {
-        asm! {
-            "out dx, al",
-            in("dx") port,
-            in("al") data,
-        }
-    }
+/// Serial port addresses.
+/// These are the standard COM ports used in x86 systems.
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SerialPort {
+    COM1,
+    COM2,
+    COM3,
+    COM4,
 }
 
-/// Read a byte from a port.
-///
-/// # Safety
-///
-/// The caller must be sure that the given port is safe to read from.
-unsafe fn inb(port: u16) -> u8 {
-    let mut data;
-    // SAFETY: The caller has assured us this is safe.
-    unsafe {
-        asm! {
-            "in al, dx",
-            in("dx") port,
-            out("al") data,
+impl SerialPort {
+    /// Convert the SerialPort enum to its u16 representation.
+    pub fn value(self) -> u16 {
+        match self {
+            SerialPort::COM1 => 0x3F8,
+            SerialPort::COM2 => 0x2F8,
+            SerialPort::COM3 => 0x3E8,
+            SerialPort::COM4 => 0x2E8,
         }
     }
-    data
 }
 
 /// A trait to access io ports used by the serial device.
@@ -67,52 +53,54 @@ pub struct InstrIoAccess;
 
 impl IoAccess for InstrIoAccess {
     unsafe fn inb(&self, port: u16) -> u8 {
-        // SAFETY: The serial port caller has specified a valid port.
-        unsafe { inb(port) }
+        io::inb(port)
     }
 
     unsafe fn outb(&self, port: u16, data: u8) {
-        // SAFETY: The serial port caller has specified a valid port and data.
-        unsafe { outb(port, data) }
+        io::outb(port, data)
     }
 }
 
-/// A writer for the COM3 UART.
+impl Default for InstrIoAccess {
+    fn default() -> Self {
+        InstrIoAccess
+    }
+}
+
+/// A writer for the UART COM Ports.
 pub struct Serial<T: IoAccess> {
     io: T,
+    serial_port: SerialPort,
+    mutex: Mutex<()>,
 }
 
-impl<T: IoAccess> Serial<T> {
+impl<T: IoAccess + Default> Serial<T> {
     /// Initialize the serial port.
-    pub fn init(io: T) -> Self {
+    pub fn new(serial_port: SerialPort) -> Self {
+        let io = T::default();
+        
         // SAFETY: Writing these values to the serial device is safe.
         unsafe {
-            io.outb(COM4 + 1, 0x00); // Disable all interrupts
-            io.outb(COM4 + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
-            io.outb(COM4 + 4, 0x0F);
+            io.outb(serial_port.value() + 1, 0x00); // Disable all interrupts
+            io.outb(serial_port.value() + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
+            io.outb(serial_port.value() + 4, 0x0F);
         }
 
-        Self { io }
-    }
-
-    /// Create an instance without calling init.
-    pub const fn new(io: T) -> Self {
-        Self { io }
+        Self { io, serial_port, mutex: Mutex::new(()) }
     }
 
     fn write_byte(&self, b: u8) {
         // SAFETY: Reading and writing text to the serial device is safe.
         unsafe {
-            while self.io.inb(COM4 + 5) & 0x20 == 0 {}
-            self.io.outb(COM4, b);
+            while self.io.inb(self.serial_port.value() + 5) & 0x20 == 0 {}
+            self.io.outb(self.serial_port.value(), b);
         }
     }
 }
 
-
-impl<T: IoAccess> fmt::Write for Serial<T> {
+impl<T: IoAccess + Default> fmt::Write for Serial<T> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let _guard = unsafe { MUTEX.lock() };
+        let _guard = self.mutex.lock();
         for &b in s.as_bytes() {
             if b == b'\n' {
                 self.write_byte(b'\r');

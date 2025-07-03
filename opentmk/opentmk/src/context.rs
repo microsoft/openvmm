@@ -1,7 +1,7 @@
 #![allow(dead_code)]
+use alloc::boxed::Box;
 use core::ops::Range;
 
-use alloc::boxed::Box;
 use hvdef::Vtl;
 
 use crate::tmkdefs::TmkResult;

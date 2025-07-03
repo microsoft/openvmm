@@ -1,5 +1,6 @@
 use alloc::string::{String, ToString};
 use core::fmt::Write;
+
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -39,7 +40,7 @@ where
     }
 }
 
-pub fn format_assert_json_string<T>(
+pub(crate) fn format_assert_json_string<T>(
     s: &str,
     terminate_new_line: bool,
     line: String,
@@ -59,8 +60,12 @@ where
     return out;
 }
 
-pub fn write_str(s: &str) {
-    let _ = crate::tmk_logger::LOGGER.get_writter().write_str(s);
+pub(crate) fn write_str(s: &str) {
+    _ = crate::tmk_logger::LOGGER.get_writer()
+            .as_mut()
+            .map(|writer| {
+                writer.write_str(s)
+            });
 }
 
 #[macro_export]
@@ -71,9 +76,10 @@ macro_rules! tmk_assert {
         let file_line = format!("{}:{}", file, line);
         let expn = stringify!($condition);
         let result: bool = $condition;
-        let js =
-            crate::tmk_assert::format_assert_json_string(&expn, true, file_line, result, &$message);
-        crate::tmk_assert::write_str(&js);
+        let js = $crate::tmk_assert::format_assert_json_string(
+            &expn, true, file_line, result, &$message,
+        );
+        $crate::tmk_assert::write_str(&js);
         if !result {
             panic!("Assertion failed: {}", $message);
         }

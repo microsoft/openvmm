@@ -27,7 +27,9 @@ struct ChannelInner<T> {
     receivers: AtomicUsize,
 }
 
+// SAFETY: ChannelInner<T> is safe to share across threads as it uses atomic operations for senders and receivers counts
 unsafe impl<T: Send> Send for ChannelInner<T> {}
+// SAFETY: ChannelInner<T> is safe to used across threads as it uses atomic operations for senders and receivers counts
 unsafe impl<T: Send> Sync for ChannelInner<T> {}
 
 /// Error type for sending operations
@@ -228,7 +230,6 @@ impl<T> Receiver<T> {
                 Ok(value) => return Ok(value),
                 Err(RecvError::Empty) => {
                     // Yield to the scheduler and try again
-                    continue;
                 },
                 Err(err) => return Err(err),
             }

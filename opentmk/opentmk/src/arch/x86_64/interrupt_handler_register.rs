@@ -1,10 +1,8 @@
 #![allow(dead_code)]
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-
 use sync_nostd::Mutex;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 static mut COMMON_HANDLER: fn(InterruptStackFrame, u8) = common_handler;
 static COMMON_HANDLER_MUTEX: Mutex<()> = Mutex::new(());
-
 
 #[unsafe(no_mangle)]
 fn abstraction_handle(stack_frame: InterruptStackFrame, interrupt: u8) {
@@ -32,7 +30,7 @@ macro_rules! create_fn_divergent_create_with_errorcode {
     ($name:ident, $i: expr) => {
         extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame, _error_code: u64) -> ! {
             abstraction_handle(stack_frame, $i);
-            loop{}
+            loop {}
         }
     };
 }
@@ -41,14 +39,17 @@ macro_rules! create_fn_divergent_create {
     ($name:ident, $i: expr) => {
         extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame) -> ! {
             abstraction_handle(stack_frame, $i);
-            loop{}
+            loop {}
         }
     };
 }
 
 macro_rules! create_page_fault_fn {
     ($name:ident, $i: expr) => {
-        extern "x86-interrupt" fn $name(stack_frame:InterruptStackFrame, _error_code: PageFaultErrorCode) {
+        extern "x86-interrupt" fn $name(
+            stack_frame: InterruptStackFrame,
+            _error_code: PageFaultErrorCode,
+        ) {
             abstraction_handle(stack_frame, $i);
         }
     };
