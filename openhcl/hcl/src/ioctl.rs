@@ -1863,7 +1863,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         Ok(())
     }
 
-    fn get_reg(&mut self, vtl: GuestVtl, regs: &mut [HvRegisterAssoc]) -> Result<(), Error> {
+    fn get_reg(&mut self, vtl: Vtl, regs: &mut [HvRegisterAssoc]) -> Result<(), Error> {
         if regs.is_empty() {
             return Ok(());
         }
@@ -2061,7 +2061,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             }
         }
 
-        self.get_reg(vtl, &mut assoc)?;
+        self.get_reg(vtl.into(), &mut assoc)?;
         for (&i, assoc) in offset.iter().zip(&assoc) {
             values[i] = assoc.value;
         }
@@ -2081,6 +2081,24 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         let mut value = [0u64.into(); 1];
         self.get_vp_registers_inner(vtl, &[name], &mut value)?;
         Ok(value[0])
+    }
+
+    /// Get the following register on the current VP for VTL 2.
+    ///
+    /// This will fail for registers that are in the mmapped CPU context, i.e.
+    /// registers that are shared between VTL0 and VTL2.
+    pub fn get_vp_vtl2_register(
+        &mut self,
+        #[cfg(guest_arch = "x86_64")] name: HvX64RegisterName,
+        #[cfg(guest_arch = "aarch64")] name: HvArm64RegisterName,
+    ) -> Result<HvRegisterValue, Error> {
+        let mut assoc = [HvRegisterAssoc {
+            name: name.into(),
+            pad: Default::default(),
+            value: FromZeros::new_zeroed(),
+        }];
+        self.get_reg(Vtl::Vtl2, &mut assoc)?;
+        Ok(assoc[0].value)
     }
 
     /// Get the following VP registers on the current VP.
@@ -2952,7 +2970,7 @@ impl Hcl {
         ))
     }
 
-    /// Get the [`hvdef::HvGuestOsId`] register for the given VTL.
+    /// Get the [`hvdef::hypercall::HvGuestOsId`] register for the given VTL.
     pub fn get_guest_os_id(&self, vtl: Vtl) -> Result<hvdef::hypercall::HvGuestOsId, Error> {
         Ok(hvdef::hypercall::HvGuestOsId::from(
             self.get_vp_register(HvAllArchRegisterName::GuestOsId, vtl.into())?
