@@ -11,7 +11,7 @@ use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::DiskHandleKind;
 
-// A resolver for DelayDisk.
+/// A resolver for DelayDisk.
 pub struct DelayDiskResolver;
 declare_static_async_resolver!(DelayDiskResolver, (DiskHandleKind, DelayDiskHandle));
 

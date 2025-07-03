@@ -5,7 +5,8 @@
 
 #![forbid(unsafe_code)]
 
-mod resolver;
+/// Provides a disk with a delay on every I/O operation.
+pub mod resolver;
 
 use disk_backend::Disk;
 use disk_backend::DiskError;
@@ -17,13 +18,15 @@ use pal_async::timer::PolledTimer;
 use scsi_buffers::RequestBuffers;
 use std::time::Duration;
 use vmcore::vm_task::VmTaskDriverSource;
+use vmcore::vm_task::VmTaskDriver;
 
 /// A disk with delay on every I/O operation.
 #[derive(Inspect)]
 pub struct DelayDisk {
+    #[inspect(skip)]
     delay: Cell<u64>,
     inner: Disk,
-    driver_source: &VmTaskDriverSource,
+    driver: VmTaskDriver,
 }
 
 impl DelayDisk {
@@ -32,7 +35,7 @@ impl DelayDisk {
         Self {
             delay,
             inner,
-            driver_source,
+            driver: driver_source.simple(),
         }
     }
 }
@@ -84,8 +87,8 @@ impl DiskIo for DelayDisk {
         sector: u64,
     ) -> Result<(), DiskError> {
         // Introduce a delay before reading the data.
-        PolledTimer::new(&self.driver_source.simple())
-            .sleep(Duration::from_millis(self.delay.get()));
+        PolledTimer::new(&self.driver)
+            .sleep(Duration::from_millis(self.delay.get())).await;
         self.inner.read_vectored(buffers, sector).await
     }
 
@@ -97,8 +100,8 @@ impl DiskIo for DelayDisk {
         fua: bool,
     ) -> Result<(), DiskError> {
         // Write the encrypted data.
-        PolledTimer::new(&self.driver_source.simple())
-            .sleep(Duration::from_millis(self.delay.get()));
+        PolledTimer::new(&self.driver)
+            .sleep(Duration::from_millis(self.delay.get())).await;
         self.inner.write_vectored(buffers, sector, fua).await
     }
 
