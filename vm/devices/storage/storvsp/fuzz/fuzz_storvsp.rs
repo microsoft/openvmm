@@ -7,7 +7,7 @@
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
 use futures::FutureExt;
-use futures::select;
+use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use pal_async::DefaultPool;
@@ -227,12 +227,15 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
             transaction_id: 0,
         };
 
-        let mut fuzz_loop = pin!(do_fuzz_loop(u, &mut guest).fuse());
-        let mut teardown = pin!(test_worker.teardown_ignore().fuse());
-
-        select! {
-            _r1 = fuzz_loop => xtask_fuzz::fuzz_eprintln!("test case exhausted arbitrary data"),
-            _r2 = teardown => xtask_fuzz::fuzz_eprintln!("test worker completed"),
+        match (
+            do_fuzz_loop(u, &mut guest),
+            test_worker.teardown_ignore(),
+        )
+            .race()
+            .await
+        {
+            futures_concurrency::future::RaceResult::First(_r1) => xtask_fuzz::fuzz_eprintln!("test case exhausted arbitrary data"),
+            futures_concurrency::future::RaceResult::Second(_r2) => xtask_fuzz::fuzz_eprintln!("test worker completed"),
         }
 
         Ok::<(), anyhow::Error>(())
