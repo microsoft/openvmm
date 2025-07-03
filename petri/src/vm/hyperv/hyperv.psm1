@@ -374,25 +374,26 @@ function Restart-OpenHCL
     Param (
         [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
         [System.Object]
-        $Vm
+        $Vm,
+        [int] $TimeoutHintSeconds = 15, # Ends up as the deadline in GuestSaveRequest (see the handling of SaveGuestVtl2StateNotification in guest_emulation_transport). Keep O(15 seconds).
+        [switch] $OverrideVersionChecks,
+        [switch] $DisableNvmeKeepalive
     )
     
     $vmid = $Vm.Id.tostring();
     $guestManagementService = Get-VmGuestManagementService;
-    $options = 1; # Override version checks
-    $TimeoutHintSecs = 15; # Ends up as the deadline in GuestSaveRequest (see the handling of SaveGuestVtl2StateNotification in guest_emulation_transport). Keep O(15 seconds).
+    $options = 0;
+    if ($OverrideVersionChecks) {
+        $options = $options -bor 1;
+    }
+    if ($DisableNvmeKeepalive) {
+        $options = $options -bor 16;
+    }
     $result = $guestManagementService | Invoke-CimMethod -name "ReloadManagementVtl" -Arguments @{
         "VmId"            = $vmid
         "Options"         = $options
-        "TimeoutHintSecs" = $TimeoutHintSecs
+        "TimeoutHintSecs" = $TimeoutHintSeconds
     }
 
-    try {
-        $null = ($result | Trace-CimMethodExecution -CimInstance $guestManagementService -MethodName "ReloadManagementVtl" -TimeoutSeconds $TimeoutHintSecs)
-    }
-    catch {
-        if (-not $FailureExpected) {
-            throw
-        }
-    }
+    $null = ($result | Trace-CimMethodExecution -CimInstance $guestManagementService -MethodName "ReloadManagementVtl" -TimeoutSeconds $TimeoutHintSecs)
 }

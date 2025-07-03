@@ -10,7 +10,6 @@ use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use hvlite_defs::config::DeviceVtl;
 use petri::OpenHclServicingFlags;
-use petri::PetriVm;
 use petri::PetriVmConfig;
 use petri::ResolvedArtifact;
 use petri::openvmm::PetriVmConfigOpenVmm;
@@ -83,7 +82,7 @@ async fn openhcl_servicing_core(
         // Test that inspect serialization works with the old version.
         vm.test_inspect_openhcl().await?;
 
-        vm.restart_openhcl_petrivm(&new_openhcl.clone().erase(), flags)
+        vm.restart_openhcl(&new_openhcl.clone().erase(), flags)
             .await?;
 
         agent.ping().await?;
@@ -132,6 +131,7 @@ async fn keepalive(
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
+            ..Default::default()
         },
     )
     .await
@@ -188,7 +188,7 @@ async fn shutdown_ic(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     let shutdown_ic = vm.wait_for_enlightened_shutdown_ready().await?;
-    vm.restart_openhcl_petrivm(&igvm_file.erase(), OpenHclServicingFlags::default())
+    vm.restart_openhcl(&igvm_file.erase(), OpenHclServicingFlags::default())
         .await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");

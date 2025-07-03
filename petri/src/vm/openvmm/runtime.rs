@@ -89,7 +89,7 @@ impl PetriVm for PetriVmOpenVmm {
         Self::wait_for_vtl2_agent(self).await
     }
 
-    async fn restart_openhcl_petrivm(
+    async fn restart_openhcl(
         &mut self,
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,

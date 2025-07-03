@@ -197,7 +197,7 @@ impl PetriVm for PetriVmHyperV {
         Self::send_enlightened_shutdown(self, kind).await
     }
 
-    async fn restart_openhcl_petrivm(
+    async fn restart_openhcl(
         &mut self,
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
@@ -275,7 +275,7 @@ impl PetriVmConfigHyperV {
                     guest,
                     isolation,
                     igvm_path,
-                    vtl2_nvme_boot: _, // TODO
+                    vtl2_nvme_boot: _, // TODO, see #1649.
                 } => (
                     match isolation {
                         Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,

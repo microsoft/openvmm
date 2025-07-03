@@ -144,8 +144,7 @@ pub trait PetriVm: Send {
     /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>;
     /// Instruct the OpenHCL to restart the VTL2 paravisor. Will fail if the VM is not running OpenHCL. Will also fail if the VM is not running.
-    async fn restart_openhcl_petrivm(
-        // TODO: mattkur: rename to restart_openhcl before sending out PR
+    async fn restart_openhcl(
         &mut self,
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
@@ -512,6 +511,10 @@ pub enum IsolationType {
 pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
     pub enable_nvme_keepalive: bool,
+    /// Skip any logic that the vmm may have to ignore servicing updates if the supplied igvm file version is not different than the one currently running.
+    pub skip_if_same_version: Option<bool>,
+    /// Hint to the OpenHCL runtime how much time to wait when stopping / saving the OpenHCL.
+    pub stop_timeout_hint_secs: Option<u16>,
 }
 
 /// Virtual machine guest state resource

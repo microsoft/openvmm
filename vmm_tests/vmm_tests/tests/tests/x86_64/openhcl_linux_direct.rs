@@ -20,7 +20,6 @@ use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use petri::OpenHclServicingFlags;
-use petri::PetriVm;
 use petri::ResolvedArtifact;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::PipetteClient;
@@ -109,7 +108,7 @@ async fn mana_nic_servicing(
 
     validate_mana_nic(&agent).await?;
 
-    vm.restart_openhcl_petrivm(&igvm_file.clone().erase(), OpenHclServicingFlags::default())
+    vm.restart_openhcl(&igvm_file.clone().erase(), OpenHclServicingFlags::default())
         .await?;
 
     validate_mana_nic(&agent).await?;

@@ -9,7 +9,6 @@ use get_resources::ged::FirmwareEvent;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
-use petri::OpenHclServicingFlags;
 use petri::PetriVmConfig;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
@@ -19,8 +18,6 @@ use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
@@ -604,47 +601,6 @@ async fn boot_expect_fail(
         .await?;
 
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-
-    Ok(())
-}
-
-#[vmm_test(
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
-)]
-async fn hyperv_openhcl_servicing(
-    config: Box<dyn PetriVmConfig>,
-    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config
-        //.with_igvm(petri::PetriIgvmResource::Disk(igvm_file))
-        .run()
-        .await?;
-
-    vm.wait_for_successful_boot_event().await?;
-
-    for _ in 0..3 {
-        agent.ping().await?;
-
-        // Test that inspect serialization works with the old version.
-        vm.test_inspect_openhcl().await?;
-
-        vm.restart_openhcl_petrivm(
-            &igvm_file.clone().erase(),
-            OpenHclServicingFlags {
-                enable_nvme_keepalive: false,
-            },
-        )
-        .await?;
-
-        agent.ping().await?;
-
-        // Test that inspect serialization works with the new version.
-        vm.test_inspect_openhcl().await?;
-    }
-
-    agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
 
     Ok(())

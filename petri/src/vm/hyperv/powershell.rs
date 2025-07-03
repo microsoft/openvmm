@@ -556,8 +556,15 @@ pub fn set_vmbus_redirect(vmid: &Guid, ps_mod: &Path, enable: bool) -> anyhow::R
 pub fn run_restart_openhcl(
     vmid: &Guid,
     ps_mod: &Path,
-    _flags: OpenHclServicingFlags, // TODO: Use flags in the future
+    flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
+    // No NVMe storage, so no keepalive. Prevent us from silently thinking that we're testing this feature.
+    // Tracked by #1649.
+    if flags.enable_nvme_keepalive {
+        return Err(anyhow::anyhow!(
+            "enable_nvme_keepalive is not yet supported for HyperV VMs"
+        ));
+    }
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
@@ -567,6 +574,14 @@ pub fn run_restart_openhcl(
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Restart-OpenHCL")
+            .arg_opt("TimeoutHintSeconds", flags.stop_timeout_hint_secs)
+            .flag_opt(
+                flags
+                    .skip_if_same_version
+                    .unwrap_or(false)
+                    .then_some("OverrideVersionChecks"),
+            )
+            .flag_opt((!flags.enable_nvme_keepalive).then_some("DisableNvmeKeepalive"))
             .finish()
             .build(),
     )
