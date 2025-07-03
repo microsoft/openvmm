@@ -25,7 +25,7 @@ rustup target add x86_64-pc-windows-msvc
 Additional build tools must be installed as well. If your distro has LLVM 14
 available (Ubuntu 22.04 or newer):
 ```bash
-sudo apt install clang-tools-14 lld-14
+sudo apt install clang-tools-14 lld-14 llvm-dev
 ```
 
 Otherwise, follow the steps at https://apt.llvm.org/ to install a specific

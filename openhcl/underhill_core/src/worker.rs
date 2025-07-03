@@ -33,7 +33,7 @@ use crate::emuplat::netvsp::HclNetworkVFManager;
 use crate::emuplat::netvsp::HclNetworkVFManagerEndpointInfo;
 use crate::emuplat::netvsp::HclNetworkVFManagerShutdownInProgress;
 use crate::emuplat::netvsp::RuntimeSavedState;
-use crate::emuplat::non_volatile_store::VmbsBrokerNonVolatileStore;
+use crate::emuplat::non_volatile_store::VmgsBrokerNonVolatileStore;
 use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
@@ -1357,33 +1357,27 @@ async fn new_underhill_vm(
         with_vmbus_relay = !hide_isolation;
     }
 
-    if matches!(
-        dps.general.guest_state_lifetime,
-        GuestStateLifetime::Ephemeral
-    ) {
-        todo!("OpenHCL ephemeral guest state")
-    }
-
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
-    let (vmgs_disk_metadata, mut vmgs) = match servicing_state.vmgs {
-        Some((vmgs_state, vmgs_get_meta_state)) => {
+    let mut vmgs = match (dps.general.guest_state_lifetime, servicing_state.vmgs) {
+        (GuestStateLifetime::Ephemeral, _) => None,
+        (_, Some((vmgs_state, vmgs_get_meta_state))) => {
             // fast path, with zero .await calls
             let disk = disk_get_vmgs::GetVmgsDisk::restore_with_meta(
                 get_client.clone(),
                 vmgs_get_meta_state,
             )
             .context("failed to open VMGS disk")?;
-            (
+            Some((
                 disk.save_meta(),
                 Vmgs::open_from_saved(
                     Disk::new(disk).context("invalid vmgs disk")?,
                     vmgs_state,
                     Some(Arc::new(GetVmgsLogger::new(get_client.clone()))),
                 ),
-            )
+            ))
         }
-        None => {
+        (_, None) => {
             let disk = disk_get_vmgs::GetVmgsDisk::new(get_client.clone())
                 .instrument(tracing::info_span!("vmgs_get_storage", CVM_ALLOWED))
                 .await
@@ -1418,7 +1412,7 @@ async fn new_underhill_vm(
                 .context("failed to open vmgs")?
             };
 
-            (meta, vmgs)
+            Some((meta, vmgs))
         }
     };
 
@@ -1608,6 +1602,9 @@ async fn new_underhill_vm(
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
         tpm_persisted: !dps.general.suppress_attestation.unwrap_or(false),
+        filtered_vpci_devices_allowed: with_vmbus_relay
+            && dps.general.vpci_boot_enabled
+            && isolation.is_isolated(),
         vm_unique_id: dps.general.bios_guid.to_string(),
     };
 
@@ -1632,7 +1629,7 @@ async fn new_underhill_vm(
     // `agent_data` and `guest_secret_key` may also be used by vTPM
     // initialization.
     let platform_attestation_data = {
-        if is_restoring {
+        if is_restoring || vmgs.is_none() {
             // TODO CVM: Save and restore last returned data when live servicing is supported.
             // We also need to revisit what states should be saved and restored.
             //
@@ -1660,7 +1657,7 @@ async fn new_underhill_vm(
                 &get_client,
                 dps.general.bios_guid,
                 &attestation_vm_config,
-                &mut vmgs,
+                &mut vmgs.as_mut().unwrap().1,
                 attestation_type,
                 suppress_attestation,
                 early_init_driver,
@@ -1678,15 +1675,24 @@ async fn new_underhill_vm(
     // Make the GET available for other resources.
     resolver.add_resolver(get_client.clone());
 
-    // Spawn the VMGS client for multi-task access.
-    let (vmgs_client, vmgs_handle) = spawn_vmgs_broker(get_spawner, vmgs);
-    resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
+    let (vmgs_client, vmgs) = if let Some((meta, vmgs)) = vmgs {
+        // Spawn the VMGS client for multi-task access.
+        let (vmgs_client, vmgs_handle) = spawn_vmgs_broker(get_spawner, vmgs);
+        resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
 
-    // ...and then we immediately "API-slice" the fully featured `vmgs_client`
-    // into smaller, more focused objects. This promotes good code hygiene and
-    // predictable performance characteristics in downstream code.
-    let vmgs_thin_client = vmgs_broker::VmgsThinClient::new(vmgs_client.clone());
-    let vmgs_client: &dyn VmbsBrokerNonVolatileStore = &vmgs_client;
+        // ...and then we immediately "API-slice" the fully featured `vmgs_client`
+        // into smaller, more focused objects. This promotes good code hygiene and
+        // predictable performance characteristics in downstream code.
+        let vmgs_thin_client = vmgs_broker::VmgsThinClient::new(vmgs_client.clone());
+        // let vmgs_client: &dyn VmgsBrokerNonVolatileStore = &vmgs_client;
+
+        (
+            Some(Box::new(vmgs_client) as Box<dyn VmgsBrokerNonVolatileStore>),
+            Some((vmgs_thin_client, meta, vmgs_handle)),
+        )
+    } else {
+        (None, None)
+    };
 
     // Read measured config from VTL0 memory. When restoring, it is already gone.
     let (firmware_type, measured_vtl0_info, load_kind) = {
@@ -1902,9 +1908,13 @@ async fn new_underhill_vm(
     let rtc_time_source = ArcMutexUnderhillLocalClock(Arc::new(Mutex::new(
         UnderhillLocalClock::new(
             get_client.clone(),
-            vmgs_client
-                .as_non_volatile_store(vmgs::FileId::RTC_SKEW, false)
-                .context("failed to instantiate RTC skew store")?,
+            if let Some(vmgs_client) = vmgs_client.as_ref() {
+                vmgs_client
+                    .as_non_volatile_store(vmgs::FileId::RTC_SKEW, false)
+                    .context("failed to instantiate RTC skew store")?
+            } else {
+                EphemeralNonVolatileStore::new_boxed()
+            },
             servicing_state.emuplat.rtc_local_clock,
         )
         .await
@@ -2025,12 +2035,16 @@ async fn new_underhill_vm(
             };
 
             // check if vmgs includes custom UEFI JSON
-            let custom_uefi_json_data = vmgs_client
-                .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
-                .context("failed to instantiate custom UEFI JSON store")?
-                .restore()
-                .await
-                .context("failed to get custom UEFI JSON data")?;
+            let custom_uefi_json_data = if let Some(vmgs_client) = vmgs_client.as_ref() {
+                vmgs_client
+                    .as_non_volatile_store(vmgs::FileId::CUSTOM_UEFI, false)
+                    .context("failed to instantiate custom UEFI JSON store")?
+                    .restore()
+                    .await
+                    .context("failed to get custom UEFI JSON data")?
+            } else {
+                None
+            };
 
             // obtain the final custom uefi vars by applying the delta onto
             // the base vars
@@ -2072,20 +2086,24 @@ async fn new_underhill_vm(
                 logger: Box::new(UnderhillLogger {
                     get: get_client.clone(),
                 }),
-                nvram_storage: Box::new(
-                    HclCompatNvram::new(
-                        VmgsStorageBackendAdapter(
-                            vmgs_client
-                                .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
-                                .context("failed to instantiate UEFI NVRAM store")?,
-                        ),
-                        Some(HclCompatNvramQuirks {
-                            skip_corrupt_vars_with_missing_null_term: true,
-                        }),
-                        is_restoring,
+                nvram_storage: if let Some(vmgs_client) = vmgs_client.as_ref() {
+                    Box::new(
+                        HclCompatNvram::new(
+                            VmgsStorageBackendAdapter(
+                                vmgs_client
+                                    .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
+                                    .context("failed to instantiate UEFI NVRAM store")?,
+                            ),
+                            Some(HclCompatNvramQuirks {
+                                skip_corrupt_vars_with_missing_null_term: true,
+                            }),
+                            is_restoring,
+                        )
+                        .await?,
                     )
-                    .await?,
-                ),
+                } else {
+                    Box::new(uefi_nvram_storage::in_memory::InMemoryNvram::new())
+                },
                 generation_id_recv: get_client
                     .take_generation_id_recv()
                     .await
@@ -2422,9 +2440,13 @@ async fn new_underhill_vm(
         Some(dev::HyperVGuestWatchdogDeps {
             port_base: WDAT_PORT,
             watchdog_platform: {
-                let store = vmgs_client
-                    .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
-                    .context("failed to instantiate guest watchdog store")?;
+                let store = if let Some(vmgs_client) = vmgs_client.as_ref() {
+                    vmgs_client
+                        .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
+                        .context("failed to instantiate guest watchdog store")?
+                } else {
+                    EphemeralNonVolatileStore::new_boxed()
+                };
                 let trigger_reset = WatchdogTimeoutHalt {
                     halt_vps: halt_vps.clone(),
                 };
@@ -3047,9 +3069,7 @@ async fn new_underhill_vm(
         network_settings,
         shutdown_relay,
 
-        vmgs_thin_client,
-        vmgs_disk_metadata,
-        _vmgs_handle: vmgs_handle,
+        vmgs,
 
         get_client: get_client.clone(),
         device_platform_settings: dps,
@@ -3080,6 +3100,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         com2_vmbus_redirector: _,
         suppress_attestation: _,
         bios_guid: _,
+        vpci_boot_enabled: _,
 
         // Validated below
         battery_enabled,
@@ -3114,7 +3135,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         generation_id: _,
         pause_after_boot_failure: _,
         disable_frontpage: _,
-        vpci_boot_enabled: _,
         num_lock_enabled: _,
         pcat_boot_device_order: _,
         vpci_instance_filter: _,

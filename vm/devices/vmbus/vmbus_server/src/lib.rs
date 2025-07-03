@@ -1729,11 +1729,7 @@ impl ServerTaskInner {
 
         // Use a subrange to access the interrupt page to give GuestMemory's without a full mapping
         // a chance to create one.
-        let interrupt_page = self
-            .gm
-            .lockable_subrange(interrupt_page, PAGE_SIZE as u64)?
-            .lock_gpns(false, &[0])?;
-
+        let interrupt_page = lock_page_with_subrange(&self.gm, interrupt_page)?;
         let channel_bitmap = Arc::new(ChannelBitmap::new(interrupt_page));
         self.channel_bitmap = Some(channel_bitmap.clone());
 
@@ -1925,15 +1921,37 @@ fn inspect_rings(
         .view()
         .map(GpadlId(open_data.ring_gpadl_id.0))
         .ok()?;
+
     let aligned = AlignedGpadlView::new(gpadl).ok()?;
     let (in_gpadl, out_gpadl) = aligned.split(open_data.ring_offset).ok()?;
-    if let Ok(incoming_mem) = GpadlRingMem::new(in_gpadl, gm) {
-        resp.child("incoming_ring", |req| ring::inspect_ring(incoming_mem, req));
-    }
-    if let Ok(outgoing_mem) = GpadlRingMem::new(out_gpadl, gm) {
-        resp.child("outgoing_ring", |req| ring::inspect_ring(outgoing_mem, req));
-    }
+    resp.child("incoming_ring", |req| inspect_ring(req, &in_gpadl, gm));
+    resp.child("outgoing_ring", |req| inspect_ring(req, &out_gpadl, gm));
     Some(())
+}
+
+/// Inspects the incoming or outgoing ring buffer by directly accessing guest memory.
+fn inspect_ring(req: inspect::Request<'_>, gpadl: &AlignedGpadlView, gm: &GuestMemory) {
+    let mut resp = req.respond();
+
+    // Data size excluding the control page.
+    let ring_size = (gpadl.gpns().len() - 1) * PAGE_SIZE;
+    resp.hex("ring_size", ring_size);
+
+    // Lock just the control page. Use a subrange to allow a GuestMemory without a full mapping to
+    // create one.
+    if let Ok(pages) = lock_page_with_subrange(gm, gpadl.gpns()[0] * PAGE_SIZE as u64) {
+        ring::inspect_ring(pages.pages()[0], &mut resp);
+    }
+}
+
+/// Helper to create a subrange before locking a single page.
+///
+/// This allows us to lock a page in a `GuestMemory` that doesn't have a full mapping, but can
+/// create one for a subrange.
+fn lock_page_with_subrange(gm: &GuestMemory, offset: u64) -> anyhow::Result<guestmem::LockedPages> {
+    Ok(gm
+        .lockable_subrange(offset, PAGE_SIZE as u64)?
+        .lock_gpns(false, &[0])?)
 }
 
 pub(crate) struct MessageSender {

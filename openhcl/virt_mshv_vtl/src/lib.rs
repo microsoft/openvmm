@@ -33,7 +33,6 @@ cfg_if::cfg_if!(
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         pub use processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
-        use hvdef::HvArm64RegisterName;
         use processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
     }
 );
@@ -59,7 +58,6 @@ use hv1_emulator::synic::SintProxied;
 use hv1_structs::VtlArray;
 use hvdef::GuestCrashCtl;
 use hvdef::HV_PAGE_SIZE;
-use hvdef::HvAllArchRegisterName;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterName;
@@ -962,11 +960,7 @@ impl UhPartitionInner {
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn vsm_status(&self) -> Result<HvRegisterVsmPartitionStatus, hcl::ioctl::Error> {
         // TODO: It might be possible to cache VsmPartitionStatus.
-        let reg = self.hcl.get_vp_register(
-            HvAllArchRegisterName::VsmPartitionStatus,
-            HvInputVtl::CURRENT_VTL,
-        )?;
-        Ok(reg.as_u64().into())
+        self.hcl.get_vsm_partition_status()
     }
 }
 
@@ -1902,13 +1896,10 @@ impl UhPartition {
             hv.guest_os_id(Vtl::Vtl0)
         } else {
             // Ask the hypervisor for this value.
-            let reg_value = self
-                .inner
+            self.inner
                 .hcl
-                .get_vp_register(HvAllArchRegisterName::GuestOsId, Vtl::Vtl0.into())
-                .map_err(Error::Hcl)?;
-
-            HvGuestOsId::from(reg_value.as_u64())
+                .get_guest_os_id(Vtl::Vtl0)
+                .map_err(Error::Hcl)?
         };
         Ok(id)
     }
@@ -1948,19 +1939,14 @@ impl UhProtoPartition<'_> {
         #[cfg(guest_arch = "x86_64")]
         let privs = {
             let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);
-            result.eax as u64 | ((result.ebx as u64) << 32)
+            let num = result.eax as u64 | ((result.ebx as u64) << 32);
+            hvdef::HvPartitionPrivilege::from(num)
         };
 
         #[cfg(guest_arch = "aarch64")]
-        let privs = hcl
-            .get_vp_register(
-                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
-                HvInputVtl::CURRENT_VTL,
-            )
-            .map_err(Error::Hcl)?
-            .as_u64();
+        let privs = hcl.get_privileges_and_features_info().map_err(Error::Hcl)?;
 
-        if !hvdef::HvPartitionPrivilege::from(privs).access_vsm() {
+        if !privs.access_vsm() {
             return Ok(false);
         }
         let guest_vsm_config = hcl.get_guest_vsm_partition_config().map_err(Error::Hcl)?;

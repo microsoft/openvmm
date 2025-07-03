@@ -312,6 +312,7 @@ impl SimpleFlowNode for Node {
                                 "openhcl-x64-test-linux-direct.bin"
                             }
                             OpenhclIgvmRecipe::Aarch64 => "openhcl-aarch64.bin",
+                            OpenhclIgvmRecipe::Aarch64Devkern => "openhcl-aarch64-devkern.bin",
                             _ => {
                                 log::info!("petri doesn't support this OpenHCL recipe: {recipe:?}");
                                 continue;

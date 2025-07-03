@@ -151,6 +151,9 @@ pub(crate) enum ParavisorCommand {
 
     /// Get or set the paravisor command line.
     CommandLine { command_line: Option<String> },
+
+    /// Reload the paravisor.
+    Reload,
 }
 
 #[derive(ValueEnum, Copy, Clone)]

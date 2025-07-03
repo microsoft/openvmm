@@ -6103,6 +6103,7 @@ dependencies = [
  "guestmem",
  "safeatomic",
  "smallvec",
+ "sparse_mmap",
  "zerocopy 0.8.24",
 ]
 
@@ -6648,9 +6649,40 @@ dependencies = [
  "scsi_core",
  "scsi_defs",
  "scsidisk",
+ "storvsc_driver",
+ "storvsp",
+ "storvsp_protocol",
+ "storvsp_resources",
  "test_with_tracing",
  "tracing",
  "user_driver_emulated_mock",
+ "vmbus_channel",
+ "vmcore",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "storvsc_driver"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "inspect",
+ "mesh_channel",
+ "pal_async",
+ "scsi_buffers",
+ "scsi_defs",
+ "slab",
+ "storvsp_protocol",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing_helpers",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_ring",
  "vmcore",
  "zerocopy 0.8.24",
 ]
@@ -7554,6 +7586,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing_helpers",
+ "uefi_nvram_storage",
  "uevent",
  "uidevices_resources",
  "underhill_attestation",

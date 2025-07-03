@@ -910,18 +910,6 @@ fn vm_config_from_command_line(
         resources.ged_rpc = Some(send);
 
         let vmgs = vmgs.take().unwrap();
-        // OpenHCL doesn't support ephemeral guest state yet,
-        // so give it a memory-backed VMGS
-        let vmgs = if matches!(vmgs, VmgsResource::Ephemeral) {
-            VmgsResource::Disk(
-                disk_backend_resources::LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-                })
-                .into_resource(),
-            )
-        } else {
-            vmgs
-        };
 
         vmbus_devices.extend([
             (
