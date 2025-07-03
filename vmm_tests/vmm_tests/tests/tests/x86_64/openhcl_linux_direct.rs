@@ -108,7 +108,7 @@ async fn mana_nic_servicing(
 
     validate_mana_nic(&agent).await?;
 
-    vm.restart_openhcl(&igvm_file.clone().erase(), OpenHclServicingFlags::default())
+    vm.restart_openhcl(&igvm_file.erase(), OpenHclServicingFlags::default())
         .await?;
 
     validate_mana_nic(&agent).await?;

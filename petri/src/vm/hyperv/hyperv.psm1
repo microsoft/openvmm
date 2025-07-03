@@ -395,5 +395,5 @@ function Restart-OpenHCL
         "TimeoutHintSecs" = $TimeoutHintSeconds
     }
 
-    $null = ($result | Trace-CimMethodExecution -CimInstance $guestManagementService -MethodName "ReloadManagementVtl" -TimeoutSeconds $TimeoutHintSecs)
+    $result | Trace-CimMethodExecution -CimInstance $guestManagementService -MethodName "ReloadManagementVtl" -TimeoutSeconds $TimeoutHintSecs
 }

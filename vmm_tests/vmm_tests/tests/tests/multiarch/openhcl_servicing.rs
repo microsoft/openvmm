@@ -79,14 +79,15 @@ async fn openhcl_servicing_core(
         .run()
         .await?;
 
+    let new_openhcl = new_openhcl.erase();
+
     for _ in 0..3 {
         agent.ping().await?;
 
         // Test that inspect serialization works with the old version.
         vm.test_inspect_openhcl().await?;
 
-        vm.restart_openhcl(&new_openhcl.clone().erase(), flags)
-            .await?;
+        vm.restart_openhcl(&new_openhcl, flags).await?;
 
         agent.ping().await?;
 
