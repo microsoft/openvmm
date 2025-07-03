@@ -34,7 +34,7 @@ impl ResourceId<DiskHandleKind> for DiskWithReservationsHandle {
     const ID: &'static str = "prwrap";
 }
 
-/// Disk handle for a delay disk
+/// Disk handle for a delay disk.
 #[derive(MeshPayload)]
 pub struct DelayDiskHandle {
     /// The underlying disk resource.
