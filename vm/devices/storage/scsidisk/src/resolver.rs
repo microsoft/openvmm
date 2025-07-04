@@ -56,7 +56,6 @@ impl AsyncResolveResource<ScsiDeviceHandleKind, SimpleScsiDiskHandle> for Simple
                 resource.disk,
                 ResolveDiskParameters {
                     read_only: resource.read_only,
-                    _async_trait_workaround: &(),
                     driver_source: input.driver_source,
                 },
             )
@@ -86,7 +85,6 @@ impl AsyncResolveResource<ScsiDeviceHandleKind, SimpleScsiDvdHandle> for SimpleS
                         media,
                         ResolveDiskParameters {
                             read_only: true,
-                            _async_trait_workaround: &(),
                             driver_source: input.driver_source,
                         },
                     )
@@ -137,7 +135,6 @@ async fn handle_dvd_requests(
                                     resource,
                                     ResolveDiskParameters {
                                         read_only: true,
-                                        _async_trait_workaround: &(),
                                         driver_source: &driver_source,
                                     },
                                 )
