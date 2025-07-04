@@ -173,6 +173,13 @@ pub struct NicDevice {
     pub max_sub_channels: Option<u16>,
 }
 
+#[derive(Default, Debug, Clone, Eq, PartialEq, MeshPayload, Inspect)]
+pub struct Vtl2AttestedSettings {
+    pub version: i32,
+    // Reserved for future use
+    init_data_hash: Option<Vec<u8>>,
+}
+
 #[derive(Debug, Clone, MeshPayload, Inspect)]
 pub struct Vtl2SettingsFixed {
     /// number of sub-channels for the SCSI controller
@@ -181,6 +188,8 @@ pub struct Vtl2SettingsFixed {
     pub io_ring_size: u32,
     /// Max bounce buffer pages active per cpu
     pub max_bounce_buffer_pages: Option<u32>,
+    /// Attested settings
+    pub attested_settings: Option<Vtl2AttestedSettings>,
 }
 
 #[derive(Debug, Clone, MeshPayload, Inspect)]
