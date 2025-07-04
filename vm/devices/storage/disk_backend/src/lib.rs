@@ -127,6 +127,32 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
         1
     }
 
+    /// The maximum transfer length supported for atomic IOs, if any.
+    fn maximum_atomic_transfer_length(&self) -> Option<u32> {
+        None
+    }
+
+    /// Any required alignment of LBA for atomic IOs.
+    fn atomic_alignment(&self) -> Option<u32> {
+        None
+    }
+
+    /// Required granularity of atomic IOs, if any. If set, IO sizes must be a multiple of this.
+    fn atomic_transfer_length_granularity(&self) -> Option<u32> {
+        None
+    }
+
+    /// Maximum transfer length of atomic IOs when atomic boundary set, if any.
+    fn maximum_atomic_transfer_length_with_atomic_boundary(&self) -> Option<u32> {
+        None
+    }
+
+    /// The maximum size of atomic IOs when performing multiple atomic IOs in a single request, if any.
+    /// If None and atomic IOs are enabled, only one atomic IO supported per request.
+    fn maximum_atomic_boundary_size(&self) -> Option<u32> {
+        None
+    }
+
     /// Optionally returns a trait object to issue persistent reservation
     /// requests.
     fn pr(&self) -> Option<&dyn pr::PersistentReservation> {
@@ -204,6 +230,11 @@ struct DiskInner<T: ?Sized = dyn DynDisk> {
     is_read_only: bool,
     unmap_behavior: UnmapBehavior,
     optimal_unmap_sectors: u32,
+    maximum_atomic_transfer_length: Option<u32>,
+    atomic_alignment: Option<u32>,
+    atomic_transfer_length_granularity: Option<u32>,
+    maximum_atomic_transfer_length_with_atomic_boundary: Option<u32>,
+    maximum_atomic_boundary_size: Option<u32>,
     disk: T,
 }
 
@@ -242,6 +273,12 @@ impl Disk {
             is_read_only: disk.is_read_only(),
             optimal_unmap_sectors: disk.optimal_unmap_sectors(),
             unmap_behavior: disk.unmap_behavior(),
+            maximum_atomic_transfer_length: disk.maximum_atomic_transfer_length(),
+            atomic_alignment: disk.atomic_alignment(),
+            atomic_transfer_length_granularity: disk.atomic_transfer_length_granularity(),
+            maximum_atomic_transfer_length_with_atomic_boundary: disk
+                .maximum_atomic_transfer_length_with_atomic_boundary(),
+            maximum_atomic_boundary_size: disk.maximum_atomic_boundary_size(),
             disk,
         })))
     }
@@ -362,6 +399,32 @@ impl Disk {
     /// Waits for the disk sector size to be different than the specified value.
     pub fn wait_resize(&self, sector_count: u64) -> impl use<'_> + Future<Output = u64> {
         self.0.disk.wait_resize(sector_count)
+    }
+
+    /// The maximum transfer length supported for atomic IOs, if any.
+    pub fn maximum_atomic_transfer_length(&self) -> Option<u32> {
+        self.0.maximum_atomic_transfer_length
+    }
+
+    /// Any required alignment of LBA for atomic IOs.
+    pub fn atomic_alignment(&self) -> Option<u32> {
+        self.0.atomic_alignment
+    }
+
+    /// Required granularity of atomic IOs, if any. If set, IO sizes must be a multiple of this.
+    pub fn atomic_transfer_length_granularity(&self) -> Option<u32> {
+        self.0.atomic_transfer_length_granularity
+    }
+
+    /// Maximum transfer length of atomic IOs when atomic boundary set, if any.
+    pub fn maximum_atomic_transfer_length_with_atomic_boundary(&self) -> Option<u32> {
+        self.0.maximum_atomic_transfer_length_with_atomic_boundary
+    }
+
+    /// The maximum size of atomic IOs when performing multiple atomic IOs in a single request, if any.
+    /// If None and atomic IOs are enabled, only one atomic IO supported per request.
+    pub fn maximum_atomic_boundary_size(&self) -> Option<u32> {
+        self.0.maximum_atomic_boundary_size
     }
 }
 
