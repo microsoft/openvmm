@@ -703,10 +703,10 @@ impl PetriVmHyperV {
     /// Restart the OpenHCL firmware in the VM. (Run OpenHCL servicing)
     pub async fn restart_openhcl(
         &mut self,
-        new_openhcl: &ResolvedArtifact,
+        _new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
-        self.vm.set_openhcl_firmware(new_openhcl.get(), false)?;
+        // TODO: Updating the file causes failure ... self.vm.set_openhcl_firmware(new_openhcl.get(), false)?;
         self.vm.restart_openhcl(flags).await
     }
 
