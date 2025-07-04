@@ -54,6 +54,7 @@ impl AsyncResolveResource<DiskHandleKind, DiskCryptHandle> for DiskCryptResolver
                 ResolveDiskParameters {
                     read_only: input.read_only,
                     _async_trait_workaround: &(),
+                    driver_source: input.driver_source,
                 },
             )
             .await
