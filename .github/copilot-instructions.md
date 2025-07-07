@@ -12,3 +12,18 @@ This is a Rust based repository. Please follow these guidelines when contributin
 2. Maintain existing code structure and organization.
 3. Write unit tests for new functionality.
 4. Document public APIs and complex logic. Suggest changes to the `Guide/` folder when appropriate.
+
+## Domain-specific Guidelines
+Both OpenVMM and OpenHCL processes data from untrusted sources. OpenHCL runs in a constrained environment.
+
+When possible:
+1. Avoid `unsafe` code.
+2. Avoid taking new external dependencies, or those that can significantly increase binary size.
+
+## Testing
+The OpenVMM project contains several types of tests.
+- **Unit tests** are spread throughout crates, and are marked by a `#[cfg(test)]` code block.
+- **VMM tests** are integration tests. These are found in the `vmm_tests` folder, and use the code in `petri` as a framework to help create Hyper-V and OpenVMM based VMs.
+- **Fuzz tests** are nondeterminstic, and are used to ensure that the code does not panic across trust boundaries.
+
+Whenever possible, thoroughly test the code with unit tests. Add a test case to the VMM tests if there is an interesting integration point.
