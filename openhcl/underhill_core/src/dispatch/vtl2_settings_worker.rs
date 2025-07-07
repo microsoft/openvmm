@@ -560,7 +560,6 @@ pub async fn disk_from_disk_type(
             disk_type,
             ResolveDiskParameters {
                 read_only,
-                _async_trait_workaround: &(),
                 driver_source,
             },
         )
