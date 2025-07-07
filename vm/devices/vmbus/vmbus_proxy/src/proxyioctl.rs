@@ -1,12 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
+#![expect(
     dead_code,
     non_snake_case,
     non_upper_case_globals,
     non_camel_case_types,
-    clippy::upper_case_acronyms
 )]
 
 use super::vmbusioctl::VMBUS_CHANNEL_OFFER;

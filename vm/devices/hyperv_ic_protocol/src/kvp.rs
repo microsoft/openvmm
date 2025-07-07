@@ -56,7 +56,7 @@ open_enum! {
     /// The pool to use for a value.
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum KvpPool: u8 {
-        #![allow(missing_docs)] // TODO: figure out what the semantics of these actually are.
+        #![expect(missing_docs)] // TODO: figure out what the semantics of these actually are.
         EXTERNAL = 0,
         GUEST = 1,
         AUTO = 2,
