@@ -107,6 +107,11 @@ impl Test {
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
 
+        // Start host trace collection if supported on this platform
+        #[cfg(windows)]
+        let host_trace_collector =
+            crate::host_wpr_trace::start_host_trace_collection(&name, output_dir);
+
         // Catch test panics in order to cleanly log the panic result. Without
         // this, `libtest_mimic` will report the panic to stdout and fail the
         // test, but the details won't end up in our per-test JSON log.
@@ -120,6 +125,18 @@ impl Test {
                 &artifacts,
             )
         }));
+
+        // Stop host trace collection regardless of test outcome
+        #[cfg(windows)]
+        if let Some(collector) = host_trace_collector {
+            if let Err(e) = collector.stop() {
+                tracing::warn!(
+                    error = %e,
+                    "failed to stop host trace collection cleanly"
+                );
+            }
+        }
+
         let r = r.unwrap_or_else(|err| {
             // The error from `catch_unwind` is almost always either a
             // `&str` or a `String`, since that's what `panic!` produces.

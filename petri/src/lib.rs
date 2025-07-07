@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 
 pub mod disk_image;
+#[cfg(windows)]
+mod host_wpr_trace;
 mod linux_direct_serial_agent;
 mod openhcl_diag;
 mod test;
