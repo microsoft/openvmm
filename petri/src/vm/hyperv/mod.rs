@@ -6,6 +6,8 @@ pub mod powershell;
 pub mod vm;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use super::ProcessorTopology;
 use crate::Firmware;
@@ -231,6 +233,33 @@ impl PetriVmArtifactsHyperV {
 }
 
 impl PetriVmConfigHyperV {
+    /// Creates a valid Hyper-V VM name from a test name.
+    /// 
+    /// Hyper-V limits VM names to 100 characters. If the test name exceeds this limit,
+    /// we truncate it and append a hash to maintain uniqueness.
+    fn create_vm_name(test_name: &str) -> String {
+        const MAX_VM_NAME_LENGTH: usize = 100;
+        
+        if test_name.len() <= MAX_VM_NAME_LENGTH {
+            return test_name.to_owned();
+        }
+        
+        // Create a hash of the full name for uniqueness
+        let mut hasher = DefaultHasher::new();
+        test_name.hash(&mut hasher);
+        let hash = hasher.finish();
+        let hash_suffix = format!("-{:x}", hash);
+        
+        // Reserve space for the hash suffix
+        let max_prefix_length = MAX_VM_NAME_LENGTH - hash_suffix.len();
+        
+        // Take the end of the test name to preserve the most specific part
+        let start_pos = test_name.len().saturating_sub(max_prefix_length);
+        let truncated = &test_name[start_pos..];
+        
+        format!("{}{}", truncated, hash_suffix)
+    }
+
     /// Create a new Hyper-V petri VM config
     pub fn new(
         params: &PetriTestParams<'_>,
@@ -287,7 +316,7 @@ impl PetriVmConfigHyperV {
         let openhcl_igvm = igvm_artifact.cloned();
 
         Ok(PetriVmConfigHyperV {
-            name: params.test_name.to_owned(),
+            name: Self::create_vm_name(params.test_name),
             arch,
             generation,
             guest_state_isolation_type,
@@ -777,4 +806,52 @@ fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {
         anyhow::bail!("icacls failed: {stderr}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_vm_name() {
+        // Test short names remain unchanged
+        let short_name = "test::short_name";
+        assert_eq!(PetriVmConfigHyperV::create_vm_name(short_name), short_name);
+
+        // Test long names are truncated to 100 characters
+        let long_name = "multiarch::openhcl_servicing::hyperv_openhcl_uefi_aarch64_ubuntu_2404_server_aarch64_openhcl_servicing";
+        let vm_name = PetriVmConfigHyperV::create_vm_name(long_name);
+        assert!(vm_name.len() <= 100);
+        assert!(vm_name.len() == 100); // Should be exactly 100 for this case
+
+        // Test different long names get different hashes
+        let long_name2 = "multiarch::openhcl_servicing::hyperv_openhcl_uefi_aarch64_ubuntu_2404_server_aarch64_openhcl_different";
+        let vm_name2 = PetriVmConfigHyperV::create_vm_name(long_name2);
+        assert!(vm_name2.len() <= 100);
+        assert_ne!(vm_name, vm_name2);
+
+        // Test the most specific part is preserved
+        assert!(vm_name.contains("openhcl_servicing"));
+        assert!(vm_name2.contains("openhcl_different"));
+    }
+
+    #[test]
+    fn test_vm_name_exactly_100_chars() {
+        let exactly_100 = "a".repeat(100);
+        let result = PetriVmConfigHyperV::create_vm_name(&exactly_100);
+        assert_eq!(result, exactly_100);
+        assert_eq!(result.len(), 100);
+    }
+
+    #[test]
+    fn test_vm_name_101_chars() {
+        let exactly_101 = "a".repeat(101);
+        let result = PetriVmConfigHyperV::create_vm_name(&exactly_101);
+        assert_eq!(result.len(), 100);
+        assert!(result.ends_with(&format!("-{:x}", {
+            let mut hasher = DefaultHasher::new();
+            exactly_101.hash(&mut hasher);
+            hasher.finish()
+        })));
+    }
 }
