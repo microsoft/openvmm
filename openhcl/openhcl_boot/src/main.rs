@@ -632,7 +632,7 @@ fn get_hw_debug_bit(isolation: IsolationType) -> bool {
     match isolation {
         #[cfg(target_arch = "x86_64")]
         IsolationType::Tdx => {
-            use tdx_guest_device::protocol::TdReport;
+            use x86defs::tdx::TdReport;
 
             use crate::arch::tdx::get_tdreport;
 
