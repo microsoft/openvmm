@@ -9,7 +9,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u32_le = zerocopy::U32<zerocopy::LittleEndian>;
     pub type u64_le = zerocopy::U64<zerocopy::LittleEndian>;

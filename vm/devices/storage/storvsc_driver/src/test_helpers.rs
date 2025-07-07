@@ -4,7 +4,7 @@
 //! Helpers for unit tests.
 
 #![cfg_attr(not(test), expect(dead_code))]
-#![allow(missing_docs)]
+#![expect(missing_docs)]
 
 use crate::PacketError;
 use crate::Storvsc;
@@ -107,7 +107,6 @@ impl Version {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone)]
 struct Range {
     buf: MultiPagedRangeBuf<GpnList>,
@@ -115,7 +114,6 @@ struct Range {
     is_write: bool,
 }
 
-#[allow(dead_code)]
 impl Range {
     fn new(
         buf: MultiPagedRangeBuf<GpnList>,
@@ -131,6 +129,7 @@ impl Range {
         Some(Self { buf, len, is_write })
     }
 
+    #[expect(dead_code)]
     fn buffer<'a>(&'a self, guest_memory: &'a GuestMemory) -> RequestBuffers<'a> {
         let mut range = self.buf.first().unwrap_or_else(PagedRange::empty);
         range.truncate(self.len);
@@ -138,8 +137,8 @@ impl Range {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
+#[expect(dead_code)]
 pub(crate) struct ScsiRequestAndRange {
     external_data: Range,
     request: storvsp_protocol::ScsiRequest,

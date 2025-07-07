@@ -26,12 +26,7 @@ use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
 
 mod virtdisk {
-    #![allow(
-        non_snake_case,
-        dead_code,
-        non_camel_case_types,
-        clippy::upper_case_acronyms
-    )]
+    #![expect(non_snake_case, dead_code)]
 
     use std::os::windows::prelude::*;
     use winapi::shared::guiddef::GUID;

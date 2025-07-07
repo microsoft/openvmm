@@ -1,13 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
-    dead_code,
-    non_camel_case_types,
-    non_snake_case,
-    non_upper_case_globals,
-    clippy::upper_case_acronyms
-)]
+#![expect(non_snake_case)]
 
 use bitfield_struct::bitfield;
 use vmbus_core::protocol::UserDefinedData;
