@@ -831,7 +831,9 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         while i < packets.len() {
             if let Some(cqe) = self.rx_cq.pop() {
                 let rx = self.posted_rx.pop_front().unwrap();
-                let rx_oob = ManaRxcompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                let (rx_oob, rest) = ManaRxcompOob::read_from_prefix(&cqe.data[..]).unwrap();
+                debug_assert!(rest.is_empty(), "Unexpected extra data in RX completion entry");
+                let rx_oob = rx_oob;
                 match rx_oob.cqe_hdr.cqe_type() {
                     CQE_RX_OKAY => {
                         let ip_checksum = if rx_oob.flags.rx_iphdr_csum_succeed() {
@@ -937,7 +939,9 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         let mut queue_stuck = false;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
-                let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                let (tx_oob, rest) = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap();
+                debug_assert!(rest.is_empty(), "Unexpected extra data in TX completion entry");
+                let tx_oob = tx_oob;
                 match tx_oob.cqe_hdr.cqe_type() {
                     CQE_TX_OKAY => {
                         self.stats.tx_packets += 1;

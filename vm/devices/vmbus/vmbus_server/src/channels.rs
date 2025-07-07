@@ -4148,7 +4148,7 @@ mod tests {
             let (header, data) = protocol::MessageHeader::read_from_prefix(message.data()).unwrap();
 
             assert_eq!(header.message_type(), T::MESSAGE_TYPE);
-            T::read_from_prefix(data).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+            T::read_from_prefix(data).unwrap().0 // NOTE: Test helper - only needs message content, not remaining data
         }
 
         fn check_messages(&mut self, messages: &[OutgoingMessage]) {
