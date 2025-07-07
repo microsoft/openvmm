@@ -142,7 +142,7 @@ project, and will fast-fail if it catches any warnings / errors.
 ### Suppressing Lints
 
 In general, lints should be fixed by modifying the code to satisfy the lint.
-However, there are cases where a lint may need to be `allow`'d inline.
+However, there are cases where a lint may need to be `expect`'d inline.
 
 In these cases, you _must_ provide a inline comment providing reasonable
 justification for the suppressed lint.
