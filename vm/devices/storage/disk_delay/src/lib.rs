@@ -23,7 +23,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 /// A disk with delay on every I/O operation.
 #[derive(Inspect)]
 pub struct DelayDisk {
-    #[inspect(skip)]
+    #[inspect(hex, with = "|x| x.get()")]
     delay: Cell<u64>,
     inner: Disk,
     driver: VmTaskDriver,
