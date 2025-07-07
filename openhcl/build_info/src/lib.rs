@@ -2,6 +2,41 @@
 // Licensed under the MIT License.
 
 //! Provides build metadata
+//!
+//! This crate provides build-time metadata for OpenVMM builds. It includes:
+//! - Standard build information (SCM revision, branch, crate name, etc.)
+//! - Arbitrary build data from environment variables with the `OPENVMM_BUILD_` prefix
+//! - Build profile information (debug/release)
+//! - Target architecture
+//! 
+//! ## Usage
+//! 
+//! ```rust
+//! use build_info::BuildInfo;
+//! 
+//! let build_info = BuildInfo::new();
+//! println!("Build profile: {}", build_info.build_profile());
+//! println!("Target arch: {}", build_info.target_arch());
+//! 
+//! // Check for specific arbitrary data
+//! if let Some(features) = build_info.get_arbitrary_data("features") {
+//!     println!("Build features: {}", features);
+//! }
+//! 
+//! // Get all arbitrary data
+//! for (key, value) in build_info.arbitrary_data() {
+//!     println!("{}: {}", key, value);
+//! }
+//! ```
+//! 
+//! ## Environment Variables
+//! 
+//! The following environment variables are supported for arbitrary build data:
+//! - `OPENVMM_BUILD_TARGET` - Build target information
+//! - `OPENVMM_BUILD_FEATURES` - Enabled features
+//! - `OPENVMM_BUILD_TIMESTAMP` - Build timestamp
+//! - `OPENVMM_BUILD_RUST_VERSION` - Rust version used for build
+//! - `OPENVMM_BUILD_CUSTOM_1` through `OPENVMM_BUILD_CUSTOM_5` - Custom build data
 
 #![expect(missing_docs)]
 
@@ -300,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_get_function() {
-        let build_info = crate::get();
+        let build_info = get();
         
         // Test that get() returns the same data as new()
         assert_eq!(build_info.crate_name(), "build_info");
