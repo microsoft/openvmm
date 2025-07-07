@@ -8,13 +8,13 @@
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
-use tdx_guest_device::protocol::TdReport;
 use thiserror::Error;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdGlaVmAndFlags;
+use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdVmCallSubFunction;
 use x86defs::tdx::TdgMemPageAcceptRcx;

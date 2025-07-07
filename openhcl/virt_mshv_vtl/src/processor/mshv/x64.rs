@@ -1290,8 +1290,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             }
         };
 
-        let target_vtl = self.vtl;
-
         // The translation will be used, so set the appropriate page table bits
         // (the access/dirty bit).
         //
@@ -1309,7 +1307,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         assert!(!control_flags.privilege_exempt());
 
         // Do the translation using the current VTL.
-        control_flags.set_input_vtl(target_vtl.into());
+        control_flags.set_input_vtl(self.vtl.into());
 
         match self
             .vp
@@ -1321,7 +1319,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 gpa_page,
                 overlay_page,
             }) => {
-                self.vp.mark_tlb_locked(Vtl::Vtl2, GuestVtl::Vtl0);
+                self.vp.mark_tlb_locked(Vtl::Vtl2, self.vtl);
                 Ok(Ok(EmuTranslateResult {
                     gpa: (gpa_page << hvdef::HV_PAGE_SHIFT) + (gva & (HV_PAGE_SIZE - 1)),
                     overlay_page: Some(overlay_page),

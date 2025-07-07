@@ -81,7 +81,7 @@ impl<FDC: MaybeStubFloppyDiskController> Winbond83977FloppySioDevice<FDC> {
         secondary_dma: Box<dyn IsaDmaChannel>,
     ) -> Result<Self, NewWinbond83977FloppySioDeviceError<FDC::NewError>> {
         let secondary_interrupt = interrupt
-            .new_shared("floppy secondary")
+            .new_shared("floppy_secondary")
             .map_err(NewWinbond83977FloppySioDeviceError::LineShare)?;
 
         Ok(Self {

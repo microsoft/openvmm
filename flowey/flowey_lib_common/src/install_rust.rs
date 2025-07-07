@@ -135,7 +135,7 @@ impl FlowNode for Node {
                 if let Ok(rustup) = which::which("rustup") {
                     for (thing, expected_things) in [
                         ("target", &additional_target_triples),
-                        ("compoment", &additional_components),
+                        ("component", &additional_components),
                     ] {
                         let output = xshell::cmd!(
                             sh,
