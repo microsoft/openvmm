@@ -5,6 +5,7 @@ This is a Rust based repository. Please follow these guidelines when contributin
 ### Required Before Each Commit
 - Run `cargo xtask fmt --fix` before committing any changes to ensure proper code formatting.
 - This will ensure all source code and generated pipeline files maintain consistent style and content.
+- Cross-compile by targeting `x86_64` and `aarch64` processors, and Windows and Linux environments.
 
 ## Key Guidelines
 1. Follow Rust best practices and idiomatic patterns.
