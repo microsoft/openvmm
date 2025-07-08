@@ -38,3 +38,6 @@ steps:
       # This includes protoc (Protocol Buffers compiler), mu_msvm UEFI firmware, 
       # test Linux kernels, and other build artifacts
       cargo xflowey restore-packages
+      
+      # Install cargo-nextest for running unit tests
+      cargo install cargo-nextest --locked
