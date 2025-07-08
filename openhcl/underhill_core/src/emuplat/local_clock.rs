@@ -13,7 +13,7 @@ use vmcore::save_restore::SaveRestore;
 
 const NANOS_IN_SECOND: i64 = 1_000_000_000;
 const NANOS_100_IN_SECOND: i64 = NANOS_IN_SECOND / 100;
-const MILLIS_IN_TWO_DAYS: i64 = 100 * 60 * 60 * 24 * 2;
+const MILLIS_IN_TWO_DAYS: i64 = 1000 * 60 * 60 * 24 * 2;
 
 /// Implementation of [`LocalClock`], backed a real time source on the host.
 ///

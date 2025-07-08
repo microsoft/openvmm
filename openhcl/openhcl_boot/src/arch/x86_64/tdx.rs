@@ -20,10 +20,10 @@ use tdcall::TdcallOutput;
 use tdcall::tdcall_hypercall;
 use tdcall::tdcall_map_gpa;
 use tdcall::tdcall_wrmsr;
-use tdx_guest_device::protocol::TdReport;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::RESET_VECTOR_PAGE;
 use x86defs::tdx::TdCallResult;
+use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
