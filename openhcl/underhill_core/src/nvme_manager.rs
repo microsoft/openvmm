@@ -28,6 +28,58 @@ use std::collections::HashMap;
 use std::collections::hash_map;
 use thiserror::Error;
 use tracing::Instrument;
+
+/// Strongly typed wrapper for NVMe device name (formerly debug_id/controller_instance_id)
+#[derive(Debug, Clone, PartialEq, Eq, MeshPayload)]
+pub struct NvmeDeviceName(pub String);
+
+impl From<String> for NvmeDeviceName {
+    fn from(s: String) -> Self {
+        NvmeDeviceName(s)
+    }
+}
+
+impl From<&str> for NvmeDeviceName {
+    fn from(s: &str) -> Self {
+        NvmeDeviceName(s.to_string())
+    }
+}
+
+impl AsRef<str> for NvmeDeviceName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Strongly typed wrapper for PCI ID
+#[derive(Debug, Clone, PartialEq, Eq, MeshPayload)]
+pub struct PciId(pub String);
+
+impl From<String> for PciId {
+    fn from(s: String) -> Self {
+        PciId(s)
+    }
+}
+
+impl From<&str> for PciId {
+    fn from(s: &str) -> Self {
+        PciId(s.to_string())
+    }
+}
+
+impl AsRef<str> for PciId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Parameters for getting an NVMe namespace
+#[derive(Debug, Clone, MeshPayload)]
+pub struct GetNamespaceParams {
+    pub name: NvmeDeviceName,
+    pub pci_id: PciId,
+    pub nsid: u32,
+}
 use user_driver::vfio::VfioDevice;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceId;
@@ -175,7 +227,7 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(Rpc<(String, String, u32), Result<nvme_driver::Namespace, NamespaceError>>),
+    GetNamespace(Rpc<GetNamespaceParams, Result<nvme_driver::Namespace, NamespaceError>>),
     Save(Rpc<(), Result<NvmeManagerSavedState, anyhow::Error>>),
     Shutdown {
         span: tracing::Span,
@@ -191,20 +243,22 @@ pub struct NvmeManagerClient {
 impl NvmeManagerClient {
     pub async fn get_namespace(
         &self,
-        debug_id: String,
-        pci_id: String,
+        name: impl Into<NvmeDeviceName>,
+        pci_id: impl Into<PciId>,
         nsid: u32,
     ) -> anyhow::Result<nvme_driver::Namespace> {
+        let params = GetNamespaceParams {
+            name: name.into(),
+            pci_id: pci_id.into(),
+            nsid,
+        };
         Ok(self
             .sender
-            .call(
-                Request::GetNamespace,
-                (debug_id.clone(), pci_id.clone(), nsid),
-            )
+            .call(Request::GetNamespace, params.clone())
             .instrument(tracing::info_span!(
                 "nvme_get_namespace",
-                debug_id,
-                pci_id,
+                name = params.name.as_ref(),
+                pci_id = params.pci_id.as_ref(),
                 nsid
             ))
             .await
@@ -258,9 +312,12 @@ impl NvmeManagerWorker {
                     }
                 }
                 Request::GetNamespace(rpc) => {
-                    rpc.handle(async |(debug_id, pci_id, nsid)| {
-                        self.get_namespace(debug_id, pci_id.clone(), nsid)
-                            .map_err(|source| NamespaceError { pci_id, source })
+                    rpc.handle(async |params| {
+                        self.get_namespace(params.name.0, params.pci_id.0.clone(), params.nsid)
+                            .map_err(|source| NamespaceError {
+                                pci_id: params.pci_id.0,
+                                source,
+                            })
                             .await
                     })
                     .await
@@ -295,11 +352,11 @@ impl NvmeManagerWorker {
         if !nvme_keepalive || !self.save_restore_supported {
             async {
                 join_all(self.devices.drain().map(|(pci_id, driver)| {
-                    let debug_id = driver.debug_id();
+                    let name = driver.name();
                     driver.shutdown().instrument(tracing::info_span!(
                         "shutdown_nvme_driver",
                         pci_id,
-                        debug_id
+                        name
                     ))
                 }))
                 .await
@@ -311,7 +368,7 @@ impl NvmeManagerWorker {
 
     async fn get_driver(
         &mut self,
-        debug_id: String,
+        name: String,
         pci_id: String,
     ) -> Result<&mut nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
         let driver = match self.devices.entry(pci_id.to_owned()) {
@@ -344,7 +401,7 @@ impl NvmeManagerWorker {
                     self.vp_count,
                     device,
                     self.is_isolated,
-                    debug_id,
+                    name,
                 )
                 .instrument(tracing::info_span!(
                     "nvme_driver_init",
@@ -361,11 +418,11 @@ impl NvmeManagerWorker {
 
     async fn get_namespace(
         &mut self,
-        debug_id: String,
+        name: String,
         pci_id: String,
         nsid: u32,
     ) -> Result<nvme_driver::Namespace, InnerError> {
-        let driver = self.get_driver(debug_id, pci_id.to_owned()).await?;
+        let driver = self.get_driver(name, pci_id.to_owned()).await?;
         driver
             .namespace(nsid)
             .await
@@ -425,7 +482,7 @@ impl NvmeManagerWorker {
                 vfio_device,
                 &disk.driver_state,
                 self.is_isolated,
-                None, // controller_instance_id is not persisted in saved state
+                format!("restored-{}", disk.pci_id), // Use PCI ID as name for restored drivers
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await?;
@@ -469,7 +526,7 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
 
 #[derive(MeshPayload)]
 pub struct NvmeDiskConfig {
-    pub debug_id: String,
+    pub name: String,
     pub pci_id: String,
     pub nsid: u32,
 }
@@ -477,7 +534,7 @@ pub struct NvmeDiskConfig {
 impl Default for NvmeDiskConfig {
     fn default() -> Self {
         Self {
-            debug_id: "force-load".to_string(),
+            name: "force-load".to_string(),
             pci_id: String::new(),
             nsid: 0,
         }
