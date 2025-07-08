@@ -578,7 +578,6 @@ pub fn run_restart_openhcl(
             .flag_opt(
                 flags
                     .override_version_checks
-                    .unwrap_or(false)
                     .then_some("OverrideVersionChecks"),
             )
             .flag_opt((!flags.enable_nvme_keepalive).then_some("DisableNvmeKeepalive"))

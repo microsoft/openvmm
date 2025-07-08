@@ -121,7 +121,7 @@ async fn basic(
         "",
         igvm_file,
         OpenHclServicingFlags {
-            override_version_checks: Some(true),
+            override_version_checks: true,
             ..Default::default()
         },
     )
