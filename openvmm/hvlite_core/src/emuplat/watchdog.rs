@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use vmcore::non_volatile_store::NonVolatileStore;
+use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use watchdog_vmgs_format::WatchdogVmgsFormatStore;
 use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
@@ -12,17 +13,16 @@ pub struct HvLiteWatchdogPlatform {
     /// The VMGS store used to persist the watchdog status.
     store: WatchdogVmgsFormatStore,
     /// Callbacks to execute when the watchdog times out.
-    callbacks: Vec<Box<dyn Fn() + Send + Sync>>,
+    callbacks: Vec<Box<dyn WatchdogCallback>>,
 }
 
 impl HvLiteWatchdogPlatform {
     pub async fn new(
         store: Box<dyn NonVolatileStore>,
-        callbacks: Vec<Box<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, WatchdogVmgsFormatStoreError> {
         Ok(HvLiteWatchdogPlatform {
             store: WatchdogVmgsFormatStore::new(store).await?,
-            callbacks,
+            callbacks: Vec::new(),
         })
     }
 }
@@ -38,8 +38,8 @@ impl WatchdogPlatform for HvLiteWatchdogPlatform {
             );
         }
 
-        for cb in &self.callbacks {
-            (cb)()
+        for callback in &self.callbacks {
+            callback.on_timeout().await;
         }
     }
 
@@ -58,7 +58,7 @@ impl WatchdogPlatform for HvLiteWatchdogPlatform {
         }
     }
 
-    fn add_callback(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
-        self.callbacks.push(cb);
+    fn add_callback(&mut self, callback: Box<dyn WatchdogCallback>) {
+        self.callbacks.push(callback);
     }
 }

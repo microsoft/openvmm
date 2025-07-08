@@ -77,6 +77,7 @@ use thiserror::Error;
 use uefi_nvram_storage::VmmNvramStorage;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::vmtime::VmTimeSource;
+use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 
 #[derive(Debug, Error)]
@@ -157,6 +158,16 @@ pub struct UefiDevice {
     address: u32,
 }
 
+// REMOVE LATER: Dummy watchdog callback
+struct DummyWatchdogCallback;
+
+#[async_trait::async_trait]
+impl WatchdogCallback for DummyWatchdogCallback {
+    async fn on_timeout(&self) {
+        tracelimit::info_ratelimited!("Encountered watchdog timeout");
+    }
+}
+
 impl UefiDevice {
     pub async fn new(
         runtime_deps: UefiRuntimeDeps<'_>,
@@ -174,9 +185,8 @@ impl UefiDevice {
             time_source,
         } = runtime_deps;
 
-        watchdog_platform.add_callback(Box::new(|| {
-            tracelimit::info_ratelimited!("Invoked callback on watchdog!")
-        }));
+        // REMOVE LATER: Testing watchdog callback additions
+        watchdog_platform.add_callback(Box::new(DummyWatchdogCallback));
 
         let uefi = UefiDevice {
             use_mmio: cfg.use_mmio,

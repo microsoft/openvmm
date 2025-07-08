@@ -3,6 +3,7 @@
 
 use cvm_tracing::CVM_ALLOWED;
 use vmcore::non_volatile_store::NonVolatileStore;
+use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 use watchdog_vmgs_format::WatchdogVmgsFormatStore;
 use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
@@ -15,36 +16,18 @@ pub struct UnderhillWatchdog {
     /// Handle to the guest emulation transport client.
     get: guest_emulation_transport::GuestEmulationTransportClient,
     /// Callbacks to execute when the watchdog times out.
-    callbacks: Vec<Box<dyn WatchdogTimeout>>,
-}
-
-/// A trait that represents a callback that should be invoked when
-/// the watchdog times out
-#[async_trait::async_trait]
-pub trait WatchdogTimeout: Send + Sync {
-    async fn on_timeout(&self);
-}
-
-/// Adapter to convert a simple function into a WatchdogTimeout trait
-struct FunctionCallback(Box<dyn Fn() + Send + Sync>);
-
-#[async_trait::async_trait]
-impl WatchdogTimeout for FunctionCallback {
-    async fn on_timeout(&self) {
-        (self.0)();
-    }
+    callbacks: Vec<Box<dyn WatchdogCallback>>,
 }
 
 impl UnderhillWatchdog {
     pub async fn new(
         store: Box<dyn NonVolatileStore>,
         get: guest_emulation_transport::GuestEmulationTransportClient,
-        hook: Box<dyn WatchdogTimeout>,
     ) -> Result<Self, WatchdogVmgsFormatStoreError> {
         Ok(UnderhillWatchdog {
             store: WatchdogVmgsFormatStore::new(store).await?,
             get,
-            callbacks: vec![hook],
+            callbacks: Vec::new(),
         })
     }
 }
@@ -63,8 +46,8 @@ impl WatchdogPlatform for UnderhillWatchdog {
 
         // Invoke all callbacks before reporting this to the GET, as each
         // callback may want to do something before the host tears us down.
-        for cb in &self.callbacks {
-            cb.on_timeout().await;
+        for callback in &self.callbacks {
+            callback.on_timeout().await;
         }
 
         // FUTURE: consider emitting different events for the UEFI watchdog vs.
@@ -90,7 +73,7 @@ impl WatchdogPlatform for UnderhillWatchdog {
         }
     }
 
-    fn add_callback(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
-        self.callbacks.push(Box::new(FunctionCallback(cb)));
+    fn add_callback(&mut self, callback: Box<dyn WatchdogCallback>) {
+        self.callbacks.push(callback);
     }
 }
