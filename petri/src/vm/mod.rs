@@ -543,12 +543,21 @@ impl Default for MemoryTopology {
 }
 
 /// UEFI firmware configuration
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct UefiConfig {
     /// Secure boot template
     pub secure_boot_template: Option<SecureBootTemplate>,
     /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
     pub disable_frontpage: bool,
+}
+
+impl Default for UefiConfig {
+    fn default() -> Self {
+        Self {
+            disable_frontpage: true,
+            ..Default::default()
+        }
+    }
 }
 
 /// OpenHCL configuration
