@@ -10,14 +10,29 @@ use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
 /// An implementation of [`WatchdogPlatform`] for use with both the UEFI
 /// watchdog and the Guest Watchdog in Underhill.
 pub struct UnderhillWatchdog {
+    /// The VMGS store used to persist the watchdog status.
     store: WatchdogVmgsFormatStore,
+    /// Handle to the guest emulation transport client.
     get: guest_emulation_transport::GuestEmulationTransportClient,
-    hook: Box<dyn WatchdogTimeout>,
+    /// Callbacks to execute when the watchdog times out.
+    callbacks: Vec<Box<dyn WatchdogTimeout>>,
 }
 
+/// A trait that represents a callback that should be invoked when
+/// the watchdog times out
 #[async_trait::async_trait]
 pub trait WatchdogTimeout: Send + Sync {
     async fn on_timeout(&self);
+}
+
+/// Adapter to convert a simple function into a WatchdogTimeout trait
+struct FunctionCallback(Box<dyn Fn() + Send + Sync>);
+
+#[async_trait::async_trait]
+impl WatchdogTimeout for FunctionCallback {
+    async fn on_timeout(&self) {
+        (self.0)();
+    }
 }
 
 impl UnderhillWatchdog {
@@ -29,7 +44,7 @@ impl UnderhillWatchdog {
         Ok(UnderhillWatchdog {
             store: WatchdogVmgsFormatStore::new(store).await?,
             get,
-            hook,
+            callbacks: vec![hook],
         })
     }
 }
@@ -46,9 +61,11 @@ impl WatchdogPlatform for UnderhillWatchdog {
             );
         }
 
-        // Call the hook before reporting this to the GET, as the hook may
-        // want to do something before the host tears us down.
-        self.hook.on_timeout().await;
+        // Invoke all callbacks before reporting this to the GET, as each
+        // callback may want to do something before the host tears us down.
+        for cb in &self.callbacks {
+            cb.on_timeout().await;
+        }
 
         // FUTURE: consider emitting different events for the UEFI watchdog vs.
         // the guest watchdog
@@ -71,5 +88,9 @@ impl WatchdogPlatform for UnderhillWatchdog {
                 false
             }
         }
+    }
+
+    fn add_callback(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        self.callbacks.push(Box::new(FunctionCallback(cb)));
     }
 }

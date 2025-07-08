@@ -9,18 +9,20 @@ use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
 /// An implementation of [`WatchdogPlatform`] for use with both the UEFI
 /// watchdog and the Guest Watchdog in HvLite.
 pub struct HvLiteWatchdogPlatform {
+    /// The VMGS store used to persist the watchdog status.
     store: WatchdogVmgsFormatStore,
-    on_timeout: Box<dyn Fn() + Send + Sync>,
+    /// Callbacks to execute when the watchdog times out.
+    callbacks: Vec<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl HvLiteWatchdogPlatform {
     pub async fn new(
         store: Box<dyn NonVolatileStore>,
-        on_timeout: Box<dyn Fn() + Send + Sync>,
+        callbacks: Vec<Box<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, WatchdogVmgsFormatStoreError> {
         Ok(HvLiteWatchdogPlatform {
             store: WatchdogVmgsFormatStore::new(store).await?,
-            on_timeout,
+            callbacks,
         })
     }
 }
@@ -36,7 +38,9 @@ impl WatchdogPlatform for HvLiteWatchdogPlatform {
             );
         }
 
-        (self.on_timeout)()
+        for cb in &self.callbacks {
+            (cb)()
+        }
     }
 
     async fn read_and_clear_boot_status(&mut self) -> bool {
@@ -52,5 +56,9 @@ impl WatchdogPlatform for HvLiteWatchdogPlatform {
                 false
             }
         }
+    }
+
+    fn add_callback(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        self.callbacks.push(cb);
     }
 }

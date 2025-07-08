@@ -168,11 +168,15 @@ impl UefiDevice {
             nvram_storage,
             logger,
             vmtime,
-            watchdog_platform,
+            mut watchdog_platform,
             generation_id_deps,
             vsm_config,
             time_source,
         } = runtime_deps;
+
+        watchdog_platform.add_callback(Box::new(|| {
+            tracelimit::info_ratelimited!("Invoked callback on watchdog!")
+        }));
 
         let uefi = UefiDevice {
             use_mmio: cfg.use_mmio,

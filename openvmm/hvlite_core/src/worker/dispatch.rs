@@ -1113,7 +1113,7 @@ impl InitializedVm {
                             Box::new(move || halt.halt(HaltReason::Reset))
                         };
 
-                        Box::new(HvLiteWatchdogPlatform::new(store, on_timeout).await?)
+                        Box::new(HvLiteWatchdogPlatform::new(store, vec![on_timeout]).await?)
                     },
                     vsm_config: None,
                     // TODO: persist SystemTimeClock time across reboots.
@@ -1335,7 +1335,7 @@ impl InitializedVm {
                         Box::new(move || halt.halt(HaltReason::Reset))
                     };
 
-                    Box::new(HvLiteWatchdogPlatform::new(store, trigger_reset).await?)
+                    Box::new(HvLiteWatchdogPlatform::new(store, vec![trigger_reset]).await?)
                 },
             })
         } else {
