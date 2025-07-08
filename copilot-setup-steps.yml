@@ -1,0 +1,57 @@
+# GitHub Copilot setup steps for OpenVMM development environment
+# Based on the devcontainer configuration and getting started documentation
+
+steps:
+  - name: Install Rust with required targets
+    run: |
+      # Install Rust using rustup (tracks latest stable as per project requirements)
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      source ~/.cargo/env
+      
+      # Install all required targets for OpenVMM cross-compilation
+      rustup target add aarch64-apple-darwin
+      rustup target add aarch64-unknown-linux-musl
+      rustup target add x86_64-pc-windows-msvc
+      rustup target add x86_64-unknown-linux-gnu
+      rustup target add x86_64-unknown-linux-musl
+      rustup target add x86_64-unknown-none
+
+  - name: Install system dependencies
+    run: |
+      # Update package lists
+      sudo apt-get update
+      
+      # Install build dependencies required for OpenVMM
+      sudo apt-get install -y \
+        binutils \
+        build-essential \
+        gcc-aarch64-linux-gnu \
+        libssl-dev \
+        pkg-config
+
+  - name: Restore OpenVMM build dependencies
+    run: |
+      # Restore external dependencies required for building OpenVMM
+      # This includes protoc (Protocol Buffers compiler), mu_msvm UEFI firmware, 
+      # test Linux kernels, and other build artifacts
+      cargo xflowey restore-packages
+
+  - name: Set up development tools
+    run: |
+      # Install git hooks for automatic formatting (recommended)
+      cargo xtask install-git-hooks --pre-push --with-fmt=yes
+
+  - name: Verify installation
+    run: |
+      # Verify that Rust and required tools are installed
+      rustc --version
+      cargo --version
+      
+      # Check that required targets are installed
+      rustup target list --installed
+      
+      # Run formatting checks to ensure environment is set up correctly
+      cargo xtask fmt
+      
+      # Test that basic workspace check works
+      cargo check --workspace
