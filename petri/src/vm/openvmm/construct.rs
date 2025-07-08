@@ -21,12 +21,14 @@ use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::ProcessorTopology;
 use crate::SIZE_1_GB;
+use crate::SecureBootTemplate;
+use crate::UefiConfig;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
+use crate::openvmm::mem_diff_vmgs_from_artifact;
+use crate::vm::append_cmdline;
 use anyhow::Context;
-use disk_backend_resources::LayeredDiskHandle;
-use disk_backend_resources::layer::RamDiskLayerHandle;
 use framebuffer::FRAMEBUFFER_SIZE;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferAccess;
@@ -72,7 +74,6 @@ use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_socket::net::OpenSocketSerialConfig;
 use sparse_mmap::alloc_shared_memory;
-use std::fmt::Write as _;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -322,6 +323,44 @@ impl PetriVmConfigOpenVmm {
             }
         };
 
+        let (secure_boot_enabled, custom_uefi_vars) = if let Firmware::Uefi {
+            uefi_config:
+                UefiConfig {
+                    secure_boot_template: Some(secure_boot_template),
+                    ..
+                },
+            ..
+        } = firmware
+        {
+            (
+                true,
+                match (arch, secure_boot_template) {
+                    (MachineArch::X86_64, SecureBootTemplate::MicrosoftWindows) => {
+                        hyperv_secure_boot_templates::x64::microsoft_windows()
+                    }
+                    (
+                        MachineArch::X86_64,
+                        SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy,
+                    ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
+                    (MachineArch::Aarch64, SecureBootTemplate::MicrosoftWindows) => {
+                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                    }
+                    (
+                        MachineArch::Aarch64,
+                        SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy,
+                    ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
+                },
+            )
+        } else {
+            (false, Default::default())
+        };
+
+        let vmgs = if let Firmware::Uefi { vmgs_file, .. } = firmware {
+            Some(mem_diff_vmgs_from_artifact(vmgs_file)?)
+        } else {
+            None
+        };
+
         let config = Config {
             // Firmware
             load_mode,
@@ -367,8 +406,9 @@ impl PetriVmConfigOpenVmm {
             framebuffer,
             vga_firmware,
 
-            // Reasonable defaults
-            custom_uefi_vars: Default::default(),
+            secure_boot_enabled,
+            custom_uefi_vars,
+            vmgs,
 
             // Disabled for VMM tests by default
             #[cfg(windows)]
@@ -380,12 +420,6 @@ impl PetriVmConfigOpenVmm {
             virtio_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs: if firmware.is_openhcl() {
-                None
-            } else {
-                Some(VmgsResource::Ephemeral)
-            },
-            secure_boot_enabled: false,
             debugger_rpc: None,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
@@ -442,8 +476,7 @@ impl PetriVmConfigOpenVmm {
 
             ged,
             framebuffer_access,
-        }
-        .with_processor_topology(ProcessorTopology::default()))
+        })
     }
 }
 
@@ -585,7 +618,8 @@ impl PetriVmConfigSetupCore<'_> {
                 MachineArch::X86_64,
                 Firmware::Pcat {
                     bios_firmware: firmware,
-                    ..
+                    guest: _,         // load_boot_disk
+                    svga_firmware: _, // config_video
                 },
             ) => {
                 let firmware = hvlite_pcat_locator::find_pcat_bios(firmware.get())
@@ -599,7 +633,13 @@ impl PetriVmConfigSetupCore<'_> {
                 _,
                 Firmware::Uefi {
                     uefi_firmware: firmware,
-                    ..
+                    guest: _,     // load_boot_disk
+                    vmgs_file: _, // new
+                    uefi_config:
+                        UefiConfig {
+                            secure_boot_template: _, // new
+                            disable_frontpage,
+                        },
                 },
             ) => {
                 let firmware = File::open(firmware.clone())
@@ -609,7 +649,7 @@ impl PetriVmConfigSetupCore<'_> {
                     firmware,
                     enable_debugging: false,
                     enable_memory_protections: false,
-                    disable_frontpage: true,
+                    disable_frontpage: *disable_frontpage,
                     enable_tpm: false,
                     enable_battery: false,
                     enable_serial: true,
@@ -620,18 +660,41 @@ impl PetriVmConfigSetupCore<'_> {
             }
             (
                 MachineArch::X86_64,
-                Firmware::OpenhclLinuxDirect { igvm_path, .. }
-                | Firmware::OpenhclUefi { igvm_path, .. },
+                Firmware::OpenhclLinuxDirect {
+                    igvm_path,
+                    openhcl_config,
+                }
+                | Firmware::OpenhclUefi {
+                    igvm_path,
+                    guest: _,       // load_boot_disk
+                    isolation: _,   // new via Firmware::isolation
+                    vmgs_file: _,   // config_openhcl_vmbus_devices
+                    uefi_config: _, // config_openhcl_vmbus_devices
+                    openhcl_config,
+                },
             ) => {
-                let mut cmdline =
-                    format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}");
+                let OpenHclConfig {
+                    vtl2_nvme_boot: _, // load_boot_disk
+                    vmbus_redirect: _, // config_openhcl_vmbus_devices
+                    command_line,
+                } = openhcl_config;
+
+                let mut cmdline = command_line.clone();
+
+                append_cmdline(
+                    &mut cmdline,
+                    &format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}"),
+                );
 
                 let isolated = match self.firmware {
                     Firmware::OpenhclLinuxDirect { .. } => {
                         // Set UNDERHILL_SERIAL_WAIT_FOR_RTS=1 so that we don't pull serial data
                         // until the guest is ready. Otherwise, Linux will drop the input serial
                         // data on the floor during boot.
-                        write!(cmdline, " UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh\"").unwrap();
+                        append_cmdline(
+                            &mut cmdline,
+                            "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh\"",
+                        );
                         false
                     }
                     Firmware::OpenhclUefi { isolation, .. } if isolation.is_some() => true,
@@ -642,7 +705,7 @@ impl PetriVmConfigSetupCore<'_> {
                     .into();
                 LoadMode::Igvm {
                     file,
-                    cmdline,
+                    cmdline: cmdline.unwrap_or_default(),
                     vtl2_base_address: if isolated {
                         // Isolated VMs must load at the location specified by
                         // the file, as they do not support relocation.
@@ -851,31 +914,60 @@ impl PetriVmConfigSetupCore<'_> {
 
         let (guest_request_send, guest_request_recv) = mesh::channel();
 
+        let (
+            UefiConfig {
+                secure_boot_template,
+                disable_frontpage,
+            },
+            vmgs,
+            OpenHclConfig { vmbus_redirect, .. },
+        ) = match self.firmware {
+            Firmware::OpenhclUefi {
+                uefi_config,
+                vmgs_file,
+                openhcl_config,
+                ..
+            } => (
+                uefi_config,
+                mem_diff_vmgs_from_artifact(vmgs_file)?,
+                openhcl_config,
+            ),
+            Firmware::OpenhclLinuxDirect { openhcl_config, .. } => (
+                &UefiConfig::default(),  // TODO: does linux direct use this?
+                VmgsResource::Ephemeral, // TODO: does linux direct use this?
+                openhcl_config,
+            ),
+            _ => anyhow::bail!("not a supported openhcl firmware config"),
+        };
+
         // Save the GED handle to add later after configuration is complete.
         let ged = get_resources::ged::GuestEmulationDeviceHandle {
             firmware: get_resources::ged::GuestFirmwareConfig::Uefi {
                 firmware_debug: false,
-                disable_frontpage: true,
+                disable_frontpage: *disable_frontpage,
                 enable_vpci_boot: false,
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,
                 default_boot_always_attempt: false,
             },
             com1: true,
             com2: true,
-            vmbus_redirection: false,
+            vmbus_redirection: *vmbus_redirect,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
-            vmgs: VmgsResource::Disk(
-                LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-                })
-                .into_resource(),
-            ),
+            vmgs,
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
             enable_tpm: false,
             firmware_event_send: Some(firmware_event_send.clone()),
             secure_boot_enabled: false,
-            secure_boot_template: get_resources::ged::GuestSecureBootTemplateType::None,
+            secure_boot_template: match secure_boot_template {
+                Some(SecureBootTemplate::MicrosoftWindows) => {
+                    get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows
+                }
+                Some(SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy) => {
+                    get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy
+                }
+                None => get_resources::ged::GuestSecureBootTemplateType::None,
+            },
             enable_battery: false,
             no_persistent_secrets: true,
             igvm_attest_test_config: None,

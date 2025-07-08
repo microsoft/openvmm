@@ -271,12 +271,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             Firmware::OpenhclLinuxDirect { openhcl_config, .. }
             | Firmware::OpenhclPcat { openhcl_config, .. }
             | Firmware::OpenhclUefi { openhcl_config, .. } => {
-                if let Some(cmd) = openhcl_config.command_line.as_mut() {
-                    cmd.push(' ');
-                    cmd.push_str(additional_command_line);
-                } else {
-                    openhcl_config.command_line = Some(additional_command_line.to_string());
-                }
+                append_cmdline(&mut openhcl_config.command_line, additional_command_line);
             }
             Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
                 panic!("OpenHCL command line is only supported for OpenHCL firmware.")
@@ -346,7 +341,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             | Firmware::OpenhclLinuxDirect { .. }
             | Firmware::Pcat { .. }
             | Firmware::OpenhclPcat { .. } => {
-                panic!("UEFI frontpage is only supported for UEFI firmware.")
+                panic!("VMGS file is only supported for UEFI firmware.")
             }
         }
         self
@@ -973,7 +968,7 @@ pub struct OpenHclServicingFlags {
 }
 
 /// Virtual machine guest state resource
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PetriVmgsResource<T = ()> {
     /// Use disk to store guest state
     Disk(ResolvedArtifact<T>),
@@ -1005,4 +1000,13 @@ pub enum SecureBootTemplate {
     MicrosoftWindows,
     /// The Microsoft UEFI certificate authority template.
     MicrosoftUefiCertificateAuthoritiy,
+}
+
+fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {
+    if let Some(cmd) = cmd.as_mut() {
+        cmd.push(' ');
+        cmd.push_str(add_cmd);
+    } else {
+        *cmd = Some(add_cmd.to_string());
+    }
 }

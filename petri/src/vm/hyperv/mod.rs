@@ -20,6 +20,7 @@ use crate::ShutdownKind;
 use crate::UefiConfig;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::openhcl_diag::OpenHclDiagHandler;
+use crate::vm::append_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
@@ -217,14 +218,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
             if *disable_frontpage {
                 // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
-                const ARG: &str = "OPENHCL_DISABLE_UEFI_FRONTPAGE=1";
                 if let Some((_, config)) = openhcl_config.as_mut() {
-                    if let Some(cmd) = config.command_line.as_mut() {
-                        cmd.push(' ');
-                        cmd.push_str(ARG);
-                    } else {
-                        config.command_line = Some(ARG.to_string());
-                    }
+                    append_cmdline(&mut config.command_line, "OPENHCL_DISABLE_UEFI_FRONTPAGE=1");
                 };
             }
         }

@@ -6,9 +6,9 @@
 use super::MANA_INSTANCE;
 use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
-use super::memdiff_disk_from_artifact;
 use crate::PetriVmgsResource;
 use crate::ProcessorTopology;
+use crate::openvmm::mem_diff_vmgs_from_artifact;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use fs_err::File;
@@ -28,7 +28,6 @@ use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
-use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vtl2_settings_proto::Vtl2Settings;
 
@@ -343,18 +342,7 @@ impl PetriVmConfigOpenVmm {
 
     /// Specifies an existing VMGS file to use
     pub fn with_vmgs<T: IsTestVmgs>(mut self, vmgs: PetriVmgsResource<T>) -> Self {
-        let vmgs = match vmgs {
-            PetriVmgsResource::Disk(disk) => {
-                VmgsResource::Disk(memdiff_disk_from_artifact(&disk.erase()).expect("open VMGS"))
-            }
-            PetriVmgsResource::ReprovisionOnFailure(disk) => VmgsResource::ReprovisionOnFailure(
-                memdiff_disk_from_artifact(&disk.erase()).expect("open VMGS"),
-            ),
-            PetriVmgsResource::Reprovision(disk) => VmgsResource::Reprovision(
-                memdiff_disk_from_artifact(&disk.erase()).expect("open VMGS"),
-            ),
-            PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
-        };
+        let vmgs = mem_diff_vmgs_from_artifact(&vmgs.erase()).expect("open VMGS");
 
         if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().vmgs = vmgs;

@@ -20,6 +20,7 @@ use crate::PetriLogFile;
 use crate::PetriLogSource;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
+use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::disk_image::AgentImage;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
@@ -51,6 +52,7 @@ use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vmgs_resources::VmgsResource;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// The instance guid used for all of our SCSI drives.
@@ -170,4 +172,17 @@ fn memdiff_disk_from_artifact(
         ],
     }
     .into_resource())
+}
+
+fn mem_diff_vmgs_from_artifact(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
+    Ok(match vmgs {
+        PetriVmgsResource::Disk(disk) => VmgsResource::Disk(memdiff_disk_from_artifact(disk)?),
+        PetriVmgsResource::ReprovisionOnFailure(disk) => {
+            VmgsResource::ReprovisionOnFailure(memdiff_disk_from_artifact(disk)?)
+        }
+        PetriVmgsResource::Reprovision(disk) => {
+            VmgsResource::Reprovision(memdiff_disk_from_artifact(disk)?)
+        }
+        PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
+    })
 }
