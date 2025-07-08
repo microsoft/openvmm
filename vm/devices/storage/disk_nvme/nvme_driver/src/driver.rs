@@ -856,7 +856,10 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
     /// Select the optimal CPU for an interrupt vector to achieve better distribution.
     /// This implements a stride-based algorithm to spread interrupt vectors across CPUs
     /// when there are significantly more CPUs than interrupt vectors.
-    fn select_cpu_for_interrupt(&self, iv: u16, _requesting_cpu: u32) -> u32 {
+    ///
+    /// To avoid overlap between multiple NVMe driver instances, this method incorporates
+    /// a device-specific offset based on the device ID hash.
+    fn select_cpu_for_interrupt(&self, iv: u16, requesting_cpu: u32) -> u32 {
         // Total number of CPUs available
         let cpu_count = self.io_issuers.per_cpu.len() as u32;
         let max_interrupt_count = self.device.max_interrupt_count().max(1);
@@ -868,8 +871,19 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             let stride = cpu_count / max_interrupt_count;
             let stride = stride.max(1); // Ensure stride is at least 1
 
-            // Calculate base CPU using stride
-            let base_cpu = (iv as u32 * stride) % cpu_count;
+            // Generate a device-specific offset to coordinate between multiple NVMe driver instances
+            // This prevents different devices from always selecting the same CPUs
+            let device_offset = {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+
+                let mut hasher = DefaultHasher::new();
+                self.device.id().hash(&mut hasher);
+                (hasher.finish() as u32) % stride
+            };
+
+            // Calculate base CPU using stride with device-specific offset
+            let base_cpu = ((iv as u32 * stride) + device_offset) % cpu_count;
 
             // Try to find a CPU that hasn't been used yet, starting from the calculated base
             for offset in 0..cpu_count {
@@ -888,7 +902,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             base_cpu
         } else {
             // For smaller configurations, use the requesting CPU to maintain existing behavior
-            _requesting_cpu
+            requesting_cpu
         }
     }
 

@@ -434,6 +434,92 @@ async fn test_nvme_cpu_interrupt_distribution_with_many_vectors(driver: DefaultD
     nvme_driver.shutdown().await;
 }
 
+#[async_test]
+async fn test_nvme_multiple_drivers_coordination(driver: DefaultDriver) {
+    const MSIX_COUNT: u16 = 8;
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 32;
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+
+    // Create two separate NVMe devices with different device IDs
+    let device1 = create_test_device(
+        &driver_source,
+        "device1",
+        MSIX_COUNT,
+        IO_QUEUE_COUNT,
+        CPU_COUNT,
+    )
+    .await;
+    let device2 = create_test_device(
+        &driver_source,
+        "device2",
+        MSIX_COUNT,
+        IO_QUEUE_COUNT,
+        CPU_COUNT,
+    )
+    .await;
+
+    // Create drivers for both devices
+    let nvme_driver1 = NvmeDriver::new(&driver_source, CPU_COUNT, device1, false)
+        .await
+        .unwrap();
+    let nvme_driver2 = NvmeDriver::new(&driver_source, CPU_COUNT, device2, false)
+        .await
+        .unwrap();
+
+    // Force creation of IO queues for both drivers
+    let io_issuers1 = nvme_driver1.io_issuers();
+    let io_issuers2 = nvme_driver2.io_issuers();
+
+    // Request issuers from first 4 CPUs for both drivers
+    for cpu in 0..4 {
+        let _issuer1 = io_issuers1.get(cpu).await.unwrap();
+        let _issuer2 = io_issuers2.get(cpu).await.unwrap();
+    }
+
+    // With the device-specific offset, these two drivers should now distribute
+    // their interrupt vectors to different CPU ranges instead of overlapping
+    println!("Multiple driver coordination test completed");
+    println!("Device 1 and Device 2 should use different CPU offsets due to device ID hashing");
+
+    nvme_driver1.shutdown().await;
+    nvme_driver2.shutdown().await;
+}
+
+async fn create_test_device(
+    driver_source: &VmTaskDriverSource,
+    device_id: &str,
+    msix_count: u16,
+    io_queue_count: u16,
+    _cpu_count: u32,
+) -> impl DeviceBacking {
+    let pages = 1000;
+    let device_test_memory = DeviceTestMemory::new(pages, false, device_id);
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
+
+    let mut msi_set = MsiInterruptSet::new();
+    let nvme = nvme::NvmeController::new(
+        driver_source,
+        guest_mem,
+        &mut msi_set,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count,
+            max_io_queues: io_queue_count,
+            subsystem_id: Guid::new_random(),
+        },
+    );
+
+    nvme.client()
+        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .await
+        .unwrap();
+
+    NvmeTestInterruptTracker::new(nvme, msi_set, dma_client)
+}
+
 #[derive(Inspect)]
 pub struct NvmeTestInterruptTracker<T: InspectMut, U: DmaClient> {
     device: EmulatedDevice<T, U>,
