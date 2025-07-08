@@ -877,10 +877,20 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
     ///
     /// To avoid overlap between multiple NVMe driver instances, this method incorporates
     /// a device-specific offset based on the device ID hash.
-    fn select_cpu_for_interrupt(&self, iv: u16, requesting_cpu: u32) -> u32 {
+    fn select_cpu_for_interrupt(&self, iv: u16, requesting_cpu: u32, state: &WorkerState) -> u32 {
         // Total number of CPUs available
         let cpu_count = self.io_issuers.per_cpu.len() as u32;
         let max_interrupt_count = self.device.max_interrupt_count().max(1);
+
+        // If we have enough IO queues available for each CPU to potentially have its own,
+        // prefer using the requesting CPU to avoid unnecessary fallback behavior
+        let current_io_queue_count = self.io.len() as u16;
+        let remaining_io_queues = state.max_io_queues.saturating_sub(current_io_queue_count);
+        
+        // If we have plenty of IO queues remaining, use the requesting CPU directly
+        if remaining_io_queues > 0 && self.io_issuers.per_cpu[requesting_cpu as usize].get().is_none() {
+            return requesting_cpu;
+        }
 
         // Only apply stride-based distribution if we have significantly more CPUs than interrupt vectors
         if cpu_count > max_interrupt_count * 2 {
@@ -978,7 +988,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         let iv = self.io.len() as u16;
 
         // Select the optimal CPU for this interrupt vector to achieve better distribution
-        let interrupt_cpu = self.select_cpu_for_interrupt(iv, requesting_cpu);
+        let interrupt_cpu = self.select_cpu_for_interrupt(iv, requesting_cpu, state);
 
         tracing::debug!(
             requesting_cpu,

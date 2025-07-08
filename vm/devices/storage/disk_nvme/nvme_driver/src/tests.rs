@@ -208,7 +208,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
 
-    assert_eq!(driver.fallback_cpu_count(), 2);
+    assert_eq!(driver.fallback_cpu_count(), 0);
 
     // Test the fallback queue functionality.
     namespace
@@ -222,7 +222,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
 
-    assert_eq!(driver.fallback_cpu_count(), 3);
+    assert_eq!(driver.fallback_cpu_count(), 1);
 
     let mut v = [0; 4096];
     payload_mem.read_at(0, &mut v).unwrap();
