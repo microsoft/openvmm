@@ -77,6 +77,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
 #[derive(Inspect)]
 struct DriverWorkerTask<T: DeviceBacking> {
     device: T,
+    name: String,
     #[inspect(skip)]
     driver: VmTaskDriver,
     registers: Arc<DeviceRegisters<T>>,
@@ -183,17 +184,25 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         name: String,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
-        let mut this = Self::new_disabled(driver_source, cpu_count, device, bounce_buffer, name)
-            .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
-            .await?;
+        let mut this = Self::new_disabled(
+            driver_source,
+            cpu_count,
+            device,
+            bounce_buffer,
+            name.clone(),
+        )
+        .instrument(tracing::info_span!("nvme_new_disabled", name, pci_id))
+        .await?;
         match this
             .enable(cpu_count as u16)
-            .instrument(tracing::info_span!("nvme_enable", pci_id))
+            .instrument(tracing::info_span!("nvme_enable", name, pci_id))
             .await
         {
             Ok(()) => Ok(this),
             Err(err) => {
                 tracing::error!(
+                    name = %name,
+                    pci_id = %pci_id,
                     error = err.as_ref() as &dyn std::error::Error,
                     "device initialization failed, shutting down"
                 );
@@ -225,6 +234,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 .reset(&driver)
                 .instrument(tracing::info_span!(
                     "nvme_already_enabled",
+                    name = name,
                     pci_id = device.id().to_owned()
                 ))
                 .await
@@ -251,9 +261,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         Ok(Self {
             device_id: device.id().to_owned(),
-            name,
+            name: name.clone(),
             task: Some(TaskControl::new(DriverWorkerTask {
                 device,
+                name: name.clone(),
                 driver: driver.clone(),
                 registers,
                 admin: None,
@@ -318,7 +329,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         worker.registers.bar0.set_acq(admin.cq_addr());
 
         // Enable the controller.
-        let span = tracing::info_span!("nvme_ctrl_enable", pci_id = worker.device.id().to_owned());
+        let span = tracing::info_span!(
+            "nvme_ctrl_enable",
+            name = worker.name,
+            pci_id = worker.device.id().to_owned()
+        );
         let ctrl_enable_span = span.enter();
         worker.registers.bar0.set_cc(
             spec::Cc::new()
@@ -385,6 +400,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let requested_io_queue_count = if max_interrupt_count < requested_io_queue_count as u32 {
             tracing::warn!(
+                name = %worker.name,
+                pci_id = %worker.device.id(),
                 max_interrupt_count,
                 requested_io_queue_count,
                 "queue count constrained by msi count"
@@ -416,6 +433,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let allocated_io_queue_count = sq_count.min(cq_count);
         if allocated_io_queue_count < requested_io_queue_count {
             tracing::warn!(
+                name = %worker.name,
+                pci_id = %worker.device.id(),
                 sq_count,
                 cq_count,
                 requested_io_queue_count,
@@ -441,9 +460,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let async_event_task = self.driver.spawn("nvme_async_event", {
             let admin = admin.issuer().clone();
             let rescan_event = self.rescan_event.clone();
+            let name = worker.name.clone();
+            let device_id = worker.device.id().to_owned();
             async move {
                 if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
                     tracing::error!(
+                        name = %name,
+                        pci_id = %device_id,
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
                     );
@@ -500,7 +523,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 _admin_responses = admin.shutdown().await;
             }
             if let Err(e) = worker.registers.bar0.reset(&driver).await {
-                tracing::info!(csts = e, "device reset failed");
+                tracing::info!(
+                    name = %worker.name,
+                    pci_id = %worker.device.id(),
+                    csts = e,
+                    "device reset failed"
+                );
             }
         }
     }
@@ -599,9 +627,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let mut this = Self {
             device_id: device.id().to_owned(),
-            name,
+            name: name.clone(),
             task: Some(TaskControl::new(DriverWorkerTask {
                 device,
+                name: name.clone(),
                 driver: driver.clone(),
                 registers: registers.clone(),
                 admin: None, // Updated below.
@@ -667,9 +696,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let async_event_task = this.driver.spawn("nvme_async_event", {
             let admin = admin.issuer().clone();
             let rescan_event = this.rescan_event.clone();
+            let name = this.name.clone();
+            let device_id = this.device_id.clone();
             async move {
                 if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
                     tracing::error!(
+                        name = %name,
+                        pci_id = %device_id,
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
                     );
@@ -880,6 +913,8 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .unwrap();
 
                 tracing::error!(
+                    name = %self.name,
+                    pci_id = %self.device.id(),
                     cpu,
                     fallback_cpu,
                     error = err.as_ref() as &dyn std::error::Error,
@@ -987,6 +1022,8 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .await
                 {
                     tracing::error!(
+                        name = %self.name,
+                        pci_id = %self.device.id(),
                         error = &err as &dyn std::error::Error,
                         "failed to delete completion queue in teardown path"
                     );

@@ -28,50 +28,11 @@ use std::collections::HashMap;
 use std::collections::hash_map;
 use thiserror::Error;
 use tracing::Instrument;
+use user_driver::vfio::PciId;
 
 /// Strongly typed wrapper for NVMe device name (formerly debug_id/controller_instance_id)
 #[derive(Debug, Clone, PartialEq, Eq, MeshPayload)]
 pub struct NvmeDeviceName(pub String);
-
-impl From<String> for NvmeDeviceName {
-    fn from(s: String) -> Self {
-        NvmeDeviceName(s)
-    }
-}
-
-impl From<&str> for NvmeDeviceName {
-    fn from(s: &str) -> Self {
-        NvmeDeviceName(s.to_string())
-    }
-}
-
-impl AsRef<str> for NvmeDeviceName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Strongly typed wrapper for PCI ID
-#[derive(Debug, Clone, PartialEq, Eq, MeshPayload)]
-pub struct PciId(pub String);
-
-impl From<String> for PciId {
-    fn from(s: String) -> Self {
-        PciId(s)
-    }
-}
-
-impl From<&str> for PciId {
-    fn from(s: &str) -> Self {
-        PciId(s.to_string())
-    }
-}
-
-impl AsRef<str> for PciId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
 
 /// Parameters for getting an NVMe namespace
 #[derive(Debug, Clone, MeshPayload)]
@@ -243,13 +204,13 @@ pub struct NvmeManagerClient {
 impl NvmeManagerClient {
     pub async fn get_namespace(
         &self,
-        name: impl Into<NvmeDeviceName>,
-        pci_id: impl Into<PciId>,
+        name: String,
+        pci_id: String,
         nsid: u32,
     ) -> anyhow::Result<nvme_driver::Namespace> {
         let params = GetNamespaceParams {
-            name: name.into(),
-            pci_id: pci_id.into(),
+            name: NvmeDeviceName(name),
+            pci_id: PciId(pci_id),
             nsid,
         };
         Ok(self
@@ -257,8 +218,8 @@ impl NvmeManagerClient {
             .call(Request::GetNamespace, params.clone())
             .instrument(tracing::info_span!(
                 "nvme_get_namespace",
-                name = params.name.as_ref(),
-                pci_id = params.pci_id.as_ref(),
+                name = params.name.0,
+                pci_id = params.pci_id.0,
                 nsid
             ))
             .await
@@ -388,10 +349,15 @@ impl NvmeManagerWorker {
                     })
                     .map_err(InnerError::DmaClient)?;
 
-                let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
-                    .instrument(tracing::info_span!("vfio_device_open", pci_id))
-                    .await
-                    .map_err(InnerError::Vfio)?;
+                let device = VfioDevice::new(
+                    &self.driver_source,
+                    entry.key(),
+                    Some(name.clone()),
+                    dma_client,
+                )
+                .instrument(tracing::info_span!("vfio_device_open", pci_id))
+                .await
+                .map_err(InnerError::Vfio)?;
 
                 // TODO: For now, any isolation means use bounce buffering. This
                 // needs to change when we have nvme devices that support DMA to
@@ -468,10 +434,15 @@ impl NvmeManagerWorker {
             // This code can wait on each VFIO device until it is arrived.
             // A potential optimization would be to delay VFIO operation
             // until it is ready, but a redesign of VfioDevice is needed.
-            let vfio_device =
-                VfioDevice::restore(&self.driver_source, &disk.pci_id.clone(), true, dma_client)
-                    .instrument(tracing::info_span!("vfio_device_restore", pci_id))
-                    .await?;
+            let vfio_device = VfioDevice::restore(
+                &self.driver_source,
+                &disk.pci_id.clone(),
+                Some(format!("restored-{}", pci_id)),
+                true,
+                dma_client,
+            )
+            .instrument(tracing::info_span!("vfio_device_restore", pci_id))
+            .await?;
 
             // TODO: For now, any isolation means use bounce buffering. This
             // needs to change when we have nvme devices that support DMA to

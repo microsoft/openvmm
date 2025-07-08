@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Support for accessing a MANA device via VFIO on Linux.
+//! Support for accessing devices via VFIO on Linux.
 
 #![cfg(target_os = "linux")]
 #![cfg(feature = "vfio")]
@@ -16,6 +16,7 @@ use futures::FutureExt;
 use futures_concurrency::future::Race;
 use inspect::Inspect;
 use inspect_counters::SharedCounter;
+use mesh::MeshPayload;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::wait::PolledWait;
@@ -38,10 +39,15 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+/// Strongly typed wrapper for PCI ID
+#[derive(Debug, Clone, PartialEq, Eq, MeshPayload)]
+pub struct PciId(pub String);
+
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
 pub struct VfioDevice {
     pci_id: Arc<str>,
+    debug_controller_id: Option<String>,
     #[inspect(skip)]
     _container: vfio_sys::Container,
     #[inspect(skip)]
@@ -73,9 +79,17 @@ impl VfioDevice {
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
+        debug_controller_id: Option<String>,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, false, dma_client).await
+        Self::restore(
+            driver_source,
+            pci_id,
+            debug_controller_id,
+            false,
+            dma_client,
+        )
+        .await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -83,6 +97,7 @@ impl VfioDevice {
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
+        debug_controller_id: Option<String>,
         keepalive: bool,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
@@ -123,6 +138,7 @@ impl VfioDevice {
         let config_space = device.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
         let this = Self {
             pci_id: pci_id.into(),
+            debug_controller_id,
             _container: container,
             _group: group,
             device: Arc::new(device),
@@ -152,6 +168,11 @@ impl VfioDevice {
         let status_command = (status_command & 0xffff0000) | u16::from(command) as u32;
         self.write_config(offset, status_command)?;
         Ok(())
+    }
+
+    /// Returns the debug controller ID for diagnostic purposes.
+    pub fn debug_controller_id(&self) -> Option<&str> {
+        self.debug_controller_id.as_deref()
     }
 
     pub fn read_config(&self, offset: u16) -> anyhow::Result<u32> {
