@@ -5448,7 +5448,6 @@ dependencies = [
  "vmbfs_resources",
  "vmbus_serial_resources",
  "vmcore",
- "vmgs_format",
  "vmgs_resources",
  "vmm_core_defs",
  "vmotherboard",
@@ -6997,7 +6996,6 @@ dependencies = [
  "petri",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
- "tracing",
 ]
 
 [[package]]

@@ -554,8 +554,8 @@ pub struct UefiConfig {
 impl Default for UefiConfig {
     fn default() -> Self {
         Self {
+            secure_boot_template: None,
             disable_frontpage: true,
-            ..Default::default()
         }
     }
 }
@@ -598,7 +598,7 @@ pub enum Firmware {
         /// The SVGA firmware to use.
         svga_firmware: ResolvedOptionalArtifact,
     },
-    /// Boot a UEFI-based VM with OpenHCL in VTL2.
+    /// Boot a PCAT-based VM with OpenHCL in VTL2.
     OpenhclPcat {
         /// The guest OS the VM will boot into.
         guest: PcatGuest,
@@ -698,7 +698,7 @@ impl Firmware {
         arch: MachineArch,
         guest: UefiGuest,
         isolation: Option<IsolationType>,
-        _nvme: bool,
+        vtl2_nvme_boot: bool,
     ) -> Self {
         use petri_artifacts_vmm_test::artifacts::openhcl_igvm::*;
         let igvm_path = match arch {
@@ -712,7 +712,10 @@ impl Firmware {
             igvm_path,
             vmgs_file: PetriVmgsResource::Ephemeral,
             uefi_config: Default::default(),
-            openhcl_config: Default::default(),
+            openhcl_config: OpenHclConfig {
+                vtl2_nvme_boot,
+                ..Default::default()
+            },
         }
     }
 

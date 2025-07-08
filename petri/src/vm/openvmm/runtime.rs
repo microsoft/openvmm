@@ -102,6 +102,8 @@ macro_rules! petri_vm_fn {
     };
 }
 
+// TODO: Add all runtime functions that are not backend specific
+// to the `PetriVmRuntime` trait
 impl PetriVmOpenVmm {
     pub(super) fn new(inner: PetriVmInner, halt_notif: Receiver<HaltReason>) -> Self {
         Self {

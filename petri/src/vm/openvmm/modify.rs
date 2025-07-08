@@ -3,6 +3,10 @@
 
 //! Helpers to modify a [`PetriVmConfigOpenVmm`] from its defaults.
 
+// TODO: Delete all modification functions that are not backend-specific
+// from this file, add necessary settings to the backend-agnostic
+// `PetriVmConfig`, and add corresponding functions to `PetriVmBuilder`.
+
 use super::MANA_INSTANCE;
 use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;

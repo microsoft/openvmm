@@ -14,7 +14,6 @@ petri_artifacts_vmm_test.workspace = true
 pal_async.workspace = true
 
 anyhow.workspace = true
-tracing.workspace = true
 
 [lints]
 workspace = true

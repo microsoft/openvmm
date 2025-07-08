@@ -400,7 +400,7 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
-async fn boot_no_agent_heavy(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config
         .with_processor_topology(ProcessorTopology {
             vp_count: 16,
@@ -434,7 +434,7 @@ async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn vmbus_relay_heavy(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config
         .with_vmbus_redirect(true)
         .with_processor_topology(ProcessorTopology {
