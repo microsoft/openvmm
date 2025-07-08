@@ -2224,7 +2224,9 @@ async fn new_underhill_vm(
                         read_only,
                         disk_parameters,
                     } => {
-                        let disk = disk_from_disk_type(disk_type, read_only, &resolver).await?;
+                        let disk =
+                            disk_from_disk_type(disk_type, read_only, &resolver, &driver_source)
+                                .await?;
                         let scsi_disk = Arc::new(scsidisk::SimpleScsiDisk::new(
                             disk.clone(),
                             disk_parameters.unwrap_or_default(),
