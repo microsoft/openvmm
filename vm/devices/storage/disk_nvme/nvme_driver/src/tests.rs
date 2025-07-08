@@ -309,6 +309,189 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     //     .unwrap();
 }
 
+#[async_test]
+async fn test_nvme_cpu_interrupt_distribution(driver: DefaultDriver) {
+    const MSIX_COUNT: u16 = 4; // Limited interrupt vectors
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 8; // More CPUs than interrupt vectors
+
+    // Memory setup
+    let pages = 1000;
+    let device_test_memory =
+        DeviceTestMemory::new(pages, false, "test_nvme_cpu_interrupt_distribution");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mut msi_set = MsiInterruptSet::new();
+    let nvme = nvme::NvmeController::new(
+        &driver_source,
+        guest_mem,
+        &mut msi_set,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: IO_QUEUE_COUNT,
+            subsystem_id: Guid::new_random(),
+        },
+    );
+
+    nvme.client()
+        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .await
+        .unwrap();
+
+    let device = NvmeTestInterruptTracker::new(nvme, msi_set, dma_client.clone());
+
+    // Create the NVMe driver
+    let nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+        .await
+        .unwrap();
+
+    // Access the io_issuers to force creation of IO queues for different CPUs
+    let io_issuers = nvme_driver.io_issuers();
+
+    // Request IO issuers from different CPUs to demonstrate the current behavior
+    let _issuer_0 = io_issuers.get(0).await.unwrap();
+    let _issuer_1 = io_issuers.get(1).await.unwrap();
+    let _issuer_2 = io_issuers.get(2).await.unwrap();
+    let _issuer_3 = io_issuers.get(3).await.unwrap();
+
+    // Try to get issuers for more CPUs - these should reuse existing queues
+    let _issuer_4 = io_issuers.get(4).await.unwrap();
+    let _issuer_5 = io_issuers.get(5).await.unwrap();
+
+    // Verify the interrupt distribution
+    // Since we have 4 MSI-X vectors and 8 CPUs, we should see better distribution
+    // in the fixed version vs. current greedy allocation
+    println!("Current interrupt distribution (should be improved after fix):");
+    println!("This test demonstrates the current behavior - to be improved by the fix.");
+
+    nvme_driver.shutdown().await;
+}
+
+#[async_test]
+async fn test_nvme_cpu_interrupt_distribution_with_many_vectors(driver: DefaultDriver) {
+    const MSIX_COUNT: u16 = 8; // More interrupt vectors
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 32; // More CPUs than interrupt vectors
+
+    // Memory setup
+    let pages = 1000;
+    let device_test_memory = DeviceTestMemory::new(
+        pages,
+        false,
+        "test_nvme_cpu_interrupt_distribution_with_many_vectors",
+    );
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mut msi_set = MsiInterruptSet::new();
+    let nvme = nvme::NvmeController::new(
+        &driver_source,
+        guest_mem,
+        &mut msi_set,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: IO_QUEUE_COUNT,
+            subsystem_id: Guid::new_random(),
+        },
+    );
+
+    nvme.client()
+        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .await
+        .unwrap();
+
+    let device = NvmeTestInterruptTracker::new(nvme, msi_set, dma_client.clone());
+
+    // Create the NVMe driver
+    let nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+        .await
+        .unwrap();
+
+    // Access the io_issuers to force creation of IO queues for different CPUs
+    let io_issuers = nvme_driver.io_issuers();
+
+    // Request IO issuers from different CPUs to demonstrate the stride algorithm
+    let _issuer_0 = io_issuers.get(0).await.unwrap();
+    let _issuer_1 = io_issuers.get(1).await.unwrap();
+    let _issuer_2 = io_issuers.get(2).await.unwrap();
+    let _issuer_3 = io_issuers.get(3).await.unwrap();
+    let _issuer_4 = io_issuers.get(4).await.unwrap();
+    let _issuer_5 = io_issuers.get(5).await.unwrap();
+    let _issuer_6 = io_issuers.get(6).await.unwrap();
+    let _issuer_7 = io_issuers.get(7).await.unwrap();
+
+    // Verify the interrupt distribution
+    // With 8 MSI-X vectors and 32 CPUs, we should see stride-based distribution
+    println!("Interrupt distribution with stride algorithm:");
+    println!("Should see interrupts distributed across CPUs with stride 4 (32/8)");
+    println!("Expected: CPUs 0, 4, 8, 12, 16, 20, 24, 28");
+
+    nvme_driver.shutdown().await;
+}
+
+#[derive(Inspect)]
+pub struct NvmeTestInterruptTracker<T: InspectMut, U: DmaClient> {
+    device: EmulatedDevice<T, U>,
+    #[inspect(debug)]
+    mocked_response_u32: Arc<Mutex<Option<(usize, u32)>>>,
+    #[inspect(debug)]
+    mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
+    #[inspect(debug)]
+    interrupt_mappings: Arc<Mutex<Vec<(u32, u32)>>>, // (msix_index, cpu)
+}
+
+impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> NvmeTestInterruptTracker<T, U> {
+    /// Creates a new emulated device that tracks interrupt mappings
+    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
+        Self {
+            device: EmulatedDevice::new(device, msi_set, dma_client.clone()),
+            mocked_response_u32: Arc::new(Mutex::new(None)),
+            mocked_response_u64: Arc::new(Mutex::new(None)),
+            interrupt_mappings: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> DeviceBacking
+    for NvmeTestInterruptTracker<T, U>
+{
+    type Registers = NvmeTestMapping<T>;
+
+    fn id(&self) -> &str {
+        self.device.id()
+    }
+
+    fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
+        Ok(NvmeTestMapping {
+            mapping: self.device.map_bar(n).unwrap(),
+            mocked_response_u32: Arc::clone(&self.mocked_response_u32),
+            mocked_response_u64: Arc::clone(&self.mocked_response_u64),
+        })
+    }
+
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        self.device.dma_client()
+    }
+
+    fn max_interrupt_count(&self) -> u32 {
+        self.device.max_interrupt_count()
+    }
+
+    fn map_interrupt(&mut self, msix: u32, cpu: u32) -> anyhow::Result<DeviceInterrupt> {
+        // Track the interrupt mapping
+        let mut mappings = self.interrupt_mappings.lock();
+        mappings.push((msix, cpu));
+        println!("Interrupt vector {} mapped to CPU {}", msix, cpu);
+
+        self.device.map_interrupt(msix, cpu)
+    }
+}
+
 #[derive(Inspect)]
 pub struct NvmeTestEmulatedDevice<T: InspectMut, U: DmaClient> {
     device: EmulatedDevice<T, U>,

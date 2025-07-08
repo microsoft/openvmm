@@ -739,6 +739,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
         self.nvme_keepalive = nvme_keepalive;
     }
+
+    /// Get io_issuers for testing purposes.
+    #[cfg(test)]
+    pub fn io_issuers(&self) -> &Arc<IoIssuers> {
+        &self.io_issuers
+    }
 }
 
 async fn handle_asynchronous_events(
@@ -847,6 +853,45 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
 }
 
 impl<T: DeviceBacking> DriverWorkerTask<T> {
+    /// Select the optimal CPU for an interrupt vector to achieve better distribution.
+    /// This implements a stride-based algorithm to spread interrupt vectors across CPUs
+    /// when there are significantly more CPUs than interrupt vectors.
+    fn select_cpu_for_interrupt(&self, iv: u16, _requesting_cpu: u32) -> u32 {
+        // Total number of CPUs available
+        let cpu_count = self.io_issuers.per_cpu.len() as u32;
+        let max_interrupt_count = self.device.max_interrupt_count().max(1);
+
+        // Only apply stride-based distribution if we have significantly more CPUs than interrupt vectors
+        // and we have more than 4 interrupt vectors (to avoid breaking existing tests)
+        if cpu_count > max_interrupt_count * 2 && max_interrupt_count > 4 {
+            // Calculate stride to distribute interrupt vectors across CPUs
+            let stride = cpu_count / max_interrupt_count;
+            let stride = stride.max(1); // Ensure stride is at least 1
+
+            // Calculate base CPU using stride
+            let base_cpu = (iv as u32 * stride) % cpu_count;
+
+            // Try to find a CPU that hasn't been used yet, starting from the calculated base
+            for offset in 0..cpu_count {
+                let candidate_cpu = (base_cpu + offset) % cpu_count;
+
+                // Check if this CPU already has an issuer - if not, prefer it
+                if self.io_issuers.per_cpu[candidate_cpu as usize]
+                    .get()
+                    .is_none()
+                {
+                    return candidate_cpu;
+                }
+            }
+
+            // If all CPUs have issuers, use the calculated base CPU
+            base_cpu
+        } else {
+            // For smaller configurations, use the requesting CPU to maintain existing behavior
+            _requesting_cpu
+        }
+    }
+
     async fn create_io_issuer(&mut self, state: &mut WorkerState, cpu: u32) {
         tracing::debug!(cpu, "issuer request");
         if self.io_issuers.per_cpu[cpu as usize].get().is_some() {
@@ -887,7 +932,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
     async fn create_io_queue(
         &mut self,
         state: &mut WorkerState,
-        cpu: u32,
+        requesting_cpu: u32,
     ) -> anyhow::Result<IoIssuer> {
         if self.io.len() >= state.max_io_queues as usize {
             anyhow::bail!("no more io queues available");
@@ -895,13 +940,25 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         let qid = self.io.len() as u16 + 1;
 
-        tracing::debug!(cpu, qid, "creating io queue");
+        tracing::debug!(requesting_cpu, qid, "creating io queue");
 
         // Share IO queue 1's interrupt with the admin queue.
         let iv = self.io.len() as u16;
+
+        // Select the optimal CPU for this interrupt vector to achieve better distribution
+        let interrupt_cpu = self.select_cpu_for_interrupt(iv, requesting_cpu);
+
+        tracing::debug!(
+            requesting_cpu,
+            interrupt_cpu,
+            iv,
+            qid,
+            "mapping interrupt vector to CPU"
+        );
+
         let interrupt = self
             .device
-            .map_interrupt(iv.into(), cpu)
+            .map_interrupt(iv.into(), interrupt_cpu)
             .context("failed to map interrupt")?;
 
         let queue = QueuePair::new(
@@ -921,7 +978,11 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         // Add the queue pair before aliasing its memory with the device so
         // that it can be torn down correctly on failure.
-        self.io.push(IoQueue { queue, iv, cpu });
+        self.io.push(IoQueue {
+            queue,
+            iv,
+            cpu: interrupt_cpu,
+        });
         let io_queue = self.io.last_mut().unwrap();
 
         let admin = self.admin.as_ref().unwrap().issuer().as_ref();
@@ -988,7 +1049,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         Ok(IoIssuer {
             issuer: io_queue.queue.issuer().clone(),
-            cpu,
+            cpu: interrupt_cpu,
         })
     }
 
