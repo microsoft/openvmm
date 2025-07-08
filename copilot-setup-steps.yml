@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # GitHub Copilot setup steps for OpenVMM development environment
 # Based on the devcontainer configuration and getting started documentation
 
@@ -35,23 +38,3 @@ steps:
       # This includes protoc (Protocol Buffers compiler), mu_msvm UEFI firmware, 
       # test Linux kernels, and other build artifacts
       cargo xflowey restore-packages
-
-  - name: Set up development tools
-    run: |
-      # Install git hooks for automatic formatting (recommended)
-      cargo xtask install-git-hooks --pre-push --with-fmt=yes
-
-  - name: Verify installation
-    run: |
-      # Verify that Rust and required tools are installed
-      rustc --version
-      cargo --version
-      
-      # Check that required targets are installed
-      rustup target list --installed
-      
-      # Run formatting checks to ensure environment is set up correctly
-      cargo xtask fmt
-      
-      # Test that basic workspace check works
-      cargo check --workspace
