@@ -826,6 +826,23 @@ impl IoIssuers {
             .issuer
             .as_ref())
     }
+    
+    pub fn is_cpu_used(&self, cpu: u32) -> bool {
+        self.per_cpu[cpu as usize].get().is_some()
+    }
+    
+    pub fn get_used_cpus(&self) -> Vec<u32> {
+        self.per_cpu.iter()
+            .enumerate()
+            .filter_map(|(cpu, issuer)| {
+                if issuer.get().is_some() {
+                    Some(cpu as u32)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
@@ -865,18 +882,16 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         let max_interrupt_count = self.device.max_interrupt_count().max(1);
 
         // Only apply stride-based distribution if we have significantly more CPUs than interrupt vectors
-        // and we have more than 4 interrupt vectors (to avoid breaking existing tests)
-        if cpu_count > max_interrupt_count * 2 && max_interrupt_count > 4 {
+        if cpu_count > max_interrupt_count * 2 {
             // Calculate stride to distribute interrupt vectors across CPUs
             let stride = cpu_count / max_interrupt_count;
-            let stride = stride.max(1); // Ensure stride is at least 1
 
             // Generate a device-specific offset to coordinate between multiple NVMe driver instances
             // This prevents different devices from always selecting the same CPUs
             let device_offset = {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
-
+                
                 let mut hasher = DefaultHasher::new();
                 self.device.id().hash(&mut hasher);
                 (hasher.finish() as u32) % stride
