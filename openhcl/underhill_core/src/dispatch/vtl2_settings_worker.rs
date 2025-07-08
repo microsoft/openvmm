@@ -993,6 +993,7 @@ async fn make_disk_type_from_physical_device(
         // We can't validate yet that this namespace actually exists. That will
         // be checked later.
         return Ok(Resource::new(NvmeDiskConfig {
+            controller_instance_id: Some(controller_instance_id.to_string()),
             pci_id,
             nsid: sub_device_path,
         }));

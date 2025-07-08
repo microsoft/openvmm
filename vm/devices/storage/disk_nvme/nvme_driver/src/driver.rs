@@ -56,6 +56,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(flatten)]
     task: Option<TaskControl<DriverWorkerTask<T>, WorkerState>>,
     device_id: String,
+    controller_instance_id: Option<String>,
     identify: Option<Arc<spec::IdentifyController>>,
     #[inspect(skip)]
     driver: VmTaskDriver,
@@ -179,11 +180,18 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         cpu_count: u32,
         device: T,
         bounce_buffer: bool,
+        controller_instance_id: Option<String>,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
-        let mut this = Self::new_disabled(driver_source, cpu_count, device, bounce_buffer)
-            .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
-            .await?;
+        let mut this = Self::new_disabled(
+            driver_source,
+            cpu_count,
+            device,
+            bounce_buffer,
+            controller_instance_id,
+        )
+        .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
+        .await?;
         match this
             .enable(cpu_count as u16)
             .instrument(tracing::info_span!("nvme_enable", pci_id))
@@ -208,6 +216,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         cpu_count: u32,
         mut device: T,
         bounce_buffer: bool,
+        controller_instance_id: Option<String>,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0 = Bar0(
@@ -248,6 +257,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         Ok(Self {
             device_id: device.id().to_owned(),
+            controller_instance_id,
             task: Some(TaskControl::new(DriverWorkerTask {
                 device,
                 driver: driver.clone(),
@@ -568,6 +578,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         mut device: T,
         saved_state: &NvmeDriverSavedState,
         bounce_buffer: bool,
+        controller_instance_id: Option<String>,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0_mapping = device
@@ -594,6 +605,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let mut this = Self {
             device_id: device.id().to_owned(),
+            controller_instance_id,
             task: Some(TaskControl::new(DriverWorkerTask {
                 device,
                 driver: driver.clone(),
@@ -738,6 +750,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
         self.nvme_keepalive = nvme_keepalive;
+    }
+
+    /// Get the controller instance ID, if set.
+    pub fn controller_instance_id(&self) -> Option<String> {
+        self.controller_instance_id.clone()
     }
 }
 
