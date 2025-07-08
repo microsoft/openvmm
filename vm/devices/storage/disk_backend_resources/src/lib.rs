@@ -9,6 +9,7 @@ pub mod layer;
 
 use mesh::Cell;
 use mesh::MeshPayload;
+use std::time::Duration;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
@@ -39,8 +40,8 @@ impl ResourceId<DiskHandleKind> for DiskWithReservationsHandle {
 pub struct DelayDiskHandle {
     /// The underlying disk resource.
     pub disk: Resource<DiskHandleKind>,
-    /// The delay to add to each I/O operation, in milliseconds.
-    pub delay: Cell<u64>,
+    /// The delay to add to each I/O operation.
+    pub delay: Cell<Duration>,
 }
 
 impl ResourceId<DiskHandleKind> for DelayDiskHandle {
