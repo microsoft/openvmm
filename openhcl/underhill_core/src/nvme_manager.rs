@@ -175,9 +175,7 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(
-        Rpc<(Option<String>, String, u32), Result<nvme_driver::Namespace, NamespaceError>>,
-    ),
+    GetNamespace(Rpc<(String, String, u32), Result<nvme_driver::Namespace, NamespaceError>>),
     Save(Rpc<(), Result<NvmeManagerSavedState, anyhow::Error>>),
     Shutdown {
         span: tracing::Span,
@@ -193,7 +191,7 @@ pub struct NvmeManagerClient {
 impl NvmeManagerClient {
     pub async fn get_namespace(
         &self,
-        controller_instance_id: Option<String>,
+        debug_id: String,
         pci_id: String,
         nsid: u32,
     ) -> anyhow::Result<nvme_driver::Namespace> {
@@ -201,11 +199,11 @@ impl NvmeManagerClient {
             .sender
             .call(
                 Request::GetNamespace,
-                (controller_instance_id.clone(), pci_id.clone(), nsid),
+                (debug_id.clone(), pci_id.clone(), nsid),
             )
             .instrument(tracing::info_span!(
                 "nvme_get_namespace",
-                controller_instance_id = controller_instance_id.as_ref().map(|s| s.as_str()),
+                debug_id,
                 pci_id,
                 nsid
             ))
@@ -246,7 +244,10 @@ impl NvmeManagerWorker {
             match req {
                 Request::Inspect(deferred) => deferred.inspect(&self),
                 Request::ForceLoadDriver(update) => {
-                    match self.get_driver(None, update.new_value().to_owned()).await {
+                    match self
+                        .get_driver("force-load".to_string(), update.new_value().to_owned())
+                        .await
+                    {
                         Ok(_) => {
                             let pci_id = update.new_value().to_string();
                             update.succeed(pci_id);
@@ -257,8 +258,8 @@ impl NvmeManagerWorker {
                     }
                 }
                 Request::GetNamespace(rpc) => {
-                    rpc.handle(async |(controller_instance_id, pci_id, nsid)| {
-                        self.get_namespace(controller_instance_id, pci_id.clone(), nsid)
+                    rpc.handle(async |(debug_id, pci_id, nsid)| {
+                        self.get_namespace(debug_id, pci_id.clone(), nsid)
                             .map_err(|source| NamespaceError { pci_id, source })
                             .await
                     })
@@ -294,12 +295,11 @@ impl NvmeManagerWorker {
         if !nvme_keepalive || !self.save_restore_supported {
             async {
                 join_all(self.devices.drain().map(|(pci_id, driver)| {
-                    let controller_instance_id = driver.controller_instance_id();
+                    let debug_id = driver.debug_id();
                     driver.shutdown().instrument(tracing::info_span!(
                         "shutdown_nvme_driver",
                         pci_id,
-                        controller_instance_id =
-                            controller_instance_id.as_ref().map(|s| s.as_str())
+                        debug_id
                     ))
                 }))
                 .await
@@ -311,7 +311,7 @@ impl NvmeManagerWorker {
 
     async fn get_driver(
         &mut self,
-        controller_instance_id: Option<String>,
+        debug_id: String,
         pci_id: String,
     ) -> Result<&mut nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
         let driver = match self.devices.entry(pci_id.to_owned()) {
@@ -344,7 +344,7 @@ impl NvmeManagerWorker {
                     self.vp_count,
                     device,
                     self.is_isolated,
-                    controller_instance_id,
+                    debug_id,
                 )
                 .instrument(tracing::info_span!(
                     "nvme_driver_init",
@@ -361,13 +361,11 @@ impl NvmeManagerWorker {
 
     async fn get_namespace(
         &mut self,
-        controller_instance_id: Option<String>,
+        debug_id: String,
         pci_id: String,
         nsid: u32,
     ) -> Result<nvme_driver::Namespace, InnerError> {
-        let driver = self
-            .get_driver(controller_instance_id, pci_id.to_owned())
-            .await?;
+        let driver = self.get_driver(debug_id, pci_id.to_owned()).await?;
         driver
             .namespace(nsid)
             .await
@@ -461,7 +459,7 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
     ) -> Result<Self::Output, Self::Error> {
         let namespace = self
             .manager
-            .get_namespace(rsrc.controller_instance_id, rsrc.pci_id, rsrc.nsid)
+            .get_namespace(rsrc.debug_id, rsrc.pci_id, rsrc.nsid)
             .await
             .context("could not open nvme namespace")?;
 
@@ -469,11 +467,21 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
     }
 }
 
-#[derive(MeshPayload, Default)]
+#[derive(MeshPayload)]
 pub struct NvmeDiskConfig {
-    pub controller_instance_id: Option<String>,
+    pub debug_id: String,
     pub pci_id: String,
     pub nsid: u32,
+}
+
+impl Default for NvmeDiskConfig {
+    fn default() -> Self {
+        Self {
+            debug_id: "force-load".to_string(),
+            pci_id: String::new(),
+            nsid: 0,
+        }
+    }
 }
 
 impl ResourceId<DiskHandleKind> for NvmeDiskConfig {
