@@ -826,13 +826,14 @@ impl IoIssuers {
             .issuer
             .as_ref())
     }
-    
+
     pub fn is_cpu_used(&self, cpu: u32) -> bool {
         self.per_cpu[cpu as usize].get().is_some()
     }
-    
+
     pub fn get_used_cpus(&self) -> Vec<u32> {
-        self.per_cpu.iter()
+        self.per_cpu
+            .iter()
             .enumerate()
             .filter_map(|(cpu, issuer)| {
                 if issuer.get().is_some() {
@@ -889,12 +890,14 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             // Generate a device-specific offset to coordinate between multiple NVMe driver instances
             // This prevents different devices from always selecting the same CPUs
             let device_offset = {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                
-                let mut hasher = DefaultHasher::new();
-                self.device.id().hash(&mut hasher);
-                (hasher.finish() as u32) % stride
+                // Simple hash of device ID string to get deterministic offset
+                let device_id_sum: u32 = self
+                    .device
+                    .id()
+                    .as_bytes()
+                    .iter()
+                    .fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
+                device_id_sum % stride
             };
 
             // Calculate base CPU using stride with device-specific offset

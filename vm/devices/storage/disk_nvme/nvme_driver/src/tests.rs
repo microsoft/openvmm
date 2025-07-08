@@ -309,7 +309,6 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     //     .unwrap();
 }
 
-
 #[async_test]
 async fn test_nvme_cpu_interrupt_distribution_with_many_vectors(driver: DefaultDriver) {
     const MSIX_COUNT: u16 = 8; // More interrupt vectors
@@ -417,7 +416,7 @@ async fn test_nvme_multiple_drivers_coordination(driver: DefaultDriver) {
         let _issuer1 = io_issuers1.get(cpu).await.unwrap();
         let _issuer2 = io_issuers2.get(cpu).await.unwrap();
     }
-    
+
     // Get the actual CPU assignments
     let device1_cpus = io_issuers1.get_used_cpus();
     let device2_cpus = io_issuers2.get_used_cpus();
@@ -427,25 +426,33 @@ async fn test_nvme_multiple_drivers_coordination(driver: DefaultDriver) {
     println!("Multiple driver coordination test completed");
     println!("Device 1 CPUs: {:?}", device1_cpus);
     println!("Device 2 CPUs: {:?}", device2_cpus);
-    
+
     // Validate that the devices use different starting offsets
     // Due to hashing, they should have different patterns
-    assert!(device1_cpus.len() <= 8, "Device 1 should have at most 8 interrupt vectors");
-    assert!(device2_cpus.len() <= 8, "Device 2 should have at most 8 interrupt vectors");
-    
+    assert!(
+        device1_cpus.len() <= 8,
+        "Device 1 should have at most 8 interrupt vectors"
+    );
+    assert!(
+        device2_cpus.len() <= 8,
+        "Device 2 should have at most 8 interrupt vectors"
+    );
+
     // The devices should use different starting patterns due to device ID hashing
     // For stride-based allocation (32 CPUs, 8 IVs), we expect different offsets
     // For smaller configurations, they may still overlap but show different ordering
     if device1_cpus.len() >= 4 && device2_cpus.len() >= 4 {
         let device1_pattern: Vec<_> = device1_cpus.into_iter().take(4).collect();
         let device2_pattern: Vec<_> = device2_cpus.into_iter().take(4).collect();
-        
+
         // Due to stride algorithm and device hashing, they should be different
         // unless both devices hash to the same offset (rare but possible)
         if device1_pattern != device2_pattern {
             println!("✓ Validation passed: devices use different CPU offset patterns");
         } else {
-            println!("◯ Devices have same pattern (possible with hash collisions or fallback behavior)");
+            println!(
+                "◯ Devices have same pattern (possible with hash collisions or fallback behavior)"
+            );
         }
     } else {
         println!("◯ Validation skipped: insufficient interrupt vectors created");
@@ -462,20 +469,25 @@ async fn test_nvme_comprehensive_scenarios(driver: DefaultDriver) {
     // Scenario 1: 96 vCPUs, 8 NVMe devices, each with 11 interrupt vectors
     println!("\n=== Scenario 1: 96 vCPUs, 8 NVMe devices, 11 interrupt vectors each ===");
     test_scenario(&driver_source, 96, 8, 11).await;
-    
-    // Scenario 2: 10 vCPUs, 8 NVMe devices, each with 10 interrupt vectors  
+
+    // Scenario 2: 10 vCPUs, 8 NVMe devices, each with 10 interrupt vectors
     println!("\n=== Scenario 2: 10 vCPUs, 8 NVMe devices, 10 interrupt vectors each ===");
     test_scenario(&driver_source, 10, 8, 10).await;
-    
+
     // Scenario 3: 4 vCPUs, 1 NVMe device with 4 interrupt vectors
     println!("\n=== Scenario 3: 4 vCPUs, 1 NVMe device, 4 interrupt vectors ===");
     test_scenario(&driver_source, 4, 1, 4).await;
 }
 
-async fn test_scenario(driver_source: &VmTaskDriverSource, cpu_count: u32, device_count: u8, msix_count: u16) {
+async fn test_scenario(
+    driver_source: &VmTaskDriverSource,
+    cpu_count: u32,
+    device_count: u8,
+    msix_count: u16,
+) {
     let mut drivers = Vec::new();
     let mut devices_cpu_usage = Vec::new();
-    
+
     // Create multiple devices
     for device_idx in 0..device_count {
         let device_id = format!("device_{}", device_idx);
@@ -485,29 +497,30 @@ async fn test_scenario(driver_source: &VmTaskDriverSource, cpu_count: u32, devic
             msix_count,
             64, // IO_QUEUE_COUNT
             cpu_count,
-        ).await;
-        
+        )
+        .await;
+
         let nvme_driver = NvmeDriver::new(driver_source, cpu_count, device, false)
             .await
             .unwrap();
-            
+
         let io_issuers = nvme_driver.io_issuers();
-        
+
         // Force creation of all interrupt vectors
         for cpu in 0..cpu_count.min(msix_count as u32) {
             let _issuer = io_issuers.get(cpu).await.unwrap();
         }
-        
+
         // Get the actual CPU assignments
         let mut device_cpus = io_issuers.get_used_cpus();
         device_cpus.sort();
         devices_cpu_usage.push(device_cpus.clone());
-        
+
         println!("  Device {}: CPUs {:?}", device_idx, device_cpus);
-        
+
         drivers.push(nvme_driver);
     }
-    
+
     // Analysis
     let total_vectors = device_count as u32 * msix_count as u32;
     let stride_expected = if cpu_count > msix_count as u32 * 2 {
@@ -515,14 +528,17 @@ async fn test_scenario(driver_source: &VmTaskDriverSource, cpu_count: u32, devic
     } else {
         None
     };
-    
-    println!("  CPU count: {}, Total interrupt vectors: {}", cpu_count, total_vectors);
+
+    println!(
+        "  CPU count: {}, Total interrupt vectors: {}",
+        cpu_count, total_vectors
+    );
     if let Some(stride) = stride_expected {
         println!("  Expected stride: {} (stride-based distribution)", stride);
     } else {
         println!("  Expected: greedy allocation (no stride)");
     }
-    
+
     // Calculate CPU utilization distribution
     let mut cpu_usage_count = vec![0u32; cpu_count as usize];
     for device_cpus in &devices_cpu_usage {
@@ -530,30 +546,37 @@ async fn test_scenario(driver_source: &VmTaskDriverSource, cpu_count: u32, devic
             cpu_usage_count[cpu as usize] += 1;
         }
     }
-    
+
     let used_cpus = cpu_usage_count.iter().filter(|&&count| count > 0).count();
     let max_usage = cpu_usage_count.iter().max().unwrap_or(&0);
-    let min_usage = cpu_usage_count.iter().filter(|&&count| count > 0).min().unwrap_or(&0);
-    
-    println!("  CPU utilization: {} CPUs used, max {} vectors/CPU, min {} vectors/CPU", 
-             used_cpus, max_usage, min_usage);
-    
+    let min_usage = cpu_usage_count
+        .iter()
+        .filter(|&&count| count > 0)
+        .min()
+        .unwrap_or(&0);
+
+    println!(
+        "  CPU utilization: {} CPUs used, max {} vectors/CPU, min {} vectors/CPU",
+        used_cpus, max_usage, min_usage
+    );
+
     // Validate behavior based on scenario expectations
     if device_count > 1 {
         // For multiple devices, ensure they have different patterns (coordination test)
-        let unique_patterns: std::collections::HashSet<_> = devices_cpu_usage.iter().cloned().collect();
+        let unique_patterns: std::collections::HashSet<_> =
+            devices_cpu_usage.iter().cloned().collect();
         if unique_patterns.len() > 1 {
             println!("  ✓ Multiple devices use different CPU patterns");
         } else if device_count <= 4 && msix_count <= 4 {
             println!("  ◯ Small configuration may have overlapping patterns (expected)");
         }
     }
-    
+
     // Cleanup
     for driver in drivers {
         driver.shutdown().await;
     }
-    
+
     println!("  Scenario completed\n");
 }
 
