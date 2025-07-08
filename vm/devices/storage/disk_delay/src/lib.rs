@@ -23,15 +23,15 @@ use vmcore::vm_task::VmTaskDriverSource;
 /// A disk with delay on every I/O operation.
 #[derive(Inspect)]
 pub struct DelayDisk {
-    #[inspect(hex, with = "|x| x.get()")]
-    delay: Cell<u64>,
+    #[inspect(hex, with = "|x| inspect::AsDebug(x.get())")]
+    delay: Cell<Duration>,
     inner: Disk,
     driver: VmTaskDriver,
 }
 
 impl DelayDisk {
     /// Creates a new disk with a specified delay on I/O operations.
-    pub fn new(delay: Cell<u64>, inner: Disk, driver_source: &VmTaskDriverSource) -> Self {
+    pub fn new(delay: Cell<Duration>, inner: Disk, driver_source: &VmTaskDriverSource) -> Self {
         Self {
             delay,
             inner,
@@ -86,9 +86,7 @@ impl DiskIo for DelayDisk {
         buffers: &RequestBuffers<'_>,
         sector: u64,
     ) -> Result<(), DiskError> {
-        PolledTimer::new(&self.driver)
-            .sleep(Duration::from_millis(self.delay.get()))
-            .await;
+        PolledTimer::new(&self.driver).sleep(self.delay.get()).await;
         self.inner.read_vectored(buffers, sector).await
     }
 
@@ -99,9 +97,7 @@ impl DiskIo for DelayDisk {
         sector: u64,
         fua: bool,
     ) -> Result<(), DiskError> {
-        PolledTimer::new(&self.driver)
-            .sleep(Duration::from_millis(self.delay.get()))
-            .await;
+        PolledTimer::new(&self.driver).sleep(self.delay.get()).await;
         self.inner.write_vectored(buffers, sector, fua).await
     }
 
