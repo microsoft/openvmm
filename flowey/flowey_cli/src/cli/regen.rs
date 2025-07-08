@@ -100,6 +100,17 @@ impl Regen {
             }
         }
 
+        // Generate copilot-setup-steps.yml using flowey's version management
+        // This ensures the file uses the correct Rust and tool versions
+        let copilot_result = generate_copilot_setup_steps_file(repo_root);
+        if copilot_result.is_err() {
+            error = true;
+            log::error!(
+                "Failed to generate copilot-setup-steps.yml: {:?}",
+                copilot_result
+            );
+        }
+
         if error {
             anyhow::bail!("encountered one or more errors")
         }
@@ -195,5 +206,20 @@ fn install_flowey_merge_driver() -> anyhow::Result<()> {
         .ignore_status()
         .run()?;
 
+    Ok(())
+}
+
+fn generate_copilot_setup_steps_file(repo_root: &Path) -> anyhow::Result<()> {
+    // Run the copilot setup generator command
+    let sh = xshell::Shell::new()?;
+    sh.change_dir(repo_root);
+    xshell::cmd!(
+        sh,
+        "cargo run -p flowey_hvlite -- pipeline run copilot-setup-generator"
+    )
+    .quiet()
+    .run()?;
+
+    log::info!("Generated copilot-setup-steps.yml");
     Ok(())
 }
