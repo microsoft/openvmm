@@ -4,10 +4,10 @@
 mod hvc;
 pub mod powershell;
 pub mod vm;
-use vmsocket::VmAddress;
-use vmsocket::VmSocket;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use vmsocket::VmAddress;
+use vmsocket::VmSocket;
 
 use super::ProcessorTopology;
 use crate::Firmware;
@@ -234,29 +234,29 @@ impl PetriVmArtifactsHyperV {
 
 impl PetriVmConfigHyperV {
     /// Creates a valid Hyper-V VM name from a test name.
-    /// 
+    ///
     /// Hyper-V limits VM names to 100 characters. If the test name exceeds this limit,
     /// we truncate it and append a hash to maintain uniqueness.
     fn create_vm_name(test_name: &str) -> String {
         const MAX_VM_NAME_LENGTH: usize = 100;
-        
+
         if test_name.len() <= MAX_VM_NAME_LENGTH {
             return test_name.to_owned();
         }
-        
+
         // Create a hash of the full name for uniqueness
         let mut hasher = DefaultHasher::new();
         test_name.hash(&mut hasher);
         let hash = hasher.finish();
         let hash_suffix = format!("-{:x}", hash);
-        
+
         // Reserve space for the hash suffix
         let max_prefix_length = MAX_VM_NAME_LENGTH - hash_suffix.len();
-        
+
         // Take the end of the test name to preserve the most specific part
         let start_pos = test_name.len().saturating_sub(max_prefix_length);
         let truncated = &test_name[start_pos..];
-        
+
         format!("{}{}", truncated, hash_suffix)
     }
 
