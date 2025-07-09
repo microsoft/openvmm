@@ -9234,12 +9234,16 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "bitfield-struct 0.10.1",
+ "cvm_tracing",
+ "get_protocol",
+ "guest_emulation_transport",
  "inspect",
  "mesh",
  "pal_async",
  "thiserror 2.0.12",
  "tracing",
  "vmcore",
+ "watchdog_vmgs_format",
 ]
 
 [[package]]

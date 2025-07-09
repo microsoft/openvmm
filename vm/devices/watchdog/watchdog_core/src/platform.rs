@@ -13,6 +13,11 @@
 //! - [`WatchdogCallback`]: Implement this to define custom timeout behavior
 //! - [`WatchdogPlatform`]: The interface that watchdog devices use to handle timeouts
 
+use cvm_tracing::CVM_ALLOWED;
+use vmcore::non_volatile_store::NonVolatileStore;
+use watchdog_vmgs_format::WatchdogVmgsFormatStore;
+use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
+
 /// Trait for responding to watchdog timeouts.
 ///
 /// Implement this trait whenever you want to respond to watchdog timeouts, then pass
@@ -51,29 +56,59 @@ pub trait WatchdogPlatform: Send {
     fn add_callback(&mut self, callback: Box<dyn WatchdogCallback>);
 }
 
-/// A simple implementation of [`WatchdogPlatform`], suitable for ephemeral VMs.
-pub struct SimpleWatchdogPlatform {
+/// A base implementation of [`WatchdogPlatform`], used by OpenVMM and OpenHCL.
+pub struct BaseWatchdogPlatform {
     /// Whether the watchdog has timed out or not.
     watchdog_status: bool,
     /// Callbacks to execute when the watchdog times out.
     callbacks: Vec<Box<dyn WatchdogCallback>>,
+    /// The VMGS store used to persist the watchdog status.
+    store: WatchdogVmgsFormatStore,
+    /// Handle to the guest emulation transport client.
+    get: Option<guest_emulation_transport::GuestEmulationTransportClient>,
 }
 
-impl SimpleWatchdogPlatform {
-    pub fn new() -> Self {
-        SimpleWatchdogPlatform {
+impl BaseWatchdogPlatform {
+    pub async fn new(
+        store: Box<dyn NonVolatileStore>,
+        get: Option<guest_emulation_transport::GuestEmulationTransportClient>,
+    ) -> Result<Self, WatchdogVmgsFormatStoreError> {
+        Ok(BaseWatchdogPlatform {
             watchdog_status: false,
             callbacks: Vec::new(),
-        }
+            store: WatchdogVmgsFormatStore::new(store).await?,
+            get,
+        })
     }
 }
 
 #[async_trait::async_trait]
-impl WatchdogPlatform for SimpleWatchdogPlatform {
+impl WatchdogPlatform for BaseWatchdogPlatform {
     async fn on_timeout(&mut self) {
+        // Denote the watchdog status as true
         self.watchdog_status = true;
+
+        // Persist the watchdog status to the VMGS store
+        let result = self.store.set_boot_failure().await;
+        if let Err(e) = result {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = &e as &dyn std::error::Error,
+                "error persisting watchdog status"
+            );
+        }
+
+        // Invoke all callbacks before reporting this to the GET, as each
+        // callback may want to do something before the host tears us down.
         for callback in &self.callbacks {
             callback.on_timeout().await;
+        }
+
+        // FUTURE: consider emitting different events for the UEFI watchdog vs.
+        // the guest watchdog
+        if let Some(get) = &self.get {
+            get.event_log_fatal(get_protocol::EventLogId::WATCHDOG_TIMEOUT_RESET)
+                .await;
         }
     }
 
