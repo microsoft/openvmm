@@ -2125,7 +2125,7 @@ async fn new_underhill_vm(
 
                     // ARM64 does not have NMI support yet, so halt instead
                     #[cfg(guest_arch = "aarch64")]
-                    let watchdog_callback = WatchdogTimeoutHalt {
+                    let watchdog_callback = WatchdogTimeoutReset {
                         halt_vps: halt_vps.clone(),
                     };
 
@@ -2458,7 +2458,7 @@ async fn new_underhill_vm(
                     EphemeralNonVolatileStore::new_boxed()
                 };
 
-                let trigger_reset = WatchdogTimeoutHalt {
+                let trigger_reset = WatchdogTimeoutReset {
                     halt_vps: halt_vps.clone(),
                 };
 
@@ -3477,12 +3477,12 @@ impl WatchdogCallback for WatchdogTimeoutNmi {
     }
 }
 
-struct WatchdogTimeoutHalt {
+struct WatchdogTimeoutReset {
     halt_vps: Arc<Halt>,
 }
 
 #[async_trait::async_trait]
-impl WatchdogCallback for WatchdogTimeoutHalt {
+impl WatchdogCallback for WatchdogTimeoutReset {
     async fn on_timeout(&self) {
         crate::livedump::livedump().await;
 

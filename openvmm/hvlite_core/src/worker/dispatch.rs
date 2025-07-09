@@ -1107,7 +1107,7 @@ impl InitializedVm {
 
                         // ARM64 does not have NMI support yet, so halt instead
                         #[cfg(guest_arch = "aarch64")]
-                        let watchdog_callback = WatchdogTimeoutHalt {
+                        let watchdog_callback = WatchdogTimeoutReset {
                             halt_vps: halt_vps.clone(),
                         };
 
@@ -1334,8 +1334,8 @@ impl InitializedVm {
                     // Create the base watchdog platform
                     let mut hvlite_watchdog_platform = HvLiteWatchdogPlatform::new(store).await?;
 
-                    // Create callback to halt on watchdog timeout
-                    let watchdog_callback = WatchdogTimeoutHalt {
+                    // Create callback to reset on watchdog timeout
+                    let watchdog_callback = WatchdogTimeoutReset {
                         halt_vps: halt_vps.clone(),
                     };
 
@@ -3012,12 +3012,12 @@ impl WatchdogCallback for WatchdogTimeoutNmi {
     }
 }
 
-struct WatchdogTimeoutHalt {
+struct WatchdogTimeoutReset {
     halt_vps: Arc<Halt>,
 }
 
 #[async_trait::async_trait]
-impl WatchdogCallback for WatchdogTimeoutHalt {
+impl WatchdogCallback for WatchdogTimeoutReset {
     async fn on_timeout(&self) {
         self.halt_vps.halt(HaltReason::Reset)
     }
