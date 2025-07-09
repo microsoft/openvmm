@@ -23,6 +23,20 @@ pub trait WatchdogCallback: Send + Sync {
     async fn on_timeout(&self);
 }
 
+/// Blanket implementation of [`WatchdogCallback`] for closures.
+///
+/// This allows you to pass simple closures directly as callbacks without
+/// needing to create a struct.
+#[async_trait::async_trait]
+impl<F> WatchdogCallback for F
+where
+    F: Fn() + Send + Sync,
+{
+    async fn on_timeout(&self) {
+        self();
+    }
+}
+
 /// Platform hooks required by the watchdog device.
 #[async_trait::async_trait]
 pub trait WatchdogPlatform: Send {
