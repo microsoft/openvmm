@@ -43,11 +43,18 @@ use zerocopy::KnownLayout;
 #[derive(Debug, Clone, PartialEq, Eq, MeshPayload)]
 pub struct PciId(pub String);
 
+impl std::fmt::Display for PciId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
 pub struct VfioDevice {
-    pci_id: Arc<str>,
-    debug_controller_id: Option<String>,
+    #[inspect(skip)]
+    pci_id: PciId,
+    debug_controller_id: Option<Arc<str>>,
     #[inspect(skip)]
     _container: vfio_sys::Container,
     #[inspect(skip)]
@@ -78,7 +85,7 @@ impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
+        pci_id: PciId,
         debug_controller_id: Option<String>,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
@@ -96,12 +103,12 @@ impl VfioDevice {
     /// or creates a device from the saved state if provided.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
-        pci_id: &str,
+        pci_id: PciId,
         debug_controller_id: Option<String>,
         keepalive: bool,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        let path = Path::new("/sys/bus/pci/devices").join(pci_id);
+        let path = Path::new("/sys/bus/pci/devices").join(&pci_id.0);
 
         // The vfio device attaches asynchronously after the PCI device is added,
         // so make sure that it has completed by checking for the vfio-dev subpath.
@@ -127,9 +134,9 @@ impl VfioDevice {
         container.set_iommu(IommuType::NoIommu)?;
         if keepalive {
             // Prevent physical hardware interaction when restoring.
-            group.set_keep_alive(pci_id)?;
+            group.set_keep_alive(&pci_id.0)?;
         }
-        let device = group.open_device(pci_id)?;
+        let device = group.open_device(&pci_id.0)?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
@@ -137,8 +144,8 @@ impl VfioDevice {
 
         let config_space = device.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
         let this = Self {
-            pci_id: pci_id.into(),
-            debug_controller_id,
+            pci_id,
+            debug_controller_id: debug_controller_id.map(|s| s.into()),
             _container: container,
             _group: group,
             device: Arc::new(device),
@@ -173,6 +180,11 @@ impl VfioDevice {
     /// Returns the debug controller ID for diagnostic purposes.
     pub fn debug_controller_id(&self) -> Option<&str> {
         self.debug_controller_id.as_deref()
+    }
+
+    /// Returns the PCI ID for inspection purposes.
+    pub fn pci_id(&self) -> &str {
+        &self.pci_id.0
     }
 
     pub fn read_config(&self, offset: u16) -> anyhow::Result<u32> {
@@ -245,7 +257,7 @@ impl DeviceBacking for VfioDevice {
     type Registers = MappedRegionWithFallback;
 
     fn id(&self) -> &str {
-        &self.pci_id
+        &self.pci_id.0
     }
 
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
@@ -298,7 +310,7 @@ impl DeviceBacking for VfioDevice {
             // The interrupt's CPU affinity will be set by the task when it
             // starts. This can block the thread briefly, so it's better to do
             // it on the target CPU.
-            let irq = vfio_sys::find_msix_irq(&self.pci_id, msix)
+            let irq = vfio_sys::find_msix_irq(&self.pci_id.0, msix)
                 .context("failed to find irq for msix")?;
 
             let target_cpu = Arc::new(AtomicU32::new(cpu));
@@ -310,7 +322,7 @@ impl DeviceBacking for VfioDevice {
                 InterruptTask {
                     driver: driver.clone(),
                     target_cpu: target_cpu.clone(),
-                    pci_id: self.pci_id.clone(),
+                    pci_id: self.pci_id.0.clone().into(),
                     msix,
                     irq,
                     event,
