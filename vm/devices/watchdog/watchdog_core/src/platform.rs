@@ -42,7 +42,7 @@ where
     }
 }
 
-/// Platform hooks required by the watchdog device.
+/// Defines the watchdog platform interface.
 #[async_trait::async_trait]
 pub trait WatchdogPlatform: Send {
     /// Callback fired when the timer expires.
@@ -93,8 +93,7 @@ impl WatchdogPlatform for BaseWatchdogPlatform {
             );
         }
 
-        // Invoke all callbacks before reporting this to the GET, as each
-        // callback may want to do something before the host tears us down.
+        // Invoke all callbacks
         for callback in &self.callbacks {
             callback.on_timeout().await;
         }
