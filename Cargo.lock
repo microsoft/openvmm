@@ -3061,7 +3061,6 @@ dependencies = [
  "vmswitch",
  "vpci",
  "watchdog_core",
- "watchdog_vmgs_format",
  "zerocopy 0.8.24",
 ]
 
@@ -9235,8 +9234,6 @@ dependencies = [
  "async-trait",
  "bitfield-struct 0.10.1",
  "cvm_tracing",
- "get_protocol",
- "guest_emulation_transport",
  "inspect",
  "mesh",
  "pal_async",

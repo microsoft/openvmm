@@ -59,25 +59,21 @@ pub trait WatchdogPlatform: Send {
 /// A base implementation of [`WatchdogPlatform`], used by OpenVMM and OpenHCL.
 pub struct BaseWatchdogPlatform {
     /// Whether the watchdog has timed out or not.
-    watchdog_status: bool,
+    watchdog_expired: bool,
     /// Callbacks to execute when the watchdog times out.
     callbacks: Vec<Box<dyn WatchdogCallback>>,
     /// The VMGS store used to persist the watchdog status.
     store: WatchdogVmgsFormatStore,
-    /// Handle to the guest emulation transport client.
-    get: Option<guest_emulation_transport::GuestEmulationTransportClient>,
 }
 
 impl BaseWatchdogPlatform {
     pub async fn new(
         store: Box<dyn NonVolatileStore>,
-        get: Option<guest_emulation_transport::GuestEmulationTransportClient>,
     ) -> Result<Self, WatchdogVmgsFormatStoreError> {
         Ok(BaseWatchdogPlatform {
-            watchdog_status: false,
+            watchdog_expired: false,
             callbacks: Vec::new(),
             store: WatchdogVmgsFormatStore::new(store).await?,
-            get,
         })
     }
 }
@@ -85,8 +81,7 @@ impl BaseWatchdogPlatform {
 #[async_trait::async_trait]
 impl WatchdogPlatform for BaseWatchdogPlatform {
     async fn on_timeout(&mut self) {
-        // Denote the watchdog status as true
-        self.watchdog_status = true;
+        self.watchdog_expired = true;
 
         // Persist the watchdog status to the VMGS store
         let result = self.store.set_boot_failure().await;
@@ -103,20 +98,13 @@ impl WatchdogPlatform for BaseWatchdogPlatform {
         for callback in &self.callbacks {
             callback.on_timeout().await;
         }
-
-        // FUTURE: consider emitting different events for the UEFI watchdog vs.
-        // the guest watchdog
-        if let Some(get) = &self.get {
-            get.event_log_fatal(get_protocol::EventLogId::WATCHDOG_TIMEOUT_RESET)
-                .await;
-        }
     }
 
     async fn read_and_clear_boot_status(&mut self) -> bool {
-        if self.watchdog_status {
-            self.watchdog_status = false;
+        if self.watchdog_expired {
+            self.watchdog_expired = false;
         }
-        self.watchdog_status
+        self.watchdog_expired
     }
 
     fn add_callback(&mut self, callback: Box<dyn WatchdogCallback>) {

@@ -73,7 +73,6 @@ vmbus_core.workspace = true
 vmbus_server.workspace = true
 vpci.workspace = true
 watchdog_core.workspace = true
-watchdog_vmgs_format.workspace = true
 
 cache_topology.workspace = true
 debug_ptr.workspace = true

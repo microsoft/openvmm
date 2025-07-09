@@ -37,7 +37,7 @@ use crate::emuplat::non_volatile_store::VmgsBrokerNonVolatileStore;
 use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
-use crate::emuplat::watchdog::UnderhillWatchdog;
+use crate::emuplat::watchdog::UnderhillWatchdogPlatform;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
@@ -2115,7 +2115,7 @@ async fn new_underhill_vm(
 
                     // Create base watchdog platform
                     let mut underhill_watchdog_platform =
-                        UnderhillWatchdog::new(store, get_client.clone()).await?;
+                        UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
 
                     // Inject NMI on watchdog timeout
                     #[cfg(guest_arch = "x86_64")]
@@ -2463,7 +2463,7 @@ async fn new_underhill_vm(
                 };
 
                 let mut underhill_watchdog_platform =
-                    UnderhillWatchdog::new(store, get_client.clone()).await?;
+                    UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
                 underhill_watchdog_platform.add_callback(Box::new(trigger_reset));
 
                 Box::new(underhill_watchdog_platform)

@@ -144,6 +144,7 @@ use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
 use vpci::bus::VpciBus;
+use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
 
@@ -1089,15 +1090,13 @@ impl InitializedVm {
                     },
                     generation_id_recv,
                     watchdog_platform: {
-                        use emuplat::watchdog::HvLiteWatchdogPlatform;
                         use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
                         // UEFI watchdog doesn't persist to VMGS at this time
                         let store = EphemeralNonVolatileStore::new_boxed();
 
                         // Create the base watchdog platform
-                        let mut hvlite_watchdog_platform =
-                            HvLiteWatchdogPlatform::new(store).await?;
+                        let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
 
                         // Inject NMI on watchdog timeout
                         #[cfg(guest_arch = "x86_64")]
@@ -1112,9 +1111,9 @@ impl InitializedVm {
                         };
 
                         // Add callbacks
-                        hvlite_watchdog_platform.add_callback(Box::new(watchdog_callback));
+                        base_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-                        Box::new(hvlite_watchdog_platform)
+                        Box::new(base_watchdog_platform)
                     },
                     vsm_config: None,
                     // TODO: persist SystemTimeClock time across reboots.
@@ -1321,7 +1320,6 @@ impl InitializedVm {
             Some(dev::HyperVGuestWatchdogDeps {
                 port_base: WDAT_PORT,
                 watchdog_platform: {
-                    use emuplat::watchdog::HvLiteWatchdogPlatform;
                     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
                     let store = match vmgs_client {
@@ -1332,7 +1330,7 @@ impl InitializedVm {
                     };
 
                     // Create the base watchdog platform
-                    let mut hvlite_watchdog_platform = HvLiteWatchdogPlatform::new(store).await?;
+                    let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
 
                     // Create callback to reset on watchdog timeout
                     let watchdog_callback = WatchdogTimeoutReset {
@@ -1340,9 +1338,9 @@ impl InitializedVm {
                     };
 
                     // Add callbacks
-                    hvlite_watchdog_platform.add_callback(Box::new(watchdog_callback));
+                    base_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-                    Box::new(hvlite_watchdog_platform)
+                    Box::new(base_watchdog_platform)
                 },
             })
         } else {
