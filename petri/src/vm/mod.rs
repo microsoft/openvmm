@@ -839,6 +839,15 @@ impl Firmware {
             }
         }
     }
+
+    fn openhcl_config(&self) -> Option<&OpenHclConfig> {
+        match self {
+            Firmware::OpenhclLinuxDirect { openhcl_config, .. }
+            | Firmware::OpenhclUefi { openhcl_config, .. }
+            | Firmware::OpenhclPcat { openhcl_config, .. } => Some(openhcl_config),
+            Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
+        }
+    }
 }
 
 /// The guest the VM will boot into. A boot drive with the chosen setup

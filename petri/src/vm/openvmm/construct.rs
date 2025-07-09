@@ -175,7 +175,7 @@ impl PetriVmConfigOpenVmm {
             ged_send,
             mut vtl2_settings,
             vtl2_vsock_path,
-        ) = if firmware.is_openhcl() {
+        ) = if let Some(OpenHclConfig { vmbus_redirect, .. }) = firmware.openhcl_config() {
             let (ged, ged_send) = setup.config_openhcl_vmbus_devices(
                 &mut emulated_serial_config,
                 &mut devices,
@@ -192,7 +192,7 @@ impl PetriVmConfigOpenVmm {
                     vsock_listener: Some(vtl2_vsock_listener),
                     vsock_path: Some(vtl2_vsock_path.to_string_lossy().into_owned()),
                     vmbus_max_version: None,
-                    vtl2_redirect: false,
+                    vtl2_redirect: *vmbus_redirect,
                     #[cfg(windows)]
                     vmbusproxy_handle: None,
                 }),
@@ -958,7 +958,7 @@ impl PetriVmConfigSetupCore<'_> {
             guest_request_recv,
             enable_tpm: false,
             firmware_event_send: Some(firmware_event_send.clone()),
-            secure_boot_enabled: false,
+            secure_boot_enabled: secure_boot_template.is_some(),
             secure_boot_template: match secure_boot_template {
                 Some(SecureBootTemplate::MicrosoftWindows) => {
                     get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows

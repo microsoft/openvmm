@@ -207,9 +207,9 @@ fn resolve_openhcl_tmks<T: PetriVmmBackend>(
     Some(OpenhclTmkArtifacts { vm, tmk_vmm, tmk })
 }
 
-fn openhcl_tmks<T: PetriVmmBackend>(
+fn openhcl_tmks(
     params: petri::PetriTestParams<'_>,
-    artifacts: OpenhclTmkArtifacts<T>,
+    artifacts: OpenhclTmkArtifacts<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     DefaultPool::run_with(async |driver| {
         let mut vm = petri::PetriVmBuilder::new(&params, artifacts.vm, &driver)?
@@ -220,7 +220,9 @@ fn openhcl_tmks<T: PetriVmmBackend>(
                 vp_count: 1,
                 ..Default::default()
             })
-            // .with_allow_early_vtl0_access(true) // TODO: remove once the TMK VMM initializes memory properly.
+            .modify_backend(
+                |b| b.with_allow_early_vtl0_access(true), // TODO: remove once the TMK VMM initializes memory properly.
+            )
             .run_without_agent()
             .await?;
 
@@ -232,9 +234,35 @@ fn openhcl_tmks<T: PetriVmmBackend>(
 
 #[cfg(windows)]
 mod hyperv {
-    use crate::openhcl_tmks;
+    use crate::OPENHCL_COMMAND_LINE;
+    use crate::OpenhclTmkArtifacts;
+    use crate::openhcl_tmks_inner;
     use crate::resolve_openhcl_tmks;
+    use pal_async::DefaultPool;
+    use petri::ProcessorTopology;
     use petri::hyperv::HyperVPetriBackend;
+
+    fn openhcl_tmks(
+        params: petri::PetriTestParams<'_>,
+        artifacts: OpenhclTmkArtifacts<HyperVPetriBackend>,
+    ) -> anyhow::Result<()> {
+        DefaultPool::run_with(async |driver| {
+            let mut vm = petri::PetriVmBuilder::new(&params, artifacts.vm, &driver)?
+                .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
+                .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
+                .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
+                .with_processor_topology(ProcessorTopology {
+                    vp_count: 1,
+                    ..Default::default()
+                })
+                .run_without_agent()
+                .await?;
+
+            openhcl_tmks_inner(&driver, &params, &mut vm).await?;
+
+            Ok(())
+        })
+    }
 
     petri::test!(openhcl_tmks, resolve_openhcl_tmks::<HyperVPetriBackend>);
 }
