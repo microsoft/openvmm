@@ -13,7 +13,7 @@ use super::SCSI_INSTANCE;
 use super::memdiff_disk_from_artifact;
 use crate::Firmware;
 use crate::IsolationType;
-use crate::MemoryTopology;
+use crate::MemoryConfig;
 use crate::OpenHclConfig;
 use crate::PcatGuest;
 use crate::PetriLogSource;
@@ -47,7 +47,6 @@ use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
 use hvlite_defs::config::LoadMode;
-use hvlite_defs::config::MemoryConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::VmbusConfig;
@@ -281,7 +280,7 @@ impl PetriVmConfigOpenVmm {
             .context("failed to build chipset configuration")?;
 
         let memory = {
-            let MemoryTopology {
+            let MemoryConfig {
                 startup_bytes,
                 dynamic_memory_range,
             } = memory;
@@ -290,7 +289,7 @@ impl PetriVmConfigOpenVmm {
                 anyhow::bail!("dynamic memory not supported in OpenVMM");
             }
 
-            MemoryConfig {
+            hvlite_defs::config::MemoryConfig {
                 mem_size: *startup_bytes,
                 mmio_gaps: if firmware.is_openhcl() {
                     match arch {

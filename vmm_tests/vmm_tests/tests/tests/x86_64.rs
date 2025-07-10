@@ -182,16 +182,23 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 )]
 async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let mut vm = config
-        .modify_backend(|b| b.with_tpm())
-        .run_without_agent()
-        .await?;
+    let config = config.modify_backend(|b| b.with_tpm());
 
-    if matches!(os_flavor, OsFlavor::Linux) {
-        // Workaround to https://github.com/microsoft/openvmm/issues/379
-        assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
-        vm.backend().reset().await?;
-    }
+    let mut vm = match os_flavor {
+        OsFlavor::Windows => config.run_without_agent().await?,
+        OsFlavor::Linux => {
+            let mut vm = config
+                // TODO: we shouldn't need to specify a generic here...
+                .with_vmgs::<VMGS_WITH_BOOT_ENTRY>(petri::PetriVmgsResource::TempDisk)
+                .run_without_agent()
+                .await?;
+            // Workaround to https://github.com/microsoft/openvmm/issues/379
+            assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+            vm.backend().reset().await?;
+            vm
+        }
+        _ => unreachable!(),
+    };
 
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;

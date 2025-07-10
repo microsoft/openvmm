@@ -89,7 +89,7 @@ pub struct PetriVmConfig {
     /// Firmware and/or OS to load into the VM and associated settings
     pub firmware: Firmware,
     /// The amount of memory, in bytes, to assign to the VM
-    pub memory: MemoryTopology,
+    pub memory: MemoryConfig,
     /// The processor tology for the VM
     pub proc_topology: ProcessorTopology,
     /// Agent to run in the guest
@@ -244,6 +244,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Set the VM to use the specified processor topology.
     pub fn with_processor_topology(mut self, topology: ProcessorTopology) -> Self {
         self.config.proc_topology = topology;
+        self
+    }
+
+    /// Set the VM to use the specified processor topology.
+    pub fn with_memory(mut self, memory: MemoryConfig) -> Self {
+        self.config.memory = memory;
         self
     }
 
@@ -519,8 +525,8 @@ pub enum ApicMode {
     X2apicEnabled,
 }
 
-/// Common memory topology information for the VM.
-pub struct MemoryTopology {
+/// Common memory configuration information for the VM.
+pub struct MemoryConfig {
     /// Specifies the amount of memory, in bytes, to assign to the
     /// virtual machine.
     pub startup_bytes: u64,
@@ -530,7 +536,7 @@ pub struct MemoryTopology {
     pub dynamic_memory_range: Option<(u64, u64)>,
 }
 
-impl Default for MemoryTopology {
+impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             startup_bytes: 0x1_0000_0000,

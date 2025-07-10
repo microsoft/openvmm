@@ -9,6 +9,7 @@ use get_resources::ged::FirmwareEvent;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
+use petri::MemoryConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
@@ -404,6 +405,12 @@ async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> a
     let mut vm = config
         .with_processor_topology(ProcessorTopology {
             vp_count: 16,
+            ..Default::default()
+        })
+        // multiarch::openvmm_uefi_x64_windows_datacenter_core_2022_x64_boot_no_agent_heavy
+        // fails with 4GB of RAM (the default)
+        .with_memory(MemoryConfig {
+            startup_bytes: SIZE_1_GB,
             ..Default::default()
         })
         .run_without_agent()
