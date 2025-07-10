@@ -2799,6 +2799,7 @@ dependencies = [
  "tracing",
  "ucs2 0.0.0",
  "uefi_nvram_storage",
+ "vmcore",
  "wchar",
  "zerocopy 0.8.24",
 ]
@@ -7276,10 +7277,12 @@ dependencies = [
  "async-trait",
  "guid",
  "inspect",
+ "mesh_protobuf",
  "pal_async",
  "thiserror 2.0.12",
  "ucs2 0.0.0",
  "uefi_specs",
+ "vmcore",
  "wchar",
  "zerocopy 0.8.24",
 ]
