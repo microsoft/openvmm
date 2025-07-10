@@ -35,7 +35,7 @@ pub trait WatchdogCallback: Send + Sync {
 #[async_trait::async_trait]
 impl<F> WatchdogCallback for F
 where
-    F: Fn() + Send + Sync,
+    F: FnMut() + Send + Sync,
 {
     async fn on_timeout(&mut self) {
         self();
@@ -100,10 +100,19 @@ impl WatchdogPlatform for BaseWatchdogPlatform {
     }
 
     async fn read_and_clear_boot_status(&mut self) -> bool {
-        if self.watchdog_expired {
-            self.watchdog_expired = false;
+        let res = self.store.read_and_clear_boot_status().await;
+        match res {
+            Ok(status) => status,
+            Err(e) => {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    error = &e as &dyn std::error::Error,
+                    "error reading watchdog status"
+                );
+                // assume no failure
+                false
+            }
         }
-        self.watchdog_expired
     }
 
     fn add_callback(&mut self, callback: Box<dyn WatchdogCallback>) {
