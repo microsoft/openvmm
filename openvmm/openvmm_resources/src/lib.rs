@@ -46,6 +46,7 @@ vm_resource::register_static_resolvers! {
     disk_crypt::resolver::DiskCryptResolver,
     disk_file::FileDiskResolver,
     disk_prwrap::DiskWithReservationsResolver,
+    disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
     #[cfg(windows)]
     disk_vhdmp::VhdmpDiskResolver,
