@@ -48,8 +48,7 @@ pub trait WatchdogPlatform: Send {
     /// Callback fired when the timer expires.
     async fn on_timeout(&mut self);
 
-    // Check if the watchdog previously timed-out, clearing the bit in the
-    // process.
+    // Check the vmgs store for boot status and clear it.
     async fn read_and_clear_boot_status(&mut self) -> bool;
 
     /// Add a callback, which executes when the watchdog times out
