@@ -68,10 +68,12 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
 use pal_async::local::block_on;
+use parking_lot::Mutex;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::task::Context;
 use thiserror::Error;
 use uefi_nvram_storage::VmmNvramStorage;
@@ -104,7 +106,7 @@ struct UefiDeviceServices {
     generation_id: service::generation_id::GenerationIdServices,
     #[inspect(mut)]
     time: service::time::TimeServices,
-    diagnostics: service::diagnostics::DiagnosticsServices,
+    diagnostics: Arc<Mutex<service::diagnostics::DiagnosticsServices>>,
 }
 
 // Begin and end range are inclusive.
@@ -174,10 +176,12 @@ impl UefiDevice {
             time_source,
         } = runtime_deps;
 
-        // Create diagnostics service separately to register a watchdog callback.
-        let diagnostics = service::diagnostics::DiagnosticsServices::new();
+        // Create diagnostics serparately since it will be shared.
+        let diagnostics = Arc::new(Mutex::new(service::diagnostics::DiagnosticsServices::new()));
+
+        // Add a watchdog callback to process diagnostics on timeout.
         watchdog_platform.add_callback(Box::new(
-            service::diagnostics::DiagnosticsWatchdogCallback::new(diagnostics, gm.clone()),
+            service::diagnostics::DiagnosticsWatchdogCallback::new(diagnostics.clone(), gm.clone()),
         ));
 
         // Create the UEFI device with the rest of the services.
@@ -207,7 +211,7 @@ impl UefiDevice {
                     generation_id_deps,
                 ),
                 time: service::time::TimeServices::new(time_source),
-                diagnostics: service::diagnostics::DiagnosticsServices::new(),
+                diagnostics,
             },
         };
 
@@ -264,7 +268,7 @@ impl UefiDevice {
             }
             UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
                 tracelimit::info_ratelimited!(?addr, data, "set gpa for diagnostics");
-                self.service.diagnostics.set_gpa(data)
+                self.service.diagnostics.lock().set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
@@ -510,7 +514,7 @@ mod save_restore {
                 watchdog: uefi_watchdog.save()?,
                 generation_id: generation_id.save()?,
                 time: time.save()?,
-                diagnostics: diagnostics.save()?,
+                diagnostics: diagnostics.lock().save()?,
             })
         }
 
@@ -533,7 +537,7 @@ mod save_restore {
             self.service.uefi_watchdog.restore(watchdog)?;
             self.service.generation_id.restore(generation_id)?;
             self.service.time.restore(time)?;
-            self.service.diagnostics.restore(diagnostics)?;
+            self.service.diagnostics.lock().restore(diagnostics)?;
 
             Ok(())
         }

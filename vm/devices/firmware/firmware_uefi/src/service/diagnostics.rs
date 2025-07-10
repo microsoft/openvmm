@@ -17,10 +17,12 @@ use crate::UefiDevice;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
+use parking_lot::Mutex;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::mem::size_of;
+use std::sync::Arc;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
@@ -449,6 +451,7 @@ impl UefiDevice {
         match self
             .service
             .diagnostics
+            .lock()
             .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
         {
             Ok(_) => {}
@@ -464,13 +467,13 @@ impl UefiDevice {
 
 /// Watchdog callback for diagnostics processing
 pub struct DiagnosticsWatchdogCallback {
-    diagnostics: DiagnosticsServices,
+    diagnostics: Arc<Mutex<DiagnosticsServices>>,
     gm: GuestMemory,
 }
 
 impl DiagnosticsWatchdogCallback {
     /// Create a new diagnostics watchdog callback
-    pub fn new(diagnostics: DiagnosticsServices, gm: GuestMemory) -> Self {
+    pub fn new(diagnostics: Arc<Mutex<DiagnosticsServices>>, gm: GuestMemory) -> Self {
         Self { diagnostics, gm }
     }
 }
@@ -480,6 +483,7 @@ impl WatchdogCallback for DiagnosticsWatchdogCallback {
     async fn on_timeout(&mut self) {
         match self
             .diagnostics
+            .lock()
             .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
         {
             Ok(_) => {
