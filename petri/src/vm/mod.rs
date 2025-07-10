@@ -276,6 +276,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Enable confidential filtering, even if the VM is not confidential.
+    pub fn with_confidential_filtering(self) -> Self {
+        if !self.config.firmware.is_openhcl() {
+            panic!("Confidential filtering is only supported for OpenHCL");
+        }
+        self.with_openhcl_command_line(&format!(
+            "{}=1 {}=0",
+            underhill_confidentiality::OPENHCL_CONFIDENTIAL_ENV_VAR_NAME,
+            underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
+        ))
+    }
+
     /// Adds a file to the VM's pipette agent image.
     pub fn with_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
         self.config
@@ -737,16 +749,6 @@ impl Firmware {
         }
     }
 
-    fn is_uefi(&self) -> bool {
-        match self {
-            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => true,
-            Firmware::LinuxDirect { .. }
-            | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::OpenhclPcat { .. } => false,
-        }
-    }
-
     fn is_pcat(&self) -> bool {
         match self {
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => true,
@@ -1030,6 +1032,8 @@ pub enum PetriVmgsResource<T = ()> {
     Reprovision(ResolvedArtifact<T>),
     /// Store guest state in memory
     Ephemeral,
+    /// Use a temporary disk that preserves guest state across reboots
+    TempDisk,
 }
 
 impl<T> PetriVmgsResource<T> {
@@ -1041,6 +1045,7 @@ impl<T> PetriVmgsResource<T> {
             }
             PetriVmgsResource::Reprovision(a) => PetriVmgsResource::Reprovision(a.erase()),
             PetriVmgsResource::Ephemeral => PetriVmgsResource::Ephemeral,
+            PetriVmgsResource::TempDisk => PetriVmgsResource::TempDisk,
         }
     }
 }

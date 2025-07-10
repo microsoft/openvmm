@@ -5448,6 +5448,7 @@ dependencies = [
  "vmbfs_resources",
  "vmbus_serial_resources",
  "vmcore",
+ "vmgs_format",
  "vmgs_resources",
  "vmm_core_defs",
  "vmotherboard",

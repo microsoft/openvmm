@@ -190,5 +190,11 @@ fn mem_diff_vmgs_from_artifact(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsR
             VmgsResource::Reprovision(memdiff_disk_from_artifact(disk)?)
         }
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
+        PetriVmgsResource::TempDisk => VmgsResource::Disk(
+            LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+            })
+            .into_resource(),
+        ),
     })
 }

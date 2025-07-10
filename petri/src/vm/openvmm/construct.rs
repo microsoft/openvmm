@@ -312,14 +312,37 @@ impl PetriVmConfigOpenVmm {
                 vp_count,
                 enable_smt,
                 vps_per_socket,
-                apic_mode: _, // TODO
+                apic_mode,
             } = proc_topology;
 
             ProcessorTopologyConfig {
                 proc_count: *vp_count,
                 vps_per_socket: *vps_per_socket,
                 enable_smt: *enable_smt,
-                arch: None,
+                arch: Some(match arch {
+                    MachineArch::X86_64 => hvlite_defs::config::ArchTopologyConfig::X86(
+                        hvlite_defs::config::X86TopologyConfig {
+                            x2apic: match apic_mode {
+                                None => hvlite_defs::config::X2ApicConfig::Auto,
+                                Some(x) => match x {
+                                    crate::ApicMode::Xapic => {
+                                        hvlite_defs::config::X2ApicConfig::Unsupported
+                                    }
+                                    crate::ApicMode::X2apicSupported => {
+                                        hvlite_defs::config::X2ApicConfig::Supported
+                                    }
+                                    crate::ApicMode::X2apicEnabled => {
+                                        hvlite_defs::config::X2ApicConfig::Enabled
+                                    }
+                                },
+                            },
+                            ..Default::default()
+                        },
+                    ),
+                    MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                        hvlite_defs::config::Aarch64TopologyConfig::default(),
+                    ),
+                }),
             }
         };
 
