@@ -448,6 +448,13 @@ impl DiagnosticsServices {
 impl UefiDevice {
     /// Process the diagnostics buffer and log the entries to tracing
     pub(crate) fn process_diagnostics(&mut self) {
+        // Do not proceed if we have already processed before
+        if self.service.diagnostics.lock().did_process {
+            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
+            return;
+        }
+        self.service.diagnostics.lock().did_process = true;
+
         match self
             .service
             .diagnostics
