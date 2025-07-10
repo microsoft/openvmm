@@ -60,6 +60,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
     type VmmConfig = ();
     type VmRuntime = HyperVPetriRuntime;
 
+    fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
+        arch == MachineArch::host()
+            && firmware.is_linux_direct()
+            && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
+    }
+
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
         HyperVPetriBackend {}
     }
@@ -201,20 +207,22 @@ impl PetriVmmBackend for HyperVPetriBackend {
         }
 
         if let Some(UefiConfig {
+            secure_boot_enabled,
             secure_boot_template,
             disable_frontpage,
         }) = uefi_config
         {
-            if let Some(secure_boot_template) = secure_boot_template {
-                vm.set_secure_boot_template(match secure_boot_template {
+            vm.set_secure_boot(
+                *secure_boot_enabled,
+                secure_boot_template.map(|t| match t {
                     SecureBootTemplate::MicrosoftWindows => {
                         HyperVSecureBootTemplate::MicrosoftWindows
                     }
-                    SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy => {
+                    SecureBootTemplate::MicrosoftUefiCertificateAuthority => {
                         HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority
                     }
-                })?;
-            }
+                }),
+            )?;
 
             if *disable_frontpage {
                 // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
@@ -403,7 +411,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         Ok(HaltReason::PowerOff) // TODO: Get actual halt reason
     }
 
-    async fn connect_to_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+    async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
         let socket = VmSocket::new().context("failed to create AF_HYPERV socket")?;
         socket
             .set_connect_timeout(Duration::from_secs(5))

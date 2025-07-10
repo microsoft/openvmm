@@ -12,7 +12,7 @@ pub mod disk_image;
 mod linux_direct_serial_agent;
 // TODO: Add docs and maybe a trait interface for this, or maybe this can
 // remain crate-local somehow without violating interface privacy.
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod openhcl_diag;
 mod test;
 mod tracing;

@@ -177,7 +177,7 @@ impl PetriVmConfigOpenVmm {
 
         if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().secure_boot_template =
-                get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy;
+                get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority;
         } else {
             self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_uefi_ca();
         }

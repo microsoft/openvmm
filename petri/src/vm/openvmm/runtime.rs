@@ -50,15 +50,42 @@ pub struct PetriVmOpenVmm {
 #[async_trait]
 impl PetriVmRuntime for PetriVmOpenVmm {
     async fn teardown(self) -> anyhow::Result<()> {
-        Self::teardown(self).await
+        tracing::info!("cancelling watchdogs");
+        futures::future::join_all(self.inner.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
+
+        tracing::info!("Cancelled watchdogs, waiting for worker");
+        let worker = Arc::into_inner(self.inner.worker)
+            .expect("Watchdog task was cancelled, we should be the only ref left");
+        worker.shutdown().await?;
+
+        tracing::info!("Worker quit, waiting for mesh");
+        self.inner.mesh.shutdown().await;
+
+        tracing::info!("Mesh shutdown, waiting for logging tasks");
+        for t in self.inner.resources.log_stream_tasks {
+            t.await?;
+        }
+
+        Ok(())
     }
 
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        Self::wait_for_halt(self).await
+        let halt_reason = if let Some(already) = self.halt.already_received.take() {
+            already.map_err(anyhow::Error::from)
+        } else {
+            self.halt
+                .halt_notif
+                .recv()
+                .await
+                .context("Failed to get halt reason")
+        }?;
+
+        tracing::info!(?halt_reason, "Got halt reason");
+        Ok(halt_reason)
     }
 
-    async fn connect_to_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
-        Self::connect_to_agent(self, set_high_vtl).await
+    async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+        Self::wait_for_agent(self, set_high_vtl).await
     }
 
     fn openhcl_diag(&self) -> Option<&OpenHclDiagHandler> {
@@ -122,43 +149,6 @@ impl PetriVmOpenVmm {
             .vtl2_vsock_path
             .as_deref()
             .context("VM is not configured with OpenHCL")
-    }
-
-    /// Wait for the VM to halt, returning the reason for the halt.
-    pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        let halt_reason = if let Some(already) = self.halt.already_received.take() {
-            already.map_err(anyhow::Error::from)
-        } else {
-            self.halt
-                .halt_notif
-                .recv()
-                .await
-                .context("Failed to get halt reason")
-        }?;
-
-        tracing::info!(?halt_reason, "Got halt reason");
-        Ok(halt_reason)
-    }
-
-    /// Cleanly tear down the VM.
-    pub async fn teardown(self) -> anyhow::Result<()> {
-        tracing::info!("cancelling watchdogs");
-        futures::future::join_all(self.inner.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
-
-        tracing::info!("Cancelled watchdogs, waiting for worker");
-        let worker = Arc::into_inner(self.inner.worker)
-            .expect("Watchdog task was cancelled, we should be the only ref left");
-        worker.shutdown().await?;
-
-        tracing::info!("Worker quit, waiting for mesh");
-        self.inner.mesh.shutdown().await;
-
-        tracing::info!("Mesh shutdown, waiting for logging tasks");
-        for t in self.inner.resources.log_stream_tasks {
-            t.await?;
-        }
-
-        Ok(())
     }
 
     /// Wait for the VM to halt, returning the reason for the halt,
@@ -229,11 +219,6 @@ impl PetriVmOpenVmm {
         pub async fn kmsg(&mut self) -> anyhow::Result<KmsgStream>
     );
     petri_vm_fn!(
-        /// Wait for a connection from a pipette agent running in the guest.
-        /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
-        pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>
-    );
-    petri_vm_fn!(
         /// Wait for VTL 2 to report that it is ready to respond to commands.
         /// Will fail if the VM is not running OpenHCL.
         ///
@@ -242,14 +227,8 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
-        /// Wait for a connection from a pipette agent running in VTL 2.
-        /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
-        /// Will fail if the VM is not running OpenHCL.
-        pub async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient>
-    );
-    petri_vm_fn!(
         /// Wait for a connection from a pipette agent
-        pub async fn connect_to_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>
+        pub async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>
     );
     petri_vm_fn!(
         /// Modifies OpenHCL VTL2 settings.
@@ -484,34 +463,11 @@ impl PetriVmInner {
         self.openhcl_diag()?.kmsg().await
     }
 
-    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
-        Self::wait_for_agent_core(
-            &self.resources.driver,
-            &mut self.resources.pipette_listener,
-            &self.resources.output_dir,
-        )
-        .await
-    }
-
     async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
         self.openhcl_diag()?.wait_for_vtl2().await
     }
 
-    async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient> {
-        // VTL 2's pipette doesn't auto launch, only launch it on demand
-        self.launch_vtl2_pipette().await?;
-        Self::wait_for_agent_core(
-            &self.resources.driver,
-            self.resources
-                .vtl2_pipette_listener
-                .as_mut()
-                .context("VM is not configured with VTL 2")?,
-            &self.resources.output_dir,
-        )
-        .await
-    }
-
-    async fn connect_to_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+    async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
         Self::wait_for_agent_core(
             &self.resources.driver,
             if set_high_vtl {
@@ -581,26 +537,6 @@ impl PetriVmInner {
             .unwrap()
             .run_command("mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'")
             .await?;
-        Ok(())
-    }
-
-    async fn launch_vtl2_pipette(&mut self) -> anyhow::Result<()> {
-        // Start pipette through DiagClient
-        let res = self
-            .openhcl_diag()?
-            .run_vtl2_command(
-                "sh",
-                &[
-                    "-c",
-                    "mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'",
-                ],
-            )
-            .await?;
-
-        if !res.exit_status.success() {
-            anyhow::bail!("Failed to start VTL 2 pipette: {:?}", res);
-        }
-
         Ok(())
     }
 

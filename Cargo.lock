@@ -6996,6 +6996,7 @@ dependencies = [
  "petri",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "tracing",
 ]
 
 [[package]]

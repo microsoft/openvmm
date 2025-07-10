@@ -178,7 +178,10 @@ async fn openhcl_tmks_inner<T: PetriVmmBackend>(
     Ok(())
 }
 
-petri::test!(openhcl_tmks, resolve_openhcl_tmks::<OpenVmmPetriBackend>);
+petri::test!(
+    openvmm_openhcl_tmks,
+    resolve_openhcl_tmks::<OpenVmmPetriBackend>
+);
 
 struct OpenhclTmkArtifacts<T: PetriVmmBackend> {
     vm: petri::PetriVmArtifacts<T>,
@@ -190,6 +193,11 @@ fn resolve_openhcl_tmks<T: PetriVmmBackend>(
     resolver: &petri::ArtifactResolver<'_>,
 ) -> Option<OpenhclTmkArtifacts<T>> {
     let arch = MachineArch::host();
+    if MachineArch::host() != MachineArch::X86_64 {
+        // TODO: aarch64 currently hangs, fix
+        return None;
+    }
+
     let (igvm_path, tmk_vmm, tmk) = resolve_paravisor_tmk_artifacts(resolver, arch);
 
     let vm = petri::PetriVmArtifacts::new(
@@ -207,7 +215,7 @@ fn resolve_openhcl_tmks<T: PetriVmmBackend>(
     Some(OpenhclTmkArtifacts { vm, tmk_vmm, tmk })
 }
 
-fn openhcl_tmks(
+fn openvmm_openhcl_tmks(
     params: petri::PetriTestParams<'_>,
     artifacts: OpenhclTmkArtifacts<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
@@ -220,12 +228,13 @@ fn openhcl_tmks(
                 vp_count: 1,
                 ..Default::default()
             })
-            .modify_backend(
-                |b| b.with_allow_early_vtl0_access(true), // TODO: remove once the TMK VMM initializes memory properly.
-            )
+            // TODO: remove once the TMK VMM initializes memory properly.
+            // and unify test functions into one generic function
+            .modify_backend(|b| b.with_allow_early_vtl0_access(true))
             .run_without_agent()
             .await?;
 
+        tracing::info!("started vm");
         openhcl_tmks_inner(&driver, &params, &mut vm).await?;
 
         Ok(())
@@ -242,7 +251,7 @@ mod hyperv {
     use petri::ProcessorTopology;
     use petri::hyperv::HyperVPetriBackend;
 
-    fn openhcl_tmks(
+    fn hyperv_openhcl_tmks(
         params: petri::PetriTestParams<'_>,
         artifacts: OpenhclTmkArtifacts<HyperVPetriBackend>,
     ) -> anyhow::Result<()> {
@@ -258,11 +267,15 @@ mod hyperv {
                 .run_without_agent()
                 .await?;
 
+            tracing::info!("started vm");
             openhcl_tmks_inner(&driver, &params, &mut vm).await?;
 
             Ok(())
         })
     }
 
-    petri::test!(openhcl_tmks, resolve_openhcl_tmks::<HyperVPetriBackend>);
+    petri::test!(
+        hyperv_openhcl_tmks,
+        resolve_openhcl_tmks::<HyperVPetriBackend>
+    );
 }

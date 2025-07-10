@@ -175,7 +175,7 @@ impl PetriVmConfigOpenVmm {
             ged_send,
             mut vtl2_settings,
             vtl2_vsock_path,
-        ) = if let Some(OpenHclConfig { vmbus_redirect, .. }) = firmware.openhcl_config() {
+        ) = if firmware.is_openhcl() {
             let (ged, ged_send) = setup.config_openhcl_vmbus_devices(
                 &mut emulated_serial_config,
                 &mut devices,
@@ -192,7 +192,7 @@ impl PetriVmConfigOpenVmm {
                     vsock_listener: Some(vtl2_vsock_listener),
                     vsock_path: Some(vtl2_vsock_path.to_string_lossy().into_owned()),
                     vmbus_max_version: None,
-                    vtl2_redirect: *vmbus_redirect,
+                    vtl2_redirect: false,
                     #[cfg(windows)]
                     vmbusproxy_handle: None,
                 }),
@@ -323,37 +323,31 @@ impl PetriVmConfigOpenVmm {
             }
         };
 
-        let (secure_boot_enabled, custom_uefi_vars) = if let Firmware::Uefi {
-            uefi_config:
-                UefiConfig {
-                    secure_boot_template: Some(secure_boot_template),
-                    ..
-                },
-            ..
-        } = firmware
-        {
-            (
-                true,
-                match (arch, secure_boot_template) {
-                    (MachineArch::X86_64, SecureBootTemplate::MicrosoftWindows) => {
-                        hyperv_secure_boot_templates::x64::microsoft_windows()
-                    }
-                    (
-                        MachineArch::X86_64,
-                        SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy,
-                    ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
-                    (MachineArch::Aarch64, SecureBootTemplate::MicrosoftWindows) => {
-                        hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                    }
-                    (
-                        MachineArch::Aarch64,
-                        SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy,
-                    ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
-                },
-            )
-        } else {
-            (false, Default::default())
-        };
+        let (secure_boot_enabled, custom_uefi_vars) = firmware.uefi_config().map_or_else(
+            || (false, Default::default()),
+            |c| {
+                (
+                    c.secure_boot_enabled,
+                    match (arch, c.secure_boot_template) {
+                        (MachineArch::X86_64, Some(SecureBootTemplate::MicrosoftWindows)) => {
+                            hyperv_secure_boot_templates::x64::microsoft_windows()
+                        }
+                        (
+                            MachineArch::X86_64,
+                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
+                        ) => hyperv_secure_boot_templates::x64::microsoft_uefi_ca(),
+                        (MachineArch::Aarch64, Some(SecureBootTemplate::MicrosoftWindows)) => {
+                            hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                        }
+                        (
+                            MachineArch::Aarch64,
+                            Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority),
+                        ) => hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca(),
+                        (_, None) => Default::default(),
+                    },
+                )
+            },
+        );
 
         let vmgs = if let Firmware::Uefi { vmgs_file, .. } = firmware {
             Some(mem_diff_vmgs_from_artifact(vmgs_file)?)
@@ -390,7 +384,7 @@ impl PetriVmConfigOpenVmm {
                 vsock_listener: Some(vmbus_vsock_listener),
                 vsock_path: Some(vmbus_vsock_path.to_string_lossy().into_owned()),
                 vmbus_max_version: None,
-                vtl2_redirect: false,
+                vtl2_redirect: firmware.openhcl_config().is_some_and(|c| c.vmbus_redirect),
                 #[cfg(windows)]
                 vmbusproxy_handle: None,
             }),
@@ -637,6 +631,7 @@ impl PetriVmConfigSetupCore<'_> {
                     vmgs_file: _, // new
                     uefi_config:
                         UefiConfig {
+                            secure_boot_enabled: _,  // new
                             secure_boot_template: _, // new
                             disable_frontpage,
                         },
@@ -916,6 +911,7 @@ impl PetriVmConfigSetupCore<'_> {
 
         let (
             UefiConfig {
+                secure_boot_enabled,
                 secure_boot_template,
                 disable_frontpage,
             },
@@ -958,13 +954,13 @@ impl PetriVmConfigSetupCore<'_> {
             guest_request_recv,
             enable_tpm: false,
             firmware_event_send: Some(firmware_event_send.clone()),
-            secure_boot_enabled: secure_boot_template.is_some(),
+            secure_boot_enabled: *secure_boot_enabled,
             secure_boot_template: match secure_boot_template {
                 Some(SecureBootTemplate::MicrosoftWindows) => {
                     get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows
                 }
-                Some(SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy) => {
-                    get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy
+                Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority) => {
+                    get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority
                 }
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },

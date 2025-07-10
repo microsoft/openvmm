@@ -83,6 +83,12 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
 
+    fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
+        arch == MachineArch::host()
+            && !(firmware.is_openhcl() && arch == MachineArch::Aarch64)
+            && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
+    }
+
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
         OpenVmmPetriBackend {
             openvmm_path: resolver
@@ -103,7 +109,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
             config = f(config);
         }
 
-        config.run_with_lazy_pipette().await
+        config.run().await
     }
 }
 

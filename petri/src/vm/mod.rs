@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::GuestQuirks;
+use petri_artifacts_common::tags::IsOpenhclIgvm;
 use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
@@ -50,7 +51,7 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         firmware: Firmware,
         arch: MachineArch,
     ) -> Option<Self> {
-        if arch != MachineArch::host() {
+        if !T::check_compat(&firmware, arch) {
             return None;
         }
         Some(Self {
@@ -112,6 +113,10 @@ pub trait PetriVmmBackend {
 
     /// Runtime object
     type VmRuntime: PetriVmRuntime;
+
+    /// Check whether the combination of firmware and architecture is
+    /// supported on the VMM.
+    fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool;
 
     /// Resolve any artifacts needed to use this backend
     fn new(resolver: &ArtifactResolver<'_>) -> Self;
@@ -199,7 +204,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     // TODO: Make sure all of the below are parsed in openvmm construct
 
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
-    pub fn with_secure_boot(self) -> Self {
+    pub fn with_secure_boot(mut self) -> Self {
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("Secure boot is only supported for UEFI firmware.")
+            .secure_boot_enabled = true;
+
         match self.os_flavor() {
             OsFlavor::Windows => self.with_windows_secure_boot_template(),
             OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(),
@@ -212,35 +223,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Inject Windows secure boot templates into the VM's UEFI.
     pub fn with_windows_secure_boot_template(mut self) -> Self {
-        match &mut self.config.firmware {
-            Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
-                uefi_config.secure_boot_template = Some(SecureBootTemplate::MicrosoftWindows);
-            }
-            Firmware::LinuxDirect { .. }
-            | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::OpenhclPcat { .. } => {
-                panic!("Secure boot is only supported for UEFI firmware.")
-            }
-        }
-
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("Secure boot is only supported for UEFI firmware.")
+            .secure_boot_template = Some(SecureBootTemplate::MicrosoftWindows);
         self
     }
 
     /// Inject UEFI CA secure boot templates into the VM's UEFI.
     pub fn with_uefi_ca_secure_boot_template(mut self) -> Self {
-        match &mut self.config.firmware {
-            Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
-                uefi_config.secure_boot_template =
-                    Some(SecureBootTemplate::MicrosoftUefiCertificateAuthoritiy);
-            }
-            Firmware::LinuxDirect { .. }
-            | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::OpenhclPcat { .. } => {
-                panic!("Secure boot is only supported for UEFI firmware.")
-            }
-        }
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("Secure boot is only supported for UEFI firmware.")
+            .secure_boot_template = Some(SecureBootTemplate::MicrosoftUefiCertificateAuthority);
         self
     }
 
@@ -251,12 +248,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Sets a custom OpenHCL IGVM file to use.
-    pub fn with_custom_openhcl(mut self, artifact: ResolvedArtifact) -> Self {
+    pub fn with_custom_openhcl<O: IsOpenhclIgvm>(mut self, artifact: ResolvedArtifact<O>) -> Self {
         match &mut self.config.firmware {
             Firmware::OpenhclLinuxDirect { igvm_path, .. }
             | Firmware::OpenhclPcat { igvm_path, .. }
             | Firmware::OpenhclUefi { igvm_path, .. } => {
-                *igvm_path = artifact;
+                *igvm_path = artifact.erase();
             }
             Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
                 panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
@@ -267,16 +264,15 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Sets the command line for the paravisor.
     pub fn with_openhcl_command_line(mut self, additional_command_line: &str) -> Self {
-        match &mut self.config.firmware {
-            Firmware::OpenhclLinuxDirect { openhcl_config, .. }
-            | Firmware::OpenhclPcat { openhcl_config, .. }
-            | Firmware::OpenhclUefi { openhcl_config, .. } => {
-                append_cmdline(&mut openhcl_config.command_line, additional_command_line);
-            }
-            Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
-                panic!("OpenHCL command line is only supported for OpenHCL firmware.")
-            }
-        }
+        append_cmdline(
+            &mut self
+                .config
+                .firmware
+                .openhcl_config_mut()
+                .expect("OpenHCL command line is only supported for OpenHCL firmware.")
+                .command_line,
+            additional_command_line,
+        );
         self
     }
 
@@ -302,32 +298,21 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Sets whether UEFI frontpage is enabled.
     pub fn with_uefi_frontpage(mut self, enable: bool) -> Self {
-        match &mut self.config.firmware {
-            Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
-                uefi_config.disable_frontpage = !enable;
-            }
-            Firmware::LinuxDirect { .. }
-            | Firmware::OpenhclLinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::OpenhclPcat { .. } => {
-                panic!("UEFI frontpage is only supported for UEFI firmware.")
-            }
-        }
+        self.config
+            .firmware
+            .uefi_config_mut()
+            .expect("UEFI frontpage is only supported for UEFI firmware.")
+            .disable_frontpage = !enable;
         self
     }
 
     /// Run the VM with Enable VMBus relay enabled
     pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
-        match &mut self.config.firmware {
-            Firmware::OpenhclLinuxDirect { openhcl_config, .. }
-            | Firmware::OpenhclPcat { openhcl_config, .. }
-            | Firmware::OpenhclUefi { openhcl_config, .. } => {
-                openhcl_config.vmbus_redirect = enable;
-            }
-            Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } | Firmware::Pcat { .. } => {
-                panic!("VMBus redirection is only supported for OpenHCL firmware.")
-            }
-        }
+        self.config
+            .firmware
+            .openhcl_config_mut()
+            .expect("VMBus redirection is only supported for OpenHCL firmware.")
+            .vmbus_redirect = enable;
         self
     }
 
@@ -391,7 +376,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for a connection from a pipette agent running in the guest.
     /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
     pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
-        self.runtime.connect_to_agent(false).await
+        self.runtime.wait_for_agent(false).await
     }
 
     /// Wait for a connection from a pipette agent running in VTL 2.
@@ -400,7 +385,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     pub async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient> {
         // VTL 2's pipette doesn't auto launch, only launch it on demand
         self.launch_vtl2_pipette().await?;
-        self.runtime.connect_to_agent(true).await
+        self.runtime.wait_for_agent(true).await
     }
 
     /// Waits for an event emitted by the firmware about its boot status, and
@@ -471,7 +456,7 @@ pub trait PetriVmRuntime {
     /// Wait for the VM to halt, returning the reason for the halt.
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason>;
     /// Wait for a connection from a pipette agent
-    async fn connect_to_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>;
+    async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>;
     /// Get an OpenHCL diagnostics handler for the VM
     fn openhcl_diag(&self) -> Option<&OpenHclDiagHandler>;
     /// Waits for an event emitted by the firmware about its boot status, and
@@ -545,6 +530,8 @@ impl Default for MemoryTopology {
 /// UEFI firmware configuration
 #[derive(Debug)]
 pub struct UefiConfig {
+    /// Enable secure boot
+    pub secure_boot_enabled: bool,
     /// Secure boot template
     pub secure_boot_template: Option<SecureBootTemplate>,
     /// Disable the UEFI frontpage which will cause the VM to shutdown instead when unable to boot.
@@ -554,6 +541,7 @@ pub struct UefiConfig {
 impl Default for UefiConfig {
     fn default() -> Self {
         Self {
+            secure_boot_enabled: false,
             secure_boot_template: None,
             disable_frontpage: true,
         }
@@ -759,6 +747,16 @@ impl Firmware {
         }
     }
 
+    fn is_pcat(&self) -> bool {
+        match self {
+            Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => true,
+            Firmware::Uefi { .. }
+            | Firmware::OpenhclUefi { .. }
+            | Firmware::LinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. } => false,
+        }
+    }
+
     fn os_flavor(&self) -> OsFlavor {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => OsFlavor::Linux,
@@ -846,6 +844,39 @@ impl Firmware {
             | Firmware::OpenhclUefi { openhcl_config, .. }
             | Firmware::OpenhclPcat { openhcl_config, .. } => Some(openhcl_config),
             Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
+        }
+    }
+
+    fn openhcl_config_mut(&mut self) -> Option<&mut OpenHclConfig> {
+        match self {
+            Firmware::OpenhclLinuxDirect { openhcl_config, .. }
+            | Firmware::OpenhclUefi { openhcl_config, .. }
+            | Firmware::OpenhclPcat { openhcl_config, .. } => Some(openhcl_config),
+            Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
+        }
+    }
+
+    fn uefi_config(&self) -> Option<&UefiConfig> {
+        match self {
+            Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
+                Some(uefi_config)
+            }
+            Firmware::LinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::Pcat { .. }
+            | Firmware::OpenhclPcat { .. } => None,
+        }
+    }
+
+    fn uefi_config_mut(&mut self) -> Option<&mut UefiConfig> {
+        match self {
+            Firmware::Uefi { uefi_config, .. } | Firmware::OpenhclUefi { uefi_config, .. } => {
+                Some(uefi_config)
+            }
+            Firmware::LinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::Pcat { .. }
+            | Firmware::OpenhclPcat { .. } => None,
         }
     }
 }
@@ -1020,7 +1051,7 @@ pub enum SecureBootTemplate {
     /// The Microsoft Windows template.
     MicrosoftWindows,
     /// The Microsoft UEFI certificate authority template.
-    MicrosoftUefiCertificateAuthoritiy,
+    MicrosoftUefiCertificateAuthority,
 }
 
 fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {

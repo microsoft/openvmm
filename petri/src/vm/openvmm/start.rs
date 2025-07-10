@@ -27,7 +27,6 @@ use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::io::Write;
 use std::path::PathBuf;
@@ -155,23 +154,9 @@ impl PetriVmConfigOpenVmm {
         Ok(vm)
     }
 
-    /// Build and boot the requested VM. Does not configure and start pipette.
-    /// Should only be used for testing platforms that pipette does not support.
-    pub async fn run_without_agent(self) -> anyhow::Result<PetriVmOpenVmm> {
-        self.run_core().await
-    }
-
-    /// Run the VM, launching pipette and returning a client to it.
-    pub async fn run(self) -> anyhow::Result<(PetriVmOpenVmm, PipetteClient)> {
-        let mut vm = self.run_with_lazy_pipette().await?;
-        let client = vm.wait_for_agent().await?;
-        Ok((vm, client))
-    }
-
-    /// Run the VM, configuring pipette to automatically start, but do not wait
-    /// for it to connect. This is useful for tests where the first boot attempt
-    /// is expected to not succeed, but pipette functionality is still desired.
-    pub async fn run_with_lazy_pipette(mut self) -> anyhow::Result<PetriVmOpenVmm> {
+    /// Run the VM, configuring pipette to automatically start if it is
+    /// included in the config
+    pub async fn run(mut self) -> anyhow::Result<PetriVmOpenVmm> {
         let launch_linux_direct_pipette = if let Some(agent_image) = &self.resources.agent_image {
             const CIDATA_SCSI_INSTANCE: Guid = guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
 
