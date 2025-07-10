@@ -168,12 +168,19 @@ impl UefiDevice {
             nvram_storage,
             logger,
             vmtime,
-            watchdog_platform,
+            mut watchdog_platform,
             generation_id_deps,
             vsm_config,
             time_source,
         } = runtime_deps;
 
+        // Create diagnostics service separately to register a watchdog callback.
+        let diagnostics = service::diagnostics::DiagnosticsServices::new();
+        watchdog_platform.add_callback(Box::new(
+            service::diagnostics::DiagnosticsWatchdogCallback::new(diagnostics, gm.clone()),
+        ));
+
+        // Create the UEFI device with the rest of the services.
         let uefi = UefiDevice {
             use_mmio: cfg.use_mmio,
             command_set: cfg.command_set,
@@ -203,6 +210,7 @@ impl UefiDevice {
                 diagnostics: service::diagnostics::DiagnosticsServices::new(),
             },
         };
+
         Ok(uefi)
     }
 
@@ -254,7 +262,10 @@ impl UefiDevice {
                     );
                 }
             }
-            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => self.service.diagnostics.set_gpa(data),
+            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
+                tracelimit::info_ratelimited!(?addr, data, "set gpa for diagnostics");
+                self.service.diagnostics.set_gpa(data)
+            }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }

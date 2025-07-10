@@ -30,6 +30,7 @@ use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
+use watchdog_core::platform::WatchdogCallback;
 use zerocopy::FromBytes;
 
 /// 8-byte alignment for every entry
@@ -100,6 +101,36 @@ fn phase_to_string(phase: u16) -> &'static str {
         .find(|&&(phase_raw, _)| phase_raw == phase)
         .map(|&(_, name)| name)
         .unwrap_or("UNKNOWN")
+}
+
+/// Defines how we want EfiDiagnosticsLog entries to be handled.
+pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
+    let debug_level_str = debug_level_to_string(log.debug_level);
+    let phase_str = phase_to_string(log.phase);
+
+    match log.debug_level {
+        DEBUG_WARN => tracing::warn!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        DEBUG_ERROR => tracing::error!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        _ => tracing::info!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+    }
 }
 
 /// Errors that occur when parsing entries
@@ -415,50 +446,49 @@ impl DiagnosticsServices {
 impl UefiDevice {
     /// Process the diagnostics buffer and log the entries to tracing
     pub(crate) fn process_diagnostics(&mut self) {
-        // Do not proceed if we have already processed before
-        if self.service.diagnostics.did_process {
-            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
-            return;
-        }
-        self.service.diagnostics.did_process = true;
-
-        // Process diagnostics logs and send each directly to tracing
         match self
             .service
             .diagnostics
-            .process_diagnostics(&self.gm, |log| {
-                let debug_level_str = debug_level_to_string(log.debug_level);
-                let phase_str = phase_to_string(log.phase);
-
-                match log.debug_level {
-                    DEBUG_WARN => tracing::warn!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                    DEBUG_ERROR => tracing::error!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                    _ => tracing::info!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                }
-            }) {
+            .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
+        {
             Ok(_) => {}
             Err(error) => {
-                tracelimit::error_ratelimited!(
+                tracing::error!(
                     error = &error as &dyn std::error::Error,
-                    "Failed to process diagnostics buffer"
+                    "failed to process diagnostics buffer"
+                );
+            }
+        }
+    }
+}
+
+/// Watchdog callback for diagnostics processing
+pub struct DiagnosticsWatchdogCallback {
+    diagnostics: DiagnosticsServices,
+    gm: GuestMemory,
+}
+
+impl DiagnosticsWatchdogCallback {
+    /// Create a new diagnostics watchdog callback
+    pub fn new(diagnostics: DiagnosticsServices, gm: GuestMemory) -> Self {
+        Self { diagnostics, gm }
+    }
+}
+
+#[async_trait::async_trait]
+impl WatchdogCallback for DiagnosticsWatchdogCallback {
+    async fn on_timeout(&mut self) {
+        match self
+            .diagnostics
+            .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
+        {
+            Ok(_) => {
+                tracing::info!("Processed EFI Diagnostics successfully on watchdog timeout");
+            }
+            Err(error) => {
+                tracing::error!(
+                    error = &error as &dyn std::error::Error,
+                    "failed to process EfiDiagnostics on timeout"
                 );
             }
         }

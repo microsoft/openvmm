@@ -25,7 +25,7 @@ use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
 #[async_trait::async_trait]
 pub trait WatchdogCallback: Send + Sync {
     /// Called when the watchdog timer expires
-    async fn on_timeout(&self);
+    async fn on_timeout(&mut self);
 }
 
 /// Blanket implementation of [`WatchdogCallback`] for closures.
@@ -37,7 +37,7 @@ impl<F> WatchdogCallback for F
 where
     F: Fn() + Send + Sync,
 {
-    async fn on_timeout(&self) {
+    async fn on_timeout(&mut self) {
         self();
     }
 }
@@ -94,7 +94,7 @@ impl WatchdogPlatform for BaseWatchdogPlatform {
         }
 
         // Invoke all callbacks
-        for callback in &self.callbacks {
+        for callback in &mut self.callbacks {
             callback.on_timeout().await;
         }
     }
