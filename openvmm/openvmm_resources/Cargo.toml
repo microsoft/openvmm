@@ -35,6 +35,7 @@ serial_socket.workspace = true
 # Disks
 disk_blob = { workspace = true, optional = true }
 disk_crypt = { workspace = true, optional = true }
+disk_delay.workspace = true
 disk_file.workspace = true
 disk_layered.workspace = true
 disk_prwrap.workspace = true
