@@ -525,6 +525,7 @@ enum ProtocolState {
 
 struct ReadyState {
     send_device: bool,
+    send_completion: Option<u64>,
     vpci_version: protocol::ProtocolVersion,
 }
 
@@ -566,6 +567,7 @@ impl<T: RingMem> VpciChannelState<T> {
                             self.state = ProtocolState::Ready(ReadyState {
                                 vpci_version: version,
                                 send_device: false,
+                                send_completion: None,
                             });
                         }
                     } else {
@@ -639,6 +641,10 @@ impl ReadyState {
                 self.send_child_device(conn, dev).await?;
                 self.send_device = false;
             }
+            if let Some(transaction_id) = self.send_completion {
+                conn.send_completion(Some(transaction_id), &protocol::Status::SUCCESS, &[])?;
+                self.send_completion = None;
+            }
 
             // Don't pull a packets off the ring until there is space for its completion.
             conn.wait_for_completion_space().await?;
@@ -688,8 +694,9 @@ impl ReadyState {
             }
             PacketData::FdoD0Entry { mmio_start } => {
                 dev.config_space.map(mmio_start);
-                conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
                 self.send_device = true;
+                // Send the completion after the device has been sent.
+                self.send_completion = transaction_id;
             }
             PacketData::FdoD0Exit => {
                 dev.config_space.unmap();
@@ -1055,11 +1062,16 @@ impl VpciConfigSpace {
     }
 
     fn map(&mut self, addr: u64) {
+        tracing::debug!(addr, "mapping config space");
         self.offset.0.store(addr, Ordering::Relaxed);
         self.control_mmio.map(addr);
     }
 
     fn unmap(&mut self) {
+        tracing::debug!(
+            addr = self.offset.0.load(Ordering::Relaxed),
+            "unmapping config space"
+        );
         // Note that there may be some current accessors that this will not
         // flush out synchronously. The MMIO implementation in bus.rs must be
         // careful to ignore reads/writes that are not to an expected address.
@@ -1073,7 +1085,7 @@ impl VpciConfigSpace {
 /// PCI Config space offset structure
 #[derive(Debug, Clone, Inspect)]
 #[inspect(transparent)]
-pub struct VpciConfigSpaceOffset(Arc<AtomicU64>);
+pub struct VpciConfigSpaceOffset(#[inspect(hex)] Arc<AtomicU64>);
 
 impl VpciConfigSpaceOffset {
     const INVALID: u64 = !0;
@@ -1391,7 +1403,7 @@ mod tests {
             }
         }
 
-        async fn power_on(&mut self, base_address: u64) {
+        async fn initiate_power_on(&mut self, base_address: u64) -> u64 {
             let power_on = protocol::FdoD0Entry {
                 message_type: protocol::MessageType::FDO_D0_ENTRY,
                 padding: 0,
@@ -1401,15 +1413,7 @@ mod tests {
             self.write_packet(Some(transaction_id), &power_on)
                 .await
                 .unwrap();
-
-            let mut pkt_info = ReadPacketInfo::None;
-            let status: protocol::Status = self.read_packet(&mut pkt_info).await.unwrap();
-            if let ReadPacketInfo::Completion(id) = pkt_info {
-                assert_eq!(id, transaction_id);
-                assert_eq!(status, protocol::Status::SUCCESS);
-            } else {
-                panic!("Unexpected D0 (power on) reply");
-            }
+            transaction_id
         }
 
         fn verify_device_relations2(&self, message: &Relations2) {
@@ -1432,7 +1436,7 @@ mod tests {
 
         async fn start_device(&mut self, base_address: u64) {
             self.negotiate_version().await;
-            self.power_on(base_address).await;
+            let transaction_id = self.initiate_power_on(base_address).await;
             let mut pkt_info = ReadPacketInfo::None;
             let relations: Relations2 = self.read_packet(&mut pkt_info).await.unwrap();
             if let ReadPacketInfo::NewTransaction = pkt_info {
@@ -1443,6 +1447,15 @@ mod tests {
                 self.verify_device_relations2(&relations);
             } else {
                 panic!("Expecting QueryBusRelations2 message in response to version.");
+            }
+
+            let mut pkt_info = ReadPacketInfo::None;
+            let status: protocol::Status = self.read_packet(&mut pkt_info).await.unwrap();
+            if let ReadPacketInfo::Completion(id) = pkt_info {
+                assert_eq!(id, transaction_id);
+                assert_eq!(status, protocol::Status::SUCCESS);
+            } else {
+                panic!("Unexpected D0 (power on) reply");
             }
         }
 
