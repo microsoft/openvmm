@@ -1241,6 +1241,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk_delay"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "disk_backend",
+ "disk_backend_resources",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "scsi_buffers",
+ "vm_resource",
+ "vmcore",
+]
+
+[[package]]
 name = "disk_file"
 version = "0.0.0"
 dependencies = [
