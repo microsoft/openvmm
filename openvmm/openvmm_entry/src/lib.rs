@@ -37,6 +37,7 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
+use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
@@ -86,6 +87,7 @@ use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
 use mesh::CancelContext;
+use mesh::CellUpdater;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
@@ -1573,6 +1575,13 @@ fn disk_open_inner(
         DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
             disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
         )),
+        DiskCliKind::DelayDiskWrapper {
+            delay_ms,
+            disk: inner,
+        } => layers.push(disk(DelayDiskHandle {
+            delay: CellUpdater::new(Duration::from_millis(*delay_ms)).cell(),
+            disk: disk_open(inner, read_only)?,
+        })),
         DiskCliKind::Crypt {
             disk: inner,
             cipher,
