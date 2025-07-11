@@ -4,8 +4,10 @@
 mod hvc;
 pub mod powershell;
 pub mod vm;
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
@@ -253,10 +255,28 @@ impl PetriVmConfigHyperV {
         // Reserve space for the hash suffix
         let max_prefix_length = MAX_VM_NAME_LENGTH - hash_suffix.len();
 
-        // Take the end of the test name to preserve the most specific part
-        let start_pos = test_name.len().saturating_sub(max_prefix_length);
-        let truncated = &test_name[start_pos..];
+        // Split by :: and take full components from the end to avoid cutting words
+        let parts: Vec<&str> = test_name.split("::").collect();
+        let mut result_parts = Vec::new();
+        let mut current_length = 0;
 
+        // Work backwards through the parts to preserve the most specific components
+        for part in parts.iter().rev() {
+            let part_with_separator = if result_parts.is_empty() {
+                part.len()
+            } else {
+                part.len() + 2 // Add 2 for "::"
+            };
+
+            if current_length + part_with_separator <= max_prefix_length {
+                result_parts.insert(0, *part);
+                current_length += part_with_separator;
+            } else {
+                break;
+            }
+        }
+
+        let truncated = result_parts.join("::");
         format!("{}{}", truncated, hash_suffix)
     }
 
@@ -818,17 +838,21 @@ mod tests {
         let short_name = "test::short_name";
         assert_eq!(PetriVmConfigHyperV::create_vm_name(short_name), short_name);
 
-        // Test long names are truncated to 100 characters
+        // Test long names are truncated to 100 characters with full components
         let long_name = "multiarch::openhcl_servicing::hyperv_openhcl_uefi_aarch64_ubuntu_2404_server_aarch64_openhcl_servicing";
         let vm_name = PetriVmConfigHyperV::create_vm_name(long_name);
         assert!(vm_name.len() <= 100);
-        assert!(vm_name.len() == 100); // Should be exactly 100 for this case
+        assert!(vm_name.contains("-")); // Should have hash suffix
 
         // Test different long names get different hashes
         let long_name2 = "multiarch::openhcl_servicing::hyperv_openhcl_uefi_aarch64_ubuntu_2404_server_aarch64_openhcl_different";
         let vm_name2 = PetriVmConfigHyperV::create_vm_name(long_name2);
         assert!(vm_name2.len() <= 100);
         assert_ne!(vm_name, vm_name2);
+
+        // Test that full components are preserved (no partial components)
+        assert!(!vm_name.starts_with("::"));
+        assert!(!vm_name2.starts_with("::"));
 
         // Test the most specific part is preserved
         assert!(vm_name.contains("openhcl_servicing"));
