@@ -666,7 +666,7 @@ struct StorvscCompletionPacket {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct StorvscDataPacket {
     transaction_id: Option<u64>,
     request_size: usize,

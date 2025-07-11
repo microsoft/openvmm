@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 //! UEFI specific loader definitions and implementation.
-#![allow(non_camel_case_types)]
 
 pub mod config;
 

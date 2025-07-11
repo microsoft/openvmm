@@ -1590,8 +1590,11 @@ mod tests {
         assert!(DiskCliKind::from_str("sqldiff:path").is_err());
 
         // Missing OPENVMM_AUTO_CACHE_PATH for AutoCacheSqlite
-        #[allow(deprecated_safe_2024)]
-        std::env::remove_var("OPENVMM_AUTO_CACHE_PATH");
+        // SAFETY:
+        // Safe in a testing context because it won't be changed concurrently
+        unsafe {
+            std::env::remove_var("OPENVMM_AUTO_CACHE_PATH");
+        }
         assert!(DiskCliKind::from_str("autocache:key:file:disk.vhd").is_err());
 
         // Invalid blob kind

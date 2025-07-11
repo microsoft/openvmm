@@ -21,7 +21,7 @@ use std::time::Duration;
 use winapi::shared::ntstatus::STATUS_TIMEOUT;
 
 mod ntlpcapi {
-    #![allow(non_snake_case, dead_code, clippy::upper_case_acronyms)]
+    #![expect(non_snake_case, dead_code)]
 
     pub use ntapi::ntlpcapi::*;
     use winapi::shared::ntdef::HANDLE;
