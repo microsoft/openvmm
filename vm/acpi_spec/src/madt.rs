@@ -357,7 +357,7 @@ impl MadtIter<'_> {
     fn parse(&mut self) -> Result<Option<MadtEntry>, ParserError> {
         // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         while let Ok((header, _)) = MadtEntryHeader::read_from_prefix(self.entries) {
-            // TODO: zerocopy: ok (https://github.com/microsoft/openvmm/issues/759)
+            // NOTE: Length validation is correct here
             if self.entries.len() < header.length as usize {
                 return Err(ParserError);
             }
