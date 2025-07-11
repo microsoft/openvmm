@@ -76,10 +76,11 @@ impl PendingCommands {
     const MAX_CIDS: usize = 1 << Self::CID_KEY_BITS;
     const CID_SEQ_OFFSET: Wrapping<u16> = Wrapping(1 << Self::CID_KEY_BITS);
 
-    fn new() -> Self {
+    fn new(qid: u16) -> Self {
         Self {
             commands: Slab::new(),
             next_cid_high_bits: Wrapping(0),
+            qid,
         }
     }
 
@@ -113,7 +114,11 @@ impl PendingCommands {
         assert_eq!(
             command.command.cdw0.cid(),
             cid,
-            "cid sequence number mismatch"
+            "cid sequence number mismatch: queue_id={}, command_opcode={:#x}, expected_cid={:#x}, actual_cid={:#x}",
+            self.qid,
+            command.command.cdw0.opcode(),
+            cid,
+            command.command.cdw0.cid()
         );
         command.respond
     }
@@ -241,7 +246,7 @@ impl QueuePair {
                 QueueHandler {
                     sq: SubmissionQueue::new(qid, sq_entries, sq_mem_block),
                     cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
-                    commands: PendingCommands::new(),
+                    commands: PendingCommands::new(qid),
                     stats: Default::default(),
                     drain_after_restore: false,
                 }
@@ -609,6 +614,7 @@ struct PendingCommands {
     commands: Slab<PendingCommand>,
     #[inspect(hex)]
     next_cid_high_bits: Wrapping<u16>,
+    qid: u16,
 }
 
 #[derive(Inspect)]
