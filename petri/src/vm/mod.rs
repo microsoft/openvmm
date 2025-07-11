@@ -355,6 +355,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self.config.firmware.os_flavor()
     }
 
+    /// Get whether the VM will use OpenHCL
+    pub fn is_openhcl(&self) -> bool {
+        self.config.firmware.is_openhcl()
+    }
+
     /// Get the backend-specific config builder
     pub fn modify_backend(
         mut self,

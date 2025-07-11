@@ -62,7 +62,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
         arch == MachineArch::host()
-            && firmware.is_linux_direct()
+            && !firmware.is_linux_direct()
             && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
     }
 
