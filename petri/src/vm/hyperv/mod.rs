@@ -6,21 +6,13 @@ pub mod powershell;
 pub mod vm;
 
 use std::collections::hash_map::DefaultHasher;
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
 
-use vmsocket::VmAddress;
-use vmsocket::VmSocket;
-
-use super::ProcessorTopology;
-use crate::Firmware;
-use crate::IsolationType;
-use crate::PetriLogSource;
-use crate::PetriTestParams;
-use crate::PetriVm;
-use crate::PetriVmConfig;
-use crate::ShutdownKind;
-use crate::disk_image::AgentImage;
-use crate::openhcl_diag::OpenHclDiagHandler;
 use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
@@ -37,13 +29,21 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
-use std::fs;
-use std::io::Write;
-use std::path::Path;
-use std::path::PathBuf;
-use std::time::Duration;
 use vm::HyperVVM;
 use vmm_core_defs::HaltReason;
+use vmsocket::VmAddress;
+use vmsocket::VmSocket;
+
+use super::ProcessorTopology;
+use crate::Firmware;
+use crate::IsolationType;
+use crate::PetriLogSource;
+use crate::PetriTestParams;
+use crate::PetriVm;
+use crate::PetriVmConfig;
+use crate::ShutdownKind;
+use crate::disk_image::AgentImage;
+use crate::openhcl_diag::OpenHclDiagHandler;
 
 /// Hyper-V VM configuration and resources
 pub struct PetriVmConfigHyperV {
