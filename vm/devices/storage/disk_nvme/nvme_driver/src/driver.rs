@@ -56,6 +56,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     #[inspect(flatten)]
     task: Option<TaskControl<DriverWorkerTask<T>, WorkerState>>,
     device_id: String,
+    controller_instance_id: Option<String>,
     identify: Option<Arc<spec::IdentifyController>>,
     #[inspect(skip)]
     driver: VmTaskDriver,
@@ -248,6 +249,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         Ok(Self {
             device_id: device.id().to_owned(),
+            controller_instance_id: None,
             task: Some(TaskControl::new(DriverWorkerTask {
                 device,
                 driver: driver.clone(),
@@ -555,6 +557,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     // TODO: See the description above, save the vector once resolved.
                     namespaces: vec![],
                     worker_data: s,
+                    controller_instance_id: self.controller_instance_id.clone(),
                 })
             }
             Err(e) => Err(e),
@@ -594,6 +597,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let mut this = Self {
             device_id: device.id().to_owned(),
+            controller_instance_id: saved_state.controller_instance_id.clone(),
             task: Some(TaskControl::new(DriverWorkerTask {
                 device,
                 driver: driver.clone(),
@@ -738,6 +742,16 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
         self.nvme_keepalive = nvme_keepalive;
+    }
+
+    /// Get the controller instance ID, if set.
+    pub fn controller_instance_id(&self) -> Option<String> {
+        self.controller_instance_id.clone()
+    }
+
+    /// Set the controller instance ID.
+    pub fn set_controller_instance_id(&mut self, controller_instance_id: String) {
+        self.controller_instance_id = Some(controller_instance_id);
     }
 }
 
@@ -1051,6 +1065,9 @@ pub mod save_restore {
         /// NVMe driver worker task data.
         #[mesh(4)]
         pub worker_data: NvmeDriverWorkerSavedState,
+        /// Controller instance ID.
+        #[mesh(5)]
+        pub controller_instance_id: Option<String>,
     }
 
     /// Save/restore state for NVMe driver worker task.
