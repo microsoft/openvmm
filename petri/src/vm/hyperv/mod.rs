@@ -276,6 +276,13 @@ impl PetriVmConfigHyperV {
             }
         }
 
+        // If no parts fit, take the last part and truncate it
+        if result_parts.is_empty() && !parts.is_empty() {
+            let last_part = parts.last().unwrap();
+            let truncated_part = &last_part[..max_prefix_length.min(last_part.len())];
+            result_parts.push(truncated_part);
+        }
+
         let truncated = result_parts.join("::");
         format!("{}{}", truncated, hash_suffix)
     }
@@ -877,5 +884,35 @@ mod tests {
             exactly_101.hash(&mut hasher);
             hasher.finish()
         })));
+    }
+
+    #[test]
+    fn test_vm_name_final_component_over_100_chars() {
+        // Test case where the final component itself is longer than 100 characters
+        let long_final_component = "a".repeat(120);
+        let test_name = format!("short::component::{}", long_final_component);
+        let result = PetriVmConfigHyperV::create_vm_name(&test_name);
+
+        // Should still be exactly 100 characters
+        assert_eq!(result.len(), 100);
+
+        // Should have a hash suffix
+        assert!(result.contains("-"));
+
+        // Should handle the situation reasonably (not be empty or malformed)
+        assert!(!result.is_empty());
+        assert!(!result.starts_with("-"));
+
+        // Should contain part of the long component (truncated)
+        assert!(result.starts_with("a"));
+
+        // Edge case: entire name is one very long component without separators
+        let very_long_name = "a".repeat(150);
+        let result2 = PetriVmConfigHyperV::create_vm_name(&very_long_name);
+        assert_eq!(result2.len(), 100);
+        assert!(result2.contains("-"));
+        assert!(!result2.is_empty());
+        assert!(!result2.starts_with("-"));
+        assert!(result2.starts_with("a"));
     }
 }
