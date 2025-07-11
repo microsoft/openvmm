@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8" standalone='yes'?>
+<WindowsPerformanceRecorder Version="1.0" Author="OpenVMM Test Framework" Team="OpenVMM" Company="Microsoft Corporation" Copyright="Microsoft Corporation">
+  <Profiles>
+    <!-- System Collectors -->
+    <SystemCollector Id="SystemCollector_HostTrace" Base="" Realtime="false">
+      <BufferSize Value="1024"/>
+      <Buffers Value="200"/>
+    </SystemCollector>
+
+    <!-- Event Collectors -->
+    <EventCollector Id="EventCollector_HostTrace" Base="" Name="Host Trace Event Collector" Private="false" ProcessPrivate="false" Secure="false" Realtime="false">
+      <BufferSize Value="1024"/>
+      <Buffers Value="100"/>
+    </EventCollector>
+
+    <!-- System Providers -->
+    <SystemProvider Id="SystemProvider_HostTrace" Base="">
+      <Keywords>
+        <Keyword Value="CpuConfig"/>
+        <Keyword Value="Loader"/>
+        <Keyword Value="ProcessThread"/>
+      </Keywords>
+    </SystemProvider>
+
+    <!-- Event Providers for Host Tracing -->
+    
+    <!-- Hyper-V Host Components -->
+    <EventProvider Id="EventProvider_HyperV_VMMS" Name="Microsoft-Windows-Hyper-V-VMMS" NonPagedMemory="true" />
+    <EventProvider Id="EventProvider_HyperV_Worker" Name="Microsoft-Windows-Hyper-V-Worker" NonPagedMemory="true" />
+    <EventProvider Id="EventProvider_HyperV_Hypervisor" Name="Microsoft-Windows-Hyper-V-Hypervisor" NonPagedMemory="true" />
+    <EventProvider Id="EventProvider_HyperV_VID" Name="Microsoft-Windows-Hyper-V-VID" NonPagedMemory="true" />
+    
+    <!-- OpenVMM/HvLite ETW Provider -->
+    <EventProvider Id="EventProvider_OpenVMM" Name="{22bc55fe-2116-5adc-12fb-3fadfd7e360c}" NonPagedMemory="true" Level="5" />
+    
+    <!-- OpenHCL ETW Provider -->
+    <EventProvider Id="EventProvider_OpenHCL" Name="{AA5DE534-D149-487A-9053-05972BA20A7C}" NonPagedMemory="true" Level="5" />
+
+    <!-- Profiles -->
+    <Profile Id="HostTraceProfile.Light.File" Name="HostTraceProfile" Description="Host Trace Collection for OpenVMM Tests" DetailLevel="Light" LoggingMode="File">
+      <Collectors Operation="Add">
+        <SystemCollectorId Value="SystemCollector_HostTrace">
+          <SystemProviderId Value="SystemProvider_HostTrace" />
+        </SystemCollectorId>
+        <EventCollectorId Value="EventCollector_HostTrace">
+          <EventProviders Operation="Add">
+            <EventProviderId Value="EventProvider_HyperV_VMMS" />
+            <EventProviderId Value="EventProvider_HyperV_Worker" />
+            <EventProviderId Value="EventProvider_HyperV_Hypervisor" />
+            <EventProviderId Value="EventProvider_HyperV_VID" />
+            <EventProviderId Value="EventProvider_OpenVMM" />
+            <EventProviderId Value="EventProvider_OpenHCL" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+
+  </Profiles>
+
+  <TraceMergeProperties>
+    <TraceMergeProperty Id="TraceMerge_HostTrace" Name="TraceMerge_HostTrace">
+      <DeletePreMergedTraceFiles Value="true"/>
+      <CustomEvents>
+        <CustomEvent Value="ImageId"/>
+        <CustomEvent Value="BuildInfo"/>
+        <CustomEvent Value="EventMetadata"/>
+        <CustomEvent Value="PerfTrackMetadata"/>
+      </CustomEvents>
+    </TraceMergeProperty>
+  </TraceMergeProperties>
+
+</WindowsPerformanceRecorder>

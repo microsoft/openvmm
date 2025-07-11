@@ -20,7 +20,7 @@ use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use test_macro_support::TESTS;
 
 /// Defines a single test from a value that implements [`RunTest`].
@@ -120,6 +120,7 @@ impl Test {
                 &artifacts,
             )
         }));
+
         let r = r.unwrap_or_else(|err| {
             // The error from `catch_unwind` is almost always either a
             // `&str` or a `String`, since that's what `panic!` produces.
@@ -307,6 +308,50 @@ pub fn test_main(
     }
     args.inner.test_threads = Some(1);
 
+    // Mark this as the parent process for WPR collection
+    std::env::set_var("PETRI_PARENT_PROCESS", "1");
+
+    // Start global host trace collection before running tests
+    let trace_output_dir = if let Some(path) = std::env::var_os("TEST_OUTPUT_PATH") {
+        PathBuf::from(path)
+    } else {
+        // Use the same logic as test_log_directory_path but without per-test subdirectory
+        let repo_root = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.ancestors().nth(3).map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        repo_root.join("vmm_test_results")
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&trace_output_dir) {
+        eprintln!("Warning: failed to create trace output directory: {}", e);
+    }
+
+    #[cfg(windows)]
+    if let Err(e) = crate::host_wpr_trace::start_global_host_trace_collection(&trace_output_dir) {
+        eprintln!(
+            "Warning: failed to start global host trace collection: {}",
+            e
+        );
+    }
+
     let trials = Test::all().map(|test| test.trial(resolve)).collect();
-    libtest_mimic::run(&args.inner, trials).exit()
+    let result = libtest_mimic::run(&args.inner, trials);
+
+    // Stop global host trace collection after all tests complete
+    #[cfg(windows)]
+    if let Err(e) = crate::host_wpr_trace::stop_global_host_trace_collection() {
+        eprintln!(
+            "Warning: failed to stop global host trace collection: {}",
+            e
+        );
+    }
+    // else {
+    //     println!(
+    //         "Host trace collection completed. Trace files available in: {}",
+    //         trace_output_dir.display()
+    //     );
+    // }
+
+    result.exit()
 }
