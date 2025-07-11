@@ -12,6 +12,7 @@ use diag_proto::ExecRequest;
 use diag_proto::ExecResponse;
 use diag_proto::FILE_LINE_MAX;
 use diag_proto::FileRequest;
+use diag_proto::HostFileRequest;
 use diag_proto::KmsgRequest;
 use diag_proto::NetworkPacketCaptureRequest;
 use diag_proto::NetworkPacketCaptureResponse;
@@ -84,6 +85,11 @@ pub enum DiagRequest {
     Resume(FailableRpc<(), ()>),
     /// Save VTL2 state
     Save(FailableRpc<(), Vec<u8>>),
+    /// Get the `vmlinux` image from the host.
+    /// Just experimental, not used in production -- must be signed, even better come inside an IGVM.
+    VmLinux(FailableRpc<Socket, ()>),
+    /// Write the log from the host.
+    SomeLog(FailableRpc<Socket, ()>),
     /// Setup network trace
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
     /// Profile VTL2
@@ -239,6 +245,10 @@ impl DiagServiceHandler {
             }
             UnderhillDiag::DumpSavedState((), response) => response.send(grpc_result(
                 ctx.until_cancelled(self.handle_dump_saved_state()).await,
+            )),
+            UnderhillDiag::HostFile(request, response) => response.send(grpc_result(
+                ctx.until_cancelled(self.handle_host_file_access(driver, &request))
+                    .await,
             )),
         }
     }
@@ -579,6 +589,33 @@ impl DiagServiceHandler {
     ) -> anyhow::Result<()> {
         self.handle_read_file_request(driver, request.conn, request.follow, &request.file_path)
             .await
+    }
+
+    async fn handle_host_file_access(
+        &self,
+        _driver: &(impl Driver + Spawn + Clone),
+        request: &HostFileRequest,
+    ) -> anyhow::Result<()> {
+        let params = self.take_connection(request.conn).await?;
+        match request.id.as_str() {
+            "vmlinux" => {
+                tracing::info!("Reading vmlinux from the host");
+                self.request_send
+                    .call_failable(DiagRequest::VmLinux, params.into_inner())
+                    .await?;
+            }
+            "log" => {
+                tracing::info!("Wring the log from the host");
+                self.request_send
+                    .call_failable(DiagRequest::SomeLog, params.into_inner())
+                    .await?;
+            }
+            _ => {
+                tracing::warn!("Unsupported host file access request: {}", request.id);
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_packet_capture(

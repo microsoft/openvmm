@@ -604,6 +604,26 @@ async fn run_control(
                             })
                             .detach();
                     }
+                    diag_server::DiagRequest::VmLinux(rpc) => {
+                        tracing::info!(CVM_ALLOWED, "reading vmlinux from the host");
+                        let Some(workers) = &mut workers else {
+                            rpc.complete(Err(RemoteError::new(anyhow::anyhow!(
+                                "worker has not been started yet"
+                            ))));
+                            continue;
+                        };
+                        workers.vm_rpc.send(UhVmRpc::VmLinux(rpc));
+                    }
+                    diag_server::DiagRequest::SomeLog(rpc) => {
+                        tracing::info!(CVM_ALLOWED, "writing log to the host");
+                        let Some(workers) = &mut workers else {
+                            rpc.complete(Err(RemoteError::new(anyhow::anyhow!(
+                                "worker has not been started yet"
+                            ))));
+                            continue;
+                        };
+                        workers.vm_rpc.send(UhVmRpc::SomeLog(rpc));
+                    }
                     diag_server::DiagRequest::PacketCapture(rpc) => {
                         let Some(workers) = &mut workers else {
                             rpc.complete(Err(RemoteError::new(anyhow::anyhow!(

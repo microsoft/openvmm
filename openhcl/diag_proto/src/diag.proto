@@ -29,6 +29,7 @@ service UnderhillDiag {
     rpc ReadFile(FileRequest) returns (google.protobuf.Empty);
     rpc DumpSavedState(google.protobuf.Empty) returns (DumpSavedStateResponse);
     rpc PacketCapture(NetworkPacketCaptureRequest) returns (NetworkPacketCaptureResponse);
+    rpc HostFile(HostFileRequest) returns (google.protobuf.Empty);
 }
 
 message ExecRequest {
@@ -105,4 +106,9 @@ message NetworkPacketCaptureResponse {
 
 message CrashRequest {
     int32 pid = 1;
+}
+
+message HostFileRequest {
+    string id = 1;
+    uint64 conn = 2;
 }

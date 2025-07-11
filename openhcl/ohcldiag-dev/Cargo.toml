@@ -14,6 +14,7 @@ inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal.workspace = true
+host_file_access.workspace = true
 term.workspace = true
 
 anyhow.workspace = true
@@ -27,6 +28,7 @@ socket2.workspace = true
 thiserror.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 unicycle.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true

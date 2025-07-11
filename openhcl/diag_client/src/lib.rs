@@ -772,6 +772,27 @@ impl DiagClient {
 
         Ok(state.data)
     }
+
+    /// Connect to the synthetic data endpoint.
+    pub async fn synthetic_data(
+        &self,
+        id: &String,
+    ) -> anyhow::Result<PolledSocket<socket2::Socket>> {
+        let (conn, socket) = self.connect_data().await?;
+        self.ttrpc
+            .call()
+            .start(
+                diag_proto::UnderhillDiag::HostFile,
+                diag_proto::HostFileRequest {
+                    id: id.clone(),
+                    conn,
+                },
+            )
+            .await
+            .map_err(grpc_status)?;
+
+        Ok(socket)
+    }
 }
 
 fn grpc_status(status: Status) -> anyhow::Error {

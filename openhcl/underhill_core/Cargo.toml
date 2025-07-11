@@ -59,6 +59,7 @@ hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save
 get_helpers.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
+host_file_access.workspace = true
 ide.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
@@ -162,6 +163,7 @@ parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_helpers.workspace = true
 serde_json.workspace = true
+sha2 = { workspace = true, features = ["std"] }
 socket2.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 time = { workspace = true, features = ["macros"] }

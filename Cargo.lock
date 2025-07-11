@@ -1041,6 +1041,7 @@ dependencies = [
  "fs-err",
  "futures",
  "guid",
+ "host_file_access",
  "inspect",
  "inspect_proto",
  "mesh_rpc",
@@ -2880,6 +2881,18 @@ dependencies = [
  "inspect",
  "memory_range",
  "tracing",
+]
+
+[[package]]
+name = "host_file_access"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.10.1",
+ "futures",
+ "open_enum",
+ "thiserror 2.0.12",
+ "tracing",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
@@ -4756,6 +4769,7 @@ dependencies = [
  "fs-err",
  "futures",
  "futures-concurrency",
+ "host_file_access",
  "inspect",
  "kmsg",
  "mesh",
@@ -4766,6 +4780,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing-subscriber",
  "unicycle",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
@@ -7520,6 +7535,7 @@ dependencies = [
  "guid",
  "hcl",
  "hcl_compat_uefi_nvram_storage",
+ "host_file_access",
  "hvdef",
  "hyperv_ic_guest",
  "hyperv_ic_resources",
@@ -7567,6 +7583,7 @@ dependencies = [
  "serde_helpers",
  "serde_json",
  "serial_16550_resources",
+ "sha2",
  "socket2",
  "sparse_mmap",
  "state_unit",

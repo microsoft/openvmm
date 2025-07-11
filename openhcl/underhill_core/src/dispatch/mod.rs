@@ -47,10 +47,13 @@ use openhcl_dma_manager::OpenhclDmaManager;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
+use sha2::Digest;
 use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
+use std::io::Read;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -78,6 +81,8 @@ pub enum UhVmRpc {
     Pause(Rpc<(), bool>),
     Resume(Rpc<(), bool>),
     Save(FailableRpc<(), Vec<u8>>),
+    VmLinux(FailableRpc<Socket, ()>),
+    SomeLog(FailableRpc<Socket, ()>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
 }
@@ -354,6 +359,36 @@ impl LoadedVm {
                             network_settings.packet_capture(params).await
                         })
                         .await
+                    }
+                    UhVmRpc::VmLinux(rpc) => {
+                        tracing::info!(CVM_ALLOWED, "reading vmlinux from the host");
+
+                        pal_async::local::block_with_io(async |_| {
+                            rpc.handle_failable::<_, anyhow::Error>(async |socket| {
+                                let mut hfa = host_file_access::HostFileAccess::new(socket);
+                                let mut vmlinux = vec![];
+                                hfa.read_to_end(&mut vmlinux)?;
+
+                                let mut hasher = sha2::Sha256::new();
+                                hasher.update(&vmlinux);
+                                let result = hasher.finalize();
+                                tracing::info!(CVM_ALLOWED, "vmlinux sha256: {:x?}", result);
+                                Ok(())
+                            })
+                            .await
+                        });
+                    }
+                    UhVmRpc::SomeLog(rpc) => {
+                        tracing::info!(CVM_ALLOWED, "writing log to the host");
+
+                        pal_async::local::block_with_io(async |_| {
+                            rpc.handle_failable::<_, anyhow::Error>(async |socket| {
+                                let mut hfa = host_file_access::HostFileAccess::new(socket);
+                                hfa.write_all(b"Hello from underhill!")?;
+                                Ok(())
+                            })
+                            .await
+                        });
                     }
                 },
                 Event::ServicingRequest(message) => {

@@ -16,6 +16,7 @@ inspect.workspace = true
 mesh_rpc.workspace = true
 unix_socket.workspace = true
 pal_async.workspace = true
+host_file_access.workspace = true
 vmsocket.workspace = true
 
 anyhow.workspace = true

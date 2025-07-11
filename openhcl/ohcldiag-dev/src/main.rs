@@ -157,6 +157,24 @@ enum Command {
         #[clap(long, requires = "serial")]
         pipe_path: Option<String>,
     },
+    /// Requests data by the string ID, providing the ability to download
+    /// synthetized data such that requires seeks within the file.
+    HostFile {
+        /// The ID of the data to synthesize.
+        #[clap(short, long)]
+        id: String,
+        /// The output file path.
+        dst: PathBuf,
+        /// Maximum data size the host allows.
+        #[clap(short, long)]
+        size_limit: Option<usize>,
+        /// Allow existing file.
+        #[clap(short, long, default_value = "false")]
+        existing: bool,
+        /// Allow writing to the file.
+        #[clap(short, long, default_value = "false")]
+        write: bool,
+    },
     /// Writes the contents of the file.
     File {
         /// Keep waiting for and writing new data as its logged.
@@ -872,6 +890,41 @@ pub fn main() -> anyhow::Result<()> {
                 let client = new_client(driver.clone(), &vm)?;
                 let mut file = create_or_stderr(&output)?;
                 file.write_all(&client.dump_saved_state().await?)?;
+            }
+            Command::HostFile {
+                id,
+                dst,
+                size_limit,
+                existing,
+                write,
+            } => {
+                let medium = fs_err::OpenOptions::new()
+                    .read(true)
+                    .write(write)
+                    .create(!existing)
+                    .open(dst)
+                    .context("failed to open file")?;
+                let client = new_client(driver.clone(), &vm)?;
+                let transport = client.synthetic_data(&id).await?;
+
+                let mut data_stor =
+                    host_file_access::HostFileStorage::new(medium, size_limit.into());
+                match data_stor.run_async(transport).await {
+                    Ok(_) => {}
+                    Err(host_file_access::HostFileError::EndOfFile) => {
+                        eprintln!("Synthetic data {id} transfer complete, end of file reached.");
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to run data transfer: {e}");
+                        return Err(anyhow::Error::from(e));
+                    }
+                }
+
+                let bytes_written = data_stor.bytes_written();
+                println!(
+                    "Synthetic data {id} transfer complete, {} bytes written.",
+                    bytes_written
+                );
             }
         }
         Ok(())
