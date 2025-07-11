@@ -271,13 +271,13 @@ impl UefiDevice {
                 tracelimit::info_ratelimited!(?addr, data, "set gpa for diagnostics");
                 self.service.diagnostics.lock().set_gpa(data)
             }
-            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(),
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.ratelimited_process_diagnostics(),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }
 
     fn inspect_extra(&mut self, _resp: &mut inspect::Response<'_>) {
-        self.process_diagnostics();
+        self.force_process_diagnostics();
     }
 }
 
