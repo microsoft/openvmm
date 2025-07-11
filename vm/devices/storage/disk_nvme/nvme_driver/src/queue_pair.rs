@@ -105,7 +105,7 @@ impl PendingCommands {
         });
     }
 
-    fn remove(&mut self, cid: u16) -> Rpc<(), spec::Completion> {
+    fn remove(&mut self, cid: u16, queue_id: u16) -> Rpc<(), spec::Completion> {
         let command = self
             .commands
             .try_remove((cid & Self::CID_KEY_MASK) as usize)
@@ -113,7 +113,11 @@ impl PendingCommands {
         assert_eq!(
             command.command.cdw0.cid(),
             cid,
-            "cid sequence number mismatch"
+            "cid sequence number mismatch: queue_id={}, command_opcode={:#x}, expected_cid={:#x}, actual_cid={:#x}",
+            queue_id,
+            command.command.cdw0.opcode(),
+            cid,
+            command.command.cdw0.cid()
         );
         command.respond
     }
@@ -711,7 +715,7 @@ impl QueueHandler {
                 },
                 Event::Completion(completion) => {
                     assert_eq!(completion.sqid, self.sq.id());
-                    let respond = self.commands.remove(completion.cid);
+                    let respond = self.commands.remove(completion.cid, self.sq.id());
                     if self.drain_after_restore && self.commands.is_empty() {
                         // Switch to normal processing mode once all in-flight commands completed.
                         self.drain_after_restore = false;
