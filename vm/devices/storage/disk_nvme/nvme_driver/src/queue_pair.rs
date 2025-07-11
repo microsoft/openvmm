@@ -246,7 +246,7 @@ impl QueuePair {
                 QueueHandler {
                     sq: SubmissionQueue::new(qid, sq_entries, sq_mem_block),
                     cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
-                    commands: PendingCommands::new(qid),
+                    commands: PendingCommands::new(),
                     stats: Default::default(),
                     drain_after_restore: false,
                 }
