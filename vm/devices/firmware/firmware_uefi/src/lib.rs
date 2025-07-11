@@ -293,6 +293,7 @@ impl ChangeDeviceState for UefiDevice {
         self.service.event_log.reset();
         self.service.uefi_watchdog.watchdog.reset();
         self.service.generation_id.reset();
+        self.service.diagnostics.lock().reset();
     }
 }
 
