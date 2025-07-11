@@ -2992,7 +2992,7 @@ struct WatchdogTimeoutNmi {
 #[cfg(guest_arch = "x86_64")]
 #[async_trait::async_trait]
 impl WatchdogCallback for WatchdogTimeoutNmi {
-    async fn on_timeout(&self) {
+    async fn on_timeout(&mut self) {
         // Unlike Hyper-V, we only send the NMI to the BSP.
         self.partition.request_msi(
             Vtl::Vtl0,
@@ -3007,7 +3007,7 @@ struct WatchdogTimeoutReset {
 
 #[async_trait::async_trait]
 impl WatchdogCallback for WatchdogTimeoutReset {
-    async fn on_timeout(&self) {
+    async fn on_timeout(&mut self) {
         self.halt_vps.halt(HaltReason::Reset)
     }
 }

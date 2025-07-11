@@ -45,6 +45,7 @@ bitfield-struct.workspace = true
 der = { workspace = true, features = ["derive", "alloc", "oid"], optional = true }
 getrandom.workspace = true
 openssl = { optional = true, workspace = true }
+parking_lot.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["local-offset"] }
 tracelimit.workspace = true

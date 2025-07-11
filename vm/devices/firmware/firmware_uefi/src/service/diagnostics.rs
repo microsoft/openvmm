@@ -17,10 +17,12 @@ use crate::UefiDevice;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
+use parking_lot::Mutex;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::mem::size_of;
+use std::sync::Arc;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
@@ -30,6 +32,7 @@ use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
+use watchdog_core::platform::WatchdogCallback;
 use zerocopy::FromBytes;
 
 /// 8-byte alignment for every entry
@@ -100,6 +103,36 @@ fn phase_to_string(phase: u16) -> &'static str {
         .find(|&&(phase_raw, _)| phase_raw == phase)
         .map(|&(_, name)| name)
         .unwrap_or("UNKNOWN")
+}
+
+/// Defines how we want EfiDiagnosticsLog entries to be handled.
+pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
+    let debug_level_str = debug_level_to_string(log.debug_level);
+    let phase_str = phase_to_string(log.phase);
+
+    match log.debug_level {
+        DEBUG_WARN => tracing::warn!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        DEBUG_ERROR => tracing::error!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        _ => tracing::info!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+    }
 }
 
 /// Errors that occur when parsing entries
@@ -413,54 +446,65 @@ impl DiagnosticsServices {
 }
 
 impl UefiDevice {
-    /// Process the diagnostics buffer and log the entries to tracing
-    pub(crate) fn process_diagnostics(&mut self) {
+    /// Invokes the diagnostics service to process the diagnostics buffer
+    /// with a handler function that logs the entries to tracing
+    fn process_diagnostics_inner(&self, context: &str) {
+        let mut diagnostics = self.service.diagnostics.lock();
+        if let Err(error) = diagnostics.process_diagnostics(&self.gm, handle_efi_diagnostics_log) {
+            tracing::error!(
+                error = &error as &dyn std::error::Error,
+                context,
+                "failed to process diagnostics buffer"
+            );
+        }
+    }
+
+    /// Process the diagnostics buffer as long as it has not been processed before
+    ///
+    /// NOTE: This is intended to be called in response to the guest issuing the
+    /// PROCESS_EFI_DIAGNOSTICS UefiCommand
+    pub(crate) fn ratelimited_process_diagnostics(&mut self) {
         // Do not proceed if we have already processed before
-        if self.service.diagnostics.did_process {
+        if self.service.diagnostics.lock().did_process {
             tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
             return;
         }
-        self.service.diagnostics.did_process = true;
+        self.service.diagnostics.lock().did_process = true;
+        self.process_diagnostics_inner("guest");
+    }
 
-        // Process diagnostics logs and send each directly to tracing
-        match self
-            .service
+    /// Forcefully process the diagnostics buffer regardless of previous state
+    pub(crate) fn force_process_diagnostics(&mut self, context: &str) {
+        self.process_diagnostics_inner(context);
+    }
+}
+
+/// Watchdog callback for diagnostics processing
+pub struct DiagnosticsWatchdogCallback {
+    diagnostics: Arc<Mutex<DiagnosticsServices>>,
+    gm: GuestMemory,
+}
+
+impl DiagnosticsWatchdogCallback {
+    /// Create a new diagnostics watchdog callback
+    pub fn new(diagnostics: Arc<Mutex<DiagnosticsServices>>, gm: GuestMemory) -> Self {
+        Self { diagnostics, gm }
+    }
+}
+
+#[async_trait::async_trait]
+impl WatchdogCallback for DiagnosticsWatchdogCallback {
+    async fn on_timeout(&mut self) {
+        if let Err(error) = self
             .diagnostics
-            .process_diagnostics(&self.gm, |log| {
-                let debug_level_str = debug_level_to_string(log.debug_level);
-                let phase_str = phase_to_string(log.phase);
-
-                match log.debug_level {
-                    DEBUG_WARN => tracing::warn!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                    DEBUG_ERROR => tracing::error!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                    _ => tracing::info!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                }
-            }) {
-            Ok(_) => {}
-            Err(error) => {
-                tracelimit::error_ratelimited!(
-                    error = &error as &dyn std::error::Error,
-                    "Failed to process diagnostics buffer"
-                );
-            }
+            .lock()
+            .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
+        {
+            tracing::error!(
+                error = &error as &dyn std::error::Error,
+                context = "watchdog timeout",
+                "failed to process diagnostics buffer"
+            );
         }
     }
 }
