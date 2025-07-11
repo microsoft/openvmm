@@ -420,26 +420,26 @@ fn test_cid_mismatch_panic_message_format() {
     // This test validates that the panic message format is correct.
     // Since PendingCommands is private, we'll test the panic message format
     // by creating a dummy panic with the same format.
-    
+
     let queue_id = 0x10u16;
     let command_opcode = 0x42u8;
     let expected_cid = 0x5678u16;
     let actual_cid = 0x1234u16;
-    
+
     // Create the panic message with the same format as in the code
     let panic_msg = format!(
         "cid sequence number mismatch: queue_id={}, command_opcode={:#x}, expected_cid={:#x}, actual_cid={:#x}",
         queue_id, command_opcode, expected_cid, actual_cid
     );
-    
+
     // Verify that all the expected information is present
     assert!(panic_msg.contains("queue_id=16"));
     assert!(panic_msg.contains("command_opcode=0x42"));
     assert!(panic_msg.contains("expected_cid=0x5678"));
     assert!(panic_msg.contains("actual_cid=0x1234"));
-    
+
     // Verify the overall format
     assert!(panic_msg.starts_with("cid sequence number mismatch:"));
-    
+
     println!("Panic message format validated: {}", panic_msg);
 }
