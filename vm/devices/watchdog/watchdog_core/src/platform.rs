@@ -25,7 +25,7 @@ use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
 #[async_trait::async_trait]
 pub trait WatchdogCallback: Send + Sync {
     /// Called when the watchdog timer expires
-    async fn on_timeout(&self);
+    async fn on_timeout(&mut self);
 }
 
 /// Blanket implementation of [`WatchdogCallback`] for closures.
@@ -35,9 +35,9 @@ pub trait WatchdogCallback: Send + Sync {
 #[async_trait::async_trait]
 impl<F> WatchdogCallback for F
 where
-    F: Fn() + Send + Sync,
+    F: FnMut() + Send + Sync,
 {
-    async fn on_timeout(&self) {
+    async fn on_timeout(&mut self) {
         self();
     }
 }
@@ -48,8 +48,7 @@ pub trait WatchdogPlatform: Send {
     /// Callback fired when the timer expires.
     async fn on_timeout(&mut self);
 
-    // Check if the watchdog previously timed-out, clearing the bit in the
-    // process.
+    // Check the vmgs store for boot status and clear it.
     async fn read_and_clear_boot_status(&mut self) -> bool;
 
     /// Add a callback, which executes when the watchdog times out
@@ -94,16 +93,25 @@ impl WatchdogPlatform for BaseWatchdogPlatform {
         }
 
         // Invoke all callbacks
-        for callback in &self.callbacks {
+        for callback in &mut self.callbacks {
             callback.on_timeout().await;
         }
     }
 
     async fn read_and_clear_boot_status(&mut self) -> bool {
-        if self.watchdog_expired {
-            self.watchdog_expired = false;
+        let res = self.store.read_and_clear_boot_status().await;
+        match res {
+            Ok(status) => status,
+            Err(e) => {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    error = &e as &dyn std::error::Error,
+                    "error reading watchdog status"
+                );
+                // assume no failure
+                false
+            }
         }
-        self.watchdog_expired
     }
 
     fn add_callback(&mut self, callback: Box<dyn WatchdogCallback>) {

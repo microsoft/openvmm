@@ -3466,7 +3466,7 @@ struct WatchdogTimeoutNmi {
 #[cfg(guest_arch = "x86_64")]
 #[async_trait::async_trait]
 impl WatchdogCallback for WatchdogTimeoutNmi {
-    async fn on_timeout(&self) {
+    async fn on_timeout(&mut self) {
         crate::livedump::livedump().await;
 
         // Unlike Hyper-V, we only send the NMI to the BSP.
@@ -3483,7 +3483,7 @@ struct WatchdogTimeoutReset {
 
 #[async_trait::async_trait]
 impl WatchdogCallback for WatchdogTimeoutReset {
-    async fn on_timeout(&self) {
+    async fn on_timeout(&mut self) {
         crate::livedump::livedump().await;
 
         self.halt_vps.halt(HaltReason::Reset)
