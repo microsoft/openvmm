@@ -5075,6 +5075,7 @@ dependencies = [
  "debug_worker",
  "disk_blob",
  "disk_crypt",
+ "disk_delay",
  "disk_file",
  "disk_layered",
  "disk_prwrap",
