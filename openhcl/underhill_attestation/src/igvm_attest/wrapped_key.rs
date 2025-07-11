@@ -201,9 +201,7 @@ mod tests {
         let payload = result.unwrap();
 
         let header = openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader::new_zeroed();
-        let response = [header.as_bytes(), payload.as_bytes()].concat();
-
-        response
+        [header.as_bytes(), payload.as_bytes()].concat()
     }
 
     #[test]

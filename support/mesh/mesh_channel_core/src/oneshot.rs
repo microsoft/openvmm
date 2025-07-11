@@ -368,14 +368,13 @@ impl OneshotReceiverCore {
             // avoid taking the lock here. A naive implementation would require
             // extra storage in `OneshotReceiverCore` to remember this, which is
             // probably undesirable.
-            let v = if let SlotState::Sent(value) =
+            if let SlotState::Sent(value) =
                 std::mem::replace(&mut *slot.state.lock(), SlotState::Done)
             {
                 Some(value)
             } else {
                 None
-            };
-            v
+            }
         }
         if let Some(v) = clear(self) {
             // SAFETY: the value is of type `T`.
