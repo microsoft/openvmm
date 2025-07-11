@@ -277,7 +277,7 @@ impl UefiDevice {
     }
 
     fn inspect_extra(&mut self, _resp: &mut inspect::Response<'_>) {
-        self.force_process_diagnostics();
+        self.force_process_diagnostics("inspect");
     }
 }
 

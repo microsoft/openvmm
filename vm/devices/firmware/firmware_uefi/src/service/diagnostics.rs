@@ -448,12 +448,21 @@ impl DiagnosticsServices {
 impl UefiDevice {
     /// Invokes the diagnostics service to process the diagnostics buffer
     /// with a handler function that logs the entries to tracing
-    fn process_diagnostics_inner(&self) -> Result<(), DiagnosticsError> {
+    fn process_diagnostics_inner(&self, context: &str) {
         let mut diagnostics = self.service.diagnostics.lock();
-        diagnostics.process_diagnostics(&self.gm, handle_efi_diagnostics_log)
+        if let Err(error) = diagnostics.process_diagnostics(&self.gm, handle_efi_diagnostics_log) {
+            tracing::error!(
+                error = &error as &dyn std::error::Error,
+                context,
+                "failed to process diagnostics buffer"
+            );
+        }
     }
 
     /// Process the diagnostics buffer as long as it has not been processed before
+    ///
+    /// NOTE: This is intended to be called in response to the guest issuing the
+    /// PROCESS_EFI_DIAGNOSTICS UefiCommand
     pub(crate) fn ratelimited_process_diagnostics(&mut self) {
         // Do not proceed if we have already processed before
         if self.service.diagnostics.lock().did_process {
@@ -461,24 +470,12 @@ impl UefiDevice {
             return;
         }
         self.service.diagnostics.lock().did_process = true;
-
-        // Attempt to process the diagnostics buffer
-        if let Err(error) = self.process_diagnostics_inner() {
-            tracing::error!(
-                error = &error as &dyn std::error::Error,
-                "failed to process diagnostics buffer"
-            );
-        }
+        self.process_diagnostics_inner("guest");
     }
 
     /// Forcefully process the diagnostics buffer regardless of previous state
-    pub(crate) fn force_process_diagnostics(&mut self) {
-        if let Err(error) = self.process_diagnostics_inner() {
-            tracing::error!(
-                error = &error as &dyn std::error::Error,
-                "failed to force process diagnostics buffer"
-            );
-        }
+    pub(crate) fn force_process_diagnostics(&mut self, context: &str) {
+        self.process_diagnostics_inner(context);
     }
 }
 
@@ -505,7 +502,8 @@ impl WatchdogCallback for DiagnosticsWatchdogCallback {
         {
             tracing::error!(
                 error = &error as &dyn std::error::Error,
-                "failed to process diagnostics buffer on watchdog timeout"
+                context = "watchdog timeout",
+                "failed to process diagnostics buffer"
             );
         }
     }
