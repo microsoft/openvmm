@@ -79,6 +79,7 @@ use task_control::TaskControl;
 use thiserror::Error;
 use tracing::Instrument;
 use vmbus_async::queue;
+use vmbus_async::queue::CompletionPacket;
 use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::Queue;
@@ -1899,6 +1900,8 @@ enum PacketError {
     ExternalData(#[source] ExternalDataError),
     #[error("InvalidSendBufferIndex")]
     InvalidSendBufferIndex,
+    #[error("IgnoreVfAssociationCompletion")]
+    IgnoreVfAssociationCompletion,
 }
 
 #[derive(Debug, Error)]
@@ -1935,7 +1938,6 @@ enum PacketData {
     SwitchDataPath(protocol::Message4SwitchDataPath),
     OidQueryEx(protocol::Message5OidQueryEx),
     SubChannelRequest(protocol::Message5SubchannelRequest),
-    SendVfAssociationCompletion,
     SwitchDataPathCompletion,
 }
 
@@ -1967,6 +1969,29 @@ fn read_packet_data<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
     reader.read_plain().map_err(PacketError::Access)
 }
 
+fn parse_incoming_completion<'a, T: RingMem>(
+    completion: &CompletionPacket<'a, T>,
+) -> Result<PacketData, PacketError> {
+    if completion.transaction_id() == VF_ASSOCIATION_TRANSACTION_ID {
+        // Ideally netvsp could use the VF_ASSOCIATION completion packet as a signal
+        // that it is safe to expose the AccelNet device to the guest.
+        // Some Linux guests lack support for inline completions; they do not send the packet.
+        // Since the completion packet is not sent by all guests, it gets ignored.
+        Err(PacketError::IgnoreVfAssociationCompletion)
+    } else if completion.transaction_id() == SWITCH_DATA_PATH_TRANSACTION_ID {
+        Ok(PacketData::SwitchDataPathCompletion)
+    } else {
+        let mut reader = completion.reader();
+        let header: protocol::MessageHeader = reader.read_plain().map_err(PacketError::Access)?;
+        match header.message_type {
+            protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE => Ok(
+                PacketData::RndisPacketComplete(read_packet_data(&mut reader)?),
+            ),
+            typ => Err(PacketError::UnknownType(typ)),
+        }
+    }
+}
+
 fn parse_packet<'a, T: RingMem>(
     packet_ref: &queue::PacketRef<'_, T>,
     send_buffer: Option<&'a SendBuffer>,
@@ -1975,21 +2000,7 @@ fn parse_packet<'a, T: RingMem>(
     let packet = match packet_ref.as_ref() {
         IncomingPacket::Data(data) => data,
         IncomingPacket::Completion(completion) => {
-            let data = if completion.transaction_id() == VF_ASSOCIATION_TRANSACTION_ID {
-                PacketData::SendVfAssociationCompletion
-            } else if completion.transaction_id() == SWITCH_DATA_PATH_TRANSACTION_ID {
-                PacketData::SwitchDataPathCompletion
-            } else {
-                let mut reader = completion.reader();
-                let header: protocol::MessageHeader =
-                    reader.read_plain().map_err(PacketError::Access)?;
-                match header.message_type {
-                    protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE => {
-                        PacketData::RndisPacketComplete(read_packet_data(&mut reader)?)
-                    }
-                    typ => return Err(PacketError::UnknownType(typ)),
-                }
-            };
+            let data = parse_incoming_completion(completion)?;
             return Ok(Packet {
                 data,
                 transaction_id: Some(completion.transaction_id()),
@@ -4444,9 +4455,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
     ) -> Result<Option<Packet<'a>>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let packet = match read.try_read() {
-            Ok(packet) => {
-                parse_packet(&packet, send_buffer, version).map_err(WorkerError::Packet)?
-            }
+            Ok(packet) => match parse_packet(&packet, send_buffer, version) {
+                Ok(pkt) => pkt,
+                Err(PacketError::IgnoreVfAssociationCompletion) => return Ok(None),
+                Err(e) => return Err(WorkerError::Packet(e)),
+            },
             Err(queue::TryReadError::Empty) => return Ok(None),
             Err(queue::TryReadError::Queue(err)) => return Err(err.into()),
         };
@@ -4521,9 +4534,14 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 .wait_ready(ring::PacketSize::completion(protocol::PACKET_SIZE_V61))
                 .await?;
 
-            let packet = self
+            let packet = match self
                 .next_packet(None, initializing.as_ref().map(|x| x.version))
-                .await?;
+                .await
+            {
+                Ok(pkt) => pkt,
+                Err(WorkerError::Packet(PacketError::IgnoreVfAssociationCompletion)) => continue,
+                Err(e) => return Err(e),
+            };
 
             if let Some(initializing) = &mut *initializing {
                 match packet.data {
@@ -5172,7 +5190,6 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     );
                     return Err(WorkerError::BufferRevoked);
                 }
-                PacketData::SendVfAssociationCompletion if state.primary.is_some() => (),
                 PacketData::SwitchDataPath(switch_data_path) if state.primary.is_some() => {
                     self.switch_data_path(
                         state,
