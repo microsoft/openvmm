@@ -76,10 +76,11 @@ impl PendingCommands {
     const MAX_CIDS: usize = 1 << Self::CID_KEY_BITS;
     const CID_SEQ_OFFSET: Wrapping<u16> = Wrapping(1 << Self::CID_KEY_BITS);
 
-    fn new() -> Self {
+    fn new(qid: u16) -> Self {
         Self {
             commands: Slab::new(),
             next_cid_high_bits: Wrapping(0),
+            qid,
         }
     }
 
@@ -105,7 +106,7 @@ impl PendingCommands {
         });
     }
 
-    fn remove(&mut self, cid: u16, queue_id: u16) -> Rpc<(), spec::Completion> {
+    fn remove(&mut self, cid: u16) -> Rpc<(), spec::Completion> {
         let command = self
             .commands
             .try_remove((cid & Self::CID_KEY_MASK) as usize)
@@ -114,7 +115,7 @@ impl PendingCommands {
             command.command.cdw0.cid(),
             cid,
             "cid sequence number mismatch: queue_id={}, command_opcode={:#x}, expected_cid={:#x}, actual_cid={:#x}",
-            queue_id,
+            self.qid,
             command.command.cdw0.opcode(),
             cid,
             command.command.cdw0.cid()
@@ -140,7 +141,7 @@ impl PendingCommands {
     }
 
     /// Restore pending commands from the saved state.
-    pub fn restore(saved_state: &PendingCommandsSavedState) -> anyhow::Result<Self> {
+    pub fn restore(saved_state: &PendingCommandsSavedState, qid: u16) -> anyhow::Result<Self> {
         let PendingCommandsSavedState {
             commands,
             next_cid_high_bits,
@@ -165,6 +166,7 @@ impl PendingCommands {
                 })
                 .collect::<Slab<PendingCommand>>(),
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
+            qid,
         })
     }
 }
@@ -245,7 +247,7 @@ impl QueuePair {
                 QueueHandler {
                     sq: SubmissionQueue::new(qid, sq_entries, sq_mem_block),
                     cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
-                    commands: PendingCommands::new(),
+                    commands: PendingCommands::new(qid),
                     stats: Default::default(),
                     drain_after_restore: false,
                 }
@@ -613,6 +615,8 @@ struct PendingCommands {
     commands: Slab<PendingCommand>,
     #[inspect(hex)]
     next_cid_high_bits: Wrapping<u16>,
+    /// Queue ID for diagnostic purposes.
+    qid: u16,
 }
 
 #[derive(Inspect)]
@@ -715,7 +719,7 @@ impl QueueHandler {
                 },
                 Event::Completion(completion) => {
                     assert_eq!(completion.sqid, self.sq.id());
-                    let respond = self.commands.remove(completion.cid, self.sq.id());
+                    let respond = self.commands.remove(completion.cid);
                     if self.drain_after_restore && self.commands.is_empty() {
                         // Switch to normal processing mode once all in-flight commands completed.
                         self.drain_after_restore = false;
@@ -753,7 +757,7 @@ impl QueueHandler {
         Ok(Self {
             sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
             cq: CompletionQueue::restore(cq_mem_block, cq_state)?,
-            commands: PendingCommands::restore(pending_cmds)?,
+            commands: PendingCommands::restore(pending_cmds, sq_state.sqid)?,
             stats: Default::default(),
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
