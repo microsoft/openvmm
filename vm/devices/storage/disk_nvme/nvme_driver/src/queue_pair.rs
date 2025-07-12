@@ -114,11 +114,9 @@ impl PendingCommands {
         assert_eq!(
             command.command.cdw0.cid(),
             cid,
-            "cid sequence number mismatch: queue_id={}, command_opcode={:#x}, expected_cid={:#x}, actual_cid={:#x}",
+            "cid sequence number mismatch: queue_id={}, command_opcode={:#x}",
             self.qid,
             command.command.cdw0.opcode(),
-            cid,
-            command.command.cdw0.cid()
         );
         command.respond
     }
@@ -137,6 +135,7 @@ impl PendingCommands {
             next_cid_high_bits: self.next_cid_high_bits.0,
             // TODO: Not used today, added for future compatibility.
             cid_key_bits: Self::CID_KEY_BITS,
+            qid: self.qid,
         }
     }
 
@@ -146,6 +145,7 @@ impl PendingCommands {
             commands,
             next_cid_high_bits,
             cid_key_bits: _, // TODO: For future use.
+            qid,
         } = saved_state;
 
         Ok(Self {
@@ -166,6 +166,7 @@ impl PendingCommands {
                 })
                 .collect::<Slab<PendingCommand>>(),
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
+            qid: *qid,
         })
     }
 }
