@@ -638,25 +638,22 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
             | (Some(Vmm::HyperV), None)
             | (None, Some(Vmm::HyperV)) => (
                 quote!(#[cfg(windows)]),
-                quote!(::petri::hyperv::PetriVmArtifactsHyperV),
-                quote!(::petri::hyperv::PetriVmConfigHyperV),
+                quote!(::petri::PetriVmArtifacts::<::petri::hyperv::HyperVPetriBackend>),
+                quote!(::petri::PetriVmBuilder::<::petri::hyperv::HyperVPetriBackend>),
             ),
 
             (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
             | (Some(Vmm::OpenVmm), None)
             | (None, Some(Vmm::OpenVmm)) => (
                 quote!(),
-                quote!(::petri::openvmm::PetriVmArtifactsOpenVmm),
-                quote!(::petri::openvmm::PetriVmConfigOpenVmm),
+                quote!(::petri::PetriVmArtifacts::<::petri::openvmm::OpenVmmPetriBackend>),
+                quote!(::petri::PetriVmBuilder::<::petri::openvmm::OpenVmmPetriBackend>),
             ),
             (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
             _ => return Err(Error::new(config.span, "vmm mismatch")),
         };
 
-        let mut petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
-        if specific_vmm.is_none() {
-            petri_vm_config = quote!(Box::new(#petri_vm_config));
-        }
+        let petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
 
         let test = quote! {
             #cfg_conditions

@@ -45,7 +45,7 @@ pub struct VmmTestsCli {
     ///
     /// Available flags with default values:
     ///
-    /// `-tdx,-hyperv_vbs,+windows,+ubuntu,+freebsd,+openhcl,+openvmm,+hyperv,+uefi,+pcat,+tmk,+guest_test_uefi`
+    /// `-tdx,-hyperv_vbs,+windows,+ubuntu,+freebsd,+linux,+openhcl,+openvmm,+hyperv,+uefi,+pcat,+tmk,+guest_test_uefi`
     // TODO: Automatically generate the list of possible flags
     #[clap(long)]
     flags: Option<VmmTestSelectionFlags>,

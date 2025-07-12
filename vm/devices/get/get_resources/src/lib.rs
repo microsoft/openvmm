@@ -134,7 +134,7 @@ pub mod ged {
         /// The microsoft windows template.
         MicrosoftWindows,
         /// The Microsoft UEFI certificate authority template.
-        MicrosoftUefiCertificateAuthoritiy,
+        MicrosoftUefiCertificateAuthority,
     }
 
     /// The boot devices for a PC/AT BIOS.
