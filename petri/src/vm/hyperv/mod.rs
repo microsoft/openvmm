@@ -4,19 +4,16 @@
 mod hvc;
 pub mod powershell;
 pub mod vm;
-use vmsocket::VmAddress;
-use vmsocket::VmSocket;
 
-use super::ProcessorTopology;
-use crate::Firmware;
-use crate::IsolationType;
-use crate::PetriLogSource;
-use crate::PetriTestParams;
-use crate::PetriVm;
-use crate::PetriVmConfig;
-use crate::ShutdownKind;
-use crate::disk_image::AgentImage;
-use crate::openhcl_diag::OpenHclDiagHandler;
+use std::collections::hash_map::DefaultHasher;
+use std::fs;
+use std::hash::Hash;
+use std::hash::Hasher;
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+
 use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
@@ -33,13 +30,21 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
-use std::fs;
-use std::io::Write;
-use std::path::Path;
-use std::path::PathBuf;
-use std::time::Duration;
 use vm::HyperVVM;
 use vmm_core_defs::HaltReason;
+use vmsocket::VmAddress;
+use vmsocket::VmSocket;
+
+use super::ProcessorTopology;
+use crate::Firmware;
+use crate::IsolationType;
+use crate::PetriLogSource;
+use crate::PetriTestParams;
+use crate::PetriVm;
+use crate::PetriVmConfig;
+use crate::ShutdownKind;
+use crate::disk_image::AgentImage;
+use crate::openhcl_diag::OpenHclDiagHandler;
 
 /// Hyper-V VM configuration and resources
 pub struct PetriVmConfigHyperV {
@@ -231,6 +236,58 @@ impl PetriVmArtifactsHyperV {
 }
 
 impl PetriVmConfigHyperV {
+    /// Creates a valid Hyper-V VM name from a test name.
+    ///
+    /// Hyper-V limits VM names to 100 characters. If the test name exceeds this limit,
+    /// we truncate it and append a hash to maintain uniqueness.
+    fn create_vm_name(test_name: &str) -> String {
+        const MAX_VM_NAME_LENGTH: usize = 100;
+
+        if test_name.len() <= MAX_VM_NAME_LENGTH {
+            return test_name.to_owned();
+        }
+
+        // Create a hash of the full name for uniqueness
+        let mut hasher = DefaultHasher::new();
+        test_name.hash(&mut hasher);
+        let hash = hasher.finish();
+        let hash_suffix = format!("-{:x}", hash);
+
+        // Reserve space for the hash suffix
+        let max_prefix_length = MAX_VM_NAME_LENGTH - hash_suffix.len();
+
+        // Split by :: and take full components from the end to avoid cutting words
+        let parts: Vec<&str> = test_name.split("::").collect();
+        let mut result_parts = Vec::new();
+        let mut current_length = 0;
+
+        // Work backwards through the parts to preserve the most specific components
+        for part in parts.iter().rev() {
+            let part_with_separator = if result_parts.is_empty() {
+                part.len()
+            } else {
+                part.len() + 2 // Add 2 for "::"
+            };
+
+            if current_length + part_with_separator <= max_prefix_length {
+                result_parts.insert(0, *part);
+                current_length += part_with_separator;
+            } else {
+                break;
+            }
+        }
+
+        // If no parts fit, take the last part and truncate it
+        if result_parts.is_empty() && !parts.is_empty() {
+            let last_part = parts.last().unwrap();
+            let truncated_part = &last_part[..max_prefix_length.min(last_part.len())];
+            result_parts.push(truncated_part);
+        }
+
+        let truncated = result_parts.join("::");
+        format!("{}{}", truncated, hash_suffix)
+    }
+
     /// Create a new Hyper-V petri VM config
     pub fn new(
         params: &PetriTestParams<'_>,
@@ -287,7 +344,7 @@ impl PetriVmConfigHyperV {
         let openhcl_igvm = igvm_artifact.cloned();
 
         Ok(PetriVmConfigHyperV {
-            name: params.test_name.to_owned(),
+            name: Self::create_vm_name(params.test_name),
             arch,
             generation,
             guest_state_isolation_type,
@@ -777,4 +834,86 @@ fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {
         anyhow::bail!("icacls failed: {stderr}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_vm_name() {
+        // Test short names remain unchanged
+        let short_name = "test::short_name";
+        assert_eq!(PetriVmConfigHyperV::create_vm_name(short_name), short_name);
+
+        // Test long names are truncated to 100 characters with full components
+        let long_name = "multiarch::openhcl_servicing::hyperv_openhcl_uefi_aarch64_ubuntu_2404_server_aarch64_openhcl_servicing";
+        let vm_name = PetriVmConfigHyperV::create_vm_name(long_name);
+        assert!(vm_name.len() <= 100);
+        assert!(vm_name.contains("-")); // Should have hash suffix
+
+        // Test different long names get different hashes
+        let long_name2 = "multiarch::openhcl_servicing::hyperv_openhcl_uefi_aarch64_ubuntu_2404_server_aarch64_openhcl_different";
+        let vm_name2 = PetriVmConfigHyperV::create_vm_name(long_name2);
+        assert!(vm_name2.len() <= 100);
+        assert_ne!(vm_name, vm_name2);
+
+        // Test that full components are preserved (no partial components)
+        assert!(!vm_name.starts_with("::"));
+        assert!(!vm_name2.starts_with("::"));
+
+        // Test the most specific part is preserved
+        assert!(vm_name.contains("openhcl_servicing"));
+        assert!(vm_name2.contains("openhcl_different"));
+    }
+
+    #[test]
+    fn test_vm_name_exactly_100_chars() {
+        let exactly_100 = "a".repeat(100);
+        let result = PetriVmConfigHyperV::create_vm_name(&exactly_100);
+        assert_eq!(result, exactly_100);
+        assert_eq!(result.len(), 100);
+    }
+
+    #[test]
+    fn test_vm_name_101_chars() {
+        let exactly_101 = "a".repeat(101);
+        let result = PetriVmConfigHyperV::create_vm_name(&exactly_101);
+        assert_eq!(result.len(), 100);
+        assert!(result.ends_with(&format!("-{:x}", {
+            let mut hasher = DefaultHasher::new();
+            exactly_101.hash(&mut hasher);
+            hasher.finish()
+        })));
+    }
+
+    #[test]
+    fn test_vm_name_final_component_over_100_chars() {
+        // Test case where the final component itself is longer than 100 characters
+        let long_final_component = "a".repeat(120);
+        let test_name = format!("short::component::{}", long_final_component);
+        let result = PetriVmConfigHyperV::create_vm_name(&test_name);
+
+        // Should still be exactly 100 characters
+        assert_eq!(result.len(), 100);
+
+        // Should have a hash suffix
+        assert!(result.contains("-"));
+
+        // Should handle the situation reasonably (not be empty or malformed)
+        assert!(!result.is_empty());
+        assert!(!result.starts_with("-"));
+
+        // Should contain part of the long component (truncated)
+        assert!(result.starts_with("a"));
+
+        // Edge case: entire name is one very long component without separators
+        let very_long_name = "a".repeat(150);
+        let result2 = PetriVmConfigHyperV::create_vm_name(&very_long_name);
+        assert_eq!(result2.len(), 100);
+        assert!(result2.contains("-"));
+        assert!(!result2.is_empty());
+        assert!(!result2.starts_with("-"));
+        assert!(result2.starts_with("a"));
+    }
 }
