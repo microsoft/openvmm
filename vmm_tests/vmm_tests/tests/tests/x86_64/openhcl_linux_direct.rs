@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::io::Write;
 
-use crate::x86_64::openhcl_servicing::host_supports_servicing;
+use crate::multiarch::openhcl_servicing::host_supports_servicing;
 use anyhow::Context;
 use disk_backend_resources::FileDiskHandle;
 use disk_backend_resources::LayeredDiskHandle;
@@ -108,7 +108,7 @@ async fn mana_nic_servicing(
 
     validate_mana_nic(&agent).await?;
 
-    vm.restart_openhcl(&igvm_file, OpenHclServicingFlags::default())
+    vm.restart_openhcl(&igvm_file.erase(), OpenHclServicingFlags::default())
         .await?;
 
     validate_mana_nic(&agent).await?;
