@@ -39,6 +39,7 @@ use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
+use std::any::Any;
 use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
@@ -59,6 +60,27 @@ pub struct NvmeController {
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
 }
+
+pub enum FaultInjectionAction {
+    /// No fault injection.
+    None,
+    /// Inject a fault that will cause the operation to fail.
+    Fail,
+    /// Inject a fault that will cause the operation to succeed with an error.
+    SucceedWithError,
+    /// Delay the operation for a specified duration.
+    Delay(u64),
+}
+
+#[derive(Inspect)]
+pub struct NvmeControllerFaultInjection {
+    inner: NvmeController,
+    /// Fault injection callback for NVMe controller operations
+    #[inspect(skip)]
+    fi: Box<dyn Fn(&str, Vec<Box<dyn Any>>, FaultInjectionAction) -> u32 + Send + Sync>,
+}
+// This fault injection action type should be implemented by every single function that can fault inject.
+//
 
 #[derive(Inspect)]
 struct RegState {
