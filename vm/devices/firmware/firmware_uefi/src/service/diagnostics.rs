@@ -21,6 +21,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::mem::size_of;
+use std::task::Context;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
@@ -286,8 +287,33 @@ impl DiagnosticsServices {
         }
     }
 
-    /// Process the diagnostics buffer
-    pub fn process_diagnostics<F>(
+    /// Poll the diagnostics services for any pending timeouts
+    pub fn poll(&mut self, cx: &mut Context<'_>) {
+        while self.flush_recv.poll_recv(cx).is_ready() {
+            tracing::info!("Received poll, could process diagnostics...");
+        }
+    }
+
+    /// Process diagnostics if it has not been processed before
+    pub fn rate_limited_process_diagnostics(
+        &mut self,
+        gm: &GuestMemory,
+    ) -> Result<(), DiagnosticsError> {
+        if self.did_process {
+            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
+            return Ok(());
+        }
+        self.did_process = true;
+        self.process_diagnostics_inner(gm, handle_efi_diagnostics_log)
+    }
+
+    /// Forcefully process diagnostics regardless of previous state
+    pub fn force_process_diagnostics(&mut self, gm: &GuestMemory) -> Result<(), DiagnosticsError> {
+        self.process_diagnostics_inner(gm, handle_efi_diagnostics_log)
+    }
+
+    /// Internal logic to process diagnostics from guest memory
+    fn process_diagnostics_inner<F>(
         &mut self,
         gm: &GuestMemory,
         mut log_handler: F,
@@ -448,39 +474,18 @@ impl DiagnosticsServices {
 }
 
 impl UefiDevice {
-    /// Invokes the diagnostics service to process the diagnostics buffer
-    /// with a handler function that logs the entries to tracing
-    fn process_diagnostics_inner(&mut self, context: &str) {
+    /// Processes UEFI diagnostics from guest memory
+    pub(crate) fn process_diagnostics(&mut self) {
         if let Err(error) = self
             .service
             .diagnostics
-            .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
+            .rate_limited_process_diagnostics(&self.gm)
         {
-            tracing::error!(
+            tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
-                context,
                 "failed to process diagnostics buffer"
             );
         }
-    }
-
-    /// Process the diagnostics buffer as long as it has not been processed before
-    ///
-    /// NOTE: This is intended to be called in response to the guest issuing the
-    /// PROCESS_EFI_DIAGNOSTICS UefiCommand
-    pub(crate) fn ratelimited_process_diagnostics(&mut self) {
-        // Do not proceed if we have already processed before
-        if self.service.diagnostics.did_process {
-            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
-            return;
-        }
-        self.service.diagnostics.did_process = true;
-        self.process_diagnostics_inner("guest");
-    }
-
-    /// Forcefully process the diagnostics buffer regardless of previous state
-    pub(crate) fn force_process_diagnostics(&mut self, context: &str) {
-        self.process_diagnostics_inner(context);
     }
 }
 

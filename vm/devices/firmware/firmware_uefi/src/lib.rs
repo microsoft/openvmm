@@ -67,14 +67,12 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
-use mesh::RecvError;
 use pal_async::local::block_on;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
 use std::task::Context;
-use std::task::Poll;
 use thiserror::Error;
 use uefi_nvram_storage::VmmNvramStorage;
 use vmcore::device_state::ChangeDeviceState;
@@ -269,13 +267,18 @@ impl UefiDevice {
                 tracing::debug!(?addr, data, "set gpa for diagnostics");
                 self.service.diagnostics.set_gpa(data)
             }
-            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.ratelimited_process_diagnostics(),
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }
 
     fn inspect_extra(&mut self, _resp: &mut inspect::Response<'_>) {
-        self.force_process_diagnostics("inspect");
+        if let Err(error) = self.service.diagnostics.force_process_diagnostics(&self.gm) {
+            tracelimit::error_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                "failed to force process diagnostics on inspect"
+            );
+        }
     }
 }
 
@@ -313,19 +316,7 @@ impl PollDevice for UefiDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
         self.service.uefi_watchdog.watchdog.poll(cx);
         self.service.generation_id.poll(cx);
-
-        while let Poll::Ready(val) = self.service.diagnostics.flush_recv.poll_recv(cx) {
-            match val {
-                Ok(_) => self.force_process_diagnostics("poll"),
-                Err(RecvError::Closed) => break,
-                Err(err) => {
-                    tracelimit::error_ratelimited!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to receive diagnostics flush"
-                    );
-                }
-            }
-        }
+        self.service.diagnostics.poll(cx);
     }
 }
 
