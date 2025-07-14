@@ -684,6 +684,11 @@ pub enum DiskCliKind {
         key_file: PathBuf,
         disk: Box<DiskCliKind>,
     },
+    // delay:<delay_ms>:<kind>
+    DelayDiskWrapper {
+        delay_ms: u64,
+        disk: Box<DiskCliKind>,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]

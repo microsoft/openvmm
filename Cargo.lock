@@ -1739,6 +1739,7 @@ dependencies = [
  "open_enum",
  "openssl",
  "pal_async",
+ "parking_lot",
  "test_with_tracing",
  "thiserror 2.0.12",
  "time",
@@ -3061,7 +3062,6 @@ dependencies = [
  "vmswitch",
  "vpci",
  "watchdog_core",
- "watchdog_vmgs_format",
  "zerocopy 0.8.24",
 ]
 
@@ -5076,6 +5076,7 @@ dependencies = [
  "debug_worker",
  "disk_blob",
  "disk_crypt",
+ "disk_delay",
  "disk_file",
  "disk_layered",
  "disk_prwrap",
@@ -9235,12 +9236,14 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "bitfield-struct 0.10.1",
+ "cvm_tracing",
  "inspect",
  "mesh",
  "pal_async",
  "thiserror 2.0.12",
  "tracing",
  "vmcore",
+ "watchdog_vmgs_format",
 ]
 
 [[package]]

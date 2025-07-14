@@ -1603,11 +1603,16 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     // The channel is fully restored. Nothing more to do.
                 }
                 RestoreState::New => {
-                    // This is a fresh channel offer, not in the saved state.
-                    // Send the offer to the guest if it has not already been
-                    // sent (which could have happened if the channel was
-                    // offered after restore() but before revoke_unclaimed_channels()).
-                    if let ConnectionState::Connected(info) = &self.inner.state {
+                    // This is a fresh channel offer, not in the saved state. Send the offer to the
+                    // guest if it has not already been sent (which could have happened if the
+                    // channel was offered after restore() but before revoke_unclaimed_channels()).
+                    // Offers should only be sent if the guest has already sent RequestOffers.
+                    if let ConnectionState::Connected(ConnectionInfo {
+                        offers_sent: true,
+                        version,
+                        ..
+                    }) = &self.inner.state
+                    {
                         if matches!(channel.state, ChannelState::ClientReleased) {
                             channel.prepare_channel(
                                 offer_id,
@@ -1618,7 +1623,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             self.inner
                                 .pending_messages
                                 .sender(self.notifier, self.inner.state.is_paused())
-                                .send_offer(channel, info.version);
+                                .send_offer(channel, *version);
                         }
                     }
                 }
@@ -5176,6 +5181,134 @@ mod tests {
 
         // Make sure the gpadl was restored as well.
         assert!(env.server.gpadls.contains_key(&(GpadlId(1), offer_id1)));
+    }
+
+    #[test]
+    fn test_save_restore_offers_not_sent() {
+        let mut env = TestEnv::new();
+
+        let _offer_id1 = env.offer(1);
+        let _offer_id2 = env.offer(2);
+        let _offer_id3 = env.offer(3);
+
+        env.connect(Version::Copper, FeatureFlags::new());
+
+        // All offers are in the ClientReleased state, so they are not saved.
+        let state = env.server.save();
+        let mut env = TestEnv::new();
+
+        let offer_id1 = env.offer(1);
+        let offer_id2 = env.offer(2);
+        let offer_id3 = env.offer(3);
+
+        // Because the offers were not saved, they are treated as new during the restore.
+        env.c().restore(state).unwrap();
+        env.c().restore_channel(offer_id1, false).unwrap();
+        env.c().restore_channel(offer_id2, false).unwrap();
+        env.c().restore_channel(offer_id3, false).unwrap();
+
+        // Because the guest has not yet requested offers, no messages should be sent at this point.
+        env.c().revoke_unclaimed_channels();
+        assert!(env.notifier.messages.is_empty());
+
+        // When the guest requests offers, they should be all be sent.
+        env.c().handle_request_offers().unwrap();
+        env.notifier.check_messages(&[
+            OutgoingMessage::new(&protocol::OfferChannel {
+                interface_id: Guid {
+                    data1: 1,
+                    ..Guid::ZERO
+                },
+                instance_id: Guid {
+                    data1: 1,
+                    ..Guid::ZERO
+                },
+                channel_id: ChannelId(1),
+                connection_id: 0x2001,
+                is_dedicated: 1,
+                monitor_id: 0xff,
+                ..protocol::OfferChannel::new_zeroed()
+            }),
+            OutgoingMessage::new(&protocol::OfferChannel {
+                interface_id: Guid {
+                    data1: 2,
+                    ..Guid::ZERO
+                },
+                instance_id: Guid {
+                    data1: 2,
+                    ..Guid::ZERO
+                },
+                channel_id: ChannelId(2),
+                connection_id: 0x2002,
+                is_dedicated: 1,
+                monitor_id: 0xff,
+                ..protocol::OfferChannel::new_zeroed()
+            }),
+            OutgoingMessage::new(&protocol::OfferChannel {
+                interface_id: Guid {
+                    data1: 3,
+                    ..Guid::ZERO
+                },
+                instance_id: Guid {
+                    data1: 3,
+                    ..Guid::ZERO
+                },
+                channel_id: ChannelId(3),
+                connection_id: 0x2003,
+                is_dedicated: 1,
+                monitor_id: 0xff,
+                ..protocol::OfferChannel::new_zeroed()
+            }),
+            OutgoingMessage::new(&protocol::AllOffersDelivered {}),
+        ]);
+    }
+
+    #[test]
+    fn test_save_restore_hot_add_during_restore() {
+        let mut env = TestEnv::new();
+
+        let _offer_id1 = env.offer(1);
+        let _offer_id2 = env.offer(2);
+        let _offer_id3 = env.offer(3);
+
+        env.connect(Version::Copper, FeatureFlags::new());
+        env.c().handle_request_offers().unwrap();
+        let state = env.server.save();
+        let mut env = TestEnv::new();
+
+        let offer_id1 = env.offer(1);
+        let offer_id2 = env.offer(2);
+        let offer_id3 = env.offer(3);
+        // A new offer is created that is not present in the saved state.
+        let _offer_id4 = env.offer(4);
+
+        // Because the offers were not saved, they are treated as new during the restore.
+        env.c().restore(state).unwrap();
+        env.c().restore_channel(offer_id1, false).unwrap();
+        env.c().restore_channel(offer_id2, false).unwrap();
+        env.c().restore_channel(offer_id3, false).unwrap();
+        assert!(env.notifier.messages.is_empty());
+
+        // A message should be sent for the new offer only.
+        env.c().revoke_unclaimed_channels();
+        env.notifier
+            .check_message(OutgoingMessage::new(&protocol::OfferChannel {
+                interface_id: Guid {
+                    data1: 4,
+                    ..Guid::ZERO
+                },
+                instance_id: Guid {
+                    data1: 4,
+                    ..Guid::ZERO
+                },
+                channel_id: ChannelId(4),
+                connection_id: 0x2004,
+                is_dedicated: 1,
+                monitor_id: 0xff,
+                ..protocol::OfferChannel::new_zeroed()
+            }));
+
+        assert!(env.notifier.messages.is_empty());
     }
 
     #[test]

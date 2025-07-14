@@ -37,8 +37,7 @@ use crate::emuplat::non_volatile_store::VmgsBrokerNonVolatileStore;
 use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
-use crate::emuplat::watchdog::UnderhillWatchdog;
-use crate::emuplat::watchdog::WatchdogTimeout;
+use crate::emuplat::watchdog::UnderhillWatchdogPlatform;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
@@ -177,6 +176,8 @@ use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
+use watchdog_core::platform::WatchdogCallback;
+use watchdog_core::platform::WatchdogPlatform;
 use zerocopy::FromZeros;
 
 pub(crate) const PM_BASE: u16 = 0x400;
@@ -2112,19 +2113,26 @@ async fn new_underhill_vm(
                     // UEFI watchdog doesn't persist to VMGS at this time
                     let store = EphemeralNonVolatileStore::new_boxed();
 
+                    // Create base watchdog platform
+                    let mut underhill_watchdog_platform =
+                        UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
+
+                    // Inject NMI on watchdog timeout
                     #[cfg(guest_arch = "x86_64")]
-                    let watchdog_reset = WatchdogTimeoutNmi {
+                    let watchdog_callback = WatchdogTimeoutNmi {
                         partition: partition.clone(),
                     };
+
+                    // ARM64 does not have NMI support yet, so halt instead
                     #[cfg(guest_arch = "aarch64")]
-                    let watchdog_reset = WatchdogTimeoutHalt {
+                    let watchdog_callback = WatchdogTimeoutReset {
                         halt_vps: halt_vps.clone(),
                     };
 
-                    Box::new(
-                        UnderhillWatchdog::new(store, get_client.clone(), Box::new(watchdog_reset))
-                            .await?,
-                    )
+                    // Add the callback
+                    underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
+
+                    Box::new(underhill_watchdog_platform)
                 },
                 vsm_config: Some(Box::new(UnderhillVsmConfig {
                     partition: Arc::downgrade(&partition),
@@ -2449,14 +2457,16 @@ async fn new_underhill_vm(
                 } else {
                     EphemeralNonVolatileStore::new_boxed()
                 };
-                let trigger_reset = WatchdogTimeoutHalt {
+
+                let trigger_reset = WatchdogTimeoutReset {
                     halt_vps: halt_vps.clone(),
                 };
 
-                Box::new(
-                    UnderhillWatchdog::new(store, get_client.clone(), Box::new(trigger_reset))
-                        .await?,
-                )
+                let mut underhill_watchdog_platform =
+                    UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
+                underhill_watchdog_platform.add_callback(Box::new(trigger_reset));
+
+                Box::new(underhill_watchdog_platform)
             },
         })
     } else {
@@ -3455,8 +3465,8 @@ struct WatchdogTimeoutNmi {
 
 #[cfg(guest_arch = "x86_64")]
 #[async_trait::async_trait]
-impl WatchdogTimeout for WatchdogTimeoutNmi {
-    async fn on_timeout(&self) {
+impl WatchdogCallback for WatchdogTimeoutNmi {
+    async fn on_timeout(&mut self) {
         crate::livedump::livedump().await;
 
         // Unlike Hyper-V, we only send the NMI to the BSP.
@@ -3467,13 +3477,13 @@ impl WatchdogTimeout for WatchdogTimeoutNmi {
     }
 }
 
-struct WatchdogTimeoutHalt {
+struct WatchdogTimeoutReset {
     halt_vps: Arc<Halt>,
 }
 
 #[async_trait::async_trait]
-impl WatchdogTimeout for WatchdogTimeoutHalt {
-    async fn on_timeout(&self) {
+impl WatchdogCallback for WatchdogTimeoutReset {
+    async fn on_timeout(&mut self) {
         crate::livedump::livedump().await;
 
         self.halt_vps.halt(HaltReason::Reset)
