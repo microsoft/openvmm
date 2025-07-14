@@ -114,7 +114,7 @@ impl PendingCommands {
         assert_eq!(
             command.command.cdw0.cid(),
             cid,
-            "cid sequence number mismatch: queue_id={}, command_opcode={:#x}",
+            "cid sequence number mismatch: qid={}, command_opcode={:#x}",
             self.qid,
             command.command.cdw0.opcode(),
         );
