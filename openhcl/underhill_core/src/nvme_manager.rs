@@ -344,15 +344,11 @@ impl NvmeManagerWorker {
                     })
                     .map_err(InnerError::DmaClient)?;
 
-                let device = VfioDevice::new(
-                    &self.driver_source,
-                    entry.key().clone().into(),
-                    Some(name.clone()),
-                    dma_client,
-                )
-                .instrument(tracing::info_span!("vfio_device_open", pci_id))
-                .await
-                .map_err(InnerError::Vfio)?;
+                let device =
+                    VfioDevice::new(&self.driver_source, entry.key(), Some(&name), dma_client)
+                        .instrument(tracing::info_span!("vfio_device_open", pci_id))
+                        .await
+                        .map_err(InnerError::Vfio)?;
 
                 // TODO: For now, any isolation means use bounce buffering. This
                 // needs to change when we have nvme devices that support DMA to
@@ -431,8 +427,8 @@ impl NvmeManagerWorker {
             // until it is ready, but a redesign of VfioDevice is needed.
             let vfio_device = VfioDevice::restore(
                 &self.driver_source,
-                disk.pci_id.clone().into(),
-                Some(format!("restored-{}", pci_id)),
+                &disk.pci_id,
+                Some(&format!("restored-{}", pci_id)),
                 true,
                 dma_client,
             )

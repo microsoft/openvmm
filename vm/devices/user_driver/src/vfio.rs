@@ -16,7 +16,6 @@ use futures::FutureExt;
 use futures_concurrency::future::Race;
 use inspect::Inspect;
 use inspect_counters::SharedCounter;
-use mesh::MeshPayload;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::wait::PolledWait;
@@ -38,16 +37,6 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-
-/// Strongly typed wrapper for PCI ID
-#[derive(Debug, Clone, PartialEq, Eq, MeshPayload)]
-pub struct PciId(pub String);
-
-impl std::fmt::Display for PciId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
 
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
@@ -84,8 +73,8 @@ impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
-        pci_id: Arc<str>,
-        debug_bus_id: Option<String>,
+        pci_id: &str,
+        debug_bus_id: Option<&str>,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         Self::restore(driver_source, pci_id, debug_bus_id, false, dma_client).await
@@ -95,12 +84,12 @@ impl VfioDevice {
     /// or creates a device from the saved state if provided.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
-        pci_id: Arc<str>,
-        debug_bus_id: Option<String>,
+        pci_id: &str,
+        debug_bus_id: Option<&str>,
         keepalive: bool,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        let path = Path::new("/sys/bus/pci/devices").join(&*pci_id);
+        let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,
         // so make sure that it has completed by checking for the vfio-dev subpath.
@@ -136,7 +125,7 @@ impl VfioDevice {
 
         let config_space = device.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
         let this = Self {
-            pci_id,
+            pci_id: pci_id.into(),
             debug_bus_id: debug_bus_id.map(|s| s.into()),
             _container: container,
             _group: group,
@@ -172,11 +161,6 @@ impl VfioDevice {
     /// Returns the debug controller ID for diagnostic purposes.
     pub fn debug_bus_id(&self) -> Option<&str> {
         self.debug_bus_id.as_deref()
-    }
-
-    /// Returns the PCI ID for inspection purposes.
-    pub fn pci_id(&self) -> &str {
-        &self.pci_id
     }
 
     pub fn read_config(&self, offset: u16) -> anyhow::Result<u32> {
