@@ -110,7 +110,7 @@ impl PendingCommands {
         let command = self
             .commands
             .try_remove((cid & Self::CID_KEY_MASK) as usize)
-            .expect("completion for unknown cid");
+            .unwrap_or_else(|| panic!("completion for unknown cid: qid={}, cid={}", self.qid, cid));
         assert_eq!(
             command.command.cdw0.cid(),
             cid,
