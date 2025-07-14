@@ -324,6 +324,27 @@ pub async fn log_stream(
     Ok(())
 }
 
+/// Maps kernel log levels to tracing levels.
+///
+/// Linux kernel log levels are:
+/// - 0: Emergency (system is unusable)
+/// - 1: Alert (action must be taken immediately)
+/// - 2: Critical (critical conditions)
+/// - 3: Error (error conditions)
+/// - 4: Warning (warning conditions)
+/// - 5: Notice (normal but significant condition)
+/// - 6: Info (informational messages)
+/// - 7: Debug (debug-level messages)
+fn kernel_level_to_tracing_level(kernel_level: u8) -> Level {
+    match kernel_level {
+        0..=3 => Level::ERROR, // Emergency, Alert, Critical, Error
+        4 => Level::WARN,      // Warning
+        5..=6 => Level::INFO,  // Notice, Info
+        7 => Level::DEBUG,     // Debug
+        _ => Level::INFO,      // Fallback for unknown levels
+    }
+}
+
 /// read from the kmsg stream and write entries to the log
 pub async fn kmsg_log_task(
     log_file: PetriLogFile,
@@ -333,7 +354,8 @@ pub async fn kmsg_log_task(
         match data {
             Ok(data) => {
                 let message = kmsg::KmsgParsedEntry::new(&data)?;
-                log_file.write_entry(message.display(false));
+                let level = kernel_level_to_tracing_level(message.level);
+                log_file.write_entry_fmt(None, level, format_args!("{}", message.display(false)));
             }
             Err(err) => {
                 tracing::info!("kmsg disconnected: {err:?}");
@@ -343,4 +365,32 @@ pub async fn kmsg_log_task(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kernel_level_to_tracing_level() {
+        // Test emergency to error levels (0-3)
+        assert_eq!(kernel_level_to_tracing_level(0), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(1), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(2), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(3), Level::ERROR);
+
+        // Test warning level (4)
+        assert_eq!(kernel_level_to_tracing_level(4), Level::WARN);
+
+        // Test notice and info levels (5-6)
+        assert_eq!(kernel_level_to_tracing_level(5), Level::INFO);
+        assert_eq!(kernel_level_to_tracing_level(6), Level::INFO);
+
+        // Test debug level (7)
+        assert_eq!(kernel_level_to_tracing_level(7), Level::DEBUG);
+
+        // Test unknown level (fallback)
+        assert_eq!(kernel_level_to_tracing_level(8), Level::INFO);
+        assert_eq!(kernel_level_to_tracing_level(255), Level::INFO);
+    }
 }
