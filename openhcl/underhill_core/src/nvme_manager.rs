@@ -28,7 +28,6 @@ use std::collections::HashMap;
 use std::collections::hash_map;
 use thiserror::Error;
 use tracing::Instrument;
-use user_driver::vfio::PciId;
 
 /// Parameters for getting an NVMe namespace
 #[derive(Debug, Clone, MeshPayload)]
@@ -347,7 +346,7 @@ impl NvmeManagerWorker {
 
                 let device = VfioDevice::new(
                     &self.driver_source,
-                    PciId(entry.key().clone()),
+                    entry.key().clone().into(),
                     Some(name.clone()),
                     dma_client,
                 )
@@ -432,7 +431,7 @@ impl NvmeManagerWorker {
             // until it is ready, but a redesign of VfioDevice is needed.
             let vfio_device = VfioDevice::restore(
                 &self.driver_source,
-                disk.pci_id.clone(),
+                disk.pci_id.clone().into(),
                 Some(format!("restored-{}", pci_id)),
                 true,
                 dma_client,

@@ -39,7 +39,6 @@ use tracing::Instrument;
 use uevent::UeventListener;
 use user_driver::DmaClient;
 use user_driver::vfio::PciDeviceResetMethod;
-use user_driver::vfio::PciId;
 use user_driver::vfio::VfioDevice;
 use user_driver::vfio::vfio_set_device_reset_method;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -121,7 +120,7 @@ async fn try_create_mana_device(
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
-    let device = VfioDevice::new(driver_source, PciId(pci_id.to_string()), None, dma_client)
+    let device = VfioDevice::new(driver_source, pci_id.to_string().into(), None, dma_client)
         .await
         .context("failed to open device")?;
 

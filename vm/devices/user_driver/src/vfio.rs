@@ -52,9 +52,8 @@ impl std::fmt::Display for PciId {
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
 pub struct VfioDevice {
-    #[inspect(skip)]
-    pci_id: PciId,
-    debug_controller_id: Option<Arc<str>>,
+    pci_id: Arc<str>,
+    debug_bus_id: Option<Arc<str>>,
     #[inspect(skip)]
     _container: vfio_sys::Container,
     #[inspect(skip)]
@@ -85,30 +84,23 @@ impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     pub async fn new(
         driver_source: &VmTaskDriverSource,
-        pci_id: PciId,
-        debug_controller_id: Option<String>,
+        pci_id: Arc<str>,
+        debug_bus_id: Option<String>,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        Self::restore(
-            driver_source,
-            pci_id,
-            debug_controller_id,
-            false,
-            dma_client,
-        )
-        .await
+        Self::restore(driver_source, pci_id, debug_bus_id, false, dma_client).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
     /// or creates a device from the saved state if provided.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
-        pci_id: PciId,
-        debug_controller_id: Option<String>,
+        pci_id: Arc<str>,
+        debug_bus_id: Option<String>,
         keepalive: bool,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        let path = Path::new("/sys/bus/pci/devices").join(&pci_id.0);
+        let path = Path::new("/sys/bus/pci/devices").join(&*pci_id);
 
         // The vfio device attaches asynchronously after the PCI device is added,
         // so make sure that it has completed by checking for the vfio-dev subpath.
@@ -134,9 +126,9 @@ impl VfioDevice {
         container.set_iommu(IommuType::NoIommu)?;
         if keepalive {
             // Prevent physical hardware interaction when restoring.
-            group.set_keep_alive(&pci_id.0)?;
+            group.set_keep_alive(&pci_id)?;
         }
-        let device = group.open_device(&pci_id.0)?;
+        let device = group.open_device(&pci_id)?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
@@ -145,7 +137,7 @@ impl VfioDevice {
         let config_space = device.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
         let this = Self {
             pci_id,
-            debug_controller_id: debug_controller_id.map(|s| s.into()),
+            debug_bus_id: debug_bus_id.map(|s| s.into()),
             _container: container,
             _group: group,
             device: Arc::new(device),
@@ -178,13 +170,13 @@ impl VfioDevice {
     }
 
     /// Returns the debug controller ID for diagnostic purposes.
-    pub fn debug_controller_id(&self) -> Option<&str> {
-        self.debug_controller_id.as_deref()
+    pub fn debug_bus_id(&self) -> Option<&str> {
+        self.debug_bus_id.as_deref()
     }
 
     /// Returns the PCI ID for inspection purposes.
     pub fn pci_id(&self) -> &str {
-        &self.pci_id.0
+        &self.pci_id
     }
 
     pub fn read_config(&self, offset: u16) -> anyhow::Result<u32> {
@@ -257,7 +249,7 @@ impl DeviceBacking for VfioDevice {
     type Registers = MappedRegionWithFallback;
 
     fn id(&self) -> &str {
-        &self.pci_id.0
+        &self.pci_id
     }
 
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
@@ -291,7 +283,7 @@ impl DeviceBacking for VfioDevice {
         }
 
         let new_interrupt = {
-            let name = format!("vfio-interrupt-{pci_id}-{msix}", pci_id = self.pci_id);
+            let name = format!("vfio-interrupt-{pci_id}-{msix}", pci_id = &*self.pci_id);
             let driver = self
                 .driver_source
                 .builder()
@@ -310,7 +302,7 @@ impl DeviceBacking for VfioDevice {
             // The interrupt's CPU affinity will be set by the task when it
             // starts. This can block the thread briefly, so it's better to do
             // it on the target CPU.
-            let irq = vfio_sys::find_msix_irq(&self.pci_id.0, msix)
+            let irq = vfio_sys::find_msix_irq(&self.pci_id, msix)
                 .context("failed to find irq for msix")?;
 
             let target_cpu = Arc::new(AtomicU32::new(cpu));
@@ -322,7 +314,7 @@ impl DeviceBacking for VfioDevice {
                 InterruptTask {
                     driver: driver.clone(),
                     target_cpu: target_cpu.clone(),
-                    pci_id: self.pci_id.0.clone().into(),
+                    pci_id: self.pci_id.clone(),
                     msix,
                     irq,
                     event,
@@ -380,7 +372,7 @@ impl InterruptTask {
                             // However, it is not a fatal error--it will just result in
                             // worse performance--so do not panic.
                             tracing::error!(
-                                pci_id = self.pci_id.as_ref(),
+                                pci_id = &*self.pci_id,
                                 msix = self.msix,
                                 irq = self.irq,
                                 error = &err as &dyn std::error::Error,
