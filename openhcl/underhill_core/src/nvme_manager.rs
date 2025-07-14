@@ -30,15 +30,11 @@ use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::PciId;
 
-/// Strongly typed wrapper for NVMe device name (formerly debug_id/controller_instance_id)
-#[derive(Debug, Clone, PartialEq, Eq, MeshPayload)]
-pub struct NvmeDeviceName(pub String);
-
 /// Parameters for getting an NVMe namespace
 #[derive(Debug, Clone, MeshPayload)]
 pub struct GetNamespaceParams {
-    pub name: NvmeDeviceName,
-    pub pci_id: PciId,
+    pub debug_host_id: String,
+    pub pci_id: String,
     pub nsid: u32,
 }
 use user_driver::vfio::VfioDevice;
@@ -204,13 +200,13 @@ pub struct NvmeManagerClient {
 impl NvmeManagerClient {
     pub async fn get_namespace(
         &self,
-        name: String,
+        debug_host_id: String,
         pci_id: String,
         nsid: u32,
     ) -> anyhow::Result<nvme_driver::Namespace> {
         let params = GetNamespaceParams {
-            name: NvmeDeviceName(name),
-            pci_id: PciId(pci_id),
+            debug_host_id,
+            pci_id,
             nsid,
         };
         Ok(self
@@ -218,8 +214,8 @@ impl NvmeManagerClient {
             .call(Request::GetNamespace, params.clone())
             .instrument(tracing::info_span!(
                 "nvme_get_namespace",
-                name = params.name.0,
-                pci_id = params.pci_id.0,
+                debug_host_id = params.debug_host_id,
+                pci_id = params.pci_id,
                 nsid
             ))
             .await
@@ -274,9 +270,9 @@ impl NvmeManagerWorker {
                 }
                 Request::GetNamespace(rpc) => {
                     rpc.handle(async |params| {
-                        self.get_namespace(params.name.0, params.pci_id.0.clone(), params.nsid)
+                        self.get_namespace(params.debug_host_id, params.pci_id.clone(), params.nsid)
                             .map_err(|source| NamespaceError {
-                                pci_id: params.pci_id.0,
+                                pci_id: params.pci_id,
                                 source,
                             })
                             .await
