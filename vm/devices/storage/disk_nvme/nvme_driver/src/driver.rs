@@ -1169,8 +1169,6 @@ pub mod save_restore {
         pub next_cid_high_bits: u16,
         #[mesh(3)]
         pub cid_key_bits: u32,
-        #[mesh(4)]
-        pub qid: u16,
     }
 
     /// NVMe namespace data.
