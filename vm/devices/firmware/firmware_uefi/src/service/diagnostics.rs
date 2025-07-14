@@ -21,7 +21,6 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::mem::size_of;
-use std::task::Context;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
@@ -31,7 +30,6 @@ use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
-use watchdog_core::platform::WatchdogCallback;
 use zerocopy::FromBytes;
 
 /// 8-byte alignment for every entry
@@ -258,18 +256,14 @@ pub struct DiagnosticsServices {
     gpa: Option<u32>,
     /// Flag to indicate if we have already processed the buffer
     did_process: bool,
-    /// Channel receiver for flushing diagnostics
-    #[inspect(skip)]
-    pub flush_recv: mesh::Receiver<()>,
 }
 
 impl DiagnosticsServices {
     /// Create a new instance of the diagnostics services
-    pub fn new(flush_recv: mesh::Receiver<()>) -> DiagnosticsServices {
+    pub fn new() -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
             did_process: false,
-            flush_recv,
         }
     }
 
@@ -287,40 +281,25 @@ impl DiagnosticsServices {
         }
     }
 
-    /// Poll the diagnostics services for any pending timeouts
-    pub fn poll(&mut self, cx: &mut Context<'_>) {
-        while self.flush_recv.poll_recv(cx).is_ready() {
-            tracing::info!("Received poll, could process diagnostics...");
-        }
-    }
-
-    /// Process diagnostics if it has not been processed before
-    pub fn rate_limited_process_diagnostics(
+    /// Processes diagnostics from guest memory
+    fn process_diagnostics<F>(
         &mut self,
-        gm: &GuestMemory,
-    ) -> Result<(), DiagnosticsError> {
-        if self.did_process {
-            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
-            return Ok(());
-        }
-        self.did_process = true;
-        self.process_diagnostics_inner(gm, handle_efi_diagnostics_log)
-    }
-
-    /// Forcefully process diagnostics regardless of previous state
-    pub fn force_process_diagnostics(&mut self, gm: &GuestMemory) -> Result<(), DiagnosticsError> {
-        self.process_diagnostics_inner(gm, handle_efi_diagnostics_log)
-    }
-
-    /// Internal logic to process diagnostics from guest memory
-    fn process_diagnostics_inner<F>(
-        &mut self,
+        force: bool,
         gm: &GuestMemory,
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
     where
         F: FnMut(EfiDiagnosticsLog<'_>),
     {
+        // Enforce rate limit if we are not forcing processing
+        if !force {
+            if self.did_process {
+                tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
+                return Ok(());
+            }
+            self.did_process = true;
+        }
+
         // Validate the GPA
         let gpa = match self.gpa {
             Some(gpa) if gpa != 0 && gpa != u32::MAX => gpa,
@@ -475,37 +454,18 @@ impl DiagnosticsServices {
 
 impl UefiDevice {
     /// Processes UEFI diagnostics from guest memory
-    pub(crate) fn process_diagnostics(&mut self) {
-        if let Err(error) = self
-            .service
-            .diagnostics
-            .rate_limited_process_diagnostics(&self.gm)
-        {
+    pub(crate) fn process_diagnostics(&mut self, force: bool, context: &str) {
+        if let Err(error) = self.service.diagnostics.process_diagnostics(
+            force,
+            &self.gm,
+            handle_efi_diagnostics_log,
+        ) {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
+                context,
                 "failed to process diagnostics buffer"
             );
         }
-    }
-}
-
-/// Watchdog callback for diagnostics processing
-pub struct DiagnosticsWatchdogCallback {
-    /// Channel sender that sends notification on watchdog timeout
-    flush_send: mesh::Sender<()>,
-}
-
-impl DiagnosticsWatchdogCallback {
-    /// Create a new diagnostics watchdog callback
-    pub fn new(flush_send: mesh::Sender<()>) -> Self {
-        Self { flush_send }
-    }
-}
-
-#[async_trait::async_trait]
-impl WatchdogCallback for DiagnosticsWatchdogCallback {
-    async fn on_timeout(&mut self) {
-        self.flush_send.send(());
     }
 }
 

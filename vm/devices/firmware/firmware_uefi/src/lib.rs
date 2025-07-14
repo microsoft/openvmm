@@ -133,6 +133,7 @@ pub struct UefiRuntimeDeps<'a> {
     pub logger: Box<dyn UefiLogger>,
     pub vmtime: &'a VmTimeSource,
     pub watchdog_platform: Box<dyn WatchdogPlatform>,
+    pub watchdog_recv: mesh::Receiver<()>,
     pub generation_id_deps: generation_id::GenerationIdRuntimeDeps,
     pub vsm_config: Option<Box<dyn VsmConfig>>,
     pub time_source: Box<dyn InspectableLocalClock>,
@@ -156,6 +157,10 @@ pub struct UefiDevice {
     // Volatile state
     #[inspect(hex)]
     address: u32,
+
+    // Receiver for watchdog timeout events
+    #[inspect(skip)]
+    watchdog_recv: mesh::Receiver<()>,
 }
 
 impl UefiDevice {
@@ -169,17 +174,12 @@ impl UefiDevice {
             nvram_storage,
             logger,
             vmtime,
-            mut watchdog_platform,
+            watchdog_platform,
+            watchdog_recv,
             generation_id_deps,
             vsm_config,
             time_source,
         } = runtime_deps;
-
-        // Setup channel ends and callback for flushing diagnostics on watchdog timeout
-        let (flush_send, flush_recv) = mesh::channel();
-        watchdog_platform.add_callback(Box::new(
-            service::diagnostics::DiagnosticsWatchdogCallback::new(flush_send),
-        ));
 
         // Create the UEFI device with the rest of the services.
         let uefi = UefiDevice {
@@ -187,6 +187,7 @@ impl UefiDevice {
             command_set: cfg.command_set,
             address: 0,
             gm,
+            watchdog_recv,
             service: UefiDeviceServices {
                 nvram: service::nvram::NvramServices::new(
                     nvram_storage,
@@ -208,7 +209,7 @@ impl UefiDevice {
                     generation_id_deps,
                 ),
                 time: service::time::TimeServices::new(time_source),
-                diagnostics: service::diagnostics::DiagnosticsServices::new(flush_recv),
+                diagnostics: service::diagnostics::DiagnosticsServices::new(),
             },
         };
 
@@ -264,21 +265,16 @@ impl UefiDevice {
                 }
             }
             UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
-                tracing::debug!(?addr, data, "set gpa for diagnostics");
+                tracelimit::info_ratelimited!(?addr, data, "set gpa for diagnostics");
                 self.service.diagnostics.set_gpa(data)
             }
-            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(),
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(false, "guest"),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }
 
     fn inspect_extra(&mut self, _resp: &mut inspect::Response<'_>) {
-        if let Err(error) = self.service.diagnostics.force_process_diagnostics(&self.gm) {
-            tracelimit::error_ratelimited!(
-                error = &error as &dyn std::error::Error,
-                "failed to force process diagnostics on inspect"
-            );
-        }
+        self.process_diagnostics(true, "inspect_extra");
     }
 }
 
@@ -314,9 +310,17 @@ impl ChipsetDevice for UefiDevice {
 
 impl PollDevice for UefiDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
+        tracing::info!("polling...");
+
+        // Poll services
         self.service.uefi_watchdog.watchdog.poll(cx);
         self.service.generation_id.poll(cx);
-        self.service.diagnostics.poll(cx);
+
+        // Poll watchdog timeout events
+        if self.watchdog_recv.poll_recv(cx).is_ready() {
+            tracing::info!("watchdog timeout received");
+            self.process_diagnostics(false, "watchdog timeout");
+        }
     }
 }
 
@@ -502,6 +506,7 @@ mod save_restore {
                 use_mmio: _,
                 command_set: _,
                 gm: _,
+                watchdog_recv: _,
                 service:
                     UefiDeviceServices {
                         nvram,

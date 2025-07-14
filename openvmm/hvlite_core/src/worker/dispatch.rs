@@ -1051,6 +1051,7 @@ impl InitializedVm {
         let mut deps_hyperv_firmware_uefi = None;
         match &cfg.load_mode {
             LoadMode::Uefi { .. } => {
+                let (watchdog_send, watchdog_recv) = mesh::channel();
                 deps_hyperv_firmware_uefi = Some(dev::HyperVFirmwareUefi {
                     config: firmware_uefi::UefiConfig {
                         custom_uefi_vars: cfg.custom_uefi_vars,
@@ -1102,12 +1103,14 @@ impl InitializedVm {
                         #[cfg(guest_arch = "x86_64")]
                         let watchdog_callback = WatchdogTimeoutNmi {
                             partition: partition.clone(),
+                            watchdog_send: Some(watchdog_send),
                         };
 
                         // ARM64 does not have NMI support yet, so halt instead
                         #[cfg(guest_arch = "aarch64")]
                         let watchdog_callback = WatchdogTimeoutReset {
                             halt_vps: halt_vps.clone(),
+                            watchdog_send: Some(watchdog_send),
                         };
 
                         // Add callbacks
@@ -1115,6 +1118,7 @@ impl InitializedVm {
 
                         Box::new(base_watchdog_platform)
                     },
+                    watchdog_recv,
                     vsm_config: None,
                     // TODO: persist SystemTimeClock time across reboots.
                     time_source: Box::new(local_clock::SystemTimeClock::new(
@@ -1335,6 +1339,7 @@ impl InitializedVm {
                     // Create callback to reset on watchdog timeout
                     let watchdog_callback = WatchdogTimeoutReset {
                         halt_vps: halt_vps.clone(),
+                        watchdog_send: None,
                     };
 
                     // Add callbacks
@@ -2996,6 +3001,7 @@ fn add_devices_to_dsdt(
 #[cfg(guest_arch = "x86_64")]
 struct WatchdogTimeoutNmi {
     partition: Arc<dyn HvlitePartition>,
+    watchdog_send: Option<mesh::Sender<()>>,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -3007,16 +3013,25 @@ impl WatchdogCallback for WatchdogTimeoutNmi {
             Vtl::Vtl0,
             virt::irqcon::MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
         );
+
+        if let Some(watchdog_send) = self.watchdog_send.take() {
+            watchdog_send.send(());
+        }
     }
 }
 
 struct WatchdogTimeoutReset {
     halt_vps: Arc<Halt>,
+    watchdog_send: Option<mesh::Sender<()>>,
 }
 
 #[async_trait::async_trait]
 impl WatchdogCallback for WatchdogTimeoutReset {
     async fn on_timeout(&mut self) {
-        self.halt_vps.halt(HaltReason::Reset)
+        self.halt_vps.halt(HaltReason::Reset);
+
+        if let Some(watchdog_send) = self.watchdog_send.take() {
+            watchdog_send.send(());
+        }
     }
 }
