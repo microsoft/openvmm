@@ -139,7 +139,7 @@ impl PendingCommands {
     }
 
     /// Restore pending commands from the saved state.
-    pub fn restore(saved_state: &PendingCommandsSavedState, qid: &u16) -> anyhow::Result<Self> {
+    pub fn restore(saved_state: &PendingCommandsSavedState, qid: u16) -> anyhow::Result<Self> {
         let PendingCommandsSavedState {
             commands,
             next_cid_high_bits,
@@ -164,7 +164,7 @@ impl PendingCommands {
                 })
                 .collect::<Slab<PendingCommand>>(),
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
-            qid: *qid,
+            qid,
         })
     }
 }
@@ -754,7 +754,7 @@ impl QueueHandler {
         Ok(Self {
             sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
             cq: CompletionQueue::restore(cq_mem_block, cq_state)?,
-            commands: PendingCommands::restore(pending_cmds, &sq_state.sqid)?,
+            commands: PendingCommands::restore(pending_cmds, sq_state.sqid)?,
             stats: Default::default(),
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
