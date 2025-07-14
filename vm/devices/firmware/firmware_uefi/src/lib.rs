@@ -67,14 +67,14 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
+use mesh::RecvError;
 use pal_async::local::block_on;
-use parking_lot::Mutex;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
-use std::sync::Arc;
 use std::task::Context;
+use std::task::Poll;
 use thiserror::Error;
 use uefi_nvram_storage::VmmNvramStorage;
 use vmcore::device_state::ChangeDeviceState;
@@ -106,7 +106,7 @@ struct UefiDeviceServices {
     generation_id: service::generation_id::GenerationIdServices,
     #[inspect(mut)]
     time: service::time::TimeServices,
-    diagnostics: Arc<Mutex<service::diagnostics::DiagnosticsServices>>,
+    diagnostics: service::diagnostics::DiagnosticsServices,
 }
 
 // Begin and end range are inclusive.
@@ -177,12 +177,10 @@ impl UefiDevice {
             time_source,
         } = runtime_deps;
 
-        // Create diagnostics serparately since it will be shared.
-        let diagnostics = Arc::new(Mutex::new(service::diagnostics::DiagnosticsServices::new()));
-
-        // Add a watchdog callback to process diagnostics on timeout.
+        // Setup channel ends and callback for flushing diagnostics on watchdog timeout
+        let (flush_send, flush_recv) = mesh::channel();
         watchdog_platform.add_callback(Box::new(
-            service::diagnostics::DiagnosticsWatchdogCallback::new(diagnostics.clone(), gm.clone()),
+            service::diagnostics::DiagnosticsWatchdogCallback::new(flush_send),
         ));
 
         // Create the UEFI device with the rest of the services.
@@ -212,7 +210,7 @@ impl UefiDevice {
                     generation_id_deps,
                 ),
                 time: service::time::TimeServices::new(time_source),
-                diagnostics,
+                diagnostics: service::diagnostics::DiagnosticsServices::new(flush_recv),
             },
         };
 
@@ -268,8 +266,8 @@ impl UefiDevice {
                 }
             }
             UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
-                tracelimit::info_ratelimited!(?addr, data, "set gpa for diagnostics");
-                self.service.diagnostics.lock().set_gpa(data)
+                tracing::debug!(?addr, data, "set gpa for diagnostics");
+                self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.ratelimited_process_diagnostics(),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
@@ -293,7 +291,7 @@ impl ChangeDeviceState for UefiDevice {
         self.service.event_log.reset();
         self.service.uefi_watchdog.watchdog.reset();
         self.service.generation_id.reset();
-        self.service.diagnostics.lock().reset();
+        self.service.diagnostics.reset();
     }
 }
 
@@ -315,6 +313,19 @@ impl PollDevice for UefiDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
         self.service.uefi_watchdog.watchdog.poll(cx);
         self.service.generation_id.poll(cx);
+
+        while let Poll::Ready(val) = self.service.diagnostics.flush_recv.poll_recv(cx) {
+            match val {
+                Ok(_) => self.force_process_diagnostics("poll"),
+                Err(RecvError::Closed) => break,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to receive diagnostics flush"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -520,7 +531,7 @@ mod save_restore {
                 watchdog: uefi_watchdog.save()?,
                 generation_id: generation_id.save()?,
                 time: time.save()?,
-                diagnostics: diagnostics.lock().save()?,
+                diagnostics: diagnostics.save()?,
             })
         }
 
@@ -543,7 +554,7 @@ mod save_restore {
             self.service.uefi_watchdog.restore(watchdog)?;
             self.service.generation_id.restore(generation_id)?;
             self.service.time.restore(time)?;
-            self.service.diagnostics.lock().restore(diagnostics)?;
+            self.service.diagnostics.restore(diagnostics)?;
 
             Ok(())
         }

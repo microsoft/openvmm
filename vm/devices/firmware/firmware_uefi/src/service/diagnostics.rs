@@ -17,12 +17,10 @@ use crate::UefiDevice;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
-use parking_lot::Mutex;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::mem::size_of;
-use std::sync::Arc;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
@@ -259,14 +257,18 @@ pub struct DiagnosticsServices {
     gpa: Option<u32>,
     /// Flag to indicate if we have already processed the buffer
     did_process: bool,
+    /// Channel receiver for flushing diagnostics
+    #[inspect(skip)]
+    pub flush_recv: mesh::Receiver<()>,
 }
 
 impl DiagnosticsServices {
     /// Create a new instance of the diagnostics services
-    pub fn new() -> DiagnosticsServices {
+    pub fn new(flush_recv: mesh::Receiver<()>) -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
             did_process: false,
+            flush_recv,
         }
     }
 
@@ -448,9 +450,12 @@ impl DiagnosticsServices {
 impl UefiDevice {
     /// Invokes the diagnostics service to process the diagnostics buffer
     /// with a handler function that logs the entries to tracing
-    fn process_diagnostics_inner(&self, context: &str) {
-        let mut diagnostics = self.service.diagnostics.lock();
-        if let Err(error) = diagnostics.process_diagnostics(&self.gm, handle_efi_diagnostics_log) {
+    fn process_diagnostics_inner(&mut self, context: &str) {
+        if let Err(error) = self
+            .service
+            .diagnostics
+            .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
+        {
             tracing::error!(
                 error = &error as &dyn std::error::Error,
                 context,
@@ -465,11 +470,11 @@ impl UefiDevice {
     /// PROCESS_EFI_DIAGNOSTICS UefiCommand
     pub(crate) fn ratelimited_process_diagnostics(&mut self) {
         // Do not proceed if we have already processed before
-        if self.service.diagnostics.lock().did_process {
+        if self.service.diagnostics.did_process {
             tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
             return;
         }
-        self.service.diagnostics.lock().did_process = true;
+        self.service.diagnostics.did_process = true;
         self.process_diagnostics_inner("guest");
     }
 
@@ -481,31 +486,21 @@ impl UefiDevice {
 
 /// Watchdog callback for diagnostics processing
 pub struct DiagnosticsWatchdogCallback {
-    diagnostics: Arc<Mutex<DiagnosticsServices>>,
-    gm: GuestMemory,
+    /// Channel sender that sends notification on watchdog timeout
+    flush_send: mesh::Sender<()>,
 }
 
 impl DiagnosticsWatchdogCallback {
     /// Create a new diagnostics watchdog callback
-    pub fn new(diagnostics: Arc<Mutex<DiagnosticsServices>>, gm: GuestMemory) -> Self {
-        Self { diagnostics, gm }
+    pub fn new(flush_send: mesh::Sender<()>) -> Self {
+        Self { flush_send }
     }
 }
 
 #[async_trait::async_trait]
 impl WatchdogCallback for DiagnosticsWatchdogCallback {
     async fn on_timeout(&mut self) {
-        if let Err(error) = self
-            .diagnostics
-            .lock()
-            .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
-        {
-            tracing::error!(
-                error = &error as &dyn std::error::Error,
-                context = "watchdog timeout",
-                "failed to process diagnostics buffer"
-            );
-        }
+        self.flush_send.send(());
     }
 }
 
