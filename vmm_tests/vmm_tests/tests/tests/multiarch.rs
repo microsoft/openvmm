@@ -6,6 +6,8 @@
 use anyhow::Context;
 use futures::StreamExt;
 use get_resources::ged::FirmwareEvent;
+use guid::Guid;
+use hvlite_defs::config::DeviceVtl;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
@@ -19,7 +21,13 @@ use petri::openvmm::PetriVmConfigOpenVmm;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
+use scsidisk_resources::SimpleScsiDiskHandle;
+use scsidisk_resources::SimpleScsiDvdHandle;
 use std::time::Duration;
+use storvsp_resources::ScsiControllerHandle;
+use storvsp_resources::ScsiDeviceAndPath;
+use storvsp_resources::ScsiPath;
+use vm_resource::IntoResource;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
@@ -439,6 +447,33 @@ async fn vmbus_relay_heavy(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()>
         })
         .run_without_agent()
         .await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Test for SCSI to SCSI relay with TDX
+/// This test validates that storage relayed through VTL2 (OpenHCL) works for TDX VMs
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn scsi_to_scsi_relay_tdx(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Test for DVD functionality relayed through OpenHCL for TDX VMs
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn dvd_relay_tdx(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
