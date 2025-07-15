@@ -150,7 +150,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     GuestSecureBootTemplateType::MicrosoftWindows => {
                         SecureBootTemplateType::MICROSOFT_WINDOWS
                     }
-                    GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy => {
+                    GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
                         SecureBootTemplateType::MICROSOFT_UEFI_CERTIFICATE_AUTHORITY
                     }
                 },

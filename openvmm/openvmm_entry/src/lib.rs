@@ -963,7 +963,7 @@ fn vm_config_from_command_line(
                             get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows
                         },
                         Some(SecureBootTemplateCli::UefiCa) => {
-                            get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy
+                            get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority
                         }
                         None => {
                             get_resources::ged::GuestSecureBootTemplateType::None

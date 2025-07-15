@@ -5,7 +5,7 @@
 
 use super::PetriVmResourcesOpenVmm;
 use crate::OpenHclServicingFlags;
-use crate::PetriVm;
+use crate::PetriVmRuntime;
 use crate::ShutdownKind;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::worker::Worker;
@@ -28,7 +28,6 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::GuestQuirks;
-use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::future::Future;
@@ -37,6 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use unix_socket::UnixListener;
 use vmm_core_defs::HaltReason;
+use vtl2_settings_proto::Vtl2Settings;
 
 /// A running VM that tests can interact with.
 // DEVNOTE: Really the PetriVmInner is the actual VM and channels that we interact
@@ -48,29 +48,48 @@ pub struct PetriVmOpenVmm {
 }
 
 #[async_trait]
-impl PetriVm for PetriVmOpenVmm {
-    fn arch(&self) -> MachineArch {
-        self.inner.arch
+impl PetriVmRuntime for PetriVmOpenVmm {
+    async fn teardown(self) -> anyhow::Result<()> {
+        tracing::info!("cancelling watchdogs");
+        futures::future::join_all(self.inner.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
+
+        tracing::info!("Cancelled watchdogs, waiting for worker");
+        let worker = Arc::into_inner(self.inner.worker)
+            .expect("Watchdog task was cancelled, we should be the only ref left");
+        worker.shutdown().await?;
+
+        tracing::info!("Worker quit, waiting for mesh");
+        self.inner.mesh.shutdown().await;
+
+        tracing::info!("Mesh shutdown, waiting for logging tasks");
+        for t in self.inner.resources.log_stream_tasks {
+            t.await?;
+        }
+
+        Ok(())
     }
 
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        Self::wait_for_halt(self).await
+        let halt_reason = if let Some(already) = self.halt.already_received.take() {
+            already.map_err(anyhow::Error::from)
+        } else {
+            self.halt
+                .halt_notif
+                .recv()
+                .await
+                .context("Failed to get halt reason")
+        }?;
+
+        tracing::info!(?halt_reason, "Got halt reason");
+        Ok(halt_reason)
     }
 
-    async fn wait_for_teardown(self: Box<Self>) -> anyhow::Result<HaltReason> {
-        Self::wait_for_teardown(*self).await
+    async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
+        Self::wait_for_agent(self, set_high_vtl).await
     }
 
-    async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
-        Self::test_inspect_openhcl(self).await
-    }
-
-    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
-        Self::wait_for_agent(self).await
-    }
-
-    async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
-        Self::wait_for_vtl2_ready(self).await
+    fn openhcl_diag(&self) -> Option<&OpenHclDiagHandler> {
+        self.inner.resources.openhcl_diag_handler.as_ref()
     }
 
     async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
@@ -85,10 +104,6 @@ impl PetriVm for PetriVmOpenVmm {
         Self::send_enlightened_shutdown(self, kind).await
     }
 
-    async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient> {
-        Self::wait_for_vtl2_agent(self).await
-    }
-
     async fn restart_openhcl(
         &mut self,
         new_openhcl: &ResolvedArtifact,
@@ -99,7 +114,6 @@ impl PetriVm for PetriVmOpenVmm {
 }
 
 pub(super) struct PetriVmInner {
-    pub(super) arch: MachineArch,
     pub(super) resources: PetriVmResourcesOpenVmm,
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
@@ -123,6 +137,8 @@ macro_rules! petri_vm_fn {
     };
 }
 
+// TODO: Add all runtime functions that are not backend specific
+// to the `PetriVmRuntime` trait
 impl PetriVmOpenVmm {
     pub(super) fn new(inner: PetriVmInner, halt_notif: Receiver<HaltReason>) -> Self {
         Self {
@@ -143,39 +159,12 @@ impl PetriVmOpenVmm {
             .context("VM is not configured with OpenHCL")
     }
 
-    /// Wait for the VM to halt, returning the reason for the halt.
-    pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        if let Some(already) = self.halt.already_received.take() {
-            already.map_err(anyhow::Error::from)
-        } else {
-            self.halt
-                .halt_notif
-                .recv()
-                .await
-                .context("Failed to get halt reason")
-        }
-    }
-
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and cleanly tear down the VM.
     pub async fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
         let halt_reason = self.wait_for_halt().await?;
 
-        tracing::info!(?halt_reason, "Got halt reason, cancelling watchdogs");
-        futures::future::join_all(self.inner.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
-
-        tracing::info!(?halt_reason, "Cancelled watchdogs, waiting for worker");
-        let worker = Arc::into_inner(self.inner.worker)
-            .expect("Watchdog task was cancelled, we should be the only ref left");
-        worker.shutdown().await?;
-
-        tracing::info!("Worker quit, waiting for mesh");
-        self.inner.mesh.shutdown().await;
-
-        tracing::info!("Mesh shutdown, waiting for logging tasks");
-        for t in self.inner.resources.log_stream_tasks {
-            t.await?;
-        }
+        self.teardown().await?;
 
         Ok(halt_reason)
     }
@@ -238,11 +227,6 @@ impl PetriVmOpenVmm {
         pub async fn kmsg(&mut self) -> anyhow::Result<KmsgStream>
     );
     petri_vm_fn!(
-        /// Wait for a connection from a pipette agent running in the guest.
-        /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
-        pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>
-    );
-    petri_vm_fn!(
         /// Wait for VTL 2 to report that it is ready to respond to commands.
         /// Will fail if the VM is not running OpenHCL.
         ///
@@ -251,14 +235,12 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
-        /// Wait for a connection from a pipette agent running in VTL 2.
-        /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
-        /// Will fail if the VM is not running OpenHCL.
-        pub async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient>
+        /// Wait for a connection from a pipette agent
+        pub async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>
     );
     petri_vm_fn!(
         /// Modifies OpenHCL VTL2 settings.
-        pub async fn modify_vtl2_settings(&mut self, settings: &vtl2_settings_proto::Vtl2Settings) -> anyhow::Result<()>
+        pub async fn modify_vtl2_settings(&mut self, f: impl FnOnce(&mut Vtl2Settings)) -> anyhow::Result<()>
     );
 
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
@@ -449,9 +431,11 @@ impl PetriVmInner {
     }
 
     async fn modify_vtl2_settings(
-        &self,
-        settings: &vtl2_settings_proto::Vtl2Settings,
+        &mut self,
+        f: impl FnOnce(&mut Vtl2Settings),
     ) -> anyhow::Result<()> {
+        f(self.resources.vtl2_settings.as_mut().unwrap());
+
         let ged_send = self
             .resources
             .ged_send
@@ -461,7 +445,7 @@ impl PetriVmInner {
         ged_send
             .call_failable(
                 get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
-                prost::Message::encode_to_vec(settings),
+                prost::Message::encode_to_vec(self.resources.vtl2_settings.as_ref().unwrap()),
             )
             .await?;
 
@@ -487,28 +471,21 @@ impl PetriVmInner {
         self.openhcl_diag()?.kmsg().await
     }
 
-    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
-        Self::wait_for_agent_core(
-            &self.resources.driver,
-            &mut self.resources.pipette_listener,
-            &self.resources.output_dir,
-        )
-        .await
-    }
-
     async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
         self.openhcl_diag()?.wait_for_vtl2().await
     }
 
-    async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient> {
-        // VTL 2's pipette doesn't auto launch, only launch it on demand
-        self.launch_vtl2_pipette().await?;
+    async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
         Self::wait_for_agent_core(
             &self.resources.driver,
-            self.resources
-                .vtl2_pipette_listener
-                .as_mut()
-                .context("VM is not configured with VTL 2")?,
+            if set_high_vtl {
+                self.resources
+                    .vtl2_pipette_listener
+                    .as_mut()
+                    .context("VM is not configured with VTL 2")?
+            } else {
+                &mut self.resources.pipette_listener
+            },
             &self.resources.output_dir,
         )
         .await
@@ -568,26 +545,6 @@ impl PetriVmInner {
             .unwrap()
             .run_command("mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'")
             .await?;
-        Ok(())
-    }
-
-    async fn launch_vtl2_pipette(&mut self) -> anyhow::Result<()> {
-        // Start pipette through DiagClient
-        let res = self
-            .openhcl_diag()?
-            .run_vtl2_command(
-                "sh",
-                &[
-                    "-c",
-                    "mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'",
-                ],
-            )
-            .await?;
-
-        if !res.exit_status.success() {
-            anyhow::bail!("Failed to start VTL 2 pipette: {:?}", res);
-        }
-
         Ok(())
     }
 
