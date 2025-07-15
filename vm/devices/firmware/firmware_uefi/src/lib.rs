@@ -68,13 +68,12 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
 use pal_async::local::block_on;
-use parking_lot::Mutex;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
-use std::sync::Arc;
 use std::task::Context;
+use std::task::Poll;
 use thiserror::Error;
 use uefi_nvram_storage::InspectableNvramStorage;
 use vmcore::device_state::ChangeDeviceState;
@@ -106,7 +105,7 @@ struct UefiDeviceServices {
     generation_id: service::generation_id::GenerationIdServices,
     #[inspect(mut)]
     time: service::time::TimeServices,
-    diagnostics: Arc<Mutex<service::diagnostics::DiagnosticsServices>>,
+    diagnostics: service::diagnostics::DiagnosticsServices,
 }
 
 // Begin and end range are inclusive.
@@ -135,6 +134,7 @@ pub struct UefiRuntimeDeps<'a> {
     pub logger: Box<dyn UefiLogger>,
     pub vmtime: &'a VmTimeSource,
     pub watchdog_platform: Box<dyn WatchdogPlatform>,
+    pub watchdog_recv: mesh::Receiver<()>,
     pub generation_id_deps: generation_id::GenerationIdRuntimeDeps,
     pub vsm_config: Option<Box<dyn VsmConfig>>,
     pub time_source: Box<dyn InspectableLocalClock>,
@@ -158,6 +158,10 @@ pub struct UefiDevice {
     // Volatile state
     #[inspect(hex)]
     address: u32,
+
+    // Receiver for watchdog timeout events
+    #[inspect(skip)]
+    watchdog_recv: mesh::Receiver<()>,
 }
 
 impl UefiDevice {
@@ -171,19 +175,12 @@ impl UefiDevice {
             nvram_storage,
             logger,
             vmtime,
-            mut watchdog_platform,
+            watchdog_platform,
+            watchdog_recv,
             generation_id_deps,
             vsm_config,
             time_source,
         } = runtime_deps;
-
-        // Create diagnostics serparately since it will be shared.
-        let diagnostics = Arc::new(Mutex::new(service::diagnostics::DiagnosticsServices::new()));
-
-        // Add a watchdog callback to process diagnostics on timeout.
-        watchdog_platform.add_callback(Box::new(
-            service::diagnostics::DiagnosticsWatchdogCallback::new(diagnostics.clone(), gm.clone()),
-        ));
 
         // Create the UEFI device with the rest of the services.
         let uefi = UefiDevice {
@@ -191,6 +188,7 @@ impl UefiDevice {
             command_set: cfg.command_set,
             address: 0,
             gm,
+            watchdog_recv,
             service: UefiDeviceServices {
                 nvram: service::nvram::NvramServices::new(
                     nvram_storage,
@@ -212,7 +210,7 @@ impl UefiDevice {
                     generation_id_deps,
                 ),
                 time: service::time::TimeServices::new(time_source),
-                diagnostics,
+                diagnostics: service::diagnostics::DiagnosticsServices::new(),
             },
         };
 
@@ -269,15 +267,15 @@ impl UefiDevice {
             }
             UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
                 tracelimit::info_ratelimited!(?addr, data, "set gpa for diagnostics");
-                self.service.diagnostics.lock().set_gpa(data)
+                self.service.diagnostics.set_gpa(data)
             }
-            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.ratelimited_process_diagnostics(),
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(false, "guest"),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }
 
     fn inspect_extra(&mut self, _resp: &mut inspect::Response<'_>) {
-        self.force_process_diagnostics("inspect");
+        self.process_diagnostics(true, "inspect_extra");
     }
 }
 
@@ -293,7 +291,7 @@ impl ChangeDeviceState for UefiDevice {
         self.service.event_log.reset();
         self.service.uefi_watchdog.watchdog.reset();
         self.service.generation_id.reset();
-        self.service.diagnostics.lock().reset();
+        self.service.diagnostics.reset();
     }
 }
 
@@ -313,8 +311,15 @@ impl ChipsetDevice for UefiDevice {
 
 impl PollDevice for UefiDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
+        // Poll services
         self.service.uefi_watchdog.watchdog.poll(cx);
         self.service.generation_id.poll(cx);
+
+        // Poll watchdog timeout events
+        if let Poll::Ready(Ok(())) = self.watchdog_recv.poll_recv(cx) {
+            tracing::info!("watchdog timeout received");
+            self.process_diagnostics(true, "watchdog timeout");
+        }
     }
 }
 
@@ -500,6 +505,7 @@ mod save_restore {
                 use_mmio: _,
                 command_set: _,
                 gm: _,
+                watchdog_recv: _,
                 service:
                     UefiDeviceServices {
                         nvram,
@@ -520,7 +526,7 @@ mod save_restore {
                 watchdog: uefi_watchdog.save()?,
                 generation_id: generation_id.save()?,
                 time: time.save()?,
-                diagnostics: diagnostics.lock().save()?,
+                diagnostics: diagnostics.save()?,
             })
         }
 
@@ -543,7 +549,7 @@ mod save_restore {
             self.service.uefi_watchdog.restore(watchdog)?;
             self.service.generation_id.restore(generation_id)?;
             self.service.time.restore(time)?;
-            self.service.diagnostics.lock().restore(diagnostics)?;
+            self.service.diagnostics.restore(diagnostics)?;
 
             Ok(())
         }

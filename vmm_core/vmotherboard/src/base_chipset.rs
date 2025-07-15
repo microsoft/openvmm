@@ -605,6 +605,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             nvram_storage,
             generation_id_recv,
             watchdog_platform,
+            watchdog_recv,
             vsm_config,
             time_source,
         }) = deps_hyperv_firmware_uefi
@@ -628,6 +629,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                         logger,
                         vmtime,
                         watchdog_platform,
+                        watchdog_recv,
                         generation_id_deps: generation_id::GenerationIdRuntimeDeps {
                             generation_id_recv,
                             gm,
@@ -1324,6 +1326,8 @@ pub mod options {
             /// Device-specific functions the platform must provide in order
             /// to use the UEFI watchdog device.
             pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
+            /// Channel receiver for watchdog timeout notifications.
+            pub watchdog_recv: mesh::Receiver<()>,
             /// Interface to revoke VSM on `ExitBootServices()` if requested
             /// by the guest.
             pub vsm_config: Option<Box<dyn firmware_uefi::platform::nvram::VsmConfig>>,

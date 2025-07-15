@@ -17,12 +17,10 @@ use crate::UefiDevice;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
-use parking_lot::Mutex;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::mem::size_of;
-use std::sync::Arc;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
@@ -32,7 +30,6 @@ use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
 use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
-use watchdog_core::platform::WatchdogCallback;
 use zerocopy::FromBytes;
 
 /// 8-byte alignment for every entry
@@ -141,8 +138,6 @@ pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
 pub enum EntryParseError {
     #[error("Expected: {0:#x}, got: {1:#x}")]
     SignatureMismatch(u32, u32),
-    #[error("Expected non-zero timestamp, got: {0:#x}")]
-    Timestamp(u64),
     #[error("Expected message length < {0:#x}, got: {1:#x}")]
     MessageLength(u16, u16),
     #[error("Failed to read from buffer slice")]
@@ -257,8 +252,8 @@ pub enum DiagnosticsError {
 pub struct DiagnosticsServices {
     /// The guest physical address of the diagnostics buffer
     gpa: Option<u32>,
-    /// Flag to indicate if we have already processed the buffer
-    did_process: bool,
+    /// Flag indicating if guest-initiated processing has occurred before
+    has_guest_processed_before: bool,
 }
 
 impl DiagnosticsServices {
@@ -266,14 +261,14 @@ impl DiagnosticsServices {
     pub fn new() -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
-            did_process: false,
+            has_guest_processed_before: false,
         }
     }
 
     /// Reset the diagnostics services state
     pub fn reset(&mut self) {
         self.gpa = None;
-        self.did_process = false;
+        self.has_guest_processed_before = false;
     }
 
     /// Set the GPA of the diagnostics buffer
@@ -284,15 +279,31 @@ impl DiagnosticsServices {
         }
     }
 
-    /// Process the diagnostics buffer
-    pub fn process_diagnostics<F>(
+    /// Processes diagnostics from guest memory
+    ///
+    /// # Arguments
+    /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `gm` - Guest memory to read diagnostics from
+    /// * `log_handler` - Function to handle each parsed log entry
+    fn process_diagnostics<F>(
         &mut self,
+        allow_reprocess: bool,
         gm: &GuestMemory,
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
     where
         F: FnMut(EfiDiagnosticsLog<'_>),
     {
+        // Prevent the guest from spamming diagnostics processing
+        // unless explicitly allowed
+        if !allow_reprocess {
+            if self.has_guest_processed_before {
+                tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
+                return Ok(());
+            }
+            self.has_guest_processed_before = true;
+        }
+
         // Validate the GPA
         let gpa = match self.gpa {
             Some(gpa) if gpa != 0 && gpa != u32::MAX => gpa,
@@ -446,63 +457,20 @@ impl DiagnosticsServices {
 }
 
 impl UefiDevice {
-    /// Invokes the diagnostics service to process the diagnostics buffer
-    /// with a handler function that logs the entries to tracing
-    fn process_diagnostics_inner(&self, context: &str) {
-        let mut diagnostics = self.service.diagnostics.lock();
-        if let Err(error) = diagnostics.process_diagnostics(&self.gm, handle_efi_diagnostics_log) {
-            tracing::error!(
+    /// Processes UEFI diagnostics from guest memory
+    ///
+    /// # Arguments
+    /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `context` - String to indicate who triggered the diagnostics processing
+    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, context: &str) {
+        if let Err(error) = self.service.diagnostics.process_diagnostics(
+            allow_reprocess,
+            &self.gm,
+            handle_efi_diagnostics_log,
+        ) {
+            tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
                 context,
-                "failed to process diagnostics buffer"
-            );
-        }
-    }
-
-    /// Process the diagnostics buffer as long as it has not been processed before
-    ///
-    /// NOTE: This is intended to be called in response to the guest issuing the
-    /// PROCESS_EFI_DIAGNOSTICS UefiCommand
-    pub(crate) fn ratelimited_process_diagnostics(&mut self) {
-        // Do not proceed if we have already processed before
-        if self.service.diagnostics.lock().did_process {
-            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
-            return;
-        }
-        self.service.diagnostics.lock().did_process = true;
-        self.process_diagnostics_inner("guest");
-    }
-
-    /// Forcefully process the diagnostics buffer regardless of previous state
-    pub(crate) fn force_process_diagnostics(&mut self, context: &str) {
-        self.process_diagnostics_inner(context);
-    }
-}
-
-/// Watchdog callback for diagnostics processing
-pub struct DiagnosticsWatchdogCallback {
-    diagnostics: Arc<Mutex<DiagnosticsServices>>,
-    gm: GuestMemory,
-}
-
-impl DiagnosticsWatchdogCallback {
-    /// Create a new diagnostics watchdog callback
-    pub fn new(diagnostics: Arc<Mutex<DiagnosticsServices>>, gm: GuestMemory) -> Self {
-        Self { diagnostics, gm }
-    }
-}
-
-#[async_trait::async_trait]
-impl WatchdogCallback for DiagnosticsWatchdogCallback {
-    async fn on_timeout(&mut self) {
-        if let Err(error) = self
-            .diagnostics
-            .lock()
-            .process_diagnostics(&self.gm, handle_efi_diagnostics_log)
-        {
-            tracing::error!(
-                error = &error as &dyn std::error::Error,
-                context = "watchdog timeout",
                 "failed to process diagnostics buffer"
             );
         }
@@ -535,14 +503,14 @@ mod save_restore {
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 gpa: self.gpa,
-                did_flush: self.did_process,
+                did_flush: self.has_guest_processed_before,
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let state::SavedState { gpa, did_flush } = state;
             self.gpa = gpa;
-            self.did_process = did_flush;
+            self.has_guest_processed_before = did_flush;
             Ok(())
         }
     }

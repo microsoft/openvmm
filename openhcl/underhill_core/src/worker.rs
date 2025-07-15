@@ -2060,6 +2060,7 @@ async fn new_underhill_vm(
                 },
             };
 
+            let (watchdog_send, watchdog_recv) = mesh::channel();
             deps_hyperv_firmware_uefi = Some(dev::HyperVFirmwareUefi {
                 config,
                 logger: Box::new(UnderhillLogger {
@@ -2091,12 +2092,14 @@ async fn new_underhill_vm(
                     #[cfg(guest_arch = "x86_64")]
                     let watchdog_callback = WatchdogTimeoutNmi {
                         partition: partition.clone(),
+                        watchdog_send: Some(watchdog_send),
                     };
 
                     // ARM64 does not have NMI support yet, so halt instead
                     #[cfg(guest_arch = "aarch64")]
                     let watchdog_callback = WatchdogTimeoutReset {
                         halt_vps: halt_vps.clone(),
+                        watchdog_send: Some(watchdog_send),
                     };
 
                     // Add the callback
@@ -2104,6 +2107,7 @@ async fn new_underhill_vm(
 
                     Box::new(underhill_watchdog_platform)
                 },
+                watchdog_recv,
                 vsm_config: Some(Box::new(UnderhillVsmConfig {
                     partition: Arc::downgrade(&partition),
                 })),
@@ -2422,13 +2426,15 @@ async fn new_underhill_vm(
                     .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
                     .context("failed to instantiate guest watchdog store")?;
 
-                let trigger_reset = WatchdogTimeoutReset {
+                let watchdog_callback = WatchdogTimeoutReset {
                     halt_vps: halt_vps.clone(),
+                    watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                         // watchdog notifications.
                 };
 
                 let mut underhill_watchdog_platform =
                     UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
-                underhill_watchdog_platform.add_callback(Box::new(trigger_reset));
+                underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
                 Box::new(underhill_watchdog_platform)
             },
@@ -3441,6 +3447,7 @@ impl ChipsetDevice for FallbackMmioDevice {
 #[cfg(guest_arch = "x86_64")]
 struct WatchdogTimeoutNmi {
     partition: Arc<UhPartition>,
+    watchdog_send: Option<mesh::Sender<()>>,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -3454,11 +3461,16 @@ impl WatchdogCallback for WatchdogTimeoutNmi {
             Vtl::Vtl0,
             MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
         );
+
+        if let Some(watchdog_send) = &self.watchdog_send {
+            watchdog_send.send(());
+        }
     }
 }
 
 struct WatchdogTimeoutReset {
     halt_vps: Arc<Halt>,
+    watchdog_send: Option<mesh::Sender<()>>,
 }
 
 #[async_trait::async_trait]
@@ -3466,6 +3478,10 @@ impl WatchdogCallback for WatchdogTimeoutReset {
     async fn on_timeout(&mut self) {
         crate::livedump::livedump().await;
 
-        self.halt_vps.halt(HaltReason::Reset)
+        self.halt_vps.halt(HaltReason::Reset);
+
+        if let Some(watchdog_send) = &self.watchdog_send {
+            watchdog_send.send(());
+        }
     }
 }
