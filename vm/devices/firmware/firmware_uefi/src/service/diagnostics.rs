@@ -32,6 +32,11 @@ use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 use zerocopy::FromBytes;
 
+/// Default amount of logs emitted per period
+/// See `tracelimit::PERIOD_MS` and `tracelimit::EVENTS_PER_PERIOD`
+/// for more details
+const LOGS_PER_PERIOD: u32 = 150;
+
 /// 8-byte alignment for every entry
 const ALIGNMENT: usize = 8;
 
@@ -108,21 +113,24 @@ pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
     let phase_str = phase_to_string(log.phase);
 
     match log.debug_level {
-        DEBUG_WARN => tracing::warn!(
+        DEBUG_WARN => tracelimit::warn_ratelimited!(
+            limit: LOGS_PER_PERIOD,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
             log_message = log.message,
             "EFI log entry"
         ),
-        DEBUG_ERROR => tracing::error!(
+        DEBUG_ERROR => tracelimit::error_ratelimited!(
+            limit: LOGS_PER_PERIOD,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
             log_message = log.message,
             "EFI log entry"
         ),
-        _ => tracing::info!(
+        _ => tracelimit::info_ratelimited!(
+            limit: LOGS_PER_PERIOD,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
