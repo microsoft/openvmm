@@ -4481,6 +4481,7 @@ dependencies = [
  "event-listener",
  "futures",
  "futures-concurrency",
+ "getrandom 0.3.2",
  "guestmem",
  "guid",
  "hvdef",
