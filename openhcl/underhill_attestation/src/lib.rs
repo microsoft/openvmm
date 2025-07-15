@@ -45,7 +45,9 @@ use secure_key_release::VmgsEncryptionKeys;
 use static_assertions::const_assert_eq;
 use std::fmt::Debug;
 use tee_call::TeeCall;
+use tee_call::TeeType;
 use thiserror::Error;
+use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -76,6 +78,8 @@ enum AttestationErrorInner {
     UnlockVmgsDataStore(#[source] UnlockVmgsDataStoreError),
     #[error("failed to read guest secret key from vmgs")]
     ReadGuestSecretKey(#[source] vmgs::ReadFromVmgsError),
+    #[error("failed assertion of init data")]
+    InitDataAssertionFail(#[source] InitDataError),
 }
 
 #[derive(Debug, Error)]
@@ -156,6 +160,18 @@ enum PersistAllKeyProtectorsError {
     WriteKeyProtector(#[source] vmgs::WriteToVmgsError),
     #[error("failed to read key protector by id to vmgs")]
     WriteKeyProtectorById(#[source] vmgs::WriteToVmgsError),
+}
+
+#[derive(Debug, Error)]
+enum InitDataError {
+    #[error("Unsupported Attestation Type")]
+    UnsupportedAttestationType(AttestationType),
+    #[error("Failed to get Attestation Report")]
+    FailedGetAttestationReport,
+    #[error("Invalid Attestation Report")]
+    InvalidAttestationReport,
+    #[error("Data does not match Asserted")]
+    InitDataAssertionFail,
 }
 
 /// Label used by `derive_key`
@@ -1001,6 +1017,58 @@ fn get_derived_keys_by_id(
     })
 }
 
+// / Verify the InitData hash in the attestation report
+/// against the asserted InitData hash.
+///   For SNP, this is the host data.
+///   For TDX, this is the mr_config.
+///   For other attestation types, this is not supported.
+/// Takes the asserted InitData hash and the appropriate
+/// TEE call interface as arguments.
+/// Returns Ok(()) if the hashes match, or an error if they do not.
+pub fn verify_init_data(
+    asserted_init_data: [u8; 32],
+    tee_call: &dyn TeeCall,
+) -> Result<(), InitDataError> {
+    let report_data = [0u8; 64];
+    let mut report = tee_call
+        .get_attestation_report(&report_data)
+        .map_err(|e| InitDataError::FailedGetAttestationReport)?;
+
+    let attestation_type = match tee_call.tee_type() {
+        TeeType::Snp => AttestationType::Snp,
+        TeeType::Tdx => AttestationType::Tdx,
+    };
+    match attestation_type {
+        AttestationType::Snp => {
+            // compare hash of the encoded settings with the host data
+            let snpreport =
+                sev_guest_device::protocol::SnpReport::mut_from_bytes(&mut report.report[..])
+                    .map_err(|_e| InitDataError::InvalidAttestationReport)?;
+            let host_data = snpreport.host_data;
+            if host_data == asserted_init_data {
+                return Ok(());
+            } else {
+                return Err(InitDataError::InitDataAssertionFail);
+            }
+        }
+        AttestationType::Tdx => {
+            // compare hash of the encoded settings with the mr_config
+            let tdreport =
+                tdx_guest_device::protocol::TdReport::mut_from_bytes(&mut report.report[..])
+                    .map_err(|_e| InitDataError::InvalidAttestationReport)?;
+            let mr_config = tdreport.td_info.td_info_base.mr_owner_config;
+            if mr_config[0..32] == asserted_init_data {
+                return Ok(());
+            } else {
+                return Err(InitDataError::InitDataAssertionFail);
+            }
+        }
+        _ => {
+            return Err(InitDataError::UnsupportedAttestationType(attestation_type));
+        }
+    }
+}
+
 /// Prepare the request payload and request GSP from the host via GET.
 async fn get_gsp_data(
     get: &GuestEmulationTransportClient,
@@ -1786,5 +1854,51 @@ mod tests {
             found_key_protector_by_id.id_guid,
             key_protector_by_id.inner.id_guid
         );
+    }
+
+    struct MockSnpTeeCall;
+
+    impl TeeCall for MockSnpTeeCall {
+        fn get_attestation_report(
+            &self,
+            _report_data: &[u8; 64],
+        ) -> Result<tee_call::GetAttestationReportResult, tee_call::Error> {
+            Ok(tee_call::GetAttestationReportResult {
+                report: [0u8; sev_guest_device::protocol::SNP_REPORT_SIZE].to_vec(),
+                tcb_version: None,
+            })
+        }
+
+        fn supports_get_derived_key(&self) -> Option<&dyn tee_call::TeeCallGetDerivedKey> {
+            Some(self)
+        }
+
+        fn tee_type(&self) -> TeeType {
+            TeeType::Snp
+        }
+    }
+
+    impl tee_call::TeeCallGetDerivedKey for MockSnpTeeCall {
+        fn get_derived_key(&self, _tcb_version: u64) -> Result<[u8; 32], tee_call::Error> {
+            Ok([0u8; tee_call::HW_DERIVED_KEY_LENGTH])
+        }
+    }
+
+    #[test]
+    fn test_verify_init_data() {
+        let asserted_init_data = [0u8; 32];
+
+        let mock_call: Box<dyn TeeCall> = Box::new(MockSnpTeeCall {});
+        let result = verify_init_data(asserted_init_data, mock_call.as_ref());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_init_data_fail() {
+        let asserted_init_data = [1u8; 32];
+
+        let mock_call: Box<dyn TeeCall> = Box::new(MockSnpTeeCall {});
+        let result = verify_init_data(asserted_init_data, mock_call.as_ref());
+        assert!(result.is_err_and(|e| { matches!(e, InitDataError::InitDataAssertionFail) }));
     }
 }

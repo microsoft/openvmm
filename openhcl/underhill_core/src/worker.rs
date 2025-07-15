@@ -442,6 +442,7 @@ impl UnderhillVmWorker {
         let dps = read_device_platform_settings(&get_client)
             .instrument(tracing::info_span!("init/dps", CVM_ALLOWED))
             .await?;
+        // Parsing the dps will parse the vtl2_settings including the attested settings
 
         // Build the thread pool now that we know the IO ring size to use.
         let threadpool = {
@@ -1204,6 +1205,9 @@ async fn new_underhill_vm(
         bootloader_fdt_parser::IsolationType::Snp => virt::IsolationType::Snp,
         bootloader_fdt_parser::IsolationType::Tdx => virt::IsolationType::Tdx,
     };
+    // Now that we have the isolation type, we can determine if the VM is SNP/TDX
+    // and use the dps.vtl2_settings.attested_settings.verify() to validate
+    // the vtl2_settings against the init-time data.
 
     let hardware_isolated = isolation.is_hardware_isolated();
 

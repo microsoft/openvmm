@@ -43,6 +43,10 @@ vmgs_format.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+sev_guest_device.workspace = true
+tdx_guest_device.workspace = true
+
 [package.metadata.xtask.unused-deps]
 # Needed for the base64-serde macros.
 ignored = ["serde"]

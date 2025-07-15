@@ -5,6 +5,7 @@
 //!
 //! Generic schema structs and functions
 
+use self::v1::NAMESPACE_ATTESTED_SETTINGS;
 use self::v1::NAMESPACE_BASE;
 use self::v1::NAMESPACE_NETWORK_ACCELERATION;
 use self::v1::NAMESPACE_NETWORK_DEVICE;
@@ -42,6 +43,16 @@ impl From<ParseError> for ParseErrorInner {
 impl From<ParsingStopped> for ParseErrorInner {
     fn from(value: ParsingStopped) -> Self {
         ParseErrorInner::Validation(value)
+    }
+}
+
+impl From<Vtl2AttestedSettings> for crate::Vtl2AttestedSettings {
+    fn from(settings: Vtl2AttestedSettings) -> crate::Vtl2AttestedSettings {
+        // Reserved for future use
+        crate::Vtl2AttestedSettings {
+            version: settings.version,
+            init_data_hash: None,
+        }
     }
 }
 
@@ -87,6 +98,7 @@ impl crate::Vtl2Settings {
 
         let mut nic_devices: Option<Vec<crate::NicDevice>> = None;
         let mut nic_acceleration: Option<Vec<crate::NicDevice>> = None;
+        let mut external_attested_settings: Option<crate::Vtl2AttestedSettings> = None;
 
         for chunk in &decoded.namespace_settings {
             if chunk.settings.is_empty() {
@@ -119,6 +131,19 @@ impl crate::Vtl2Settings {
                             .flat_map(|v| v.parse(errors).collect_error(errors))
                             .collect(),
                     );
+                }
+                NAMESPACE_ATTESTED_SETTINGS => {
+                    // Ignore this namespace, it is not used in the current version
+                    // of the schema.
+                    let raw_bytes = chunk.settings.as_slice();
+                    if !raw_bytes.is_empty() {
+                        let mut hasher = openssl::sha::Sha256::new();
+                        hasher.update(raw_bytes);
+                        let attested_settings: Vtl2AttestedSettings = Self::read(raw_bytes)?;
+                        let mut settings: crate::Vtl2AttestedSettings = attested_settings.into();
+                        settings.init_data_hash = Some(hasher.finish().to_vec());
+                        external_attested_settings = Some(settings);
+                    }
                 }
                 _ => {
                     errors.push(v1::Error::UnsupportedSchemaNamespace(
@@ -158,6 +183,13 @@ impl crate::Vtl2Settings {
                     }
                 }
             }
+        }
+
+        // NAMESPACE_ATTESTED_SETTINGS
+        // In the future, attested settings need to be added here.
+        // See patterns above for how to add them.
+        if let Some(external_attested_settings) = external_attested_settings {
+            old_settings.fixed.attested_settings = Some(external_attested_settings);
         }
 
         Ok(old_settings)
@@ -278,6 +310,28 @@ mod test {
         let mut buf = Vec::new();
         settings.encode(&mut buf).unwrap();
         crate::Vtl2Settings::read_from(&buf, Default::default()).unwrap();
+    }
+
+    #[test]
+    fn smoke_test_attested_settings_namespace() {
+        let settings = crate::Vtl2Settings::read_from(
+            include_bytes!("vtl2s_test_attested_settings_namespaces.json"),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(1, settings.fixed.attested_settings.unwrap().version)
+    }
+
+    #[test]
+    fn smoke_test_attested_settings_namespace_pb() {
+        let json = include_bytes!("vtl2s_test_attested_settings_namespaces.json");
+        let settings: Vtl2Settings = crate::Vtl2Settings::read(json).unwrap();
+        assert_eq!("AttestedSettings", settings.namespace_settings[0].namespace);
+        let mut buf = Vec::new();
+        settings.encode(&mut buf).unwrap();
+        print!("{:?}", buf);
+        let settings = crate::Vtl2Settings::read_from(&buf, Default::default()).unwrap();
+        assert_eq!(1, settings.fixed.attested_settings.unwrap().version)
     }
 
     #[test]

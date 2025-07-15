@@ -26,6 +26,7 @@ use vtl2_settings_proto::*;
 pub(crate) const NAMESPACE_BASE: &str = "Base";
 pub(crate) const NAMESPACE_NETWORK_DEVICE: &str = "NetworkDevice";
 pub(crate) const NAMESPACE_NETWORK_ACCELERATION: &str = "NetworkAcceleration";
+pub(crate) const NAMESPACE_ATTESTED_SETTINGS: &str = "AttestedSettings";
 
 #[derive(Error, Debug)]
 pub(crate) enum Error<'a> {
@@ -528,6 +529,7 @@ impl ParseSchema<crate::Vtl2SettingsFixed> for Vtl2SettingsFixed {
             scsi_sub_channels: self.scsi_sub_channels.map_or(0, |x| x as u16),
             io_ring_size: self.io_ring_size.unwrap_or(256),
             max_bounce_buffer_pages: self.max_bounce_buffer_pages,
+            attested_settings: None,
         })
     }
 }
