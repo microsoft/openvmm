@@ -23,8 +23,10 @@ use std::time::Instant;
 #[doc(hidden)]
 pub use tracing;
 
-const PERIOD_MS: u32 = 5000;
-const EVENTS_PER_PERIOD: u32 = 10;
+#[doc(hidden)]
+pub const PERIOD_MS: u32 = 5000;
+#[doc(hidden)]
+pub const EVENTS_PER_PERIOD: u32 = 10;
 
 static DISABLE_RATE_LIMITING: AtomicBool = AtomicBool::new(false);
 
@@ -97,8 +99,49 @@ impl RateLimiter {
 }
 
 /// As [`tracing::error!`], but rate limited.
+///
+/// Can be called with optional parameters to customize rate limiting:
+/// - `period: <ms>` - rate limiting period in milliseconds
+/// - `limit: <count>` - maximum events per period
+///
+/// Examples:
+/// ```
+/// use tracelimit::error_ratelimited;
+/// error_ratelimited!("simple message");
+/// error_ratelimited!(period: 1000, limit: 5, "custom rate limit");
+/// error_ratelimited!(period: 10000, "custom period only");
+/// error_ratelimited!(limit: 50, "custom limit only");
+/// ```
 #[macro_export]
 macro_rules! error_ratelimited {
+    // With both period and limit
+    (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($period, $limit);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // With period only
+    (period: $period:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($period, $crate::EVENTS_PER_PERIOD);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // With limit only
+    (limit: $limit:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($crate::PERIOD_MS, $limit);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
             static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
@@ -110,8 +153,49 @@ macro_rules! error_ratelimited {
 }
 
 /// As [`tracing::warn!`], but rate limited.
+///
+/// Can be called with optional parameters to customize rate limiting:
+/// - `period: <ms>` - rate limiting period in milliseconds
+/// - `limit: <count>` - maximum events per period
+///
+/// Examples:
+/// ```
+/// use tracelimit::warn_ratelimited;
+/// warn_ratelimited!("simple message");
+/// warn_ratelimited!(period: 1000, limit: 5, "custom rate limit");
+/// warn_ratelimited!(period: 10000, "custom period only");
+/// warn_ratelimited!(limit: 50, "custom limit only");
+/// ```
 #[macro_export]
 macro_rules! warn_ratelimited {
+    // With both period and limit
+    (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($period, $limit);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // With period only
+    (period: $period:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($period, $crate::EVENTS_PER_PERIOD);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // With limit only
+    (limit: $limit:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($crate::PERIOD_MS, $limit);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
             static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
@@ -123,8 +207,49 @@ macro_rules! warn_ratelimited {
 }
 
 /// As [`tracing::info!`], but rate limited.
+///
+/// Can be called with optional parameters to customize rate limiting:
+/// - `period: <ms>` - rate limiting period in milliseconds
+/// - `limit: <count>` - maximum events per period
+///
+/// Examples:
+/// ```
+/// use tracelimit::info_ratelimited;
+/// info_ratelimited!("simple message");
+/// info_ratelimited!(period: 1000, limit: 5, "custom rate limit");
+/// info_ratelimited!(period: 10000, "custom period only");
+/// info_ratelimited!(limit: 50, "custom limit only");
+/// ```
 #[macro_export]
 macro_rules! info_ratelimited {
+    // With both period and limit
+    (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($period, $limit);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // With period only
+    (period: $period:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($period, $crate::EVENTS_PER_PERIOD);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // With limit only
+    (limit: $limit:expr, $($rest:tt)*) => {
+        {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new($crate::PERIOD_MS, $limit);
+            if let Ok(missed_events) = RATE_LIMITER.event() {
+                $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
+            }
+        }
+    };
+    // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
             static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
