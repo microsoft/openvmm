@@ -420,9 +420,7 @@ async fn boot_no_agent_heavy(config: Box<dyn PetriVmConfig>) -> anyhow::Result<(
 
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
-#[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
-)]
+#[vmm_test(hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
@@ -432,26 +430,29 @@ async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     Ok(())
 }
 
-// Test for SCSI to SCSI relay through VTL2 for TDX VMs
+// Test for SCSI relay through VTL2 for TDX VMs
+#[vmm_test(hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)))]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn scsi_relay_tdx(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_vmbus_redirect(true)
+        .with_scsi_relay()
+        .run_without_agent()
+        .await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+// Test for vmbus relay
+// TODO: VBS isolation was failing and other targets too
 #[vmm_test(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn scsi_to_scsi_relay_tdx(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
-    let mut vm = config
-        .with_vmbus_redirect(true)
-        .with_custom_vtl2_settings(|vtl2_settings| {
-            // Configure SCSI storage controller for relay
-            let scsi_instance_id = guid::guid!("12345678-1234-4321-abcd-123456789abc");
-            let device_id = guid::Guid::new_random();
-            crate::vm::configure_vtl2_storage_controller(
-                vtl2_settings,
-                &scsi_instance_id,
-                &device_id,
-            );
-        })
-        .run_without_agent()
-        .await?;
+async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

@@ -257,7 +257,6 @@ impl HyperVVM {
     pub fn add_scsi_controller_with_vtl2_relay(
         &mut self,
         scsi_instance_id: &Guid,
-        additional_modifiers: Vec<Box<dyn FnOnce(&mut vtl2_settings_proto::Vtl2Settings) + Send>>,
     ) -> anyhow::Result<u32> {
         let controller_number = self.add_scsi_controller(2)?;
 
@@ -268,7 +267,7 @@ impl HyperVVM {
             &self.vmid,
             scsi_instance_id,
             &device_id,
-            additional_modifiers,
+            Vec::new(), // No additional modifiers
         )?;
 
         Ok(controller_number)

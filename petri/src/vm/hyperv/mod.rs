@@ -63,7 +63,6 @@ pub struct PetriVmConfigHyperV {
     disable_frontpage: bool,
     vmbus_redirect: bool,
     scsi_relay: bool,
-    vtl2_settings_modifiers: Vec<Box<dyn FnOnce(&mut vtl2_settings_proto::Vtl2Settings) + Send>>,
 
     driver: DefaultDriver,
     agent_image: AgentImage,
@@ -144,19 +143,10 @@ impl PetriVmConfig for PetriVmConfigHyperV {
         Box::new(Self::with_vmbus_redirect(*self, enable))
     }
 
-    fn with_custom_config(
-        self: Box<Self>,
-        _f: impl FnOnce(&mut hvlite_defs::config::Config) + Send + 'static,
-    ) -> Box<dyn PetriVmConfig> {
-        panic!("with_custom_config is not supported for HyperV backend");
-    }
-
-    fn with_custom_vtl2_settings(
-        mut self: Box<Self>,
-        f: impl FnOnce(&mut vtl2_settings_proto::Vtl2Settings) + Send + 'static,
-    ) -> Box<dyn PetriVmConfig> {
-        self.vtl2_settings_modifiers.push(Box::new(f));
-        self
+    fn with_scsi_relay(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        let mut config = *self;
+        config.scsi_relay = true;
+        Box::new(config)
     }
 
     fn os_flavor(&self) -> OsFlavor {
@@ -332,7 +322,6 @@ impl PetriVmConfigHyperV {
             disable_frontpage: true,
             vmbus_redirect: false,
             scsi_relay: false,
-            vtl2_settings_modifiers: Vec::new(),
             openhcl_command_line: String::new(),
         })
     }
@@ -407,13 +396,12 @@ impl PetriVmConfigHyperV {
                 powershell::HyperVGeneration::One => (powershell::ControllerType::Ide, i as u32),
                 powershell::HyperVGeneration::Two => {
                     // TODO: PCAT VMs can use OpenHCL for storage, but that is not implemented yet.
-                    if self.scsi_relay || !self.vtl2_settings_modifiers.is_empty() {
+                    if self.scsi_relay {
                         // For SCSI relay, use the VTL2 relay functionality
                         let scsi_instance_id = Guid::new_random();
-                        let modifiers = std::mem::take(&mut self.vtl2_settings_modifiers);
                         (
                             powershell::ControllerType::Scsi,
-                            vm.add_scsi_controller_with_vtl2_relay(&scsi_instance_id, modifiers)?,
+                            vm.add_scsi_controller_with_vtl2_relay(&scsi_instance_id)?,
                         )
                     } else {
                         (powershell::ControllerType::Scsi, vm.add_scsi_controller(0)?)
