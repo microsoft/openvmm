@@ -138,8 +138,6 @@ pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
 pub enum EntryParseError {
     #[error("Expected: {0:#x}, got: {1:#x}")]
     SignatureMismatch(u32, u32),
-    #[error("Expected non-zero timestamp, got: {0:#x}")]
-    Timestamp(u64),
     #[error("Expected message length < {0:#x}, got: {1:#x}")]
     MessageLength(u16, u16),
     #[error("Failed to read from buffer slice")]
