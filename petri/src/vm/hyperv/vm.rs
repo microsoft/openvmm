@@ -6,6 +6,7 @@
 use super::hvc;
 use super::hvc::VmState;
 use super::powershell;
+use crate::OpenHclServicingFlags;
 use crate::PetriLogFile;
 use anyhow::Context;
 use get_resources::ged::FirmwareEvent;
@@ -425,6 +426,11 @@ impl HyperVVM {
     /// Enable VMBusRelay
     pub fn set_vmbus_redirect(&self, enable: bool) -> anyhow::Result<()> {
         powershell::set_vmbus_redirect(&self.vmid, &self.ps_mod, enable)
+    }
+
+    /// Perform an OpenHCL servicing operation.
+    pub async fn restart_openhcl(&self, flags: OpenHclServicingFlags) -> anyhow::Result<()> {
+        powershell::run_restart_openhcl(&self.vmid, &self.ps_mod, flags)
     }
 }
 

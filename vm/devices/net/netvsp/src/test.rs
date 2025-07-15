@@ -275,6 +275,7 @@ impl net_backend::Endpoint for TestNicEndpoint {
     }
 
     async fn set_data_path_to_guest_vf(&self, use_vf: bool) -> anyhow::Result<()> {
+        tracing::info!(use_vf, "set_data_path_to_guest_vf");
         let inner = self.inner.clone();
         let mut iter = {
             let locked_inner = inner.lock().await;
@@ -657,14 +658,17 @@ impl TestNicDevice {
 
     pub async fn retarget_vp(&self, vp: u32) {
         let modify_request = ModifyRequest::TargetVp { target_vp: vp };
-        let modify_response = self
-            .send_to_channel(
-                0,
-                ChannelRequest::Modify,
-                modify_request,
-                ChannelResponse::Modify,
-            )
+        let send_request = self.send_to_channel(
+            0,
+            ChannelRequest::Modify,
+            modify_request,
+            ChannelResponse::Modify,
+        );
+        let modify_response = mesh::CancelContext::new()
+            .with_timeout(Duration::from_millis(333))
+            .until_cancelled(send_request)
             .await
+            .expect("response received")
             .expect("modify successful");
 
         assert!(matches!(modify_response, ChannelResponse::Modify(0)));
@@ -1493,6 +1497,13 @@ impl VirtualFunction for TestVirtualFunction {
         self.state.id()
     }
     async fn guest_ready_for_device(&mut self) {
+        // Wait a random amount of time before completing the request.
+        let mut wait_ms: u64 = 0;
+        getrandom::fill(wait_ms.as_mut_bytes()).expect("rng failure");
+        wait_ms %= 50;
+        tracing::info!(id = self.state.id(), wait_ms, "Readying VF...");
+        let mut ctx = mesh::CancelContext::new().with_timeout(Duration::from_millis(wait_ms));
+        let _ = ctx.until_cancelled(pending::<()>()).await;
         tracing::info!(id = self.state.id(), "VF ready");
         self.state.set_ready(true).await;
     }
@@ -2538,7 +2549,7 @@ async fn stop_start_with_vf(driver: DefaultDriver) {
     // 'guest VF' state logic.
     assert!(
         test_vf_state
-            .await_ready(true, Duration::ZERO)
+            .await_ready(true, Duration::from_millis(333))
             .await
             .is_ok()
     );
@@ -4640,6 +4651,22 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
         } else {
             false
         };
+        // Change the VF availability every other instance.
+        if (i % 2) == 0 {
+            let is_add = (i % 4) == 0;
+            test_vf_state
+                .update_id(
+                    if is_add { Some(124) } else { None },
+                    Some(Duration::from_millis(100)),
+                )
+                .await
+                .unwrap();
+
+            if is_add {
+                PolledTimer::new(&driver).sleep(VF_DEVICE_DELAY).await;
+            }
+        }
+
         // send switch data path message
         channel
             .write(OutgoingPacket {
@@ -4672,6 +4699,7 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
                 )
                 .await;
         }
+
         // Trigger a retarget VP 2/3 of the time offset with the link update,
         // such that 1/3 times only link update or retarget VP will be
         // triggered.
@@ -4690,14 +4718,44 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
                 .read_with(|packet| match packet {
                     IncomingPacket::Completion(_) => None,
                     IncomingPacket::Data(data) => {
-                        let (rndis_header, _) = rndis_parser.parse_control_message(data);
-                        if rndis_header.message_type == rndisprot::MESSAGE_TYPE_KEEPALIVE_CMPLT {
-                            tracing::info!("Got keepalive completion");
-                            Some(data.transaction_id().expect("should request completion"))
-                        } else {
-                            tracing::info!(rndis_header.message_type, "Got link status update");
-                            Some(data.transaction_id().expect("should request completion"))
+                        let mut reader = data.reader();
+                        let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                        match header.message_type {
+                            protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION => {
+                                let association_data: protocol::Message4SendVfAssociation =
+                                    reader.read_plain().unwrap();
+                                tracing::info!(
+                                    is_vf = association_data.vf_allocated,
+                                    vfid = association_data.serial_number,
+                                    "Message: VF association"
+                                );
+                            }
+                            protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH => {
+                                tracing::info!("Message: switch data path");
+                                let switch_result: protocol::Message4SwitchDataPath =
+                                    reader.read_plain().unwrap();
+                                // Switch data path is expected when the data
+                                // path is forced to synthetic.
+                                assert_eq!(
+                                    switch_result.active_data_path,
+                                    protocol::DataPath::SYNTHETIC.0
+                                );
+                            }
+                            _ => {
+                                let (rndis_header, _) = rndis_parser.parse_control_message(data);
+                                if rndis_header.message_type
+                                    == rndisprot::MESSAGE_TYPE_KEEPALIVE_CMPLT
+                                {
+                                    tracing::info!("Message: keepalive completion");
+                                } else {
+                                    tracing::info!(
+                                        rndis_header.message_type,
+                                        "Message: link status update"
+                                    );
+                                }
+                            }
                         }
+                        Some(data.transaction_id().expect("should request completion"))
                     }
                 })
                 .await

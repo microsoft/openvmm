@@ -24,6 +24,9 @@ use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
+// Servicing tests.
+pub(crate) mod openhcl_servicing;
+
 /// Boot through the UEFI firmware, it will shut itself down after booting.
 #[vmm_test(
     openvmm_uefi_x64(none),
