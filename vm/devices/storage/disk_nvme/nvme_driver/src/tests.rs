@@ -8,6 +8,7 @@ use chipset_device::pci::PciConfigSpace;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use nvme::FaultInjectionAction;
 use nvme::NvmeControllerCaps;
 use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
@@ -16,6 +17,7 @@ use pal_async::async_test;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
+use std::any::Any;
 use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
@@ -32,6 +34,11 @@ use zerocopy::IntoBytes;
 #[async_test]
 async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
     test_nvme_driver(driver, true).await;
+}
+
+#[async_test]
+async fn test_nvme_controller_fault_injection(driver: DefaultDriver) {
+    test_nvme_controller_fi(driver, true).await;
 }
 
 #[async_test]
@@ -307,6 +314,143 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
     //     .await
     //     .unwrap();
+}
+
+async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
+    const MSIX_COUNT: u16 = 2;
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 64;
+
+    // Arrange: Create 8MB of space. First 4MB for the device and second 4MB for the payload.
+    let pages = 1024; // 4MB
+    let device_test_memory = DeviceTestMemory::new(pages * 2, allow_dma, "test_nvme_driver");
+    let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
+    let dma_client = device_test_memory.dma_client(); // Access 0-4MB
+    let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
+
+    // Arrange: Create the NVMe controller and driver.
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mut msi_set = MsiInterruptSet::new();
+    let nvme = nvme::NvmeControllerFaultInjection::new(
+        &driver_source,
+        guest_mem.clone(),
+        &mut msi_set,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: IO_QUEUE_COUNT,
+            subsystem_id: Guid::new_random(),
+        },
+    );
+
+    nvme.client() // 2MB namespace
+        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .await
+        .unwrap();
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+        .await
+        .unwrap();
+    let namespace = driver.namespace(1).await.unwrap();
+
+    // Act: Write 1024 bytes of data to disk starting at LBA 1.
+    let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
+    payload_mem.write_at(0, &[0xcc; 4096]).unwrap();
+    namespace
+        .write(
+            0,
+            1,
+            2,
+            false,
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
+        )
+        .await
+        .unwrap();
+
+    // Act: Read 16384 bytes of data from disk starting at LBA 0.
+    namespace
+        .read(
+            1,
+            0,
+            32,
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
+        )
+        .await
+        .unwrap();
+    let mut v = [0; 4096];
+    payload_mem.read_at(0, &mut v).unwrap();
+
+    // Assert: First block should be 0x00 since we never wrote to it. Followed by 1024 bytes of 0xcc.
+    assert_eq!(&v[..512], &[0; 512]);
+    assert_eq!(&v[512..1536], &[0xcc; 1024]);
+    assert!(v[1536..].iter().all(|&x| x == 0));
+
+    namespace
+        .deallocate(
+            0,
+            &[
+                DsmRange {
+                    context_attributes: 0,
+                    starting_lba: 1000,
+                    lba_count: 2000,
+                },
+                DsmRange {
+                    context_attributes: 0,
+                    starting_lba: 2,
+                    lba_count: 2,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(driver.fallback_cpu_count(), 0);
+
+    // Test the fallback queue functionality.
+    namespace
+        .read(
+            63,
+            0,
+            32,
+            &payload_mem,
+            buf_range.buffer(&guest_mem).range(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(driver.fallback_cpu_count(), 1);
+
+    let mut v = [0; 4096];
+    payload_mem.read_at(0, &mut v).unwrap();
+    assert_eq!(&v[..512], &[0; 512]);
+    assert_eq!(&v[512..1024], &[0xcc; 512]);
+    assert!(v[1024..].iter().all(|&x| x == 0));
+
+    driver.shutdown().await;
+}
+
+/// A fault injection function where fn_name is the name of the function being invoked and
+/// input is the input provided to that function
+/// this controller can respond with types of actions: FaultInjectionAction
+/// This function is used to mock the behavior of the NVMe controller for testing purposes.
+/// I might have to wrap this in a struct to control some Mesh::Cell objects.
+fn fault_controller(
+    fn_name: &str,
+    input: Vec<Box<dyn Any>>,
+) -> (FaultInjectionAction, Box<dyn Any>) {
+    match fn_name {
+        "bar0" => {
+            (
+                FaultInjectionAction::Continue,
+                Box::new(35u32), // Return a boxed u32 value as the mock response
+            )
+        }
+        _ => {
+            panic!("Unsupported function name: {}", fn_name);
+        }
+    }
 }
 
 #[derive(Inspect)]

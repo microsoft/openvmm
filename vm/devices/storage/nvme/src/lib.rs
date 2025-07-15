@@ -8,6 +8,7 @@
 mod error;
 mod namespace;
 mod pci;
+mod pci_fault_injection;
 mod prp;
 mod queue;
 pub mod resolver;
@@ -18,6 +19,7 @@ mod tests;
 
 pub use pci::NvmeController;
 pub use pci::NvmeControllerCaps;
+pub use pci_fault_injection::FaultInjectionAction;
 pub use workers::NsidConflict;
 pub use workers::NvmeControllerClient;
 
