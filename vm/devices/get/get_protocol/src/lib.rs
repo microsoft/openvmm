@@ -1762,10 +1762,12 @@ impl BatteryStatusNotification {
 #[bitfield(u64)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct CreateRamGpaRangeFlags {
-    /// writes are discarded
+    _reserved1: bool,
+
+    /// Writes are discarded
     pub rom_mb: bool,
 
-    #[bits(63)]
+    #[bits(62)]
     _reserved: u64,
 }
 
