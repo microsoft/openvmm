@@ -258,15 +258,7 @@ impl HyperVVM {
         &mut self,
         scsi_instance_id: &Guid,
     ) -> anyhow::Result<u32> {
-        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid)?;
-
-        // Set the controller to target VTL2
-        powershell::run_set_vm_scsi_controller_target_vtl(
-            &self.ps_mod,
-            &self.vmid,
-            controller_number,
-            2,
-        )?;
+        let controller_number = self.add_scsi_controller(2)?;
 
         // Configure VTL2 settings for SCSI relay
         let device_id = Guid::new_random();

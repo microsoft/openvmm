@@ -936,33 +936,7 @@ pub fn configure_vtl2_scsi_relay(
     };
 
     // Configure SCSI controller and LUN
-    let dynamic = vtl2_settings.dynamic.as_mut().unwrap();
-    dynamic
-        .storage_controllers
-        .push(vtl2_settings_proto::StorageController {
-            instance_id: scsi_instance_id.to_string(),
-            protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi.into(),
-            luns: vec![vtl2_settings_proto::Lun {
-                location: 0, // Boot LUN
-                device_id: device_id.to_string(),
-                vendor_id: "OpenVMM".to_string(),
-                product_id: "Boot Disk".to_string(),
-                product_revision_level: "1.0".to_string(),
-                serial_number: "0".to_string(),
-                model_number: "1".to_string(),
-                physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
-                    r#type: vtl2_settings_proto::physical_devices::BackingType::Single.into(),
-                    device: Some(vtl2_settings_proto::PhysicalDevice {
-                        device_type: vtl2_settings_proto::physical_device::DeviceType::Vscsi.into(),
-                        device_path: scsi_instance_id.to_string(),
-                        sub_device_path: 0,
-                    }),
-                    devices: Vec::new(),
-                }),
-                ..Default::default()
-            }],
-            io_queue_depth: None,
-        });
+    crate::vm::configure_vtl2_storage_controller(&mut vtl2_settings, scsi_instance_id, device_id);
 
     // Encode the settings to protobuf
     let mut encoded_settings = Vec::new();
