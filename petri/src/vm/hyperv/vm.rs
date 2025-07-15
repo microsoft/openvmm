@@ -127,6 +127,7 @@ impl HyperVVM {
         if generation == powershell::HyperVGeneration::Two {
             powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
                 vmid: &vmid,
+                secure_boot_enabled: Some(false),
                 secure_boot_template: None,
             })?;
         }
@@ -228,14 +229,16 @@ impl HyperVVM {
         )
     }
 
-    /// Set the secure boot template
-    pub fn set_secure_boot_template(
+    /// Configure secure boot
+    pub fn set_secure_boot(
         &mut self,
-        secure_boot_template: powershell::HyperVSecureBootTemplate,
+        secure_boot_enabled: bool,
+        secure_boot_template: Option<powershell::HyperVSecureBootTemplate>,
     ) -> anyhow::Result<()> {
         powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
             vmid: &self.vmid,
-            secure_boot_template: Some(secure_boot_template),
+            secure_boot_enabled: Some(secure_boot_enabled),
+            secure_boot_template,
         })
     }
 

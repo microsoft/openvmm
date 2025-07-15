@@ -415,6 +415,8 @@ pub struct HyperVSetVMFirmwareArgs<'a> {
     /// Specifies the ID of virtual machines for which you want to modify the
     /// firmware configuration.
     pub vmid: &'a Guid,
+    /// Whether to enable secure boot
+    pub secure_boot_enabled: Option<bool>,
     /// Specifies the name of the secure boot template. If secure boot is
     /// enabled, you must have a valid secure boot template for the guest
     /// operating system to start.
@@ -423,29 +425,31 @@ pub struct HyperVSetVMFirmwareArgs<'a> {
 
 /// Runs Set-VMFirmware with the given arguments.
 pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<()> {
-    let mut builder = PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg("Id", args.vmid)
-        .pipeline();
-
-    builder = match args.secure_boot_template {
-        None => builder
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VM")
+            .arg("Id", args.vmid)
+            .pipeline()
             .cmdlet("Set-VMFirmware")
-            .arg("EnableSecureBoot", ps::RawVal::new("Off"))
-            .finish(),
-        Some(template) => builder
-            .cmdlet("Set-VMFirmware")
-            .arg("EnableSecureBoot", ps::RawVal::new("On"))
-            .arg("SecureBootTemplate", template)
-            .finish(),
-    };
-
-    run_cmd(builder.build())
-        .map(|_| ())
-        .context("set_vm_firmware")
+            .arg_opt(
+                "EnableSecureBoot",
+                args.secure_boot_enabled.map(|enabled| {
+                    if enabled {
+                        ps::RawVal::new("On")
+                    } else {
+                        ps::RawVal::new("Off")
+                    }
+                }),
+            )
+            .arg_opt("SecureBootTemplate", args.secure_boot_template)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_vm_firmware")
 }
 
-/// Runs Set-VMFirmware with the given arguments.
+/// Runs Set-OpenHCLFirmware with the given arguments.
 pub fn run_set_openhcl_firmware(
     vmid: &Guid,
     ps_mod: &Path,

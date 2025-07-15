@@ -27,7 +27,6 @@ use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use pipette_client::PipetteClient;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::io::Write;
 use std::path::PathBuf;
@@ -50,7 +49,6 @@ impl PetriVmConfigOpenVmm {
             openvmm_log_file,
 
             ged,
-            vtl2_settings,
             framebuffer_access,
         } = self;
 
@@ -93,7 +91,9 @@ impl PetriVmConfigOpenVmm {
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
-            ged.vtl2_settings = Some(prost::Message::encode_to_vec(&vtl2_settings.unwrap()));
+            ged.vtl2_settings = Some(prost::Message::encode_to_vec(
+                resources.vtl2_settings.as_ref().unwrap(),
+            ));
             config
                 .vmbus_devices
                 .push((DeviceVtl::Vtl2, ged.into_resource()));
@@ -126,7 +126,6 @@ impl PetriVmConfigOpenVmm {
 
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
-                arch,
                 resources,
                 mesh,
                 worker,
@@ -155,83 +154,70 @@ impl PetriVmConfigOpenVmm {
         Ok(vm)
     }
 
-    /// Build and boot the requested VM. Does not configure and start pipette.
-    /// Should only be used for testing platforms that pipette does not support.
-    pub async fn run_without_agent(self) -> anyhow::Result<PetriVmOpenVmm> {
-        self.run_core().await
-    }
+    /// Run the VM, configuring pipette to automatically start if it is
+    /// included in the config
+    pub async fn run(mut self) -> anyhow::Result<PetriVmOpenVmm> {
+        let launch_linux_direct_pipette = if let Some(agent_image) = &self.resources.agent_image {
+            const CIDATA_SCSI_INSTANCE: Guid = guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
 
-    /// Run the VM, launching pipette and returning a client to it.
-    pub async fn run(self) -> anyhow::Result<(PetriVmOpenVmm, PipetteClient)> {
-        let mut vm = self.run_with_lazy_pipette().await?;
-        let client = vm.wait_for_agent().await?;
-        Ok((vm, client))
-    }
+            // Construct the agent disk.
+            let agent_disk = agent_image.build().context("failed to build agent image")?;
 
-    /// Run the VM, configuring pipette to automatically start, but do not wait
-    /// for it to connect. This is useful for tests where the first boot attempt
-    /// is expected to not succeed, but pipette functionality is still desired.
-    pub async fn run_with_lazy_pipette(mut self) -> anyhow::Result<PetriVmOpenVmm> {
-        const CIDATA_SCSI_INSTANCE: Guid = guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
-
-        // Construct the agent disk.
-        let agent_disk = self
-            .resources
-            .agent_image
-            .build()
-            .context("failed to build agent image")?;
-
-        // Add a SCSI controller to contain the agent disk. Don't reuse an
-        // existing controller so that we can avoid interfering with
-        // test-specific configuration.
-        self.config.vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            ScsiControllerHandle {
-                instance_id: CIDATA_SCSI_INSTANCE,
-                max_sub_channel_count: 1,
-                io_queue_depth: None,
-                devices: vec![ScsiDeviceAndPath {
-                    path: ScsiPath {
-                        path: 0,
-                        target: 0,
-                        lun: 0,
-                    },
-                    device: SimpleScsiDiskHandle {
-                        read_only: true,
-                        parameters: Default::default(),
-                        disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
-                    }
-                    .into_resource(),
-                }],
-                requests: None,
-            }
-            .into_resource(),
-        ));
-
-        if matches!(self.firmware.os_flavor(), OsFlavor::Windows) {
-            // Make a file for the IMC hive. It's not guaranteed to be at a fixed
-            // location at runtime.
-            let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
-            imc_hive_file
-                .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
-                .context("failed to write imc hive")?;
-
-            // Add the IMC device.
+            // Add a SCSI controller to contain the agent disk. Don't reuse an
+            // existing controller so that we can avoid interfering with
+            // test-specific configuration.
             self.config.vmbus_devices.push((
                 DeviceVtl::Vtl0,
-                vmbfs_resources::VmbfsImcDeviceHandle {
-                    file: imc_hive_file,
+                ScsiControllerHandle {
+                    instance_id: CIDATA_SCSI_INSTANCE,
+                    max_sub_channel_count: 1,
+                    io_queue_depth: None,
+                    devices: vec![ScsiDeviceAndPath {
+                        path: ScsiPath {
+                            path: 0,
+                            target: 0,
+                            lun: 0,
+                        },
+                        device: SimpleScsiDiskHandle {
+                            read_only: true,
+                            parameters: Default::default(),
+                            disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
+                        }
+                        .into_resource(),
+                    }],
+                    requests: None,
                 }
                 .into_resource(),
             ));
-        }
 
-        let is_linux_direct = self.firmware.is_linux_direct();
+            if matches!(self.firmware.os_flavor(), OsFlavor::Windows) {
+                // Make a file for the IMC hive. It's not guaranteed to be at a fixed
+                // location at runtime.
+                let mut imc_hive_file =
+                    tempfile::tempfile().context("failed to create temp file")?;
+                imc_hive_file
+                    .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
+                    .context("failed to write imc hive")?;
+
+                // Add the IMC device.
+                self.config.vmbus_devices.push((
+                    DeviceVtl::Vtl0,
+                    vmbfs_resources::VmbfsImcDeviceHandle {
+                        file: imc_hive_file,
+                    }
+                    .into_resource(),
+                ));
+            }
+
+            self.firmware.is_linux_direct()
+        } else {
+            false
+        };
 
         // Start the VM.
         let mut vm = self.run_core().await?;
 
-        if is_linux_direct {
+        if launch_linux_direct_pipette {
             vm.launch_linux_direct_pipette().await?;
         }
 

@@ -7,6 +7,7 @@
 //! [`The Linux/x86 Boot Protocol`](https://www.kernel.org/doc/html/latest/x86/boot.html).
 
 #![expect(missing_docs)]
+#![expect(non_camel_case_types)]
 
 use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
@@ -15,7 +16,6 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-#[allow(non_camel_case_types)]
 mod packed_nums {
     pub type u16_ne = zerocopy::U16<zerocopy::NativeEndian>;
     pub type u32_ne = zerocopy::U32<zerocopy::NativeEndian>;

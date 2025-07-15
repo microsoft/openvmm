@@ -8,7 +8,7 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-#[allow(unused_extern_crates)]
+#[expect(unused_extern_crates)]
 extern crate self as mesh;
 
 pub mod payload {

@@ -6,20 +6,21 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::OpenHclServicingFlags;
+use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
-use petri::openvmm::PetriVmConfigOpenVmm;
+use petri::openvmm::OpenVmmPetriBackend;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 
 async fn nvme_relay_test_core(
-    config: PetriVmConfigOpenVmm,
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
     openhcl_cmdline: &str,
 ) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
-        .with_vmbus_redirect()
+        .with_vmbus_redirect(true)
         .with_processor_topology(ProcessorTopology {
             vp_count: 1,
             ..Default::default()
@@ -36,14 +37,14 @@ async fn nvme_relay_test_core(
 
 /// Servicing tests with NVMe devices attached.
 async fn nvme_relay_servicing_core(
-    config: PetriVmConfigOpenVmm,
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
     openhcl_cmdline: &str,
     new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
 ) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
-        .with_vmbus_redirect()
+        .with_vmbus_redirect(true)
         .run()
         .await?;
 
@@ -52,7 +53,7 @@ async fn nvme_relay_servicing_core(
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
 
-    vm.restart_openhcl(&new_openhcl.erase(), flags).await?;
+    vm.restart_openhcl(new_openhcl, flags).await?;
 
     agent.ping().await?;
 
@@ -68,7 +69,7 @@ async fn nvme_relay_servicing_core(
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
-async fn nvme_relay(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(config, "").await
 }
 
@@ -77,7 +78,9 @@ async fn nvme_relay(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
 ///
 /// Use the shared pool override to test the shared pool dma path.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
-async fn nvme_relay_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn nvme_relay_shared_pool(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(config, "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1").await
 }
 
@@ -86,7 +89,9 @@ async fn nvme_relay_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyh
 ///
 /// Use the private pool override to test the private pool dma path.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
-async fn nvme_relay_private_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn nvme_relay_private_pool(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
     // Number of pages to reserve as a private pool.
     nvme_relay_test_core(config, "OPENHCL_ENABLE_VTL2_GPA_POOL=512").await
 }
@@ -97,7 +102,7 @@ async fn nvme_relay_private_pool(config: PetriVmConfigOpenVmm) -> Result<(), any
 /// Pass 'keepalive' servicing flag which impacts NVMe save/restore.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
 async fn nvme_keepalive(
-    config: PetriVmConfigOpenVmm,
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
     nvme_relay_servicing_core(
@@ -115,10 +120,12 @@ async fn nvme_keepalive(
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
 /// hvlite.
 #[openvmm_test(openhcl_uefi_x64(none))]
-async fn auto_vtl2_range(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let mut vm = config
-        .with_vtl2_relocation_mode(hvlite_defs::config::Vtl2BaseAddressType::MemoryLayout {
-            size: None,
+        .modify_backend(|b| {
+            b.with_vtl2_relocation_mode(hvlite_defs::config::Vtl2BaseAddressType::MemoryLayout {
+                size: None,
+            })
         })
         .run_without_agent()
         .await?;
@@ -135,7 +142,7 @@ async fn auto_vtl2_range(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Err
 /// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
 /// should also validate that the kernel gets two different numa nodes.
 #[openvmm_test(openhcl_uefi_x64(none))]
-async fn no_numa_errors(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn no_numa_errors(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let mut vm = config
         .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
         .run_without_agent()
@@ -145,7 +152,7 @@ async fn no_numa_errors(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Erro
     const NO_NUMA: &str = "NUMA: No NUMA configuration found";
     const FAKING_NODE: &str = "Faking a node at";
 
-    let mut kmsg = vm.kmsg().await?;
+    let mut kmsg = vm.backend().kmsg().await?;
 
     // Search kmsg and make sure we didn't see any errors from the kernel
     while let Some(data) = kmsg.next().await {

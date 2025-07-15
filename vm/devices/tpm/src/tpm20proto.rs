@@ -15,7 +15,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u16_be = zerocopy::U16<zerocopy::BigEndian>;
     pub type u32_be = zerocopy::U32<zerocopy::BigEndian>;
@@ -223,7 +223,7 @@ impl CommandCode {
     }
 }
 
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[expect(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u32)]
 pub enum CommandCodeEnum {
@@ -601,7 +601,7 @@ impl AlgId {
     }
 }
 
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[expect(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 #[repr(u16)]
 pub enum AlgIdEnum {

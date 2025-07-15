@@ -8,10 +8,12 @@ mod openhcl_uefi;
 
 use anyhow::Context;
 use petri::ApicMode;
-use petri::PetriVmConfig;
+use petri::PetriGuestStateLifetime;
+use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::ShutdownKind;
-use petri::openvmm::PetriVmConfigOpenVmm;
+use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use vmm_core_defs::HaltReason;
@@ -25,8 +27,11 @@ use vmm_test_macros::vmm_test;
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let (vm, agent) = config.with_vtl0_alias_map().run().await?;
+async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| b.with_vtl0_alias_map())
+        .run()
+        .await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
@@ -37,18 +42,21 @@ async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config.with_tpm();
+    let config = config.modify_backend(|b| b.with_tpm());
 
     let (vm, agent) = match os_flavor {
         OsFlavor::Windows => config.run().await?,
         OsFlavor::Linux => {
-            let mut vm = config.run_with_lazy_pipette().await?;
+            let mut vm = config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                .run_with_lazy_pipette()
+                .await?;
             // Workaround to https://github.com/microsoft/openvmm/issues/379
             assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
 
-            vm.reset().await?;
+            vm.backend().reset().await?;
             let agent = vm.wait_for_agent().await?;
             vm.wait_for_successful_boot_event().await?;
 
@@ -69,7 +77,7 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 // // do have an easy way to interact with TPM without a private
 // // or custom tool.
 // #[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
-// async fn tpm_ak_cert_persisted(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+// async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
 //     let config = config
 //         .with_tpm()
 //         .with_tpm_state_persistence()
@@ -114,7 +122,7 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 // // do have an easy way to interact with TPM without a private
 // // or custom tool.
 // #[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
-// async fn tpm_ak_cert_retry(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+// async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
 //     let config = config
 //         .with_tpm()
 //         .with_tpm_state_persistence()
@@ -170,15 +178,24 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
 )]
-async fn vbs_boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let mut vm = config.with_tpm().run_without_agent().await?;
+    let config = config.modify_backend(|b| b.with_tpm());
 
-    if matches!(os_flavor, OsFlavor::Linux) {
-        // Workaround to https://github.com/microsoft/openvmm/issues/379
-        assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
-        vm.reset().await?;
-    }
+    let mut vm = match os_flavor {
+        OsFlavor::Windows => config.run_without_agent().await?,
+        OsFlavor::Linux => {
+            let mut vm = config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                .run_without_agent()
+                .await?;
+            // Workaround to https://github.com/microsoft/openvmm/issues/379
+            assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+            vm.backend().reset().await?;
+            vm
+        }
+        _ => unreachable!(),
+    };
 
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -188,7 +205,7 @@ async fn vbs_boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 
 /// Basic VTL 2 pipette functionality test.
 #[openvmm_test(openhcl_linux_direct_x64)]
-async fn vtl2_pipette(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+async fn vtl2_pipette(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (mut vm, agent) = config.run().await?;
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
@@ -203,7 +220,7 @@ async fn vtl2_pipette(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 
 /// Boot Linux and have it dump MTRR related output.
 #[openvmm_test(linux_direct_x64, openhcl_linux_direct_x64)]
-async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn mtrrs(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let (vm, agent) = config.run().await?;
 
     let sh = agent.unix_shell();
@@ -250,8 +267,8 @@ async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn vmbus_redirect(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config.with_vmbus_redirect().run().await?;
+async fn vmbus_redirect(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config.with_vmbus_redirect(true).run().await?;
     vm.wait_for_successful_boot_event().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -265,9 +282,11 @@ async fn vmbus_redirect(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Erro
     uefi_x64(vhd(ubuntu_2204_server_x64)),
     uefi_x64(vhd(windows_datacenter_core_2022_x64))
 )]
-async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn battery_capacity(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
     let os_flavor = config.os_flavor();
-    let (mut vm, agent) = config.with_battery().run().await?;
+    let (mut vm, agent) = config.modify_backend(|b| b.with_battery()).run().await?;
     vm.wait_for_successful_boot_event().await?;
 
     let output = match os_flavor {
@@ -304,11 +323,11 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
     Ok(())
 }
 
-fn configure_for_sidecar(
-    config: Box<dyn PetriVmConfig>,
+fn configure_for_sidecar<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
     proc_count: u32,
     node_count: u32,
-) -> Box<dyn PetriVmConfig> {
+) -> PetriVmBuilder<T> {
     config.with_processor_topology({
         ProcessorTopology {
             vp_count: proc_count,
@@ -325,7 +344,9 @@ fn configure_for_sidecar(
 //
 // Sidecar isn't supported on aarch64 yet.
 #[vmm_test(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
-async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+async fn sidecar_aps_unused<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
     let proc_count = 4;
     let mut vm = configure_for_sidecar(config, proc_count, 1)
         .with_uefi_frontpage(true)
@@ -359,7 +380,7 @@ async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn sidecar_boot(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
