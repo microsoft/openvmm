@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::str::FromStr;
+use underhill_config::schema::v1::NAMESPACE_BASE;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// Hyper-V VM Generation
@@ -918,9 +919,10 @@ pub fn configure_vtl2_scsi_relay(
     vmid: &Guid,
     scsi_instance_id: &Guid,
     device_id: &Guid,
+    additional_modifiers: Vec<Box<dyn FnOnce(&mut Vtl2Settings) + Send>>,
 ) -> anyhow::Result<()> {
     // Get current VTL2 settings
-    let current_settings = run_get_management_vtl_settings(ps_mod, vmid, "Base")?;
+    let current_settings = run_get_management_vtl_settings(ps_mod, vmid, NAMESPACE_BASE)?;
 
     // Parse existing settings or create new ones
     let mut vtl2_settings = if current_settings.settings.is_empty() {
@@ -938,6 +940,11 @@ pub fn configure_vtl2_scsi_relay(
     // Configure SCSI controller and LUN
     crate::vm::configure_vtl2_storage_controller(&mut vtl2_settings, scsi_instance_id, device_id);
 
+    // Apply additional modifiers
+    for modifier in additional_modifiers {
+        modifier(&mut vtl2_settings);
+    }
+
     // Encode the settings to protobuf
     let mut encoded_settings = Vec::new();
     vtl2_settings
@@ -948,7 +955,7 @@ pub fn configure_vtl2_scsi_relay(
     run_set_management_vtl_settings(
         ps_mod,
         vmid,
-        "Base",
+        NAMESPACE_BASE,
         &encoded_settings,
         current_settings.current_update_id + 1,
     )?;

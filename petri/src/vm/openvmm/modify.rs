@@ -462,21 +462,4 @@ impl PetriVmConfigOpenVmm {
 
         self
     }
-
-    /// Enable SCSI relay through VTL2 for OpenHCL.
-    pub fn with_scsi_relay(mut self, enable: bool) -> Self {
-        if !enable {
-            return self;
-        }
-
-        let Some(vtl2_settings) = &mut self.vtl2_settings else {
-            panic!("SCSI relay is only supported for OpenHCL with VTL2 settings.");
-        };
-
-        // Configure VTL2 settings for SCSI relay
-        // This will be used during boot disk loading to set up the relay
-        // The actual configuration happens in construct.rs when loading the boot disk
-
-        self
-    }
 }

@@ -67,8 +67,18 @@ pub trait PetriVmConfig: Send {
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
     /// Run the VM with Enable VMBus relay enabled
     fn with_vmbus_redirect(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
-    /// Run the VM with SCSI relay through VTL2 enabled
-    fn with_scsi_relay(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+
+    /// Apply custom configuration to the VM config (OpenVMM only)
+    fn with_custom_config(
+        self: Box<Self>,
+        f: impl FnOnce(&mut hvlite_defs::config::Config) + Send + 'static,
+    ) -> Box<dyn PetriVmConfig>;
+
+    /// Apply custom VTL2 settings to the VM config (OpenVMM only)
+    fn with_custom_vtl2_settings(
+        self: Box<Self>,
+        f: impl FnOnce(&mut vtl2_settings_proto::Vtl2Settings) + Send + 'static,
+    ) -> Box<dyn PetriVmConfig>;
 
     /// Get the OS that the VM will boot into.
     fn os_flavor(&self) -> OsFlavor;

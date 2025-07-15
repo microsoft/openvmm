@@ -203,8 +203,18 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
         Box::new(Self::with_vmbus_redirect(*self))
     }
 
-    fn with_scsi_relay(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_scsi_relay(*self, enable))
+    fn with_custom_config(
+        self: Box<Self>,
+        f: impl FnOnce(&mut hvlite_defs::config::Config) + Send + 'static,
+    ) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_custom_config(*self, f))
+    }
+
+    fn with_custom_vtl2_settings(
+        self: Box<Self>,
+        f: impl FnOnce(&mut vtl2_settings_proto::Vtl2Settings) + Send + 'static,
+    ) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_custom_vtl2_settings(*self, f))
     }
 
     fn os_flavor(&self) -> OsFlavor {
