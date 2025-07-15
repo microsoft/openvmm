@@ -1339,7 +1339,8 @@ impl InitializedVm {
                     // Create callback to reset on watchdog timeout
                     let watchdog_callback = WatchdogTimeoutReset {
                         halt_vps: halt_vps.clone(),
-                        watchdog_send: None,
+                        watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                             // watchdog notifications
                     };
 
                     // Add callbacks
@@ -3014,7 +3015,7 @@ impl WatchdogCallback for WatchdogTimeoutNmi {
             virt::irqcon::MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
         );
 
-        if let Some(watchdog_send) = self.watchdog_send.take() {
+        if let Some(watchdog_send) = &self.watchdog_send {
             watchdog_send.send(());
         }
     }
@@ -3030,7 +3031,7 @@ impl WatchdogCallback for WatchdogTimeoutReset {
     async fn on_timeout(&mut self) {
         self.halt_vps.halt(HaltReason::Reset);
 
-        if let Some(watchdog_send) = self.watchdog_send.take() {
+        if let Some(watchdog_send) = &self.watchdog_send {
             watchdog_send.send(());
         }
     }

@@ -2462,14 +2462,15 @@ async fn new_underhill_vm(
                     EphemeralNonVolatileStore::new_boxed()
                 };
 
-                let trigger_reset = WatchdogTimeoutReset {
+                let watchdog_callback = WatchdogTimeoutReset {
                     halt_vps: halt_vps.clone(),
-                    watchdog_send: None,
+                    watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                         // watchdog notifications.
                 };
 
                 let mut underhill_watchdog_platform =
                     UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
-                underhill_watchdog_platform.add_callback(Box::new(trigger_reset));
+                underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
                 Box::new(underhill_watchdog_platform)
             },
@@ -3481,7 +3482,7 @@ impl WatchdogCallback for WatchdogTimeoutNmi {
             MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
         );
 
-        if let Some(watchdog_send) = self.watchdog_send.take() {
+        if let Some(watchdog_send) = &self.watchdog_send {
             watchdog_send.send(());
         }
     }
@@ -3499,8 +3500,8 @@ impl WatchdogCallback for WatchdogTimeoutReset {
 
         self.halt_vps.halt(HaltReason::Reset);
 
-        if let Some(watchdog_notify_send) = self.watchdog_send.take() {
-            watchdog_notify_send.send(());
+        if let Some(watchdog_send) = &self.watchdog_send {
+            watchdog_send.send(());
         }
     }
 }

@@ -316,12 +316,9 @@ impl PollDevice for UefiDevice {
         self.service.generation_id.poll(cx);
 
         // Poll watchdog timeout events
-        match self.watchdog_recv.poll_recv(cx) {
-            Poll::Ready(Ok(())) => {
-                tracing::info!("watchdog timeout received");
-                self.process_diagnostics(true, "watchdog timeout");
-            }
-            _ => { /* Do nothing */ }
+        if let Poll::Ready(Ok(())) = self.watchdog_recv.poll_recv(cx) {
+            tracing::info!("watchdog timeout received");
+            self.process_diagnostics(true, "watchdog timeout");
         }
     }
 }
