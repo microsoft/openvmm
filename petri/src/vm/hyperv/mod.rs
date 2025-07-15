@@ -62,6 +62,7 @@ pub struct PetriVmConfigHyperV {
     openhcl_command_line: String,
     disable_frontpage: bool,
     vmbus_redirect: bool,
+    scsi_relay: bool,
 
     driver: DefaultDriver,
     agent_image: AgentImage,
@@ -140,6 +141,10 @@ impl PetriVmConfig for PetriVmConfigHyperV {
 
     fn with_vmbus_redirect(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_vmbus_redirect(*self, enable))
+    }
+
+    fn with_scsi_relay(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_scsi_relay(*self, enable))
     }
 
     fn os_flavor(&self) -> OsFlavor {
@@ -314,6 +319,7 @@ impl PetriVmConfigHyperV {
             log_source: params.logger.clone(),
             disable_frontpage: true,
             vmbus_redirect: false,
+            scsi_relay: false,
             openhcl_command_line: String::new(),
         })
     }
@@ -387,7 +393,16 @@ impl PetriVmConfigHyperV {
             let (controller_type, controller_number) = match self.generation {
                 powershell::HyperVGeneration::One => (powershell::ControllerType::Ide, i as u32),
                 powershell::HyperVGeneration::Two => {
-                    (powershell::ControllerType::Scsi, vm.add_scsi_controller(0)?)
+                    if self.scsi_relay {
+                        // For SCSI relay, use the VTL2 relay functionality
+                        let scsi_instance_id = Guid::new_random();
+                        (
+                            powershell::ControllerType::Scsi,
+                            vm.add_scsi_controller_with_vtl2_relay(&scsi_instance_id)?,
+                        )
+                    } else {
+                        (powershell::ControllerType::Scsi, vm.add_scsi_controller(0)?)
+                    }
                 }
             };
             for (controller_location, vhd) in vhds.iter().enumerate() {
@@ -625,6 +640,12 @@ impl PetriVmConfigHyperV {
     /// Enables VMBus relay for the VM
     pub fn with_vmbus_redirect(mut self, enable: bool) -> Self {
         self.vmbus_redirect = enable;
+        self
+    }
+
+    /// Enables SCSI relay through VTL2 for the VM
+    pub fn with_scsi_relay(mut self, enable: bool) -> Self {
+        self.scsi_relay = enable;
         self
     }
 }

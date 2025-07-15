@@ -438,7 +438,11 @@ async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn scsi_to_scsi_relay_tdx(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
-    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
+    let mut vm = config
+        .with_vmbus_redirect(true)
+        .with_scsi_relay(true)
+        .run_without_agent()
+        .await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
