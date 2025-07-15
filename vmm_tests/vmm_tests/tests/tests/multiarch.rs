@@ -442,7 +442,7 @@ async fn scsi_to_scsi_relay_tdx(config: Box<dyn PetriVmConfig>) -> anyhow::Resul
         .with_vmbus_redirect(true)
         .with_custom_vtl2_settings(|vtl2_settings| {
             // Configure SCSI storage controller for relay
-            let scsi_instance_id = guid::Guid::new_random();
+            let scsi_instance_id = guid::guid!("12345678-1234-4321-abcd-123456789abc");
             let device_id = guid::Guid::new_random();
             crate::vm::configure_vtl2_storage_controller(
                 vtl2_settings,
