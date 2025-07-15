@@ -203,10 +203,8 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
         Box::new(Self::with_vmbus_redirect(*self))
     }
 
-    fn with_scsi_relay(self: Box<Self>, _: bool) -> Box<dyn PetriVmConfig> {
-        // SCSI relay is not supported for OpenVMM backend
-        // OpenVMM handles VTL2 settings differently
-        self
+    fn with_scsi_relay(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_scsi_relay(*self, enable))
     }
 
     fn os_flavor(&self) -> OsFlavor {
