@@ -70,6 +70,8 @@ use local_clock::InspectableLocalClock;
 use pal_async::local::block_on;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
+use service::diagnostics::DEFAULT_LOGS_PER_PERIOD;
+use service::diagnostics::GUEST_LOGS_PER_PERIOD;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
 use std::task::Context;
@@ -269,13 +271,15 @@ impl UefiDevice {
                 tracelimit::info_ratelimited!(?addr, data, "set gpa for diagnostics");
                 self.service.diagnostics.set_gpa(data)
             }
-            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(false, "guest"),
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
+                self.process_diagnostics(false, GUEST_LOGS_PER_PERIOD, "guest")
+            }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }
 
     fn inspect_extra(&mut self, _resp: &mut inspect::Response<'_>) {
-        self.process_diagnostics(true, "inspect_extra");
+        self.process_diagnostics(true, DEFAULT_LOGS_PER_PERIOD, "inspect_extra");
     }
 }
 
@@ -318,7 +322,7 @@ impl PollDevice for UefiDevice {
         // Poll watchdog timeout events
         if let Poll::Ready(Ok(())) = self.watchdog_recv.poll_recv(cx) {
             tracing::info!("watchdog timeout received");
-            self.process_diagnostics(true, "watchdog timeout");
+            self.process_diagnostics(true, DEFAULT_LOGS_PER_PERIOD, "watchdog timeout");
         }
     }
 }

@@ -32,10 +32,11 @@ use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 use zerocopy::FromBytes;
 
-/// Default amount of logs emitted per period
-/// See `tracelimit::PERIOD_MS` and `tracelimit::EVENTS_PER_PERIOD`
-/// for more details
-const LOGS_PER_PERIOD: u32 = 150;
+/// Default number of logs emitted per period
+pub const DEFAULT_LOGS_PER_PERIOD: u32 = 500;
+
+/// Guest specific amount of logs emitted per period
+pub const GUEST_LOGS_PER_PERIOD: u32 = 150;
 
 /// 8-byte alignment for every entry
 const ALIGNMENT: usize = 8;
@@ -108,13 +109,13 @@ fn phase_to_string(phase: u16) -> &'static str {
 }
 
 /// Defines how we want EfiDiagnosticsLog entries to be handled.
-pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
+pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>, limit: u32) {
     let debug_level_str = debug_level_to_string(log.debug_level);
     let phase_str = phase_to_string(log.phase);
 
     match log.debug_level {
         DEBUG_WARN => tracelimit::warn_ratelimited!(
-            limit: LOGS_PER_PERIOD,
+            limit: limit,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
@@ -122,7 +123,7 @@ pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
             "EFI log entry"
         ),
         DEBUG_ERROR => tracelimit::error_ratelimited!(
-            limit: LOGS_PER_PERIOD,
+            limit: limit,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
@@ -130,7 +131,7 @@ pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
             "EFI log entry"
         ),
         _ => tracelimit::info_ratelimited!(
-            limit: LOGS_PER_PERIOD,
+            limit: limit,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
@@ -470,12 +471,14 @@ impl UefiDevice {
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `context` - String to indicate who triggered the diagnostics processing
-    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, context: &str) {
-        if let Err(error) = self.service.diagnostics.process_diagnostics(
-            allow_reprocess,
-            &self.gm,
-            handle_efi_diagnostics_log,
-        ) {
+    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: u32, context: &str) {
+        if let Err(error) =
+            self.service
+                .diagnostics
+                .process_diagnostics(allow_reprocess, &self.gm, |log| {
+                    handle_efi_diagnostics_log(log, limit)
+                })
+        {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
                 context,
