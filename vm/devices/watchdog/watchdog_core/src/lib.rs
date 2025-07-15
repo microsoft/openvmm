@@ -193,8 +193,8 @@ impl WatchdogServices {
             }
             Register::Resolution => return Err(WatchdogServiceError::WriteResolution),
             Register::Count => {
-                self.state.count = 10;
-                self.state.configured_count = 10;
+                self.state.count = val;
+                self.state.configured_count = val;
             }
         }
 

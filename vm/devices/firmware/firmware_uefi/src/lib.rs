@@ -73,6 +73,7 @@ use platform::nvram::VsmConfig;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
 use std::task::Context;
+use std::task::Poll;
 use thiserror::Error;
 use uefi_nvram_storage::VmmNvramStorage;
 use vmcore::device_state::ChangeDeviceState;
@@ -310,16 +311,17 @@ impl ChipsetDevice for UefiDevice {
 
 impl PollDevice for UefiDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
-        tracing::info!("polling...");
-
         // Poll services
         self.service.uefi_watchdog.watchdog.poll(cx);
         self.service.generation_id.poll(cx);
 
         // Poll watchdog timeout events
-        if self.watchdog_recv.poll_recv(cx).is_ready() {
-            tracing::info!("watchdog timeout received");
-            self.process_diagnostics(false, "watchdog timeout");
+        match self.watchdog_recv.poll_recv(cx) {
+            Poll::Ready(Ok(())) => {
+                tracing::info!("watchdog timeout received");
+                self.process_diagnostics(true, "watchdog timeout");
+            }
+            _ => { /* Do nothing */ }
         }
     }
 }
