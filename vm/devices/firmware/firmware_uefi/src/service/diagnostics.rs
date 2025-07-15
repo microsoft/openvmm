@@ -252,8 +252,8 @@ pub enum DiagnosticsError {
 pub struct DiagnosticsServices {
     /// The guest physical address of the diagnostics buffer
     gpa: Option<u32>,
-    /// Flag to indicate if we have already processed the buffer
-    did_process: bool,
+    /// Flag indicating if guest-initiated processing has occurred before
+    has_guest_processed_before: bool,
 }
 
 impl DiagnosticsServices {
@@ -261,14 +261,14 @@ impl DiagnosticsServices {
     pub fn new() -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
-            did_process: false,
+            has_guest_processed_before: false,
         }
     }
 
     /// Reset the diagnostics services state
     pub fn reset(&mut self) {
         self.gpa = None;
-        self.did_process = false;
+        self.has_guest_processed_before = false;
     }
 
     /// Set the GPA of the diagnostics buffer
@@ -280,22 +280,28 @@ impl DiagnosticsServices {
     }
 
     /// Processes diagnostics from guest memory
+    ///
+    /// # Arguments
+    /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `gm` - Guest memory to read diagnostics from
+    /// * `log_handler` - Function to handle each parsed log entry
     fn process_diagnostics<F>(
         &mut self,
-        force: bool,
+        allow_reprocess: bool,
         gm: &GuestMemory,
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
     where
         F: FnMut(EfiDiagnosticsLog<'_>),
     {
-        // Enforce rate limit if we are not forcing processing
-        if !force {
-            if self.did_process {
+        // Prevent the guest from spamming diagnostics processing
+        // unless explicitly allowed
+        if !allow_reprocess {
+            if self.has_guest_processed_before {
                 tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
                 return Ok(());
             }
-            self.did_process = true;
+            self.has_guest_processed_before = true;
         }
 
         // Validate the GPA
@@ -452,9 +458,13 @@ impl DiagnosticsServices {
 
 impl UefiDevice {
     /// Processes UEFI diagnostics from guest memory
-    pub(crate) fn process_diagnostics(&mut self, force: bool, context: &str) {
+    ///
+    /// # Arguments
+    /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `context` - String to indicate who triggered the diagnostics processing
+    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, context: &str) {
         if let Err(error) = self.service.diagnostics.process_diagnostics(
-            force,
+            allow_reprocess,
             &self.gm,
             handle_efi_diagnostics_log,
         ) {
@@ -493,14 +503,14 @@ mod save_restore {
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 gpa: self.gpa,
-                did_flush: self.did_process,
+                did_flush: self.has_guest_processed_before,
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let state::SavedState { gpa, did_flush } = state;
             self.gpa = gpa;
-            self.did_process = did_flush;
+            self.has_guest_processed_before = did_flush;
             Ok(())
         }
     }
