@@ -344,7 +344,7 @@ pub async fn kmsg_log_task(
     while let Some(data) = file_stream.next().await {
         match data {
             Ok(data) => {
-                let message = KmsgParsedEntry::new(&data)?;
+                let message = KmsgParsedEntry::new(&data).unwrap();
                 let level = kernel_level_to_tracing_level(message.level);
                 log_file.write_entry_fmt(None, level, format_args!("{}", message.display(false)));
             }
