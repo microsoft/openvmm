@@ -63,6 +63,7 @@ sparse_mmap.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 clap.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
 fs-err.workspace = true

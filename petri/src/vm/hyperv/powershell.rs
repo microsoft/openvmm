@@ -7,16 +7,20 @@ use super::vm::CommandError;
 use super::vm::run_cmd;
 use crate::OpenHclServicingFlags;
 use anyhow::Context;
+use base64::prelude::*;
 use core::str;
 use guid::Guid;
 use jiff::Timestamp;
 use powershell_builder as ps;
 use powershell_builder::PowerShellBuilder;
+use prost::Message;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::str::FromStr;
+use vtl2_settings_proto::Vtl2Settings;
 
 /// Hyper-V VM Generation
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -826,4 +830,154 @@ pub fn run_remove_vm_scsi_controller(vmid: &Guid, controller_number: u32) -> any
     )
     .map(|_| ())
     .context("remove_vm_scsi_controller")
+}
+
+/// VTL2 settings result containing settings data and update ID
+pub struct ManagementVtlSettingsResult {
+    pub settings: Vec<u8>,
+    pub current_update_id: u64,
+}
+
+/// Gets the management VTL settings for a VM
+pub fn run_get_management_vtl_settings(
+    ps_mod: &Path,
+    vmid: &Guid,
+    namespace: &str,
+) -> anyhow::Result<ManagementVtlSettingsResult> {
+    let output = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Get-ManagementVtlSettings")
+            .arg("Namespace", namespace)
+            .pipeline()
+            .cmdlet("ConvertTo-Json")
+            .flag("Compress")
+            .finish()
+            .build(),
+    )
+    .context("get_management_vtl_settings")?;
+
+    let json: serde_json::Value = serde_json::from_str(&output)?;
+    let settings = json["Settings"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing Settings field"))?;
+    let current_update_id = json["CurrentUpdateId"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("Missing CurrentUpdateId field"))?;
+
+    // Convert base64 settings to bytes
+    let settings_bytes = base64::prelude::BASE64_STANDARD.decode(settings)?;
+
+    Ok(ManagementVtlSettingsResult {
+        settings: settings_bytes,
+        current_update_id,
+    })
+}
+
+/// Sets the management VTL settings for a VM
+pub fn run_set_management_vtl_settings(
+    ps_mod: &Path,
+    vmid: &Guid,
+    namespace: &str,
+    settings: &[u8],
+    update_id: u64,
+) -> anyhow::Result<()> {
+    // Convert settings to base64 for PowerShell
+    let settings_b64 = base64::prelude::BASE64_STANDARD.encode(settings);
+
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-ManagementVtlSettings")
+            .arg("Namespace", namespace)
+            .arg(
+                "Settings",
+                format!("[System.Convert]::FromBase64String('{}')", settings_b64),
+            )
+            .arg("UpdateId", update_id)
+            .finish()
+            .build(),
+    )
+    .map(|_| ())
+    .context("set_management_vtl_settings")
+}
+
+/// Configures VTL2 settings for SCSI relay
+pub fn configure_vtl2_scsi_relay(
+    ps_mod: &Path,
+    vmid: &Guid,
+    scsi_instance_id: &Guid,
+    device_id: &Guid,
+) -> anyhow::Result<()> {
+    // Get current VTL2 settings
+    let current_settings = run_get_management_vtl_settings(ps_mod, vmid, "Base")?;
+
+    // Parse existing settings or create new ones
+    let mut vtl2_settings = if current_settings.settings.is_empty() {
+        Vtl2Settings {
+            version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
+            dynamic: Some(vtl2_settings_proto::Vtl2SettingsDynamic::default()),
+            fixed: Some(vtl2_settings_proto::Vtl2SettingsFixed::default()),
+            namespace_settings: std::collections::HashMap::new(),
+        }
+    } else {
+        Vtl2Settings::decode(&current_settings.settings[..])
+            .context("Failed to decode existing VTL2 settings")?
+    };
+
+    // Configure SCSI controller and LUN
+    let dynamic = vtl2_settings.dynamic.as_mut().unwrap();
+    dynamic
+        .storage_controllers
+        .push(vtl2_settings_proto::StorageController {
+            instance_id: scsi_instance_id.to_string(),
+            protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi.into(),
+            luns: vec![vtl2_settings_proto::Lun {
+                location: 0, // Boot LUN
+                device_id: device_id.to_string(),
+                vendor_id: "OpenVMM".to_string(),
+                product_id: "Boot Disk".to_string(),
+                product_revision_level: "1.0".to_string(),
+                serial_number: "0".to_string(),
+                model_number: "1".to_string(),
+                physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
+                    r#type: vtl2_settings_proto::physical_devices::BackingType::Single.into(),
+                    device: Some(vtl2_settings_proto::PhysicalDevice {
+                        device_type: vtl2_settings_proto::physical_device::DeviceType::Vscsi.into(),
+                        device_path: scsi_instance_id.to_string(),
+                        sub_device_path: 0,
+                    }),
+                    devices: Vec::new(),
+                }),
+                ..Default::default()
+            }],
+            io_queue_depth: None,
+        });
+
+    // Encode the settings to protobuf
+    let mut encoded_settings = Vec::new();
+    vtl2_settings
+        .encode(&mut encoded_settings)
+        .context("Failed to encode VTL2 settings")?;
+
+    // Set the updated settings
+    run_set_management_vtl_settings(
+        ps_mod,
+        vmid,
+        "Base",
+        &encoded_settings,
+        current_settings.current_update_id + 1,
+    )?;
+
+    Ok(())
 }

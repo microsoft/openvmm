@@ -401,3 +401,62 @@ function Restart-OpenHCL
 
     $result | Trace-CimMethodExecution -CimInstance $guestManagementService -MethodName "ReloadManagementVtl" -TimeoutSeconds $TimeoutHintSeconds
 }
+
+function Get-ManagementVtlSettings
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+        
+        [Parameter(Mandatory = $true)]
+        [string] $Namespace
+    )
+    
+    $guestManagementService = Get-VmGuestManagementService
+    $vmid = $Vm.Id.toString()
+    
+    $result = $guestManagementService | Invoke-CimMethod -name "GetManagementVtlSettings" -Arguments @{
+        "VmId"      = $vmid
+        "Namespace" = $Namespace
+    }
+    
+    $result | Trace-CimMethodExecution -CimInstance $guestManagementService -MethodName "GetManagementVtlSettings"
+    
+    return @{
+        "Settings" = $result.Settings
+        "CurrentUpdateId" = $result.CurrentUpdateId
+    }
+}
+
+function Set-ManagementVtlSettings
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+        
+        [Parameter(Mandatory = $true)]
+        [string] $Namespace,
+        
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Settings,
+        
+        [Parameter(Mandatory = $true)]
+        [uint64] $UpdateId
+    )
+    
+    $guestManagementService = Get-VmGuestManagementService
+    $vmid = $Vm.Id.toString()
+    
+    $result = $guestManagementService | Invoke-CimMethod -name "SetManagementVtlSettings" -Arguments @{
+        "VmId"      = $vmid
+        "Namespace" = $Namespace
+        "Settings"  = $Settings
+        "UpdateId"  = $UpdateId
+    }
+    
+    $result | Trace-CimMethodExecution -CimInstance $guestManagementService -MethodName "SetManagementVtlSettings"
+}

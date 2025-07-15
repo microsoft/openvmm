@@ -432,6 +432,19 @@ async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Test for SCSI to SCSI relay through VTL2 for TDX VMs
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn scsi_to_scsi_relay_tdx(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
 #[vmm_test(

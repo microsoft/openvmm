@@ -253,6 +253,33 @@ impl HyperVVM {
         Ok(controller_number)
     }
 
+    /// Add a SCSI controller with VTL2 relay support
+    pub fn add_scsi_controller_with_vtl2_relay(
+        &mut self,
+        scsi_instance_id: &Guid,
+    ) -> anyhow::Result<u32> {
+        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid)?;
+
+        // Set the controller to target VTL2
+        powershell::run_set_vm_scsi_controller_target_vtl(
+            &self.ps_mod,
+            &self.vmid,
+            controller_number,
+            2,
+        )?;
+
+        // Configure VTL2 settings for SCSI relay
+        let device_id = Guid::new_random();
+        powershell::configure_vtl2_scsi_relay(
+            &self.ps_mod,
+            &self.vmid,
+            scsi_instance_id,
+            &device_id,
+        )?;
+
+        Ok(controller_number)
+    }
+
     /// Add a VHD
     pub fn add_vhd(
         &mut self,
