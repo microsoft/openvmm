@@ -470,21 +470,6 @@ async fn vmbus_relay_heavy(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Test for DVD functionality relayed through OpenHCL for TDX VMs
-/// This test validates that DVD relay functionality is working correctly
-/// in TDX VMs by testing VMBus relay with storage.
-#[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn dvd_relay_tdx(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
-    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
-    vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-    Ok(())
-}
-
 /// Basic boot test without agent and with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),

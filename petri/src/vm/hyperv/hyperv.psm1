@@ -415,7 +415,7 @@ function Get-ManagementVtlSettings
     )
     
     $guestManagementService = Get-VmGuestManagementService
-    $vmid = $Vm.Id.toString()
+    $vmid = $Vm.Id.tostring()
     
     $result = $guestManagementService | Invoke-CimMethod -name "GetManagementVtlSettings" -Arguments @{
         "VmId"      = $vmid
@@ -449,7 +449,7 @@ function Set-ManagementVtlSettings
     )
     
     $guestManagementService = Get-VmGuestManagementService
-    $vmid = $Vm.Id.toString()
+    $vmid = $Vm.Id.tostring()
     
     $result = $guestManagementService | Invoke-CimMethod -name "SetManagementVtlSettings" -Arguments @{
         "VmId"      = $vmid

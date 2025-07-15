@@ -7,7 +7,7 @@ use super::vm::CommandError;
 use super::vm::run_cmd;
 use crate::OpenHclServicingFlags;
 use anyhow::Context;
-use base64::prelude::*;
+use base64::prelude::BASE64_STANDARD;
 use core::str;
 use guid::Guid;
 use jiff::Timestamp;

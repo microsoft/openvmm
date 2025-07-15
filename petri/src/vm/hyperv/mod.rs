@@ -393,6 +393,7 @@ impl PetriVmConfigHyperV {
             let (controller_type, controller_number) = match self.generation {
                 powershell::HyperVGeneration::One => (powershell::ControllerType::Ide, i as u32),
                 powershell::HyperVGeneration::Two => {
+                    // TODO: PCAT VMs can use OpenHCL for storage, but that is not implemented yet.
                     if self.scsi_relay {
                         // For SCSI relay, use the VTL2 relay functionality
                         let scsi_instance_id = Guid::new_random();
