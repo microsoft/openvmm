@@ -109,7 +109,7 @@ fn phase_to_string(phase: u16) -> &'static str {
 }
 
 /// Defines how we want EfiDiagnosticsLog entries to be handled.
-pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>, limit: u32) {
+pub fn handle_efi_diagnostics_log(log: EfiDiagnosticsLog<'_>, limit: u32) {
     let debug_level_str = debug_level_to_string(log.debug_level);
     let phase_str = phase_to_string(log.phase);
 
