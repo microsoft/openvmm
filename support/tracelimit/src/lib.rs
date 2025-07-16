@@ -17,7 +17,6 @@
 #![forbid(unsafe_code)]
 
 use parking_lot::Mutex;
-use std::sync::LazyLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -25,9 +24,9 @@ use std::time::Instant;
 pub use tracing;
 
 #[doc(hidden)]
-pub const PERIOD_MS: u32 = 5000;
+const PERIOD_MS: u32 = 5000;
 #[doc(hidden)]
-pub const EVENTS_PER_PERIOD: u32 = 10;
+const EVENTS_PER_PERIOD: u32 = 10;
 
 static DISABLE_RATE_LIMITING: AtomicBool = AtomicBool::new(false);
 
@@ -41,12 +40,12 @@ pub fn disable_rate_limiting(disabled: bool) {
 
 #[doc(hidden)]
 pub struct RateLimiter {
-    period_ms: u32,
-    events_per_period: u32,
     state: Mutex<RateLimiterState>,
 }
 
 struct RateLimiterState {
+    period_ms: u32,
+    events_per_period: u32,
     start: Option<Instant>,
     events: u32,
     missed: u64,
@@ -62,27 +61,13 @@ impl RateLimiter {
 
     pub const fn new(period_ms: u32, events_per_period: u32) -> Self {
         Self {
-            period_ms,
-            events_per_period,
             state: Mutex::new(RateLimiterState {
+                period_ms,
+                events_per_period,
                 start: None,
                 events: 0,
                 missed: 0,
             }),
-        }
-    }
-
-    /// Reconfigure this rate limiter with new parameters.
-    /// Resets the rate limiting state if parameters changed.
-    pub fn reconfigure(&mut self, period_ms: u32, events_per_period: u32) {
-        if self.period_ms != period_ms || self.events_per_period != events_per_period {
-            self.period_ms = period_ms;
-            self.events_per_period = events_per_period;
-            // Reset state when parameters change
-            let state = self.state.get_mut();
-            state.start = None;
-            state.events = 0;
-            state.missed = 0;
         }
     }
 
@@ -91,53 +76,69 @@ impl RateLimiter {
     /// `missed_events` is `Some(n)` if there were any missed events or if this
     /// event is the last one before rate limiting kicks in.
     pub fn event(&self) -> Result<Option<u64>, RateLimited> {
+        self.event_with_config(None, None)
+    }
+
+    /// Returns `Ok(missed_events)` if this event should be logged.
+    /// Optionally reconfigures the rate limiter if new parameters are provided.
+    ///
+    /// `missed_events` is `Some(n)` if there were any missed events or if this
+    /// event is the last one before rate limiting kicks in.
+    pub fn event_with_config(
+        &self,
+        period_ms: Option<u32>,
+        events_per_period: Option<u32>,
+    ) -> Result<Option<u64>, RateLimited> {
         if DISABLE_RATE_LIMITING.load(Ordering::Relaxed) {
             return Ok(None);
         }
+
         let mut state = self.state.try_lock().ok_or(RateLimited)?;
+
+        // Reconfigure if new parameters are provided
+        let mut reset_state = false;
+        if let Some(new_period) = period_ms {
+            if state.period_ms != new_period {
+                state.period_ms = new_period;
+                reset_state = true;
+            }
+        }
+        if let Some(new_events_per_period) = events_per_period {
+            if state.events_per_period != new_events_per_period {
+                state.events_per_period = new_events_per_period;
+                reset_state = true;
+            }
+        }
+
+        // Reset state when parameters change
+        if reset_state {
+            state.start = None;
+            state.events = 0;
+            state.missed = 0;
+        }
+
         let now = Instant::now();
+        let period_ms = state.period_ms;
         let start = state.start.get_or_insert(now);
         let elapsed = now.duration_since(*start);
-        if elapsed.as_millis() > self.period_ms as u128 {
+        if elapsed.as_millis() > period_ms as u128 {
             *start = now;
             state.events = 0;
         }
-        if state.events >= self.events_per_period {
+        if state.events >= state.events_per_period {
             state.missed += 1;
             return Err(RateLimited);
         }
         state.events += 1;
         let missed = std::mem::take(&mut state.missed);
-        let missed = (missed != 0 || state.events == self.events_per_period).then_some(missed);
+        let missed = (missed != 0 || state.events == state.events_per_period).then_some(missed);
         Ok(missed)
     }
 }
 
-// Runtime rate limiter support
-//
-// NOTE: Rust does not allow using runtime values in static initializers,
-// so we can't make the rate limiter itself static.
-//
-// Instead, we use a global `LazyLock` that holds a `Mutex<RateLimiter>`.
-// This allows us to reconfigure the rate limiter at runtime while still
-// providing a global instance that can be used in macros.
-static RUNTIME_RATE_LIMITER: LazyLock<Mutex<RateLimiter>> =
-    LazyLock::new(|| Mutex::new(RateLimiter::new_default()));
-
-/// Get the global runtime rate limiter, reconfiguring it if needed.
+// Global rate limiter instance
 #[doc(hidden)]
-pub fn get_runtime_rate_limiter(
-    period_ms: u32,
-    events_per_period: u32,
-) -> Result<Option<u64>, RateLimited> {
-    if DISABLE_RATE_LIMITING.load(Ordering::Relaxed) {
-        return Ok(None);
-    }
-
-    let mut limiter = RUNTIME_RATE_LIMITER.lock();
-    limiter.reconfigure(period_ms, events_per_period);
-    limiter.event()
-}
+pub static RATE_LIMITER: RateLimiter = RateLimiter::new_default();
 
 /// As [`tracing::error!`], but rate limited.
 ///
@@ -158,7 +159,7 @@ macro_rules! error_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $limit) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -166,7 +167,7 @@ macro_rules! error_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $crate::EVENTS_PER_PERIOD) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), None) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -174,7 +175,7 @@ macro_rules! error_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($crate::PERIOD_MS, $limit) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(None, Some($limit)) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -182,8 +183,7 @@ macro_rules! error_ratelimited {
     // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
-            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
-            if let Ok(missed_events) = RATE_LIMITER.event() {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event() {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -209,7 +209,7 @@ macro_rules! warn_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $limit) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -217,7 +217,7 @@ macro_rules! warn_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $crate::EVENTS_PER_PERIOD) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), None) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -225,7 +225,7 @@ macro_rules! warn_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($crate::PERIOD_MS, $limit) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(None, Some($limit)) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -233,8 +233,7 @@ macro_rules! warn_ratelimited {
     // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
-            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
-            if let Ok(missed_events) = RATE_LIMITER.event() {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event() {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -260,7 +259,7 @@ macro_rules! info_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $limit) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -268,7 +267,7 @@ macro_rules! info_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $crate::EVENTS_PER_PERIOD) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), None) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -276,7 +275,7 @@ macro_rules! info_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($crate::PERIOD_MS, $limit) {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(None, Some($limit)) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -284,8 +283,7 @@ macro_rules! info_ratelimited {
     // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
-            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
-            if let Ok(missed_events) = RATE_LIMITER.event() {
+            if let Ok(missed_events) = $crate::RATE_LIMITER.event() {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
