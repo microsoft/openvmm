@@ -507,9 +507,8 @@ impl VmInner {
 
                 while let Some(data) = kmsg.next().await {
                     match data {
-                        Ok(data) => {
-                            let message = kmsg::KmsgParsedEntry::new(&data)?;
-                            match &mut target {
+                        Ok(data) => match kmsg::KmsgParsedEntry::new(&data) {
+                            Ok(message) => match &mut target {
                                 IoTarget::Printer => {
                                     writeln!(
                                         self.printer.out(),
@@ -522,8 +521,18 @@ impl VmInner {
                                     let line = format!("{}\r\n", message.display(true));
                                     console.write_all(line.as_bytes()).await?;
                                 }
-                            }
-                        }
+                            },
+                            Err(e) => match &mut target {
+                                IoTarget::Printer => {
+                                    writeln!(self.printer.out(), "[kmsg]: invalid entry: {:?}", e)
+                                        .ok();
+                                }
+                                IoTarget::Console(console) => {
+                                    let line = format!("invalid kmsg entry: {:?}\r\n", e);
+                                    console.write_all(line.as_bytes()).await?;
+                                }
+                            },
+                        },
                         Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => {
                             break;
                         }

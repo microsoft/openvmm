@@ -629,10 +629,10 @@ pub fn main() -> anyhow::Result<()> {
 
                     while let Some(data) = file_stream.next().await {
                         match data {
-                            Ok(data) => {
-                                let message = kmsg::KmsgParsedEntry::new(&data)?;
-                                println!("{}", message.display(is_terminal));
-                            }
+                            Ok(data) => match kmsg::KmsgParsedEntry::new(&data) {
+                                Ok(message) => println!("{}", message.display(is_terminal)),
+                                Err(e) => println!("Invalid kmsg entry: {e:?}"),
+                            },
                             Err(err) if reconnect && err.kind() == ErrorKind::ConnectionReset => {
                                 if verbose {
                                     eprintln!(
