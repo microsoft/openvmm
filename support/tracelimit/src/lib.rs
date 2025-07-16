@@ -23,9 +23,7 @@ use std::time::Instant;
 #[doc(hidden)]
 pub use tracing;
 
-#[doc(hidden)]
 const PERIOD_MS: u32 = 5000;
-#[doc(hidden)]
 const EVENTS_PER_PERIOD: u32 = 10;
 
 static DISABLE_RATE_LIMITING: AtomicBool = AtomicBool::new(false);
