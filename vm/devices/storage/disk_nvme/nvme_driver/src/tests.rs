@@ -341,6 +341,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
         },
+        Box::new(fault_controller),
     );
 
     nvme.client() // 2MB namespace
@@ -441,11 +442,19 @@ fn fault_controller(
     input: Vec<Box<dyn Any>>,
 ) -> (FaultInjectionAction, Box<dyn Any>) {
     match fn_name {
-        "bar0" => {
-            (
-                FaultInjectionAction::Continue,
-                Box::new(35u32), // Return a boxed u32 value as the mock response
-            )
+        "read_bar0" => {
+            // Change Output. FaultInjectionAction::Return
+            tracing::debug!("read_bar0 called with input");
+            (FaultInjectionAction::No_Op, Box::new(0u32))
+        }
+        "write_bar0" => {
+            // Change Input. FaultInjectionAction::Continue
+            panic!("client function is currently unsupported");
+        }
+        "client" => {
+            // Delay
+            tracing::debug!("client called with input");
+            panic!("client function is currently unsupported");
         }
         _ => {
             panic!("Unsupported function name: {}", fn_name);

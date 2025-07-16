@@ -9,6 +9,7 @@ use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use inspect::Inspect;
+use inspect::InspectMut;
 use pci_core::msi::RegisterMsi;
 use std::any::Any;
 use vmcore::device_state::ChangeDeviceState;
@@ -19,19 +20,21 @@ use vmcore::vm_task::VmTaskDriverSource;
 
 // The function can respond with two types of actions.
 pub enum FaultInjectionAction {
+    /// No-fault.
+    No_Op,
     /// No fault injection.
-    Continue,
+    Inject_Input,
     /// Inject a fault that will cause the operation to fail.
-    Return,
+    Inject_Output,
 }
 
-#[derive(Inspect)]
+#[derive(InspectMut)]
 pub struct NvmeControllerFaultInjection {
     #[inspect(skip)]
     inner: NvmeController,
     /// Fault injection callback for NVMe controller operations
     #[inspect(skip)]
-    fi: Box<dyn Fn(&str, Vec<Box<dyn Any>>, FaultInjectionAction) -> u32 + Send + Sync>,
+    fi: Box<dyn Fn(&str, Vec<Box<dyn Any>>) -> (FaultInjectionAction, Box<dyn Any>) + Send + Sync>,
 }
 
 impl NvmeControllerFaultInjection {
@@ -42,7 +45,9 @@ impl NvmeControllerFaultInjection {
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
-        fi: Box<dyn Fn(&str, Vec<Box<dyn Any>>, FaultInjectionAction) -> u32 + Send + Sync>,
+        fi: Box<
+            dyn Fn(&str, Vec<Box<dyn Any>>) -> (FaultInjectionAction, Box<dyn Any>) + Send + Sync,
+        >,
     ) -> Self {
         Self {
             inner: NvmeController::new(
@@ -58,16 +63,22 @@ impl NvmeControllerFaultInjection {
 
     /// Returns a client for manipulating the NVMe controller at runtime.
     pub fn client(&self) -> NvmeControllerClient {
+        (self.fi)("client", vec![Box::new(0 as u32)]);
         self.inner.client()
     }
 
     /// Reads from the virtual BAR 0.
     pub fn read_bar0(&mut self, addr: u16, data: &mut [u8]) -> IoResult {
+        (self.fi)("read_bar0", vec![Box::new(addr as u32)]);
         self.inner.read_bar0(addr, data)
     }
 
     /// Writes to the virtual BAR 0.
     pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
+        (self.fi)(
+            "write_bar0",
+            vec![Box::new(addr as u32), Box::new(data.to_vec())],
+        );
         self.inner.write_bar0(addr, data)
     }
 
