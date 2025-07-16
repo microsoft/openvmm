@@ -17,7 +17,6 @@
 #![forbid(unsafe_code)]
 
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -73,6 +72,20 @@ impl RateLimiter {
         }
     }
 
+    /// Reconfigure this rate limiter with new parameters.
+    /// Resets the rate limiting state if parameters changed.
+    pub fn reconfigure(&mut self, period_ms: u32, events_per_period: u32) {
+        if self.period_ms != period_ms || self.events_per_period != events_per_period {
+            self.period_ms = period_ms;
+            self.events_per_period = events_per_period;
+            // Reset state when parameters change
+            let state = self.state.get_mut();
+            state.start = None;
+            state.events = 0;
+            state.missed = 0;
+        }
+    }
+
     /// Returns `Ok(missed_events)` if this event should be logged.
     ///
     /// `missed_events` is `Some(n)` if there were any missed events or if this
@@ -102,37 +115,27 @@ impl RateLimiter {
 
 // Runtime rate limiter support
 //
-// NOTE: We can't use static rate limiters when users pass runtime variables to macros
-// The solution is to use a global cache of rate limiters created on-demand
+// NOTE: Rust does not allow using runtime values in static initializers,
+// so we can't make the rate limiter itself static.
 //
-// HashMap: Cache rate limiters to preserve state across calls
-// Mutex: Thread-safe access to the HashMap
-// LazyLock: Initialize HashMap on first use
-//
-// The keys are (period, limit, call_site) to ensure that each macro location gets
-// independent rate limiting.
-static RUNTIME_RATE_LIMITERS: LazyLock<Mutex<HashMap<(u32, u32, &'static str), RateLimiter>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+// Instead, we use a global `LazyLock` that holds a `Mutex<RateLimiter>`.
+// This allows us to reconfigure the rate limiter at runtime while still
+// providing a global instance that can be used in macros.
+static RUNTIME_RATE_LIMITER: LazyLock<Mutex<RateLimiter>> =
+    LazyLock::new(|| Mutex::new(RateLimiter::new_default()));
 
-/// Get or create a runtime rate limiter for the given parameters and call site.
-/// This will reuse existing rate limiters if they exist, otherwise create a new one.
+/// Get the global runtime rate limiter, reconfiguring it if needed.
 #[doc(hidden)]
 pub fn get_runtime_rate_limiter(
     period_ms: u32,
     events_per_period: u32,
-    call_site: &'static str,
 ) -> Result<Option<u64>, RateLimited> {
     if DISABLE_RATE_LIMITING.load(Ordering::Relaxed) {
         return Ok(None);
     }
 
-    let key = (period_ms, events_per_period, call_site);
-    let mut limiters = RUNTIME_RATE_LIMITERS.lock();
-
-    let limiter = limiters
-        .entry(key)
-        .or_insert_with(|| RateLimiter::new(period_ms, events_per_period));
-
+    let mut limiter = RUNTIME_RATE_LIMITER.lock();
+    limiter.reconfigure(period_ms, events_per_period);
     limiter.event()
 }
 
@@ -155,11 +158,7 @@ macro_rules! error_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $period,
-                $limit,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $limit) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -167,11 +166,7 @@ macro_rules! error_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $period,
-                $crate::EVENTS_PER_PERIOD,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $crate::EVENTS_PER_PERIOD) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -179,11 +174,7 @@ macro_rules! error_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $crate::PERIOD_MS,
-                $limit,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($crate::PERIOD_MS, $limit) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -218,11 +209,7 @@ macro_rules! warn_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $period,
-                $limit,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $limit) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -230,11 +217,7 @@ macro_rules! warn_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $period,
-                $crate::EVENTS_PER_PERIOD,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $crate::EVENTS_PER_PERIOD) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -242,11 +225,7 @@ macro_rules! warn_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $crate::PERIOD_MS,
-                $limit,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($crate::PERIOD_MS, $limit) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -281,11 +260,7 @@ macro_rules! info_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $period,
-                $limit,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $limit) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -293,11 +268,7 @@ macro_rules! info_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $period,
-                $crate::EVENTS_PER_PERIOD,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($period, $crate::EVENTS_PER_PERIOD) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -305,11 +276,7 @@ macro_rules! info_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::get_runtime_rate_limiter(
-                $crate::PERIOD_MS,
-                $limit,
-                concat!(file!(), ":", line!(), ":", column!())
-            ) {
+            if let Ok(missed_events) = $crate::get_runtime_rate_limiter($crate::PERIOD_MS, $limit) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
