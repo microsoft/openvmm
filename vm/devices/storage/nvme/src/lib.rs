@@ -20,6 +20,7 @@ mod tests;
 pub use pci::NvmeController;
 pub use pci::NvmeControllerCaps;
 pub use pci_fault_injection::FaultInjectionAction;
+pub use pci_fault_injection::NvmeControllerFaultInjection;
 pub use workers::NsidConflict;
 pub use workers::NvmeControllerClient;
 
