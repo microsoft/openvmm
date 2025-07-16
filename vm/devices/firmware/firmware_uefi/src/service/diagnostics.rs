@@ -289,11 +289,13 @@ impl DiagnosticsServices {
     ///
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `triggered_by` - String to indicate who triggered the diagnostics processing
     /// * `gm` - Guest memory to read diagnostics from
     /// * `log_handler` - Function to handle each parsed log entry
     fn process_diagnostics<F>(
         &mut self,
         allow_reprocess: bool,
+        triggered_by: &str,
         gm: &GuestMemory,
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
@@ -456,7 +458,12 @@ impl DiagnosticsServices {
         }
 
         // Print summary statistics
-        tracelimit::info_ratelimited!(entries_processed, bytes_read, "processed EFI log entries");
+        tracelimit::info_ratelimited!(
+            triggered_by,
+            entries_processed,
+            bytes_read,
+            "processed EFI log entries"
+        );
 
         Ok(())
     }
@@ -467,18 +474,22 @@ impl UefiDevice {
     ///
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
-    /// * `context` - String to indicate who triggered the diagnostics processing
-    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: u32, context: &str) {
-        if let Err(error) =
-            self.service
-                .diagnostics
-                .process_diagnostics(allow_reprocess, &self.gm, |log| {
-                    handle_efi_diagnostics_log(log, limit)
-                })
-        {
+    /// * `triggered_by` - String to indicate who triggered the diagnostics processing
+    pub(crate) fn process_diagnostics(
+        &mut self,
+        allow_reprocess: bool,
+        limit: u32,
+        triggered_by: &str,
+    ) {
+        if let Err(error) = self.service.diagnostics.process_diagnostics(
+            allow_reprocess,
+            triggered_by,
+            &self.gm,
+            |log| handle_efi_diagnostics_log(log, limit),
+        ) {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
-                context,
+                triggered_by,
                 "failed to process diagnostics buffer"
             );
         }
