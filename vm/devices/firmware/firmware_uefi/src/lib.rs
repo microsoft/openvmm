@@ -71,7 +71,6 @@ use pal_async::local::block_on;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use service::diagnostics::DEFAULT_LOGS_PER_PERIOD;
-use service::diagnostics::GUEST_LOGS_PER_PERIOD;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
 use std::task::Context;
@@ -272,13 +271,15 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(false, GUEST_LOGS_PER_PERIOD, "guest")
+                self.process_diagnostics(false, DEFAULT_LOGS_PER_PERIOD, "guest")
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }
 
     fn inspect_extra(&mut self, _resp: &mut inspect::Response<'_>) {
+        // This is the only place where we allow reprocessing diagnostics,
+        // since this will be driven by the user themselves.
         self.process_diagnostics(true, DEFAULT_LOGS_PER_PERIOD, "inspect_extra");
     }
 }
@@ -321,8 +322,10 @@ impl PollDevice for UefiDevice {
 
         // Poll watchdog timeout events
         if let Poll::Ready(Ok(())) = self.watchdog_recv.poll_recv(cx) {
-            tracing::info!("watchdog timeout received");
-            self.process_diagnostics(true, DEFAULT_LOGS_PER_PERIOD, "watchdog timeout");
+            // NOTE: Do not allow reprocessing diagnostics here.
+            // UEFI programs the watchdog's configuration, so we should assume that
+            // this path could trigger multiple times.
+            self.process_diagnostics(false, DEFAULT_LOGS_PER_PERIOD, "watchdog timeout");
         }
     }
 }

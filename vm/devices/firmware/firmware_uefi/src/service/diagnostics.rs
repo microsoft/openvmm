@@ -32,11 +32,8 @@ use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 use zerocopy::FromBytes;
 
-/// Default number of logs emitted per period
-pub const DEFAULT_LOGS_PER_PERIOD: u32 = 500;
-
-/// Guest specific amount of logs emitted per period
-pub const GUEST_LOGS_PER_PERIOD: u32 = 150;
+/// Default number of EfiDiagnosticsLogs emitted per period
+pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 
 /// 8-byte alignment for every entry
 const ALIGNMENT: usize = 8;
