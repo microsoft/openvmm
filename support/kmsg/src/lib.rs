@@ -69,12 +69,12 @@ impl Display for EncodedMessage<'_> {
 
 /// An error indicating the kmsg entry could not be parsed because it is invalid.
 #[derive(Debug, Error)]
-#[error("invalid kmsg entry")]
-pub struct InvalidKmsgEntry;
+#[error("invalid kmsg entry: {0:?}")]
+pub struct InvalidKmsgEntry<'a>(&'a [u8]);
 
 impl<'a> KmsgParsedEntry<'a> {
-    pub fn new(data: &'a [u8]) -> Result<Self, InvalidKmsgEntry> {
-        Self::new_inner(data).ok_or(InvalidKmsgEntry)
+    pub fn new(data: &'a [u8]) -> Result<Self, InvalidKmsgEntry<'a>> {
+        Self::new_inner(data).ok_or(InvalidKmsgEntry(data))
     }
 
     fn new_inner(data: &'a [u8]) -> Option<Self> {
