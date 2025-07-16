@@ -134,10 +134,6 @@ impl RateLimiter {
     }
 }
 
-// Global rate limiter instance
-#[doc(hidden)]
-pub static RATE_LIMITER: RateLimiter = RateLimiter::new_default();
-
 /// As [`tracing::error!`], but rate limited.
 ///
 /// Can be called with optional parameters to customize rate limiting:
@@ -157,7 +153,8 @@ macro_rules! error_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -165,7 +162,8 @@ macro_rules! error_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), None) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(Some($period), None) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -173,7 +171,8 @@ macro_rules! error_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(None, Some($limit)) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(None, Some($limit)) {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -181,7 +180,8 @@ macro_rules! error_ratelimited {
     // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event() {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event() {
                 $crate::tracing::error!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -207,7 +207,8 @@ macro_rules! warn_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -215,7 +216,8 @@ macro_rules! warn_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), None) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(Some($period), None) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -223,7 +225,8 @@ macro_rules! warn_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(None, Some($limit)) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(None, Some($limit)) {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -231,7 +234,8 @@ macro_rules! warn_ratelimited {
     // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event() {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event() {
                 $crate::tracing::warn!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -257,7 +261,8 @@ macro_rules! info_ratelimited {
     // With both period and limit
     (period: $period:expr, limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(Some($period), Some($limit)) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -265,7 +270,8 @@ macro_rules! info_ratelimited {
     // With period only
     (period: $period:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(Some($period), None) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(Some($period), None) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -273,7 +279,8 @@ macro_rules! info_ratelimited {
     // With limit only
     (limit: $limit:expr, $($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event_with_config(None, Some($limit)) {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event_with_config(None, Some($limit)) {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
@@ -281,7 +288,8 @@ macro_rules! info_ratelimited {
     // Default case (no custom parameters)
     ($($rest:tt)*) => {
         {
-            if let Ok(missed_events) = $crate::RATE_LIMITER.event() {
+            static RATE_LIMITER: $crate::RateLimiter = $crate::RateLimiter::new_default();
+            if let Ok(missed_events) = RATE_LIMITER.event() {
                 $crate::tracing::info!(dropped_ratelimited = missed_events, $($rest)*);
             }
         }
