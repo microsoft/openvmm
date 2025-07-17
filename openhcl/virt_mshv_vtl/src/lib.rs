@@ -1007,7 +1007,12 @@ impl virt::Synic for UhPartition {
     }
 
     fn monitor_support(&self) -> Option<&dyn virt::SynicMonitor> {
-        Some(self)
+        // TODO: MNF does not work on TDX, tracked by GH issue 1711.
+        if matches!(self.inner.isolation, IsolationType::Tdx) {
+            return None;
+        } else {
+            Some(self)
+        }
     }
 }
 
