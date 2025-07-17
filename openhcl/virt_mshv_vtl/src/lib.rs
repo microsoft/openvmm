@@ -1007,8 +1007,8 @@ impl virt::Synic for UhPartition {
     }
 
     fn monitor_support(&self) -> Option<&dyn virt::SynicMonitor> {
-        // TODO: MNF does not work on TDX, tracked by GH issue 1711.
-        if matches!(self.inner.isolation, IsolationType::Tdx) {
+        // TODO: MNF does not work on CVM, tracked by GH issue 1711.
+        if self.inner.isolation.is_hardware_isolated() {
             None
         } else {
             Some(self)
