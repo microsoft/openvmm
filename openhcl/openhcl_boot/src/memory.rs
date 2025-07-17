@@ -22,6 +22,9 @@ const MAX_RESERVED_MEM_RANGES: usize = 5 + sidecar_defs::MAX_NODES;
 
 const MAX_MEMORY_RANGES: usize = MAX_VTL2_RAM_RANGES + MAX_RESERVED_MEM_RANGES;
 
+// TODO: sizing of arrayvec
+const MAX_ADDRESS_RANGES: usize = MAX_MEMORY_RANGES * 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReservedMemoryType {
     /// VTL2 parameter regions (could be up to 2).
@@ -87,7 +90,7 @@ pub struct AllocatedRange {
 #[derive(Debug)]
 pub struct AddressSpaceManager {
     /// tracks address space, must be sorted
-    address_space: ArrayVec<AddressRange, MAX_MEMORY_RANGES>,
+    address_space: ArrayVec<AddressRange, MAX_ADDRESS_RANGES>,
 }
 
 pub enum AllocationType {
@@ -277,5 +280,67 @@ mod tests {
             .allocate(None, 0x2000, AllocationType::GpaPool)
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
+    }
+
+    // test numa allocation
+    #[test]
+    fn test_allocate_numa() {
+        let mut address_space = AddressSpaceManager::new(
+            &[
+                MemoryEntry {
+                    range: MemoryRange::new(0x0..0x20000),
+                    vnode: 0,
+                    mem_type: MemoryMapEntryType::MEMORY,
+                },
+                MemoryEntry {
+                    range: MemoryRange::new(0x20000..0x40000),
+                    vnode: 1,
+                    mem_type: MemoryMapEntryType::MEMORY,
+                },
+                MemoryEntry {
+                    range: MemoryRange::new(0x40000..0x60000),
+                    vnode: 2,
+                    mem_type: MemoryMapEntryType::MEMORY,
+                },
+            ],
+            MemoryRange::new(0x0..0x1000),
+            &[
+                MemoryRange::new(0x3000..0x4000),
+                MemoryRange::new(0x5000..0x6000),
+            ],
+            Some(MemoryRange::new(0x8000..0xA000)),
+            Some(MemoryRange::new(0xA000..0xC000)),
+        );
+
+        let range = address_space
+            .allocate(Some(1), 0x1000, AllocationType::GpaPool)
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
+        assert_eq!(range.vnode, 1);
+
+        let range = address_space
+            .allocate(Some(1), 0x2000, AllocationType::SidecarNode)
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x1C000..0x1F000));
+        assert_eq!(range.vnode, 1);
+
+        let range = address_space
+            .allocate(Some(2), 0x2000, AllocationType::GpaPool)
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x3D000..0x40000));
+        assert_eq!(range.vnode, 2);
+
+        // allocate all of node 3, then subsequent allocations fail
+        let range = address_space
+            .allocate(Some(3), 0x20000, AllocationType::SidecarNode)
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x40000..0x60000));
+        assert_eq!(range.vnode, 3);
+
+        let range = address_space.allocate(Some(3), 0x1000, AllocationType::SidecarNode);
+        assert!(
+            range.is_none(),
+            "allocation should fail, no space left for node 3"
+        );
     }
 }
