@@ -400,7 +400,6 @@ impl NvmeManagerWorker {
                     dma_client,
                 )
                 .await?;
-                //.map_err(InnerError::DeviceInitFailed)?;
 
                 entry.insert(driver)
             }
