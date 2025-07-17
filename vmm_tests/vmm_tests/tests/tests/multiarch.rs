@@ -467,12 +467,15 @@ async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
     Ok(())
 }
 
-// Test for vmbus relay, with MNF enabled via cmdline.
+// Test for vmbus relay, with MNF enabled via cmdline on TDX.
+//
+// TODO: Shortened test name to make it work on Hyper-V, but it should use the
+// full name once petri is fixed.
 #[vmm_test(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn vmbus_relay_force_mnf_no_agent<T: PetriVmmBackend>(
+async fn vmbr_force_mnf_no_agent<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let mut vm = config
