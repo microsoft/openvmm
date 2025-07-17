@@ -373,6 +373,7 @@ impl Partition {
 
         let banks;
         let synth_banks;
+        let abi_bool;
         let data = match &property {
             PartitionProperty::ExtendedVmExits(val) => set(partition_prop::ExtendedVmExits, val),
             #[cfg(target_arch = "x86_64")]
@@ -380,7 +381,8 @@ impl Partition {
                 set(partition_prop::ExceptionExitBitmap, val)
             }
             PartitionProperty::SeparateSecurityDomain(val) => {
-                set(partition_prop::SeparateSecurityDomain, val)
+                abi_bool = val.clone().into();
+                set(partition_prop::SeparateSecurityDomain, &abi_bool)
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::X64MsrExitBitmap(val) => set(partition_prop::X64MsrExitBitmap, val),
@@ -393,9 +395,13 @@ impl Partition {
                 set(partition_prop::ProcessorFrequencyCap, val)
             }
             PartitionProperty::AllowDeviceAssignment(val) => {
-                set(partition_prop::AllowDeviceAssignment, val)
+                abi_bool = val.clone().into();
+                set(partition_prop::AllowDeviceAssignment, &abi_bool)
             }
-            PartitionProperty::DisableSmt(val) => set(partition_prop::DisableSmt, val),
+            PartitionProperty::DisableSmt(val) => {
+                abi_bool = val.clone().into();
+                set(partition_prop::DisableSmt, &abi_bool)
+            }
             PartitionProperty::ProcessorFeatures(val) => {
                 let ProcessorFeatures {
                     bank0: b0,
@@ -438,7 +444,8 @@ impl Partition {
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::ApicRemoteReadSupport(val) => {
-                set(partition_prop::ApicRemoteReadSupport, val)
+                abi_bool = val.clone().into();
+                set(partition_prop::ApicRemoteReadSupport, &abi_bool)
             }
             PartitionProperty::ReferenceTime(val) => set(partition_prop::ReferenceTime, val),
             PartitionProperty::SyntheticProcessorFeatures(val) => {

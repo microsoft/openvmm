@@ -1971,8 +1971,11 @@ impl InitializedVm {
                     let device = chipset_builder
                         .arc_mutex_device(device_name)
                         .with_external_pci()
-                        .try_add(|_services| {
-                            virt_whp::device::AssignedPciDevice::new(hv_device.clone())
+                        .try_add(|services| {
+                            virt_whp::device::AssignedPciDevice::new(
+                                &mut services.register_mmio(),
+                                hv_device.clone(),
+                            )
                         })
                         .context("failed to assign device")?;
 

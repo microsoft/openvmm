@@ -994,15 +994,18 @@ unsafe impl Sync for Overlapped {}
 
 #[macro_export]
 macro_rules! delayload {
-    {$dll:literal {$($($idents:ident)+ ($($params:ident : $types:ty),* $(,)?) -> $result:ty;)*}} => {
+    {$dll:literal {
+        $(
+            $(#[$a:meta])*
+            $visibility:vis fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty;
+        )*
+    }} => {
         fn get_module() -> Result<::winapi::shared::minwindef::HINSTANCE, u32> {
             use ::std::ptr::null_mut;
             use ::std::sync::atomic::{AtomicPtr, Ordering};
-            use ::winapi::{
-                um::{
-                    errhandlingapi::GetLastError,
-                    libloaderapi::{FreeLibrary, LoadLibraryA},
-                },
+            use ::winapi::um::{
+                errhandlingapi::GetLastError,
+                libloaderapi::{FreeLibrary, LoadLibraryA},
             };
 
             static MODULE: AtomicPtr<::winapi::shared::minwindef::HINSTANCE__> = AtomicPtr::new(null_mut());
@@ -1020,52 +1023,60 @@ macro_rules! delayload {
             Ok(module)
         }
 
+        mod funcs {
+            #![expect(non_snake_case)]
+            $(
+                $(#[$a])*
+                pub fn $name() -> usize {
+                    use ::std::concat;
+                    use ::std::sync::atomic::{AtomicUsize, Ordering};
+                    use ::winapi::um::libloaderapi::GetProcAddress;
+                    static FNCELL: AtomicUsize = AtomicUsize::new(0);
+                    let mut fnval = FNCELL.load(Ordering::Relaxed);
+                    if fnval == 0 {
+                        #[allow(unreachable_code)]
+                        match super::get_module() {
+                            Ok(module) => {
+                                fnval = unsafe { GetProcAddress(
+                                    module,
+                                    concat!(stringify!($name), "\0").as_ptr() as *const i8) }
+                                as usize;
+                            }
+                            Err(e) => return $crate::delayload!(@result_from_win32(($result), e)),
+                        }
+                        if fnval == 0 {
+                            fnval = 1;
+                        }
+                        FNCELL.store(fnval, Ordering::Relaxed);
+                    }
+                    fnval
+                }
+            )*
+        }
+
+        pub mod is_supported {
+            #![expect(dead_code, non_snake_case)]
+            $(
+                $(#[$a])*
+                pub fn $name() -> bool {
+                    super::funcs::$name() != 1
+                }
+            )*
+        }
+
         $(
-            $crate::delayload! { @func $($idents)* ($($params:$types),*) -> $result }
+            $(#[$a])*
+            #[expect(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
+            $visibility unsafe fn $name($($params: $types,)*) -> $result {
+                $crate::delayload!(@body $name($($params : $types),*) -> $result)
+            }
         )*
-    };
-
-    (@func pub fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        #[expect(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
-        pub unsafe fn $name($($params: $types,)*) -> $result {
-            $crate::delayload!(@body $name($($params : $types),*) -> $result)
-        }
-    };
-
-    (@func fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        #[expect(non_snake_case, clippy::diverging_sub_expression)]
-        unsafe fn $name($($params: $types,)*) -> $result {
-            $crate::delayload!(@body $name($($params : $types),*) -> $result)
-        }
     };
 
     (@body $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
         {
-            use ::winapi::{
-                shared::winerror::ERROR_PROC_NOT_FOUND,
-                um::libloaderapi::GetProcAddress,
-            };
-            use ::std::concat;
-            use ::std::sync::atomic::{AtomicUsize, Ordering};
-
-            static FNCELL: AtomicUsize = AtomicUsize::new(0);
-            let mut fnval = FNCELL.load(Ordering::Relaxed);
-            if fnval == 0 {
-                #[allow(unreachable_code)]
-                match get_module() {
-                    Ok(module) => {
-                        fnval = GetProcAddress(
-                            module,
-                            concat!(stringify!($name), "\0").as_ptr() as *const i8)
-                        as usize;
-                    }
-                    Err(e) => return $crate::delayload!(@result_from_win32(($result), e)),
-                }
-                if fnval == 0 {
-                    fnval = 1;
-                }
-                FNCELL.store(fnval, Ordering::Relaxed);
-            }
+            use ::winapi::shared::winerror::ERROR_PROC_NOT_FOUND;
+            let fnval = funcs::$name();
             if fnval == 1 {
                 #[allow(unreachable_code)]
                 return $crate::delayload!(@result_from_win32(($result), ERROR_PROC_NOT_FOUND));
