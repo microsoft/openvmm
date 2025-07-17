@@ -222,7 +222,7 @@ impl<T> Sender<T> {
 }
 
 impl<T> Receiver<T> {
-    /// Tries to receive an element from the front of the queue without blocking
+    /// Tries to receive an element from the front of the queue while blocking
     /// Returns Ok(value) if successful, Err(RecvError) otherwise
     pub fn recv(&self) -> Result<T, RecvError> {
         loop {

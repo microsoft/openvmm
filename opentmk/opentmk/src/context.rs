@@ -117,7 +117,8 @@ impl<T> VpExecutor<T> {
     ///
     /// The closure receives a mutable reference to the platform-specific
     /// type `T` that implements `VtlPlatformTrait`.
-    pub fn command(mut self, cmd: impl FnOnce(&mut T) + 'static) -> Self {
+    pub fn command(mut self, cmd: impl FnOnce(&mut T) + 'static + Send) -> Self 
+    {
         self.cmd = Some(Box::new(cmd));
         self
     }

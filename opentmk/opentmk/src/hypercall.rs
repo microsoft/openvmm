@@ -24,6 +24,7 @@ struct HvcallPage {
     buffer: [u8; HV_PAGE_SIZE as usize],
 }
 
+#[inline(never)]
 pub fn invoke_hypercall_vtl(control: hvdef::hypercall::Control) {
     // SAFETY: the caller guarantees the safety of this operation.
     unsafe {
@@ -687,6 +688,7 @@ impl HvCall {
             })
     }
 
+    #[inline(never)]
     /// Invokes the HvCallVtlCall hypercall.
     pub fn vtl_call() {
         let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()
@@ -695,6 +697,7 @@ impl HvCall {
         invoke_hypercall_vtl(control);
     }
 
+    #[inline(never)]
     /// Invokes the HvCallVtlReturn hypercall.
     pub fn vtl_return() {
         let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()

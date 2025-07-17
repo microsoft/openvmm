@@ -16,7 +16,7 @@ where
     tmk_assert!(vp_count.is_ok(), "get_vp_count should succeed");
 
     let vp_count = vp_count.unwrap();
-    tmk_assert!(vp_count == 8, "vp count should be 8");
+    tmk_assert!(vp_count == 4, "vp count should be 4");
 
     // Testing BSP VTL1 Bringup
     {

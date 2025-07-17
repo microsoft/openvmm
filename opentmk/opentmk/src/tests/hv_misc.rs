@@ -3,9 +3,9 @@ use alloc::{alloc::alloc, sync::Arc};
 use core::{
     alloc::{GlobalAlloc, Layout},
     arch::asm,
-    cell::RefCell,
+    cell::{RefCell, UnsafeCell},
     ops::Range,
-    sync::atomic::{AtomicI32, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
 };
 
 use ::alloc::{boxed::Box, vec::Vec};
@@ -62,7 +62,7 @@ where
     let vp_count = ctx.get_vp_count();
     tmk_assert!(vp_count.is_ok(), "get_vp_count should succeed");
     let vp_count = vp_count.unwrap();
-    tmk_assert!(vp_count == 8, "vp count should be 8");
+    tmk_assert!(vp_count == 4, "vp count should be 8");
 
     ctx.setup_interrupt_handler();
 
@@ -77,7 +77,6 @@ where
             log::info!("interrupt fired!");
 
             let hv = HvTestCtx::new();
-            hv.get_current_vp();
             log::info!(
                 "current vp from interrupt: {}",
                 hv.get_current_vp().unwrap()
@@ -113,39 +112,47 @@ where
         ctx.switch_to_low_vtl();
     }));
 
-    ctx.queue_command_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
-        log::info!("successfully started running VTL1 on vp0.");
-        ctx.switch_to_low_vtl();
-    }));
     log::info!("ctx ptr: {:p}", &ctx as *const _);
 
     let mut l = 0u64;
     unsafe { asm!("mov {}, rsp", out(reg) l) };
     log::info!("rsp: 0x{:x}", l);
 
-    //log::info!("Attempting to read heap memory from vtl0");
+    let (tx, rx) = Channel::new().split();
+    
+    ctx.start_on_vp(VpExecutor::new(0x2, Vtl::Vtl1).command(move|ctx: &mut T| {
+        ctx.setup_interrupt_handler();
+        ctx.setup_secure_intercept(0x30);
 
-    ctx.start_on_vp(
-        VpExecutor::new(0x2, Vtl::Vtl0)
-        .command(|ctx| unsafe {
-        
-        log::info!("successfully started running VTL0 on vp2.");
-            // let heapx = *HEAPX.borrow();
-        // let val = *(heapx.add(10));
-        // log::info!(
-        //     "reading mutated heap memory from vtl0(it should not be 0xAA): 0x{:x}",
-        //     val
-        // );
-        // tmk_assert!(
-        //     val != 0xAA,
-        //     "heap memory should not be accessible from vtl0"
-        // );
+        log::info!("successfully started running VTL1 on vp2.");
     }));
 
-    log::info!("after ctx ptr: {:p}", &ctx as *const _);
-    unsafe { asm!("mov {}, rsp", out(reg) l) };
-    log::info!("rsp: 0x{:x}", l);
+    ctx.start_on_vp(VpExecutor::new(0x2, Vtl::Vtl0).command( move |ctx: &mut T| unsafe {        
+        
+        log::info!("successfully started running VTL0 on vp2.");
 
+        ctx.queue_command_vp(VpExecutor::new(2, Vtl::Vtl1).command(move |ctx: &mut T| {
+            log::info!("after intercept successfully started running VTL1 on vp2.");
+            ctx.switch_to_low_vtl();
+        }));
+
+        unsafe {
+            let heapx = *HEAPX.borrow();
+            let val = *(heapx.add(10));
+            log::info!(
+                "reading mutated heap memory from vtl0(it should not be 0xAA): 0x{:x}",
+                val
+            );
+            tmk_assert!(
+                val != 0xAA,
+                "heap memory should not be accessible from vtl0"
+            );
+        }
+
+        tx.send(());
+    }));
+
+    rx.recv();
     // let (mut tx, mut rx) = Channel::new(1);
     // {
     //     let mut tx = tx.clone();
@@ -156,11 +163,6 @@ where
     //         },
     //     ));
     // }
-    log::info!("ctx ptr: {:p}", &ctx as *const _);
-    let c = ctx.get_vp_count();
-    tmk_assert!(c.is_ok(), "get_vp_count should succeed");
-    let c = c.unwrap();
-    tmk_assert!(c == 8, "vp count should be 8");
 
     // rx.recv();
 

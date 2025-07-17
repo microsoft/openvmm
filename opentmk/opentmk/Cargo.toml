@@ -31,14 +31,14 @@ workspace = true
 [build-dependencies]
 minimal_rt_build.workspace = true
 
-[profile.dev]
-overflow-checks = true
 
 [profile.release]
-overflow-checks = true
+opt-level = 0           # No optimizations (same as debug)
+debug = true            # Include debug symbols
+debug-assertions = true # Enable debug assertions
+overflow-checks = true  # Enable integer overflow checks
+lto = "off"            # Disable link-time optrimization
+codegen-units = 256    # Use more codegen units (faster compilation)
 
-
-[build]
-rustflags = ["-Z", "stack-protector=all"]
-
-
+[profile.release.package."*"]
+opt-level = 0

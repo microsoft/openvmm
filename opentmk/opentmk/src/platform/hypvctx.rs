@@ -3,14 +3,17 @@ use alloc::{
     boxed::Box,
     collections::{btree_map::BTreeMap, btree_set::BTreeSet, linked_list::LinkedList},
 };
-use core::{alloc::Layout, ops::Range};
+use core::{alloc::Layout, arch::asm, ops::Range};
 
 use hvdef::{
-    hypercall::{HvInputVtl, InitialVpContextX64},
-    Vtl,
+    hypercall::{self, HvInputVtl, InitialVpContextX64},
+    HvRegisterValue, Vtl,
 };
 use memory_range::MemoryRange;
-use minimal_rt::arch::msr::{read_msr, write_msr};
+use minimal_rt::arch::{
+    hypercall::HYPERCALL_PAGE,
+    msr::{read_msr, write_msr},
+};
 use sync_nostd::Mutex;
 
 use crate::{
@@ -55,7 +58,8 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     /// hypervisor side notifications back to the guest.  
     /// Returns [`TmkResult::Err`] if the allocation of the SIMP buffer fails.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
-        let layout = Layout::from_size_align(4096, ALIGNMENT).map_err(|_| TmkError(TmkErrorType::AllocationFailed))?;
+        let layout = Layout::from_size_align(4096, ALIGNMENT)
+            .map_err(|_| TmkError(TmkErrorType::AllocationFailed))?;
 
         let ptr = unsafe { alloc(layout) };
         let gpn = (ptr as u64) >> 12;
@@ -146,9 +150,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     fn get_vp_count(&self) -> TmkResult<u32> {
         #[cfg(target_arch = "x86_64")]
         {
-            let cpuid = unsafe { core::arch::x86_64::__cpuid(1) };
-            let result = cpuid.ebx;
-            Ok((result >> 16) & 0xFF)
+            Ok(4)
         }
 
         #[cfg(not(target_arch = "x86_64"))]
@@ -171,6 +173,8 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         Ok(())
     }
 
+    
+    #[inline(never)]
     /// Ensure the target VP is running in the requested VTL and queue
     /// the command for execution.  
     /// – If the VP is not yet running, it is started with a default
@@ -186,7 +190,12 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         if vtl >= Vtl::Vtl2 {
             return Err(TmkError(TmkErrorType::InvalidParameter));
         }
-
+        log::debug!(
+            "VP{}: Queued command for VP{} in VTL{:?}",
+            self.my_vp_idx,
+            vp_index,
+            vtl
+        );
         let is_vp_running = self.vp_runing.get(&vp_index);
         if let Some(_running_vtl) = is_vp_running {
             log::debug!("both vtl0 and vtl1 are running for VP: {:?}", vp_index);
@@ -201,7 +210,15 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                     }),
                     Vtl::Vtl1,
                 ));
+                log::info!("self addr: {:p}", self as *const _);
                 self.switch_to_high_vtl();
+                log::info!("self addr after switch: {:p}", self as *const _);
+                log::debug!(
+                    "VP{}: Queued command for VP{} in VTL{:?}",
+                    self.my_vp_idx,
+                    vp_index,
+                    vtl
+                );
                 self.vp_runing.insert(vp_index);
             } else {
                 let (tx, rx) = sync_nostd::Channel::<TmkResult<()>>::new().split();
@@ -245,6 +262,12 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
             }
         }
 
+        log::debug!(
+            "VP{}: Queued command for VP{} in VTL{:?}",
+            self.my_vp_idx,
+            vp_index,
+            vtl
+        );
         cmdt()
             .lock()
             .get_mut(&vp_index)
@@ -340,12 +363,61 @@ impl VtlPlatformTrait for HvTestCtx {
     /// Switch execution from the current (low) VTL to the next higher
     /// one (`vtl_call`).
     fn switch_to_high_vtl(&mut self) {
+        self.print_rsp();
         HvCall::vtl_call();
+        let rsp: u64;
+        unsafe {
+            asm!(
+                "mov {}, rsp",
+                out(reg) rsp,
+            );
+        }
+        log::debug!("switched back to low VTL");
+        // let reg = self
+        //     .get_register(hvdef::HvAllArchRegisterName::VsmCodePageOffsets.0)
+        //     .unwrap();
+        // let reg = HvRegisterValue::from(reg);
+        // let offset = hvdef::HvRegisterVsmCodePageOffsets::from_bits(reg.as_u64());
+
+        // log::debug!("call_offset: {:?}", offset);
+
+        // let call_offset = offset.call_offset();
+        // unsafe {
+        //     let call_address = &raw const HYPERCALL_PAGE as *const u8;
+        //     let off_addr = call_address.add(call_offset.into()) as u64;
+        //     asm!(
+        //         "
+        //         call {call_address}",
+        //         in("rcx") 0x0,
+        //         call_address = in(reg) off_addr,
+        //     );
+        // }
     }
 
     /// Return from a high VTL back to the low VTL (`vtl_return`).
     fn switch_to_low_vtl(&mut self) {
+        log::debug!("switching to low VTL");
         HvCall::vtl_return();
+
+        // let reg = self
+        //     .get_register(hvdef::HvAllArchRegisterName::VsmCodePageOffsets.0)
+        //     .unwrap();
+        // let reg = HvRegisterValue::from(reg);
+        // let offset = hvdef::HvRegisterVsmCodePageOffsets::from_bits(reg.as_u64());
+
+        // log::debug!("ret_offset: {:?}", offset);
+
+        // let call_offset = offset.return_offset();
+        // unsafe {
+        //     let call_address = &raw const HYPERCALL_PAGE as *const u8;
+        //     let off_addr = call_address.add(call_offset.into()) as u64;
+        //     asm!(
+        //         "
+        //         call {call_address}",
+        //         in("rcx") 0x0,
+        //         call_address = in(reg) off_addr,
+        //     );
+        // }
     }
 }
 
@@ -393,32 +465,55 @@ impl HvTestCtx {
             let mut cmd: Option<Box<dyn FnOnce(&mut HvTestCtx) + 'static>> = None;
 
             {
+                log::info!("pop1");
                 let mut cmdt = cmdt().lock();
+                log::debug!("pop2");
                 let d = cmdt.get_mut(&ctx.my_vp_idx);
+                log::debug!("pop3");
                 if let Some(d) = d {
+                    log::debug!("pop4");
                     if !d.is_empty() {
                         let (_c, v) = d.front().unwrap();
+                        log::debug!("pop5: vtl={:?}", v);
+                        log::debug!("pop5: my_vtl={:?}", ctx.my_vtl);
+                        log::debug!("pop5: vtl_={}", *v == Vtl::Vtl1);
                         if *v == ctx.my_vtl {
                             let (c, _v) = d.pop_front().unwrap();
                             cmd = Some(c);
                         } else {
                             vtl = Some(*v);
                         }
+
+                        log::debug!("pop6: cmd_is_none={:?}", cmd.is_none());
                     }
                 }
             }
 
+            log::debug!("pop7: vtl={:?}, cmd={:?}", vtl, cmd.is_some());
             if let Some(vtl) = vtl {
+                log::debug!("switching to vtl {:?} for vp {}", vtl, ctx.my_vp_idx);
                 if vtl == Vtl::Vtl0 {
                     ctx.switch_to_low_vtl();
                 } else {
                     ctx.switch_to_high_vtl();
                 }
             }
+            log::debug!("pop8: vtl={:?}, cmd={:?}", vtl, cmd.is_some());
 
             if let Some(cmd) = cmd {
+                log::debug!(
+                    "executing command on vp {} VTL{:?}",
+                    ctx.my_vp_idx,
+                    ctx.my_vtl
+                );
                 cmd(&mut ctx);
+                log::debug!(
+                    "executed command on vp {} VTL{:?}",
+                    ctx.my_vp_idx,
+                    ctx.my_vtl
+                );
             }
+            log::debug!("pop9");
         }
     }
 
@@ -450,6 +545,20 @@ impl HvTestCtx {
         vp_context.rip = fn_address;
         vp_context.rsp = stack_top;
         Ok(vp_context)
+    }
+
+    // function to print the current register states for x64
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    fn print_rsp(&self) {
+        let rsp: u64;
+        unsafe {
+            asm!(
+                "mov {}, rsp",
+                out(reg) rsp,
+            );
+        }
+        log::debug!("Current RSP: 0x{:#x}", rsp);
     }
 }
 

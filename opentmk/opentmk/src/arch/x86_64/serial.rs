@@ -61,12 +61,6 @@ impl IoAccess for InstrIoAccess {
     }
 }
 
-impl Default for InstrIoAccess {
-    fn default() -> Self {
-        InstrIoAccess
-    }
-}
-
 /// A writer for the UART COM Ports.
 pub struct Serial<T: IoAccess> {
     io: T,
@@ -74,19 +68,18 @@ pub struct Serial<T: IoAccess> {
     mutex: Mutex<()>,
 }
 
-impl<T: IoAccess + Default> Serial<T> {
+impl<T: IoAccess> Serial<T> {
     /// Initialize the serial port.
-    pub fn new(serial_port: SerialPort) -> Self {
-        let io = T::default();
-        
-        // SAFETY: Writing these values to the serial device is safe.
-        unsafe {
-            io.outb(serial_port.value() + 1, 0x00); // Disable all interrupts
-            io.outb(serial_port.value() + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
-            io.outb(serial_port.value() + 4, 0x0F);
-        }
-
+    pub const fn new(serial_port: SerialPort, io: T) -> Self {        
         Self { io, serial_port, mutex: Mutex::new(()) }
+    }
+
+    pub fn init(&self) {
+        unsafe {
+            self.io.outb(self.serial_port.value() + 1, 0x00); // Disable all interrupts
+            self.io.outb(self.serial_port.value() + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
+            self.io.outb(self.serial_port.value() + 4, 0x0F);
+        }
     }
 
     fn write_byte(&self, b: u8) {
@@ -98,7 +91,7 @@ impl<T: IoAccess + Default> Serial<T> {
     }
 }
 
-impl<T: IoAccess + Default> fmt::Write for Serial<T> {
+impl<T: IoAccess> fmt::Write for Serial<T> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let _guard = self.mutex.lock();
         for &b in s.as_bytes() {

@@ -29,6 +29,7 @@ HYPERCALL_PAGE:
 /// input/output pages are not being concurrently used elsewhere. For fast
 /// hypercalls, the caller must ensure that there are no output words so that
 /// there is no register corruption.
+#[inline(never)]
 pub unsafe fn invoke_hypercall(
     control: hvdef::hypercall::Control,
     input_gpa_or_fast1: u64,
