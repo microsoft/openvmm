@@ -318,6 +318,76 @@ async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Openhcl boot test with MNF enabled in vmbus relay.
+///
+/// TODO: Remove the no_agent version below once agents are supported in CVMs.
+///
+/// TODO: validate in this test that MNF actually works by querying guests
+/// properties via the agent.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
+        .run()
+        .await?;
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+// Test for vmbus relay, with MNF enabled via cmdline on TDX.
+//
+// TODO: Shortened test name to make it work on Hyper-V, but it should use the
+// full name once petri is fixed.
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn vmbr_force_mnf_no_agent<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
+        .run_without_agent()
+        .await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+// Test for vmbus relay
+// TODO: VBS isolation was failing and other targets too
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_vmbus_redirect(true)
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 16,
+            ..Default::default()
+        })
+        .run_without_agent()
+        .await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Basic boot test without agent and with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
