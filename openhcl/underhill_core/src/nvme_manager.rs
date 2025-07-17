@@ -95,6 +95,7 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         save_restore_supported: bool,
+        nvme_always_flr: bool,
         is_isolated: bool,
         saved_state: Option<NvmeSavedState>,
         dma_client_spawner: DmaClientSpawner,
@@ -106,6 +107,7 @@ impl NvmeManager {
             devices: HashMap::new(),
             vp_count,
             save_restore_supported,
+            nvme_always_flr,
             is_isolated,
             dma_client_spawner,
         };
@@ -223,6 +225,7 @@ struct NvmeManagerWorker {
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
+    nvme_always_flr: bool,
     /// If this VM is isolated or not. This influences DMA client allocations.
     is_isolated: bool,
     #[inspect(skip)]
@@ -233,6 +236,7 @@ async fn create_nvme_device(
     driver_source: &VmTaskDriverSource,
     pci_id: &str,
     vp_count: u32,
+    nvme_always_flr: bool,
     is_isolated: bool,
     dma_client: Arc<dyn user_driver::DmaClient>,
 ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
@@ -251,7 +255,12 @@ async fn create_nvme_device(
         }
     };
     let mut last_err = None;
-    for reset_method in [PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr] {
+    let reset_methods = if nvme_always_flr {
+        vec![PciDeviceResetMethod::Flr]
+    } else {
+        vec![PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr]
+    };
+    for reset_method in reset_methods {
         update_reset(reset_method);
         match try_create_nvme_device(
             driver_source,
@@ -396,6 +405,7 @@ impl NvmeManagerWorker {
                     &self.driver_source,
                     &pci_id,
                     self.vp_count,
+                    self.nvme_always_flr,
                     self.is_isolated,
                     dma_client,
                 )

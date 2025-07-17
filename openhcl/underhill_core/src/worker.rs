@@ -282,6 +282,8 @@ pub struct UnderhillEnvCfg {
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
+    /// The NVMe reset option to use.
+    pub nvme_always_flr: bool,
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
     /// Disable the UEFI front page.
@@ -1881,6 +1883,7 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             save_restore_supported,
+            env_cfg.nvme_always_flr,
             isolation.is_isolated(),
             servicing_state.nvme_state.unwrap_or(None),
             dma_manager.client_spawner(),
