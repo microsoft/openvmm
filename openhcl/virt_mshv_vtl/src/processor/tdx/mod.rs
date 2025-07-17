@@ -1552,7 +1552,7 @@ impl UhProcessor<'_, TdxBacked> {
                 .private_regs
                 .vp_entry_flags
                 .invd_translations()
-                != 0;
+                == 0;
         let x2apic_enabled = self.backing.cvm.lapics[next_vtl].lapic.x2apic_enabled();
 
         let offload_flags = hcl_intr_offload_flags::new()

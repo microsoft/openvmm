@@ -332,7 +332,7 @@ pub async fn kmsg_log_task(
     while let Some(data) = file_stream.next().await {
         match data {
             Ok(data) => {
-                let message = kmsg::KmsgParsedEntry::new(&data)?;
+                let message = kmsg::KmsgParsedEntry::new(&data).unwrap();
                 log_file.write_entry(message.display(false));
             }
             Err(err) => {

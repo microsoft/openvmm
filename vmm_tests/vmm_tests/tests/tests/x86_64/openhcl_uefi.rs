@@ -149,7 +149,7 @@ async fn no_numa_errors(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Erro
     // Search kmsg and make sure we didn't see any errors from the kernel
     while let Some(data) = kmsg.next().await {
         let data = data.context("reading kmsg")?;
-        let msg = kmsg::KmsgParsedEntry::new(&data)?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
         let raw = msg.message.as_raw();
         if raw.contains(BAD_PROP) {
             anyhow::bail!("found bad prop in kmsg");

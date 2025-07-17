@@ -105,7 +105,7 @@ async fn efi_diagnostics_no_boot(config: PetriVmConfigOpenVmm) -> anyhow::Result
     // Search for the message
     while let Some(data) = kmsg.next().await {
         let data = data.context("reading kmsg")?;
-        let msg = kmsg::KmsgParsedEntry::new(&data)?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
         let raw = msg.message.as_raw();
         if raw.contains(NO_BOOT_MSG) {
             return Ok(());
