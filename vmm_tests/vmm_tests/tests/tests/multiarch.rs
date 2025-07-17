@@ -441,7 +441,11 @@ async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 }
 
 /// Openhcl boot test with MNF enabled in vmbus relay.
+///
 /// TODO: Remove the no_agent version below once agents are supported in CVMs.
+///
+/// TODO: validate in this test that MNF actually works by querying guests
+/// properties via the agent.
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
