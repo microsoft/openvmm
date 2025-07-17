@@ -32,6 +32,9 @@ use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 use zerocopy::FromBytes;
 
+/// Default number of EfiDiagnosticsLogs emitted per period
+pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
+
 /// 8-byte alignment for every entry
 const ALIGNMENT: usize = 8;
 
@@ -103,26 +106,29 @@ fn phase_to_string(phase: u16) -> &'static str {
 }
 
 /// Defines how we want EfiDiagnosticsLog entries to be handled.
-pub fn handle_efi_diagnostics_log<'a>(log: EfiDiagnosticsLog<'a>) {
+pub fn handle_efi_diagnostics_log(log: EfiDiagnosticsLog<'_>, limit: u32) {
     let debug_level_str = debug_level_to_string(log.debug_level);
     let phase_str = phase_to_string(log.phase);
 
     match log.debug_level {
-        DEBUG_WARN => tracing::warn!(
+        DEBUG_WARN => tracelimit::warn_ratelimited!(
+            limit: limit,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
             log_message = log.message,
             "EFI log entry"
         ),
-        DEBUG_ERROR => tracing::error!(
+        DEBUG_ERROR => tracelimit::error_ratelimited!(
+            limit: limit,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
             log_message = log.message,
             "EFI log entry"
         ),
-        _ => tracing::info!(
+        _ => tracelimit::info_ratelimited!(
+            limit: limit,
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
@@ -283,11 +289,13 @@ impl DiagnosticsServices {
     ///
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `triggered_by` - String to indicate who triggered the diagnostics processing
     /// * `gm` - Guest memory to read diagnostics from
     /// * `log_handler` - Function to handle each parsed log entry
     fn process_diagnostics<F>(
         &mut self,
         allow_reprocess: bool,
+        triggered_by: &str,
         gm: &GuestMemory,
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
@@ -450,7 +458,12 @@ impl DiagnosticsServices {
         }
 
         // Print summary statistics
-        tracelimit::info_ratelimited!(entries_processed, bytes_read, "processed EFI log entries");
+        tracelimit::info_ratelimited!(
+            triggered_by,
+            entries_processed,
+            bytes_read,
+            "processed EFI log entries"
+        );
 
         Ok(())
     }
@@ -461,16 +474,22 @@ impl UefiDevice {
     ///
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
-    /// * `context` - String to indicate who triggered the diagnostics processing
-    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, context: &str) {
+    /// * `triggered_by` - String to indicate who triggered the diagnostics processing
+    pub(crate) fn process_diagnostics(
+        &mut self,
+        allow_reprocess: bool,
+        limit: u32,
+        triggered_by: &str,
+    ) {
         if let Err(error) = self.service.diagnostics.process_diagnostics(
             allow_reprocess,
+            triggered_by,
             &self.gm,
-            handle_efi_diagnostics_log,
+            |log| handle_efi_diagnostics_log(log, limit),
         ) {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
-                context,
+                triggered_by,
                 "failed to process diagnostics buffer"
             );
         }
