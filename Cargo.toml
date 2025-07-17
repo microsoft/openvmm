@@ -46,7 +46,6 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
-  "vm/devices/storage/disk_delay",  # Used for internal microsoft testing
 ]
 exclude = [
   "xsync",
