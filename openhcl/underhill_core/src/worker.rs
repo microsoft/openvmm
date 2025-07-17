@@ -2099,7 +2099,6 @@ async fn new_underhill_vm(
                             Some(HclCompatNvramQuirks {
                                 skip_corrupt_vars_with_missing_null_term: true,
                             }),
-                            is_restoring,
                         )
                         .await?,
                     )
