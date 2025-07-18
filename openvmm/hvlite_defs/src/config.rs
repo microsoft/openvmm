@@ -165,6 +165,8 @@ pub enum Vtl2BaseAddressType {
 #[derive(Debug, MeshPayload)]
 pub struct VpciDeviceConfig {
     pub vtl: DeviceVtl,
+    /// The ID of the device. Vpci devices are identified by a portion of `data2` and `data3` of the
+    /// instance ID, which is used to generate the guest-visible device ID.
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
 }
