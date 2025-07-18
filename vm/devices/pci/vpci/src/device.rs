@@ -693,12 +693,14 @@ impl ReadyState {
                 return Err(WorkerError::UnexpectedPacketOrder);
             }
             PacketData::FdoD0Entry { mmio_start } => {
+                tracing::trace!(?mmio_start, ?dev.instance_id, "FDO D0 entry");
                 dev.config_space.map(mmio_start);
                 self.send_device = true;
                 // Send the completion after the device has been sent.
                 self.send_completion = transaction_id;
             }
             PacketData::FdoD0Exit => {
+                tracing::trace!(?dev.instance_id, "FDO D0 exit");
                 dev.config_space.unmap();
                 conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
             }
@@ -1009,6 +1011,9 @@ impl VpciChannel {
         // Clear the BARs.
         self.set_bars(&[MmioResource::default(); 6]).unwrap();
         self.bars_set = false;
+
+        // Unmap the claimed config space. This can also occur if the device exits D0 via the vpci protocol.
+        self.config_space.unmap();
     }
 }
 
