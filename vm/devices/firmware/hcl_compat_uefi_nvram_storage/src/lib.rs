@@ -94,6 +94,9 @@ pub struct HclCompatNvram<S> {
     // reduced allocator pressure
     #[cfg_attr(feature = "inspect", inspect(skip))] // internal bookkeeping - not worth inspecting
     nvram_buf: Vec<u8>,
+
+    // whether the NVRAM has been loaded, either from storage or saved state
+    loaded: bool,
 }
 
 /// "Quirks" to take into account when loading/storing nvram blob data.
@@ -118,12 +121,8 @@ pub struct HclCompatNvramQuirks {
 
 impl<S: StorageBackend> HclCompatNvram<S> {
     /// Create a new [`HclCompatNvram`]
-    pub async fn new(
-        storage: S,
-        quirks: Option<HclCompatNvramQuirks>,
-        is_restoring: bool,
-    ) -> Result<Self, NvramStorageError> {
-        let mut nvram = Self {
+    pub fn new(storage: S, quirks: Option<HclCompatNvramQuirks>) -> Self {
+        Self {
             quirks: quirks.unwrap_or(HclCompatNvramQuirks {
                 skip_corrupt_vars_with_missing_null_term: false,
             }),
@@ -133,16 +132,13 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             in_memory: in_memory::InMemoryNvram::new(),
 
             nvram_buf: Vec::new(),
-        };
-        if !is_restoring {
-            nvram.load_from_storage().await?;
+
+            loaded: false,
         }
-        Ok(nvram)
     }
 
-    async fn load_from_storage(&mut self) -> Result<(), NvramStorageError> {
-        tracing::info!("loading uefi nvram from storage");
-        let res = self.load_from_storage_inner().await;
+    async fn lazy_load_from_storage(&mut self) -> Result<(), NvramStorageError> {
+        let res = self.lazy_load_from_storage_inner().await;
         if let Err(e) = &res {
             tracing::error!(CVM_ALLOWED, "storage contains corrupt nvram state");
             tracing::error!(
@@ -154,7 +150,13 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         res
     }
 
-    async fn load_from_storage_inner(&mut self) -> Result<(), NvramStorageError> {
+    async fn lazy_load_from_storage_inner(&mut self) -> Result<(), NvramStorageError> {
+        if self.loaded {
+            return Ok(());
+        }
+
+        tracing::info!("loading uefi nvram from storage");
+
         let nvram_buf = self
             .storage
             .restore()
@@ -293,6 +295,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             ));
         }
 
+        self.loaded = true;
         Ok(())
     }
 
@@ -343,8 +346,11 @@ impl<S: StorageBackend> HclCompatNvram<S> {
 
     /// Iterate over the NVRAM entries. This function asynchronously loads the
     /// NVRAM contents into memory from the backing storage if necessary.
-    pub fn iter(&mut self) -> impl Iterator<Item = in_memory::VariableEntry<'_>> {
-        self.in_memory.iter()
+    pub async fn iter(
+        &mut self,
+    ) -> Result<impl Iterator<Item = in_memory::VariableEntry<'_>>, NvramStorageError> {
+        self.lazy_load_from_storage().await?;
+        Ok(self.in_memory.iter())
     }
 }
 
@@ -355,6 +361,8 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
         name: &Ucs2LeSlice,
         vendor: Guid,
     ) -> Result<Option<(u32, Vec<u8>, EFI_TIME)>, NvramStorageError> {
+        self.lazy_load_from_storage().await?;
+
         if name.as_bytes().len() > EFI_MAX_VARIABLE_NAME_SIZE {
             return Err(NvramStorageError::VariableNameTooLong);
         }
@@ -370,6 +378,8 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
         data: Vec<u8>,
         timestamp: EFI_TIME,
     ) -> Result<(), NvramStorageError> {
+        self.lazy_load_from_storage().await?;
+
         if name.as_bytes().len() > EFI_MAX_VARIABLE_NAME_SIZE {
             return Err(NvramStorageError::VariableNameTooLong);
         }
@@ -412,6 +422,8 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
         data: Vec<u8>,
         timestamp: EFI_TIME,
     ) -> Result<bool, NvramStorageError> {
+        self.lazy_load_from_storage().await?;
+
         if name.as_bytes().len() > EFI_MAX_VARIABLE_NAME_SIZE {
             return Err(NvramStorageError::VariableNameTooLong);
         }
@@ -442,6 +454,8 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
         name: &Ucs2LeSlice,
         vendor: Guid,
     ) -> Result<bool, NvramStorageError> {
+        self.lazy_load_from_storage().await?;
+
         if name.as_bytes().len() > EFI_MAX_VARIABLE_NAME_SIZE {
             return Err(NvramStorageError::VariableNameTooLong);
         }
@@ -456,6 +470,8 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
         &mut self,
         name_vendor: Option<(&Ucs2LeSlice, Guid)>,
     ) -> Result<NextVariable, NvramStorageError> {
+        self.lazy_load_from_storage().await?;
+
         if let Some((name, _)) = name_vendor {
             if name.as_bytes().len() > EFI_MAX_VARIABLE_NAME_SIZE {
                 return Err(NvramStorageError::VariableNameTooLong);
@@ -481,7 +497,11 @@ mod save_restore {
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            self.in_memory.restore(state)
+            if state.nvram.is_some() {
+                self.in_memory.restore(state)?;
+                self.loaded = true;
+            }
+            Ok(())
         }
     }
 }
@@ -516,36 +536,28 @@ mod test {
     #[async_test]
     async fn test_single_variable() {
         let mut storage = EphemeralStorageBackend::default();
-        let mut nvram = HclCompatNvram::new(&mut storage, None, false)
-            .await
-            .unwrap();
+        let mut nvram = HclCompatNvram::new(&mut storage, None);
         impl_agnostic_tests::test_single_variable(&mut nvram).await;
     }
 
     #[async_test]
     async fn test_multiple_variable() {
         let mut storage = EphemeralStorageBackend::default();
-        let mut nvram = HclCompatNvram::new(&mut storage, None, false)
-            .await
-            .unwrap();
+        let mut nvram = HclCompatNvram::new(&mut storage, None);
         impl_agnostic_tests::test_multiple_variable(&mut nvram).await;
     }
 
     #[async_test]
     async fn test_next() {
         let mut storage = EphemeralStorageBackend::default();
-        let mut nvram = HclCompatNvram::new(&mut storage, None, false)
-            .await
-            .unwrap();
+        let mut nvram = HclCompatNvram::new(&mut storage, None);
         impl_agnostic_tests::test_next(&mut nvram).await;
     }
 
     #[async_test]
     async fn boundary_conditions() {
         let mut storage = EphemeralStorageBackend::default();
-        let mut nvram = HclCompatNvram::new(&mut storage, None, false)
-            .await
-            .unwrap();
+        let mut nvram = HclCompatNvram::new(&mut storage, None);
 
         let vendor = Guid::new_random();
         let attr = 0x1234;
@@ -633,9 +645,7 @@ mod test {
         let data = vec![0x1, 0x2, 0x3, 0x4, 0x5];
         let timestamp = EFI_TIME::default();
 
-        let mut nvram = HclCompatNvram::new(&mut storage, None, false)
-            .await
-            .unwrap();
+        let mut nvram = HclCompatNvram::new(&mut storage, None);
         nvram
             .set_variable(name1, vendor1, attr, data.clone(), timestamp)
             .await
@@ -652,9 +662,7 @@ mod test {
         drop(nvram);
 
         // reload
-        let mut nvram = HclCompatNvram::new(&mut storage, None, false)
-            .await
-            .unwrap();
+        let mut nvram = HclCompatNvram::new(&mut storage, None);
 
         let (result_attr, result_data, result_timestamp) =
             nvram.get_variable(name1, vendor1).await.unwrap().unwrap();

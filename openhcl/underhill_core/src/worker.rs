@@ -2092,20 +2092,16 @@ async fn new_underhill_vm(
                     get: get_client.clone(),
                 }),
                 nvram_storage: if let Some(vmgs_client) = vmgs_client.as_ref() {
-                    Box::new(
-                        HclCompatNvram::new(
-                            VmgsStorageBackendAdapter(
-                                vmgs_client
-                                    .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
-                                    .context("failed to instantiate UEFI NVRAM store")?,
-                            ),
-                            Some(HclCompatNvramQuirks {
-                                skip_corrupt_vars_with_missing_null_term: true,
-                            }),
-                            is_restoring,
-                        )
-                        .await?,
-                    )
+                    Box::new(HclCompatNvram::new(
+                        VmgsStorageBackendAdapter(
+                            vmgs_client
+                                .as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
+                                .context("failed to instantiate UEFI NVRAM store")?,
+                        ),
+                        Some(HclCompatNvramQuirks {
+                            skip_corrupt_vars_with_missing_null_term: true,
+                        }),
+                    ))
                 } else {
                     Box::new(uefi_nvram_storage::in_memory::InMemoryNvram::new())
                 },
