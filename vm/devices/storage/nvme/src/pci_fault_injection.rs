@@ -1,12 +1,15 @@
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
 use crate::NvmeControllerClient;
+use crate::PAGE_MASK;
 use crate::namespace::Namespace;
 use crate::queue::DoorbellRegister;
+use crate::spec;
 use crate::workers::admin::AdminConfig;
 use crate::workers::admin::AdminHandler;
 use crate::workers::admin::AdminState;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
@@ -57,6 +60,15 @@ pub struct NvmeControllerFaultInjection {
     driver_source: VmTaskDriver,
     #[inspect(skip)]
     doorbells: Vec<Arc<DoorbellRegister>>,
+    regs: Regs,
+}
+
+#[derive(Inspect)]
+struct Regs {
+    asq: u64,
+    acq: u64,
+    aqa: spec::Aqa,
+    cc: spec::Cc,
 }
 
 impl NvmeControllerFaultInjection {
@@ -97,6 +109,12 @@ impl NvmeControllerFaultInjection {
             memory_outer: guest_memory.clone(),
             driver_source: driver_source.simple(),
             doorbells,
+            regs: Regs {
+                asq: 0,
+                acq: 0,
+                aqa: spec::Aqa::default(),
+                cc: spec::Cc::default(),
+            },
         }
     }
 
@@ -131,13 +149,63 @@ impl NvmeControllerFaultInjection {
 
     /// Writes to the virtual BAR 0.
     pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
+        let data_original = data.clone();
+
+        let update_reg = |x: u64| {
+            if data.len() == 8 {
+                u64::from_ne_bytes(data.try_into().unwrap())
+            } else {
+                let data = u32::from_ne_bytes(data.try_into().unwrap()) as u64;
+                if addr & 7 == 0 {
+                    (x & !(u32::MAX as u64)) | data
+                } else {
+                    (x & u32::MAX as u64) | (data << 32)
+                }
+            }
+        };
+
+        // Intercept and duplicate admin queue setup!
+        let handled = match spec::Register(addr & !7) {
+            spec::Register::ASQ => {
+                if !self.regs.cc.en() {
+                    self.regs.asq = update_reg(self.regs.asq) & PAGE_MASK;
+                } else {
+                    tracelimit::warn_ratelimited!("attempt to set asq while enabled");
+                }
+                true
+            }
+            spec::Register::ACQ => {
+                if !self.regs.cc.en() {
+                    self.regs.acq = update_reg(self.regs.acq) & PAGE_MASK;
+                } else {
+                    tracelimit::warn_ratelimited!("attempt to set acq while enabled");
+                }
+                true
+            }
+            _ => false,
+        };
+
+        let Ok(data) = data.try_into() else {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        };
+        let data = u32::from_ne_bytes(data);
+
+        // Handle 32-bit registers.
+        match spec::Register(addr) {
+            spec::Register::CC => self.set_cc(data.into()),
+            spec::Register::AQA => self.regs.aqa = data.into(),
+            _ => {}
+        }
+
         // Handled all queue related jargon, let the inner controller handle the rest of the jargon
-        self.inner.write_bar0(addr, data)
+        self.inner.write_bar0(addr, data_original)
     }
 
     pub fn fatal_error(&mut self) {
         self.inner.fatal_error();
     }
+
+    fn set_cc(&mut self, cc: spec::Cc) {}
 }
 
 impl ChangeDeviceState for NvmeControllerFaultInjection {
