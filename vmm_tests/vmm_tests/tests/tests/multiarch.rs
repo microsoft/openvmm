@@ -332,9 +332,7 @@ async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
+async fn vmbus_relay_force_mnf(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_vmbus_redirect(true)
         .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
@@ -353,9 +351,7 @@ async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn vmbr_force_mnf_no_agent<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
+async fn vmbr_force_mnf_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config
         .with_vmbus_redirect(true)
         .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
@@ -373,7 +369,7 @@ async fn vmbr_force_mnf_no_agent<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+async fn vmbus_relay_heavy(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config
         .with_vmbus_redirect(true)
         .with_processor_topology(ProcessorTopology {
