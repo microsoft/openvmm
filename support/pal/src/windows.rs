@@ -1000,7 +1000,7 @@ macro_rules! delayload {
             $visibility:vis fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty;
         )*
     }} => {
-        fn get_module() -> Result<::winapi::shared::minwindef::HINSTANCE, u32> {
+        fn get_module() -> Result<::winapi::shared::minwindef::HINSTANCE, ::winapi::shared::minwindef::DWORD> {
             use ::std::ptr::null_mut;
             use ::std::sync::atomic::{AtomicPtr, Ordering};
             use ::winapi::um::{
@@ -1024,32 +1024,40 @@ macro_rules! delayload {
         }
 
         mod funcs {
-            #![expect(non_snake_case, clippy::diverging_sub_expression)]
+            #![expect(non_snake_case)]
             $(
                 $(#[$a])*
-                pub fn $name() -> usize {
+                pub fn $name() -> Result<usize, ::winapi::shared::minwindef::DWORD> {
                     use ::std::concat;
                     use ::std::sync::atomic::{AtomicUsize, Ordering};
-                    use ::winapi::um::libloaderapi::GetProcAddress;
+                    use ::winapi::{
+                        shared::winerror::ERROR_PROC_NOT_FOUND,
+                        um::libloaderapi::GetProcAddress,
+                    };
+
+                    // A FNCELL value 0 denotes that GetProcAddress has never been
+                    // called for the given function.
+                    // A FNCELL value 1 denotes that GetProcAddress has been called
+                    // but the procedure does not exist.
+                    // Any other FNCELL value denotes the result of GetProcAddress,
+                    // the callable adress of the function.
                     static FNCELL: AtomicUsize = AtomicUsize::new(0);
                     let mut fnval = FNCELL.load(Ordering::Relaxed);
                     if fnval == 0 {
-                        #[allow(unreachable_code)]
-                        match super::get_module() {
-                            Ok(module) => {
-                                fnval = unsafe { GetProcAddress(
-                                    module,
-                                    concat!(stringify!($name), "\0").as_ptr() as *const i8) }
-                                as usize;
-                            }
-                            Err(e) => return $crate::delayload!(@result_from_win32(($result), e)),
-                        }
+                        let module = super::get_module()?;
+                        fnval = unsafe { GetProcAddress(
+                            module,
+                            concat!(stringify!($name), "\0").as_ptr() as *const i8) }
+                        as usize;
                         if fnval == 0 {
                             fnval = 1;
                         }
                         FNCELL.store(fnval, Ordering::Relaxed);
                     }
-                    fnval
+                    if fnval == 1 {
+                        return Err(ERROR_PROC_NOT_FOUND)
+                    }
+                    Ok(fnval)
                 }
             )*
         }
@@ -1059,32 +1067,27 @@ macro_rules! delayload {
             $(
                 $(#[$a])*
                 pub fn $name() -> bool {
-                    super::funcs::$name() != 1
+                    super::funcs::$name().is_ok()
                 }
             )*
         }
 
         $(
             $(#[$a])*
-            #[expect(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
+            #[expect(non_snake_case)]
             $visibility unsafe fn $name($($params: $types,)*) -> $result {
-                $crate::delayload!(@body $name($($params : $types),*) -> $result)
+                match funcs::$name() {
+                    Ok(fnval) => {
+                        type FnType = unsafe extern "stdcall" fn($($params: $types,)*) -> $result;
+                        let fnptr: FnType = ::std::mem::transmute(fnval);
+                        fnptr($($params,)*)
+                    },
+                    Err(win32) => {
+                        $crate::delayload!(@result_from_win32(($result), win32))
+                    }
+                }
             }
         )*
-    };
-
-    (@body $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        {
-            use ::winapi::shared::winerror::ERROR_PROC_NOT_FOUND;
-            let fnval = funcs::$name();
-            if fnval == 1 {
-                #[allow(unreachable_code)]
-                return $crate::delayload!(@result_from_win32(($result), ERROR_PROC_NOT_FOUND));
-            }
-            type FnType = unsafe extern "stdcall" fn($($params: $types,)*) -> $result;
-            let fnptr: FnType = ::std::mem::transmute(fnval);
-            fnptr($($params,)*)
-        }
     };
 
     (@result_from_win32((i32), $val:expr)) => { ::winapi::shared::winerror::HRESULT_FROM_WIN32($val) };
