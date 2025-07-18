@@ -392,7 +392,7 @@ pub mod caps {
             ///
             /// | Offset    | Bits 31-24       | Bits 23-16       | Bits 15-8        | Bits 7-0         |
             /// |-----------|------------------|------------------|------------------|------------------|
-            /// | Cap + 0x0 | PCI Express Capabilities Register  | Next Pointer     | Capability ID (0x10) |
+            /// | Cap + 0x0 | PCI Express Capabilities Register | Next Pointer     | Capability ID (0x10) |
             /// | Cap + 0x4 | Device Capabilities Register                                                  |
             /// | Cap + 0x8 | Device Status    | Device Control                                            |
             /// | Cap + 0xC | Link Capabilities Register                                                    |
