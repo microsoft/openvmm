@@ -9,9 +9,6 @@ rust-version.workspace = true
 [features]
 unstable_whp = []
 
-[dependencies]
-pal.workspace = true
-
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true
 features = [
