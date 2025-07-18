@@ -244,8 +244,7 @@ unsafe fn get_pde_for_va(va: u64) -> &'static mut PageTableEntry {
         let entry = pdpt.entry(va, 2);
         assert!(entry.is_present());
         let pd = page_table_at_address(entry.get_addr());
-        let entry = pd.entry(va, 1);
-        entry
+        pd.entry(va, 1)
     }
 }
 
