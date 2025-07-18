@@ -999,6 +999,7 @@ impl VpciChannel {
         Ok(())
     }
 
+    /// Release all resources associated with the device (not the bus).
     async fn release_all(&mut self) {
         // Power off the device.
         self.set_power(false);
@@ -1011,9 +1012,6 @@ impl VpciChannel {
         // Clear the BARs.
         self.set_bars(&[MmioResource::default(); 6]).unwrap();
         self.bars_set = false;
-
-        // Unmap the claimed config space. This can also occur if the device exits D0 via the vpci protocol.
-        self.config_space.unmap();
     }
 }
 
@@ -1080,6 +1078,8 @@ impl VpciConfigSpace {
         // Note that there may be some current accessors that this will not
         // flush out synchronously. The MMIO implementation in bus.rs must be
         // careful to ignore reads/writes that are not to an expected address.
+        //
+        // This is idempotent. See [`impl_device_range!`].
         self.control_mmio.unmap();
         self.offset
             .0
@@ -1170,6 +1170,9 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
 
     async fn close(&mut self) {
         self.release_all().await;
+
+        // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
+        self.config_space.unmap();
     }
 
     async fn run(
