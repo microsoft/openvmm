@@ -3,12 +3,15 @@
 
 //! PCI capabilities.
 
+pub use self::pci_express::FlrHandler;
+pub use self::pci_express::PciExpressCapability;
 pub use self::read_only::ReadOnlyCapability;
 
 use inspect::Inspect;
 use vmcore::save_restore::ProtobufSaveRestore;
 
 pub mod msix;
+pub mod pci_express;
 pub mod read_only;
 
 /// A generic PCI configuration space capability structure.

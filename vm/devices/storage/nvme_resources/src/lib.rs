@@ -21,6 +21,8 @@ pub struct NvmeControllerHandle {
     pub msix_count: u16,
     /// The number of IO queues to support.
     pub max_io_queues: u16,
+    /// Whether to advertise Function Level Reset (FLR) support.
+    pub flr_support: bool,
     /// The initial set of namespaces.
     pub namespaces: Vec<NamespaceDefinition>,
 }
