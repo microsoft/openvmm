@@ -16,9 +16,20 @@ use memory_range::MemoryRange;
 use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::PagePoolAllocatorSpawner;
+use parking_lot::Mutex;
 use std::sync::Arc;
+use thiserror::Error;
 use user_driver::DmaClient;
+use user_driver::DmaClientAllocStats;
 use user_driver::lockmem::LockedMemorySpawner;
+
+/// DMA manager errors.
+#[derive(Debug, Error)]
+pub enum DmaManagerError {
+    /// No memory.
+    #[error("no memory")]
+    NoMemory,
+}
 
 /// Save restore support for [`OpenhclDmaManager`].
 pub mod save_restore {
@@ -122,7 +133,7 @@ pub struct OpenhclDmaManager {
 }
 
 /// The required VTL permissions on DMA allocations.
-#[derive(Inspect)]
+#[derive(Clone, Inspect)]
 pub enum LowerVtlPermissionPolicy {
     /// No specific permission constraints are required.
     Any,
@@ -192,7 +203,11 @@ impl virt::VtlMemoryProtection for DmaManagerLowerVtl {
 }
 
 impl DmaManagerInner {
-    fn new_dma_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+    fn new_dma_client(
+        &self,
+        params: DmaClientParameters,
+        fallback: Option<Arc<OpenhclDmaClient>>,
+    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
         // Allocate the inner client that actually performs the allocations.
         let backing = {
             let DmaClientParameters {
@@ -291,13 +306,13 @@ impl DmaManagerInner {
                     LowerVtlPermissionPolicy::Any => {
                         // No persistence needed means the `LockedMemorySpawner`
                         // using normal VTL2 ram is fine.
-                        DmaClientBacking::LockedMemory(LockedMemorySpawner)
+                        DmaClientBacking::LockedMemory(LockedMemorySpawner::new())
                     }
                     LowerVtlPermissionPolicy::Vtl0 => {
                         // `LockedMemorySpawner` uses private VTL2 ram, so
                         // lowering VTL permissions is required.
                         DmaClientBacking::LockedMemoryLowerVtl(LowerVtlMemorySpawner::new(
-                            LockedMemorySpawner,
+                            LockedMemorySpawner::new(),
                             self.lower_vtl
                                 .as_ref()
                                 .ok_or(anyhow::anyhow!(
@@ -310,7 +325,15 @@ impl DmaManagerInner {
             }
         };
 
-        Ok(Arc::new(OpenhclDmaClient { backing, params }))
+        Ok(Arc::new(OpenhclDmaClient {
+            backing,
+            params,
+            fallback,
+            inner_stats: Mutex::new(DmaClientAllocStats {
+                total_alloc: 0,
+                fallback_alloc: 0,
+            }),
+        }))
     }
 }
 
@@ -364,8 +387,17 @@ impl OpenhclDmaManager {
 
     /// Creates a new DMA client with the given device name and lower VTL
     /// policy.
-    pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
-        self.inner.new_dma_client(params)
+    pub fn new_client(
+        &self,
+        params: DmaClientParameters,
+        fallback_params: Option<DmaClientParameters>,
+    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+        let fb = if let Some(fb1) = fallback_params {
+            self.inner.new_dma_client(fb1, None).ok()
+        } else {
+            None
+        };
+        self.inner.new_dma_client(params, fb)
     }
 
     /// Returns a [`DmaClientSpawner`] for creating DMA clients.
@@ -393,6 +425,20 @@ impl OpenhclDmaManager {
 
         Ok(())
     }
+
+    /// Return shared pool size in bytes.
+    pub fn shared_pool_size(&self) -> u64 {
+        self.shared_pool
+            .as_ref()
+            .map_or(0, |pool| pool.total_size())
+    }
+
+    /// Return private pool size in bytes.
+    pub fn private_pool_size(&self) -> u64 {
+        self.private_pool
+            .as_ref()
+            .map_or(0, |pool| pool.total_size())
+    }
 }
 
 /// A spawner for creating DMA clients.
@@ -403,8 +449,17 @@ pub struct DmaClientSpawner {
 
 impl DmaClientSpawner {
     /// Creates a new DMA client with the given parameters.
-    pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
-        self.inner.new_dma_client(params)
+    pub fn new_client(
+        &self,
+        params: DmaClientParameters,
+        fallback_params: Option<DmaClientParameters>,
+    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+        let fb = if let Some(fb1) = fallback_params {
+            self.inner.new_dma_client(fb1, None).ok()
+        } else {
+            None
+        };
+        self.inner.new_dma_client(params, fb)
     }
 }
 
@@ -447,6 +502,16 @@ impl DmaClientBacking {
             DmaClientBacking::LockedMemoryLowerVtl(spawner) => spawner.attach_pending_buffers(),
         }
     }
+
+    fn is_persistent(&self) -> bool {
+        match self {
+            DmaClientBacking::SharedPool(_allocator) => false,
+            DmaClientBacking::PrivatePool(_allocator) => true,
+            DmaClientBacking::LockedMemory(_spawner) => false,
+            DmaClientBacking::PrivatePoolLowerVtl(_spawner) => false,
+            DmaClientBacking::LockedMemoryLowerVtl(_spawner) => false,
+        }
+    }
 }
 
 /// An OpenHCL dma client. This client implements inspect to allow seeing what
@@ -455,6 +520,10 @@ impl DmaClientBacking {
 pub struct OpenhclDmaClient {
     backing: DmaClientBacking,
     params: DmaClientParameters,
+    #[inspect(skip)] // TODO: Skip for now
+    /// Allocation statistics per client.
+    inner_stats: Mutex<DmaClientAllocStats>,
+    fallback: Option<Arc<OpenhclDmaClient>>,
 }
 
 impl DmaClient for OpenhclDmaClient {
@@ -462,10 +531,37 @@ impl DmaClient for OpenhclDmaClient {
         &self,
         total_size: usize,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        self.backing.allocate_dma_buffer(total_size)
+        // The stats must be tracked here, not in the backing.
+        let mut stats = self.inner_stats.lock();
+        stats.total_alloc += total_size as u64;
+        let mem_block = self.backing.allocate_dma_buffer(total_size).or_else(|_| {
+            stats.fallback_alloc += total_size as u64;
+            self.fallback
+                .as_ref()
+                .map_or(Err(DmaManagerError::NoMemory.into()), |f| {
+                    f.allocate_dma_buffer(total_size)
+                })
+        });
+
+        mem_block
     }
 
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
         self.backing.attach_pending_buffers()
+    }
+
+    /// Query if this client supports persistent allocations.
+    fn is_persistent(&self) -> bool {
+        self.backing.is_persistent()
+    }
+
+    /// How much memory was allocated during session.
+    fn alloc_size(&self) -> u64 {
+        self.inner_stats.lock().total_alloc
+    }
+
+    /// How much backup memory was allocated during session (fallback).
+    fn fallback_alloc_size(&self) -> u64 {
+        self.inner_stats.lock().fallback_alloc
     }
 }

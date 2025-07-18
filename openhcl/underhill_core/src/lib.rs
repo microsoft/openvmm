@@ -322,7 +322,7 @@ async fn launch_workers(
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
-        nvme_keep_alive: opt.nvme_keep_alive,
+        nvme_keepalive: opt.nvme_keepalive,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
     };

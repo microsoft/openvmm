@@ -183,7 +183,7 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub nvme_keep_alive: bool,
+    pub nvme_keepalive: bool,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
 }
@@ -500,7 +500,21 @@ impl LoadedVm {
 
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
-        let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
+        let nvme_keepalive_runtime = if let Some(nvme_manager) = self.nvme_manager.as_ref() {
+            nvme_manager.query_keepalive_runtime_status().await
+        } else {
+            false
+        };
+        // Three sources to determine if keepalive can be enabled:
+        // 1. Host indicates that it is compatible with keepalive
+        //    by setting device tree property when VM starts.
+        // 2. During servicing the capabilities_flags is also set
+        //    so OpenHCL knows that it wasn't migrated to an older host.
+        // 3. If we ran out of dedicated DMA memory and used non-persistent
+        //    fallback allocator, disable keepalive altogether.
+        let nvme_keepalive = self.nvme_keepalive
+            && capabilities_flags.enable_nvme_keepalive()
+            && nvme_keepalive_runtime;
 
         // Do everything before the log flush under a span.
         let r = async {
@@ -533,7 +547,7 @@ impl LoadedVm {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
                         .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive))
+                        .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive, %nvme_keepalive_runtime))
                         .await;
                 }
             };
