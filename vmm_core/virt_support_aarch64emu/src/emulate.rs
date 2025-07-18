@@ -505,15 +505,39 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
             *success = true;
             Ok(())
         } else if self.support.is_gpa_mapped(gpa, true) {
-            let buf = &mut [0; 16][..current.len()];
-            buf.copy_from_slice(current);
-            match self.gm.compare_exchange_bytes(gpa, buf, new) {
-                Ok(swapped) => {
-                    *success = swapped;
-                    Ok(())
-                }
-                Err(e) => Err(Self::Error::Memory(e)),
+            *success = match (current.len(), new.len()) {
+                (1, 1) => self
+                    .gm
+                    .compare_exchange(gpa, current[0], new[0])
+                    .map(|r| r.is_ok()),
+                (2, 2) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u16::from_ne_bytes(current.try_into().unwrap()),
+                        u16::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                (4, 4) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u32::from_ne_bytes(current.try_into().unwrap()),
+                        u32::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                (8, 8) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u64::from_ne_bytes(current.try_into().unwrap()),
+                        u64::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                _ => panic!("unsupported size for compare and write memory"),
             }
+            .map_err(Self::Error::Memory)?;
+            Ok(())
         } else {
             // Ignore the comparison aspect for device MMIO.
             *success = true;

@@ -1768,6 +1768,10 @@ impl GuestMemory {
         current: T,
         new: T,
     ) -> Result<Result<T, T>, GuestMemoryError> {
+        const {
+            assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+            assert!(align_of::<T>() >= size_of::<T>());
+        };
         let len = size_of_val(&new);
         self.with_op(
             Some((gpa, len as u64)),
@@ -1793,44 +1797,6 @@ impl GuestMemory {
                         )?;
 
                         Ok(if success { Ok(new) } else { Err(current) })
-                    },
-                )
-            },
-        )
-    }
-
-    /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
-    pub fn compare_exchange_bytes<T: IntoBytes + FromBytes + Immutable + KnownLayout + ?Sized>(
-        &self,
-        gpa: u64,
-        current: &mut T,
-        new: &T,
-    ) -> Result<bool, GuestMemoryError> {
-        let len = size_of_val(new);
-        assert_eq!(size_of_val(current), len);
-        self.with_op(
-            Some((gpa, len as u64)),
-            GuestMemoryOperation::CompareExchange,
-            || {
-                // Assume that if write is allowed, then read is allowed.
-                self.run_on_mapping(
-                    AccessType::Write,
-                    gpa,
-                    len,
-                    current,
-                    |current, dest| {
-                        // SAFETY: dest..dest+len is guaranteed by the caller to be a valid
-                        // buffer for writes.
-                        unsafe { sparse_mmap::try_compare_exchange_ref(dest, *current, new) }
-                    },
-                    |current| {
-                        let success = self.inner.imp.compare_exchange_fallback(
-                            gpa,
-                            current.as_mut_bytes(),
-                            new.as_bytes(),
-                        )?;
-
-                        Ok(success)
                     },
                 )
             },
