@@ -3,6 +3,8 @@
 
 //! PCI capabilities.
 
+pub use self::pci_express::FlrHandler;
+pub use self::pci_express::PciExpressCapability;
 pub use self::read_only::ReadOnlyCapability;
 
 use inspect::Inspect;
