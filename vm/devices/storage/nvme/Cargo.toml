@@ -26,16 +26,17 @@ guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
-task_control.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
+task_control.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
+user_driver_emulated_mock.workspace = true
 zerocopy = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]
