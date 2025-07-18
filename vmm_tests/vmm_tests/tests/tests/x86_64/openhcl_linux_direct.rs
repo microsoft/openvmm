@@ -155,8 +155,112 @@ fn new_test_vtl2_nvme_device(
     }
 }
 
-/// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, and
-/// vmbus relay. This should expose a disk to VTL0 via vmbus.
+/// Test an OpenHCL Linux direct VM with many NVMe devices assigned to VTL2 and vmbus relay.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn many_nvme_devices_servicing(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    const NUM_NVME_DEVICES: usize = 8;
+    const SIZE: u64 = 0x1000;
+    const BASE_GUID: Guid = guid::guid!("00000000-0000-0000-0000-000000000000");
+    const NSID_OFFSET: u32 = 0x10;
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                let device_ids = (0..NUM_NVME_DEVICES)
+                    .map(|i| {
+                        let mut g = BASE_GUID;
+                        g.data2 = g.data2.wrapping_add(i as u16) + 0x1110;
+                        (NSID_OFFSET + i as u32, g)
+                    })
+                    .collect::<Vec<_>>();
+
+                c.vpci_devices.extend(
+                    device_ids
+                        .iter()
+                        .map(|(nsid, guid)| new_test_vtl2_nvme_device(*nsid, SIZE, *guid, None)),
+                );
+            })
+            .with_custom_vtl2_settings(|v| {
+                let device_ids = (0..NUM_NVME_DEVICES)
+                    .map(|i| {
+                        let mut g = BASE_GUID;
+                        g.data2 = g.data2.wrapping_add(i as u16) + 0x1110;
+                        (NSID_OFFSET + i as u32, g)
+                    })
+                    .collect::<Vec<_>>();
+
+                v.dynamic.as_mut().unwrap().storage_controllers.push(
+                    vtl2_settings_proto::StorageController {
+                        instance_id: Guid::new_random().to_string(),
+                        protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
+                            .into(),
+                        luns: device_ids
+                            .iter()
+                            .map(|(nsid, guid)| vtl2_settings_proto::Lun {
+                                location: (*nsid - NSID_OFFSET) + 1, // Add 1 so as to avoid any confusion with booting from LUN 0 (on the implicit SCSI controller created by the above `config.with_vmbus_redirect` call above).
+                                device_id: Guid::new_random().to_string(),
+                                vendor_id: "OpenVMM".to_string(),
+                                product_id: "Disk".to_string(),
+                                product_revision_level: "1.0".to_string(),
+                                serial_number: "0".to_string(),
+                                model_number: "1".to_string(),
+                                physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
+                                    r#type:
+                                        vtl2_settings_proto::physical_devices::BackingType::Single
+                                            .into(),
+                                    device: Some(vtl2_settings_proto::PhysicalDevice {
+                                        device_type:
+                                            vtl2_settings_proto::physical_device::DeviceType::Nvme
+                                                .into(),
+                                        device_path: guid.to_string(),
+                                        sub_device_path: *nsid,
+                                    }),
+                                    devices: Vec::new(),
+                                }),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        io_queue_depth: None,
+                    },
+                )
+            })
+        })
+        .run()
+        .await?;
+
+    for _ in 0..3 {
+        agent.ping().await?;
+
+        // Test that inspect serialization works with the old version.
+        vm.test_inspect_openhcl().await?;
+
+        vm.restart_openhcl(
+            igvm_file.clone(),
+            OpenHclServicingFlags {
+                enable_nvme_keepalive: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        agent.ping().await?;
+
+        // Test that inspect serialization works with the new version.
+        vm.test_inspect_openhcl().await?;
+    }
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
+}
+
+/// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, an NVMe disk assigned to VTL2, and
+/// vmbus relay. This should expose two disks to VTL0 via vmbus.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
