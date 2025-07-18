@@ -272,7 +272,7 @@ async fn create_nvme_device(
         .await
         {
             Ok(device) => {
-                if !matches!(reset_method, PciDeviceResetMethod::NoReset) {
+                if !nvme_always_flr && !matches!(reset_method, PciDeviceResetMethod::NoReset) {
                     update_reset(PciDeviceResetMethod::NoReset);
                 }
                 return Ok(device);
@@ -408,6 +408,9 @@ impl NvmeManagerWorker {
                     self.nvme_always_flr,
                     self.is_isolated,
                     dma_client,
+                )
+                .instrument(
+                    tracing::info_span!("create_nvme_device", %pci_id, self.nvme_always_flr),
                 )
                 .await?;
 
