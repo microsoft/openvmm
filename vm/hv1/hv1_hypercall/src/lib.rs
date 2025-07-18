@@ -36,6 +36,8 @@ pub use self::support::HvRepResult;
 pub use self::support::HypercallDefinition;
 pub use self::support::HypercallHandler;
 pub use self::support::HypercallIo;
+pub use self::support::complete_hypercall;
+pub use self::support::complete_hypercall_with_data;
 pub use self::x86::X64HypercallRegister;
 pub use self::x86::X64RegisterIo;
 pub use self::x86::X64RegisterState;
