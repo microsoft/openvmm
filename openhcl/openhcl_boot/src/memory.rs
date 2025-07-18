@@ -22,7 +22,8 @@ const MAX_RESERVED_MEM_RANGES: usize = 5 + sidecar_defs::MAX_NODES;
 
 const MAX_MEMORY_RANGES: usize = MAX_VTL2_RAM_RANGES + MAX_RESERVED_MEM_RANGES;
 
-// TODO: sizing of arrayvec
+/// Maximum number of ranges in the address space manager.
+/// TODO: sizing of arrayvec
 const MAX_ADDRESS_RANGES: usize = MAX_MEMORY_RANGES * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,9 +209,6 @@ impl AddressSpaceManager {
         // len must be page aligned
         assert_eq!(len % PAGE_SIZE_4K, 0);
 
-        // todo support vnode allocations for sidecar
-        assert!(preferred_vnode.is_none());
-
         // Walk ranges in reverse order until one is free that has enough space
         let index = self
             .address_space
@@ -218,7 +216,10 @@ impl AddressSpaceManager {
             .enumerate()
             .rev()
             .find_map(|(index, range)| {
-                if range.usage == AddressUsage::Free && range.range.len() >= len {
+                if range.usage == AddressUsage::Free
+                    && range.range.len() >= len
+                    && preferred_vnode.map(|pv| pv == range.vnode).unwrap_or(true)
+                {
                     Some(index)
                 } else {
                     None
@@ -302,6 +303,11 @@ mod tests {
                     vnode: 2,
                     mem_type: MemoryMapEntryType::MEMORY,
                 },
+                MemoryEntry {
+                    range: MemoryRange::new(0x60000..0x80000),
+                    vnode: 3,
+                    mem_type: MemoryMapEntryType::MEMORY,
+                },
             ],
             MemoryRange::new(0x0..0x1000),
             &[
@@ -313,28 +319,28 @@ mod tests {
         );
 
         let range = address_space
-            .allocate(Some(1), 0x1000, AllocationType::GpaPool)
+            .allocate(Some(0), 0x1000, AllocationType::GpaPool)
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
-        assert_eq!(range.vnode, 1);
+        assert_eq!(range.vnode, 0);
 
         let range = address_space
-            .allocate(Some(1), 0x2000, AllocationType::SidecarNode)
+            .allocate(Some(0), 0x2000, AllocationType::SidecarNode)
             .unwrap();
-        assert_eq!(range.range, MemoryRange::new(0x1C000..0x1F000));
-        assert_eq!(range.vnode, 1);
+        assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
+        assert_eq!(range.vnode, 0);
 
         let range = address_space
-            .allocate(Some(2), 0x2000, AllocationType::GpaPool)
+            .allocate(Some(2), 0x3000, AllocationType::GpaPool)
             .unwrap();
-        assert_eq!(range.range, MemoryRange::new(0x3D000..0x40000));
+        assert_eq!(range.range, MemoryRange::new(0x5D000..0x60000));
         assert_eq!(range.vnode, 2);
 
         // allocate all of node 3, then subsequent allocations fail
         let range = address_space
             .allocate(Some(3), 0x20000, AllocationType::SidecarNode)
             .unwrap();
-        assert_eq!(range.range, MemoryRange::new(0x40000..0x60000));
+        assert_eq!(range.range, MemoryRange::new(0x60000..0x80000));
         assert_eq!(range.vnode, 3);
 
         let range = address_space.allocate(Some(3), 0x1000, AllocationType::SidecarNode);
