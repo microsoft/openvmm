@@ -331,7 +331,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    let nvme = nvme::NvmeControllerFaultInjection::new(
+    let mut nvme = nvme::NvmeControllerFaultInjection::new(
         &driver_source,
         guest_mem.clone(),
         &mut msi_set,
@@ -342,8 +342,10 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
             subsystem_id: Guid::new_random(),
         },
         Box::new(fault_controller),
+        pages,
     );
 
+    nvme.read_bar0(0, vec![0; 4].as_mut_slice()).unwrap();
     nvme.client() // 2MB namespace
         .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
         .await
@@ -440,24 +442,24 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
 fn fault_controller(
     fn_name: &str,
     input: Vec<Box<dyn Any>>,
-) -> (FaultInjectionAction, Box<dyn Any>) {
+) -> (FaultInjectionAction, Vec<Box<dyn Any>>) {
     match fn_name {
-        "read_bar0" => {
+        "read_bar0_input" => {
+            // Get the input address and data
+            assert_eq!(input.len(), 2);
+            let addr = input[0].downcast_ref::<u32>().unwrap();
+            let data: &[u8] = input[1].downcast_ref::<Vec<u8>>().unwrap();
             // Change Output. FaultInjectionAction::Return
-            tracing::debug!("read_bar0 called with input");
-            (FaultInjectionAction::No_Op, Box::new(0u32))
-        }
-        "write_bar0" => {
-            // Change Input. FaultInjectionAction::Continue
-            panic!("client function is currently unsupported");
-        }
-        "client" => {
-            // Delay
-            tracing::debug!("client called with input");
-            panic!("client function is currently unsupported");
+            tracing::debug!(
+                "read_bar0 called with input addr: {}, data: {:?}",
+                addr,
+                data
+            );
+            (FaultInjectionAction::Drop, vec![])
         }
         _ => {
-            panic!("Unsupported function name: {}", fn_name);
+            // Undefined bheaviour is always passthrough
+            (FaultInjectionAction::No_Op, vec![])
         }
     }
 }

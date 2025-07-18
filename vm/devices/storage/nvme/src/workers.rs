@@ -3,7 +3,7 @@
 
 //! NVMe admin and IO queue workers.
 
-mod admin;
+pub mod admin;
 mod coordinator;
 mod io;
 

@@ -12,7 +12,7 @@ mod pci_fault_injection;
 mod prp;
 mod queue;
 pub mod resolver;
-mod workers;
+pub mod workers;
 
 #[cfg(test)]
 mod tests;
