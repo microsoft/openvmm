@@ -1075,17 +1075,13 @@ impl InitializedVm {
                         use vmm_core::emuplat::hcl_compat_uefi_nvram_storage::VmgsStorageBackendAdapter;
 
                         match vmgs_client {
-                            Some(vmgs) => Box::new(
-                                HclCompatNvram::new(
-                                    VmgsStorageBackendAdapter(
-                                        vmgs.as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
-                                            .context("failed to instantiate UEFI NVRAM store")?,
-                                    ),
-                                    None,
-                                    false,
-                                )
-                                .await?,
-                            ),
+                            Some(vmgs) => Box::new(HclCompatNvram::new(
+                                VmgsStorageBackendAdapter(
+                                    vmgs.as_non_volatile_store(vmgs::FileId::BIOS_NVRAM, true)
+                                        .context("failed to instantiate UEFI NVRAM store")?,
+                                ),
+                                None,
+                            )),
                             None => Box::new(InMemoryNvram::new()),
                         }
                     },
