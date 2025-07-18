@@ -143,7 +143,6 @@ pub struct UefiRuntimeDeps<'a> {
 
 /// The Hyper-V UEFI services chipset device.
 #[derive(InspectMut)]
-#[inspect(extra = "UefiDevice::inspect_extra")]
 pub struct UefiDevice {
     // Fixed configuration
     use_mmio: bool,
@@ -275,12 +274,6 @@ impl UefiDevice {
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
-    }
-
-    fn inspect_extra(&mut self, _resp: &mut inspect::Response<'_>) {
-        // This is the only place where we allow reprocessing diagnostics,
-        // since this will be driven by the user themselves.
-        self.process_diagnostics(true, DEFAULT_LOGS_PER_PERIOD, "inspect_extra");
     }
 }
 

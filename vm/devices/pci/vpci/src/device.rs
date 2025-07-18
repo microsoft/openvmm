@@ -693,12 +693,14 @@ impl ReadyState {
                 return Err(WorkerError::UnexpectedPacketOrder);
             }
             PacketData::FdoD0Entry { mmio_start } => {
+                tracing::trace!(?mmio_start, ?dev.instance_id, "FDO D0 entry");
                 dev.config_space.map(mmio_start);
                 self.send_device = true;
                 // Send the completion after the device has been sent.
                 self.send_completion = transaction_id;
             }
             PacketData::FdoD0Exit => {
+                tracing::trace!(?dev.instance_id, "FDO D0 exit");
                 dev.config_space.unmap();
                 conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
             }
@@ -997,6 +999,7 @@ impl VpciChannel {
         Ok(())
     }
 
+    /// Release all resources associated with the device (not the bus).
     async fn release_all(&mut self) {
         // Power off the device.
         self.set_power(false);
@@ -1075,6 +1078,8 @@ impl VpciConfigSpace {
         // Note that there may be some current accessors that this will not
         // flush out synchronously. The MMIO implementation in bus.rs must be
         // careful to ignore reads/writes that are not to an expected address.
+        //
+        // This is idempotent. See [`impl_device_range!`].
         self.control_mmio.unmap();
         self.offset
             .0
@@ -1165,6 +1170,9 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
 
     async fn close(&mut self) {
         self.release_all().await;
+
+        // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
+        self.config_space.unmap();
     }
 
     async fn run(
