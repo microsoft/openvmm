@@ -16,10 +16,10 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - .github/workflows/copilot-setup-steps.yml
+      - .github/workflows/copilot-setup-steps.yaml
   pull_request:
     paths:
-      - .github/workflows/copilot-setup-steps.yml
+      - .github/workflows/copilot-setup-steps.yaml
 
 jobs:
   # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
@@ -61,6 +61,9 @@ jobs:
             gcc-aarch64-linux-gnu \
             libssl-dev \
             pkg-config
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Restore OpenVMM build dependencies
         run: |

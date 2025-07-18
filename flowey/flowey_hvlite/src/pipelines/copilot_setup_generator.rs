@@ -9,7 +9,7 @@ pub struct CopilotSetupGeneratorCli {}
 
 impl CopilotSetupGeneratorCli {
     pub fn run(self, repo_root: &std::path::Path) -> Result<()> {
-        let output_file = repo_root.join(".github/workflows/copilot-setup-steps.yml");
+        let output_file = repo_root.join(".github/workflows/copilot-setup-steps.yaml");
 
         // Ensure the output directory exists
         if let Some(parent) = output_file.parent() {
@@ -20,7 +20,7 @@ impl CopilotSetupGeneratorCli {
 
         std::fs::write(&output_file, content)?;
 
-        println!("Generated .github/workflows/copilot-setup-steps.yml");
+        println!("Generated .github/workflows/copilot-setup-steps.yaml");
         Ok(())
     }
 }
