@@ -163,7 +163,12 @@ async fn many_nvme_devices_servicing(
 ) -> Result<(), anyhow::Error> {
     const NUM_NVME_DEVICES: usize = 8;
     const SIZE: u64 = 0x1000;
+    // Zeros make it easy to see what's going on when inspecting logs. Each device must be
+    // associated with a unique GUID. The pci subsystem uses the data2 field to differentiate
+    // devices.
     const BASE_GUID: Guid = guid::guid!("00000000-0000-0000-0000-000000000000");
+    // (also to make it obvious when looking at logs)
+    const GUID_UPDATE_PREFIX: u16 = 0x1110;
     const NSID_OFFSET: u32 = 0x10;
 
     let (mut vm, agent) = config
@@ -173,7 +178,7 @@ async fn many_nvme_devices_servicing(
                 let device_ids = (0..NUM_NVME_DEVICES)
                     .map(|i| {
                         let mut g = BASE_GUID;
-                        g.data2 = g.data2.wrapping_add(i as u16) + 0x1110;
+                        g.data2 = g.data2.wrapping_add(i as u16) + GUID_UPDATE_PREFIX;
                         (NSID_OFFSET + i as u32, g)
                     })
                     .collect::<Vec<_>>();
@@ -188,7 +193,7 @@ async fn many_nvme_devices_servicing(
                 let device_ids = (0..NUM_NVME_DEVICES)
                     .map(|i| {
                         let mut g = BASE_GUID;
-                        g.data2 = g.data2.wrapping_add(i as u16) + 0x1110;
+                        g.data2 = g.data2.wrapping_add(i as u16) + GUID_UPDATE_PREFIX;
                         (NSID_OFFSET + i as u32, g)
                     })
                     .collect::<Vec<_>>();
@@ -201,7 +206,9 @@ async fn many_nvme_devices_servicing(
                         luns: device_ids
                             .iter()
                             .map(|(nsid, guid)| vtl2_settings_proto::Lun {
-                                location: (*nsid - NSID_OFFSET) + 1, // Add 1 so as to avoid any confusion with booting from LUN 0 (on the implicit SCSI controller created by the above `config.with_vmbus_redirect` call above).
+                                // Add 1 so as to avoid any confusion with booting from LUN 0 (on the implicit SCSI
+                                // controller created by the above `config.with_vmbus_redirect` call above).
+                                location: (*nsid - NSID_OFFSET) + 1,
                                 device_id: Guid::new_random().to_string(),
                                 vendor_id: "OpenVMM".to_string(),
                                 product_id: "Disk".to_string(),
