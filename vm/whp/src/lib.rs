@@ -5,7 +5,7 @@
 #![cfg(windows)]
 // UNSAFETY: Calling WHP APIs.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub mod abi;
 mod api;
@@ -381,7 +381,7 @@ impl Partition {
                 set(partition_prop::ExceptionExitBitmap, val)
             }
             PartitionProperty::SeparateSecurityDomain(val) => {
-                abi_bool = val.clone().into();
+                abi_bool = (*val).into();
                 set(partition_prop::SeparateSecurityDomain, &abi_bool)
             }
             #[cfg(target_arch = "x86_64")]
@@ -395,11 +395,11 @@ impl Partition {
                 set(partition_prop::ProcessorFrequencyCap, val)
             }
             PartitionProperty::AllowDeviceAssignment(val) => {
-                abi_bool = val.clone().into();
+                abi_bool = (*val).into();
                 set(partition_prop::AllowDeviceAssignment, &abi_bool)
             }
             PartitionProperty::DisableSmt(val) => {
-                abi_bool = val.clone().into();
+                abi_bool = (*val).into();
                 set(partition_prop::DisableSmt, &abi_bool)
             }
             PartitionProperty::ProcessorFeatures(val) => {
@@ -444,7 +444,7 @@ impl Partition {
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::ApicRemoteReadSupport(val) => {
-                abi_bool = val.clone().into();
+                abi_bool = (*val).into();
                 set(partition_prop::ApicRemoteReadSupport, &abi_bool)
             }
             PartitionProperty::ReferenceTime(val) => set(partition_prop::ReferenceTime, val),

@@ -1024,7 +1024,7 @@ macro_rules! delayload {
         }
 
         mod funcs {
-            #![expect(non_snake_case)]
+            #![expect(non_snake_case, clippy::diverging_sub_expression)]
             $(
                 $(#[$a])*
                 pub fn $name() -> usize {
