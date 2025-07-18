@@ -875,7 +875,7 @@ fn test_save_restore_connecting() {
     let offer_id1 = env.offer_with_mnf(1);
     let _offer_id2 = env.offer(2);
 
-    env.start_connect(Version::Win10, FeatureFlags::new(), false);
+    env.start_connect(Version::Win10, FeatureFlags::new(), false, true);
     assert_eq!(
         env.notifier.monitor_page,
         Some(MonitorPageGpas {
@@ -1435,14 +1435,8 @@ fn test_mnf_channel() {
     let _offer_id2 = env.offer_with_mnf(2);
     let _offer_id3 = env.offer_with_preset_mnf(3, 5);
 
-    env.connect(Version::Copper, FeatureFlags::new());
-    env.c().handle_request_offers().unwrap();
-
-    // Preset monitor ID should not be in the bitmap.
-    assert_eq!(env.server.assigned_monitors.bitmap(), 1);
-
-    env.notifier.check_messages(&[
-        OutgoingMessage::new(&protocol::OfferChannel {
+    let mut expected_channels = [
+        protocol::OfferChannel {
             interface_id: Guid {
                 data1: 1,
                 ..Guid::ZERO
@@ -1456,8 +1450,8 @@ fn test_mnf_channel() {
             is_dedicated: 1,
             monitor_id: 0xff,
             ..protocol::OfferChannel::new_zeroed()
-        }),
-        OutgoingMessage::new(&protocol::OfferChannel {
+        },
+        protocol::OfferChannel {
             interface_id: Guid {
                 data1: 2,
                 ..Guid::ZERO
@@ -1469,11 +1463,10 @@ fn test_mnf_channel() {
             channel_id: ChannelId(2),
             connection_id: 0x2002,
             is_dedicated: 1,
-            monitor_id: 0,
-            monitor_allocated: 1,
+            monitor_id: 0xff,
             ..protocol::OfferChannel::new_zeroed()
-        }),
-        OutgoingMessage::new(&protocol::OfferChannel {
+        },
+        protocol::OfferChannel {
             interface_id: Guid {
                 data1: 3,
                 ..Guid::ZERO
@@ -1485,12 +1478,51 @@ fn test_mnf_channel() {
             channel_id: ChannelId(3),
             connection_id: 0x2003,
             is_dedicated: 1,
-            monitor_id: 5,
-            monitor_allocated: 1,
+            monitor_id: 0xff,
             ..protocol::OfferChannel::new_zeroed()
-        }),
-        OutgoingMessage::new(&protocol::AllOffersDelivered {}),
-    ])
+        },
+    ];
+
+    fn make_messages(
+        channels: &[protocol::OfferChannel],
+    ) -> impl Iterator<Item = OutgoingMessage> + '_ {
+        channels
+            .iter()
+            .map(OutgoingMessage::new)
+            .chain([OutgoingMessage::new(&protocol::AllOffersDelivered {})])
+    }
+
+    // If the guest does not send monitor pages, the monitor ID is not sent with the offers.
+    env.connect_without_mnf(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier
+        .check_messages(make_messages(&expected_channels));
+    env.c().reset();
+
+    // If the guest sends monitor pages, but the server does not allow it, the monitor ID is
+    // still not sent.
+    env.server.set_require_server_allocated_mnf(true);
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier
+        .check_messages(make_messages(&expected_channels));
+    env.c().reset();
+
+    // Now we connect with regular MNF support, and the monitor IDs are sent.
+    env.server.set_require_server_allocated_mnf(false);
+    expected_channels[1].monitor_id = 0;
+    expected_channels[1].monitor_allocated = 1;
+    expected_channels[2].monitor_id = 5;
+    expected_channels[2].monitor_allocated = 1;
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+
+    // Preset monitor ID should not be in the bitmap.
+    assert_eq!(env.server.assigned_monitors.bitmap(), 1);
+
+    env.notifier
+        .check_messages(make_messages(&expected_channels));
 }
 
 #[test]
@@ -2301,16 +2333,27 @@ impl TestEnv {
     }
 
     fn connect(&mut self, version: Version, feature_flags: FeatureFlags) {
-        self.start_connect(version, feature_flags, false);
+        self.start_connect(version, feature_flags, false, true);
         self.complete_connect();
     }
 
     fn connect_trusted(&mut self, version: Version, feature_flags: FeatureFlags) {
-        self.start_connect(version, feature_flags, true);
+        self.start_connect(version, feature_flags, true, true);
         self.complete_connect();
     }
 
-    fn start_connect(&mut self, version: Version, feature_flags: FeatureFlags, trusted: bool) {
+    fn connect_without_mnf(&mut self, version: Version, feature_flags: FeatureFlags) {
+        self.start_connect(version, feature_flags, false, false);
+        self.complete_connect();
+    }
+
+    fn start_connect(
+        &mut self,
+        version: Version,
+        feature_flags: FeatureFlags,
+        trusted: bool,
+        use_mnf: bool,
+    ) {
         self.version = Some(VersionInfo {
             version,
             feature_flags,
@@ -2326,8 +2369,8 @@ impl TestEnv {
                         .with_vtl(0)
                         .with_feature_flags(feature_flags.into())
                         .into(),
-                    child_to_parent_monitor_page_gpa: 0x123f000,
-                    parent_to_child_monitor_page_gpa: 0x321f000,
+                    child_to_parent_monitor_page_gpa: if use_mnf { 0x123f000 } else { 0 },
+                    parent_to_child_monitor_page_gpa: if use_mnf { 0x321f000 } else { 0 },
                     ..FromZeros::new_zeroed()
                 },
                 client_id: Guid::ZERO,
@@ -2342,10 +2385,14 @@ impl TestEnv {
             request,
             ModifyConnectionRequest {
                 version: Some(version as u32),
-                monitor_page: Update::Set(MonitorPageGpas {
-                    child_to_parent: 0x123f000,
-                    parent_to_child: 0x321f000,
-                }),
+                monitor_page: if use_mnf && !self.server.require_server_allocated_mnf {
+                    Update::Set(MonitorPageGpas {
+                        child_to_parent: 0x123f000,
+                        parent_to_child: 0x321f000,
+                    })
+                } else {
+                    Update::Reset
+                },
                 interrupt_page: Update::Reset,
                 target_message_vp: Some(0),
                 ..Default::default()

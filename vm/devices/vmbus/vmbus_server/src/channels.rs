@@ -132,6 +132,7 @@ pub struct Server {
     // This must be separate from the connection state because e.g. the UnloadComplete message,
     // or messages for reserved channels, can be pending even when disconnected.
     pending_messages: PendingMessages,
+    require_server_allocated_mnf: bool,
 }
 
 pub struct ServerWithNotifier<'a, T> {
@@ -243,6 +244,14 @@ impl ConnectionState {
     fn get_version(&self) -> Option<VersionInfo> {
         if let ConnectionState::Connected(info) = self {
             Some(info.version)
+        } else {
+            None
+        }
+    }
+
+    fn get_connected_info(&self) -> Option<ConnectionInfo> {
+        if let ConnectionState::Connected(info) = self {
+            Some(*info)
         } else {
             None
         }
@@ -1318,6 +1327,7 @@ impl Server {
             max_version: None,
             delayed_max_version: None,
             pending_messages: PendingMessages(VecDeque::new()),
+            require_server_allocated_mnf: false,
         }
     }
 
@@ -1331,6 +1341,12 @@ impl Server {
             inner: self,
             notifier,
         }
+    }
+
+    /// Requires that the server allocates monitor pages. If this is enabled, the server will ignore
+    /// client-specified monitor pages and act as if no channels use MNF in that case.
+    pub fn set_require_server_allocated_mnf(&mut self, require: bool) {
+        self.require_server_allocated_mnf = require;
     }
 
     fn validate(&self) {
@@ -1453,6 +1469,17 @@ impl Server {
         }
 
         Poll::Ready(())
+    }
+
+    /// Disables MNF for all channels.
+    ///
+    /// N.B. This only takes effect the next time the channel is offered to a guest.
+    pub fn disable_mnf_all_channels(&mut self) {
+        for (_, channel) in self.channels.iter_mut() {
+            if channel.offer.use_mnf.is_enabled() {
+                channel.offer.use_mnf = MnfUsage::Disabled;
+            }
+        }
     }
 }
 
@@ -1609,13 +1636,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     // guest if it has not already been sent (which could have happened if the
                     // channel was offered after restore() but before revoke_unclaimed_channels()).
                     // Offers should only be sent if the guest has already sent RequestOffers.
-                    if let ConnectionState::Connected(ConnectionInfo {
-                        offers_sent: true,
-                        version,
-                        ..
-                    }) = &self.inner.state
-                    {
-                        if matches!(channel.state, ChannelState::ClientReleased) {
+                    if let ConnectionState::Connected(info) = &self.inner.state {
+                        if info.offers_sent && matches!(channel.state, ChannelState::ClientReleased)
+                        {
                             channel.prepare_channel(
                                 offer_id,
                                 &mut self.inner.assigned_channels,
@@ -1625,7 +1648,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             self.inner
                                 .pending_messages
                                 .sender(self.notifier, self.inner.state.is_paused())
-                                .send_offer(channel, *version);
+                                .send_offer(channel, info);
                         }
                     }
                 }
@@ -1755,20 +1778,17 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return Ok(offer_id);
         }
 
-        let mut connected_version = None;
+        let mut connected_info = None;
         let state = match self.inner.state {
-            ConnectionState::Connected(ConnectionInfo {
-                offers_sent: true,
-                version,
-                ..
-            }) => {
-                connected_version = Some(version);
-                ChannelState::Closed
+            ConnectionState::Connected(info) => {
+                if info.offers_sent {
+                    connected_info = Some(info);
+                    ChannelState::Closed
+                } else {
+                    ChannelState::ClientReleased
+                }
             }
-            ConnectionState::Connected(ConnectionInfo {
-                offers_sent: false, ..
-            })
-            | ConnectionState::Connecting { .. }
+            ConnectionState::Connecting { .. }
             | ConnectionState::Disconnecting { .. }
             | ConnectionState::Disconnected => ChannelState::ClientReleased,
         };
@@ -1789,7 +1809,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         let offer_id = self.inner.channels.offer(channel);
-        if let Some(version) = connected_version {
+        if let Some(info) = connected_info {
             let channel = &mut self.inner.channels[offer_id];
             channel.prepare_channel(
                 offer_id,
@@ -1800,7 +1820,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             self.inner
                 .pending_messages
                 .sender(self.notifier, self.inner.state.is_paused())
-                .send_offer(channel, version);
+                .send_offer(channel, &info);
         }
 
         tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
@@ -2100,10 +2120,17 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         {
             MonitorPageRequest::Invalid
         } else if input.initiate_contact.parent_to_child_monitor_page_gpa != 0 {
-            MonitorPageRequest::Some(MonitorPageGpas {
-                parent_to_child: input.initiate_contact.parent_to_child_monitor_page_gpa,
-                child_to_parent: input.initiate_contact.child_to_parent_monitor_page_gpa,
-            })
+            if self.inner.require_server_allocated_mnf {
+                tracelimit::warn_ratelimited!(
+                    "guest supplied monitor pages not supported; MNF will be disabled"
+                );
+                MonitorPageRequest::None
+            } else {
+                MonitorPageRequest::Some(MonitorPageGpas {
+                    parent_to_child: input.initiate_contact.parent_to_child_monitor_page_gpa,
+                    child_to_parent: input.initiate_contact.child_to_parent_monitor_page_gpa,
+                })
+            }
         } else {
             MonitorPageRequest::None
         };
@@ -2555,7 +2582,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             self.inner
                 .pending_messages
                 .sender(self.notifier, info.paused)
-                .send_offer(channel, info.version);
+                .send_offer(channel, info);
         }
         self.sender().send_message(&protocol::AllOffersDelivered {});
 
@@ -3033,7 +3060,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         gpadls: &mut GpadlMap,
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
-        version: Option<VersionInfo>,
+        info: Option<ConnectionInfo>,
     ) -> bool {
         // Release any GPADLs that remain for this channel.
         gpadls.retain(|&(gpadl_id, gpadl_offer_id), gpadl| {
@@ -3072,10 +3099,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 false
             }
             ChannelState::Reoffered => {
-                if let Some(version) = version {
+                if let Some(info) = info {
                     channel.state = ChannelState::Closed;
                     channel.restore_state = RestoreState::New;
-                    sender.send_offer(channel, version);
+                    sender.send_offer(channel, &info);
                     // Do not release the channel ID.
                     return false;
                 }
@@ -3136,7 +3163,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
-                    self.inner.state.get_version(),
+                    self.inner.state.get_connected_info(),
                 ) {
                     self.inner.channels.remove(offer_id);
                 }
@@ -3723,14 +3750,20 @@ impl<N: Notifier> MessageSender<'_, N> {
     }
 
     /// Sends a channel offer message to the guest.
-    fn send_offer(&mut self, channel: &mut Channel, version: VersionInfo) {
+    fn send_offer(&mut self, channel: &mut Channel, connection_info: &ConnectionInfo) {
         let info = channel.info.as_ref().expect("assigned");
         let mut flags = channel.offer.flags;
-        if !version.feature_flags.confidential_channels() {
+        if !connection_info
+            .version
+            .feature_flags
+            .confidential_channels()
+        {
             flags.set_confidential_ring_buffer(false);
             flags.set_confidential_external_memory(false);
         }
 
+        // Send the monitor ID only if the guest supports MNF.
+        let monitor_id = connection_info.monitor_page.and(info.monitor_id);
         let msg = protocol::OfferChannel {
             interface_id: channel.offer.interface_id,
             instance_id: channel.offer.instance_id,
@@ -3741,8 +3774,8 @@ impl<N: Notifier> MessageSender<'_, N> {
             subchannel_index: channel.offer.subchannel_index,
             mmio_megabytes_optional: channel.offer.mmio_megabytes_optional,
             channel_id: info.channel_id,
-            monitor_id: info.monitor_id.unwrap_or(MonitorId::INVALID).0,
-            monitor_allocated: info.monitor_id.is_some() as u8,
+            monitor_id: monitor_id.unwrap_or(MonitorId::INVALID).0,
+            monitor_allocated: monitor_id.is_some().into(),
             // All channels are dedicated with Win8+ hosts.
             // These fields are sent to V1 guests as well, which will ignore them.
             is_dedicated: 1,

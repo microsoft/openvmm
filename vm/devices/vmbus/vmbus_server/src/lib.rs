@@ -483,6 +483,11 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
 
         let mut server = channels::Server::new(self.vtl, connection_id, self.channel_id_offset);
 
+        // If MNF is handled by this server and this is a paravisor for an isolated VM, the monitor
+        // pages must be allocated by the server, not the guest, since the guest will provide shared
+        // pages which can't be used in this case.
+        server.set_require_server_allocated_mnf(self.enable_mnf && self.private_gm.is_some());
+
         // If requested, limit the maximum protocol version and feature flags.
         if let Some(version) = self.max_version {
             server.set_compatibility_version(version, self.delay_max_version);
