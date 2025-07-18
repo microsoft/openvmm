@@ -230,7 +230,7 @@ impl HardwareIsolatedBacking for SnpBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: Option<VpIndex>,
+        vp_index: VpIndex,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
@@ -2630,7 +2630,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
 }
 
 struct SnpTlbLockFlushAccess<'a> {
-    vp_index: Option<VpIndex>,
+    vp_index: VpIndex,
     partition: &'a UhPartitionInner,
     shared: &'a SnpBackedShared,
 }
@@ -2667,13 +2667,11 @@ impl TlbFlushLockAccess for SnpTlbLockFlushAccess<'_> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        if let Some(vp_index) = self.vp_index {
-            hardware_cvm::tlb_lock::TlbLockAccess {
-                vp_index,
-                cvm_partition: &self.shared.cvm,
-            }
-            .set_wait_for_tlb_locks(vtl);
+        hardware_cvm::tlb_lock::TlbLockAccess {
+            vp_index: self.vp_index,
+            cvm_partition: &self.shared.cvm,
         }
+        .set_wait_for_tlb_locks(vtl);
     }
 }
 

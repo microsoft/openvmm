@@ -454,7 +454,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                                 .isolated_memory_protector
                                 .as_ref(),
                             tlb_access: &mut B::tlb_flush_lock_access(
-                                Some(self_index),
+                                self_index,
                                 self.vp.partition,
                                 self.vp.shared,
                             ),
@@ -609,7 +609,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                             .isolated_memory_protector
                             .as_ref(),
                         tlb_access: &mut B::tlb_flush_lock_access(
-                            Some(self_index),
+                            self_index,
                             self.vp.partition,
                             self.vp.shared,
                         ),
@@ -1576,11 +1576,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             protector: B::cvm_partition_state(self.shared)
                 .isolated_memory_protector
                 .as_ref(),
-            tlb_access: &mut B::tlb_flush_lock_access(
-                Some(self_index),
-                self.partition,
-                self.shared,
-            ),
+            tlb_access: &mut B::tlb_flush_lock_access(self_index, self.partition, self.shared),
             guest_memory: &self.partition.gm[vtl],
         };
         let r = hv.msr_write(msr, value, &mut access);
@@ -1801,7 +1797,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Returns the appropriately backed TLB flush and lock access
     pub(crate) fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + use<'_, B> {
-        B::tlb_flush_lock_access(Some(self.vp_index()), self.partition, self.shared)
+        B::tlb_flush_lock_access(self.vp_index(), self.partition, self.shared)
     }
 
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
