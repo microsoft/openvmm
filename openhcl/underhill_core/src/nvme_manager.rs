@@ -282,12 +282,23 @@ impl NvmeManagerWorker {
         // Tear down all the devices if nvme_keepalive is not set.
         if !nvme_keepalive || !self.save_restore_supported {
             async {
-                join_all(self.devices.drain().map(|(pci_id, driver)| {
-                    driver
-                        .shutdown()
-                        .instrument(tracing::info_span!("shutdown_nvme_driver", pci_id))
-                }))
-                .await
+                // Spawn each driver shutdown in a separate thread to prevent blocking
+                // the async runtime if shutdown blocks in the kernel
+                let handles = self
+                    .devices
+                    .drain()
+                    .map(|(pci_id, driver)| {
+                        let span = tracing::info_span!("shutdown_nvme_driver", pci_id);
+                        let shutdown_driver = self.driver_source.simple();
+                        shutdown_driver.spawn("nvme_shutdown", async move {
+                            let _entered = span.enter();
+                            driver.shutdown().await
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                // Wait for all shutdown operations to complete
+                join_all(handles).await;
             }
             .instrument(join_span)
             .await;
