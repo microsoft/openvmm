@@ -2356,7 +2356,7 @@ mod tests {
 
         async fn expect_response(&mut self, expected: protocol::MessageType) {
             let data = self.message_recv.next().await.unwrap();
-            let header = protocol::MessageHeader::read_from_prefix(&data).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+            let header = protocol::MessageHeader::read_from_prefix(&data).unwrap().0; // NOTE: Test helper - only needs header, not message payload
             assert_eq!(expected, header.message_type())
         }
 
@@ -2364,9 +2364,9 @@ mod tests {
             &mut self,
         ) -> T {
             let data = self.message_recv.next().await.unwrap();
-            let (header, message) = protocol::MessageHeader::read_from_prefix(&data).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
+            let (header, message) = protocol::MessageHeader::read_from_prefix(&data).unwrap(); // NOTE: Test helper - unwrap is acceptable in test code
             assert_eq!(T::MESSAGE_TYPE, header.message_type());
-            T::read_from_prefix(message).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+            T::read_from_prefix(message).unwrap().0 // NOTE: Test helper - only needs message content, not remaining data
         }
 
         fn initiate_contact(

@@ -2406,13 +2406,13 @@ impl HvRegisterValue {
     pub fn as_table(&self) -> HvX64TableRegister {
         HvX64TableRegister::read_from_prefix(self.as_bytes())
             .unwrap()
-            .0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+            .0 // NOTE: Rest of range is expected to be empty for fixed-size register
     }
 
     pub fn as_segment(&self) -> HvX64SegmentRegister {
         HvX64SegmentRegister::read_from_prefix(self.as_bytes())
             .unwrap()
-            .0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+            .0 // NOTE: Rest of range is expected to be empty for fixed-size register
     }
 }
 
@@ -2456,13 +2456,13 @@ pub struct HvX64TableRegister {
 
 impl From<HvX64TableRegister> for HvRegisterValue {
     fn from(val: HvX64TableRegister) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // NOTE: Rest of range is expected to be empty for fixed-size register
     }
 }
 
 impl From<HvRegisterValue> for HvX64TableRegister {
     fn from(val: HvRegisterValue) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // NOTE: Rest of range is expected to be empty for fixed-size register
     }
 }
 
@@ -2477,13 +2477,13 @@ pub struct HvX64SegmentRegister {
 
 impl From<HvX64SegmentRegister> for HvRegisterValue {
     fn from(val: HvX64SegmentRegister) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // NOTE: Rest of range is expected to be empty for fixed-size register
     }
 }
 
 impl From<HvRegisterValue> for HvX64SegmentRegister {
     fn from(val: HvRegisterValue) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // NOTE: Rest of range is expected to be empty for fixed-size register
     }
 }
 

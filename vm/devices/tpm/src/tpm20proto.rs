@@ -966,7 +966,7 @@ pub mod protocol {
                 return None;
             }
 
-            let size: u16 = u16_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
+            let size: u16 = u16_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // NOTE: Convert zerocopy Result to Option for consistency with function return type
             if size as usize > MAX_DIGEST_BUFFER_SIZE {
                 return None;
             }
@@ -1038,7 +1038,7 @@ pub mod protocol {
                 return None;
             }
 
-            let count: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
+            let count: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // NOTE: Convert zerocopy Result to Option for consistency with function return type
             if count > 5 {
                 return None;
             }
@@ -1252,7 +1252,7 @@ pub mod protocol {
             let (key_bits, mode) = if algorithm != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<u16_be>();
-                let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
+                let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // NOTE: Convert zerocopy Result to Option for consistency with function return type
 
                 start = end;
                 end += size_of::<AlgId>();
@@ -1331,8 +1331,7 @@ pub mod protocol {
             let scheme = TpmtRsaScheme::deserialize(&bytes[start..])?;
             end += scheme.payload_size();
 
-            // TODO: zerocopy: as of zerocopy 0.8 this can be simplified with `read_from_bytes`....ok()?, to avoid (https://github.com/microsoft/openvmm/issues/759)
-            // manual size checks. Leaving this code as-is to reduce risk of the 0.7 -> 0.8 move.
+            // NOTE: Manual size checks used here for safety and clarity
             start = end;
             end += size_of::<u16_be>();
             if bytes.len() < end {
@@ -1340,8 +1339,7 @@ pub mod protocol {
             }
             let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?;
 
-            // TODO: zerocopy: as of zerocopy 0.8 this can be simplified with `read_from_bytes`....ok()?, to avoid (https://github.com/microsoft/openvmm/issues/759)
-            // manual size checks. Leaving this code as-is to reduce risk of the 0.7 -> 0.8 move.
+            // NOTE: Manual size checks used here for safety and clarity
             start = end;
             end += size_of::<u32_be>();
             if bytes.len() < end {
