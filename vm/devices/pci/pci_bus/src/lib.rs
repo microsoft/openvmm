@@ -328,6 +328,7 @@ impl GenericPciBus {
         };
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
+            offset = self.state.pio_addr_reg.register(),
             "pci config space {} operation error: {}",
             operation,
             error
@@ -337,6 +338,7 @@ impl GenericPciBus {
     fn trace_recv_error(&self, e: mesh::RecvError, operation: &'static str) {
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
+            offset = self.state.pio_addr_reg.register(),
             "pci config space {} operation recv error: {:?}",
             operation,
             e,
