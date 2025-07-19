@@ -4,6 +4,7 @@ use crate::NvmeControllerClient;
 use crate::PAGE_MASK;
 use crate::namespace::Namespace;
 use crate::queue::DoorbellRegister;
+use crate::queue::QueueError;
 use crate::spec;
 use crate::workers::admin::AdminConfig;
 use crate::workers::admin::AdminHandler;
@@ -21,6 +22,10 @@ use pci_core::msi::RegisterMsi;
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use task_control::AsyncRun;
+use task_control::Cancelled;
+use task_control::InspectTask;
+use task_control::StopTask;
 use task_control::TaskControl;
 use user_driver_emulated_mock::DeviceTestMemory;
 use vmcore::device_state::ChangeDeviceState;
@@ -61,6 +66,8 @@ pub struct NvmeControllerFaultInjection {
     #[inspect(skip)]
     doorbells: Vec<Arc<DoorbellRegister>>,
     regs: Regs,
+    #[inspect(skip)]
+    admin: TaskControl<AdminHandlerFaultInjection, AdminState>,
 }
 
 #[derive(Inspect)]
@@ -96,6 +103,24 @@ impl NvmeControllerFaultInjection {
             .map(|_| Arc::new(DoorbellRegister::new()))
             .collect();
 
+        // TODO: Unused, but will probably need to update the AdminConfig -> AdminConfigFaultInjection and not pass this in anymore!
+        let interrupts = vec![];
+
+        let qe_sizes = Arc::new(Default::default());
+        let handler: AdminHandlerFaultInjection = AdminHandlerFaultInjection::new(
+            driver_source.simple(),
+            AdminConfig {
+                driver_source: driver_source.clone(),
+                mem: guest_memory.clone(),
+                interrupts,
+                doorbells: doorbells.clone(),
+                subsystem_id: caps.subsystem_id,
+                max_sqs: caps.max_io_queues,
+                max_cqs: caps.max_io_queues,
+                qe_sizes: Arc::clone(&qe_sizes),
+            },
+        );
+
         Self {
             inner: NvmeController::new(
                 driver_source,
@@ -115,6 +140,7 @@ impl NvmeControllerFaultInjection {
                 aqa: spec::Aqa::default(),
                 cc: spec::Cc::default(),
             },
+            admin: TaskControl::new(handler),
         }
     }
 
@@ -205,7 +231,18 @@ impl NvmeControllerFaultInjection {
         self.inner.fatal_error();
     }
 
-    fn set_cc(&mut self, cc: spec::Cc) {}
+    fn set_cc(&mut self, cc: spec::Cc) {
+        let mask: u32 = u32::from(
+            spec::Cc::new()
+                .with_en(true)
+                .with_shn(0b11)
+                .with_iosqes(0b1111)
+                .with_iocqes(0b1111),
+        );
+        let mut cc: spec::Cc = (u32::from(cc) & mask).into();
+
+        self.regs.cc = cc;
+    }
 }
 
 impl ChangeDeviceState for NvmeControllerFaultInjection {
@@ -272,6 +309,38 @@ impl SaveRestore for NvmeControllerFaultInjection {
 pub struct AdminHandlerFaultInjection {
     driver: VmTaskDriver,
     config: AdminConfig,
-    #[inspect(iter_by_key)]
-    namespaces: BTreeMap<u32, Arc<Namespace>>,
+}
+
+impl AdminHandlerFaultInjection {
+    pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
+        Self { driver, config }
+    }
+}
+
+impl AsyncRun<AdminState> for AdminHandlerFaultInjection {
+    async fn run(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        state: &mut AdminState,
+    ) -> Result<(), Cancelled> {
+        loop {
+            let event = stop.until_stopped(self.next_event(state)).await?;
+            tracing::debug!(
+                "THIS IS YOUR CAPTAIN SPEAKING: admin handler is intercepting, I repeat, admin handler is intercepting"
+            );
+        }
+        Ok(())
+    }
+}
+
+impl AdminHandlerFaultInjection {
+    async fn next_event(&mut self, state: &mut AdminState) {
+        let _ = state.admin_cq.wait_ready(&self.config.mem);
+    }
+}
+
+impl InspectTask<AdminState> for AdminHandlerFaultInjection {
+    fn inspect(&self, req: inspect::Request<'_>, state: Option<&AdminState>) {
+        req.respond().merge(self).merge(state);
+    }
 }
