@@ -59,6 +59,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
+    let nvme_controller_guid = Guid::new_random();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem,
@@ -67,7 +68,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
+            subsystem_id: nvme_controller_guid,
         },
     );
 
@@ -78,7 +79,14 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     let cap: Cap = Cap::new().with_mqes_z(max_u16);
     device.set_mock_response_u64(Some((0, cap.into())));
 
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
+    let driver = NvmeDriver::new(
+        &driver_source,
+        CPU_COUNT,
+        device,
+        false,
+        Some(nvme_controller_guid.to_string()),
+    )
+    .await;
     assert!(driver.is_ok());
 }
 
@@ -96,6 +104,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
+    let nvme_controller_guid = Guid::new_random();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem,
@@ -104,7 +113,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
+            subsystem_id: nvme_controller_guid,
         },
     );
 
@@ -113,7 +122,14 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     // Setup mock response at offset 0
     let cap: Cap = Cap::new().with_mqes_z(0);
     device.set_mock_response_u64(Some((0, cap.into())));
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
+    let driver = NvmeDriver::new(
+        &driver_source,
+        CPU_COUNT,
+        device,
+        false,
+        Some(nvme_controller_guid.to_string()),
+    )
+    .await;
 
     assert!(driver.is_err());
 }
@@ -133,6 +149,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
+    let nvme_controller_guid = Guid::new_random();
     let nvme = nvme::NvmeController::new(
         &driver_source,
         guest_mem.clone(),
@@ -141,7 +158,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
+            subsystem_id: nvme_controller_guid,
         },
     );
 
@@ -150,9 +167,15 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
-        .await
-        .unwrap();
+    let driver = NvmeDriver::new(
+        &driver_source,
+        CPU_COUNT,
+        device,
+        false,
+        Some(nvme_controller_guid.to_string()),
+    )
+    .await
+    .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
 
     // Act: Write 1024 bytes of data to disk starting at LBA 1.
@@ -246,6 +269,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
     let mut msi_x = MsiInterruptSet::new();
+    let nvme_controller_guid = Guid::new_random();
     let nvme_ctrl = nvme::NvmeController::new(
         &driver_source,
         guest_mem.clone(),
@@ -254,7 +278,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         NvmeControllerCaps {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
+            subsystem_id: nvme_controller_guid,
         },
     );
 
@@ -266,9 +290,15 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         .unwrap();
 
     let device = NvmeTestEmulatedDevice::new(nvme_ctrl, msi_x, dma_client.clone());
-    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
-        .await
-        .unwrap();
+    let mut nvme_driver = NvmeDriver::new(
+        &driver_source,
+        CPU_COUNT,
+        device,
+        false,
+        Some(nvme_controller_guid.to_string()),
+    )
+    .await
+    .unwrap();
     let _ns1 = nvme_driver.namespace(1).await.unwrap();
     let saved_state = nvme_driver.save().await.unwrap();
     // As of today we do not save namespace data to avoid possible conflict

@@ -55,6 +55,7 @@ impl ScsiDvdNvmeTest {
         let payload_mem = mem.payload_mem();
 
         let mut msi_set = MsiInterruptSet::new();
+        let nvme_controller_guid = Guid::new_random();
         let nvme = NvmeController::new(
             &driver_source,
             guest_mem.clone(),
@@ -63,7 +64,7 @@ impl ScsiDvdNvmeTest {
             NvmeControllerCaps {
                 msix_count: MSIX_COUNT,
                 max_io_queues: IO_QUEUE_COUNT,
-                subsystem_id: Guid::new_random(),
+                subsystem_id: nvme_controller_guid,
             },
         );
 
@@ -79,9 +80,15 @@ impl ScsiDvdNvmeTest {
             .unwrap();
 
         let device = EmulatedDevice::new(nvme, msi_set, dma_client.clone());
-        let nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
-            .await
-            .unwrap();
+        let nvme_driver = NvmeDriver::new(
+            &driver_source,
+            CPU_COUNT,
+            device,
+            false,
+            Some(nvme_controller_guid.to_string()),
+        )
+        .await
+        .unwrap();
         let namespace = nvme_driver.namespace(1).await.unwrap();
         let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
         for i in 0..(sector_count / 8) {
