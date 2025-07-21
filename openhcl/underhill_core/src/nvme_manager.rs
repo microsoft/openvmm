@@ -256,12 +256,12 @@ async fn create_nvme_device(
     };
     let mut last_err = None;
     let reset_methods = if nvme_always_flr {
-        vec![PciDeviceResetMethod::Flr]
+        &[PciDeviceResetMethod::Flr][..]
     } else {
-        vec![PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr]
+        &[PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr][..]
     };
     for reset_method in reset_methods {
-        update_reset(reset_method);
+        update_reset(*reset_method);
         match try_create_nvme_device(
             driver_source,
             pci_id,

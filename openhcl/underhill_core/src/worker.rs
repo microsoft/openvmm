@@ -282,7 +282,7 @@ pub struct UnderhillEnvCfg {
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
-    /// The NVMe reset option to use.
+    /// Don't skip FLR for NVMe devices.
     pub nvme_always_flr: bool,
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
