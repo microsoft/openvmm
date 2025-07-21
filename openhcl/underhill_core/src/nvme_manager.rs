@@ -258,6 +258,10 @@ async fn create_nvme_device(
     let reset_methods = if nvme_always_flr {
         &[PciDeviceResetMethod::Flr][..]
     } else {
+        // If this code can't create a device without resetting it, then still try to issue an FLR
+        // in case that unwedges something weird in the device state.
+        // (This is implicit when the code in [`try_create_nvme_device`] opens a handle to the
+        // Vfio device).
         &[PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr][..]
     };
     for reset_method in reset_methods {
@@ -288,6 +292,8 @@ async fn create_nvme_device(
             }
         }
     }
+    // Return the most reliable error (this code assumes that the reset methods are in increasing order
+    // of reliability).
     Err(last_err.unwrap())
 }
 
