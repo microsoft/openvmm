@@ -99,28 +99,40 @@ pub enum AllocationType {
     SidecarNode,
 }
 
+pub enum AllocationPolicy {
+    // prefer low memory
+    LowMemory,
+    // prefer high memory
+    HighMemory,
+}
+
 impl AddressSpaceManager {
+    pub const fn new_const() -> Self {
+        Self {
+            address_space: ArrayVec::new_const(),
+        }
+    }
+
     /// Initialize the address space manager.
     ///
     /// Some regions are known to be used at construction time, as these ranges
     /// are allocated at boot time.
-    pub fn new(
+    pub fn init(
+        &mut self,
         vtl2_ram: &[MemoryEntry],
         bootshim_used: MemoryRange,
-        vtl2_config: &[MemoryRange],
+        vtl2_config: impl Iterator<Item = MemoryRange>,
         reserved_range: Option<MemoryRange>,
         sidecar_image: Option<MemoryRange>,
-    ) -> Self {
-        assert!(vtl2_config.len() <= 2);
+    ) {
+        // assert!(vtl2_config.len() <= 2);
         assert!(vtl2_ram.len() <= MAX_VTL2_RAM_RANGES);
 
         // put all the pre-used ranges into a single arrayvec, and walk thru it with the selected vtl2 ram
         let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), 5> = ArrayVec::new();
         used_ranges.push((bootshim_used, AddressUsage::Used));
         used_ranges.extend(
-            vtl2_config
-                .iter()
-                .map(|r| (*r, AddressUsage::Reserved(ReservedMemoryType::Vtl2Config))),
+            vtl2_config.map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::Vtl2Config))),
         );
         used_ranges.extend(
             reserved_range
@@ -135,7 +147,7 @@ impl AddressSpaceManager {
         used_ranges.sort_unstable_by_key(|(r, _)| r.start());
 
         // Construct the initial state of VTL2 address space by walking ram and reserved ranges
-        let mut address_space = ArrayVec::new();
+        assert!(self.address_space.is_empty());
         for (entry, r) in walk_ranges(
             vtl2_ram.iter().map(|e| (e.range, e.vnode)),
             used_ranges.iter().map(|(r, usage)| (*r, usage)),
@@ -143,7 +155,7 @@ impl AddressSpaceManager {
             match r {
                 RangeWalkResult::Left(vnode) => {
                     // VTL2 normal ram, unused by anything.
-                    address_space.push(AddressRange {
+                    self.address_space.push(AddressRange {
                         range: entry,
                         vnode,
                         usage: AddressUsage::Free,
@@ -151,7 +163,7 @@ impl AddressSpaceManager {
                 }
                 RangeWalkResult::Both(vnode, usage) => {
                     // VTL2 ram, currently in use.
-                    address_space.push(AddressRange {
+                    self.address_space.push(AddressRange {
                         range: entry,
                         vnode,
                         usage: *usage,
@@ -163,8 +175,6 @@ impl AddressSpaceManager {
                 RangeWalkResult::Neither => {}
             }
         }
-
-        Self { address_space }
     }
 
     /// Split a free range into two, with the allocated range coming from the top end of the range.
@@ -205,17 +215,17 @@ impl AddressSpaceManager {
         preferred_vnode: Option<u32>,
         len: u64,
         allocation_type: AllocationType,
+        allocation_policy: AllocationPolicy,
     ) -> Option<AllocatedRange> {
         // len must be page aligned
         assert_eq!(len % PAGE_SIZE_4K, 0);
 
-        // Walk ranges in reverse order until one is free that has enough space
-        let index = self
-            .address_space
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, range)| {
+        fn find_index<'a>(
+            mut iter: impl Iterator<Item = (usize, &'a AddressRange)>,
+            preferred_vnode: Option<u32>,
+            len: u64,
+        ) -> Option<usize> {
+            iter.find_map(|(index, range)| {
                 if range.usage == AddressUsage::Free
                     && range.range.len() >= len
                     && preferred_vnode.map(|pv| pv == range.vnode).unwrap_or(true)
@@ -224,7 +234,17 @@ impl AddressSpaceManager {
                 } else {
                     None
                 }
-            });
+            })
+        }
+
+        // Walk ranges in reverse order until one is free that has enough space
+        let index = {
+            let iter = self.address_space.iter().enumerate();
+            match allocation_policy {
+                AllocationPolicy::LowMemory => find_index(iter, preferred_vnode, len),
+                AllocationPolicy::HighMemory => find_index(iter.rev(), preferred_vnode, len),
+            }
+        };
 
         index.map(|index| {
             dbg!(index);
@@ -257,36 +277,60 @@ mod tests {
 
     #[test]
     fn test_allocate() {
-        let mut address_space = AddressSpaceManager::new(
+        let mut address_space = AddressSpaceManager::new_const();
+        address_space.init(
             &[MemoryEntry {
                 range: MemoryRange::new(0x0..0x20000),
                 vnode: 0,
                 mem_type: MemoryMapEntryType::MEMORY,
             }],
             MemoryRange::new(0x0..0x1000),
-            &[
+            [
                 MemoryRange::new(0x3000..0x4000),
                 MemoryRange::new(0x5000..0x6000),
-            ],
+            ]
+            .iter()
+            .cloned(),
             Some(MemoryRange::new(0x8000..0xA000)),
             Some(MemoryRange::new(0xA000..0xC000)),
         );
 
         let range = address_space
-            .allocate(None, 0x1000, AllocationType::GpaPool)
+            .allocate(
+                None,
+                0x1000,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
 
         let range = address_space
-            .allocate(None, 0x2000, AllocationType::GpaPool)
+            .allocate(
+                None,
+                0x2000,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
+
+        let range = address_space
+            .allocate(
+                None,
+                0x3000,
+                AllocationType::GpaPool,
+                AllocationPolicy::LowMemory,
+            )
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0xC000..0xF000));
     }
 
     // test numa allocation
     #[test]
     fn test_allocate_numa() {
-        let mut address_space = AddressSpaceManager::new(
+        let mut address_space = AddressSpaceManager::new_const();
+        address_space.init(
             &[
                 MemoryEntry {
                     range: MemoryRange::new(0x0..0x20000),
@@ -310,40 +354,67 @@ mod tests {
                 },
             ],
             MemoryRange::new(0x0..0x1000),
-            &[
+            [
                 MemoryRange::new(0x3000..0x4000),
                 MemoryRange::new(0x5000..0x6000),
-            ],
+            ]
+            .iter()
+            .cloned(),
             Some(MemoryRange::new(0x8000..0xA000)),
             Some(MemoryRange::new(0xA000..0xC000)),
         );
 
         let range = address_space
-            .allocate(Some(0), 0x1000, AllocationType::GpaPool)
+            .allocate(
+                Some(0),
+                0x1000,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
         assert_eq!(range.vnode, 0);
 
         let range = address_space
-            .allocate(Some(0), 0x2000, AllocationType::SidecarNode)
+            .allocate(
+                Some(0),
+                0x2000,
+                AllocationType::SidecarNode,
+                AllocationPolicy::HighMemory,
+            )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
         assert_eq!(range.vnode, 0);
 
         let range = address_space
-            .allocate(Some(2), 0x3000, AllocationType::GpaPool)
+            .allocate(
+                Some(2),
+                0x3000,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x5D000..0x60000));
         assert_eq!(range.vnode, 2);
 
         // allocate all of node 3, then subsequent allocations fail
         let range = address_space
-            .allocate(Some(3), 0x20000, AllocationType::SidecarNode)
+            .allocate(
+                Some(3),
+                0x20000,
+                AllocationType::SidecarNode,
+                AllocationPolicy::HighMemory,
+            )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x60000..0x80000));
         assert_eq!(range.vnode, 3);
 
-        let range = address_space.allocate(Some(3), 0x1000, AllocationType::SidecarNode);
+        let range = address_space.allocate(
+            Some(3),
+            0x1000,
+            AllocationType::SidecarNode,
+            AllocationPolicy::HighMemory,
+        );
         assert!(
             range.is_none(),
             "allocation should fail, no space left for node 3"
