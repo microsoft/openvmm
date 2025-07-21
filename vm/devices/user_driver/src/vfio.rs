@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Support for accessing a MANA device via VFIO on Linux.
+//! Support for accessing devices via VFIO on Linux.
 
 #![cfg(target_os = "linux")]
 #![cfg(feature = "vfio")]
@@ -42,6 +42,7 @@ use zerocopy::KnownLayout;
 #[derive(Inspect)]
 pub struct VfioDevice {
     pci_id: Arc<str>,
+    debug_bus_id: Option<Arc<str>>,
     #[inspect(skip)]
     _container: vfio_sys::Container,
     #[inspect(skip)]
@@ -73,9 +74,10 @@ impl VfioDevice {
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
+        debug_bus_id: Option<&str>,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
-        Self::restore(driver_source, pci_id, false, dma_client).await
+        Self::restore(driver_source, pci_id, debug_bus_id, false, dma_client).await
     }
 
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
@@ -83,6 +85,7 @@ impl VfioDevice {
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
+        debug_bus_id: Option<&str>,
         keepalive: bool,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
@@ -112,9 +115,9 @@ impl VfioDevice {
         container.set_iommu(IommuType::NoIommu)?;
         if keepalive {
             // Prevent physical hardware interaction when restoring.
-            group.set_keep_alive(pci_id)?;
+            group.set_keep_alive(&pci_id)?;
         }
-        let device = group.open_device(pci_id)?;
+        let device = group.open_device(&pci_id)?;
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
@@ -123,6 +126,7 @@ impl VfioDevice {
         let config_space = device.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
         let this = Self {
             pci_id: pci_id.into(),
+            debug_bus_id: debug_bus_id.map(|s| s.into()),
             _container: container,
             _group: group,
             device: Arc::new(device),
@@ -152,6 +156,11 @@ impl VfioDevice {
         let status_command = (status_command & 0xffff0000) | u16::from(command) as u32;
         self.write_config(offset, status_command)?;
         Ok(())
+    }
+
+    /// Returns the debug controller ID for diagnostic purposes.
+    pub fn debug_bus_id(&self) -> Option<&str> {
+        self.debug_bus_id.as_deref()
     }
 
     pub fn read_config(&self, offset: u16) -> anyhow::Result<u32> {
@@ -258,7 +267,7 @@ impl DeviceBacking for VfioDevice {
         }
 
         let new_interrupt = {
-            let name = format!("vfio-interrupt-{pci_id}-{msix}", pci_id = self.pci_id);
+            let name = format!("vfio-interrupt-{pci_id}-{msix}", pci_id = &*self.pci_id);
             let driver = self
                 .driver_source
                 .builder()
@@ -347,7 +356,7 @@ impl InterruptTask {
                             // However, it is not a fatal error--it will just result in
                             // worse performance--so do not panic.
                             tracing::error!(
-                                pci_id = self.pci_id.as_ref(),
+                                pci_id = &*self.pci_id,
                                 msix = self.msix,
                                 irq = self.irq,
                                 error = &err as &dyn std::error::Error,
