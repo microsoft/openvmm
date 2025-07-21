@@ -1039,6 +1039,7 @@ mod test {
             vtl0_alias_map: None,
             nvme_keepalive: false,
             boot_options: BootCommandLineOptions::new(),
+            address_space_manager: todo!(),
         }
     }
 

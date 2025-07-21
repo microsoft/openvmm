@@ -6,6 +6,7 @@
 
 use crate::cmdline::BootCommandLineOptions;
 use crate::host_params::shim_params::IsolationType;
+use crate::memory::AddressSpaceManager;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use host_fdt_parser::CpuEntry;
@@ -67,7 +68,7 @@ pub struct PartitionInfo {
     ///
     /// TODO: Refactor these different ranges and consolidate address space
     /// management.
-    pub vtl2_used_ranges: ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>,
+    // pub vtl2_used_ranges: ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>,
     ///  The full memory map provided by the host.
     pub partition_ram: ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
     /// The partiton's isolation type.
@@ -95,6 +96,10 @@ pub struct PartitionInfo {
     pub nvme_keepalive: bool,
     /// Parsed boot command line options.
     pub boot_options: BootCommandLineOptions,
+    /// The address space manager for VTL2.
+    ///
+    /// TODO: replace all fields above with this as needed.
+    pub address_space_manager: AddressSpaceManager,
 
     /// GIC information on AArch64.
     pub gic: Option<GicInfo>,
@@ -111,7 +116,7 @@ impl PartitionInfo {
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
             vtl2_reserved_region: MemoryRange::EMPTY,
             vtl2_pool_memory: MemoryRange::EMPTY,
-            vtl2_used_ranges: ArrayVec::new_const(),
+            // vtl2_used_ranges: ArrayVec::new_const(),
             partition_ram: ArrayVec::new_const(),
             isolation: IsolationType::None,
             bsp_reg: 0,
@@ -131,6 +136,7 @@ impl PartitionInfo {
             vtl0_alias_map: None,
             nvme_keepalive: false,
             boot_options: BootCommandLineOptions::new(),
+            address_space_manager: AddressSpaceManager::new_const(),
             gic: None,
             pmu_gsiv: None,
         }
