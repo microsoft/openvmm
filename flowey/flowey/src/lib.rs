@@ -51,7 +51,7 @@ pub mod node {
                     let path = self.as_ref();
                     let old_mode = path.metadata()?.permissions().mode();
                     fs_err::set_permissions(
-                        &path,
+                        path,
                         std::fs::Permissions::from_mode(old_mode | 0o111),
                     )?;
                 }
