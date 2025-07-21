@@ -834,12 +834,18 @@ impl IntoPipeline for CheckinGatesCli {
             .clone()
             .finish()
             .map_err(|missing| {
-                anyhow::anyhow!("missing required windows-tdx vmm_tests artifact: {missing}")
+                anyhow::anyhow!("missing required windows-intel-tdx vmm_tests artifact: {missing}")
             })?;
         let vmm_tests_artifacts_windows_amd_x86 = vmm_tests_artifacts_windows_x86
+            .clone()
             .finish()
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd vmm_tests artifact: {missing}")
+            })?;
+        let vmm_tests_artifacts_windows_amd_snp_x86 = vmm_tests_artifacts_windows_x86
+            .finish()
+            .map_err(|missing| {
+                anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
             })?;
         let vmm_tests_artifacts_linux_x86 =
             vmm_tests_artifacts_linux_x86.finish().map_err(|missing| {
@@ -864,9 +870,10 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         // standard VM-based CI machines should be able to run all tests except
-        // those that require special hardware features (tdx) or need to be run
-        // on a baremetal host (hyper-v vbs doesn't seem to work nested)
-        let standard_filter = "all() & !test(tdx) & !(test(vbs) & test(hyperv))".to_string();
+        // those that require special hardware features (tdx/snp) or need to be
+        // run on a baremetal host (hyper-v vbs doesn't seem to work nested)
+        let standard_filter =
+            "all() & !test(tdx) & !test(snp) & !(test(vbs) & test(hyperv))".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
@@ -915,6 +922,16 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
+            },
+            VmmTestJobParams {
+                platform: FlowPlatform::Windows,
+                arch: FlowArch::X86_64,
+                gh_pool: crate::pipelines_shared::gh_pools::windows_snp_self_hosted_baremetal(),
+                label: "x64-windows-amd-snp",
+                target: CommonTriple::X86_64_WINDOWS_MSVC,
+                resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
+                nextest_filter_expr: "test(snp)".to_string(),
+                test_artifacts: vec![KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd],
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),

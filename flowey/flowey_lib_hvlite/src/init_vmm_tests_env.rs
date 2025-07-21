@@ -217,17 +217,7 @@ impl SimpleFlowNode for Node {
                         crate::build_openvmm::OpenvmmOutput::LinuxBin { bin, dbg: _ } => {
                             let dst = test_content_dir.join("openvmm");
                             fs_err::copy(bin, dst.clone())?;
-
-                            // make sure openvmm is executable
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                let old_mode = dst.metadata()?.permissions().mode();
-                                fs_err::set_permissions(
-                                    dst,
-                                    std::fs::Permissions::from_mode(old_mode | 0o111),
-                                )?;
-                            }
+                            dst.make_executable()?;
                         }
                     }
                 }
@@ -274,16 +264,7 @@ impl SimpleFlowNode for Node {
                         crate::build_tmk_vmm::TmkVmmOutput::LinuxBin { bin, .. } => {
                             let dst = test_content_dir.join("tmk_vmm");
                             fs_err::copy(bin, &dst)?;
-                            // make sure tmk_vmm is executable
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                let old_mode = dst.metadata()?.permissions().mode();
-                                fs_err::set_permissions(
-                                    dst,
-                                    std::fs::Permissions::from_mode(old_mode | 0o111),
-                                )?;
-                            }
+                            dst.make_executable()?;
                         }
                     }
                 }

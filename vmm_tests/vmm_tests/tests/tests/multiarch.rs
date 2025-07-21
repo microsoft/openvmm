@@ -372,7 +372,8 @@ async fn reboot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyho
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
 async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
@@ -403,7 +404,8 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
 async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let is_openhcl = config.is_openhcl();
@@ -429,7 +431,8 @@ async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> a
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
@@ -492,7 +495,8 @@ async fn vmbr_force_mnf_no_agent<T: PetriVmmBackend>(
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
@@ -515,7 +519,8 @@ async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> any
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
 async fn boot_no_agent_single_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,

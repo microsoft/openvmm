@@ -501,7 +501,7 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: Option<VpIndex>,
+        vp_index: VpIndex,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
@@ -4364,7 +4364,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: Some(self.vp.vp_index()),
+            vp_index: self.vp.vp_index(),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -4419,7 +4419,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: Some(self.vp.vp_index()),
+            vp_index: self.vp.vp_index(),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -4494,7 +4494,9 @@ impl TdxTlbLockFlushAccess<'_> {
         std::sync::atomic::fence(Ordering::SeqCst);
         self.partition.hcl.kick_cpus(
             processors.into_iter().filter(|&vp| {
-                self.shared.active_vtl[vp as usize].load(Ordering::Relaxed) == target_vtl as u8
+                vp != self.vp_index.index()
+                    && self.shared.active_vtl[vp as usize].load(Ordering::Relaxed)
+                        == target_vtl as u8
             }),
             true,
             true,
@@ -4503,7 +4505,7 @@ impl TdxTlbLockFlushAccess<'_> {
 }
 
 struct TdxTlbLockFlushAccess<'a> {
-    vp_index: Option<VpIndex>,
+    vp_index: VpIndex,
     partition: &'a UhPartitionInner,
     shared: &'a TdxBackedShared,
 }
@@ -4531,13 +4533,11 @@ impl TlbFlushLockAccess for TdxTlbLockFlushAccess<'_> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        if let Some(vp_index) = self.vp_index {
-            hardware_cvm::tlb_lock::TlbLockAccess {
-                vp_index,
-                cvm_partition: &self.shared.cvm,
-            }
-            .set_wait_for_tlb_locks(vtl);
+        hardware_cvm::tlb_lock::TlbLockAccess {
+            vp_index: self.vp_index,
+            cvm_partition: &self.shared.cvm,
         }
+        .set_wait_for_tlb_locks(vtl);
     }
 }
 

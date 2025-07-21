@@ -85,6 +85,7 @@ macro_rules! define_vmm_test_selection_flags {
 
 define_vmm_test_selection_flags! {
     tdx: false,
+    snp: false,
     hyperv_vbs: false,
     windows: true,
     ubuntu: true,
@@ -212,6 +213,7 @@ impl SimpleFlowNode for Node {
             } => (filter, artifacts, build, deps),
             VmmTestSelections::Flags(VmmTestSelectionFlags {
                 tdx,
+                snp,
                 hyperv_vbs,
                 windows,
                 mut ubuntu,
@@ -246,6 +248,9 @@ impl SimpleFlowNode for Node {
                 let mut filter = "all()".to_string();
                 if !tdx {
                     filter.push_str(" & !test(tdx)");
+                }
+                if !snp {
+                    filter.push_str(" & !test(snp)");
                 }
                 if !hyperv_vbs {
                     filter.push_str(" & !(test(vbs) & test(hyperv))");
@@ -298,7 +303,7 @@ impl SimpleFlowNode for Node {
                     CommonArch::X86_64 => {
                         let mut artifacts = Vec::new();
 
-                        if windows && (tdx || hyperv_vbs) {
+                        if windows && (tdx || snp || hyperv_vbs) {
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
                         }
                         if ubuntu {
@@ -343,7 +348,7 @@ impl SimpleFlowNode for Node {
                     target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
                         hyperv,
                         whp: openvmm,
-                        hardware_isolation: tdx,
+                        hardware_isolation: tdx || snp,
                     },
                     target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
                     _ => unreachable!(),
