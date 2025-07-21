@@ -26,9 +26,12 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::collections::HashMap;
 use std::collections::hash_map;
+use std::sync::Arc;
 use thiserror::Error;
 use tracing::Instrument;
+use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
+use user_driver::vfio::vfio_set_device_reset_method;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
@@ -92,6 +95,7 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         save_restore_supported: bool,
+        nvme_always_flr: bool,
         is_isolated: bool,
         saved_state: Option<NvmeSavedState>,
         dma_client_spawner: DmaClientSpawner,
@@ -103,6 +107,7 @@ impl NvmeManager {
             devices: HashMap::new(),
             vp_count,
             save_restore_supported,
+            nvme_always_flr,
             is_isolated,
             dma_client_spawner,
         };
@@ -217,10 +222,97 @@ struct NvmeManagerWorker {
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
+    nvme_always_flr: bool,
     /// If this VM is isolated or not. This influences DMA client allocations.
     is_isolated: bool,
     #[inspect(skip)]
     dma_client_spawner: DmaClientSpawner,
+}
+
+async fn create_nvme_device(
+    driver_source: &VmTaskDriverSource,
+    pci_id: &str,
+    vp_count: u32,
+    nvme_always_flr: bool,
+    is_isolated: bool,
+    dma_client: Arc<dyn user_driver::DmaClient>,
+) -> Result<nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
+    // Disable FLR on vfio attach/detach; this allows faster system
+    // startup/shutdown with the caveat that the device needs to be properly
+    // sent through the shutdown path during servicing operations, as that is
+    // the only cleanup performed. If the device fails to initialize, turn FLR
+    // on and try again, so that the reset is invoked on the next attach.
+    let update_reset = |method: PciDeviceResetMethod| {
+        if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
+            tracing::warn!(
+                ?method,
+                err = &err as &dyn std::error::Error,
+                "Failed to update reset_method"
+            );
+        }
+    };
+    let mut last_err = None;
+    let reset_methods = if nvme_always_flr {
+        &[PciDeviceResetMethod::Flr][..]
+    } else {
+        // If this code can't create a device without resetting it, then still try to issue an FLR
+        // in case that unwedges something weird in the device state.
+        // (This is implicit when the code in [`try_create_nvme_device`] opens a handle to the
+        // Vfio device).
+        &[PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr][..]
+    };
+    for reset_method in reset_methods {
+        update_reset(*reset_method);
+        match try_create_nvme_device(
+            driver_source,
+            pci_id,
+            vp_count,
+            is_isolated,
+            dma_client.clone(),
+        )
+        .await
+        {
+            Ok(device) => {
+                if !nvme_always_flr && !matches!(reset_method, PciDeviceResetMethod::NoReset) {
+                    update_reset(PciDeviceResetMethod::NoReset);
+                }
+                return Ok(device);
+            }
+            Err(err) => {
+                tracing::error!(
+                    pci_id,
+                    ?reset_method,
+                    err = &err as &dyn std::error::Error,
+                    "failed to create nvme device"
+                );
+                last_err = Some(err);
+            }
+        }
+    }
+    // Return the most reliable error (this code assumes that the reset methods are in increasing order
+    // of reliability).
+    Err(last_err.unwrap())
+}
+
+async fn try_create_nvme_device(
+    driver_source: &VmTaskDriverSource,
+    pci_id: &str,
+    vp_count: u32,
+    is_isolated: bool,
+    dma_client: Arc<dyn user_driver::DmaClient>,
+) -> Result<nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
+    let device = VfioDevice::new(driver_source, pci_id, dma_client)
+        .instrument(tracing::info_span!("vfio_device_open", pci_id))
+        .await
+        .map_err(InnerError::Vfio)?;
+
+    // TODO: For now, any isolation means use bounce buffering. This
+    // needs to change when we have nvme devices that support DMA to
+    // confidential memory.
+    nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
+        .instrument(tracing::info_span!("nvme_driver_init", pci_id))
+        .await
+        .map_err(InnerError::DeviceInitFailed)
 }
 
 impl NvmeManagerWorker {
@@ -312,26 +404,18 @@ impl NvmeManagerWorker {
                     })
                     .map_err(InnerError::DmaClient)?;
 
-                let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
-                    .instrument(tracing::info_span!("vfio_device_open", pci_id))
-                    .await
-                    .map_err(InnerError::Vfio)?;
-
-                // TODO: For now, any isolation means use bounce buffering. This
-                // needs to change when we have nvme devices that support DMA to
-                // confidential memory.
-                let driver = nvme_driver::NvmeDriver::new(
+                let driver = create_nvme_device(
                     &self.driver_source,
+                    &pci_id,
                     self.vp_count,
-                    device,
+                    self.nvme_always_flr,
                     self.is_isolated,
+                    dma_client,
                 )
-                .instrument(tracing::info_span!(
-                    "nvme_driver_init",
-                    pci_id = entry.key()
-                ))
-                .await
-                .map_err(InnerError::DeviceInitFailed)?;
+                .instrument(
+                    tracing::info_span!("create_nvme_device", %pci_id, self.nvme_always_flr),
+                )
+                .await?;
 
                 entry.insert(driver)
             }
