@@ -301,6 +301,8 @@ pub struct UnderhillEnvCfg {
     pub no_sidecar_hotplug: bool,
     /// Enables the GDB stub for debugging the guest.
     pub gdbstub: bool,
+    /// Don't skip FLR for NVMe devices.
+    pub nvme_always_flr: bool,
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
 }
@@ -1848,6 +1850,7 @@ async fn new_underhill_vm(
         let manager = NvmeManager::new(
             &driver_source,
             processor_topology.vp_count(),
+            env_cfg.nvme_always_flr,
             vfio_dma_buffer_spawner,
         );
 

@@ -22,6 +22,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::Instrument;
+use user_driver::vfio::vfio_set_device_reset_method;
+use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
 use user_driver::vfio::VfioDmaBuffer;
 use vm_resource::kind::DiskHandleKind;
@@ -84,6 +86,7 @@ impl NvmeManager {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
+        nvme_always_flr: bool,
         dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     ) -> Self {
         let (send, recv) = mesh::channel();
@@ -93,6 +96,7 @@ impl NvmeManager {
             devices: HashMap::new(),
             vp_count,
             dma_buffer_spawner,
+            nvme_always_flr,
         };
         let task = driver.spawn("nvme-manager", async move { worker.run(recv).await });
         Self {
@@ -160,11 +164,84 @@ struct NvmeManagerWorker {
     driver_source: VmTaskDriverSource,
     #[inspect(iter_by_key)]
     devices: HashMap<String, nvme_driver::NvmeDriver<VfioDevice>>,
-    // TODO: Revisit this Box<fn> into maybe a trait, once we refactor DMA to a
+    nvme_always_flr: bool,
     // central manager.
     #[inspect(skip)]
     dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
     vp_count: u32,
+}
+
+async fn create_nvme_device(
+    driver_source: &VmTaskDriverSource,
+    pci_id: &str,
+    vp_count: u32,
+    nvme_always_flr: bool,
+    dma_buffer: Arc<dyn VfioDmaBuffer>,
+) -> Result<nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
+    // Disable FLR on vfio attach/detach; this allows faster system
+    // startup/shutdown with the caveat that the device needs to be properly
+    // sent through the shutdown path during servicing operations, as that is
+    // the only cleanup performed. If the device fails to initialize, turn FLR
+    // on and try again, so that the reset is invoked on the next attach.
+    let update_reset = |method: PciDeviceResetMethod| {
+        if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
+            tracing::warn!(
+                ?method,
+                err = &err as &dyn std::error::Error,
+                "Failed to update reset_method"
+            );
+        }
+    };
+    let mut last_err = None;
+    let reset_methods = if nvme_always_flr {
+        &[PciDeviceResetMethod::Flr][..]
+    } else {
+        // If this code can't create a device without resetting it, then still try to issue an FLR
+        // in case that unwedges something weird in the device state.
+        // (This is implicit when the code in [`try_create_nvme_device`] opens a handle to the
+        // Vfio device).
+        &[PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr][..]
+    };
+    for reset_method in reset_methods {
+        update_reset(*reset_method);
+        match try_create_nvme_device(driver_source, pci_id, vp_count, dma_buffer.clone()).await {
+            Ok(device) => {
+                if !nvme_always_flr && !matches!(reset_method, PciDeviceResetMethod::NoReset) {
+                    update_reset(PciDeviceResetMethod::NoReset);
+                }
+                return Ok(device);
+            }
+            Err(err) => {
+                tracing::error!(
+                    pci_id,
+                    ?reset_method,
+                    err = &err as &dyn std::error::Error,
+                    "failed to create nvme device"
+                );
+                last_err = Some(err);
+            }
+        }
+    }
+    // Return the most reliable error (this code assumes that the reset methods are in increasing order
+    // of reliability).
+    Err(last_err.unwrap())
+}
+
+async fn try_create_nvme_device(
+    driver_source: &VmTaskDriverSource,
+    pci_id: &str,
+    vp_count: u32,
+    dma_buffer: Arc<dyn VfioDmaBuffer>,
+) -> Result<nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
+    let device = VfioDevice::new(driver_source, pci_id, dma_buffer.clone())
+        .instrument(tracing::info_span!("vfio_device_open", pci_id))
+        .await
+        .map_err(InnerError::Vfio)?;
+
+    nvme_driver::NvmeDriver::new(driver_source, vp_count, device)
+        .instrument(tracing::info_span!("nvme_driver_init", pci_id))
+        .await
+        .map_err(InnerError::DeviceInitFailed)
 }
 
 impl NvmeManagerWorker {
@@ -229,24 +306,20 @@ impl NvmeManagerWorker {
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
-                let device = VfioDevice::new(
-                    &self.driver_source,
-                    entry.key(),
-                    (self.dma_buffer_spawner)(format!("nvme_{}", entry.key()))
-                        .map_err(InnerError::DmaBuffer)?,
-                )
-                .instrument(tracing::info_span!("vfio_device_open", pci_id))
-                .await
-                .map_err(InnerError::Vfio)?;
+                let dma_buffer = (self.dma_buffer_spawner)(format!("nvme_{}", pci_id))
+                    .map_err(InnerError::DmaBuffer)?;
 
-                let driver =
-                    nvme_driver::NvmeDriver::new(&self.driver_source, self.vp_count, device)
-                        .instrument(tracing::info_span!(
-                            "nvme_driver_init",
-                            pci_id = entry.key()
-                        ))
-                        .await
-                        .map_err(InnerError::DeviceInitFailed)?;
+                let driver = create_nvme_device(
+                    &self.driver_source,
+                    &pci_id,
+                    self.vp_count,
+                    self.nvme_always_flr,
+                    dma_buffer,
+                )
+                .instrument(
+                    tracing::info_span!("create_nvme_device", %pci_id, self.nvme_always_flr),
+                )
+                .await?;
 
                 entry.insert(driver)
             }

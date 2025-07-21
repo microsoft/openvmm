@@ -131,6 +131,11 @@ pub struct Options {
     /// hit exits.
     pub no_sidecar_hotplug: bool,
 
+    /// (OPENHCL_NVME_ALWAYS_FLR=1)
+    /// Always use the FLR (Function Level Reset) path for NVMe devices,
+    /// even if we would otherwise attempt to use VFIO's NoReset support.
+    pub nvme_always_flr: bool,
+
     /// (OPENHCL_TEST_CONFIG=\<TestScenarioConfig\>)
     /// Test configurations are designed to replicate specific behaviors and
     /// conditions in order to simulate various test scenarios.
@@ -206,6 +211,7 @@ impl Options {
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
+        let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
         let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
@@ -269,6 +275,7 @@ impl Options {
             cvm_guest_vsm,
             halt_on_guest_halt,
             no_sidecar_hotplug,
+            nvme_always_flr,
             test_configuration,
         })
     }

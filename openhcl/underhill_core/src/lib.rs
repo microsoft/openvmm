@@ -324,6 +324,7 @@ async fn launch_workers(
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
+        nvme_always_flr: opt.nvme_always_flr,
         test_configuration: opt.test_configuration,
     };
 
