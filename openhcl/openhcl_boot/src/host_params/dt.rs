@@ -5,6 +5,7 @@
 
 use super::PartitionInfo;
 use super::shim_params::ShimParams;
+use crate::boot_logger::debug_log;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
@@ -449,15 +450,38 @@ impl PartitionInfo {
             storage.partition_ram.push(*entry);
         }
 
-        // Add all the ranges are not free for further allocation.
-        let mut used_ranges =
-            off_stack!(ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>, ArrayVec::new_const());
-        used_ranges.push(params.used);
-        used_ranges.sort_unstable_by_key(|r| r.start());
-        storage.vtl2_used_ranges.clear();
-        storage
-            .vtl2_used_ranges
-            .extend(flatten_ranges(used_ranges.iter().copied()));
+        // initialize address space manager
+        let vtl2_config_region = MemoryRange::new(
+            params.parameter_region_start
+                ..(params.parameter_region_start + params.parameter_region_size),
+        );
+        let vtl2_reserved_range = if params.vtl2_reserved_region_size != 0 {
+            Some(MemoryRange::new(
+                params.vtl2_reserved_region_start
+                    ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
+            ))
+        } else {
+            None
+        };
+        let sidecar_image = if params.sidecar_size != 0 {
+            Some(MemoryRange::new(
+                params.sidecar_base..(params.sidecar_base + params.sidecar_size),
+            ))
+        } else {
+            None
+        };
+        storage.address_space_manager.init(
+            &storage.vtl2_ram,
+            params.used,
+            subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
+            vtl2_reserved_range,
+            sidecar_image,
+        );
+
+        debug_log!(
+            "init storage.address_space_manager: {:#?}",
+            storage.address_space_manager
+        );
 
         // Decide if we will reserve memory for a VTL2 private pool. Parse this
         // from the final command line, or the host provided device tree value.
@@ -470,6 +494,7 @@ impl PartitionInfo {
             // Reserve the specified number of pages for the pool. Use the used
             // ranges to figure out which VTL2 memory is free to allocate from.
             let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
+
             let free_memory = subtract_ranges(
                 storage.vtl2_ram.iter().map(|e| e.range),
                 storage.vtl2_used_ranges.iter().copied(),
@@ -531,6 +556,7 @@ impl PartitionInfo {
             vtl0_alias_map: _,
             nvme_keepalive,
             boot_options,
+            address_space_manager: _,
         } = storage;
 
         assert!(!vtl2_used_ranges.is_empty());
