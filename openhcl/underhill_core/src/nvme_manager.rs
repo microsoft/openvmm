@@ -165,6 +165,7 @@ struct NvmeManagerWorker {
     #[inspect(iter_by_key)]
     devices: HashMap<String, nvme_driver::NvmeDriver<VfioDevice>>,
     nvme_always_flr: bool,
+    // TODO: Revisit this Box<fn> into maybe a trait, once we refactor DMA to a
     // central manager.
     #[inspect(skip)]
     dma_buffer_spawner: Box<dyn Fn(String) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> + Send>,
