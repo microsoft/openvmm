@@ -450,7 +450,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         }) = deps_hyperv_ide
         {
             builder
-                .arc_mutex_device("ide")
+                .arc_mutex_device("pci-ide")
                 .on_pci_bus(attached_to)
                 .try_add(|services| {
                     // hard-coded to iRQ lines 14 and 15, as per PIIX4 spec
