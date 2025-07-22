@@ -1706,15 +1706,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job9
-    - job7
-    - job7
     - job4
     - job5
-    - job5
-    - job5
+    - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -1942,15 +1937,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job9
-    - job7
-    - job7
     - job4
     - job5
-    - job5
-    - job5
+    - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -2176,15 +2166,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job9
-    - job7
-    - job7
     - job4
     - job5
-    - job5
-    - job5
+    - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -2412,15 +2397,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job9
-    - job7
-    - job7
     - job4
     - job5
-    - job5
-    - job5
+    - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -2646,13 +2626,9 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job7
-    - job7
-    - job7
     - job5
     - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -3127,15 +3103,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job8
-    - job8
-    - job8
-    - job6
-    - job6
     - job2
     - job3
-    - job3
-    - job3
+    - job6
+    - job8
     if: github.event.pull_request.draft == false
     steps:
     - run: |
@@ -3520,28 +3491,28 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job21
-    - job20
-    - job19
-    - job18
-    - job17
-    - job16
-    - job15
-    - job14
-    - job13
-    - job12
-    - job11
-    - job10
-    - job9
-    - job8
-    - job7
-    - job6
-    - job5
-    - job4
-    - job3
-    - job2
-    - job1
     - job0
+    - job1
+    - job10
+    - job11
+    - job12
+    - job13
+    - job14
+    - job15
+    - job16
+    - job17
+    - job18
+    - job19
+    - job2
+    - job20
+    - job21
+    - job3
+    - job4
+    - job5
+    - job6
+    - job7
+    - job8
+    - job9
     if: always() && github.event.pull_request.draft == false
     env:
       ANY_JOBS_FAILED: ${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}

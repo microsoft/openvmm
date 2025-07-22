@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 mod none {
     use serde::Deserialize;
@@ -237,7 +238,8 @@ pub struct Stage {
     #[serde(serialize_with = "validate_name")]
     pub stage: String,
     pub display_name: String,
-    pub depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub depends_on: BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
     pub jobs: Vec<Job>,
@@ -258,7 +260,8 @@ pub struct Job {
     pub job: String,
     pub display_name: String,
     pub pool: Pool,
-    pub depends_on: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub depends_on: BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

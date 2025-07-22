@@ -532,9 +532,9 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job2
-    - job1
     - job0
+    - job1
+    - job2
     if: always() && github.event.pull_request.draft == false
     env:
       ANY_JOBS_FAILED: ${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}
