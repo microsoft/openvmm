@@ -494,10 +494,11 @@ impl ReceiverCore {
         }
     }
 
-    // Polls for a message.
-    //
-    // # Safety
-    // The queue must have element type `T`.
+    /// Polls for a message.
+    ///
+    /// # Safety
+    ///
+    /// The queue must have element type `T`.
     unsafe fn try_poll_recv<T>(
         &mut self,
         cx: Option<&mut Context<'_>>,
@@ -909,12 +910,12 @@ impl HandlePortEvent for RemotePortHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::channel;
     use super::Receiver;
     use super::Sender;
+    use super::channel;
     use crate::RecvError;
-    use futures::executor::block_on;
     use futures::StreamExt;
+    use futures::executor::block_on;
     use futures_core::FusedStream;
     use mesh_node::local_node::Port;
     use mesh_protobuf::Protobuf;

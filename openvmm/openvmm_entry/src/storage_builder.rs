@@ -3,10 +3,10 @@
 
 //! Code to build storage configuration from command line arguments.
 
+use crate::VmResources;
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::UnderhillDiskSource;
 use crate::disk_open;
-use crate::VmResources;
 use anyhow::Context;
 use guid::Guid;
 use hvlite_defs::config::Config;
@@ -24,9 +24,9 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
-use vtl2_settings_proto::storage_controller;
 use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
+use vtl2_settings_proto::storage_controller;
 
 pub(super) struct StorageBuilder {
     vtl0_ide_disks: Vec<IdeDeviceConfig>,

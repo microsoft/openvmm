@@ -3,12 +3,12 @@
 
 //! Implementation of the key retrieval logic for the [`KeyProtector`].
 
-use crate::crypto;
 use crate::Keys;
+use crate::crypto;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
-use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
+use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use thiserror::Error;
@@ -24,7 +24,9 @@ pub(crate) enum GetKeysFromKeyProtectorError {
         key_size: usize,
         expected_size: usize,
     },
-    #[error("Wrapped DiskEncryptionSettings key size {key_size} was smaller than expected {expected_size}")]
+    #[error(
+        "Wrapped DiskEncryptionSettings key size {key_size} was smaller than expected {expected_size}"
+    )]
     InvalidWrappedDesKeySize {
         key_size: usize,
         expected_size: usize,
@@ -225,7 +227,7 @@ impl KeyProtectorExt for KeyProtector {
             tracing::info!(CVM_ALLOWED, "there is no egress dek");
 
             // There is no egress DEK, so create a new key value and encrypt it.
-            getrandom::getrandom(&mut egress_key).expect("rng failure");
+            getrandom::fill(&mut egress_key).expect("rng failure");
 
             let new_egress_key = if let Some(wrapping_key) = des_key {
                 // Create an AES wrapped key

@@ -1,65 +1,60 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! An implementation of [`WatchdogPlatform`] for use with the Underhill
+//! environment.
+//!
+//! This implementation wraps over [`BaseWatchdogPlatform`] in
+//! [watchdog_core::platform::BaseWatchdogPlatform], providing additional
+//! functionality specific to the Underhill environment.
+
 use vmcore::non_volatile_store::NonVolatileStore;
+use watchdog_core::platform::BaseWatchdogPlatform;
+use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
-use watchdog_vmgs_format::WatchdogVmgsFormatStore;
 use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
 
-/// An implementation of [`WatchdogPlatform`] for use with both the UEFI
-/// watchdog and the Guest Watchdog in Underhill.
-pub struct UnderhillWatchdog {
-    store: WatchdogVmgsFormatStore,
+/// An implementation of [`WatchdogPlatform`] for the Underhill environment.
+pub struct UnderhillWatchdogPlatform {
+    /// The base watchdog platform implementation
+    base: BaseWatchdogPlatform,
+    /// Handle to the guest emulation transport client
     get: guest_emulation_transport::GuestEmulationTransportClient,
-    on_timeout: Box<dyn Fn() + Send + Sync>,
 }
 
-impl UnderhillWatchdog {
+impl UnderhillWatchdogPlatform {
     pub async fn new(
         store: Box<dyn NonVolatileStore>,
         get: guest_emulation_transport::GuestEmulationTransportClient,
-        on_timeout: Box<dyn Fn() + Send + Sync>,
     ) -> Result<Self, WatchdogVmgsFormatStoreError> {
-        Ok(UnderhillWatchdog {
-            store: WatchdogVmgsFormatStore::new(store).await?,
+        Ok(UnderhillWatchdogPlatform {
+            base: BaseWatchdogPlatform::new(store).await?,
             get,
-            on_timeout,
         })
     }
 }
 
 #[async_trait::async_trait]
-impl WatchdogPlatform for UnderhillWatchdog {
+impl WatchdogPlatform for UnderhillWatchdogPlatform {
     async fn on_timeout(&mut self) {
-        let res = self.store.set_boot_failure().await;
-        if let Err(e) = res {
-            tracing::error!(
-                error = &e as &dyn std::error::Error,
-                "error persisting watchdog status"
-            );
-        }
+        // Call the parent implementation first
+        self.base.on_timeout().await;
 
         // FUTURE: consider emitting different events for the UEFI watchdog vs.
         // the guest watchdog
+        //
+        // NOTE: This must be done last to ensure that all callbacks
+        // have been executed before we log the event.
         self.get
             .event_log_fatal(get_protocol::EventLogId::WATCHDOG_TIMEOUT_RESET)
             .await;
-
-        (self.on_timeout)()
     }
 
     async fn read_and_clear_boot_status(&mut self) -> bool {
-        let res = self.store.read_and_clear_boot_status().await;
-        match res {
-            Ok(status) => status,
-            Err(e) => {
-                tracing::error!(
-                    error = &e as &dyn std::error::Error,
-                    "error reading watchdog status"
-                );
-                // assume no failure
-                false
-            }
-        }
+        self.base.read_and_clear_boot_status().await
+    }
+
+    fn add_callback(&mut self, callback: Box<dyn WatchdogCallback>) {
+        self.base.add_callback(callback);
     }
 }

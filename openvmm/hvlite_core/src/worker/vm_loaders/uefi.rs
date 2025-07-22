@@ -6,8 +6,8 @@ use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use hvlite_defs::config::UefiConsoleMode;
 use loader::importer::Register;
-use loader::uefi::config;
 use loader::uefi::IMAGE_SIZE;
+use loader::uefi::config;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -22,6 +22,8 @@ pub enum Error {
     Firmware(#[source] std::io::Error),
     #[error("uefi loader error")]
     Loader(#[source] loader::uefi::Error),
+    #[error("UEFI requires at least two MMIO ranges")]
+    UnsupportedMmio,
 }
 
 pub struct UefiLoadSettings {
@@ -34,6 +36,7 @@ pub struct UefiLoadSettings {
     pub vpci_boot: bool,
     pub serial: bool,
     pub uefi_console_mode: Option<UefiConsoleMode>,
+    pub default_boot_always_attempt: bool,
 }
 
 /// Loads the UEFI firmware.
@@ -49,7 +52,9 @@ pub fn load_uefi(
     srat: &[u8],
     pptt: Option<&[u8]>,
 ) -> Result<Vec<Register>, Error> {
-    assert!(mem_layout.mmio().len() >= 2, "UEFI expects 2 MMIO gaps");
+    if mem_layout.mmio().len() < 2 {
+        return Err(Error::UnsupportedMmio);
+    }
 
     let mut loaded_image;
     let image = {
@@ -62,7 +67,7 @@ pub fn load_uefi(
     };
 
     let mut entropy = [0; 64];
-    getrandom::getrandom(&mut entropy).expect("rng failure");
+    getrandom::fill(&mut entropy).expect("rng failure");
 
     let memory_map: Vec<_> = mem_layout
         .ram()
@@ -107,7 +112,8 @@ pub fn load_uefi(
                 UefiConsoleMode::Com2 => config::ConsolePort::Com2,
                 UefiConsoleMode::None => config::ConsolePort::None,
             },
-        );
+        )
+        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {

@@ -15,10 +15,13 @@ CC_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-clang-cl", relativ
 AR_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-llvm-lib", relative = true }
 RC_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-llvm-rc", relative = true }
 DLLTOOL_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-llvm-dlltool", relative = true }
+MIDLRT_aarch64_pc_windows_msvc = { value = "windows_cross/aarch64-midlrt.exe", relative = true }
 CC_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-clang-cl", relative = true }
 AR_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-llvm-lib", relative = true }
 RC_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-llvm-rc", relative = true }
 DLLTOOL_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-llvm-dlltool", relative = true }
+MIDLRT_x86_64_pc_windows_msvc = { value = "windows_cross/x86_64-midlrt.exe", relative = true }
+OPENVMM_WINDOWS_CROSS_TOOL = { value = "windows_cross/cross_tool.py", relative = true }
 
 [target.x86_64-pc-windows-msvc]
 linker = "windows_cross/x86_64-lld-link"

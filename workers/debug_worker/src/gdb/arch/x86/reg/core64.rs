@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::F80;
 use super::X86SegmentRegs;
 use super::X87FpuInternalRegs;
-use super::F80;
 use gdbstub::arch::Registers;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

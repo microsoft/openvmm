@@ -15,6 +15,7 @@ pub const APIC_LEGACY_ID_COUNT: u32 = 255;
 
 /// The APIC base MSR.
 #[bitfield(u64)]
+#[derive(PartialEq, Eq)]
 pub struct ApicBase {
     _reserved: u8,
     /// True if this processor is the BSP.

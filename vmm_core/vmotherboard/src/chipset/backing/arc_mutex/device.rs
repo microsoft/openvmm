@@ -162,15 +162,21 @@ where
                         let (ob, od, of) = override_bdf;
                         let (sb, sd, sf) = suggested_bdf;
                         tracing::info!(
-                        "overriding suggested bdf: using {:02x}:{:02x}:{} instead of {:02x}:{:02x}:{}",
-                        ob, od, of,
-                        sb, sd, sf
-                    );
+                            "overriding suggested bdf: using {:02x}:{:02x}:{} instead of {:02x}:{:02x}:{}",
+                            ob,
+                            od,
+                            of,
+                            sb,
+                            sd,
+                            sf
+                        );
                         override_bdf
                     }
                     (None, Some(bdf)) | (Some(bdf), None) => bdf,
                     (None, None) => {
-                        return Err(AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name))
+                        return Err(
+                            AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name)
+                        );
                     }
                 };
 
@@ -233,7 +239,7 @@ where
         let dev = match (f)(&mut self.services) {
             Ok(dev) => dev,
             Err(e) => {
-                return Err(AddDeviceErrorKind::DeviceError(e.into()).with_dev_name(self.dev_name))
+                return Err(AddDeviceErrorKind::DeviceError(e.into()).with_dev_name(self.dev_name));
             }
         };
         self.inner_add(Ok(dev))
@@ -252,7 +258,7 @@ where
         let dev = match (f)(&mut self.services).await {
             Ok(dev) => dev,
             Err(e) => {
-                return Err(AddDeviceErrorKind::DeviceError(e.into()).with_dev_name(self.dev_name))
+                return Err(AddDeviceErrorKind::DeviceError(e.into()).with_dev_name(self.dev_name));
             }
         };
         self.inner_add(Ok(dev))

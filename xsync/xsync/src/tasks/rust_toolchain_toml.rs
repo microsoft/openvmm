@@ -80,7 +80,9 @@ impl Cmd for RustToolchainToml {
                 fs_err::write(out, generated_toolchain_toml.as_bytes())?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                log::info!("base rust-toolchain.toml not found, removing overlay rust-toolchain.toml if present");
+                log::info!(
+                    "base rust-toolchain.toml not found, removing overlay rust-toolchain.toml if present"
+                );
                 match fs_err::remove_file(out) {
                     Ok(_) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

@@ -10,11 +10,11 @@ use chipset_device_resources::ResolvedChipsetDevice;
 use serial_core::resources::ResolveSerialBackendParams;
 use serial_debugcon_resources::SerialDebugconDeviceHandle;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// The resource resolver for [`SerialDebugcon`].
 pub struct SerialDebugconResolver;

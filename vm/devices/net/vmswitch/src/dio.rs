@@ -5,14 +5,14 @@
 //! type. This provides a tap-like interface to vmswitch on Windows, allowing
 //! Ethernet frames to be sent and received.
 
-use super::kernel::c16;
 use super::kernel::SwitchPortId;
+use super::kernel::c16;
 use super::vmsif;
 use futures::AsyncRead;
 use guid::Guid;
-use pal::windows::status_to_error;
 use pal::windows::Overlapped;
 use pal::windows::SendSyncRawHandle;
+use pal::windows::status_to_error;
 use pal_async::driver::Driver;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
@@ -348,9 +348,9 @@ mod tests {
     use futures::AsyncReadExt;
     use futures::FutureExt;
     use guid::Guid;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::Driver;
-    use pal_async::DefaultDriver;
 
     const MAC_ADDRESS: [u8; 6] = [0x00, 0x15, 0x5D, 0x18, 0x99, 0x25];
 

@@ -4,12 +4,12 @@
 //! Emulation fast paths for specific use cases.
 
 use super::instruction;
+use crate::Cpu;
 use crate::emulator::arith::ArithOp;
 use crate::emulator::arith::OrOp;
-use crate::registers::bitness;
 use crate::registers::Bitness;
 use crate::registers::Segment;
-use crate::Cpu;
+use crate::registers::bitness;
 use iced_x86::OpKind;
 
 const PAGE_SIZE: u32 = 4096;

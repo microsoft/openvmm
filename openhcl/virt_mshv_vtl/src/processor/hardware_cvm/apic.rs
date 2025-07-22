@@ -4,12 +4,13 @@
 #![cfg(guest_arch = "x86_64")]
 
 use super::UhRunVpError;
-use crate::processor::HardwareIsolatedBacking;
 use crate::UhProcessor;
+use crate::processor::HardwareIsolatedBacking;
+use cvm_tracing::CVM_ALLOWED;
 use hcl::GuestVtl;
+use virt::Processor;
 use virt::vp::MpState;
 use virt::x86::SegmentRegister;
-use virt::Processor;
 use virt_support_apic::ApicWork;
 
 pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {
@@ -27,7 +28,7 @@ pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {
     fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError>;
 
     fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
-        tracelimit::warn_ratelimited!(?vtl, "extint not supported");
+        tracelimit::warn_ratelimited!(CVM_ALLOWED, ?vtl, "extint not supported");
         Ok(())
     }
 }
@@ -60,28 +61,37 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
         .lapic
         .scan(&mut vp.vmtime, scan_irr);
 
-    // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
-    if init && !apic_backing.vp().backing.cvm_state().vtl1_enabled {
-        assert_eq!(vtl, GuestVtl::Vtl0);
-        apic_backing.handle_init(vtl)?;
+    // Check VTL permissions inside each block to avoid taking a lock on the hot path,
+    // INIT and SIPI are quite cold.
+    if init {
+        if !apic_backing
+            .vp()
+            .cvm_partition()
+            .is_lower_vtl_startup_denied()
+        {
+            apic_backing.handle_init(vtl)?;
+        }
     }
 
     if let Some(vector) = sipi {
-        if apic_backing.vp().backing.cvm_state_mut().lapics[vtl].activity == MpState::WaitForSipi
-            && !apic_backing.vp().backing.cvm_state().vtl1_enabled
-        {
-            assert_eq!(vtl, GuestVtl::Vtl0);
-            let base = (vector as u64) << 12;
-            let selector = (vector as u16) << 8;
-            apic_backing.handle_sipi(
-                vtl,
-                SegmentRegister {
-                    base,
-                    limit: 0xffff,
-                    selector,
-                    attributes: 0x9b,
-                },
-            )?;
+        if apic_backing.vp().backing.cvm_state_mut().lapics[vtl].activity == MpState::WaitForSipi {
+            if !apic_backing
+                .vp()
+                .cvm_partition()
+                .is_lower_vtl_startup_denied()
+            {
+                let base = (vector as u64) << 12;
+                let selector = (vector as u16) << 8;
+                apic_backing.handle_sipi(
+                    vtl,
+                    SegmentRegister {
+                        base,
+                        limit: 0xffff,
+                        selector,
+                        attributes: 0x9b,
+                    },
+                )?;
+            }
         }
     }
 

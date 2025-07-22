@@ -2,10 +2,12 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 #[warn(missing_docs)]
 pub mod common;
 pub mod cpuid;
-mod elf;
+pub mod elf;
 pub mod importer;
 pub mod linux;
 pub mod paravisor;

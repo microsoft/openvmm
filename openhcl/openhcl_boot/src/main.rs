@@ -31,21 +31,22 @@ use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use boot_logger::LoggerType;
+use cmdline::BootCommandLineOptions;
 use core::fmt::Write;
-use dt::write_dt;
 use dt::BootTimes;
+use dt::write_dt;
+use host_params::COMMAND_LINE_SIZE;
+use host_params::PartitionInfo;
 use host_params::shim_params::IsolationType;
 use host_params::shim_params::ShimParams;
-use host_params::PartitionInfo;
-use host_params::COMMAND_LINE_SIZE;
 use hvdef::Vtl;
-use loader_defs::linux::setup_data;
 use loader_defs::linux::SETUP_DTB;
+use loader_defs::linux::setup_data;
 use loader_defs::shim::ShimParamsRaw;
-use memory_range::merge_adjacent_ranges;
-use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
+use memory_range::merge_adjacent_ranges;
+use memory_range::walk_ranges;
 use minimal_rt::enlightened_panic::enable_enlightened_panic;
 use sidecar::SidecarConfig;
 use sidecar_defs::SidecarOutput;
@@ -72,6 +73,7 @@ fn build_kernel_command_line(
     cmdline: &mut ArrayString<COMMAND_LINE_SIZE>,
     partition_info: &PartitionInfo,
     can_trust_host: bool,
+    is_confidential_debug: bool,
     sidecar: Option<&SidecarConfig<'_>>,
 ) -> Result<(), CommandLineTooLong> {
     // For reference:
@@ -148,12 +150,6 @@ fn build_kernel_command_line(
         "tsc=reliable",
         // RELIABILITY: Panic on receiving an NMI.
         "unknown_nmi_panic=1",
-        // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
-        // (iommu=off ignored entirely), and CVMs (memory encryption forces it on).
-        // Set it to the minimum, saving ~63 MiB. The first parameter controls the
-        // area size, the second controls the number of areas (default is # of CPUs).
-        // Set them both to the minimum.
-        "swiotlb=1,1",
         // Use vfio for MANA devices.
         "vfio_pci.ids=1414:00ba",
         // WORKAROUND: Enable no-IOMMU mode. This mode provides no device isolation,
@@ -206,6 +202,37 @@ fn build_kernel_command_line(
         write!(cmdline, "{p} ")?;
     }
 
+    const HARDWARE_ISOLATED_KERNEL_PARAMETERS: &[&str] = &[
+        // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
+        // (iommu=off ignored entirely), and CVMs (memory encryption forces it
+        // on). Set it to a single area in 8MB. The first parameter controls the
+        // area size in slabs (2KB per slab), the second controls the number of
+        // areas (default is # of CPUs).
+        //
+        // This is set to 8MB on hardware isolated VMs since there are some
+        // scenarios, such as provisioning over DVD, which require a larger size
+        // since the buffer is being used.
+        "swiotlb=4096,1",
+    ];
+
+    const NON_HARDWARE_ISOLATED_KERNEL_PARAMETERS: &[&str] = &[
+        // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
+        // (iommu=off ignored entirely). Set it to the minimum, saving ~63 MiB.
+        // The first parameter controls the area size, the second controls the
+        // number of areas (default is # of CPUs). Set them both to the minimum.
+        "swiotlb=1,1",
+    ];
+
+    if params.isolation_type.is_hardware_isolated() {
+        for p in HARDWARE_ISOLATED_KERNEL_PARAMETERS {
+            write!(cmdline, "{p} ")?;
+        }
+    } else {
+        for p in NON_HARDWARE_ISOLATED_KERNEL_PARAMETERS {
+            write!(cmdline, "{p} ")?;
+        }
+    }
+
     // Enable the com3 console by default if it's available and we're not
     // isolated, or if we are isolated but also have debugging enabled.
     //
@@ -228,6 +255,14 @@ fn build_kernel_command_line(
         )?;
     }
 
+    if is_confidential_debug {
+        write!(
+            cmdline,
+            "{}=1 ",
+            underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
+        )?;
+    }
+
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
     if partition_info.nvme_keepalive && !partition_info.vtl2_pool_memory.is_empty() {
@@ -240,7 +275,7 @@ fn build_kernel_command_line(
 
     // If we're isolated we can't trust the host-provided cmdline
     if can_trust_host {
-        let old_cmdline = partition_info.cmdline.as_ref();
+        let old_cmdline = &partition_info.cmdline;
 
         // HACK: See if we should set the vmbus connection id via kernel
         // commandline. It may already be set, and we don't want to set it again.
@@ -372,26 +407,27 @@ fn reserved_memory_regions(
     flattened
 }
 
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(target_arch = "x86_64"), expect(dead_code))]
 mod x86_boot {
-    use crate::host_params::PartitionInfo;
-    use crate::single_threaded::off_stack;
-    use crate::single_threaded::OffStackRef;
-    use crate::zeroed;
     use crate::PageAlign;
     use crate::ReservedMemoryType;
+    use crate::host_params::PartitionInfo;
+    use crate::host_params::shim_params::IsolationType;
+    use crate::single_threaded::OffStackRef;
+    use crate::single_threaded::off_stack;
+    use crate::zeroed;
     use core::mem::size_of;
     use core::ops::Range;
     use core::ptr;
-    use loader_defs::linux::boot_params;
-    use loader_defs::linux::e820entry;
-    use loader_defs::linux::setup_data;
     use loader_defs::linux::E820_RAM;
     use loader_defs::linux::E820_RESERVED;
     use loader_defs::linux::SETUP_E820_EXT;
-    use memory_range::walk_ranges;
+    use loader_defs::linux::boot_params;
+    use loader_defs::linux::e820entry;
+    use loader_defs::linux::setup_data;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
+    use memory_range::walk_ranges;
     use zerocopy::FromZeros;
     use zerocopy::Immutable;
     use zerocopy::KnownLayout;
@@ -430,6 +466,11 @@ mod x86_boot {
         ext: &mut E820Ext,
         partition_info: &PartitionInfo,
         reserved: &[(MemoryRange, ReservedMemoryType)],
+        // The following params are only used when TDX Isolated
+        #[cfg_attr(target_arch = "aarch64", expect(unused_variables))]
+        isolation_type: IsolationType,
+        #[cfg_attr(target_arch = "aarch64", expect(unused_variables))] //
+        page_tables: Option<MemoryRange>,
     ) -> Result<bool, BuildE820MapError> {
         boot_params.e820_entries = 0;
         let mut entries = boot_params
@@ -458,8 +499,30 @@ mod x86_boot {
             }
         }
 
+        // If TDX-isolated, APs start up in the shim, and then are held in a wait
+        // loop as part of AP mailbox protocol used with the kernel. Mark the page
+        // tables and mailbox/reset-vector region of openhcl_boot as E820-reserved,
+        // otherwise the L1 kernel can use the pages while APs are in the reset vector
+        //
+        // TODO: address space management in the shim is getting centralized in
+        // a refactor, this should be moved somewhere more appropriate when possible
+        #[cfg(target_arch = "x86_64")]
+        if IsolationType::Tdx == isolation_type {
+            add_e820_entry(entries.next(), page_tables.unwrap(), E820_RESERVED)?;
+            n += 1;
+            add_e820_entry(
+                entries.next(),
+                MemoryRange::new(
+                    x86defs::tdx::RESET_VECTOR_PAGE..x86defs::tdx::RESET_VECTOR_PAGE + 0x1000,
+                ),
+                E820_RESERVED,
+            )?;
+            n += 1;
+        }
+
         let base = n.min(boot_params.e820_map.len());
         boot_params.e820_entries = base as u8;
+
         if base < n {
             ext.header.len = ((n - base) * size_of::<e820entry>()) as u32;
             Ok(true)
@@ -475,6 +538,8 @@ mod x86_boot {
         cmdline: &str,
         setup_data_head: *const setup_data,
         setup_data_tail: &mut &mut setup_data,
+        isolation_type: IsolationType,
+        page_tables: Option<MemoryRange>,
     ) -> OffStackRef<'static, PageAlign<boot_params>> {
         let mut boot_params_storage = off_stack!(PageAlign<boot_params>, zeroed());
         let boot_params = &mut boot_params_storage.0;
@@ -499,8 +564,15 @@ mod x86_boot {
 
         let e820_ext = OffStackRef::leak(off_stack!(E820Ext, zeroed()));
 
-        let used_ext = build_e820_map(boot_params, e820_ext, partition_info, reserved_memory)
-            .expect("building e820 map must succeed");
+        let used_ext = build_e820_map(
+            boot_params,
+            e820_ext,
+            partition_info,
+            reserved_memory,
+            isolation_type,
+            page_tables,
+        )
+        .expect("building e820 map must succeed");
 
         if used_ext {
             e820_ext.header.ty = SETUP_E820_EXT;
@@ -513,6 +585,7 @@ mod x86_boot {
         boot_params.ext_cmd_line_ptr = (cmd_line_addr >> 32) as u32;
 
         boot_params.hdr.setup_data = (setup_data_head as u64).into();
+
         boot_params_storage
     }
 }
@@ -555,8 +628,34 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
     }
 }
 
+fn get_hw_debug_bit(isolation: IsolationType) -> bool {
+    match isolation {
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => {
+            use x86defs::tdx::TdReport;
+
+            use crate::arch::tdx::get_tdreport;
+
+            let mut report = off_stack!(PageAlign<TdReport>, zeroed());
+            match get_tdreport(&mut report.0) {
+                Ok(()) => report.0.td_info.td_info_base.attributes.debug(),
+                Err(_) => false,
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => {
+            // Not implemented yet for SNP.
+            false
+        }
+        _ => false,
+    }
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
+    if p.isolation_type == IsolationType::None {
+        enable_enlightened_panic();
+    }
 
     // The support code for the fast hypercalls does not set
     // the Guest ID if it is not set yet as opposed to the slow
@@ -564,40 +663,41 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Thus the fast hypercalls will fail as the the Guest ID has
     // to be set first hence initialize hypercall support
     // explicitly.
-    //
-    // In the hardware-isolated case, the hypervisor cannot
-    // access the guest registers so the fast hypercalls and
-    // any other methods of passing data to/from the hypervisor
-    // via the CPU registers (e.g. CPUID, hypercall call code or
-    // status) do not work, and the `hvcall()` doesn't have
-    // provisions for the hardware-isolated case.
     if !p.isolation_type.is_hardware_isolated() {
         hvcall().initialize();
-        if p.isolation_type == IsolationType::None {
-            enable_enlightened_panic();
-        }
     }
 
     // Enable early log output if requested in the static command line.
     // Also check for confidential debug mode if we're isolated.
-    let static_options =
-        cmdline::parse_boot_command_line(p.command_line().command_line().unwrap_or(""));
+    let mut static_options = BootCommandLineOptions::new();
+    if let Some(cmdline) = p.command_line().command_line() {
+        static_options.parse(cmdline);
+    }
     if let Some(typ) = static_options.logger {
         boot_logger_init(p.isolation_type, typ);
         log!("openhcl_boot: early debugging enabled");
     }
 
-    let can_trust_host =
-        p.isolation_type == IsolationType::None || static_options.confidential_debug;
+    let hw_debug_bit = get_hw_debug_bit(p.isolation_type);
+    let can_trust_host = p.isolation_type == IsolationType::None
+        || static_options.confidential_debug
+        || hw_debug_bit;
 
     let boot_reftime = get_ref_time(p.isolation_type);
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
-    let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
-        Ok(Some(val)) => val,
-        Ok(None) => panic!("host did not provide a device tree"),
-        Err(e) => panic!("unable to read device tree params {}", e),
-    };
+    let partition_info =
+        match PartitionInfo::read_from_dt(&p, &mut dt_storage, static_options, can_trust_host) {
+            Ok(Some(val)) => val,
+            Ok(None) => panic!("host did not provide a device tree"),
+            Err(e) => panic!("unable to read device tree params {}", e),
+        };
+
+    // Confidential debug will show up in boot_options only if included in the
+    // static command line, or if can_trust_host is true (so the dynamic command
+    // line has been parsed).
+    let is_confidential_debug = (can_trust_host && p.isolation_type != IsolationType::None)
+        || partition_info.boot_options.confidential_debug;
 
     // Fill out the non-devicetree derived parts of PartitionInfo.
     if !p.isolation_type.is_hardware_isolated()
@@ -632,8 +732,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     if can_trust_host {
         // Enable late log output if requested in the dynamic command line.
         // Confidential debug is only allowed in the static command line.
-        let dynamic_options = cmdline::parse_boot_command_line(&partition_info.cmdline);
-        if let Some(typ) = dynamic_options.logger {
+        if let Some(typ) = partition_info.boot_options.logger {
             boot_logger_init(p.isolation_type, typ);
         } else if partition_info.com3_serial_available && cfg!(target_arch = "x86_64") {
             // If COM3 is available and we can trust the host, enable log output even
@@ -650,8 +749,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_vp(partition_info);
     setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_vp(partition_info);
+
     verify_imported_regions_hash(&p);
 
     let mut sidecar_params = off_stack!(PageAlign<SidecarParams>, zeroed());
@@ -669,6 +769,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &mut cmdline,
         partition_info,
         can_trust_host,
+        is_confidential_debug,
         sidecar.as_ref(),
     )
     .unwrap();
@@ -715,6 +816,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         setup_data_head,
         &mut setup_data_tail,
+        p.isolation_type,
+        p.page_tables,
     );
 
     // Compute the ending boot time. This has to be before writing to device
@@ -762,6 +865,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         sidecar.as_ref(),
         boot_times,
+        p.isolation_type,
     )
     .unwrap();
 
@@ -863,14 +967,15 @@ fn main() {
 
 #[cfg(test)]
 mod test {
-    use super::x86_boot::build_e820_map;
     use super::x86_boot::E820Ext;
-    use crate::dt::write_dt;
-    use crate::host_params::shim_params::IsolationType;
-    use crate::host_params::PartitionInfo;
-    use crate::host_params::MAX_CPU_COUNT;
-    use crate::reserved_memory_regions;
+    use super::x86_boot::build_e820_map;
     use crate::ReservedMemoryType;
+    use crate::cmdline::BootCommandLineOptions;
+    use crate::dt::write_dt;
+    use crate::host_params::MAX_CPU_COUNT;
+    use crate::host_params::PartitionInfo;
+    use crate::host_params::shim_params::IsolationType;
+    use crate::reserved_memory_regions;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
@@ -878,13 +983,13 @@ mod test {
     use host_fdt_parser::MemoryEntry;
     use host_fdt_parser::VmbusInfo;
     use igvm_defs::MemoryMapEntryType;
-    use loader_defs::linux::boot_params;
-    use loader_defs::linux::e820entry;
     use loader_defs::linux::E820_RAM;
     use loader_defs::linux::E820_RESERVED;
-    use memory_range::walk_ranges;
+    use loader_defs::linux::boot_params;
+    use loader_defs::linux::e820entry;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
+    use memory_range::walk_ranges;
     use zerocopy::FromZeros;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB
@@ -931,6 +1036,7 @@ mod test {
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            boot_options: BootCommandLineOptions::new(),
         }
     }
 
@@ -953,6 +1059,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
     }
@@ -1026,6 +1133,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
@@ -1054,6 +1162,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
@@ -1125,13 +1234,17 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_ok());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_ok()
+        );
 
         check_e820(
             &boot_params,
@@ -1153,13 +1266,17 @@ mod test {
             Some(3 * ONE_MB..4 * ONE_MB),
         );
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_ok());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_ok()
+        );
 
         check_e820(
             &boot_params,
@@ -1183,13 +1300,17 @@ mod test {
             Some(3 * ONE_MB..4 * ONE_MB),
         );
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_ok());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_ok()
+        );
 
         check_e820(
             &boot_params,
@@ -1221,13 +1342,17 @@ mod test {
             Some(3 * ONE_MB..4 * ONE_MB),
         );
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_ok());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_ok()
+        );
 
         check_e820(
             &boot_params,
@@ -1253,13 +1378,17 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_err()
+        );
 
         // parameter range start partial coverage
         let mut boot_params: boot_params = FromZeros::new_zeroed();
@@ -1268,13 +1397,17 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_err()
+        );
 
         // parameter range end partial coverage
         let mut boot_params: boot_params = FromZeros::new_zeroed();
@@ -1283,13 +1416,17 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_err()
+        );
 
         // parameter range larger than ram
         let mut boot_params: boot_params = FromZeros::new_zeroed();
@@ -1298,13 +1435,17 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_err()
+        );
 
         // ram has gap inside param range
         let mut boot_params: boot_params = FromZeros::new_zeroed();
@@ -1316,13 +1457,17 @@ mod test {
             None,
         );
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1341,7 +1486,15 @@ mod test {
             })
             .collect::<Vec<_>>();
 
-        build_e820_map(&mut boot_params, &mut ext, &partition_info, &reserved).unwrap();
+        build_e820_map(
+            &mut boot_params,
+            &mut ext,
+            &partition_info,
+            &reserved,
+            partition_info.isolation,
+            None,
+        )
+        .unwrap();
 
         assert!(ext.header.len > 0);
 

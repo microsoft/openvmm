@@ -7,6 +7,7 @@ mod device_memory;
 
 pub use device_memory::DeviceMemoryMapper;
 
+use crate::RemoteProcess;
 use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingManager;
 use crate::mapping_manager::MappingManagerClient;
@@ -16,7 +17,6 @@ use crate::partition_mapper::PartitionMapper;
 use crate::region_manager::MapParams;
 use crate::region_manager::RegionHandle;
 use crate::region_manager::RegionManager;
-use crate::RemoteProcess;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::Inspect;
@@ -94,7 +94,7 @@ pub enum MemoryBuildError {
 /// A builder for [`GuestMemoryManager`].
 pub struct GuestMemoryBuilder {
     existing_mapping: Option<SharedMemoryBacking>,
-    vtl0_alias_map: bool,
+    vtl0_alias_map: Option<u64>,
     prefetch_ram: bool,
     pin_mappings: bool,
     x86_legacy_support: bool,
@@ -105,7 +105,7 @@ impl GuestMemoryBuilder {
     pub fn new() -> Self {
         Self {
             existing_mapping: None,
-            vtl0_alias_map: false,
+            vtl0_alias_map: None,
             pin_mappings: false,
             prefetch_ram: false,
             x86_legacy_support: false,
@@ -118,11 +118,11 @@ impl GuestMemoryBuilder {
         self
     }
 
-    /// Specifies whether the VTL0 alias map is enabled for VTL2. This is a
-    /// mirror of VTL0 memory into the high half of the VM's physical address
+    /// Specifies the offset of the VTL0 alias map, if enabled for VTL2. This is
+    /// a mirror of VTL0 memory into a high portion of the VM's physical address
     /// space.
-    pub fn vtl0_alias_map(mut self, enable: bool) -> Self {
-        self.vtl0_alias_map = enable;
+    pub fn vtl0_alias_map(mut self, offset: Option<u64>) -> Self {
+        self.vtl0_alias_map = offset;
         self
     }
 
@@ -186,12 +186,11 @@ impl GuestMemoryBuilder {
         let max_addr =
             (mem_layout.end_of_ram_or_mmio()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
 
-        let vtl0_alias_map_mask = if self.vtl0_alias_map {
-            let mask = 1 << (mem_layout.physical_address_size() - 1);
-            if max_addr > mask {
+        let vtl0_alias_map_offset = if let Some(offset) = self.vtl0_alias_map {
+            if max_addr > offset {
                 return Err(MemoryBuildError::AliasMapWontFit);
             }
-            Some(mask)
+            Some(offset)
         } else {
             None
         };
@@ -287,7 +286,7 @@ impl GuestMemoryBuilder {
             mapping_manager,
             region_manager,
             va_mapper,
-            vtl0_alias_map_offset: vtl0_alias_map_mask,
+            vtl0_alias_map_offset,
             pin_mappings: self.pin_mappings,
         };
         Ok(gm)

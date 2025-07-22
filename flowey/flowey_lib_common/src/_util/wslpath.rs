@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::path::Path;
 use std::path::PathBuf;
 
-pub fn win_to_linux(path: impl AsRef<std::path::Path>) -> PathBuf {
+pub fn win_to_linux(path: impl AsRef<Path>) -> PathBuf {
     let sh = xshell::Shell::new().unwrap();
     let path = path.as_ref();
     xshell::cmd!(sh, "wslpath {path}")
@@ -14,7 +15,7 @@ pub fn win_to_linux(path: impl AsRef<std::path::Path>) -> PathBuf {
         .into()
 }
 
-pub fn linux_to_win(path: impl AsRef<std::path::Path>) -> PathBuf {
+pub fn linux_to_win(path: impl AsRef<Path>) -> PathBuf {
     let sh = xshell::Shell::new().unwrap();
     let path = path.as_ref();
     xshell::cmd!(sh, "wslpath -aw {path}")

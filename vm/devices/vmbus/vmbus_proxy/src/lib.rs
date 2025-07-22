@@ -5,10 +5,12 @@
 #![cfg(windows)]
 // UNSAFETY: Calling vmbus proxy ioctls.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 use futures::poll;
 use guestmem::GuestMemory;
+use guid::Guid;
+use mesh::CancelContext;
 use mesh::MeshPayload;
 use pal::windows::ObjectAttributes;
 use pal::windows::UnicodeStringRef;
@@ -19,16 +21,14 @@ use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbusioctl::VMBUS_CHANNEL_OFFER;
 use vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
-use widestring::utf16str;
 use widestring::Utf16Str;
+use widestring::utf16str;
 use windows::Wdk::Storage::FileSystem::NtOpenFile;
-use windows::Win32::Foundation::ERROR_CANCELLED;
+use windows::Win32::Foundation::ERROR_OPERATION_ABORTED;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
@@ -83,7 +83,7 @@ pub struct VmbusProxy {
     // NOTE: This must come after `file` so that it is not released until `file`
     // is closed.
     guest_memory: Option<GuestMemory>,
-    cancelled: AtomicBool,
+    cancel: CancelContext,
 }
 
 #[derive(Debug)]
@@ -127,17 +127,12 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 }
 
 impl VmbusProxy {
-    pub fn new(driver: &dyn Driver, handle: ProxyHandle) -> Result<Self> {
+    pub fn new(driver: &dyn Driver, handle: ProxyHandle, ctx: CancelContext) -> Result<Self> {
         Ok(Self {
             file: OverlappedFile::new(driver, handle.0)?,
             guest_memory: None,
-            cancelled: AtomicBool::new(false),
+            cancel: ctx,
         })
-    }
-
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-        self.file.cancel();
     }
 
     pub fn handle(&self) -> BorrowedHandle<'_> {
@@ -149,10 +144,27 @@ impl VmbusProxy {
         In: IoBufMut,
         Out: IoBufMut,
     {
-        // Don't issue new IO if the cancel() method has been called.
-        if self.cancelled.load(Ordering::Acquire) {
+        // SAFETY: guaranteed by caller.
+        let (r, (_, output)) = unsafe { self.file.ioctl(code, input, output).await };
+        r?;
+        Ok(output)
+    }
+
+    async unsafe fn ioctl_cancellable<In, Out>(
+        &self,
+        code: u32,
+        input: In,
+        output: Out,
+    ) -> Result<Out>
+    where
+        In: IoBufMut,
+        Out: IoBufMut,
+    {
+        // Don't issue new IO if the cancel context has already been cancelled.
+        let mut cancel = self.cancel.clone();
+        if cancel.is_cancelled() {
             tracing::trace!("ioctl cancelled before issued");
-            return Err(Error::from_hresult(ERROR_CANCELLED.into()));
+            return Err(ERROR_OPERATION_ABORTED.into());
         }
 
         // SAFETY: guaranteed by caller.
@@ -160,17 +172,16 @@ impl VmbusProxy {
         let (r, (_, output)) = match poll!(&mut ioctl) {
             std::task::Poll::Ready(result) => result,
             std::task::Poll::Pending => {
-                // Cancellation may have happened after the check above but before the IO was
-                // issued, in which case it was not actually cancelled. Cancel it again now just in
-                // case.
-                if self.cancelled.load(Ordering::Acquire) {
-                    tracing::trace!("ioctl cancelled during issue");
-                    ioctl.cancel();
+                match cancel.until_cancelled(&mut ioctl).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        tracing::trace!("ioctl cancelled after issued");
+                        ioctl.cancel();
+                        // Even when cancelled, we must wait to complete the IO so buffers aren't released
+                        // while still in use.
+                        ioctl.await
+                    }
                 }
-
-                // Even when cancelled, we must wait to complete the IO so buffers aren't released
-                // while still in use.
-                ioctl.await
             }
         };
 
@@ -181,10 +192,7 @@ impl VmbusProxy {
     pub async fn set_memory(&mut self, guest_memory: &GuestMemory) -> Result<()> {
         assert!(self.guest_memory.is_none());
         let (base, len) = guest_memory.full_mapping().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "vmbusproxy not supported without mapped memory",
-            )
+            std::io::Error::other("vmbusproxy not supported without mapped memory")
         })?;
         self.guest_memory = Some(guest_memory.clone());
         unsafe {
@@ -202,7 +210,7 @@ impl VmbusProxy {
 
     pub async fn next_action(&self) -> Result<ProxyAction> {
         let output = unsafe {
-            self.ioctl(
+            self.ioctl_cancellable(
                 proxyioctl::IOCTL_VMBUS_PROXY_NEXT_ACTION,
                 (),
                 StaticIoctlBuffer(zeroed::<proxyioctl::VMBUS_PROXY_NEXT_ACTION_OUTPUT>()),
@@ -213,7 +221,7 @@ impl VmbusProxy {
         match output.Type {
             proxyioctl::VmbusProxyActionTypeOffer => unsafe {
                 Ok(ProxyAction::Offer {
-                    id: output.ChannelId,
+                    id: output.ProxyId,
                     offer: output.u.Offer.Offer,
                     incoming_event: OwnedHandle::from_raw_handle(
                         output.u.Offer.DeviceIncomingRingEvent as usize as RawHandle,
@@ -231,9 +239,9 @@ impl VmbusProxy {
                     },
                 })
             },
-            proxyioctl::VmbusProxyActionTypeRevoke => Ok(ProxyAction::Revoke {
-                id: output.ChannelId,
-            }),
+            proxyioctl::VmbusProxyActionTypeRevoke => {
+                Ok(ProxyAction::Revoke { id: output.ProxyId })
+            }
             proxyioctl::VmbusProxyActionTypeInterruptPolicy => Ok(ProxyAction::InterruptPolicy {}),
             proxyioctl::VmbusProxyActionTypeTlConnectResult => unsafe {
                 Ok(ProxyAction::TlConnectResult {
@@ -260,7 +268,8 @@ impl VmbusProxy {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_OPEN_CHANNEL,
                 StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_OPEN_CHANNEL_INPUT {
-                    ChannelId: id,
+                    ProxyId: id,
+                    Padding: 0,
                     OpenParameters: *params,
                     VmmSignalEvent: handle,
                 }),
@@ -271,12 +280,88 @@ impl VmbusProxy {
         };
         NTSTATUS(output.Status).ok()
     }
+    pub async fn set_interrupt(&self, id: u64, event: &Event) -> Result<()> {
+        unsafe {
+            let handle = event.as_handle().as_raw_handle() as usize as u64;
+            self.ioctl(
+                proxyioctl::IOCTL_VMBUS_PROXY_RESTORE_SET_INTERRUPT,
+                StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_SET_INTERRUPT_INPUT {
+                    ProxyId: id,
+                    VmmSignalEvent: handle,
+                }),
+                (),
+            )
+            .await?
+        };
+        Ok(())
+    }
+
+    pub async fn restore(
+        &self,
+        interface_type: Guid,
+        interface_instance: Guid,
+        subchannel_index: u16,
+        target_vtl: u8,
+        open_params: Option<VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS>,
+        gpadls: impl Iterator<Item = Gpadl<'_>>,
+    ) -> Result<u64> {
+        let mut buffer = Vec::new();
+        let mut header = proxyioctl::VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
+            InterfaceType: interface_type,
+            InterfaceInstance: interface_instance,
+            SubchannelIndex: subchannel_index,
+            TargetVtl: target_vtl,
+            GpadlCount: 0,
+            OpenParameters: open_params.unwrap_or_default(),
+            Open: open_params.is_some().into(),
+        };
+
+        // Leave space for the header.
+        const HEADER_LEN: usize = size_of::<proxyioctl::VMBUS_PROXY_RESTORE_CHANNEL_INPUT>();
+        buffer.resize(HEADER_LEN, 0);
+
+        // Add GPADLs to the buffer and count them.
+        for gpadl in gpadls {
+            header.GpadlCount += 1;
+            Self::add_gpadl(
+                &mut buffer,
+                0, // Not used for restoring.
+                gpadl.gpadl_id,
+                gpadl.range_count,
+                gpadl.range_buffer.as_bytes(),
+            );
+        }
+
+        // Copy the header now that the GPADL count is known.
+        buffer[..HEADER_LEN].copy_from_slice(header.as_bytes());
+        Ok(unsafe {
+            self.ioctl(
+                proxyioctl::IOCTL_VMBUS_PROXY_RESTORE_CHANNEL,
+                buffer,
+                StaticIoctlBuffer(zeroed::<proxyioctl::VMBUS_PROXY_RESTORE_CHANNEL_OUTPUT>()),
+            )
+            .await?
+            .0
+            .ProxyId
+        })
+    }
+
+    pub async fn revoke_unclaimed_channels(&self) -> Result<()> {
+        unsafe {
+            self.ioctl(
+                proxyioctl::IOCTL_VMBUS_PROXY_REVOKE_UNCLAIMED_CHANNELS,
+                (),
+                (),
+            )
+            .await
+        }
+    }
 
     pub async fn close(&self, id: u64) -> Result<()> {
         unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_CLOSE_CHANNEL,
-                StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_CLOSE_CHANNEL_INPUT { ChannelId: id }),
+                StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_CLOSE_CHANNEL_INPUT { ProxyId: id }),
                 (),
             )
             .await
@@ -287,7 +372,7 @@ impl VmbusProxy {
         unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_RELEASE_CHANNEL,
-                StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_RELEASE_CHANNEL_INPUT { ChannelId: id }),
+                StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_RELEASE_CHANNEL_INPUT { ProxyId: id }),
                 (),
             )
             .await
@@ -302,15 +387,7 @@ impl VmbusProxy {
         range_buf: &[u8],
     ) -> Result<()> {
         let mut buf = Vec::new();
-        let header = proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT {
-            ChannelId: id,
-            GpadlId: gpadl_id,
-            RangeCount: range_count,
-            RangeBufferOffset: size_of::<proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT>() as u32,
-            RangeBufferSize: range_buf.len() as u32,
-        };
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(range_buf);
+        Self::add_gpadl(&mut buf, id, gpadl_id, range_count, range_buf);
         unsafe {
             self.ioctl(proxyioctl::IOCTL_VMBUS_PROXY_CREATE_GPADL, buf, ())
                 .await
@@ -322,8 +399,9 @@ impl VmbusProxy {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_DELETE_GPADL,
                 StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_DELETE_GPADL_INPUT {
-                    ChannelId: id,
+                    ProxyId: id,
                     GpadlId: gpadl_id,
+                    Padding: 0,
                 }),
                 (),
             )
@@ -342,6 +420,7 @@ impl VmbusProxy {
                     Flags: proxyioctl::VMBUS_PROXY_TL_CONNECT_REQUEST_FLAGS::new()
                         .with_hosted_silo_unaware(request.hosted_silo_unaware),
                     Vtl: vtl,
+                    Padding: [0; 3],
                 }),
                 (),
             )
@@ -352,7 +431,7 @@ impl VmbusProxy {
     pub fn run_channel(&self, id: u64) -> Result<()> {
         unsafe {
             // This is a synchronous operation, so don't use the async IO infrastructure.
-            let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ChannelId: id };
+            let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ProxyId: id };
             let mut bytes = 0;
             DeviceIoControl(
                 HANDLE(self.file.get().as_raw_handle()),
@@ -367,4 +446,30 @@ impl VmbusProxy {
         };
         Ok(())
     }
+
+    /// Adds GPADL ioctl data to a buffer.
+    fn add_gpadl(
+        buffer: &mut Vec<u8>,
+        id: u64,
+        gpadl_id: u32,
+        range_count: u32,
+        range_buffer: &[u8],
+    ) {
+        let header = proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT {
+            ProxyId: id,
+            GpadlId: gpadl_id,
+            RangeCount: range_count,
+            RangeBufferOffset: size_of::<proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT>() as u32,
+            RangeBufferSize: range_buffer.len() as u32,
+        };
+        buffer.extend_from_slice(header.as_bytes());
+        buffer.extend_from_slice(range_buffer);
+    }
+}
+
+/// Represents data to be restored for a GPADL.
+pub struct Gpadl<'a> {
+    pub gpadl_id: u32,
+    pub range_count: u32,
+    pub range_buffer: &'a [u64],
 }

@@ -6,14 +6,14 @@
 #![forbid(unsafe_code)]
 
 use inspect::Inspect;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
-use mesh::MeshPayload;
 use storage_string::AsciiString;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::ScsiDeviceHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::ScsiDeviceHandleKind;
 
 /// Resource handle for an emulated SCSI disk.
 #[derive(MeshPayload)]

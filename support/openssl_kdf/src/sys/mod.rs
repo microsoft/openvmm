@@ -4,8 +4,8 @@
 // See also the LICENSE file in the root of the crate for additional copyright
 // information.
 
-#![allow(dead_code)]
-#![allow(non_camel_case_types)]
+#![expect(dead_code)]
+#![expect(non_camel_case_types)]
 
 pub mod evp;
 pub mod kdf;

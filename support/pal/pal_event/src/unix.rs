@@ -88,7 +88,7 @@ mod fifo {
             // Create a random path.
             let mut path = std::env::temp_dir();
             let mut val = [0; 16];
-            getrandom::getrandom(&mut val).unwrap();
+            getrandom::fill(&mut val).unwrap();
             path.push(u128::from_ne_bytes(val).to_string());
 
             // Create the FIFO.

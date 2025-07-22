@@ -4,7 +4,8 @@
 //! Infrastructure for spawning tasks and issuing async IO related to VM
 //! activity.
 
-#![warn(missing_docs)]
+// UNSAFETY: Needed to implement the unsafe new_dyn_overlapped_file method.
+#![cfg_attr(windows, expect(unsafe_code))]
 
 use inspect::Inspect;
 use pal_async::driver::Driver;
@@ -320,10 +321,10 @@ pub mod thread {
     use super::BuildVmTaskDriver;
     use super::TargetedDriver;
     use inspect::Inspect;
-    use pal_async::driver::Driver;
-    use pal_async::task::Spawn;
     use pal_async::DefaultDriver;
     use pal_async::DefaultPool;
+    use pal_async::driver::Driver;
+    use pal_async::task::Spawn;
 
     /// A backend for [`VmTaskDriverSource`](super::VmTaskDriverSource) based on
     /// individual threads.

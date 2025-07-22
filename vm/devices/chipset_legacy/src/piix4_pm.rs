@@ -7,6 +7,7 @@ use chipset::pm::PmTimerAssist;
 use chipset::pm::PowerAction;
 use chipset::pm::PowerActionFn;
 use chipset::pm::PowerManagementDevice;
+use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -14,7 +15,6 @@ use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use open_enum::open_enum;
@@ -74,9 +74,9 @@ struct Piix4PmState {
     counter_info_a: u32,
     counter_info_b: u32,
     general_purpose_config_info: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     device_resource_flags: [u32; 10],
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     device_activity_flags: [u32; 2],
 }
 

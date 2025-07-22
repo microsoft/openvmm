@@ -5,12 +5,15 @@
 //! response.
 use crate::igvm_attest::parse_response_header;
 use crate::igvm_attest::Error as CommonError;
+
 use thiserror::Error;
 
 /// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
 #[derive(Debug, Error)]
 pub enum AkCertError {
-    #[error("AK cert response is too small to parse. Found {size} bytes but expected at least {minimum_size}")]
+    #[error(
+        "AK cert response is too small to parse. Found {size} bytes but expected at least {minimum_size}"
+    )]
     SizeTooSmall { size: usize, minimum_size: usize },
     #[error(
         "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
@@ -58,6 +61,28 @@ mod tests {
             result.unwrap_err().to_string(),
             AkCertError::ParseHeader(CommonError::ResponseSizeTooSmall { response_size: 0 })
                 .to_string()
+        );
+
+        // Response has to be at least `HEADER_SIZE` bytes long, so `HEADER_SIZE - 1` bytes is too small.
+        let undersized_parse_ = parse_response(undersized_response);
+        assert!(undersized_parse_.is_err());
+        assert_eq!(
+            undersized_parse_.unwrap_err().to_string(),
+            format!(
+                "AK cert response is too small to parse. Found {} bytes but expected at least {}",
+                HEADER_SIZE - 1,
+                HEADER_SIZE
+            )
+        );
+
+        // When we finally have `HEADER_SIZE` bytes, we no longer see the failure as `AkCertError::SizeTooSmall`,
+        // but we still see a different error since the response is not valid.
+        let properly_sized_parse = parse_response(&properly_sized_response);
+        assert!(
+            !properly_sized_parse
+                .unwrap_err()
+                .to_string()
+                .starts_with("AK cert response is too small to parse"),
         );
     }
 

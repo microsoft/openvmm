@@ -141,7 +141,7 @@ impl TopologyBuilder<X86Topology> {
                 let ecx = ExtendedAddressSpaceSizesEcx::from(ecx);
 
                 vps_per_socket = if ecx.apic_core_id_size() != 0 {
-                    ecx.apic_core_id_size().into()
+                    1 << ecx.apic_core_id_size()
                 } else {
                     ecx.nc() as u32 + 1
                 };

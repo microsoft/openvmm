@@ -14,7 +14,7 @@
             },
             "image": {
                 "openhcl": {
-                    "command_line": "",
+                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
                     "memory_page_count": 163840,
                     "memory_page_base": 32768,
                     "uefi": true
@@ -49,7 +49,7 @@
             },
             "image": {
                 "openhcl": {
-                    "command_line": "",
+                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
                     "memory_page_count": 32768,
                     "memory_page_base": 32768,
                     "uefi": true

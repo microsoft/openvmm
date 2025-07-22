@@ -6,8 +6,9 @@
 use crate::Disk;
 use crate::DiskIo;
 use crate::InvalidDisk;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::DiskHandleKind;
+use vmcore::vm_task::VmTaskDriverSource;
 
 impl CanResolveTo<ResolvedDisk> for DiskHandleKind {
     type Input<'a> = ResolveDiskParameters<'a>;
@@ -18,11 +19,8 @@ impl CanResolveTo<ResolvedDisk> for DiskHandleKind {
 pub struct ResolveDiskParameters<'a> {
     /// Whether the disk is being opened for read-only use.
     pub read_only: bool,
-    #[doc(hidden)]
-    // Workaround for async_trait not working well with GAT input parameters
-    // with missing lifetimes. Remove once we stop using async_trait for async
-    // resolvers.
-    pub _async_trait_workaround: &'a (),
+    /// The task driver source for the VM.
+    pub driver_source: &'a VmTaskDriverSource,
 }
 
 /// A resolved [`Disk`].

@@ -3,11 +3,11 @@
 
 use inspect::Inspect;
 use pal_async::task::Spawn;
-use state_unit::run_async_unit;
 use state_unit::NameInUse;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnit;
 use state_unit::UnitBuilder;
+use state_unit::run_async_unit;
 use vmbus_relay::HostVmbusTransport;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -64,9 +64,5 @@ impl StateUnit for &'_ VmbusRelayUnit {
             .restore(state.parse()?)
             .await
             .map_err(RestoreError::Other)
-    }
-
-    async fn post_restore(&mut self) -> anyhow::Result<()> {
-        Ok(())
     }
 }

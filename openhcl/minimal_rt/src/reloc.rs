@@ -18,7 +18,7 @@ macro_rules! panic_no_relocs {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 enum ElfDynTag {
     Null = 0,
     RelA = 7,

@@ -4,19 +4,19 @@
 //! Remote Procedure Call functionality.
 
 use super::error::RemoteResult;
-use crate::error::RemoteError;
-use crate::oneshot;
 use crate::OneshotReceiver;
 use crate::OneshotSender;
 use crate::RecvError;
+use crate::error::RemoteError;
+use crate::oneshot;
 use mesh_node::message::MeshField;
 use mesh_protobuf::Protobuf;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 use thiserror::Error;
 
 /// An RPC message for a request with input of type `I` and output of type `R`.
@@ -293,24 +293,7 @@ impl<T: 'static + Send> RpcSend for OneshotSender<T> {
     }
 }
 
-#[cfg(feature = "newchan")]
 impl<T: 'static + Send> RpcSend for &mesh_channel_core::Sender<T> {
-    type Message = T;
-    fn send_rpc(self, message: T) {
-        self.send(message);
-    }
-}
-
-#[cfg(not(feature = "newchan_spsc"))]
-impl<T: 'static + Send> RpcSend for &crate::Sender<T> {
-    type Message = T;
-    fn send_rpc(&self, message: T) {
-        self.send(message);
-    }
-}
-
-#[cfg(not(feature = "newchan_mpsc"))]
-impl<T: 'static + Send> RpcSend for &crate::MpscSender<T> {
     type Message = T;
     fn send_rpc(self, message: T) {
         self.send(message);

@@ -3,11 +3,11 @@
 
 //! Resource resolver for VMGS files.
 
+use crate::VmgsClient;
 use crate::non_volatile_store::EncryptionNotSupported;
 use crate::non_volatile_store::VmgsNonVolatileStore;
-use crate::VmgsClient;
-use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::ResolveResource;
+use vm_resource::kind::NonVolatileStoreKind;
 use vmcore::non_volatile_store::resources::ResolvedNonVolatileStore;
 use vmgs_resources::VmgsFileHandle;
 

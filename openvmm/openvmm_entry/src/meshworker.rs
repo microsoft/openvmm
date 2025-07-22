@@ -7,9 +7,9 @@
 use anyhow::Context;
 use hvlite_defs::entrypoint::MeshHostParams;
 use inspect::Inspect;
-use mesh_process::try_run_mesh_host;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
+use mesh_process::try_run_mesh_host;
 use mesh_worker::RegisteredWorkers;
 use mesh_worker::WorkerHost;
 use pal_async::task::Spawn;

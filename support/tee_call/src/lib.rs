@@ -14,30 +14,30 @@ use zerocopy::IntoBytes;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("failed to open /dev/sev-guest")]
-    OpenDevSevGuest(#[source] sev_guest_device::ioctl::Error),
+    OpenDevSevGuest(#[source] sev_guest_device::Error),
     #[error("failed to get an SNP report via /dev/sev-guest")]
-    GetSnpReport(#[source] sev_guest_device::ioctl::Error),
+    GetSnpReport(#[source] sev_guest_device::Error),
     #[error("failed to get an SNP derived key via /dev/sev-guest")]
-    GetSnpDerivedKey(#[source] sev_guest_device::ioctl::Error),
+    GetSnpDerivedKey(#[source] sev_guest_device::Error),
     #[error("got all-zeros key")]
     AllZeroKey,
     #[error("failed to open /dev/tdx_guest")]
-    OpenDevTdxGuest(#[source] tdx_guest_device::ioctl::Error),
+    OpenDevTdxGuest(#[source] tdx_guest_device::Error),
     #[error("failed to get a TDX report via /dev/tdx_guest")]
-    GetTdxReport(#[source] tdx_guest_device::ioctl::Error),
+    GetTdxReport(#[source] tdx_guest_device::Error),
 }
 
 /// Use the SNP-defined derived key size for now.
-pub const HW_DERIVED_KEY_LENGTH: usize = sev_guest_device::protocol::SNP_DERIVED_KEY_SIZE;
+pub const HW_DERIVED_KEY_LENGTH: usize = x86defs::snp::SNP_DERIVED_KEY_SIZE;
 
 /// Use the SNP-defined report data size for now.
 // DEVNOTE: This value should be upper bound among all the supported TEE types.
-pub const REPORT_DATA_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_DATA_SIZE;
+pub const REPORT_DATA_SIZE: usize = x86defs::snp::SNP_REPORT_DATA_SIZE;
 
 // TDX and SNP report data size are equal so we can use either of them
 static_assertions::const_assert_eq!(
-    sev_guest_device::protocol::SNP_REPORT_DATA_SIZE,
-    tdx_guest_device::protocol::TDX_REPORT_DATA_SIZE
+    x86defs::snp::SNP_REPORT_DATA_SIZE,
+    x86defs::tdx::TDX_REPORT_DATA_SIZE
 );
 
 /// Type of the TEE
@@ -86,8 +86,7 @@ impl TeeCall for SnpCall {
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<GetAttestationReportResult, Error> {
-        let dev =
-            sev_guest_device::ioctl::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
+        let dev = sev_guest_device::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
         let report = dev
             .get_report(*report_data, 0)
             .map_err(Error::GetSnpReport)?;
@@ -112,14 +111,13 @@ impl TeeCall for SnpCall {
 impl TeeCallGetDerivedKey for SnpCall {
     /// Get the derived key from /dev/sev-guest.
     fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error> {
-        let dev =
-            sev_guest_device::ioctl::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
+        let dev = sev_guest_device::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
 
         // Derive a key mixing in following data:
         // - GuestPolicy (do not allow different polices to derive same secret)
         // - Measurement (will not work across release)
         // - TcbVersion (do not derive same key on older TCB that might have a bug)
-        let guest_field_select = sev_guest_device::protocol::GuestFieldSelect::default()
+        let guest_field_select = x86defs::snp::GuestFieldSelect::default()
             .with_guest_policy(true)
             .with_measurement(true)
             .with_tcb_version(true);
@@ -150,8 +148,7 @@ impl TeeCall for TdxCall {
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
     ) -> Result<GetAttestationReportResult, Error> {
-        let dev =
-            tdx_guest_device::ioctl::TdxGuestDevice::open().map_err(Error::OpenDevTdxGuest)?;
+        let dev = tdx_guest_device::TdxGuestDevice::open().map_err(Error::OpenDevTdxGuest)?;
         let report = dev
             .get_report(*report_data, 0)
             .map_err(Error::GetTdxReport)?;

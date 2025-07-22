@@ -16,8 +16,8 @@ use mesh_node::local_node::PortWithHandler;
 use mesh_node::message::Message;
 use mesh_node::message::OwnedMessage;
 use mesh_node::resource::Resource;
-use mesh_protobuf::encoding::OptionField;
 use mesh_protobuf::Protobuf;
+use mesh_protobuf::encoding::OptionField;
 use std::collections::VecDeque;
 use std::io;
 use std::pin::Pin;
@@ -322,12 +322,12 @@ mod encoding {
     use super::ReadPipeState;
     use mesh_node::local_node::Port;
     use mesh_node::resource::Resource;
-    use mesh_protobuf::encoding::MessageEncoding;
-    use mesh_protobuf::inplace_none;
     use mesh_protobuf::DefaultEncoding;
     use mesh_protobuf::MessageDecode;
     use mesh_protobuf::MessageEncode;
     use mesh_protobuf::Protobuf;
+    use mesh_protobuf::encoding::MessageEncoding;
+    use mesh_protobuf::inplace_none;
     use std::collections::VecDeque;
 
     pub struct ReadPipeEncoder;

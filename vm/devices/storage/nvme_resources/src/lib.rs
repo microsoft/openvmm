@@ -7,10 +7,10 @@
 
 use guid::Guid;
 use mesh::MeshPayload;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::PciDeviceHandleKind;
 
 /// A handle to an NVMe controller.
 #[derive(MeshPayload)]

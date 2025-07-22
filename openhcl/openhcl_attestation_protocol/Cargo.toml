@@ -11,8 +11,7 @@ bitfield-struct.workspace = true
 open_enum.workspace = true
 guid.workspace = true
 mesh.workspace = true
-sev_guest_device.workspace = true
-tdx_guest_device.workspace = true
+x86defs.workspace = true
 
 base64.workspace = true
 base64-serde.workspace = true

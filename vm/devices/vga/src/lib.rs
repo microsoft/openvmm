@@ -15,6 +15,7 @@
 //! interface that SeaVGABios uses).
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod emu;
 mod non_linear;
@@ -22,11 +23,11 @@ mod render;
 mod spec;
 mod text_mode;
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::PortIoIntercept;
-use chipset_device::ChipsetDevice;
 use framebuffer::FramebufferLocalControl;
 use guestmem::MapRom;
 use inspect::InspectMut;

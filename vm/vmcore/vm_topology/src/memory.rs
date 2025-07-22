@@ -24,7 +24,6 @@ pub struct MemoryRangeWithNode {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 pub struct MemoryLayout {
-    physical_address_size: u8,
     #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges_with_metadata"))]
     ram: Vec<MemoryRangeWithNode>,
     #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges"))]
@@ -75,14 +74,6 @@ pub enum Error {
     /// VTL2 range is below the end of ram, and overlaps.
     #[error("vtl2 range is below end of ram")]
     Vtl2RangeBeforeEndOfRam,
-    /// An address doesn't fit into the physical address space.
-    #[error("range {range} is outside of physical address space ({width} bits)")]
-    PhysicalAddressExceeded {
-        /// The range.
-        range: MemoryRange,
-        /// The physical address width.
-        width: u8,
-    },
 }
 
 fn validate_ranges(ranges: &[MemoryRange]) -> Result<(), Error> {
@@ -109,6 +100,15 @@ fn validate_ranges_core<T>(ranges: &[T], getter: impl Fn(&T) -> &MemoryRange) ->
     Ok(())
 }
 
+/// The type backing an address.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum AddressType {
+    /// The address describes ram.
+    Ram,
+    /// The address describes mmio.
+    Mmio,
+}
+
 impl MemoryLayout {
     /// Makes a new memory layout for a guest with `ram_size` bytes of memory
     /// and MMIO gaps at the locations specified by `gaps`.
@@ -121,16 +121,12 @@ impl MemoryLayout {
     ///
     /// All RAM is assigned to NUMA node 0.
     pub fn new(
-        physical_address_size: u8,
         ram_size: u64,
         gaps: &[MemoryRange],
         vtl2_range: Option<MemoryRange>,
     ) -> Result<Self, Error> {
         if ram_size == 0 || ram_size & (PAGE_SIZE - 1) != 0 {
             return Err(Error::BadSize);
-        }
-        if gaps.len() < 2 {
-            return Err(Error::BadMmioGaps);
         }
 
         validate_ranges(gaps)?;
@@ -154,7 +150,7 @@ impl MemoryLayout {
             last_end = next_end;
         }
 
-        Self::build(physical_address_size, ram, gaps.to_vec(), vtl2_range)
+        Self::build(ram, gaps.to_vec(), vtl2_range)
     }
 
     /// Makes a new memory layout for a guest with the given mmio gaps and
@@ -163,20 +159,18 @@ impl MemoryLayout {
     /// `memory` and `gaps` ranges must be in sorted order and non-overlapping,
     /// and describe page aligned ranges.
     pub fn new_from_ranges(
-        physical_address_size: u8,
         memory: &[MemoryRangeWithNode],
         gaps: &[MemoryRange],
     ) -> Result<Self, Error> {
         validate_ranges_with_metadata(memory)?;
         validate_ranges(gaps)?;
-        Self::build(physical_address_size, memory.to_vec(), gaps.to_vec(), None)
+        Self::build(memory.to_vec(), gaps.to_vec(), None)
     }
 
     /// Builds the memory layout.
     ///
     /// `ram` and `mmio` must already be known to be sorted.
     fn build(
-        physical_address_size: u8,
         ram: Vec<MemoryRangeWithNode>,
         mmio: Vec<MemoryRange>,
         vtl2_range: Option<MemoryRange>,
@@ -191,16 +185,6 @@ impl MemoryLayout {
 
         all_ranges.sort();
         validate_ranges(&all_ranges)?;
-
-        let max_physical_address = 1 << physical_address_size;
-        for &range in &all_ranges {
-            if range.end() > max_physical_address {
-                return Err(Error::PhysicalAddressExceeded {
-                    range,
-                    width: physical_address_size,
-                });
-            }
-        }
 
         if all_ranges
             .iter()
@@ -220,7 +204,6 @@ impl MemoryLayout {
         }
 
         Ok(Self {
-            physical_address_size,
             ram,
             mmio,
             vtl2_range,
@@ -242,11 +225,6 @@ impl MemoryLayout {
     /// mmio.
     pub fn vtl2_range(&self) -> Option<MemoryRange> {
         self.vtl2_range
-    }
-
-    /// The bit width of a physical address for the VM.
-    pub fn physical_address_size(&self) -> u8 {
-        self.physical_address_size
     }
 
     /// The total RAM size in bytes. This is not contiguous.
@@ -313,6 +291,27 @@ impl MemoryLayout {
     pub fn end_of_ram_or_mmio(&self) -> u64 {
         std::cmp::max(self.mmio.last().expect("mmio set").end(), self.end_of_ram())
     }
+
+    /// Probe a given address to see if it is in the memory layout described by
+    /// `self`. Returns the [`AddressType`] of the address if it is in the
+    /// layout.
+    ///
+    /// This does not check the vtl2_range.
+    pub fn probe_address(&self, address: u64) -> Option<AddressType> {
+        let ranges = self
+            .ram
+            .iter()
+            .map(|r| (&r.range, AddressType::Ram))
+            .chain(self.mmio.iter().map(|r| (r, AddressType::Mmio)));
+
+        for (range, address_type) in ranges {
+            if range.contains_addr(address) {
+                return Some(address_type);
+            }
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]
@@ -345,7 +344,7 @@ mod tests {
             },
         ];
 
-        let layout = MemoryLayout::new(42, TB, mmio, None).unwrap();
+        let layout = MemoryLayout::new(TB, mmio, None).unwrap();
         assert_eq!(
             layout.ram(),
             &[
@@ -367,7 +366,7 @@ mod tests {
         assert_eq!(layout.ram_size(), TB);
         assert_eq!(layout.end_of_ram(), TB + 2 * GB);
 
-        let layout = MemoryLayout::new_from_ranges(42, ram, mmio).unwrap();
+        let layout = MemoryLayout::new_from_ranges(ram, mmio).unwrap();
         assert_eq!(
             layout.ram(),
             &[
@@ -392,20 +391,20 @@ mod tests {
 
     #[test]
     fn bad_layout() {
-        MemoryLayout::new(42, TB + 1, &[], None).unwrap_err();
+        MemoryLayout::new(TB + 1, &[], None).unwrap_err();
         let mmio = &[
             MemoryRange::new(3 * GB..4 * GB),
             MemoryRange::new(GB..2 * GB),
         ];
-        MemoryLayout::new(42, TB, mmio, None).unwrap_err();
+        MemoryLayout::new(TB, mmio, None).unwrap_err();
 
-        MemoryLayout::new_from_ranges(42, &[], mmio).unwrap_err();
+        MemoryLayout::new_from_ranges(&[], mmio).unwrap_err();
 
         let ram = &[MemoryRangeWithNode {
             range: MemoryRange::new(0..GB),
             vnode: 0,
         }];
-        MemoryLayout::new_from_ranges(42, ram, mmio).unwrap_err();
+        MemoryLayout::new_from_ranges(ram, mmio).unwrap_err();
 
         let ram = &[MemoryRangeWithNode {
             range: MemoryRange::new(0..GB + MB),
@@ -415,12 +414,45 @@ mod tests {
             MemoryRange::new(GB..2 * GB),
             MemoryRange::new(3 * GB..4 * GB),
         ];
-        MemoryLayout::new_from_ranges(42, ram, mmio).unwrap_err();
+        MemoryLayout::new_from_ranges(ram, mmio).unwrap_err();
+    }
 
+    #[test]
+    fn probe_address() {
         let mmio = &[
             MemoryRange::new(GB..2 * GB),
             MemoryRange::new(3 * GB..4 * GB),
         ];
-        MemoryLayout::new(36, TB, mmio, None).unwrap_err();
+        let ram = &[
+            MemoryRangeWithNode {
+                range: MemoryRange::new(0..GB),
+                vnode: 0,
+            },
+            MemoryRangeWithNode {
+                range: MemoryRange::new(2 * GB..3 * GB),
+                vnode: 0,
+            },
+            MemoryRangeWithNode {
+                range: MemoryRange::new(4 * GB..TB + 2 * GB),
+                vnode: 0,
+            },
+        ];
+
+        let layout = MemoryLayout::new_from_ranges(ram, mmio).unwrap();
+
+        assert_eq!(layout.probe_address(0), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(256), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(2 * GB), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(4 * GB), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(TB), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(TB + 1), Some(AddressType::Ram));
+
+        assert_eq!(layout.probe_address(GB), Some(AddressType::Mmio));
+        assert_eq!(layout.probe_address(GB + 123), Some(AddressType::Mmio));
+        assert_eq!(layout.probe_address(3 * GB), Some(AddressType::Mmio));
+
+        assert_eq!(layout.probe_address(TB + 2 * GB), None);
+        assert_eq!(layout.probe_address(TB + 3 * GB), None);
+        assert_eq!(layout.probe_address(4 * TB), None);
     }
 }

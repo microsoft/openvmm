@@ -5,7 +5,7 @@
 # Validate that a tool is present.
 function check_cross_tool {
     if ! command -v "$1" >/dev/null 2>/dev/null; then
-        >&2 echo "missing $1 - Try 'sudo apt install clang-tools-14 lld-14' or check the guide."
+        >&2 echo "missing $1 - Try 'sudo apt install clang-tools-14 lld-14 llvm-dev' or check the guide."
         false
     fi
 }
@@ -38,11 +38,14 @@ function setup_windows_cross {
     export AR_aarch64_pc_windows_msvc=$(tool "$tooldir" aarch64-llvm-lib)
     export RC_aarch64_pc_windows_msvc=$(tool "$tooldir" aarch64-llvm-rc)
     export DLLTOOL_aarch64_pc_windows_msvc=$(tool "$tooldir" aarch64-llvm-dlltool)
+    export MIDLRT_aarch64_pc_windows_msvc=$(tool "$tooldir" aarch64-midlrt.exe)
     export CC_x86_64_pc_windows_msvc=$(tool "$tooldir" x86_64-clang-cl)
     export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(tool "$tooldir" x86_64-lld-link)
     export AR_x86_64_pc_windows_msvc=$(tool "$tooldir" x86_64-llvm-lib)
     export RC_x86_64_pc_windows_msvc=$(tool "$tooldir" x86_64-llvm-rc)
     export DLLTOOL_x86_64_pc_windows_msvc=$(tool "$tooldir" x86_64-llvm-dlltool)
+    export MIDLRT_x86_64_pc_windows_msvc=$(tool "$tooldir" x86_64-midlrt.exe)
+    export OPENVMM_WINDOWS_CROSS_TOOL="$tooldir/cross_tool.py"
 }
 
 # Check if this file was run directly instead of sourced, and fail with a

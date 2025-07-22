@@ -23,9 +23,9 @@ use ucs2::Ucs2LeSlice;
 use ucs2::Ucs2ParseError;
 use uefi_nvram_specvars::signature_list;
 use uefi_nvram_specvars::signature_list::ParseSignatureLists;
-use uefi_nvram_storage::InspectableNvramStorage;
 use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorageError;
+use uefi_nvram_storage::VmmNvramStorage;
 use uefi_specs::uefi::common::EfiStatus;
 use uefi_specs::uefi::nvram::EfiVariableAttributes;
 use uefi_specs::uefi::time::EFI_TIME;
@@ -134,7 +134,7 @@ impl SupportedAttrs {
 }
 
 /// Helper struct to collect various properties of a parsed authenticated var
-#[cfg_attr(not(feature = "auth-var-verify-crypto"), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ParsedAuthVar<'a> {
     pub name: &'a Ucs2LeSlice,
@@ -224,12 +224,12 @@ impl RuntimeState {
 /// `NvramError` type provides additional context as to what error occurred in
 /// OpenVMM (i.e: for logging purposes).
 #[derive(Debug, Inspect)]
-pub struct NvramSpecServices<S: InspectableNvramStorage> {
+pub struct NvramSpecServices<S: VmmNvramStorage> {
     storage: S,
     runtime_state: RuntimeState,
 }
 
-impl<S: InspectableNvramStorage> NvramSpecServices<S> {
+impl<S: VmmNvramStorage> NvramSpecServices<S> {
     /// Construct a new NvramServices instance from an existing storage backend.
     pub fn new(storage: S) -> NvramSpecServices<S> {
         NvramSpecServices {
@@ -567,7 +567,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                     (),
                     EfiStatus::DEVICE_ERROR,
                     Some(NvramError::NvramStorage(err)),
-                )
+                );
             }
         };
 
@@ -690,8 +690,8 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                 // UEFI spec 8.2.2 - Using the EFI_VARIABLE_AUTHENTICATION_2 descriptor
                 use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
                 use uefi_specs::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
-                use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
                 use uefi_specs::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
+                use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
 
                 tracing::trace!(
                     "variable is attempting to use TIME_BASED_AUTHENTICATED_WRITE_ACCESS"
@@ -705,7 +705,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                             (),
                             EfiStatus::INVALID_PARAMETER,
                             Some(NvramError::DataNull),
-                        )
+                        );
                     }
                 };
 
@@ -719,7 +719,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                                 (),
                                 EfiStatus::SECURITY_VIOLATION,
                                 Some(NvramError::AuthError(AuthError::NotEnoughHdrData)),
-                            )
+                            );
                         }
                     };
                 let timestamp = auth_hdr.timestamp;
@@ -1037,7 +1037,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                     (0, _) => return NvramResult((), EfiStatus::SUCCESS, None),
                     // If data len is non-zero, data cannot be nullptr
                     (_, None) => {
-                        return NvramResult((), EfiStatus::SUCCESS, Some(NvramError::DataNull))
+                        return NvramResult((), EfiStatus::SUCCESS, Some(NvramError::DataNull));
                     }
                     (_, Some(data)) => data,
                 };
@@ -1105,7 +1105,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                                     (),
                                     EfiStatus::INVALID_PARAMETER,
                                     Some(NvramError::SignatureList(e)),
-                                )
+                                );
                             }
                         };
 
@@ -1214,7 +1214,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                             (),
                             EfiStatus::INVALID_PARAMETER,
                             Some(NvramError::DataNull),
-                        )
+                        );
                     }
                 };
 
@@ -1304,7 +1304,9 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
         _: (Guid, &Ucs2LeSlice),
         _: ParsedAuthVar<'_>,
     ) -> Result<(), (EfiStatus, Option<NvramError>)> {
-        tracing::warn!("compiled without 'auth-var-verify-crypto' - unconditionally failing auth var validation!");
+        tracing::warn!(
+            "compiled without 'auth-var-verify-crypto' - unconditionally failing auth var validation!"
+        );
         Err((EfiStatus::SECURITY_VIOLATION, None))
     }
 
@@ -1391,7 +1393,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
         loop {
             match res {
                 Ok(NextVariable::EndOfList) => {
-                    return NvramResult(None, EfiStatus::NOT_FOUND, None)
+                    return NvramResult(None, EfiStatus::NOT_FOUND, None);
                 }
                 Ok(NextVariable::InvalidKey) => {
                     return NvramResult(None, EfiStatus::INVALID_PARAMETER, None);
@@ -1451,6 +1453,8 @@ mod save_restore {
 
     mod state {
         use mesh::payload::Protobuf;
+        use uefi_nvram_storage::in_memory::InMemoryNvram;
+        use vmcore::save_restore::SaveRestore;
 
         #[derive(Protobuf)]
         #[mesh(package = "firmware.uefi.nvram.spec")]
@@ -1468,10 +1472,12 @@ mod save_restore {
         pub struct SavedState {
             #[mesh(1)]
             pub runtime_state: SavedRuntimeState,
+            #[mesh(2)]
+            pub storage: <InMemoryNvram as SaveRestore>::SavedState,
         }
     }
 
-    impl<S: InspectableNvramStorage> SaveRestore for NvramSpecServices<S> {
+    impl<S: VmmNvramStorage> SaveRestore for NvramSpecServices<S> {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
@@ -1481,17 +1487,22 @@ mod save_restore {
                     RuntimeState::Boot => state::SavedRuntimeState::Boot,
                     RuntimeState::Runtime => state::SavedRuntimeState::Runtime,
                 },
+                storage: self.storage.save()?,
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { runtime_state } = state;
+            let state::SavedState {
+                runtime_state,
+                storage,
+            } = state;
 
             self.runtime_state = match runtime_state {
                 state::SavedRuntimeState::PreBoot => RuntimeState::PreBoot,
                 state::SavedRuntimeState::Boot => RuntimeState::Boot,
                 state::SavedRuntimeState::Runtime => RuntimeState::Runtime,
             };
+            self.storage.restore(storage)?;
 
             Ok(())
         }
@@ -1524,7 +1535,7 @@ mod test {
     }
 
     #[async_trait::async_trait]
-    impl<S: InspectableNvramStorage> NvramServicesTestExt for NvramSpecServices<S> {
+    impl<S: VmmNvramStorage> NvramServicesTestExt for NvramSpecServices<S> {
         async fn set_test_var(&mut self, name: &[u8], attr: u32, data: &[u8]) -> NvramResult<()> {
             let vendor = Guid::default();
 

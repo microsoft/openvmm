@@ -6,9 +6,10 @@
 use super::SegmentRegister;
 use super::TableRegister;
 use super::X86PartitionCapabilities;
-use crate::state::state_trait;
 use crate::state::HvRegisterState;
 use crate::state::StateElement;
+use crate::state::state_trait;
+use hvdef::HV_MESSAGE_SIZE;
 use hvdef::HvInternalActivityRegister;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64InterruptStateRegister;
@@ -20,17 +21,21 @@ use hvdef::HvX64PendingInterruptionType;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64SegmentRegister;
 use hvdef::HvX64TableRegister;
-use hvdef::HV_MESSAGE_SIZE;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
 use vm_topology::processor::x86::X86VpInfo;
+use x86defs::RFlags;
+use x86defs::X64_CR0_CD;
+use x86defs::X64_CR0_ET;
+use x86defs::X64_CR0_NW;
+use x86defs::X64_EFER_NXE;
+use x86defs::X86X_MSR_DEFAULT_PAT;
+use x86defs::apic::APIC_BASE_PAGE;
 use x86defs::apic::ApicBase;
 use x86defs::apic::ApicVersion;
-use x86defs::apic::APIC_BASE_PAGE;
-use x86defs::xsave::Fxsave;
-use x86defs::xsave::XsaveHeader;
 use x86defs::xsave::DEFAULT_MXCSR;
+use x86defs::xsave::Fxsave;
 use x86defs::xsave::INIT_FCW;
 use x86defs::xsave::XCOMP_COMPRESSED;
 use x86defs::xsave::XFEATURE_SSE;
@@ -38,12 +43,7 @@ use x86defs::xsave::XFEATURE_X87;
 use x86defs::xsave::XFEATURE_YMM;
 use x86defs::xsave::XSAVE_LEGACY_LEN;
 use x86defs::xsave::XSAVE_VARIABLE_OFFSET;
-use x86defs::RFlags;
-use x86defs::X64_CR0_CD;
-use x86defs::X64_CR0_ET;
-use x86defs::X64_CR0_NW;
-use x86defs::X64_EFER_NXE;
-use x86defs::X86X_MSR_DEFAULT_PAT;
+use x86defs::xsave::XsaveHeader;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -337,7 +337,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Registers {
             r14: 0,
             r15: 0,
             rip: 0xfff0,
-            rflags: RFlags::default().into(),
+            rflags: RFlags::at_reset().into(),
             cs,
             ds,
             es: ds,
@@ -720,7 +720,7 @@ impl Xsave {
         // This normalizes behavior between mshv (which always sets SSE in
         // xstate_bv) and KVM (which does not).
         if header.xstate_bv & XFEATURE_SSE != 0 {
-            if fxsave.xmm.iter().eq(std::iter::repeat(&[0; 16]).take(16))
+            if fxsave.xmm.iter().eq(std::iter::repeat_n(&[0; 16], 16))
                 && fxsave.mxcsr == DEFAULT_MXCSR
             {
                 header.xstate_bv &= !XFEATURE_SSE;
@@ -967,14 +967,14 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Xsave {
 
 #[derive(PartialEq, Eq, Clone, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
+#[inspect(hex)]
 pub struct Apic {
-    #[inspect(hex)]
     #[mesh(1)]
     pub apic_base: u64,
     #[inspect(with = "ApicRegisters::from")]
     #[mesh(2)]
     pub registers: [u32; 64],
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
+    #[inspect(iter_by_index)]
     #[mesh(3)]
     pub auto_eoi: [u32; 8],
 }
@@ -996,64 +996,44 @@ impl Debug for Apic {
 
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+#[inspect(hex)]
 pub struct ApicRegisters {
     #[inspect(skip)]
     pub reserved_0: [u32; 2],
-    #[inspect(hex)]
     pub id: u32,
-    #[inspect(hex)]
     pub version: u32,
     #[inspect(skip)]
     pub reserved_4: [u32; 4],
-    #[inspect(hex)]
     pub tpr: u32, // Task Priority Register
-    #[inspect(hex)]
     pub apr: u32, // Arbitration Priority Register
-    #[inspect(hex)]
     pub ppr: u32, // Processor Priority Register
-    #[inspect(hex)]
     pub eoi: u32, //
-    #[inspect(hex)]
     pub rrd: u32, // Remote Read Register
-    #[inspect(hex)]
     pub ldr: u32, // Logical Destination Register
-    #[inspect(hex)]
     pub dfr: u32, // Destination Format Register
-    #[inspect(hex)]
     pub svr: u32, // Spurious Interrupt Vector
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
+    #[inspect(iter_by_index)]
     pub isr: [u32; 8], // In-Service Register
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
+    #[inspect(iter_by_index)]
     pub tmr: [u32; 8], // Trigger Mode Register
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
+    #[inspect(iter_by_index)]
     pub irr: [u32; 8], // Interrupt Request Register
-    #[inspect(hex)]
     pub esr: u32, // Error Status Register
     #[inspect(skip)]
     pub reserved_29: [u32; 6],
-    #[inspect(hex)]
     pub lvt_cmci: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
+    #[inspect(iter_by_index)]
     pub icr: [u32; 2], // Interrupt Command Register
-    #[inspect(hex)]
     pub lvt_timer: u32,
-    #[inspect(hex)]
     pub lvt_thermal: u32,
-    #[inspect(hex)]
     pub lvt_pmc: u32,
-    #[inspect(hex)]
     pub lvt_lint0: u32,
-    #[inspect(hex)]
     pub lvt_lint1: u32,
-    #[inspect(hex)]
     pub lvt_error: u32,
-    #[inspect(hex)]
     pub timer_icr: u32, // Initial Count Register
-    #[inspect(hex)]
     pub timer_ccr: u32, // Current Count Register
     #[inspect(skip)]
     pub reserved_3a: [u32; 4],
-    #[inspect(hex)]
     pub timer_dcr: u32, // Divide Configuration Register
     #[inspect(skip)]
     pub reserved_3f: u32,
@@ -1287,15 +1267,16 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Pat {
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
+#[inspect(hex)]
 pub struct Mtrrs {
     #[mesh(1)]
     #[inspect(hex)]
     pub msr_mtrr_def_type: u64,
     #[mesh(2)]
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
+    #[inspect(iter_by_index)]
     pub fixed: [u64; 11],
     #[mesh(3)]
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
+    #[inspect(iter_by_index)]
     pub variable: [u64; 16],
 }
 
@@ -1373,30 +1354,23 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Mtrrs {
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
+#[inspect(hex)]
 pub struct VirtualMsrs {
     #[mesh(1)]
-    #[inspect(hex)]
     pub kernel_gs_base: u64,
     #[mesh(2)]
-    #[inspect(hex)]
     pub sysenter_cs: u64,
     #[mesh(3)]
-    #[inspect(hex)]
     pub sysenter_eip: u64,
     #[mesh(4)]
-    #[inspect(hex)]
     pub sysenter_esp: u64,
     #[mesh(5)]
-    #[inspect(hex)]
     pub star: u64,
     #[mesh(6)]
-    #[inspect(hex)]
     pub lstar: u64,
     #[mesh(7)]
-    #[inspect(hex)]
     pub cstar: u64,
     #[mesh(8)]
-    #[inspect(hex)]
     pub sfmask: u64,
 }
 
@@ -1583,12 +1557,11 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Cet {
 #[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
+#[inspect(hex)]
 pub struct CetSs {
     #[mesh(1)]
-    #[inspect(hex)]
     pub ssp: u64,
     #[mesh(2)]
-    #[inspect(hex)]
     pub interrupt_ssp_table_addr: u64,
     // Plx_ssp are part of xsave state.
 }
@@ -1627,21 +1600,18 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for CetSs {
 #[repr(C)]
 #[derive(Debug, Default, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
+#[inspect(hex)]
 pub struct SyntheticMsrs {
     #[mesh(1)]
-    #[inspect(hex)]
     pub vp_assist_page: u64,
     #[mesh(2)]
-    #[inspect(hex)]
     pub scontrol: u64,
     #[mesh(3)]
-    #[inspect(hex)]
     pub siefp: u64,
     #[mesh(4)]
-    #[inspect(hex)]
     pub simp: u64,
     #[mesh(5)]
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter().map(inspect::AsHex))")]
+    #[inspect(iter_by_index)]
     pub sint: [u64; 16],
 }
 
@@ -1714,18 +1684,15 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for SyntheticMsrs {
 
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Protobuf, Inspect)]
 #[mesh(package = "virt.x86")]
+#[inspect(hex)]
 pub struct SynicTimer {
     #[mesh(1)]
-    #[inspect(hex)]
     pub config: u64,
     #[mesh(2)]
-    #[inspect(hex)]
     pub count: u64,
     #[mesh(3)]
-    #[inspect(hex)]
     pub adjustment: u64,
     #[mesh(4)]
-    #[inspect(hex)]
     pub undelivered_message_expiration_time: Option<u64>,
 }
 

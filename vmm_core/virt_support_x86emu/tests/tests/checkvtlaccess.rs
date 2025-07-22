@@ -8,8 +8,8 @@ use iced_x86::code_asm::*;
 use pal_async::async_test;
 use virt_support_x86emu::emulate::*;
 use vm_topology::processor::VpIndex;
-use x86defs::cpuid::Vendor;
 use x86defs::RFlags;
+use x86defs::cpuid::Vendor;
 use x86emu::Gp;
 use x86emu::Segment;
 use zerocopy::FromBytes;
@@ -118,7 +118,7 @@ impl EmulatorSupport for MockSupport {
     }
 
     /// The gva translation included in the intercept message header, if valid.
-    fn initial_gva_translation(&self) -> Option<InitialTranslation> {
+    fn initial_gva_translation(&mut self) -> Option<InitialTranslation> {
         None
     }
 
@@ -157,6 +157,12 @@ async fn run_emulation(
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
+
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -181,7 +187,7 @@ async fn run_emulation(
         gm.write_at(support.state.rip, &instruction_bytes).unwrap();
     }
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     if fail_vtl_access.is_none() {
         assert_eq!(support.gp(Gp::RAX), TEST_VALUE);

@@ -24,7 +24,7 @@ impl ObjectId {
     /// Returns a new random object ID.
     pub fn new() -> Self {
         let mut v = [0; 16];
-        getrandom::getrandom(&mut v).unwrap();
+        getrandom::fill(&mut v).unwrap();
         Self(v)
     }
 }

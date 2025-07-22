@@ -4,8 +4,8 @@
 use crate::OfferInfo;
 use inspect::Inspect;
 use mesh::rpc::Rpc;
-use vmbus_core::protocol;
 use vmbus_core::HvsockConnectRequest;
+use vmbus_core::protocol;
 
 /// Tracks guest-to-host hvsocket requests that the host has not responded to yet.
 #[derive(Inspect)]

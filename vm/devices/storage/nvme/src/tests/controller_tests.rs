@@ -2,21 +2,21 @@
 // Licensed under the MIT License.
 
 use super::test_helpers::TestNvmeMmioRegistration;
+use crate::BAR0_LEN;
+use crate::NvmeController;
+use crate::NvmeControllerCaps;
+use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
-use crate::NvmeController;
-use crate::NvmeControllerCaps;
-use crate::BAR0_LEN;
-use crate::PAGE_SIZE64;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
-use pal_async::async_test;
 use pal_async::DefaultDriver;
+use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::test_helpers::TestPciInterruptController;
 use user_driver::backoff::Backoff;

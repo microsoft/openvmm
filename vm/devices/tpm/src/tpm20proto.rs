@@ -15,7 +15,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u16_be = zerocopy::U16<zerocopy::BigEndian>;
     pub type u32_be = zerocopy::U32<zerocopy::BigEndian>;
@@ -64,13 +64,17 @@ pub enum TpmProtoError {
 pub enum ResponseValidationError {
     #[error("response size is too small to fit into the buffer")]
     ResponseSizeTooSmall,
-    #[error("size {size} specified in the response header does not meet the minimal size of command type {expected_size}, command succeeded: {command_succeeded}")]
+    #[error(
+        "size {size} specified in the response header does not meet the minimal size of command type {expected_size}, command succeeded: {command_succeeded}"
+    )]
     HeaderResponseSizeMismatch {
         size: u32,
         expected_size: usize,
         command_succeeded: bool,
     },
-    #[error("unexpected session tag {response_session_tag} specified in the response header, expected: {expected_session_tag}, command succeeded: {command_succeeded}")]
+    #[error(
+        "unexpected session tag {response_session_tag} specified in the response header, expected: {expected_session_tag}, command succeeded: {command_succeeded}"
+    )]
     HeaderSessionTagMismatch {
         response_session_tag: u16,
         expected_session_tag: u16,
@@ -219,7 +223,7 @@ impl CommandCode {
     }
 }
 
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[expect(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u32)]
 pub enum CommandCodeEnum {
@@ -597,7 +601,7 @@ impl AlgId {
     }
 }
 
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[expect(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 #[repr(u16)]
 pub enum AlgIdEnum {
@@ -1946,7 +1950,7 @@ pub mod protocol {
 
     // === Startup === //
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub enum StartupType {
         Clear,
         State,

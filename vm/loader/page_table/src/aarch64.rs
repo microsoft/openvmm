@@ -9,7 +9,7 @@ use bitfield_struct::bitfield;
 /// manual for further details and other types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 #[repr(u8)]
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 pub enum MemoryAttributeEl1 {
     /// Most restricted device memory: non-gathering,
     /// non-reordering, non-early-ack.
@@ -693,7 +693,9 @@ pub fn build_identity_page_tables_aarch64(
         panic!("size not 2mb aligned");
     }
 
-    tracing::debug!("Creating Aarch64 page tables at {page_table_gpa:#x} mapping starting at {start_gpa:#x} of size {size} bytes");
+    tracing::debug!(
+        "Creating Aarch64 page tables at {page_table_gpa:#x} mapping starting at {start_gpa:#x} of size {size} bytes"
+    );
 
     let mut page_table_space = vec![0; page_table_region_size];
     let mut page_tables =

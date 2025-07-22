@@ -116,11 +116,8 @@ impl FlowNode for Node {
                 let initrd = initrd.claim(ctx);
                 move |rt| {
                     let interactive_dep = rt.read(interactive_dep);
-                    let rootfs_config = rootfs_config
-                        .into_iter()
-                        .map(|x| rt.read(x))
-                        .collect::<Vec<_>>();
-                    let extra_env = extra_env.map(|x| rt.read(x));
+                    let rootfs_config = rt.read(rootfs_config);
+                    let extra_env = rt.read(extra_env);
                     let bin_openhcl = rt.read(bin_openhcl);
                     let openvmm_repo_path = rt.read(openvmm_repo_path);
                     let kernel_package_root = rt.read(kernel_package_root);

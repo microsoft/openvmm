@@ -4,6 +4,7 @@
 //! Architecture-independent runtime support.
 
 #[cfg(minimal_rt)]
+#[expect(clippy::missing_safety_doc)]
 mod instead_of_builtins {
     /// Implementation cribbed from compiler_builtins.
     #[inline(always)]

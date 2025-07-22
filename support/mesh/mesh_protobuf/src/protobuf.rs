@@ -3,15 +3,15 @@
 
 //! Tools to encode and decode protobuf messages.
 
-use super::buffer;
-use super::buffer::Buf;
-use super::buffer::Buffer;
 use super::DecodeError;
 use super::InplaceOption;
 use super::MessageDecode;
 use super::MessageEncode;
 use super::RefCell;
 use super::Result;
+use super::buffer;
+use super::buffer::Buf;
+use super::buffer::Buffer;
 use crate::DefaultEncoding;
 use alloc::vec;
 use alloc::vec::Vec;

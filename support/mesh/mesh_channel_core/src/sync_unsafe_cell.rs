@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // UNSAFETY: needed to implement `Sync` for `SyncUnsafeCell`.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use std::cell::UnsafeCell;
 use std::fmt::Debug;

@@ -3,8 +3,8 @@
 
 //! Build `xtask` binary
 
-use crate::run_cargo_build::common::CommonTriple;
 use crate::run_cargo_build::BuildProfile;
+use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 
@@ -37,7 +37,7 @@ impl SimpleFlowNode for Node {
             crate_name: "xtask".into(),
             out_name: "xtask".into(),
             crate_type: CargoCrateType::Bin,
-            profile: BuildProfile::Xtask,
+            profile: BuildProfile::Light,
             features: [].into(),
             target: target.as_triple(),
             no_split_dbg_info: false,
@@ -46,7 +46,7 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        ctx.emit_rust_step("report built xtask", |ctx| {
+        ctx.emit_minor_rust_step("report built xtask", |ctx| {
             let xtask = xtask.claim(ctx);
             let output = output.claim(ctx);
             move |rt| {
@@ -64,8 +64,6 @@ impl SimpleFlowNode for Node {
                 };
 
                 rt.write(xtask, &output);
-
-                Ok(())
             }
         });
 

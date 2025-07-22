@@ -29,6 +29,8 @@
 //!
 //! [`Inspect`]: inspect::Inspect
 
+#![forbid(unsafe_code)]
+
 mod clock_impls;
 
 pub use clock_impls::MockLocalClock;
@@ -118,13 +120,16 @@ impl Debug for LocalClockDelta {
 }
 
 impl LocalClockDelta {
+    /// A delta of zero milliseconds.
+    pub const ZERO: Self = Self { millis: 0 };
+
     /// Return the duration in milliseconds.
-    pub fn as_millis(self) -> i64 {
+    pub const fn as_millis(self) -> i64 {
         self.millis
     }
 
     /// Create a duration from milliseconds.
-    pub fn from_millis(millis: i64) -> Self {
+    pub const fn from_millis(millis: i64) -> Self {
         Self { millis }
     }
 }

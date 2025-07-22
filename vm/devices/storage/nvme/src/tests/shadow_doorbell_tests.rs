@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::DOORBELL_STRIDE_BITS;
+use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::queue::ShadowDoorbell;
 use crate::spec;
@@ -9,11 +11,9 @@ use crate::tests::controller_tests::wait_for_msi;
 use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
-use crate::DOORBELL_STRIDE_BITS;
-use crate::PAGE_SIZE64;
 use guestmem::GuestMemory;
-use pal_async::async_test;
 use pal_async::DefaultDriver;
+use pal_async::async_test;
 use pci_core::test_helpers::TestPciInterruptController;
 use user_driver::backoff::Backoff;
 use zerocopy::FromZeros;

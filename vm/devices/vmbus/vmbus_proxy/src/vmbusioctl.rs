@@ -1,13 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
-    dead_code,
-    non_camel_case_types,
-    non_snake_case,
-    non_upper_case_globals,
-    clippy::upper_case_acronyms
-)]
+#![expect(non_snake_case)]
 
 use bitfield_struct::bitfield;
 use vmbus_core::protocol::UserDefinedData;
@@ -45,9 +39,10 @@ pub struct VmbusChannelOfferFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default, zerocopy::IntoBytes, zerocopy::Immutable)]
 pub struct VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
     pub RingBufferGpadlHandle: u32,
     pub DownstreamRingBufferPageOffset: u32,
     pub NodeNumber: u16,
+    pub Padding: u16,
 }

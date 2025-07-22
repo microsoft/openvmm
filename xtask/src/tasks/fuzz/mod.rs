@@ -300,7 +300,9 @@ impl Xtask for Fuzz {
                 );
 
                 if let Err(e) = res {
-                    log::warn!("Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!");
+                    log::warn!(
+                        "Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!"
+                    );
                     return Err(e);
                 }
             }
@@ -351,7 +353,9 @@ impl Xtask for Fuzz {
                 );
 
                 if let Err(e) = res {
-                    log::warn!("Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!");
+                    log::warn!(
+                        "Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!"
+                    );
                     return Err(e);
                 }
             }
@@ -424,7 +428,9 @@ impl Xtask for Fuzz {
                         let Ok(path) = path.strip_prefix(&ctx.root) else {
                             // Ok to throw away `std::path::StripPrefixError`,
                             // it doesn't contain any additional context
-                            anyhow::bail!("allowlist for '{name}' references file(s) outside of the HvLite directory")
+                            anyhow::bail!(
+                                "allowlist for '{name}' references file(s) outside of the HvLite directory"
+                            )
                         };
                         // add in "*/" to appease the OneFuzz allowlist syntax
                         writeln!(allowlist_file, "*/{}", path.display())?;

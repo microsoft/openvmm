@@ -4,23 +4,24 @@
 use diag_client::kmsg_stream::KmsgStream;
 use fs_err::File;
 use fs_err::PathExt;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::StreamExt;
+use futures::io::BufReader;
 use jiff::Timestamp;
+use kmsg::KmsgParsedEntry;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::level_filters::LevelFilter;
 use tracing::Level;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -288,7 +289,7 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 
     fn make_writer(&'a self) -> Self::Writer {
         LogWriter {
-            inner: &self.0 .0,
+            inner: &self.0.0,
             level: Level::INFO,
             timestamp: None,
         }
@@ -296,7 +297,7 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 
     fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
         LogWriter {
-            inner: &self.0 .0,
+            inner: &self.0.0,
             level: *meta.level(),
             timestamp: None,
         }
@@ -324,6 +325,17 @@ pub async fn log_stream(
     Ok(())
 }
 
+/// Maps kernel log levels to tracing levels.
+fn kernel_level_to_tracing_level(kernel_level: u8) -> Level {
+    match kernel_level {
+        0..=3 => Level::ERROR,
+        4 => Level::WARN,
+        5..=6 => Level::INFO,
+        7 => Level::DEBUG,
+        _ => Level::INFO,
+    }
+}
+
 /// read from the kmsg stream and write entries to the log
 pub async fn kmsg_log_task(
     log_file: PetriLogFile,
@@ -332,8 +344,9 @@ pub async fn kmsg_log_task(
     while let Some(data) = file_stream.next().await {
         match data {
             Ok(data) => {
-                let message = kmsg::KmsgParsedEntry::new(&data)?;
-                log_file.write_entry(message.display(false));
+                let message = KmsgParsedEntry::new(&data).unwrap();
+                let level = kernel_level_to_tracing_level(message.level);
+                log_file.write_entry_fmt(None, level, format_args!("{}", message.display(false)));
             }
             Err(err) => {
                 tracing::info!("kmsg disconnected: {err:?}");
@@ -343,4 +356,32 @@ pub async fn kmsg_log_task(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kernel_level_to_tracing_level() {
+        // Test emergency to error levels (0-3)
+        assert_eq!(kernel_level_to_tracing_level(0), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(1), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(2), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(3), Level::ERROR);
+
+        // Test warning level (4)
+        assert_eq!(kernel_level_to_tracing_level(4), Level::WARN);
+
+        // Test notice and info levels (5-6)
+        assert_eq!(kernel_level_to_tracing_level(5), Level::INFO);
+        assert_eq!(kernel_level_to_tracing_level(6), Level::INFO);
+
+        // Test debug level (7)
+        assert_eq!(kernel_level_to_tracing_level(7), Level::DEBUG);
+
+        // Test unknown level (fallback)
+        assert_eq!(kernel_level_to_tracing_level(8), Level::INFO);
+        assert_eq!(kernel_level_to_tracing_level(255), Level::INFO);
+    }
 }

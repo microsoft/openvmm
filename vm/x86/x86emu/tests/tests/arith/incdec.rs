@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::tests::common::run_lockable_test;
 use crate::tests::common::LockTestBehavior;
 use crate::tests::common::RFLAGS_ARITH_MASK;
+use crate::tests::common::run_lockable_test;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
 use x86emu::Cpu;

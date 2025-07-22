@@ -6,10 +6,10 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
+use disk_backend::resolve::ResolveDiskParameters;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::FixedVhd1DiskHandle;
 use disk_file::FileDisk;
 use guid::Guid;
@@ -22,9 +22,9 @@ use std::io::Seek;
 use std::io::Write;
 use thiserror::Error;
 use vhd1_defs::VhdFooter;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
-use vm_resource::ResolveResource;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 

@@ -19,8 +19,8 @@ const ATTESTATION_SIGNATURE: u32 = 0x414c4348; // 'HCLA'
 const ATTESTATION_REPORT_SIZE_MAX: usize = SNP_VM_REPORT_SIZE;
 
 pub const VBS_VM_REPORT_SIZE: usize = 0x230;
-pub const SNP_VM_REPORT_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_SIZE;
-pub const TDX_VM_REPORT_SIZE: usize = tdx_guest_device::protocol::TDX_REPORT_SIZE;
+pub const SNP_VM_REPORT_SIZE: usize = x86defs::snp::SNP_REPORT_SIZE;
+pub const TDX_VM_REPORT_SIZE: usize = x86defs::tdx::TDX_REPORT_SIZE;
 /// No TEE attestation report for TVM
 pub const TVM_REPORT_SIZE: usize = 0;
 
@@ -399,6 +399,8 @@ pub mod runtime_claims {
         pub tpm_enabled: bool,
         /// Whether the TPM states is persisted
         pub tpm_persisted: bool,
+        /// Whether certain vPCI devices are allowed through the device filter
+        pub filtered_vpci_devices_allowed: bool,
         /// VM id
         #[serde(rename = "vmUniqueId")]
         pub vm_unique_id: String,

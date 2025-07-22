@@ -101,7 +101,7 @@ pub enum KvmRunVpError {
     ExtintInterrupt(#[source] kvm::Error),
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 pub struct KvmProcessorBinder {
     partition: Arc<KvmPartitionInner>,
     vpindex: VpIndex,

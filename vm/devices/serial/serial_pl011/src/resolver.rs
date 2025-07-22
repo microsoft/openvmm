@@ -5,17 +5,17 @@
 
 use crate::SerialPl011;
 use async_trait::async_trait;
+use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
-use chipset_device_resources::IRQ_LINE_SET;
 use serial_core::resources::ResolveSerialBackendParams;
 use serial_pl011_resources::SerialPl011DeviceHandle;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// The resource resolver for [`SerialPl011`].
 pub struct SerialPl011Resolver;

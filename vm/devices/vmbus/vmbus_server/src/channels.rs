@@ -3,25 +3,27 @@
 
 mod saved_state;
 
+use crate::Guid;
+use crate::SINT;
+use crate::SynicMessage;
 use crate::monitor::AssignedMonitors;
 use crate::protocol::Version;
-use crate::Guid;
-use crate::SynicMessage;
-use crate::SINT;
 use hvdef::Vtl;
 use inspect::Inspect;
 pub use saved_state::RestoreError;
 pub use saved_state::SavedState;
+pub use saved_state::SavedStateData;
 use slab::Slab;
 use std::cmp::min;
+use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::collections::hash_map::HashMap;
-use std::collections::VecDeque;
 use std::fmt::Display;
 use std::ops::Index;
 use std::ops::IndexMut;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
+use std::time::Duration;
 use thiserror::Error;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
@@ -29,6 +31,11 @@ use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::bus::RestoredGpadl;
+use vmbus_core::HvsockConnectRequest;
+use vmbus_core::HvsockConnectResult;
+use vmbus_core::MaxVersionInfo;
+use vmbus_core::OutgoingMessage;
+use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::ConnectionId;
@@ -37,14 +44,10 @@ use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::Message;
 use vmbus_core::protocol::OfferFlags;
 use vmbus_core::protocol::UserDefinedData;
-use vmbus_core::HvsockConnectRequest;
-use vmbus_core::HvsockConnectResult;
-use vmbus_core::MaxVersionInfo;
-use vmbus_core::MonitorPageGpas;
-use vmbus_core::OutgoingMessage;
-use vmbus_core::VersionInfo;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
+use vmcore::synic::MonitorInfo;
+use vmcore::synic::MonitorPageGpas;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -324,7 +327,6 @@ pub struct ModifyConnectionRequest {
     pub monitor_page: Update<MonitorPageGpas>,
     pub interrupt_page: Update<u64>,
     pub target_message_vp: Option<u32>,
-    pub force: bool,
     pub notify_relay: bool,
 }
 
@@ -336,7 +338,6 @@ impl Default for ModifyConnectionRequest {
             monitor_page: Update::Unchanged,
             interrupt_page: Update::Unchanged,
             target_message_vp: None,
-            force: false,
             notify_relay: true,
         }
     }
@@ -396,8 +397,8 @@ enum RestoreState {
     /// The channel has been offered newly this session.
     New,
     /// The channel was in the saved state and has been re-offered this session,
-    /// but restore_channel has not yet been called on it, and post_restore has
-    /// not yet been called.
+    /// but restore_channel has not yet been called on it, and revoke_unclaimed_channels
+    /// has not yet been called.
     Restoring,
     /// The channel was in the saved state but has not yet been re-offered this
     /// session.
@@ -543,6 +544,46 @@ impl Display for ChannelState {
     }
 }
 
+/// Indicates how a MNF (monitored interrupts) should be used for a channel.
+#[derive(Debug, Clone, Default, mesh::MeshPayload)]
+pub enum MnfUsage {
+    /// The channel does not use MNF.
+    #[default]
+    Disabled,
+    /// The channel uses MNF, handled by this server, with the specified interrupt latency.
+    Enabled { latency: Duration },
+    /// The channel uses MNF, handled by the relay host, with the monitor ID specified by the relay
+    /// host.
+    Relayed { monitor_id: u8 },
+}
+
+impl MnfUsage {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, Self::Enabled { .. })
+    }
+
+    pub fn is_relayed(&self) -> bool {
+        matches!(self, Self::Relayed { .. })
+    }
+
+    pub fn enabled_and_then<T>(&self, f: impl FnOnce(Duration) -> Option<T>) -> Option<T> {
+        if let Self::Enabled { latency } = self {
+            f(*latency)
+        } else {
+            None
+        }
+    }
+}
+
+impl From<Option<Duration>> for MnfUsage {
+    fn from(value: Option<Duration>) -> Self {
+        match value {
+            None => Self::Disabled,
+            Some(latency) => Self::Enabled { latency },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, mesh::MeshPayload)]
 pub struct OfferParamsInternal {
     /// An informational string describing the channel type.
@@ -552,11 +593,10 @@ pub struct OfferParamsInternal {
     pub mmio_megabytes: u16,
     pub mmio_megabytes_optional: u16,
     pub subchannel_index: u16,
-    pub use_mnf: bool,
+    pub use_mnf: MnfUsage,
     pub offer_order: Option<u32>,
     pub flags: OfferFlags,
     pub user_defined: UserDefinedData,
-    pub monitor_id: Option<u8>,
 }
 
 impl OfferParamsInternal {
@@ -625,11 +665,10 @@ impl From<OfferParams> for OfferParamsInternal {
             mmio_megabytes: value.mmio_megabytes,
             mmio_megabytes_optional: value.mmio_megabytes_optional,
             subchannel_index: value.subchannel_index,
-            use_mnf: value.use_mnf,
+            use_mnf: value.mnf_interrupt_latency.into(),
             offer_order: value.offer_order,
             user_defined,
             flags,
-            monitor_id: None,
         }
     }
 }
@@ -739,21 +778,28 @@ impl Channel {
             .binary("offer_flags", self.offer.flags.into_bits());
     }
 
-    /// Returns the monitor ID only if it's being handled by this server.
+    /// Returns the monitor ID and latency only if it's being handled by this server.
     ///
-    /// The monitor ID can be set while use_mnf is false, which is the case if
+    /// The monitor ID can be set while use_mnf is Relayed, which is the case if
     /// the relay host is handling MNF.
     ///
     /// Also returns `None` for reserved channels, since monitored notifications
     /// are only usable for standard channels. Otherwise, we fail later when we
     /// try to change the MNF page as part of vmbus protocol renegotiation,
     /// since the page still appears to be in use by a device.
-    fn handled_monitor_id(&self) -> Option<MonitorId> {
-        if self.offer.use_mnf && !self.state.is_reserved() {
-            self.info.and_then(|info| info.monitor_id)
-        } else {
-            None
-        }
+    fn handled_monitor_info(&self) -> Option<MonitorInfo> {
+        self.offer.use_mnf.enabled_and_then(|latency| {
+            if self.state.is_reserved() {
+                None
+            } else {
+                self.info.and_then(|info| {
+                    info.monitor_id.map(|monitor_id| MonitorInfo {
+                        monitor_id,
+                        latency,
+                    })
+                })
+            }
+        })
     }
 
     /// Prepares a channel to be sent to the guest by allocating a channel ID if
@@ -777,17 +823,19 @@ impl Channel {
 
         // Allocate a monitor ID if the channel uses MNF.
         // N.B. If the synic doesn't support MNF or MNF is disabled by the server, use_mnf should
-        //      always be set to false. For the relay, that means the host is handling MNF so we
-        //      should use the monitor ID it provided if there is one.
-        let monitor_id = if self.offer.use_mnf {
-            let monitor_id = assigned_monitors.assign_monitor();
-            if monitor_id.is_none() {
-                tracelimit::warn_ratelimited!("Out of monitor IDs.");
-            }
+        //      always be set to Disabled, except if the relay host is handling MnF in which case
+        //      we should use the monitor ID it provided.
+        let monitor_id = match self.offer.use_mnf {
+            MnfUsage::Enabled { .. } => {
+                let monitor_id = assigned_monitors.assign_monitor();
+                if monitor_id.is_none() {
+                    tracelimit::warn_ratelimited!("Out of monitor IDs.");
+                }
 
-            monitor_id
-        } else {
-            self.offer.monitor_id.map(MonitorId)
+                monitor_id
+            }
+            MnfUsage::Relayed { monitor_id } => Some(MonitorId(monitor_id)),
+            MnfUsage::Disabled => None,
         };
 
         self.info = Some(OfferedInfo {
@@ -807,9 +855,9 @@ impl Channel {
         if let Some(info) = self.info.take() {
             assigned_channels.free(info.channel_id, offer_id);
 
-            // Only unassign the monitor ID if it was not explicitly provided by the offer.
+            // Only unassign the monitor ID if it was not a relayed ID provided by the offer.
             if let Some(monitor_id) = info.monitor_id {
-                if self.offer.use_mnf {
+                if self.offer.use_mnf.is_enabled() {
                     assigned_monitors.release_monitor(monitor_id);
                 }
             }
@@ -893,9 +941,11 @@ impl AssignmentEntry<'_> {
     }
 
     pub fn insert(self, offer_id: OfferId) {
-        assert!(self.list.assignments[self.index]
-            .replace(offer_id)
-            .is_none());
+        assert!(
+            self.list.assignments[self.index]
+                .replace(offer_id)
+                .is_none()
+        );
 
         if self.index < self.list.reserved_offset {
             self.list.count_in_reserved_range += 1;
@@ -935,9 +985,11 @@ impl ChannelList {
                     // Merge in the inspection state from outside. Skip this if
                     // the channel is revoked (and not reoffered) since in that
                     // case the caller won't recognize the channel ID.
-                    if !matches!(channel.state, ChannelState::Revoked) {
-                        notifier.inspect(version, offer_id, resp.request());
-                    }
+                    resp.merge(inspect::adhoc(|req| {
+                        if !matches!(channel.state, ChannelState::Revoked) {
+                            notifier.inspect(version, offer_id, req);
+                        }
+                    }));
                 },
             );
         }
@@ -1136,16 +1188,17 @@ pub struct OpenParams {
     pub open_data: OpenData,
     pub connection_id: u32,
     pub event_flag: u16,
-    pub monitor_id: Option<MonitorId>,
+    pub monitor_info: Option<MonitorInfo>,
     pub flags: protocol::OpenChannelFlags,
     pub reserved_target: Option<ConnectionTarget>,
+    pub channel_id: ChannelId,
 }
 
 impl OpenParams {
     fn from_request(
         info: &OfferedInfo,
         request: &OpenRequest,
-        monitor_id: Option<MonitorId>,
+        monitor_info: Option<MonitorInfo>,
         reserved_target: Option<ConnectionTarget>,
     ) -> Self {
         // Determine whether to use the alternate IDs.
@@ -1167,9 +1220,10 @@ impl OpenParams {
             },
             connection_id,
             event_flag,
-            monitor_id,
+            monitor_info,
             flags: request.flags.with_unused(0),
             reserved_target,
+            channel_id: info.channel_id,
         }
     }
 }
@@ -1339,7 +1393,7 @@ impl Server {
             RestoreState::Restoring => {}
             RestoreState::Unmatched => unreachable!(),
             RestoreState::Restored => {
-                return Err(RestoreError::AlreadyRestored(channel.offer.key()))
+                return Err(RestoreError::AlreadyRestored(channel.offer.key()));
             }
         }
 
@@ -1374,7 +1428,7 @@ impl Server {
         Ok(OpenParams::from_request(
             &info,
             &request,
-            channel.handled_monitor_id(),
+            channel.handled_monitor_info(),
             reserved_state.map(|state| state.target),
         ))
     }
@@ -1425,7 +1479,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             RestoreState::Restoring => {}
             RestoreState::Unmatched => unreachable!(),
             RestoreState::Restored => {
-                return Err(RestoreError::AlreadyRestored(channel.offer.key()))
+                return Err(RestoreError::AlreadyRestored(channel.offer.key()));
             }
         }
 
@@ -1433,9 +1487,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .info
             .ok_or_else(|| RestoreError::MissingChannel(channel.offer.key()))?;
 
-        if let Some(monitor_id) = channel.handled_monitor_id() {
-            if !self.inner.assigned_monitors.claim_monitor(monitor_id) {
-                return Err(RestoreError::DuplicateMonitorId(monitor_id.0));
+        if let Some(monitor_info) = channel.handled_monitor_info() {
+            if !self
+                .inner
+                .assigned_monitors
+                .claim_monitor(monitor_info.monitor_id)
+            {
+                return Err(RestoreError::DuplicateMonitorId(monitor_info.monitor_id.0));
             }
         }
 
@@ -1492,7 +1550,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             OpenParams::from_request(
                                 &info,
                                 &request,
-                                channel.handled_monitor_id(),
+                                channel.handled_monitor_info(),
                                 None,
                             ),
                             self.inner.state.get_version().expect("must be connected"),
@@ -1513,7 +1571,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             OpenParams::from_request(
                                 &info,
                                 &request,
-                                channel.handled_monitor_id(),
+                                channel.handled_monitor_info(),
                                 reserved_state.map(|state| state.target),
                             ),
                             self.inner.state.get_version().expect("must be connected"),
@@ -1536,18 +1594,25 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         Ok(())
     }
 
-    pub fn post_restore(&mut self) -> Result<(), RestoreError> {
+    /// Revoke and reoffer channels to the guest, depending on their `RestoreState.`
+    /// This function should be called after [`ServerWithNotifier::restore`].
+    pub fn revoke_unclaimed_channels(&mut self) {
         for (offer_id, channel) in self.inner.channels.iter_mut() {
             match channel.restore_state {
                 RestoreState::Restored => {
                     // The channel is fully restored. Nothing more to do.
                 }
                 RestoreState::New => {
-                    // This is a fresh channel offer, not in the saved state.
-                    // Send the offer to the guest if it has not already been
-                    // sent (which could have happened if the channel was
-                    // offered after restore() but before post_restore()).
-                    if let ConnectionState::Connected(info) = &self.inner.state {
+                    // This is a fresh channel offer, not in the saved state. Send the offer to the
+                    // guest if it has not already been sent (which could have happened if the
+                    // channel was offered after restore() but before revoke_unclaimed_channels()).
+                    // Offers should only be sent if the guest has already sent RequestOffers.
+                    if let ConnectionState::Connected(ConnectionInfo {
+                        offers_sent: true,
+                        version,
+                        ..
+                    }) = &self.inner.state
+                    {
                         if matches!(channel.state, ChannelState::ClientReleased) {
                             channel.prepare_channel(
                                 offer_id,
@@ -1558,7 +1623,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             self.inner
                                 .pending_messages
                                 .sender(self.notifier, self.inner.state.is_paused())
-                                .send_offer(channel, info.version);
+                                .send_offer(channel, *version);
                         }
                     }
                 }
@@ -1616,42 +1681,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
         }
 
-        // Restore server state, and resend server notifications if needed. If these notifications
-        // were processed before the save, it's harmless as the values will be the same.
-        let request = match self.inner.state {
-            ConnectionState::Connecting {
-                info,
-                next_action: _,
-            } => Some(ModifyConnectionRequest {
-                version: Some(info.version.version as u32),
-                interrupt_page: info.interrupt_page.into(),
-                monitor_page: info.monitor_page.into(),
-                target_message_vp: Some(info.target_message_vp),
-                force: true,
-                notify_relay: true,
-            }),
-            ConnectionState::Connected(info) => Some(ModifyConnectionRequest {
-                version: None,
-                monitor_page: info.monitor_page.into(),
-                interrupt_page: info.interrupt_page.into(),
-                target_message_vp: Some(info.target_message_vp),
-                force: true,
-                // If the save didn't happen while modifying, the relay doesn't need to be notified
-                // of this info as it doesn't constitute a change, we're just restoring existing
-                // connection state.
-                notify_relay: info.modifying,
-            }),
-            // No action needed for these states; if disconnecting, check_disconnected will resend
-            // the reset request if needed.
-            ConnectionState::Disconnected | ConnectionState::Disconnecting { .. } => None,
-        };
-
-        if let Some(request) = request {
-            self.notifier.modify_connection(request)?;
-        }
-
         self.check_disconnected();
-        Ok(())
     }
 
     /// Initiates a state reset and a closing of all channels.
@@ -1698,12 +1728,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 assert!(!matches!(channel.state, ChannelState::Revoked));
                 // This channel was previously offered to the guest in the saved
                 // state. Match this back up to handle future calls to
-                // restore_channel and post_restore.
+                // restore_channel and revoke_unclaimed_channels.
                 channel.restore_state = RestoreState::Restoring;
 
                 // The relay can specify a host-determined monitor ID, which needs to match what's
                 // in the saved state.
-                if let Some(monitor_id) = offer.monitor_id {
+                if let MnfUsage::Relayed { monitor_id } = offer.use_mnf {
                     if info.monitor_id != Some(MonitorId(monitor_id)) {
                         return Err(OfferError::MismatchedMonitorId(
                             info.monitor_id,
@@ -1804,12 +1834,22 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 reserved_state,
             } => {
                 let channel_id = channel.info.expect("assigned").channel_id;
-                tracing::info!(
-                    offer_id = offer_id.0,
-                    channel_id = channel_id.0,
-                    result,
-                    "opened channel"
-                );
+                if result >= 0 {
+                    tracelimit::info_ratelimited!(
+                        offer_id = offer_id.0,
+                        channel_id = channel_id.0,
+                        result,
+                        "opened channel"
+                    );
+                } else {
+                    // Log channel open failures at error level for visibility.
+                    tracelimit::error_ratelimited!(
+                        offer_id = offer_id.0,
+                        channel_id = channel_id.0,
+                        result,
+                        "failed to open channel"
+                    );
+                }
 
                 self.inner
                     .pending_messages
@@ -2185,7 +2225,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             monitor_page: monitor_page.into(),
             interrupt_page: request.interrupt_page.into(),
             target_message_vp: Some(request.target_message_vp),
-            force: false,
             notify_relay: true,
         }) {
             tracelimit::error_ratelimited!(?err, "server failed to change state");
@@ -2260,18 +2299,20 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .find(|v| request.version_requested == **v as u32)
             .copied()?;
 
+        // The max version may be limited in order to test older protocol versions.
+        if let Some(max_version) = self.inner.max_version {
+            if version as u32 > max_version.version {
+                return None;
+            }
+        }
+
         let supported_flags = if version >= Version::Copper {
-            // The max version and features may be limited in order to test older protocol versions.
-            //
-            // N.B. Confidential channels should only be enabled if the connection is trusted.
+            // Confidential channels should only be enabled if the connection is trusted.
             let max_supported_flags =
                 SUPPORTED_FEATURE_FLAGS.with_confidential_channels(request.trusted);
 
+            // The max features may be limited in order to test older protocol versions.
             if let Some(max_version) = self.inner.max_version {
-                if version as u32 > max_version.version {
-                    return None;
-                }
-
                 max_supported_flags & max_version.feature_flags
             } else {
                 max_supported_flags
@@ -2719,7 +2760,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 OpenParams::from_request(
                     info,
                     input,
-                    channel.handled_monitor_id(),
+                    channel.handled_monitor_info(),
                     reserved_state.map(|state| state.target),
                 ),
                 self.inner.state.get_version().expect("must be connected"),
@@ -2868,11 +2909,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             ChannelState::Revoked | ChannelState::Reoffered => {}
 
             ChannelState::Open { .. } | ChannelState::Opening { .. } => {
-                return Err(ChannelError::ChannelAlreadyOpen)
+                return Err(ChannelError::ChannelAlreadyOpen);
             }
 
             ChannelState::Closing { .. } | ChannelState::ClosingReopen { .. } => {
-                return Err(ChannelError::InvalidChannelState)
+                return Err(ChannelError::InvalidChannelState);
             }
 
             ChannelState::ClientReleased
@@ -4376,7 +4417,7 @@ mod tests {
         assert_eq!(op.open_data.connection_id, connection_id);
         assert_eq!(op.connection_id, connection_id);
         assert_eq!(op.event_flag, event_flag);
-        assert_eq!(op.monitor_id, None);
+        assert_eq!(op.monitor_info, None);
         assert_eq!(op.flags, expected_flags);
 
         server
@@ -4569,15 +4610,29 @@ mod tests {
         }
 
         fn offer(&mut self, id: u32) -> OfferId {
-            self.offer_inner(id, id, false, None, None, OfferFlags::new())
+            self.offer_inner(id, id, MnfUsage::Disabled, None, OfferFlags::new())
         }
 
         fn offer_with_mnf(&mut self, id: u32) -> OfferId {
-            self.offer_inner(id, id, true, None, None, OfferFlags::new())
+            self.offer_inner(
+                id,
+                id,
+                MnfUsage::Enabled {
+                    latency: Duration::from_micros(100),
+                },
+                None,
+                OfferFlags::new(),
+            )
         }
 
         fn offer_with_preset_mnf(&mut self, id: u32, monitor_id: u8) -> OfferId {
-            self.offer_inner(id, id, false, None, Some(monitor_id), OfferFlags::new())
+            self.offer_inner(
+                id,
+                id,
+                MnfUsage::Relayed { monitor_id },
+                None,
+                OfferFlags::new(),
+            )
         }
 
         fn offer_with_order(
@@ -4589,24 +4644,22 @@ mod tests {
             self.offer_inner(
                 interface_id,
                 instance_id,
-                false,
+                MnfUsage::Disabled,
                 order,
-                None,
                 OfferFlags::new(),
             )
         }
 
         fn offer_with_flags(&mut self, id: u32, flags: OfferFlags) -> OfferId {
-            self.offer_inner(id, id, false, None, None, flags)
+            self.offer_inner(id, id, MnfUsage::Disabled, None, flags)
         }
 
         fn offer_inner(
             &mut self,
             interface_id: u32,
             instance_id: u32,
-            use_mnf: bool,
+            use_mnf: MnfUsage,
             offer_order: Option<u32>,
-            monitor_id: Option<u8>,
             flags: OfferFlags,
         ) -> OfferId {
             self.c()
@@ -4621,7 +4674,6 @@ mod tests {
                     },
                     use_mnf,
                     offer_order,
-                    monitor_id,
                     flags,
                     ..Default::default()
                 })
@@ -4844,9 +4896,8 @@ mod tests {
         let state = env.server.save();
         env.c().reset();
         assert!(env.notifier.is_reset());
-        env.server.restore(state).unwrap();
+        env.c().restore(state).unwrap();
         env.c().restore_channel(offer_id1, false).unwrap();
-        env.c().post_restore().unwrap();
     }
 
     #[test]
@@ -4932,7 +4983,7 @@ mod tests {
         env.c().revoke_channel(offer_id5);
         env.c().revoke_channel(offer_id6);
 
-        env.server.restore(state.clone()).unwrap();
+        env.c().restore(state.clone()).unwrap();
 
         env.c().revoke_channel(offer_id1);
         env.c().revoke_channel(offer_id4);
@@ -4948,7 +4999,7 @@ mod tests {
             ChannelState::Reoffered
         ));
 
-        env.c().post_restore().unwrap();
+        env.c().revoke_unclaimed_channels();
 
         assert_eq!(env.notifier.monitor_page, Some(expected_monitor));
         assert_eq!(env.notifier.target_message_vp, Some(0));
@@ -4975,9 +5026,8 @@ mod tests {
         env.complete_reset();
         env.notifier.check_reset();
 
-        env.server.restore(state).unwrap();
+        env.c().restore(state).unwrap();
         env.c().restore_channel(offer_id3, false).unwrap();
-        env.c().post_restore().unwrap();
         assert_eq!(env.notifier.monitor_page, Some(expected_monitor));
         assert_eq!(env.notifier.target_message_vp, Some(0));
     }
@@ -5005,9 +5055,8 @@ mod tests {
         env.complete_connect();
         env.notifier.check_reset();
 
-        env.server.restore(state).unwrap();
+        env.c().restore(state).unwrap();
         env.c().restore_channel(offer_id1, false).unwrap();
-        env.c().post_restore().unwrap();
         assert_eq!(
             env.notifier.monitor_page,
             Some(MonitorPageGpas {
@@ -5028,7 +5077,6 @@ mod tests {
                 }),
                 interrupt_page: Update::Reset,
                 target_message_vp: Some(0),
-                force: true,
                 ..Default::default()
             }
         );
@@ -5068,8 +5116,8 @@ mod tests {
         let state = env.server.save();
         env.c().reset();
         env.notifier.check_reset();
-        env.server.restore(state).unwrap();
-        env.c().post_restore().unwrap();
+
+        env.c().restore(state).unwrap();
 
         // Restore should have resent the request.
         let request = env.next_action();
@@ -5082,7 +5130,6 @@ mod tests {
                 }),
                 interrupt_page: Update::Reset,
                 target_message_vp: Some(0),
-                force: true,
                 ..Default::default()
             }
         );
@@ -5124,16 +5171,144 @@ mod tests {
         let offer_id1 = env.offer(1);
         let offer_id2 = env.offer(2);
         let offer_id3 = env.offer(3);
-        env.server.restore(state).unwrap();
+
+        env.c().restore(state).unwrap();
 
         // This will panic if the reserved channel was not restored.
         env.c().restore_channel(offer_id1, true).unwrap();
         env.c().restore_channel(offer_id2, false).unwrap();
         env.c().restore_channel(offer_id3, false).unwrap();
-        env.c().post_restore().unwrap();
 
         // Make sure the gpadl was restored as well.
         assert!(env.server.gpadls.contains_key(&(GpadlId(1), offer_id1)));
+    }
+
+    #[test]
+    fn test_save_restore_offers_not_sent() {
+        let mut env = TestEnv::new();
+
+        let _offer_id1 = env.offer(1);
+        let _offer_id2 = env.offer(2);
+        let _offer_id3 = env.offer(3);
+
+        env.connect(Version::Copper, FeatureFlags::new());
+
+        // All offers are in the ClientReleased state, so they are not saved.
+        let state = env.server.save();
+        let mut env = TestEnv::new();
+
+        let offer_id1 = env.offer(1);
+        let offer_id2 = env.offer(2);
+        let offer_id3 = env.offer(3);
+
+        // Because the offers were not saved, they are treated as new during the restore.
+        env.c().restore(state).unwrap();
+        env.c().restore_channel(offer_id1, false).unwrap();
+        env.c().restore_channel(offer_id2, false).unwrap();
+        env.c().restore_channel(offer_id3, false).unwrap();
+
+        // Because the guest has not yet requested offers, no messages should be sent at this point.
+        env.c().revoke_unclaimed_channels();
+        assert!(env.notifier.messages.is_empty());
+
+        // When the guest requests offers, they should be all be sent.
+        env.c().handle_request_offers().unwrap();
+        env.notifier.check_messages(&[
+            OutgoingMessage::new(&protocol::OfferChannel {
+                interface_id: Guid {
+                    data1: 1,
+                    ..Guid::ZERO
+                },
+                instance_id: Guid {
+                    data1: 1,
+                    ..Guid::ZERO
+                },
+                channel_id: ChannelId(1),
+                connection_id: 0x2001,
+                is_dedicated: 1,
+                monitor_id: 0xff,
+                ..protocol::OfferChannel::new_zeroed()
+            }),
+            OutgoingMessage::new(&protocol::OfferChannel {
+                interface_id: Guid {
+                    data1: 2,
+                    ..Guid::ZERO
+                },
+                instance_id: Guid {
+                    data1: 2,
+                    ..Guid::ZERO
+                },
+                channel_id: ChannelId(2),
+                connection_id: 0x2002,
+                is_dedicated: 1,
+                monitor_id: 0xff,
+                ..protocol::OfferChannel::new_zeroed()
+            }),
+            OutgoingMessage::new(&protocol::OfferChannel {
+                interface_id: Guid {
+                    data1: 3,
+                    ..Guid::ZERO
+                },
+                instance_id: Guid {
+                    data1: 3,
+                    ..Guid::ZERO
+                },
+                channel_id: ChannelId(3),
+                connection_id: 0x2003,
+                is_dedicated: 1,
+                monitor_id: 0xff,
+                ..protocol::OfferChannel::new_zeroed()
+            }),
+            OutgoingMessage::new(&protocol::AllOffersDelivered {}),
+        ]);
+    }
+
+    #[test]
+    fn test_save_restore_hot_add_during_restore() {
+        let mut env = TestEnv::new();
+
+        let _offer_id1 = env.offer(1);
+        let _offer_id2 = env.offer(2);
+        let _offer_id3 = env.offer(3);
+
+        env.connect(Version::Copper, FeatureFlags::new());
+        env.c().handle_request_offers().unwrap();
+        let state = env.server.save();
+        let mut env = TestEnv::new();
+
+        let offer_id1 = env.offer(1);
+        let offer_id2 = env.offer(2);
+        let offer_id3 = env.offer(3);
+        // A new offer is created that is not present in the saved state.
+        let _offer_id4 = env.offer(4);
+
+        // Because the offers were not saved, they are treated as new during the restore.
+        env.c().restore(state).unwrap();
+        env.c().restore_channel(offer_id1, false).unwrap();
+        env.c().restore_channel(offer_id2, false).unwrap();
+        env.c().restore_channel(offer_id3, false).unwrap();
+        assert!(env.notifier.messages.is_empty());
+
+        // A message should be sent for the new offer only.
+        env.c().revoke_unclaimed_channels();
+        env.notifier
+            .check_message(OutgoingMessage::new(&protocol::OfferChannel {
+                interface_id: Guid {
+                    data1: 4,
+                    ..Guid::ZERO
+                },
+                instance_id: Guid {
+                    data1: 4,
+                    ..Guid::ZERO
+                },
+                channel_id: ChannelId(4),
+                connection_id: 0x2004,
+                is_dedicated: 1,
+                monitor_id: 0xff,
+                ..protocol::OfferChannel::new_zeroed()
+            }));
+
+        assert!(env.notifier.messages.is_empty());
     }
 
     #[test]
@@ -5178,11 +5353,11 @@ mod tests {
         let offer_id1 = env.offer(1);
         let offer_id2 = env.offer(2);
         let offer_id3 = env.offer(3);
-        env.server.restore(state).unwrap();
+
+        env.c().restore(state).unwrap();
         env.c().restore_channel(offer_id1, false).unwrap();
         env.c().restore_channel(offer_id2, true).unwrap();
         env.c().restore_channel(offer_id3, true).unwrap();
-        env.c().post_restore().unwrap();
 
         // The messages should be pending again.
         assert!(env.server.has_pending_messages());

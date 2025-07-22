@@ -8,8 +8,8 @@
 // UNSAFETY: Calling ioctls.
 #![expect(unsafe_code)]
 
-use hvdef::hypercall::HvInputVtl;
 use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
 use inspect::Inspect;
 use thiserror::Error;
 

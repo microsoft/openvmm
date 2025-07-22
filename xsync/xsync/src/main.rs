@@ -29,7 +29,7 @@ pub struct CmdCtx {
 }
 
 /// Common trait implemented by all Cmd subcommands.
-trait Cmd: clap::Parser {
+trait Cmd: Parser {
     /// Run the Cmd.
     fn run(self, ctx: CmdCtx) -> anyhow::Result<()>;
 }
@@ -51,7 +51,6 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[expect(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     CargoToml(tasks::CargoToml),
@@ -119,19 +118,25 @@ fn try_main() -> anyhow::Result<()> {
 }
 
 fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
-    log::info!("running xsync cmd: `rust-toolchain regen`    (syncing overlay-repo's `rust-toolchain.toml` to base-repo's `rust-toolchain.toml`)");
+    log::info!(
+        "running xsync cmd: `rust-toolchain regen`    (syncing overlay-repo's `rust-toolchain.toml` to base-repo's `rust-toolchain.toml`)"
+    );
     tasks::RustToolchainToml {
         cmd: tasks::rust_toolchain_toml::Command::Regen,
     }
     .run(ctx.clone())?;
 
-    log::info!("running xsync cmd: `rustfmt regen`    (syncing overlay-repo's `rustfmt.toml` to base-repo's `rustfmt.toml`)");
+    log::info!(
+        "running xsync cmd: `rustfmt regen`    (syncing overlay-repo's `rustfmt.toml` to base-repo's `rustfmt.toml`)"
+    );
     tasks::RustfmtToml {
         cmd: tasks::rustfmt_toml::Command::Regen,
     }
     .run(ctx.clone())?;
 
-    log::info!("running xsync cmd: `cargo-toml regen`    (regenerating overlay-repo `Cargo.toml` using `Cargo.xsync.toml`)");
+    log::info!(
+        "running xsync cmd: `cargo-toml regen`    (regenerating overlay-repo `Cargo.toml` using `Cargo.xsync.toml`)"
+    );
     tasks::CargoToml {
         cmd: tasks::cargo_toml::Command::Regen,
     }
@@ -156,7 +161,9 @@ fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
         }
     }
 
-    log::info!("running xsync cmd: `cargo-lock gen-external base`    (regenerating list of base-repo external dependencies)");
+    log::info!(
+        "running xsync cmd: `cargo-lock gen-external base`    (regenerating list of base-repo external dependencies)"
+    );
     tasks::CargoLock {
         cmd: tasks::cargo_lock::Command::GenExternal {
             which: tasks::cargo_lock::Generate::Base,
@@ -164,7 +171,9 @@ fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
     }
     .run(ctx.clone())?;
 
-    log::info!("running xsync cmd: `cargo-lock gen-external overlay`    (regenerating list of overlay-repo external dependencies)");
+    log::info!(
+        "running xsync cmd: `cargo-lock gen-external overlay`    (regenerating list of overlay-repo external dependencies)"
+    );
     tasks::CargoLock {
         cmd: tasks::cargo_lock::Command::GenExternal {
             which: tasks::cargo_lock::Generate::Overlay,
@@ -172,13 +181,17 @@ fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
     }
     .run(ctx.clone())?;
 
-    log::info!("running xsync cmd: `cargo-lock regen`    (syncing overlay-repo's `Cargo.lock` to base-repo's `Cargo.lock`)");
+    log::info!(
+        "running xsync cmd: `cargo-lock regen`    (syncing overlay-repo's `Cargo.lock` to base-repo's `Cargo.lock`)"
+    );
     tasks::CargoLock {
         cmd: tasks::cargo_lock::Command::Regen,
     }
     .run(ctx.clone())?;
 
-    log::info!("running xsync cmd: `cargo-lock gen-external overlay`    (regenerating list of overlay-repo external dependencies (post-sync))");
+    log::info!(
+        "running xsync cmd: `cargo-lock gen-external overlay`    (regenerating list of overlay-repo external dependencies (post-sync))"
+    );
     tasks::CargoLock {
         cmd: tasks::cargo_lock::Command::GenExternal {
             which: tasks::cargo_lock::Generate::Overlay,

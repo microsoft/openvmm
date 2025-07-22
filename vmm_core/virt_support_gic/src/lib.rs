@@ -10,15 +10,15 @@ pub use gicd::Distributor;
 pub use gicr::Redistributor;
 
 mod gicd {
-    use super::gicr::SharedState;
     use super::Redistributor;
+    use super::gicr::SharedState;
+    use aarch64defs::MpidrEl1;
+    use aarch64defs::SystemReg;
     use aarch64defs::gic::GicdCtlr;
     use aarch64defs::gic::GicdRegister;
     use aarch64defs::gic::GicdTyper;
     use aarch64defs::gic::GicdTyper2;
     use aarch64defs::gic::GicrSgi;
-    use aarch64defs::MpidrEl1;
-    use aarch64defs::SystemReg;
     use inspect::Inspect;
     use memory_range::MemoryRange;
     use parking_lot::Mutex;
@@ -497,17 +497,17 @@ mod gicd {
 }
 
 mod gicr {
+    use aarch64defs::MpidrEl1;
     use aarch64defs::gic::GicrCtlr;
     use aarch64defs::gic::GicrRdRegister;
     use aarch64defs::gic::GicrSgiRegister;
     use aarch64defs::gic::GicrTyper;
     use aarch64defs::gic::GicrWaker;
-    use aarch64defs::MpidrEl1;
     use inspect::Inspect;
     use parking_lot::Mutex;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
 
     #[derive(Debug, Inspect)]
     pub struct Redistributor {

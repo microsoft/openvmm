@@ -6,8 +6,8 @@ use hvdef::HvResult;
 use hvdef::Vtl;
 use inspect::Inspect;
 use parking_lot::Mutex;
-use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -15,11 +15,12 @@ use std::task::Context;
 use std::task::Poll;
 use virt::Synic;
 use virt::VpIndex;
-use vmcore::monitor::MonitorId;
 use vmcore::synic::EventPort;
 use vmcore::synic::GuestEventPort;
 use vmcore::synic::GuestMessagePort;
 use vmcore::synic::MessagePort;
+use vmcore::synic::MonitorInfo;
+use vmcore::synic::MonitorPageGpas;
 use vmcore::synic::SynicMonitorAccess;
 use vmcore::synic::SynicPortAccess;
 
@@ -99,7 +100,7 @@ impl SynicPortAccess for SynicPorts {
     ) -> Result<Box<dyn Sync + Send>, vmcore::synic::Error> {
         match self.ports.lock().entry(connection_id) {
             hash_map::Entry::Occupied(_) => {
-                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id))
+                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id));
             }
             hash_map::Entry::Vacant(e) => {
                 e.insert(Port {
@@ -112,6 +113,7 @@ impl SynicPortAccess for SynicPorts {
             ports: Arc::downgrade(&self.ports),
             connection_id,
             _inner_handle: None,
+            _monitor: None,
         }))
     }
 
@@ -120,6 +122,7 @@ impl SynicPortAccess for SynicPorts {
         connection_id: u32,
         minimum_vtl: Vtl,
         port: Arc<dyn EventPort>,
+        monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<dyn Sync + Send>, vmcore::synic::Error> {
         // Create a direct port mapping in the hypervisor if an event was provided.
         let inner_handle = if let Some(event) = port.os_event() {
@@ -131,7 +134,7 @@ impl SynicPortAccess for SynicPorts {
 
         match self.ports.lock().entry(connection_id) {
             hash_map::Entry::Occupied(_) => {
-                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id))
+                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id));
             }
             hash_map::Entry::Vacant(e) => {
                 e.insert(Port {
@@ -141,10 +144,17 @@ impl SynicPortAccess for SynicPorts {
             }
         }
 
+        let monitor = monitor_info.as_ref().and_then(|info| {
+            self.partition
+                .monitor_support()
+                .map(|monitor| monitor.register_monitor(info.monitor_id, connection_id))
+        });
+
         Ok(Box::new(PortHandle {
             ports: Arc::downgrade(&self.ports),
             connection_id,
             _inner_handle: inner_handle,
+            _monitor: monitor,
         }))
     }
 
@@ -164,8 +174,14 @@ impl SynicPortAccess for SynicPorts {
 
     fn new_guest_event_port(
         &self,
+        _port_id: u32,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+        _monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
-        Ok(self.partition.new_guest_event_port())
+        Ok(self.partition.new_guest_event_port(vtl, vp, sint, flag))
     }
 
     fn prefer_os_events(&self) -> bool {
@@ -178,18 +194,11 @@ impl SynicPortAccess for SynicPorts {
 }
 
 impl SynicMonitorAccess for SynicPorts {
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()> {
         self.partition
             .monitor_support()
             .unwrap()
-            .register_monitor(monitor_id, connection_id)
-    }
-
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()> {
-        self.partition
-            .monitor_support()
-            .unwrap()
-            .set_monitor_page(gpa)
+            .set_monitor_page(vtl, gpa.map(|mp| mp.child_to_parent))
     }
 }
 
@@ -197,6 +206,7 @@ struct PortHandle {
     ports: Weak<PortMap>,
     connection_id: u32,
     _inner_handle: Option<Box<dyn Sync + Send>>,
+    _monitor: Option<Box<dyn Sync + Send>>,
 }
 
 impl Drop for PortHandle {

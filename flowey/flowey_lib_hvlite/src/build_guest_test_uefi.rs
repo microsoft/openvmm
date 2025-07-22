@@ -11,10 +11,15 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct GuestTestUefiOutput {
+    #[serde(rename = "guest_test_uefi.efi")]
     pub efi: PathBuf,
+    #[serde(rename = "guest_test_uefi.pdb")]
     pub pdb: PathBuf,
+    #[serde(rename = "guest_test_uefi.img")]
     pub img: PathBuf,
 }
+
+impl Artifact for GuestTestUefiOutput {}
 
 flowey_request! {
     pub struct Request {

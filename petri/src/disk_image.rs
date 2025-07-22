@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Tools for building a disk image for a VM.
+
 use anyhow::Context;
 use fatfs::FormatVolumeOptions;
 use fatfs::FsOptions;
@@ -19,6 +21,7 @@ use std::path::Path;
 pub struct AgentImage {
     os_flavor: OsFlavor,
     pipette: Option<ResolvedArtifact>,
+    extras: Vec<(String, ResolvedArtifact)>,
 }
 
 impl AgentImage {
@@ -47,58 +50,67 @@ impl AgentImage {
             ),
             (OsFlavor::FreeBsd | OsFlavor::Uefi, _) => None,
         };
-        Self { os_flavor, pipette }
+        Self {
+            os_flavor,
+            pipette,
+            extras: Vec::new(),
+        }
+    }
+
+    /// Adds an extra file to the disk image.
+    pub fn add_file(&mut self, name: &str, artifact: ResolvedArtifact) {
+        self.extras.push((name.to_string(), artifact));
     }
 
     /// Builds a disk image containing pipette and any files needed for the guest VM
     /// to run pipette.
     pub fn build(&self) -> anyhow::Result<tempfile::NamedTempFile> {
-        match self.os_flavor {
+        let mut files = self
+            .extras
+            .iter()
+            .map(|(name, artifact)| (name.as_str(), PathOrBinary::Path(artifact.as_ref())))
+            .collect::<Vec<_>>();
+        let volume_label = match self.os_flavor {
             OsFlavor::Windows => {
                 // Windows doesn't use cloud-init, so we only need pipette
                 // (which is configured via the IMC hive).
-                build_disk_image(
-                    b"pipette    ",
-                    &[(
-                        "pipette.exe",
-                        PathOrBinary::Path(self.pipette.as_ref().unwrap().as_ref()),
-                    )],
-                )
+                files.push((
+                    "pipette.exe",
+                    PathOrBinary::Path(self.pipette.as_ref().unwrap().as_ref()),
+                ));
+                b"pipette    "
             }
             OsFlavor::Linux => {
                 // Linux uses cloud-init, so we need to include the cloud-init
                 // configuration files as well.
-                build_disk_image(
-                    b"cidata     ", // cloud-init looks for a volume label of "cidata",
-                    &[
-                        (
-                            "pipette",
-                            PathOrBinary::Path(self.pipette.as_ref().unwrap().as_ref()),
-                        ),
-                        (
-                            "meta-data",
-                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/meta-data")),
-                        ),
-                        (
-                            "user-data",
-                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data")),
-                        ),
-                        // Specify a non-present NIC to work around https://github.com/canonical/cloud-init/issues/5511
-                        // TODO: support dynamically configuring the network based on vm configuration
-                        (
-                            "network-config",
-                            PathOrBinary::Binary(include_bytes!(
-                                "../guest-bootstrap/network-config"
-                            )),
-                        ),
-                    ],
-                )
+                files.extend([
+                    (
+                        "pipette",
+                        PathOrBinary::Path(self.pipette.as_ref().unwrap().as_ref()),
+                    ),
+                    (
+                        "meta-data",
+                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/meta-data")),
+                    ),
+                    (
+                        "user-data",
+                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data")),
+                    ),
+                    // Specify a non-present NIC to work around https://github.com/canonical/cloud-init/issues/5511
+                    // TODO: support dynamically configuring the network based on vm configuration
+                    (
+                        "network-config",
+                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/network-config")),
+                    ),
+                ]);
+                b"cidata     " // cloud-init looks for a volume label of "cidata",
             }
             OsFlavor::FreeBsd | OsFlavor::Uefi => {
                 // No pipette binary yet.
                 todo!()
             }
-        }
+        };
+        build_disk_image(volume_label, &files)
     }
 }
 

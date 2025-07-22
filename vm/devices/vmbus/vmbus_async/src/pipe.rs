@@ -21,12 +21,12 @@ use std::io;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use thiserror::Error;
-use vmbus_channel::connected_async_channels;
 use vmbus_channel::RawAsyncChannel;
+use vmbus_channel::connected_async_channels;
 use vmbus_ring as ring;
 use vmbus_ring::FlatRingMem;
 use vmbus_ring::RingMem;
@@ -68,7 +68,7 @@ impl From<Error> for io::Error {
             Error::ChannelClosed => {
                 io::Error::new(io::ErrorKind::ConnectionReset, Error::ChannelClosed)
             }
-            err => io::Error::new(io::ErrorKind::Other, err),
+            err => io::Error::other(err),
         }
     }
 }
@@ -773,11 +773,12 @@ impl<M: RingMem> AsyncRecv for MessagePipe<M> {
 
 impl<M: RingMem> AsyncSend for MessagePipe<M> {
     fn poll_send(&mut self, cx: &mut Context<'_>, bufs: &[IoSlice<'_>]) -> Poll<io::Result<()>> {
-        ready!(self
-            .0
-            .write
-            .writer(&self.0.core)
-            .poll_write_message(cx, bufs))?;
+        ready!(
+            self.0
+                .write
+                .writer(&self.0.core)
+                .poll_write_message(cx, bufs)
+        )?;
 
         Poll::Ready(Ok(()))
     }
@@ -911,9 +912,9 @@ mod tests {
     use crate::pipe::connected_message_pipes;
     use futures::AsyncReadExt;
     use futures::AsyncWriteExt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use std::io::ErrorKind;
     use std::time::Duration;
     use zerocopy::IntoBytes;

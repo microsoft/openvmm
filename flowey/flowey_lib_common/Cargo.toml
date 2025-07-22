@@ -17,6 +17,7 @@ log.workspace = true
 rlimit.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 target-lexicon = { workspace = true, features = ["serde_support"] }
 toml_edit.workspace = true
 which.workspace = true
@@ -24,7 +25,3 @@ xshell.workspace = true
 
 [lints]
 workspace = true
-
-[package.metadata.xtask.unused-deps]
-# Pulled in via prelude
-ignored = ["serde"]

@@ -3,28 +3,28 @@
 
 //! The NVMe PCI device implementation.
 
-use crate::spec;
-use crate::workers::IoQueueEntrySizes;
-use crate::workers::NvmeWorkers;
-use crate::NvmeControllerClient;
 use crate::BAR0_LEN;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::IOCQES;
 use crate::IOSQES;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
+use crate::NvmeControllerClient;
 use crate::PAGE_MASK;
 use crate::VENDOR_ID;
+use crate::spec;
+use crate::workers::IoQueueEntrySizes;
+use crate::workers::NvmeWorkers;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoError::InvalidRegister;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use chipset_device::ChipsetDevice;
+use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use device_emulators::ReadWriteRequestType;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;

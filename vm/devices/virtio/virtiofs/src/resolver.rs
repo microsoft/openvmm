@@ -3,16 +3,16 @@
 
 //! Defines the resource resolver for virtiofs devices.
 
-use crate::virtio::VirtioFsDevice;
 use crate::VirtioFs;
+use crate::virtio::VirtioFsDevice;
 use lxutil::LxVolumeOptions;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::fs::VirtioFsBackend;
 use virtio_resources::fs::VirtioFsHandle;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
-use vm_resource::ResolveResource;
 
 /// Resolver for virtiofs devices.
 pub struct VirtioFsResolver;

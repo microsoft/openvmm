@@ -5,19 +5,19 @@
 //! [`Disk`].
 
 use super::DriveRegister;
+use crate::DmaType;
+use crate::NewDeviceError;
 use crate::protocol;
 use crate::protocol::DeviceControlReg;
 use crate::protocol::DeviceHeadReg;
 use crate::protocol::ErrorReg;
 use crate::protocol::IdeCommand;
 use crate::protocol::Status;
-use crate::DmaType;
-use crate::NewDeviceError;
 use disk_backend::Disk;
 use disk_backend::DiskError;
-use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use ide_resources::IdePath;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;
@@ -282,7 +282,7 @@ impl MediaGeometry {
             sectors_per_track = 17;
             cylinders_times_heads = hard_drive_sectors / (sectors_per_track as u64);
 
-            head_count = std::cmp::max((cylinders_times_heads as u32 + 1023) / 1024, 4);
+            head_count = std::cmp::max((cylinders_times_heads as u32).div_ceil(1024), 4);
 
             if (cylinders_times_heads >= (head_count as u64) * 1024) || head_count > 16 {
                 // Always use 16 heads
@@ -563,7 +563,9 @@ impl HardDrive {
                     && data != self.disk_path.drive
                     && self.state.command.is_some()
                 {
-                    tracing::warn!("Changing selected drive in the middle of operation. Resetting previously selected drive");
+                    tracing::warn!(
+                        "Changing selected drive in the middle of operation. Resetting previously selected drive"
+                    );
                     self.reset();
                 }
                 self.state.regs.device_head = data.into();
@@ -1308,7 +1310,12 @@ impl HardDrive {
     fn write_media_sectors_complete(&mut self) -> Result<(), IdeError> {
         let command = self.state.command.as_mut().unwrap();
         let sectors_written = command.sectors_before_interrupt;
-        command.sectors_remaining -= sectors_written;
+        if self.state.prd_exhausted {
+            // If no more PRDs, no more to write
+            command.sectors_remaining = 0;
+        } else {
+            command.sectors_remaining -= sectors_written;
+        }
         command.next_lba += sectors_written as u64;
         // Update the registers with the last written LBA.
         self.state

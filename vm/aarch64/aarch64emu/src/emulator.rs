@@ -3,14 +3,14 @@
 
 //! Implements an arm64 instruction emulator.
 
-use crate::opcodes::decode_group;
+use crate::Cpu;
 use crate::opcodes::Aarch64DecodeGroup;
 use crate::opcodes::Aarch64DecodeLoadStoreGroup;
 use crate::opcodes::LoadRegisterLiteral;
 use crate::opcodes::LoadStoreAtomic;
 use crate::opcodes::LoadStoreRegister;
 use crate::opcodes::LoadStoreRegisterPair;
-use crate::Cpu;
+use crate::opcodes::decode_group;
 use aarch64defs::EsrEl2;
 use inspect::Inspect;
 use thiserror::Error;
@@ -34,7 +34,7 @@ pub struct InterceptState {
     pub instruction_bytes: [u8; 4],
     pub instruction_byte_count: u8,
     pub gpa: Option<u64>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     pub syndrome: EsrEl2,
     pub interruption_pending: bool,
 }

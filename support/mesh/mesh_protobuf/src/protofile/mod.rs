@@ -227,11 +227,13 @@ impl<'a> FieldType<'a> {
             [] => {
                 return Self::external("google.protobuf.Empty", "google/protobuf/empty.proto");
             }
-            &[Self {
-                kind: FieldKind::Builtin(ty),
-                sequence_type: None,
-                annotation,
-            }] if annotation.is_empty() => {
+            &[
+                Self {
+                    kind: FieldKind::Builtin(ty),
+                    sequence_type: None,
+                    annotation,
+                },
+            ] if annotation.is_empty() => {
                 let wrapper = match ty.as_bytes() {
                     b"double" => Some("google.protobuf.DoubleValue"),
                     b"float" => Some("google.protobuf.FloatValue"),

@@ -21,19 +21,19 @@
 //! in the same OS (but not across machines, virtual or physical). See the
 //! comments on [`VmTimeSourceBuilder`] for more information.
 
-#![warn(missing_docs)]
+pub use saved_state::SavedState;
 
-use futures::future::join_all;
 use futures::StreamExt;
+use futures::future::join_all;
 use futures_concurrency::future::Race;
 use futures_concurrency::stream::Merge;
-use inspect::adhoc;
 use inspect::Inspect;
 use inspect::InspectMut;
+use inspect::adhoc;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
 use pal_async::driver::Driver;
 use pal_async::driver::PollImpl;
 use pal_async::driver::SpawnDriver;
@@ -104,20 +104,12 @@ impl VmTime {
 
     /// Returns `self` or `t`, whichever is earlier.
     pub fn min(self, t: Self) -> Self {
-        if self.is_before(t) {
-            self
-        } else {
-            t
-        }
+        if self.is_before(t) { self } else { t }
     }
 
     /// Returns `self` or `t`, whichever is later.
     pub fn max(self, t: Self) -> Self {
-        if self.is_before(t) {
-            t
-        } else {
-            self
-        }
+        if self.is_before(t) { t } else { self }
     }
 }
 
@@ -353,18 +345,24 @@ pub struct VmTimeKeeper {
     time: TimeState,
 }
 
-/// Saved state for [`VmTimeKeeper`].
-#[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "vmtime")]
-pub struct SavedState {
-    #[mesh(1)]
-    vmtime: VmTime,
-}
+// UNSAFETY: Needed to derive SavedStateRoot in the same crate it is declared
+#[expect(unsafe_code)]
+mod saved_state {
+    use super::*;
 
-impl SavedState {
-    /// Create a new instance of `SavedState` from an existing `VmTime`.
-    pub fn from_vmtime(vmtime: VmTime) -> Self {
-        SavedState { vmtime }
+    /// Saved state for [`VmTimeKeeper`].
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "vmtime")]
+    pub struct SavedState {
+        #[mesh(1)]
+        pub(super) vmtime: VmTime,
+    }
+
+    impl SavedState {
+        /// Create a new instance of `SavedState` from an existing `VmTime`.
+        pub fn from_vmtime(vmtime: VmTime) -> Self {
+            SavedState { vmtime }
+        }
     }
 }
 
@@ -982,9 +980,9 @@ mod tests {
     use super::VmTime;
     use super::VmTimeKeeper;
     use futures::FutureExt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use std::future::poll_fn;
     use std::time::Duration;
 
@@ -1017,9 +1015,11 @@ mod tests {
             }
         }
         // Timeout should be cleared by the successful poll.
-        assert!(poll_fn(|cx| access.poll_timeout(cx))
-            .now_or_never()
-            .is_none());
+        assert!(
+            poll_fn(|cx| access.poll_timeout(cx))
+                .now_or_never()
+                .is_none()
+        );
 
         // Test changing timeout.
         let now = access.now();

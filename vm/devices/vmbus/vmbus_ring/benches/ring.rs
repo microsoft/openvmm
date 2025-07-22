@@ -5,21 +5,21 @@
 
 #![expect(missing_docs)]
 
-use criterion::black_box;
-use criterion::criterion_group;
-use criterion::criterion_main;
 use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::Throughput;
+use criterion::black_box;
+use criterion::criterion_group;
+use criterion::criterion_main;
 use safeatomic::AsAtomicBytes;
 use safeatomic::AtomicSliceOps;
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU32;
+use vmbus_ring::CONTROL_WORD_COUNT;
+use vmbus_ring::PAGE_SIZE;
 use vmbus_ring::PagedMemory;
 use vmbus_ring::PagedRingMem;
 use vmbus_ring::RingMem;
-use vmbus_ring::CONTROL_WORD_COUNT;
-use vmbus_ring::PAGE_SIZE;
 
 criterion_main!(benches);
 

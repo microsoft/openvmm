@@ -113,7 +113,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         );
 
         let mut iv = [0u8; vmgs::AES_CBC_IV_LENGTH];
-        getrandom::getrandom(&mut iv).expect("rng failure");
+        getrandom::fill(&mut iv).expect("rng failure");
 
         let mut encrypted_egress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
         let output = crypto::aes_256_cbc_encrypt(&hardware_derived_keys.aes_key, egress_key, &iv)
@@ -232,6 +232,7 @@ mod tests {
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
+            filtered_vpci_devices_allowed: true,
             vm_unique_id: "".to_string(),
         };
         let mock_call = Box::new(MockTeeCall {}) as Box<dyn tee_call::TeeCall>;

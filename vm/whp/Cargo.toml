@@ -9,6 +9,9 @@ rust-version.workspace = true
 [features]
 unstable_whp = []
 
+[dependencies]
+pal.workspace = true
+
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true
 features = [
@@ -22,9 +25,6 @@ features = [
 
 [target.'cfg(windows)'.dev-dependencies]
 criterion = { workspace = true, features = ["rayon", "cargo_bench_support"] }
-
-[build-dependencies]
-win_import_lib.workspace = true
 
 [[bench]]
 name = "primitives"

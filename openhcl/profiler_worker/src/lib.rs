@@ -8,14 +8,14 @@
 
 use anyhow::Context;
 use futures::FutureExt;
-use mesh::error::RemoteError;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
+use pal_async::DefaultPool;
 use pal_async::driver::Driver;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultPool;
 use socket2::Socket;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -153,7 +153,10 @@ pub async fn profile(request: ProfilerRequest, driver: &impl Driver) -> anyhow::
     let free_mem_mb = match get_free_mem_mb() {
         Ok(m) => m,
         Err(e) => {
-            tracing::error!("Error when getting memory {}", e.to_string());
+            tracing::error!(
+                e = e.as_ref() as &dyn std::error::Error,
+                "Error when getting memory"
+            );
             0
         }
     };
@@ -203,8 +206,8 @@ pub async fn profile(request: ProfilerRequest, driver: &impl Driver) -> anyhow::
             Err(e) => {
                 process_success = false;
                 tracing::error!(
-                    "Running profiler binary failed with error {}",
-                    e.to_string()
+                    e = &e as &dyn std::error::Error,
+                    "Running profiler binary failed",
                 );
                 break;
             }

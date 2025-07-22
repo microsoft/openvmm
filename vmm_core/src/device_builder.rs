@@ -9,9 +9,9 @@ use guestmem::GuestMemory;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use std::sync::Arc;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::PciDeviceHandleKind;
 use vmbus_server::Guid;
 use vmbus_server::VmbusServerControl;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -34,7 +34,7 @@ pub async fn build_vpci_device(
         u64,
     ) -> anyhow::Result<(
         Arc<dyn MsiInterruptTarget>,
-        Arc<dyn VpciInterruptMapper>,
+        VpciInterruptMapper,
     )>,
 ) -> anyhow::Result<()> {
     let device_name = format!("{}:vpci-{instance_id}", resource.id());
@@ -71,7 +71,11 @@ pub async fn build_vpci_device(
             .arc_mutex_device(vpci_bus_name)
             .try_add_async(async |services| {
                 let (msi_controller, interrupt_mapper) =
-                    new_virtual_device(device_id).context("failed to create virtual device")?;
+                    new_virtual_device(device_id).context(format!(
+                        "failed to create virtual device, device_id {device_id} = {} | {}",
+                        instance_id.data2,
+                        instance_id.data3 as u64 & 0xfff8
+                    ))?;
 
                 msi_set.connect(msi_controller.as_ref());
 

@@ -11,30 +11,30 @@ use crate::message::OwnedMessage;
 use crate::resource::OsResource;
 use crate::resource::Resource;
 use futures_channel::oneshot;
-use mesh_protobuf::buffer::write_with;
+use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::buffer::Buf;
 use mesh_protobuf::buffer::Buffer;
+use mesh_protobuf::buffer::write_with;
 use mesh_protobuf::protobuf::Encoder;
-use mesh_protobuf::DefaultEncoding;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use parking_lot::RwLock;
 use std::any::Any;
 use std::cmp::Reverse;
-use std::collections::hash_map;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::hash_map;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::num::Wrapping;
+use std::sync::Arc;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicIsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::Weak;
 use std::task::Waker;
 use thiserror::Error;
 use zerocopy::FromBytes;
@@ -416,19 +416,14 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
 
     pub fn remove_handler(self) -> (Port, T) {
         let port = self.into_port_preserve_handler();
-        let handler = port.inner.drain_queue();
-        (port, *handler.unwrap().into_any().downcast().unwrap())
+        let handler = port.inner.drain_queue().unwrap() as Box<dyn Any>;
+        (port, *handler.downcast().unwrap())
     }
 
     pub fn with_handler<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let mut state = self.raw.inner.state.lock();
-        f(state
-            .handler
-            .as_mut()
-            .unwrap()
-            .as_any()
-            .downcast_mut()
-            .unwrap())
+        let handler = state.handler.as_mut().unwrap().as_mut() as &mut dyn Any;
+        f(handler.downcast_mut().unwrap())
     }
 
     pub fn with_port_and_handler<'a, R>(
@@ -446,16 +441,8 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
             peer_and_seq,
             events: &mut pending_events,
         };
-        let r = f(
-            &mut control,
-            state
-                .handler
-                .as_mut()
-                .unwrap()
-                .as_any()
-                .downcast_mut()
-                .unwrap(),
-        );
+        let handler = state.handler.as_mut().unwrap().as_mut() as &mut dyn Any;
+        let r = f(&mut control, handler.downcast_mut().unwrap());
         pending_events.process();
         r
     }
@@ -844,10 +831,7 @@ struct RemoteNodeDisconnected;
 #[error("remote node dropped")]
 struct RemoteNodeDropped;
 
-trait HandlePortEventAndAny: HandlePortEvent {
-    fn as_any(&mut self) -> &mut dyn Any;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
-}
+trait HandlePortEventAndAny: HandlePortEvent + Any {}
 
 impl Debug for dyn HandlePortEventAndAny {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -855,15 +839,7 @@ impl Debug for dyn HandlePortEventAndAny {
     }
 }
 
-impl<T: HandlePortEvent> HandlePortEventAndAny for T {
-    fn as_any(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-}
+impl<T: HandlePortEvent> HandlePortEventAndAny for T {}
 
 /// The mutable interior state of a port.
 #[derive(Debug)]
@@ -1062,7 +1038,7 @@ enum EventError {
     UnknownPort,
     Truncated,
     // Field is stored solely for logging via debug, not actually dead.
-    UnknownEventType(#[allow(dead_code)] protocol::EventType),
+    UnknownEventType(#[expect(dead_code)] protocol::EventType),
     MissingOsResource,
 }
 
@@ -2326,15 +2302,15 @@ pub mod tests {
     use crate::message::MeshField;
     use crate::resource::SerializedMessage;
     use futures::stream::Stream;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
-    use pal_async::DefaultDriver;
-    use std::future::poll_fn;
     use std::future::Future;
+    use std::future::poll_fn;
     use std::marker::PhantomData;
-    use std::pin::pin;
     use std::pin::Pin;
+    use std::pin::pin;
     use std::task::Context;
     use std::task::Poll;
     use test_with_tracing::test;

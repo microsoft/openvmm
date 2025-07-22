@@ -9,6 +9,8 @@ rust-version.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 elfcore.workspace = true
 
+underhill_confidentiality = { workspace = true, features = ["std"] }
+
 anyhow.workspace = true
 libc.workspace = true
 tracing.workspace = true

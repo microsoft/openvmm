@@ -7,6 +7,10 @@ The OpenVMM Guide is written in Markdown, and rendered to HTML using
 this Guide in the main OpenVMM GitHub repo, in the
 [`Guide/`](https://github.com/microsoft/openvmm/tree/main/Guide) folder.
 
+## Guide conventions
+
+* Line Length: Wrap lines at 80 characters.
+
 ## Editing the Guide
 
 ### Small Changes

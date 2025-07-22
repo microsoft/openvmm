@@ -9,10 +9,10 @@ use net_backend::resolve::ResolveEndpointParams;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::net::VirtioNetHandle;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::VirtioDeviceHandle;
 
 /// Resolver for virtio-pmem devices.
 pub struct VirtioNetResolver;

@@ -3,12 +3,12 @@
 
 //! Provides a resolver for the vmbfs device.
 
-use crate::single_file_backing::VmbfsSingleFileBacking;
 use crate::VmbfsDevice;
+use crate::single_file_backing::VmbfsSingleFileBacking;
 use std::convert::Infallible;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_resource::ResolveResource;
 use vmbfs_resources::VmbfsImcDeviceHandle;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;

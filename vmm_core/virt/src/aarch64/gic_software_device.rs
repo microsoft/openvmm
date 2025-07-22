@@ -9,9 +9,9 @@ use pci_core::msi::MsiInterruptTarget;
 use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 
 pub struct GicSoftwareDevice {
     irqcon: Arc<dyn ControlGic>,
@@ -33,8 +33,8 @@ enum GicInterruptError {
 
 const SPI_RANGE: Range<u32> = 32..1020;
 
-impl VpciInterruptMapper for GicSoftwareDevice {
-    fn register_interrupt(
+impl MapVpciInterrupt for GicSoftwareDevice {
+    async fn register_interrupt(
         &self,
         vector_count: u32,
         params: &vmcore::vpci_msi::VpciInterruptParameters<'_>,
@@ -57,7 +57,7 @@ impl VpciInterruptMapper for GicSoftwareDevice {
         })
     }
 
-    fn unregister_interrupt(&self, address: u64, data: u32) {
+    async fn unregister_interrupt(&self, address: u64, data: u32) {
         let _ = (address, data);
     }
 }

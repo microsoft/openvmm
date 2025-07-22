@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 use self::packed_nums::*;
 use zerocopy::FromBytes;
@@ -9,7 +9,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u16_be = zerocopy::U16<zerocopy::BigEndian>;
     pub type u32_be = zerocopy::U32<zerocopy::BigEndian>;

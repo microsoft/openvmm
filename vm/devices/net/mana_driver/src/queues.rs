@@ -3,28 +3,28 @@
 
 //! Types to access work, completion, and event queues.
 
-use gdma_defs::CqEqDoorbellValue;
-use gdma_defs::Cqe;
-use gdma_defs::Eqe;
-use gdma_defs::GdmaQueueType;
-use gdma_defs::Sge;
-use gdma_defs::WqDoorbellValue;
-use gdma_defs::WqeHeader;
-use gdma_defs::WqeParams;
+use gdma_defs::CLIENT_OOB_8;
 use gdma_defs::CLIENT_OOB_24;
 use gdma_defs::CLIENT_OOB_32;
-use gdma_defs::CLIENT_OOB_8;
+use gdma_defs::CqEqDoorbellValue;
+use gdma_defs::Cqe;
 use gdma_defs::DB_CQ;
 use gdma_defs::DB_EQ;
 use gdma_defs::DB_RQ;
 use gdma_defs::DB_SQ;
+use gdma_defs::Eqe;
+use gdma_defs::GdmaQueueType;
 use gdma_defs::OWNER_BITS;
 use gdma_defs::OWNER_MASK;
+use gdma_defs::Sge;
 use gdma_defs::WQE_ALIGNMENT;
+use gdma_defs::WqDoorbellValue;
+use gdma_defs::WqeHeader;
+use gdma_defs::WqeParams;
 use inspect::Inspect;
 use std::marker::PhantomData;
-use std::sync::atomic::Ordering::Acquire;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Acquire;
 use user_driver::memory::MemoryBlock;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;

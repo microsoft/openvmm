@@ -6,12 +6,12 @@ use guestmem::GuestMemory;
 use iced_x86::code_asm::CodeAssembler;
 use pal_async::async_test;
 use virt::VpIndex;
-use virt_support_x86emu::emulate::emulate;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
-use x86defs::cpuid::Vendor;
+use virt_support_x86emu::emulate::emulate;
 use x86defs::RFlags;
+use x86defs::cpuid::Vendor;
 use x86emu::Gp;
 use x86emu::Segment;
 
@@ -99,7 +99,9 @@ impl EmulatorSupport for MockSupport {
     }
 
     /// The gva translation included in the intercept message header, if valid.
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         None
     }
 
@@ -135,6 +137,11 @@ async fn basic_mov() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -153,7 +160,7 @@ async fn basic_mov() {
         interruption_pending: false,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
@@ -164,6 +171,11 @@ async fn not_enough_bytes() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -185,7 +197,7 @@ async fn not_enough_bytes() {
 
     gm.write_at(support.state.rip, &instruction_bytes).unwrap();
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
@@ -197,6 +209,11 @@ async fn trap_from_interrupt() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -215,7 +232,7 @@ async fn trap_from_interrupt() {
         interruption_pending: true,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 }
 
 #[async_test]
@@ -225,6 +242,11 @@ async fn trap_from_debug() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -246,5 +268,5 @@ async fn trap_from_debug() {
         interruption_pending: false,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 }

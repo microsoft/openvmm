@@ -64,7 +64,7 @@ pub mod test_utilities {
 
     pub const DEFAULT_SIZE: usize = 4194816; // 4 MB
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), expect(dead_code))]
     pub struct TestGet {
         pub client: GuestEmulationTransportClient,
         pub(crate) gen_id: Receiver<[u8; 16]>,
@@ -115,14 +115,14 @@ mod tests {
     use super::test_utilities::*;
     use super::worker::GuestEmulationTransportWorker;
     use crate::process_loop::FatalError;
-    use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
     use get_protocol::ProtocolVersion;
     use get_protocol::VmgsIoStatus;
+    use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
     use guest_emulation_device::test_utilities::Event;
     use guest_emulation_device::test_utilities::TestGetResponses;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
     use test_with_tracing::test;
     use vmbus_async::async_dgram::AsyncRecvExt;
     use vmbus_async::async_dgram::AsyncSendExt;
@@ -147,7 +147,7 @@ mod tests {
                 );
 
                 assert_eq!(
-                    version_request.message_header.message_id,
+                    version_request.message_header.message_id(),
                     get_protocol::HostRequests::VERSION
                 );
                 assert_eq!(version_request.version, protocol);
@@ -450,9 +450,89 @@ mod tests {
         assert_eq!(result.utc, 1);
         assert_eq!(result.time_zone, 2);
 
-        let _host_result = get.guest_task.await;
+        // The GET can tolerate extraneous responses, ensure it doesn't crash
+        assert!(futures::poll!(get.guest_task).is_pending());
+    }
 
-        assert!(matches!(FatalError::NoPendingRequest, _host_result));
+    #[async_test]
+    async fn host_send_mismatched_multiple_response(driver: DefaultDriver) {
+        let responses = TestGetResponses::new(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::TimeResponse::new(0, 1, 2, false)
+                .as_bytes()
+                .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ));
+
+        let ged_responses = vec![responses];
+
+        let get =
+            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+
+        let time_req = get.client.host_time();
+
+        let result = time_req.await;
+        assert_eq!(result.utc, 1);
+        assert_eq!(result.time_zone, 2);
+    }
+
+    #[async_test]
+    async fn host_send_mismatched_multiple_request_response(driver: DefaultDriver) {
+        let responses = TestGetResponses::new(Event::Response(
+            get_protocol::TimeResponse::new(0, 1, 2, false)
+                .as_bytes()
+                .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::TimeResponse::new(0, 1, 2, false)
+                .as_bytes()
+                .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ));
+
+        let ged_responses = vec![responses];
+
+        let get =
+            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+
+        let time_req = get.client.host_time();
+        let mut vpci_req = std::pin::pin!(get.client.offer_vpci_device(guid::Guid::new_random()));
+
+        // Start the VPCI request going so it enters the queue.
+        assert!(futures::poll!(&mut vpci_req).is_pending());
+
+        // Run the full time request, ensuring it can handle the other responses.
+        let result = time_req.await;
+        assert_eq!(result.utc, 1);
+        assert_eq!(result.time_zone, 2);
+
+        // Now let the VPCI request finish with one of the responses.
+        vpci_req.await.unwrap();
     }
 
     #[async_test]

@@ -464,12 +464,8 @@ impl<I: Iterator<Item = (MemoryRange, T)>, T> PeekableSorted<I> {
     }
 }
 
-impl<
-        I: Iterator<Item = (MemoryRange, T)>,
-        J: Iterator<Item = (MemoryRange, U)>,
-        T: Clone,
-        U: Clone,
-    > Iterator for RangeWalkIter<I, J>
+impl<I: Iterator<Item = (MemoryRange, T)>, J: Iterator<Item = (MemoryRange, U)>, T: Clone, U: Clone>
+    Iterator for RangeWalkIter<I, J>
 {
     type Item = (MemoryRange, RangeWalkResult<T, U>);
 
@@ -641,11 +637,11 @@ mod tests {
     extern crate alloc;
     use super::MemoryRange;
     use super::TWO_MB;
+    use crate::AlignedSubranges;
     use crate::flatten_ranges;
     use crate::merge_adjacent_ranges;
     use crate::overlapping_ranges;
     use crate::subtract_ranges;
-    use crate::AlignedSubranges;
     use alloc::vec;
     use alloc::vec::Vec;
 

@@ -77,8 +77,8 @@ impl EFI_VARIABLE_AUTHENTICATION_2 {
     /// itself.
     pub const DUMMY: Self = {
         use crate::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
-        use crate::uefi::signing::WIN_CERTIFICATE;
         use crate::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
+        use crate::uefi::signing::WIN_CERTIFICATE;
 
         EFI_VARIABLE_AUTHENTICATION_2 {
             timestamp: EFI_TIME::ZEROED,
@@ -182,7 +182,6 @@ pub fn is_secure_boot_policy_var(vendor: Guid, name: &ucs2::Ucs2LeSlice) -> bool
 /// wide-string literals, and me not wanting to yak-shave a proc macro
 /// implementation that emits valid Utf16LeSlices at compile time, these
 /// "constants" are actually methods that can only be called at runtime.
-#[allow(dead_code)] // no live code - just a bunch of constants
 pub mod vars {
     use guid::Guid;
 

@@ -406,10 +406,11 @@ pub const WHvRunVpExitReasonArm64Reset: WHV_RUN_VP_EXIT_REASON = WHV_RUN_VP_EXIT
 pub const WHvRunVpExitReasonHypercall: WHV_RUN_VP_EXIT_REASON = WHV_RUN_VP_EXIT_REASON(0x80000050);
 pub const WHvRunVpExitReasonCanceled: WHV_RUN_VP_EXIT_REASON = WHV_RUN_VP_EXIT_REASON(0xFFFFFFFF);
 
-#[repr(C, align(8))]
-#[derive(Copy, Clone)]
+#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug)]
 pub struct WHV_RUN_VP_EXIT_CONTEXT_u {
-    pub message: [u8; 256],
+    pub message: [u8; 240],
+    pub extra: [u8; 16],
 }
 
 impl WHV_PROCESSOR_FEATURES {

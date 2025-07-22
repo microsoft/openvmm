@@ -1,15 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Types for supporting hypervisor monitor pages.
+
+#![forbid(unsafe_code)]
+
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvMonitorPage;
 use hvdef::HvMonitorPageSmall;
-use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use std::mem::offset_of;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -96,7 +100,7 @@ impl MonitorPage {
 
     /// Sets the GPA of the monitor page currently in use.
     pub fn set_gpa(&self, gpa: Option<u64>) -> Option<u64> {
-        assert!(gpa.is_none() || gpa.unwrap() % HV_PAGE_SIZE == 0);
+        assert!(gpa.is_none_or(|gpa| gpa % HV_PAGE_SIZE == 0));
         let old = self
             .gpa
             .swap(gpa.unwrap_or(INVALID_MONITOR_GPA), Ordering::Relaxed);
@@ -116,7 +120,11 @@ impl MonitorPage {
     /// # Panics
     ///
     /// Panics if monitor_id is already in use.
-    pub fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    pub fn register_monitor(
+        &self,
+        monitor_id: MonitorId,
+        connection_id: u32,
+    ) -> Box<dyn Sync + Send> {
         self.monitors.set(monitor_id, Some(connection_id));
 
         tracing::trace!(monitor_id = monitor_id.0, "registered monitor");

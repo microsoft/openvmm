@@ -6,13 +6,13 @@
 #![forbid(unsafe_code)]
 
 use guid::Guid;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
-use mesh::MeshPayload;
-use vm_resource::kind::ScsiDeviceHandleKind;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::ScsiDeviceHandleKind;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 /// A path at which to enumerate a SCSI logical unit.
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, Protobuf)]

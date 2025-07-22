@@ -4,13 +4,13 @@
 //! Module used to write the device tree used by the OpenHCL kernel and
 //! usermode.
 
-use crate::host_params::shim_params::IsolationType;
-use crate::host_params::PartitionInfo;
+use crate::MAX_RESERVED_MEM_RANGES;
+use crate::ReservedMemoryType;
 use crate::host_params::COMMAND_LINE_SIZE;
+use crate::host_params::PartitionInfo;
+use crate::host_params::shim_params::IsolationType;
 use crate::sidecar::SidecarConfig;
 use crate::single_threaded::off_stack;
-use crate::ReservedMemoryType;
-use crate::MAX_RESERVED_MEM_RANGES;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use core::fmt;
@@ -23,9 +23,11 @@ use host_fdt_parser::VmbusInfo;
 use hvdef::Vtl;
 use igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY;
 use loader_defs::shim::MemoryVtlType;
-use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
+use memory_range::walk_ranges;
+#[cfg(target_arch = "x86_64")]
+use x86defs::tdx::RESET_VECTOR_PAGE;
 
 /// AArch64 defines
 mod aarch64 {
@@ -53,7 +55,7 @@ mod aarch64 {
 #[derive(Debug)]
 pub enum DtError {
     // Field is stored solely for logging via debug, not actually dead.
-    Fdt(#[allow(dead_code)] fdt::builder::Error),
+    Fdt(#[expect(dead_code)] fdt::builder::Error),
 }
 
 impl From<fdt::builder::Error> for DtError {
@@ -158,6 +160,9 @@ pub fn write_dt(
     cmdline: &ArrayString<COMMAND_LINE_SIZE>,
     sidecar: Option<&SidecarConfig<'_>>,
     boot_times: Option<BootTimes>,
+    #[cfg_attr(target_arch = "aarch64", expect(unused_variables))]
+    // isolation_type is unused on aarch64
+    isolation_type: IsolationType,
 ) -> Result<(), DtError> {
     // First, the reservation map is built. That keyes off of the x86 E820 memory map.
     // The `/memreserve/` is used to tell the kernel that the reserved memory is RAM
@@ -236,6 +241,25 @@ pub fn write_dt(
         .add_str(p_compatible, "microsoft,hyperv")?;
     root_builder = hypervisor_builder.end_node()?;
 
+    #[cfg(target_arch = "x86_64")]
+    if isolation_type == IsolationType::Tdx {
+        let mut mailbox_builder = root_builder
+            .start_node("reserved-memory")?
+            .add_u32(p_address_cells, 2)?
+            .add_u32(p_size_cells, 1)?
+            .add_null(p_ranges)?;
+
+        let name = format_fixed!(32, "wakeup_table@{:x}", RESET_VECTOR_PAGE);
+        let mailbox_addr_builder = mailbox_builder
+            .start_node(name.as_ref())?
+            .add_str(p_compatible, "intel,wakeup-mailbox")?
+            .add_u32_array(p_reg, &[0x0, RESET_VECTOR_PAGE.try_into().unwrap(), 0x1000])?;
+
+        mailbox_builder = mailbox_addr_builder.end_node()?;
+
+        root_builder = mailbox_builder.end_node()?;
+    }
+
     // For ARM v8, always specify two register cells, which can accommodate
     // higher number of VPs.
     let address_cells = if cfg!(target_arch = "aarch64") { 2 } else { 1 };
@@ -243,12 +267,6 @@ pub fn write_dt(
         .start_node("cpus")?
         .add_u32(p_address_cells, address_cells)?
         .add_u32(p_size_cells, 0)?;
-
-    if cfg!(target_arch = "aarch64") {
-        let pa_bits = crate::arch::physical_address_bits(partition_info.isolation);
-        let p_pa_bits = cpu_builder.add_string("pa_bits")?;
-        cpu_builder = cpu_builder.add_u32(p_pa_bits, pa_bits.into())?;
-    }
 
     // Add a CPU node for each cpu.
     for (vp_index, cpu_entry) in partition_info.cpus.iter().enumerate() {
@@ -537,6 +555,11 @@ pub fn write_dt(
 
     // Now, report the unified memory map to usermode describing which memory is
     // used by what.
+    //
+    // NOTE: Use a different device type for memory ranges, as the Linux kernel
+    // will treat every device tree node with device type as memory, and attempt
+    // to parse numa information from it.
+    let memory_openhcl_type = "memory-openhcl";
     for (range, result) in walk_ranges(
         partition_info.partition_ram.iter().map(|r| (r.range, r)),
         vtl2_memory_map.iter().map(|r| (r.range, r)),
@@ -547,7 +570,7 @@ pub fn write_dt(
                 let name = format_fixed!(64, "memory@{:x}", range.start());
                 openhcl_builder = openhcl_builder
                     .start_node(&name)?
-                    .add_str(p_device_type, "memory")?
+                    .add_str(p_device_type, memory_openhcl_type)?
                     .add_u64_array(p_reg, &[range.start(), range.len()])?
                     .add_u32(p_numa_node_id, entry.vnode)?
                     .add_u32(p_igvm_type, entry.mem_type.0.into())?
@@ -559,7 +582,7 @@ pub fn write_dt(
                 let name = format_fixed!(64, "memory@{:x}", range.start());
                 openhcl_builder = openhcl_builder
                     .start_node(&name)?
-                    .add_str(p_device_type, "memory")?
+                    .add_str(p_device_type, memory_openhcl_type)?
                     .add_u64_array(p_reg, &[range.start(), range.len()])?
                     .add_u32(p_numa_node_id, partition_entry.vnode)?
                     .add_u32(p_igvm_type, partition_entry.mem_type.0.into())?
@@ -579,7 +602,7 @@ pub fn write_dt(
         let name = format_fixed!(64, "memory@{:x}", entry.start());
         openhcl_builder = openhcl_builder
             .start_node(&name)?
-            .add_str(p_device_type, "memory")?
+            .add_str(p_device_type, memory_openhcl_type)?
             .add_u64_array(p_reg, &[entry.start(), entry.len()])?
             .add_u32(p_openhcl_memory, MemoryVtlType::VTL0_MMIO.0)?
             .end_node()?;
@@ -589,7 +612,7 @@ pub fn write_dt(
         let name = format_fixed!(64, "memory@{:x}", entry.start());
         openhcl_builder = openhcl_builder
             .start_node(&name)?
-            .add_str(p_device_type, "memory")?
+            .add_str(p_device_type, memory_openhcl_type)?
             .add_u64_array(p_reg, &[entry.start(), entry.len()])?
             .add_u32(p_openhcl_memory, MemoryVtlType::VTL2_MMIO.0)?
             .end_node()?;

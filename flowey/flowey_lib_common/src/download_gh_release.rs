@@ -180,7 +180,7 @@ impl Node {
                 dir: cache_dir.clone(),
                 key: cache_key,
                 restore_keys: None, // OK if not exact - better than nothing
-                hitvar: crate::cache::CacheResult::HitVar(v),
+                hitvar: v,
             }
         });
 
@@ -224,7 +224,7 @@ fn download_all_reqs(
 ) -> anyhow::Result<()> {
     let sh = xshell::Shell::new()?;
 
-    let gh_cli = gh_cli.map(|x| rt.read(x));
+    let gh_cli = rt.read(gh_cli);
 
     for ((repo_owner, repo_name, tag), files) in download_reqs {
         let repo = format!("{repo_owner}/{repo_name}");

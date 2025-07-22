@@ -3,8 +3,8 @@
 
 use guid::Guid;
 use std::ffi::c_void;
-use std::ptr::null_mut;
 use std::ptr::NonNull;
+use std::ptr::null_mut;
 use thiserror::Error;
 
 pal::delayload!("computenetwork.dll" {

@@ -8,25 +8,25 @@
 #![expect(unsafe_code)]
 
 use crate::HandleMap;
-use fuse::protocol::FUSE_SETUPMAPPING_FLAG_WRITE;
 use fuse::Mapper;
+use fuse::protocol::FUSE_SETUPMAPPING_FLAG_WRITE;
 use lxutil::PathExt;
 use ntapi::ntmmapi::NtCreateSection;
 use ntapi::ntmmapi::NtOpenSection;
 use ntapi::ntmmapi::NtQuerySection;
-use ntapi::ntmmapi::SectionBasicInformation;
 use ntapi::ntmmapi::SECTION_BASIC_INFORMATION;
+use ntapi::ntmmapi::SectionBasicInformation;
 use ntapi::ntobapi::DIRECTORY_TRAVERSE;
 use ntapi::winapi::shared::ntdef::LARGE_INTEGER;
 use ntapi::winapi::um::winnt::PAGE_READWRITE;
+use ntapi::winapi::um::winnt::SEC_COMMIT;
 use ntapi::winapi::um::winnt::SECTION_MAP_READ;
 use ntapi::winapi::um::winnt::SECTION_MAP_WRITE;
 use ntapi::winapi::um::winnt::SECTION_QUERY;
-use ntapi::winapi::um::winnt::SEC_COMMIT;
-use pal::windows::chk_status;
-use pal::windows::open_object_directory;
 use pal::windows::ObjectAttributes;
 use pal::windows::UnicodeString;
+use pal::windows::chk_status;
+use pal::windows::open_object_directory;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::io;

@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use mesh::payload::encoding::ResourceField;
 use mesh::payload::DefaultEncoding;
+use mesh::payload::encoding::ResourceField;
 use std::sync::Arc;
 
 /// A section handle.

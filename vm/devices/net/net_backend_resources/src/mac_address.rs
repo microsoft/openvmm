@@ -19,12 +19,12 @@ pub struct MacAddress([u8; 6]);
 
 impl MacAddress {
     /// Returns a new MAC address from the given bytes.
-    pub fn new(value: [u8; 6]) -> Self {
+    pub const fn new(value: [u8; 6]) -> Self {
         Self(value)
     }
 
     /// Returns the bytes of the MAC address.
-    pub fn to_bytes(self) -> [u8; 6] {
+    pub const fn to_bytes(self) -> [u8; 6] {
         self.0
     }
 }

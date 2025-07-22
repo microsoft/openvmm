@@ -99,16 +99,16 @@ pub(crate) use log;
 /// linted against to not pass CI. Use for local development when you just need
 /// debug prints.
 //
-// Allow unused macros for the same reason as unused_imports below, as there
+// Expect unused macros for the same reason as unused_imports below, as there
 // should be no usage of this macro normally.
-#[allow(unused_macros)]
+#[expect(unused_macros)]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
         $crate::boot_logger::log!($($arg)*)
     };
 }
 
-// Allow unused imports because there should be no normal usage in code due to
+// Expect unused imports because there should be no normal usage in code due to
 // lints against it in CI.
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 pub(crate) use debug_log;

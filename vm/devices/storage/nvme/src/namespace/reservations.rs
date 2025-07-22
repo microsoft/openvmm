@@ -3,8 +3,8 @@
 
 //! Persistent reservation support
 
-use super::map_disk_error;
 use super::Namespace;
+use super::map_disk_error;
 use crate::error::NvmeError;
 use crate::prp::PrpRange;
 use crate::spec;

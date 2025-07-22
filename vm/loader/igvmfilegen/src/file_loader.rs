@@ -10,32 +10,32 @@ use crate::identity_mapping::VbsMeasurement;
 use crate::signed_measurement::generate_snp_measurement;
 use crate::signed_measurement::generate_tdx_measurement;
 use crate::signed_measurement::generate_vbs_measurement;
+use crate::vp_context_builder::VpContextBuilder;
+use crate::vp_context_builder::VpContextPageState;
+use crate::vp_context_builder::VpContextState;
 use crate::vp_context_builder::snp::InjectionType;
 use crate::vp_context_builder::snp::SnpHardwareContext;
 use crate::vp_context_builder::tdx::TdxHardwareContext;
 use crate::vp_context_builder::vbs::VbsRegister;
 use crate::vp_context_builder::vbs::VbsVpContext;
-use crate::vp_context_builder::VpContextBuilder;
-use crate::vp_context_builder::VpContextPageState;
-use crate::vp_context_builder::VpContextState;
 use anyhow::Context;
 use hvdef::Vtl;
-use igvm::snp_defs::SevVmsa;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
 use igvm::IgvmInitializationHeader;
 use igvm::IgvmPlatformHeader;
 use igvm::IgvmRelocatableRegion;
 use igvm::IgvmRevision;
-use igvm_defs::IgvmPageDataFlags;
-use igvm_defs::IgvmPageDataType;
-use igvm_defs::IgvmPlatformType;
-use igvm_defs::SnpPolicy;
-use igvm_defs::TdxPolicy;
+use igvm::snp_defs::SevVmsa;
 use igvm_defs::IGVM_VHS_PARAMETER;
 use igvm_defs::IGVM_VHS_PARAMETER_INSERT;
 use igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM;
+use igvm_defs::IgvmPageDataFlags;
+use igvm_defs::IgvmPageDataType;
+use igvm_defs::IgvmPlatformType;
 use igvm_defs::PAGE_SIZE_4K;
+use igvm_defs::SnpPolicy;
+use igvm_defs::TdxPolicy;
 use loader::importer::Aarch64Register;
 use loader::importer::BootPageAcceptance;
 use loader::importer::GuestArch;
@@ -71,7 +71,7 @@ fn to_igvm_vtl(vtl: Vtl) -> igvm::hv_defs::Vtl {
 
 /// Page table relocation information kept for debugging purposes.
 // Allow dead code because clippy doesn't count #[derive(Debug)] as non-dead code usage.
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Debug, Clone)]
 struct PageTableRegion {
     gpa: u64,
@@ -1120,7 +1120,9 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
         }
 
         if gpa % relocation_alignment != 0 {
-            anyhow::bail!("relocation base {gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}");
+            anyhow::bail!(
+                "relocation base {gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}"
+            );
         }
 
         if minimum_relocation_gpa % relocation_alignment != 0 {
@@ -1285,9 +1287,9 @@ mod tests {
     #[test]
     fn test_tdx_measurement() {
         let ref_mrtd: [u8; 48] = [
-            206, 60, 73, 121, 202, 230, 0, 246, 193, 182, 64, 108, 252, 152, 1, 222, 218, 63, 165,
-            202, 194, 205, 221, 12, 173, 76, 101, 161, 30, 223, 51, 124, 51, 125, 184, 32, 80, 57,
-            85, 211, 87, 66, 249, 4, 184, 213, 34, 57,
+            233, 221, 92, 66, 66, 236, 182, 88, 13, 232, 138, 228, 66, 101, 86, 51, 170, 18, 201,
+            89, 188, 240, 246, 200, 31, 109, 103, 250, 92, 251, 72, 239, 110, 109, 135, 123, 211,
+            74, 133, 227, 109, 76, 161, 106, 123, 84, 66, 27,
         ];
 
         let mut loader = IgvmLoader::<X86Register>::new(

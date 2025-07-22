@@ -9,18 +9,18 @@ mod regs;
 mod vm_state;
 mod vp_state;
 
-use crate::gsi;
-use crate::gsi::GsiRouting;
 use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
+use crate::gsi;
+use crate::gsi::GsiRouting;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hv1_emulator::message_queues::MessageQueues;
-use hvdef::hypercall::Control;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
@@ -28,12 +28,12 @@ use hvdef::HvSynicScontrol;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::Control;
 use inspect::Inspect;
 use inspect::InspectMut;
+use kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
 use kvm::kvm_ioeventfd_flag_nr_datamatch;
 use kvm::kvm_ioeventfd_flag_nr_deassign;
-use kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
@@ -43,22 +43,13 @@ use std::convert::Infallible;
 use std::future::poll_fn;
 use std::io;
 use std::os::unix::prelude::*;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
 use thiserror::Error;
-use virt::io::CpuIo;
-use virt::irqcon::DeliveryMode;
-use virt::irqcon::IoApicRouting;
-use virt::irqcon::MsiRequest;
-use virt::state::StateElement;
-use virt::vm::AccessVmState;
-use virt::x86::max_physical_address_size_from_cpuid;
-use virt::x86::vp::AccessVpState;
-use virt::x86::HardwareBreakpoint;
 use virt::CpuidLeaf;
 use virt::CpuidLeafSet;
 use virt::Hv1;
@@ -73,9 +64,21 @@ use virt::ResetPartition;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
+use virt::irqcon::DeliveryMode;
+use virt::irqcon::IoApicRouting;
+use virt::irqcon::MsiRequest;
+use virt::state::StateElement;
+use virt::vm::AccessVmState;
+use virt::x86::HardwareBreakpoint;
+use virt::x86::max_physical_address_size_from_cpuid;
+use virt::x86::vp::AccessVpState;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86VpInfo;
 use vmcore::interrupt::Interrupt;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
@@ -188,17 +191,15 @@ impl virt::Hypervisor for Kvm {
             };
 
             use hvdef::*;
-            let privileges = u64::from(
-                HvPartitionPrivilege::new()
-                    .with_access_partition_reference_counter(true)
-                    .with_access_hypercall_msrs(true)
-                    .with_access_vp_index(true)
-                    .with_access_frequency_msrs(true)
-                    .with_access_synic_msrs(true)
-                    .with_access_synthetic_timer_msrs(true)
-                    .with_access_vp_runtime_msr(true)
-                    .with_access_apic_msrs(true),
-            );
+            let privileges = HvPartitionPrivilege::new()
+                .with_access_partition_reference_counter(true)
+                .with_access_hypercall_msrs(true)
+                .with_access_vp_index(true)
+                .with_access_frequency_msrs(true)
+                .with_access_synic_msrs(true)
+                .with_access_synthetic_timer_msrs(true)
+                .with_access_vp_runtime_msr(true)
+                .with_access_apic_msrs(true);
 
             let hv_cpuid = &[
                 CpuidLeaf::new(
@@ -284,7 +285,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        self.cpuid.extend(config.cpuid);
+        let mut cpuid = self.cpuid.into_leaves();
+        cpuid.extend(config.cpuid);
+        let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
         if bsp_apic_id != 0 {
@@ -293,7 +296,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         let mut caps = virt::PartitionCapabilities::from_cpuid(
             self.config.processor_topology,
-            &mut |function, index| self.cpuid.result(function, index, &[0; 4]),
+            &mut |function, index| cpuid.result(function, index, &[0; 4]),
         );
 
         caps.can_freeze_time = false;
@@ -325,8 +328,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
             // Convert the CPUID entries and update the APIC ID in CPUID for
             // this VCPU.
-            let cpuid_entries = self
-                .cpuid
+            let cpuid_entries = cpuid
                 .leaves()
                 .iter()
                 .map(|leaf| {
@@ -406,7 +408,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                 .collect(),
             gsi_routing: Mutex::new(gsi_routing),
             caps,
-            cpuid: self.cpuid,
+            cpuid,
         };
 
         let partition = KvmPartition {
@@ -445,7 +447,7 @@ pub struct KvmVpInner {
     eval: AtomicBool,
     vp_info: X86VpInfo,
     synic_message_queue: MessageQueues,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x.read()))")]
+    #[inspect(hex, with = "|x| u64::from(*x.read())")]
     siefp: RwLock<HvSynicSimpSiefp>,
 }
 
@@ -542,10 +544,33 @@ impl Hv1 for KvmPartition {
     type Error = KvmError;
     type Device = virt::x86::apic_software_device::ApicSoftwareDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        self.inner
+            .hv1_enabled
+            .then(|| ReferenceTimeSource::from(self.inner.clone() as Arc<dyn GetReferenceTime>))
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+}
+
+impl GetReferenceTime for KvmPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        // Although we can query the reference time MSR for a VP, we are not
+        // running in the context of a VP, and so such a query will hang if the
+        // VP is running. Instead, query the KVM clock, which is the backing
+        // clock for the reference time counter within KVM.
+        //
+        // This also gives us the system time, in some configurations.
+        let clock = self.kvm.get_clock_ns().unwrap();
+        ReferenceTimeResult {
+            ref_time: clock.clock / 100,
+            system_time: (clock.flags & kvm::KVM_CLOCK_REALTIME != 0)
+                .then(|| jiff::Timestamp::from_nanosecond(clock.realtime as i128).unwrap()),
+        }
     }
 }
 
@@ -609,11 +634,11 @@ pub struct KvmProcessor<'a> {
     vmtime: &'a mut VmTimeAccess,
     #[inspect(iter_by_index)]
     guest_debug_db: [u64; 4],
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     scontrol: HvSynicScontrol,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     siefp: HvSynicSimpSiefp,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     simp: HvSynicSimpSiefp,
 }
 
@@ -1055,7 +1080,7 @@ impl Processor for KvmProcessor<'_> {
             // the register state is up-to-date for save.
             let mut pending_exit = false;
             loop {
-                let exit = if self.inner.eval.load(Ordering::Relaxed) {
+                let exit = if self.inner.eval.load(Ordering::Relaxed) || stop.check().is_err() {
                     // Break out of the loop as soon as there is no pending exit.
                     if !pending_exit {
                         self.inner.eval.store(false, Ordering::Relaxed);
@@ -1213,11 +1238,21 @@ impl virt::Synic for KvmPartition {
         }
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort> {
         Box::new(KvmGuestEventPort {
             partition: Arc::downgrade(&self.inner),
             gm: self.inner.gm.clone(),
-            params: Default::default(),
+            params: Arc::new(Mutex::new(KvmEventPortParams {
+                vp: VpIndex::new(vp),
+                sint,
+                flag,
+            })),
         })
     }
 
@@ -1237,7 +1272,7 @@ struct EmulationError {
 struct KvmGuestEventPort {
     partition: Weak<KvmPartitionInner>,
     gm: GuestMemory,
-    params: Arc<Mutex<Option<KvmEventPortParams>>>,
+    params: Arc<Mutex<KvmEventPortParams>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1251,60 +1286,43 @@ impl GuestEventPort for KvmGuestEventPort {
     fn interrupt(&self) -> Interrupt {
         let this = self.clone();
         Interrupt::from_fn(move || {
-            if let Some(KvmEventPortParams { vp, sint, flag }) = *this.params.lock() {
-                let Some(partition) = this.partition.upgrade() else {
-                    return;
-                };
-                let siefp = partition.vp(vp).siefp.read();
-                if !siefp.enabled() {
-                    return;
-                }
-                let byte_gpa =
-                    siefp.base_gpn() * HV_PAGE_SIZE + sint as u64 * 256 + flag as u64 / 8;
-                let mut byte = 0;
-                let mask = 1 << (flag % 8);
-                while byte & mask == 0 {
-                    match this.gm.compare_exchange(byte_gpa, byte, byte | mask) {
-                        Ok(Ok(_)) => {
-                            drop(siefp);
-                            partition
-                                .kvm
-                                .irq_line(VMBUS_BASE_GSI + vp.index(), true)
-                                .unwrap();
+            let KvmEventPortParams { vp, sint, flag } = *this.params.lock();
+            let Some(partition) = this.partition.upgrade() else {
+                return;
+            };
+            let siefp = partition.vp(vp).siefp.read();
+            if !siefp.enabled() {
+                return;
+            }
+            let byte_gpa = siefp.base_gpn() * HV_PAGE_SIZE + sint as u64 * 256 + flag as u64 / 8;
+            let mut byte = 0;
+            let mask = 1 << (flag % 8);
+            while byte & mask == 0 {
+                match this.gm.compare_exchange(byte_gpa, byte, byte | mask) {
+                    Ok(Ok(_)) => {
+                        drop(siefp);
+                        partition
+                            .kvm
+                            .irq_line(VMBUS_BASE_GSI + vp.index(), true)
+                            .unwrap();
 
-                            break;
-                        }
-                        Ok(Err(b)) => byte = b,
-                        Err(err) => {
-                            tracelimit::warn_ratelimited!(
-                                error = &err as &dyn std::error::Error,
-                                "failed to write event flag to guest memory"
-                            );
-                            break;
-                        }
+                        break;
+                    }
+                    Ok(Err(b)) => byte = b,
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "failed to write event flag to guest memory"
+                        );
+                        break;
                     }
                 }
             }
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        _vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.lock() = Some(KvmEventPortParams {
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-        });
-
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }

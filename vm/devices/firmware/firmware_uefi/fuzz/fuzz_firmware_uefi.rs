@@ -7,8 +7,8 @@
 
 use arbitrary::Arbitrary;
 use firmware_uefi::platform::nvram::EFI_TIME;
-use firmware_uefi::service::nvram::spec_services::auth_var_crypto;
 use firmware_uefi::service::nvram::spec_services::ParsedAuthVar;
+use firmware_uefi::service::nvram::spec_services::auth_var_crypto;
 use guid::Guid;
 use openssl::asn1::Asn1Time;
 use openssl::hash::MessageDigest;
@@ -19,10 +19,10 @@ use openssl::pkey::PKeyRef;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use openssl::stack::Stack;
+use openssl::x509::X509;
 use openssl::x509::X509Builder;
 use openssl::x509::X509NameBuilder;
 use openssl::x509::X509Ref;
-use openssl::x509::X509;
 use std::borrow::Cow;
 use ucs2::Ucs2LeVec;
 use uefi_nvram_specvars::signature_list::SignatureData;

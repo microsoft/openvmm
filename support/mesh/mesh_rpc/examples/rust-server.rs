@@ -4,8 +4,8 @@
 #![expect(missing_docs)]
 
 use anyhow::Context;
-use futures::executor::block_on;
 use futures::StreamExt;
+use futures::executor::block_on;
 use pal_async::local::block_with_io;
 use unix_socket::UnixListener;
 

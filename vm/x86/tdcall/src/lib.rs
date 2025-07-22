@@ -4,13 +4,17 @@
 //! Common TDCALL handling for issuing tdcalls and functionality using tdcalls.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
+use thiserror::Error;
+use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdGlaVmAndFlags;
+use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdVmCallSubFunction;
 use x86defs::tdx::TdgMemPageAcceptRcx;
@@ -21,7 +25,6 @@ use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdgMemPageLevel;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
-use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 
 /// Input to a tdcall. This is not defined in the TDX specification, but a
 /// contract between callers of this module and this module's handling of
@@ -75,6 +78,48 @@ pub struct TdcallOutput {
 pub trait Tdcall {
     /// Perform a tdcall instruction with the specified inputs.
     fn tdcall(&mut self, input: TdcallInput) -> TdcallOutput;
+}
+
+/// Perform a tdcall based Hypercall. This is done by issuing a TDG.VP.VMCALL.
+pub fn tdcall_hypercall(
+    call: &mut impl Tdcall,
+    control: hvdef::hypercall::Control,
+    input_gpa: u64,
+    output_gpa: u64,
+) -> Result<(), TdVmCallR10Result> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VP_VMCALL,
+        rcx: 0x0d04, // pass RDX, R8, R10, R11
+        rdx: input_gpa,
+        r8: output_gpa,
+        r9: 0,
+        r10: u64::from(control), // hypercall control code
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    if output.rax.code() != TdCallResultCode::SUCCESS {
+        // This means something has gone horribly wrong with the TDX module, as
+        // this call should always succeed with hypercall errors returned in
+        // r11.
+        panic!(
+            "unexpected nonzero rax {:x} on tdcall_hypercall",
+            u64::from(output.rax)
+        );
+    }
+
+    // TD.VMCALL for Hypercall passes return code in r11
+    let result = TdVmCallR10Result(output.r11);
+
+    match result {
+        TdVmCallR10Result::SUCCESS => Ok(()),
+        val => Err(val),
+    }
 }
 
 /// Perform a tdcall based MSR read. This is done by issuing a TDG.VP.VMCALL.
@@ -381,8 +426,8 @@ fn set_page_attr(
                 assert_eq!(u64::from(mapping), result.mapping.into());
                 assert_eq!(attributes.l1(), result.attributes.l1());
                 assert_eq!(
-                    attributes.into_bits() ^ mask.with_reserved(0).into_bits(),
-                    result.attributes.into_bits() ^ mask.with_reserved(0).into_bits()
+                    attributes.into_bits() & mask.with_reserved(0).into_bits(),
+                    result.attributes.into_bits() & mask.with_reserved(0).into_bits()
                 );
             }
 
@@ -393,13 +438,22 @@ fn set_page_attr(
 }
 
 /// The error returned by [`accept_pages`].
-#[derive(Debug)]
+// TODO: why is this an enum with multiple variants--callers don't seem to care.
+// Collapse into a struct, or at least collapse some of the variants?
+#[derive(Debug, Error)]
 pub enum AcceptPagesError {
-    // TODO TDX: better error types
     /// Unknown error type.
+    #[error("unknown error: {0:?}")]
     Unknown(TdCallResultCode),
     /// Setting page attributes failed after accepting,
+    #[error("setting page attributes failed after accepting: {0:?}")]
     Attributes(TdCallResultCode),
+    /// Invalid operand
+    #[error("invalid operand: {0:?}")]
+    Invalid(TdCallResultCode),
+    /// Busy Operand
+    #[error("operand busy: {0:?}")]
+    Busy(TdCallResultCode),
 }
 
 /// The page attributes to accept pages with.
@@ -454,11 +508,18 @@ pub fn accept_pages<T: Tdcall>(
                         MemoryRange::new(range.start() + x86defs::X64_LARGE_PAGE_SIZE..range.end());
                     continue;
                 }
-                Err(TdCallResultCode::PAGE_SIZE_MISMATCH) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::trace!("accept pages size mismatch returned");
-                }
-                Err(e) => return Err(AcceptPagesError::Unknown(e)),
+                Err(e) => match e {
+                    TdCallResultCode::OPERAND_BUSY => return Err(AcceptPagesError::Busy(e)),
+                    TdCallResultCode::OPERAND_INVALID => return Err(AcceptPagesError::Invalid(e)),
+                    TdCallResultCode::PAGE_ALREADY_ACCEPTED => {
+                        panic!("page {} already accepted", range.start_4k_gpn());
+                    }
+                    TdCallResultCode::PAGE_SIZE_MISMATCH => {
+                        #[cfg(feature = "tracing")]
+                        tracing::trace!("accept pages size mismatch returned");
+                    }
+                    _ => return Err(AcceptPagesError::Unknown(e)),
+                },
             }
         }
 
@@ -474,7 +535,14 @@ pub fn accept_pages<T: Tdcall>(
 
                 range = MemoryRange::new(range.start() + HV_PAGE_SIZE..range.end());
             }
-            Err(e) => return Err(AcceptPagesError::Unknown(e)),
+            Err(e) => match e {
+                TdCallResultCode::OPERAND_BUSY => return Err(AcceptPagesError::Busy(e)),
+                TdCallResultCode::OPERAND_INVALID => return Err(AcceptPagesError::Invalid(e)),
+                TdCallResultCode::PAGE_ALREADY_ACCEPTED => {
+                    panic!("page {} already accepted", range.start_4k_gpn());
+                }
+                _ => return Err(AcceptPagesError::Unknown(e)),
+            },
         }
     }
 
@@ -577,7 +645,15 @@ pub fn tdcall_map_gpa(
 
         let output = call.tdcall(input);
 
-        // TODO TDX: check rax return code
+        // This assertion failing means something has gone horribly wrong with the
+        // TDX module, as this call should always succeed with hypercall errors
+        // returned in r10.
+        assert_eq!(
+            output.rax.code(),
+            TdCallResultCode::SUCCESS,
+            "unexpected nonzero rax {:x} returned by tdcall vmcall",
+            u64::from(output.rax)
+        );
 
         let result = TdVmCallR10Result(output.r10);
 
@@ -671,6 +747,40 @@ pub fn tdcall_vp_invgla(
         r10: 0,
         r11: 0,
         r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+#[repr(C, align(64))]
+struct AddlData {
+    /// Report data buffer for TDG.MR.REPORT call.
+    pub report_data: [u8; 64],
+}
+
+/// Issue a TDG.MR.REPORT call with empty additional data.
+pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result<(), TdCallResult> {
+    let addl_data = AddlData {
+        report_data: [0; 64],
+    };
+
+    let input = TdcallInput {
+        leaf: TdCallLeaf::MR_REPORT,
+        rcx: core::ptr::from_mut::<TdReport>(report) as u64,
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: addl_data.report_data.as_ptr() as u64,
         r13: 0,
         r14: 0,
         r15: 0,

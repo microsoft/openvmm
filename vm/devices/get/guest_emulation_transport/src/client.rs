@@ -3,8 +3,8 @@
 
 use super::process_loop::msg;
 use super::process_loop::msg::IgvmAttestRequestData;
-use crate::api::platform_settings;
 use crate::api::GuestSaveRequest;
+use crate::api::platform_settings;
 use chipset_resources::battery::HostBatteryUpdate;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
@@ -267,7 +267,7 @@ impl GuestEmulationTransportClient {
                         o => {
                             return Err(
                                 crate::error::DevicePlatformSettingsError::InvalidConsoleMode(o),
-                            )
+                            );
                         }
                     }
                 },
@@ -315,6 +315,7 @@ impl GuestEmulationTransportClient {
                         ),
                     }
                 },
+                default_boot_always_attempt: json.v2.r#static.default_boot_always_attempt,
                 nvdimm_count: json.v2.dynamic.nvdimm_count,
                 psp_enabled: json.v2.dynamic.enable_psp,
                 vmbus_redirection_enabled: json.v2.r#static.vmbus_redirection_enabled,
@@ -335,6 +336,7 @@ impl GuestEmulationTransportClient {
                 firmware_mode_is_pcat: json.v2.r#static.firmware_mode_is_pcat,
                 imc_enabled: json.v2.r#static.imc_enabled,
                 cxl_memory_enabled: json.v2.r#static.cxl_memory_enabled,
+                guest_state_lifetime: json.v2.r#static.guest_state_lifetime,
             },
             acpi_tables: json.v2.dynamic.acpi_tables,
         })
@@ -347,7 +349,7 @@ impl GuestEmulationTransportClient {
         gsp_extended_status: crate::api::GspExtendedStatusFlags,
     ) -> crate::api::GuestStateProtection {
         let mut buffer = [0; get_protocol::GSP_CLEARTEXT_MAX as usize * 2];
-        getrandom::getrandom(&mut buffer).expect("rng failure");
+        getrandom::fill(&mut buffer).expect("rng failure");
 
         let gsp_request = get_protocol::GuestStateProtectionRequest::new(
             buffer,
@@ -512,7 +514,9 @@ impl GuestEmulationTransportClient {
                     .until_cancelled(std::future::pending::<()>())
                     .await
                     .unwrap_or_else(|_| {
-                        panic!("should have been terminated after reporting start failure: {error_msg}")
+                        panic!(
+                            "should have been terminated after reporting start failure: {error_msg}"
+                        )
                     });
             }
         }

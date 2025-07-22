@@ -14,8 +14,6 @@
 //! On Underhill, this information is generated host-side, and sent over the
 //! GET, whereas on HvLite, it will need to be fetched from the Host itself.
 
-#![allow(dead_code)] // Translated protocol structs
-
 use super::config::SmbiosProcessorInfoBundle;
 use core::mem::size_of;
 use zerocopy::FromBytes;

@@ -4,16 +4,16 @@
 //! Implements atapi commands handler of optical drive.
 
 use super::DriveRegister;
+use crate::DmaType;
 use crate::protocol;
 use crate::protocol::DeviceControlReg;
 use crate::protocol::DeviceHeadReg;
 use crate::protocol::ErrorReg;
 use crate::protocol::IdeCommand;
 use crate::protocol::Status;
-use crate::DmaType;
-use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use ide_resources::IdePath;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;

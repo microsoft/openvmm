@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::new_client;
 use crate::VmArg;
 use crate::VmId;
+use crate::new_client;
 use clap::Parser;
 use clap_dyn_complete::CustomCompleter;
 use clap_dyn_complete::CustomCompleterFactory;

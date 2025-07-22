@@ -18,23 +18,23 @@
 pub mod gparange;
 
 pub use pipe_protocol::*;
-pub use protocol::TransferPageRange;
 pub use protocol::PAGE_SIZE;
+pub use protocol::TransferPageRange;
 
 use crate::gparange::GpaRange;
-use guestmem::ranges::PagedRange;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use protocol::*;
 use safeatomic::AtomicSliceOps;
 use std::fmt::Debug;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -70,8 +70,6 @@ mod pipe_protocol {
 }
 
 mod protocol {
-    #![allow(dead_code)]
-
     use crate::CONTROL_WORD_COUNT;
     use inspect::Inspect;
     use std::fmt::Debug;
@@ -481,6 +479,60 @@ impl<T: RingMem + Sync> RingMem for &'_ T {
 
     fn write_aligned(&self, addr: usize, data: &[u8]) {
         (*self).write_aligned(addr, data)
+    }
+}
+
+#[derive(Debug)]
+pub struct SingleMappedRingMem<T>(pub T);
+
+impl<T: AsRef<[AtomicU8]>> SingleMappedRingMem<T> {
+    fn control_range(&self) -> &[AtomicU8; PAGE_SIZE] {
+        self.0.as_ref()[..PAGE_SIZE].try_into().unwrap()
+    }
+
+    fn data(&self) -> &[AtomicU8] {
+        &self.0.as_ref()[PAGE_SIZE..]
+    }
+}
+
+impl<T: AsRef<[AtomicU8]> + Send> RingMem for SingleMappedRingMem<T> {
+    fn read_at(&self, mut addr: usize, data: &mut [u8]) {
+        if addr >= self.len() {
+            addr -= self.len();
+        }
+        let this_data = self.data();
+        if addr + data.len() <= self.len() {
+            this_data[addr..addr + data.len()].atomic_read(data);
+        } else {
+            let data_len = data.len();
+            let (first, last) = data.split_at_mut(self.len() - addr);
+            this_data[addr..].atomic_read(first);
+            this_data[..data_len - (self.len() - addr)].atomic_read(last);
+        }
+    }
+
+    fn write_at(&self, mut addr: usize, data: &[u8]) {
+        if addr > self.len() {
+            addr -= self.len();
+        }
+        let this_data = self.data();
+        if addr + data.len() <= self.len() {
+            this_data[addr..addr + data.len()].atomic_write(data);
+        } else {
+            let (first, last) = data.split_at(self.len() - addr);
+            this_data[addr..].atomic_write(first);
+            this_data[..data.len() - (self.len() - addr)].atomic_write(last);
+        }
+    }
+
+    fn control(&self) -> &[AtomicU32; CONTROL_WORD_COUNT] {
+        self.control_range().as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
+            .try_into()
+            .unwrap()
+    }
+
+    fn len(&self) -> usize {
+        self.data().len()
     }
 }
 
@@ -1047,7 +1099,7 @@ impl<M: RingMem> OutgoingRing<M> {
                 PACKET_FLAG_COMPLETION_REQUESTED,
             ),
         };
-        let msg_len = (packet.size + header_size + 7) / 8 * 8;
+        let msg_len = (packet.size + header_size).div_ceil(8) * 8;
         let total_msg_len = (msg_len + size_of::<Footer>()) as u32;
         if total_msg_len >= self.inner.len() - 8 {
             return Err(WriteError::Corrupt(Error::InvalidMessageLength));
@@ -1151,8 +1203,16 @@ impl<M: RingMem> Inspect for InnerRing<M> {
 
 /// Inspects ring buffer state without creating an IncomingRing or OutgoingRing
 /// structure.
-pub fn inspect_ring<M: RingMem>(mem: M, req: inspect::Request<'_>) {
-    let _ = InnerRing::new(mem).map(|ring| ring.inspect(req));
+///
+/// # Panics
+///
+/// Panics if control_page is not aligned.
+pub fn inspect_ring(control_page: &guestmem::Page, response: &mut inspect::Response<'_>) {
+    let control = control_page.as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
+        .try_into()
+        .unwrap();
+
+    response.field("control", Control(control));
 }
 
 /// Returns whether a ring buffer is in a state where the receiving end might

@@ -14,19 +14,21 @@
 //! Incoming config space accesses are then routed to connected
 //! [`GenericPciBusDevice`] devices.
 
+#![forbid(unsafe_code)]
+
 use bitfield_struct::bitfield;
-use chipset_device::io::deferred::defer_read;
-use chipset_device::io::deferred::defer_write;
+use chipset_device::ChipsetDevice;
+use chipset_device::io::IoError;
+use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredRead;
 use chipset_device::io::deferred::DeferredToken;
 use chipset_device::io::deferred::DeferredWrite;
-use chipset_device::io::IoError;
-use chipset_device::io::IoResult;
+use chipset_device::io::deferred::defer_read;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use std::collections::BTreeMap;
@@ -326,6 +328,7 @@ impl GenericPciBus {
         };
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
+            offset = self.state.pio_addr_reg.register(),
             "pci config space {} operation error: {}",
             operation,
             error
@@ -335,6 +338,7 @@ impl GenericPciBus {
     fn trace_recv_error(&self, e: mesh::RecvError, operation: &'static str) {
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
+            offset = self.state.pio_addr_reg.register(),
             "pci config space {} operation recv error: {:?}",
             operation,
             e,

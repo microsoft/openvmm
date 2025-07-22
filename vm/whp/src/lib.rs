@@ -26,9 +26,9 @@ use std::marker::PhantomData;
 use std::num::NonZeroI32;
 use std::num::NonZeroU16;
 use std::os::windows::prelude::*;
+use std::ptr::NonNull;
 use std::ptr::null;
 use std::ptr::null_mut;
-use std::ptr::NonNull;
 use winapi::shared::guiddef::GUID;
 use winapi::shared::ntdef::LUID;
 use winapi::shared::winerror;
@@ -373,6 +373,7 @@ impl Partition {
 
         let banks;
         let synth_banks;
+        let abi_bool;
         let data = match &property {
             PartitionProperty::ExtendedVmExits(val) => set(partition_prop::ExtendedVmExits, val),
             #[cfg(target_arch = "x86_64")]
@@ -380,7 +381,8 @@ impl Partition {
                 set(partition_prop::ExceptionExitBitmap, val)
             }
             PartitionProperty::SeparateSecurityDomain(val) => {
-                set(partition_prop::SeparateSecurityDomain, val)
+                abi_bool = (*val).into();
+                set(partition_prop::SeparateSecurityDomain, &abi_bool)
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::X64MsrExitBitmap(val) => set(partition_prop::X64MsrExitBitmap, val),
@@ -393,9 +395,13 @@ impl Partition {
                 set(partition_prop::ProcessorFrequencyCap, val)
             }
             PartitionProperty::AllowDeviceAssignment(val) => {
-                set(partition_prop::AllowDeviceAssignment, val)
+                abi_bool = (*val).into();
+                set(partition_prop::AllowDeviceAssignment, &abi_bool)
             }
-            PartitionProperty::DisableSmt(val) => set(partition_prop::DisableSmt, val),
+            PartitionProperty::DisableSmt(val) => {
+                abi_bool = (*val).into();
+                set(partition_prop::DisableSmt, &abi_bool)
+            }
             PartitionProperty::ProcessorFeatures(val) => {
                 let ProcessorFeatures {
                     bank0: b0,
@@ -438,7 +444,8 @@ impl Partition {
             }
             #[cfg(target_arch = "x86_64")]
             PartitionProperty::ApicRemoteReadSupport(val) => {
-                set(partition_prop::ApicRemoteReadSupport, val)
+                abi_bool = (*val).into();
+                set(partition_prop::ApicRemoteReadSupport, &abi_bool)
             }
             PartitionProperty::ReferenceTime(val) => set(partition_prop::ReferenceTime, val),
             PartitionProperty::SyntheticProcessorFeatures(val) => {
@@ -1738,7 +1745,7 @@ impl<'a> ExitReason<'a> {
         match ctx.ExitReason {
             abi::WHvRunVpExitReasonNone => Self::None,
             abi::WHvRunVpExitReasonCanceled => Self::Canceled,
-            reason => Self::Hypervisor(reason.0, &ctx.u.message),
+            reason => Self::Hypervisor(reason.0, &ctx.u),
         }
     }
 }
@@ -1785,7 +1792,7 @@ pub enum ExitReason<'a> {
 #[derive(Copy, Clone, Debug)]
 pub enum ExitReason<'a> {
     None,
-    Hypervisor(u32, &'a [u8; 256]),
+    Hypervisor(u32, &'a abi::WHV_RUN_VP_EXIT_CONTEXT_u),
     Canceled,
 }
 
@@ -1885,7 +1892,7 @@ macro_rules! get_registers {
             let mut values = [$($crate::get_registers!(@def $name)),+];
             ($vp).get_registers(&names, &mut values).map(|_| {
                 let mut vs = &values[..];
-                #[allow(unused_assignments, clippy::mixed_read_write_in_expression)]
+                #[allow(unused_assignments)]
                 ($({
                     let n = $name;
                     let v = &vs[0];

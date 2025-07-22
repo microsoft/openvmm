@@ -13,16 +13,16 @@ use crate::protocol::DeviceControlReg;
 use crate::protocol::IdeCommand;
 use crate::protocol::IdeConfigSpace;
 use crate::protocol::Status;
-use chipset_device::io::deferred::defer_write;
-use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use disk_backend::Disk;
 use drive::DiskDrive;
 use drive::DriveRegister;
@@ -32,8 +32,8 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use open_enum::open_enum;
 use pci_core::spec::cfg_space::Command;
-use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::cfg_space::HEADER_TYPE_00_SIZE;
+use pci_core::spec::cfg_space::HeaderType00;
 use protocol::BusMasterCommandReg;
 use protocol::BusMasterStatusReg;
 use scsi::CdbFlags;
@@ -1716,12 +1716,12 @@ mod save_restore {
                     (Some(_), None) => {
                         return Err(RestoreError::InvalidSavedState(
                             ChannelRestoreError::MissingStateForDrive.into(),
-                        ))
+                        ));
                     }
                     (None, Some(_)) => {
                         return Err(RestoreError::InvalidSavedState(
                             ChannelRestoreError::MissingDriveForState.into(),
-                        ))
+                        ));
                     }
                 }
             }
@@ -1734,10 +1734,10 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::IdeIoPort;
     use crate::protocol::BusMasterDmaDesc;
     use crate::protocol::DeviceHeadReg;
     use crate::protocol::IdeCommand;
-    use crate::IdeIoPort;
     use chipset_device::pio::ExternallyManagedPortIoIntercepts;
     use disk_file::FileDisk;
     use pal_async::async_test;
@@ -1782,7 +1782,7 @@ mod tests {
                 sectors_per_track = 17;
                 cylinders_times_heads = hard_drive_sectors / (sectors_per_track as u64);
 
-                head_count = std::cmp::max((cylinders_times_heads as u32 + 1023) / 1024, 4);
+                head_count = std::cmp::max((cylinders_times_heads as u32).div_ceil(1024), 4);
 
                 if (cylinders_times_heads >= (head_count as u64) * 1024) || head_count > 16 {
                     // Always use 16 heads
@@ -1815,7 +1815,7 @@ mod tests {
         device_head: u8,
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     enum Addressing {
         Chs,
         Lba28Bit,
@@ -2267,6 +2267,88 @@ mod tests {
     #[async_test]
     async fn enlightened_hdd_cmd_test() {
         enlightened_cmd_test(DriveType::Hard).await
+    }
+
+    // Command: READ SECTOR(S) - enlightened
+    // However, provide incomplete PRD table
+    #[async_test]
+    async fn enlightened_cmd_test_incomplete_prd() {
+        const SECTOR_COUNT: u16 = 8;
+        const BYTE_COUNT: u16 = SECTOR_COUNT * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
+
+        let test_guest_mem = GuestMemory::allocate(16384);
+
+        let table_gpa = 0x1000;
+        let data_gpa = 0x2000;
+        test_guest_mem
+            .write_plain(
+                table_gpa,
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: BYTE_COUNT / 2,
+                    unused: 0,
+                    end_of_table: 0x80, // Mark end before second PRD
+                },
+            )
+            .unwrap();
+        test_guest_mem
+            .write_plain(
+                table_gpa + size_of::<BusMasterDmaDesc>() as u64,
+                &BusMasterDmaDesc {
+                    mem_physical_base: data_gpa,
+                    byte_count: BYTE_COUNT / 2,
+                    unused: 0,
+                    end_of_table: 0x80,
+                },
+            )
+            .unwrap();
+
+        let data_buffer = table_gpa as u32;
+        let byte_count = 0;
+
+        let eint13_command = protocol::EnlightenedInt13Command {
+            command: IdeCommand::READ_DMA_EXT,
+            device_head: DeviceHeadReg::new().with_lba(true),
+            flags: 0,
+            result_status: 0,
+            lba_low: 0,
+            lba_high: 0,
+            block_count: SECTOR_COUNT,
+            byte_count,
+            data_buffer,
+            skip_bytes_head: 0,
+            skip_bytes_tail: 0,
+        };
+        test_guest_mem.write_plain(0, &eint13_command).unwrap();
+
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, file_contents, _geometry) =
+            ide_test_setup(Some(test_guest_mem.clone()), DriveType::Hard);
+
+        // select device [0,0] = primary channel, primary drive
+        device_select(&mut ide_device, &dev_path).await;
+        prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
+
+        // READ SECTORS - enlightened
+        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes()); // read from gpa 0
+
+        match r {
+            IoResult::Defer(mut deferred) => {
+                poll_fn(|cx| {
+                    ide_device.poll_device(cx);
+                    deferred.poll_write(cx)
+                })
+                .await
+                .unwrap();
+            }
+            _ => panic!("{:?}", r),
+        }
+
+        let mut buffer = vec![0u8; BYTE_COUNT as usize / 2];
+        test_guest_mem
+            .read_at(data_gpa.into(), &mut buffer)
+            .unwrap();
+        assert_eq!(buffer, file_contents.as_bytes()[..buffer.len()]);
     }
 
     #[async_test]

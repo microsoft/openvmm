@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use mesh_channel::rpc::Rpc;
 use mesh_channel::Receiver;
+use mesh_channel::rpc::Rpc;
 use vmgs::Vmgs;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;

@@ -197,11 +197,17 @@ pub fn bail_if_running_in_ci() -> anyhow::Result<()> {
             log::warn!("Detected that {ci_env} is set");
             log::warn!("");
             log::warn!("Do not use `build-igvm` in CI scripts!");
-            log::warn!("This is a local-only, inner-dev-loop tool to build IGVM files, with an UNSTABLE CLI.");
+            log::warn!(
+                "This is a local-only, inner-dev-loop tool to build IGVM files, with an UNSTABLE CLI."
+            );
             log::warn!("");
-            log::warn!("Automated pipelines should use the underlying `flowey` nodes that power build-igvm directly, _without_ relying on its CLI!");
+            log::warn!(
+                "Automated pipelines should use the underlying `flowey` nodes that power build-igvm directly, _without_ relying on its CLI!"
+            );
             log::warn!("");
-            log::warn!("If you _really_ know what you're doing, you can set {OVERRIDE_ENV} to disable this error.");
+            log::warn!(
+                "If you _really_ know what you're doing, you can set {OVERRIDE_ENV} to disable this error."
+            );
             anyhow::bail!("attempted to run `build-igvm` in CI")
         }
     }

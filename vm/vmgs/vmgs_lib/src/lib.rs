@@ -12,8 +12,8 @@ use core::slice;
 use disk_backend::Disk;
 use disk_vhd1::Vhd1Disk;
 use futures::executor::block_on;
-use std::ffi::c_char;
 use std::ffi::CStr;
+use std::ffi::c_char;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -122,7 +122,7 @@ async fn do_read(
     file_id: FileId,
     key: Option<&[u8]>,
 ) -> Result<Vec<u8>, VmgsError> {
-    let mut vmgs = Vmgs::open(open_disk(file_path, true)?)
+    let mut vmgs = Vmgs::open(open_disk(file_path, true)?, None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -212,7 +212,7 @@ async fn do_write(
     file.read_to_end(&mut buf)
         .map_err(|_| VmgsError::CantReadFile)?;
 
-    let mut vmgs = Vmgs::open(open_disk(file_path, false)?)
+    let mut vmgs = Vmgs::open(open_disk(file_path, false)?, None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -321,7 +321,7 @@ async fn do_create(
 
     let disk = Vhd1Disk::open_fixed(file, false).map_err(|_| VmgsError::FileDisk)?;
 
-    let mut vmgs = Vmgs::format_new(Disk::new(disk).map_err(|_| VmgsError::FileDisk)?)
+    let mut vmgs = Vmgs::format_new(Disk::new(disk).map_err(|_| VmgsError::FileDisk)?, None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -368,7 +368,7 @@ pub unsafe extern "C" fn query_size_vmgs(
 }
 
 async fn do_query_size(file_path: &str, file_id: FileId) -> Result<u64, VmgsError> {
-    let vmgs = Vmgs::open(open_disk(file_path, true)?)
+    let vmgs = Vmgs::open(open_disk(file_path, true)?, None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 

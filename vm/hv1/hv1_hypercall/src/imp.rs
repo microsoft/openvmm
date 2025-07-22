@@ -12,12 +12,6 @@ use super::support::VtlHypercall;
 use crate::support::HvRepResult;
 use crate::support::VariableRepHypercall;
 use hv1_structs::ProcessorSet;
-use hvdef::hypercall as defs;
-use hvdef::hypercall::AcceptPagesAttributes;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::HypercallOutput;
-use hvdef::hypercall::VtlPermissionSet;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvRegisterName;
@@ -25,6 +19,12 @@ use hvdef::HvRegisterValue;
 use hvdef::HvResult;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
+use hvdef::hypercall as defs;
+use hvdef::hypercall::AcceptPagesAttributes;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvRegisterAssoc;
+use hvdef::hypercall::HypercallOutput;
+use hvdef::hypercall::VtlPermissionSet;
 use zerocopy::IntoBytes;
 
 /// Implements the `HvPostMessage` hypercall.
@@ -90,7 +90,7 @@ pub type HvPostMessageDirect =
 impl<T: PostMessageDirect> HypercallDispatch<HvPostMessageDirect> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvPostMessageDirect::run(params, |input| {
-            let message = input.message;
+            let message = input.message.get();
             self.post_message_direct(
                 input.partition_id,
                 Vtl::try_from(input.vtl)?,
@@ -221,6 +221,9 @@ pub trait AssertVirtualInterrupt {
 impl<T: AssertVirtualInterrupt> HypercallDispatch<HvAssertVirtualInterrupt> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvAssertVirtualInterrupt::run(params, |input| {
+            if input.rsvd0 != 0 || input.rsvd1 != 0 {
+                return Err(HvError::InvalidParameter);
+            }
             self.assert_virtual_interrupt(
                 input.partition_id,
                 input.interrupt_control,
@@ -817,8 +820,12 @@ pub type HvFlushVirtualAddressListEx = VariableRepHypercall<
 impl<T: FlushVirtualAddressListEx> HypercallDispatch<HvFlushVirtualAddressListEx> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvFlushVirtualAddressListEx::run(params, |header, variable_input, input, _output| {
+            if header.vp_set_format != hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K {
+                return Err((HvError::InvalidParameter, 0));
+            }
+
             let processors =
-                ProcessorSet::from_generic_set(variable_input[0], &variable_input[1..])
+                ProcessorSet::from_processor_masks(header.vp_set_valid_banks_mask, variable_input)
                     .ok_or((HvError::InvalidParameter, 0))?;
             self.flush_virtual_address_list_ex(processors, header.flags, input)
         })
@@ -873,8 +880,13 @@ pub type HvFlushVirtualAddressSpaceEx = VariableHypercall<
 impl<T: FlushVirtualAddressSpaceEx> HypercallDispatch<HvFlushVirtualAddressSpaceEx> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvFlushVirtualAddressSpaceEx::run(params, |header, input| {
-            let processors = ProcessorSet::from_generic_set(input[0], &input[1..])
-                .ok_or(HvError::InvalidParameter)?;
+            if header.vp_set_format != hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K {
+                return Err(HvError::InvalidParameter);
+            }
+
+            let processors =
+                ProcessorSet::from_processor_masks(header.vp_set_valid_banks_mask, input)
+                    .ok_or(HvError::InvalidParameter)?;
             self.flush_virtual_address_space_ex(processors, header.flags)
         })
     }
@@ -922,5 +934,82 @@ pub type HvExtQueryCapabilities =
 impl<T: ExtendedQueryCapabilities> HypercallDispatch<HvExtQueryCapabilities> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvExtQueryCapabilities::run(params, |()| self.query_extended_capabilities())
+    }
+}
+
+/// Defines the `HvSendSyntheticClusterIpi` hypercall.
+pub type HvSendSyntheticClusterIpi = SimpleHypercall<
+    defs::SendSyntheticClusterIpi,
+    (),
+    { HypercallCode::HvCallSendSyntheticClusterIpi.0 },
+>;
+
+/// Implements the `HvSendSyntheticClusterIpi` hypercall.
+pub trait SendSyntheticClusterIpi {
+    /// Sends an ipi to a synthetic cluster.
+    fn send_synthetic_cluster_ipi(
+        &mut self,
+        target_vtl: Option<Vtl>,
+        vector: u32,
+        flags: u8,
+        processor_set: ProcessorSet<'_>,
+    ) -> HvResult<()>;
+}
+
+impl<T: SendSyntheticClusterIpi> HypercallDispatch<HvSendSyntheticClusterIpi> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvSendSyntheticClusterIpi::run(params, |input| {
+            if input.reserved != 0 {
+                return Err(HvError::InvalidParameter);
+            }
+            self.send_synthetic_cluster_ipi(
+                input.target_vtl.target_vtl()?,
+                input.vector,
+                input.flags,
+                ProcessorSet::from_processor_masks(1, &[input.processor_mask])
+                    .ok_or(HvError::InvalidParameter)?,
+            )
+        })
+    }
+}
+
+/// Defines the `HvSendSyntheticClusterIpi` hypercall.
+pub type HvSendSyntheticClusterIpiEx = VariableHypercall<
+    defs::SendSyntheticClusterIpiEx,
+    (),
+    { HypercallCode::HvCallSendSyntheticClusterIpiEx.0 },
+>;
+
+/// Implements the `HvSendSyntheticClusterIpi` hypercall.
+pub trait SendSyntheticClusterIpiEx {
+    /// Sends an ipi to a synthetic cluster.
+    fn send_synthetic_cluster_ipi_ex(
+        &mut self,
+        target_vtl: Option<Vtl>,
+        vector: u32,
+        flags: u8,
+        processor_set: ProcessorSet<'_>,
+    ) -> HvResult<()>;
+}
+
+impl<T: SendSyntheticClusterIpiEx> HypercallDispatch<HvSendSyntheticClusterIpiEx> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvSendSyntheticClusterIpiEx::run(params, |header, input| {
+            if header.reserved != 0 {
+                return Err(HvError::InvalidParameter);
+            }
+
+            if header.vp_set_format != hvdef::hypercall::HV_GENERIC_SET_SPARSE_4K {
+                return Err(HvError::InvalidParameter);
+            }
+
+            self.send_synthetic_cluster_ipi_ex(
+                header.target_vtl.target_vtl()?,
+                header.vector,
+                header.flags,
+                ProcessorSet::from_processor_masks(header.vp_set_valid_banks_mask, input)
+                    .ok_or(HvError::InvalidParameter)?,
+            )
+        })
     }
 }

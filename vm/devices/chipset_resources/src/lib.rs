@@ -9,10 +9,10 @@ pub mod i8042 {
     //! Resource definitions for the i8042 PS2 keyboard/mouse controller.
 
     use mesh::MeshPayload;
-    use vm_resource::kind::ChipsetDeviceHandleKind;
-    use vm_resource::kind::KeyboardInputHandleKind;
     use vm_resource::Resource;
     use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+    use vm_resource::kind::KeyboardInputHandleKind;
 
     /// A handle to an i8042 PS2 keyboard/mouse controller controller.
     #[derive(MeshPayload)]
@@ -33,8 +33,8 @@ pub mod battery {
     use arbitrary::Arbitrary;
     use inspect::Inspect;
     use mesh::MeshPayload;
-    use vm_resource::kind::ChipsetDeviceHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
     /// A handle to a battery device for x64
     #[derive(MeshPayload)]
     pub struct BatteryDeviceHandleX64 {

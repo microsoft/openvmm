@@ -7,10 +7,10 @@ use crate::KvmPartitionInner;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::os::unix::prelude::*;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 const NUM_GSIS: usize = 2048;
 

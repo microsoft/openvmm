@@ -16,15 +16,15 @@ pub use spec_services::NvramResult;
 pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
-use crate::platform::nvram::VsmConfig;
 use crate::UefiDevice;
+use crate::platform::nvram::VsmConfig;
 use firmware_uefi_custom_vars::CustomVars;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use thiserror::Error;
-use uefi_nvram_storage::InspectableNvramStorage;
+use uefi_nvram_storage::VmmNvramStorage;
 use uefi_specs::uefi::common::EfiStatus;
 use uefi_specs::uefi::nvram::EfiVariableAttributes;
 use zerocopy::IntoBytes;
@@ -67,12 +67,12 @@ pub struct NvramServices {
 
     // Sub-emulators
     #[inspect(flatten)]
-    services: NvramSpecServices<Box<dyn InspectableNvramStorage>>,
+    services: NvramSpecServices<Box<dyn VmmNvramStorage>>,
 }
 
 impl NvramServices {
     pub async fn new(
-        nvram_storage: Box<dyn InspectableNvramStorage>,
+        nvram_storage: Box<dyn VmmNvramStorage>,
         custom_vars: CustomVars,
         secure_boot_enabled: bool,
         vsm_config: Option<Box<dyn VsmConfig>>,
@@ -622,15 +622,14 @@ mod save_restore {
     mod state {
         use crate::service::nvram::NvramSpecServices;
         use mesh::payload::Protobuf;
-        use uefi_nvram_storage::InspectableNvramStorage;
+        use uefi_nvram_storage::VmmNvramStorage;
         use vmcore::save_restore::SaveRestore;
 
         #[derive(Protobuf)]
         #[mesh(package = "firmware.uefi.nvram")]
         pub struct SavedState {
             #[mesh(1)]
-            pub services:
-                <NvramSpecServices<Box<dyn InspectableNvramStorage>> as SaveRestore>::SavedState,
+            pub services: <NvramSpecServices<Box<dyn VmmNvramStorage>> as SaveRestore>::SavedState,
         }
     }
 

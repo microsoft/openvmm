@@ -76,7 +76,7 @@ impl<T: ?Sized> LoanCell<T> {
         struct RestoreOnDrop<'a, T: ?Sized>(&'a LoanCell<T>, Option<NonNull<T>>);
         impl<T: ?Sized> Drop for RestoreOnDrop<'_, T> {
             fn drop(&mut self) {
-                self.0 .0.set(self.1);
+                self.0.0.set(self.1);
             }
         }
 

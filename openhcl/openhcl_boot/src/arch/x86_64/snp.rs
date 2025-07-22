@@ -8,8 +8,8 @@ use core::arch::asm;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
-use x86defs::snp::GhcbInfo;
 use x86defs::X86X_AMD_MSR_GHCB;
+use x86defs::snp::GhcbInfo;
 
 pub struct Ghcb;
 
@@ -19,7 +19,7 @@ pub enum AcceptGpaStatus {
     Retry,
 }
 
-#[allow(dead_code)] // Printed via Debug in the error case.
+#[expect(dead_code)] // Printed via Debug in the error case.
 #[derive(Debug)]
 pub enum AcceptGpaError {
     MemorySecurityViolation {
@@ -33,7 +33,11 @@ pub enum AcceptGpaError {
 }
 
 impl Ghcb {
-    unsafe fn sev_vmgexit() {
+    /// # Safety
+    ///
+    /// Regardless of the content of the GHCB page or MSR, this instruction should not be able
+    /// to cause memory safety issues.
+    fn sev_vmgexit() {
         // SAFETY: Using the `vmgexit` instruction forces an exit to the hypervisor but doesn't
         // directly change program state.
         unsafe {

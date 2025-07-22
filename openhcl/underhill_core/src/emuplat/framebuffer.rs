@@ -6,8 +6,8 @@ use video_core::FramebufferControl;
 use video_core::FramebufferFormat;
 use video_core::ResolvedFramebuffer;
 use video_core::SharedFramebufferHandle;
-use vm_resource::kind::FramebufferHandleKind;
 use vm_resource::ResolveResource;
+use vm_resource::kind::FramebufferHandleKind;
 
 #[derive(Clone)]
 pub struct FramebufferRemoteControl {

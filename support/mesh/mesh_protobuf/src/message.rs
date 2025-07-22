@@ -3,6 +3,12 @@
 
 //! Type-erased protobuf message support.
 
+use crate::DefaultEncoding;
+use crate::DescribedProtobuf;
+use crate::Error;
+use crate::MessageDecode;
+use crate::MessageEncode;
+use crate::Protobuf;
 use crate::decode;
 use crate::encode;
 use crate::encoding::MessageEncoding;
@@ -14,12 +20,6 @@ use crate::protofile::DescribeField;
 use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
 use crate::table::DescribeTable;
-use crate::DefaultEncoding;
-use crate::DescribedProtobuf;
-use crate::Error;
-use crate::MessageDecode;
-use crate::MessageEncode;
-use crate::Protobuf;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -135,11 +135,11 @@ impl ProtobufAny {
 mod tests {
     extern crate std;
 
+    use crate::Protobuf;
     use crate::encode;
     use crate::message::ProtobufAny;
     use crate::message::ProtobufMessage;
     use crate::tests::as_expect_str;
-    use crate::Protobuf;
     use expect_test::expect;
     use std::println;
 

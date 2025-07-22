@@ -114,7 +114,7 @@ impl SimpleFlowNode for Node {
                 vtl0_kernel_type,
                 with_uefi,
                 with_interactive,
-                with_sidecar_details,
+                with_sidecar: with_sidecar_details,
             } = &mut recipe_details;
 
             if custom_kernel.is_some() {
@@ -209,12 +209,7 @@ impl SimpleFlowNode for Node {
         let (built_openvmm_hcl, write_built_openvmm_hcl) = ctx.new_var();
         let (built_openhcl_boot, write_built_openhcl_boot) = ctx.new_var();
         let (built_openhcl_igvm, write_built_openhcl_igvm) = ctx.new_var();
-        let (built_sidecar, write_built_sidecar) = if recipe_details.with_sidecar_details {
-            let (built_sidecar, write_built_sidecar) = ctx.new_var();
-            (Some(built_sidecar), Some(write_built_sidecar))
-        } else {
-            (None, None)
-        };
+        let (built_sidecar, write_built_sidecar) = ctx.new_var();
 
         ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
             profile,
@@ -254,8 +249,8 @@ impl SimpleFlowNode for Node {
                 fs_err::copy(bin, output_dir.join("openhcl_boot"))?;
                 fs_err::copy(dbg, output_dir.join("openhcl_boot.dbg"))?;
 
-                if let Some(built_sidecar) = built_sidecar {
-                    let crate::build_sidecar::SidecarOutput { bin, dbg } = rt.read(built_sidecar);
+                if let Some(built_sidecar) = rt.read(built_sidecar) {
+                    let crate::build_sidecar::SidecarOutput { bin, dbg } = built_sidecar;
                     fs_err::copy(bin, output_dir.join("sidecar"))?;
                     fs_err::copy(dbg, output_dir.join("sidecar.dbg"))?;
                 }

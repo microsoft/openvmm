@@ -179,7 +179,7 @@ impl Xtask for UnusedDeps {
 }
 
 fn remove_dependencies(manifest: &str, analysis_results: &[DepResult]) -> anyhow::Result<String> {
-    let mut manifest = toml_edit::Document::from_str(manifest)?;
+    let mut manifest = toml_edit::DocumentMut::from_str(manifest)?;
 
     let mut unused_deps = Vec::new();
     let mut ignored_and_shouldnt_be = Vec::new();

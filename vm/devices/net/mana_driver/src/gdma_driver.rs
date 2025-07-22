@@ -12,8 +12,20 @@ use crate::resources::ResourceArena;
 use anyhow::Context;
 use futures::FutureExt;
 use gdma_defs::Cqe;
+use gdma_defs::DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE;
+use gdma_defs::DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG;
+use gdma_defs::DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT;
 use gdma_defs::EqeDataReconfig;
 use gdma_defs::EstablishHwc;
+use gdma_defs::GDMA_EQE_COMPLETION;
+use gdma_defs::GDMA_EQE_HWC_INIT_DATA;
+use gdma_defs::GDMA_EQE_HWC_INIT_DONE;
+use gdma_defs::GDMA_EQE_HWC_INIT_EQ_ID_DB;
+use gdma_defs::GDMA_EQE_HWC_RECONFIG_DATA;
+use gdma_defs::GDMA_EQE_TEST_EVENT;
+use gdma_defs::GDMA_MESSAGE_V1;
+use gdma_defs::GDMA_PAGE_TYPE_4K;
+use gdma_defs::GDMA_STANDARD_HEADER_TYPE;
 use gdma_defs::GdmaChangeMsixVectorIndexForEq;
 use gdma_defs::GdmaCreateDmaRegionReq;
 use gdma_defs::GdmaCreateDmaRegionResp;
@@ -33,27 +45,6 @@ use gdma_defs::GdmaRequestType;
 use gdma_defs::GdmaRespHdr;
 use gdma_defs::GdmaVerifyVerReq;
 use gdma_defs::GdmaVerifyVerResp;
-use gdma_defs::HwcInitEqIdDb;
-use gdma_defs::HwcInitTypeData;
-use gdma_defs::HwcTxOob;
-use gdma_defs::HwcTxOobFlags3;
-use gdma_defs::HwcTxOobFlags4;
-use gdma_defs::RegMap;
-use gdma_defs::Sge;
-use gdma_defs::SmcMessageType;
-use gdma_defs::SmcProtoHdr;
-use gdma_defs::DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG;
-use gdma_defs::DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE;
-use gdma_defs::DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT;
-use gdma_defs::GDMA_EQE_COMPLETION;
-use gdma_defs::GDMA_EQE_HWC_INIT_DATA;
-use gdma_defs::GDMA_EQE_HWC_INIT_DONE;
-use gdma_defs::GDMA_EQE_HWC_INIT_EQ_ID_DB;
-use gdma_defs::GDMA_EQE_HWC_RECONFIG_DATA;
-use gdma_defs::GDMA_EQE_TEST_EVENT;
-use gdma_defs::GDMA_MESSAGE_V1;
-use gdma_defs::GDMA_PAGE_TYPE_4K;
-use gdma_defs::GDMA_STANDARD_HEADER_TYPE;
 use gdma_defs::HWC_DATA_CONFIG_HWC_TIMEOUT;
 use gdma_defs::HWC_DATA_TYPE_HW_VPORT_LINK_CONNECT;
 use gdma_defs::HWC_DATA_TYPE_HW_VPORT_LINK_DISCONNECT;
@@ -63,22 +54,31 @@ use gdma_defs::HWC_INIT_DATA_GPA_MKEY;
 use gdma_defs::HWC_INIT_DATA_PDID;
 use gdma_defs::HWC_INIT_DATA_RQID;
 use gdma_defs::HWC_INIT_DATA_SQID;
+use gdma_defs::HwcInitEqIdDb;
+use gdma_defs::HwcInitTypeData;
+use gdma_defs::HwcTxOob;
+use gdma_defs::HwcTxOobFlags3;
+use gdma_defs::HwcTxOobFlags4;
+use gdma_defs::RegMap;
 use gdma_defs::SMC_MSG_TYPE_DESTROY_HWC_VERSION;
 use gdma_defs::SMC_MSG_TYPE_ESTABLISH_HWC_VERSION;
 use gdma_defs::SMC_MSG_TYPE_REPORT_HWC_TIMEOUT_VERSION;
+use gdma_defs::Sge;
+use gdma_defs::SmcMessageType;
+use gdma_defs::SmcProtoHdr;
 use inspect::Inspect;
 use pal_async::driver::Driver;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Duration;
+use user_driver::DeviceBacking;
+use user_driver::DeviceRegisterIo;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
-use user_driver::DeviceBacking;
-use user_driver::DeviceRegisterIo;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -161,17 +161,46 @@ const NUM_PAGES: usize = 6;
 // RWQEs have no OOB and one SGL entry so they are always exactly 32 bytes.
 const RWQE_SIZE: u32 = 32;
 
+impl<T: DeviceBacking> GdmaDriver<T> {
+    /// Polls the shared‐memory ownership bit until PF gives it back (or we timeout / device not present).
+    /// Returns `Ok(header)` if we successfully see VF ownership (i.e. PF bit cleared),
+    /// or `Err` if the device not present or we hit our timeout.
+    fn wait_for_vf_to_own_shmem(&self) -> Result<SmcProtoHdr, anyhow::Error> {
+        let timeout = std::time::Instant::now() + Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS);
+
+        loop {
+            let offset = self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28;
+            let data = self.bar0.mem.read_u32(offset);
+
+            if data == u32::MAX {
+                return Err(anyhow::anyhow!("Device no longer present"));
+            }
+
+            let header = SmcProtoHdr::from(data);
+            if !header.owner_is_pf() {
+                return Ok(header);
+            }
+
+            if std::time::Instant::now() > timeout {
+                return Err(anyhow::anyhow!(
+                    "MANA request timed out waiting for PF ownership to clear"
+                ));
+            }
+
+            std::hint::spin_loop();
+        }
+    }
+}
+
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
         if self.hwc_failure {
             return;
         }
-        let data = self
-            .bar0
-            .mem
-            .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
-        if data == u32::MAX {
-            tracing::error!("Device no longer present");
+
+        // Wait for VF ownership of the shared memory before post destroy HWC
+        if let Err(e) = self.wait_for_vf_to_own_shmem() {
+            tracing::error!(error = %e, "Wait for VF posession to post DESTROY_HWC");
             return;
         }
 
@@ -184,34 +213,20 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28,
             hdr,
         );
-        // Wait for the device to respond.
-        let max_wait_time =
-            std::time::Instant::now() + Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS);
-        let header = loop {
-            let data = self
-                .bar0
-                .mem
-                .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
-            if data == u32::MAX {
-                tracing::error!("Device no longer present");
-                return;
-            }
-            let header = SmcProtoHdr::from(data);
-            if !header.owner_is_pf() {
-                break header;
-            }
-            if std::time::Instant::now() > max_wait_time {
-                tracing::error!("MANA request timed out. SMC_MSG_TYPE_DESTROY_HWC");
-                return;
-            }
-            std::hint::spin_loop();
-        };
 
-        if !header.is_response() {
-            tracing::error!("expected response");
-        }
-        if header.status() != 0 {
-            tracing::error!("DESTROY_HWC failed: {}", header.status());
+        // Wait for VF ownership of the shared memory after post destroy HWC
+        match self.wait_for_vf_to_own_shmem() {
+            Ok(header) => {
+                if !header.is_response() {
+                    tracing::error!("Unexpected response for DESTROY_HWC");
+                }
+                if header.status() != 0 {
+                    tracing::error!(status = header.status(), "DESTROY_HWC failed");
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Wait for VF possession to retrieve status after DESTROY_HWC");
+            }
         }
     }
 }
@@ -420,7 +435,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         // available.
         let mut eq_id_msix = HashMap::new();
         eq_id_msix.insert(eq.id(), 0);
-        tracing::info!("Created HWC with eq id: {}, msix: 0", eq.id());
+        tracing::info!(eq_id = eq.id(), msix = 0, "created HWC");
 
         let db_id = db_id.context("db id not provided")? as u32;
         let gpa_mkey = gpa_mkey.context("gpa mem key not provided")?;
@@ -450,7 +465,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         // To make debugging from the device side easier, randomize the upper
         // 16 bits of the ActivityId, so that requests can be distinguished.
         let mut rand_activity_id = [0_u8; 2];
-        getrandom::getrandom(&mut rand_activity_id).unwrap();
+        getrandom::fill(&mut rand_activity_id).unwrap();
         let hwc_activity_id = (u16::from_ne_bytes(rand_activity_id) as u32) << 16;
         let mut this = Self {
             device: Some(device),
@@ -591,7 +606,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             tracing::error!(msg_type, "expected shmem response");
         }
         if header.status() != 0 {
-            tracing::error!(msg_type, "response failed status={}", header.status());
+            tracing::error!(msg_type, header_status = header.status(), "response failed");
         }
     }
 
@@ -830,10 +845,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                                 "HWC timeout value"
                             );
                         }
-                        unknown => tracing::error!(unknown, "unknown reconfig data type."),
+                        unknown => tracing::error!(unknown, "unknown reconfig data type"),
                     }
                 }
-                ty => tracing::error!("unknown eq event {}", ty),
+                ty => tracing::error!(ty, "unknown eq event"),
             }
             self.eq.ack();
         }

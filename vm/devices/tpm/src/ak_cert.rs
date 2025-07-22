@@ -36,7 +36,7 @@ impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
     type Input<'a> = &'a ();
 }
 
-/// A resolved get attestation report helper resource.
+/// A resolved request AK cert helper resource.
 pub struct ResolvedRequestAkCert(pub Arc<dyn RequestAkCert>);
 
 impl<T: 'static + RequestAkCert> From<T> for ResolvedRequestAkCert {

@@ -7,9 +7,9 @@ use crate::Device;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::pmem::VirtioPmemHandle;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
-use vm_resource::ResolveResource;
 
 /// Resolver for virtio-pmem devices.
 pub struct VirtioPmemResolver;

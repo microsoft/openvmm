@@ -7,11 +7,11 @@
 #![expect(missing_docs)]
 
 use arbitrary::Arbitrary;
-use guestmem::ranges::PagedRange;
 use guestmem::BitmapInfo;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryAccess;
 use guestmem::LockedRange;
+use guestmem::ranges::PagedRange;
 use smallvec::SmallVec;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
@@ -41,7 +41,6 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         self.bitmap.as_ref().map(|bm| BitmapInfo {
             read_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
             write_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
-            execute_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
             bit_offset: 0,
         })
     }
@@ -115,10 +114,6 @@ impl LockedIoVecs {
 impl LockedRange for LockedIoVecs {
     fn push_sub_range(&mut self, sub_range: &[AtomicU8]) {
         self.0.push(sub_range.into());
-    }
-
-    fn pop_sub_range(&mut self) -> Option<(*const AtomicU8, usize)> {
-        self.0.pop().map(|buffer| (buffer.address, buffer.len))
     }
 }
 

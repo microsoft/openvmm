@@ -9,8 +9,8 @@
 use core::fmt;
 use std::alloc::Layout;
 use std::marker::PhantomData;
-use std::ptr::drop_in_place;
 use std::ptr::NonNull;
+use std::ptr::drop_in_place;
 
 /// A type-erased vector-based queue.
 ///

@@ -33,7 +33,7 @@
 //! 0xFF8   UARTPCellID2      RO   0x05         8       UARTPCellID2 Register
 //! 0xFFC   UARTPCellID3      RO   0xB1         8       UARTPCellID3 Register
 
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 use core::hint::spin_loop;
 use core::sync::atomic::AtomicBool;

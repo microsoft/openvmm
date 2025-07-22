@@ -2,19 +2,12 @@
 // Licensed under the MIT License.
 
 use anyhow::Context;
-use flowey_core::node::user_facing::GhPermission;
-use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
+use flowey_core::node::user_facing::GhPermission;
+use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::patch::ResolvedPatches;
-use flowey_core::pipeline::internal::AdoPool;
-use flowey_core::pipeline::internal::ArtifactMeta;
-use flowey_core::pipeline::internal::InternalAdoResourcesRepository;
-use flowey_core::pipeline::internal::Parameter;
-use flowey_core::pipeline::internal::ParameterMeta;
-use flowey_core::pipeline::internal::PipelineFinalized;
-use flowey_core::pipeline::internal::PipelineJobMetadata;
 use flowey_core::pipeline::AdoCiTriggers;
 use flowey_core::pipeline::AdoPrTriggers;
 use flowey_core::pipeline::AdoScheduleTriggers;
@@ -23,6 +16,13 @@ use flowey_core::pipeline::GhPrTriggers;
 use flowey_core::pipeline::GhRunner;
 use flowey_core::pipeline::GhScheduleTriggers;
 use flowey_core::pipeline::Pipeline;
+use flowey_core::pipeline::internal::AdoPool;
+use flowey_core::pipeline::internal::ArtifactMeta;
+use flowey_core::pipeline::internal::InternalAdoResourcesRepository;
+use flowey_core::pipeline::internal::Parameter;
+use flowey_core::pipeline::internal::ParameterMeta;
+use flowey_core::pipeline::internal::PipelineFinalized;
+use flowey_core::pipeline::internal::PipelineJobMetadata;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 

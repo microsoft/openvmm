@@ -8,8 +8,8 @@
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
-use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use scsi_buffers::BounceBuffer;
 use scsi_buffers::IoBuffer;
 use scsi_buffers::RequestBuffers;

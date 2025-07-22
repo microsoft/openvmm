@@ -6,8 +6,8 @@
 use anyhow::Context;
 use diag_server::DiagServer;
 use futures::FutureExt;
-use mesh::error::RemoteError;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;

@@ -3,11 +3,11 @@
 
 //! Support for encoding Prost types as Mesh types.
 
-use super::inplace::InplaceOption;
-use super::protobuf;
 use super::MessageDecode;
 use super::MessageEncode;
 use super::Result;
+use super::inplace::InplaceOption;
+use super::protobuf;
 use crate::Error;
 use alloc::vec::Vec;
 

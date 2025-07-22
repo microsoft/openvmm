@@ -6,9 +6,9 @@
 use super::PciCapability;
 use crate::msi::MsiInterrupt;
 use crate::msi::RegisterMsi;
+use crate::spec::caps::CapabilityId;
 use crate::spec::caps::msix::MsixCapabilityHeader;
 use crate::spec::caps::msix::MsixTableEntryIdx;
-use crate::spec::caps::CapabilityId;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
@@ -246,7 +246,7 @@ impl MsixEmulator {
             Self {
                 state: state.clone(),
                 pending_bits_offset,
-                pending_bits_dword_count: (count + 31) / 32,
+                pending_bits_dword_count: count.div_ceil(32),
             },
             MsixCapability {
                 count,

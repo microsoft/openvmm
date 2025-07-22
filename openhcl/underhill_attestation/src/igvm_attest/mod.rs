@@ -6,7 +6,6 @@
 //! `IGVM_ATTEST` host request.
 
 use base64_serde::base64_serde_type;
-use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
@@ -15,6 +14,7 @@ use openhcl_attestation_protocol::igvm_attest::get::IgvmCapabilityBitMap;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use tee_call::TeeType;
 use thiserror::Error;
 use zerocopy::FromBytes;
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_no_time() {
-        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
@@ -366,6 +366,7 @@ mod tests {
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
+            filtered_vpci_devices_allowed: true,
             vm_unique_id: String::new(),
         };
         let result = serde_json::to_string(&attestation_vm_config);
@@ -377,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_with_time() {
-        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"filtered-vpci-devices-allowed":true,"vmUniqueId":""}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
@@ -386,6 +387,7 @@ mod tests {
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
+            filtered_vpci_devices_allowed: true,
             vm_unique_id: String::new(),
         };
         let attestation_vm_config =

@@ -53,7 +53,9 @@ impl DumpStage0Dag {
                 let Some(patchfn) =
                     flowey_core::patch::patchfn_by_modpath().get(patchfn_name.as_str())
                 else {
-                    anyhow::bail!("could not find patch with name '{patchfn_name}'. Was it registered with `flowey_core::node::register_patch!`?")
+                    anyhow::bail!(
+                        "could not find patch with name '{patchfn_name}'. Was it registered with `flowey_core::node::register_patch!`?"
+                    )
                 };
                 patch_aggregator.apply_patchfn(*patchfn);
             }

@@ -1,0 +1,25 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "minircu"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+event-listener.workspace = true
+parking_lot.workspace = true
+tracelimit.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Threading"] }
+
+[dev-dependencies]
+pal_async.workspace = true
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

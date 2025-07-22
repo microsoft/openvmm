@@ -1,27 +1,27 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::memory::VtlAccess;
-use crate::vtl2;
 use crate::Hv1State;
 use crate::WhpProcessor;
+use crate::memory::VtlAccess;
+use crate::vtl2;
 #[cfg(guest_arch = "aarch64")]
 use aarch64 as arch;
 use hv1_hypercall::HvRepResult;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvInterceptType;
-use hvdef::HvError;
-use hvdef::HvMapGpaFlags;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
+use hvdef::HvError;
+use hvdef::HvMapGpaFlags;
+use hvdef::Vtl;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvInterceptType;
 use memory_range::MemoryRange;
 use std::iter::zip;
 use std::ops::RangeInclusive;
-use virt::io::CpuIo;
 use virt::PageVisibility;
 use virt::VpIndex;
+use virt::io::CpuIo;
 #[cfg(guest_arch = "x86_64")]
 use x86 as arch;
 
@@ -173,7 +173,7 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
 
         let target_vp = self.vp.vp.partition.vp(vp).ok_or(HvError::InvalidVpIndex)?;
 
-        let newly_signaled = match &self.vp.vp.partition.vtlp(vtl).hvstate {
+        let newly_signaled = match &self.vp.vp.partition.hvstate {
             Hv1State::Disabled => {
                 tracelimit::warn_ratelimited!(
                     ?vtl,
@@ -187,7 +187,6 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
             }
             Hv1State::Emulated(hv) => hv.synic[vtl]
                 .signal_event(
-                    &self.vp.vp.partition.gm,
                     vp,
                     sint,
                     flag,
@@ -683,18 +682,19 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
 #[cfg(guest_arch = "x86_64")]
 mod x86 {
     use super::WhpHypercallExit;
-    use crate::regs;
-    use crate::vtl2;
     use crate::WhpProcessor;
     use crate::WhpRunVpError;
+    use crate::regs;
+    use crate::vtl2;
     use arrayvec::ArrayVec;
     use hv1_hypercall::HvInterruptParameters;
     use hv1_hypercall::HvRepResult;
     use hv1_hypercall::HypercallIo;
     use hv1_hypercall::SignalEventDirect;
     use hv1_hypercall::TranslateVirtualAddressExX64;
-    use hvdef::hypercall::TranslateGvaControlFlagsX64;
-    use hvdef::hypercall::TranslateGvaResultCode;
+    use hvdef::HV_PAGE_SIZE;
+    use hvdef::HV_PARTITION_ID_SELF;
+    use hvdef::HV_VP_INDEX_SELF;
     use hvdef::HvError;
     use hvdef::HvInterceptAccessType;
     use hvdef::HvInterruptType;
@@ -706,21 +706,20 @@ mod x86 {
     use hvdef::HvVpAssistPageActionSignalEvent;
     use hvdef::HvX64RegisterName;
     use hvdef::Vtl;
-    use hvdef::HV_PAGE_SIZE;
-    use hvdef::HV_PARTITION_ID_SELF;
-    use hvdef::HV_VP_INDEX_SELF;
+    use hvdef::hypercall::TranslateGvaControlFlagsX64;
+    use hvdef::hypercall::TranslateGvaResultCode;
     use std::mem::offset_of;
     use std::sync::atomic::Ordering;
     use tracing_helpers::ErrorValueExt;
-    use virt::io::CpuIo;
     use virt::VpIndex;
-    use virt_support_x86emu::translate::translate_gva_to_gpa;
+    use virt::io::CpuIo;
     use virt_support_x86emu::translate::TranslateFlags;
     use virt_support_x86emu::translate::TranslateResult;
+    use virt_support_x86emu::translate::translate_gva_to_gpa;
     use vmcore::vpci_msi::VpciInterruptParameters;
-    use whp::abi::WHV_REGISTER_VALUE;
     use whp::RegisterName;
     use whp::RegisterValue;
+    use whp::abi::WHV_REGISTER_VALUE;
     use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
@@ -1532,8 +1531,8 @@ mod x86 {
                         return Err(HvError::AccessDenied);
                     }
 
-                    u64::from(HvRegisterVsmVpSecureVtlConfig::new().with_tlb_locked(self.tlb_lock))
-                        .into()
+                    // WHP locks the TLB on every exit, so this is already locked.
+                    u64::from(HvRegisterVsmVpSecureVtlConfig::new().with_tlb_locked(true)).into()
                 }
                 reg => {
                     if let Ok(name) = regs::hv_register_to_whp(reg) {
@@ -1630,8 +1629,11 @@ mod x86 {
                         return Err(HvError::AccessDenied);
                     }
 
-                    self.tlb_lock =
-                        HvRegisterVsmVpSecureVtlConfig::from(value.as_u64()).tlb_locked();
+                    // WHP locks the TLB on every exit, so this is already locked.
+                    // Make sure the guest isn't trying to unlock.
+                    if !HvRegisterVsmVpSecureVtlConfig::from(value.as_u64()).tlb_locked() {
+                        return Err(HvError::InvalidParameter);
+                    }
                 }
 
                 reg => {
@@ -1670,24 +1672,24 @@ mod x86 {
 #[cfg(guest_arch = "aarch64")]
 mod aarch64 {
     use super::WhpHypercallExit;
-    use crate::regs;
     use crate::WhpProcessor;
+    use crate::regs;
     use arrayvec::ArrayVec;
-    use hvdef::hypercall::TranslateGvaControlFlagsArm64;
-    use hvdef::hypercall::TranslateGvaResultCode;
+    use hvdef::HV_PAGE_SIZE;
+    use hvdef::HV_PARTITION_ID_SELF;
+    use hvdef::HV_VP_INDEX_SELF;
     use hvdef::HvArm64RegisterName;
     use hvdef::HvError;
     use hvdef::HvRegisterName;
     use hvdef::HvRegisterValue;
     use hvdef::HvResult;
     use hvdef::Vtl;
-    use hvdef::HV_PAGE_SIZE;
-    use hvdef::HV_PARTITION_ID_SELF;
-    use hvdef::HV_VP_INDEX_SELF;
+    use hvdef::hypercall::TranslateGvaControlFlagsArm64;
+    use hvdef::hypercall::TranslateGvaResultCode;
     use virt::io::CpuIo;
-    use virt_support_aarch64emu::translate::translate_gva_to_gpa;
     use virt_support_aarch64emu::translate::TranslateFlags;
     use virt_support_aarch64emu::translate::TranslationRegisters;
+    use virt_support_aarch64emu::translate::translate_gva_to_gpa;
     use whp::RegisterValue;
     use zerocopy::FromZeros;
 

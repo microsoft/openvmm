@@ -4,19 +4,20 @@
 //! A flexible chipset builder that pre-populates a [`Chipset`](super::Chipset)
 //! with a customizable configuration of semi-standardized device.
 
-use crate::chipset::backing::arc_mutex::device::AddDeviceError;
-use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
-use crate::chipset::ChipsetBuilder;
 use crate::ChipsetDeviceHandle;
 use crate::PowerEvent;
+use crate::chipset::ChipsetBuilder;
+use crate::chipset::backing::arc_mutex::device::AddDeviceError;
+use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
 use chipset_device::interrupt::LineInterruptTarget;
-use chipset_device_resources::ConfigureChipsetDevice;
-use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::BSP_LINT_LINE_SET;
+use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
+use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferDevice;
@@ -320,8 +321,9 @@ impl<'a> BaseChipsetBuilder<'a> {
                 Box::new(move || power.on_power_event(PowerEvent::Reset))
             };
 
-            let set_a20_signal =
-                Box::new(move |active| tracing::info!(?active, "setting stubbed A20 signal"));
+            let set_a20_signal = Box::new(move |active| {
+                tracing::info!(CVM_ALLOWED, active, "setting stubbed A20 signal")
+            });
 
             builder
                 .arc_mutex_device("piix4-pci-isa-bridge")
@@ -516,7 +518,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         let pm_action = || {
             let power = foundation.power_event_handler.clone();
             move |action: pm::PowerAction| {
-                tracing::info!(?action, "guest initiated");
+                tracing::info!(CVM_ALLOWED, ?action, "guest initiated");
                 let req = match action {
                     pm::PowerAction::PowerOff => PowerEvent::PowerOff,
                     pm::PowerAction::Hibernate => PowerEvent::Hibernate,
@@ -603,6 +605,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             nvram_storage,
             generation_id_recv,
             watchdog_platform,
+            watchdog_recv,
             vsm_config,
             time_source,
         }) = deps_hyperv_firmware_uefi
@@ -626,6 +629,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                         logger,
                         vmtime,
                         watchdog_platform,
+                        watchdog_recv,
                         generation_id_deps: generation_id::GenerationIdRuntimeDeps {
                             generation_id_recv,
                             gm,
@@ -716,8 +720,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         macro_rules! feature_gate_check {
             ($feature:literal, $dep:ident) => {
                 #[cfg(not(feature = $feature))]
-                let None::<()> = $dep
-                else {
+                let None::<()> = $dep else {
                     return Err(BaseChipsetBuilderError::FeatureGatedDevice($feature));
                 };
             };
@@ -792,11 +795,11 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
 }
 
 mod weak_mutex_pci {
-    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
     use crate::chipset::PciConflict;
     use crate::chipset::PciConflictReason;
-    use chipset_device::io::IoResult;
+    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
     use chipset_device::ChipsetDevice;
+    use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
     use std::sync::Arc;
@@ -1079,8 +1082,6 @@ pub mod options {
         use crate::BusIdPci;
         use chipset_resources::battery::HostBatteryUpdate;
         use local_clock::InspectableLocalClock;
-        #[allow(unused)]
-        use vmcore::non_volatile_store::NonVolatileStore;
 
         macro_rules! feature_gated {
             (
@@ -1319,12 +1320,14 @@ pub mod options {
             /// Interface to log UEFI BIOS events
             pub logger: Box<dyn firmware_uefi::platform::logger::UefiLogger>,
             /// Interface for storing/retrieving UEFI NVRAM variables
-            pub nvram_storage: Box<dyn uefi_nvram_storage::InspectableNvramStorage>,
+            pub nvram_storage: Box<dyn uefi_nvram_storage::VmmNvramStorage>,
             /// Channel to receive updated generation ID values
             pub generation_id_recv: mesh::Receiver<[u8; 16]>,
             /// Device-specific functions the platform must provide in order
             /// to use the UEFI watchdog device.
             pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
+            /// Channel receiver for watchdog timeout notifications.
+            pub watchdog_recv: mesh::Receiver<()>,
             /// Interface to revoke VSM on `ExitBootServices()` if requested
             /// by the guest.
             pub vsm_config: Option<Box<dyn firmware_uefi::platform::nvram::VsmConfig>>,

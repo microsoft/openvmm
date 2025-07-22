@@ -7,11 +7,11 @@
 
 use inspect::Inspect;
 use mesh::MeshPayload;
-use vm_resource::kind::ChipsetDeviceHandleKind;
-use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceKind;
+use vm_resource::kind::ChipsetDeviceHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 
 /// A handle to a TPM device.
 #[derive(MeshPayload)]
@@ -28,6 +28,8 @@ pub struct TpmDeviceHandle {
     pub register_layout: TpmRegisterLayout,
     /// Optional guest secret TPM key to be imported
     pub guest_secret_key: Option<Vec<u8>>,
+    /// Optional logger to send event to the host
+    pub logger: Option<Resource<TpmLoggerKind>>,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {
@@ -62,4 +64,11 @@ pub enum TpmRegisterLayout {
     IoPort,
     /// MMIO
     Mmio,
+}
+
+/// A resource kind for TPM logger.
+pub enum TpmLoggerKind {}
+
+impl ResourceKind for TpmLoggerKind {
+    const NAME: &'static str = "tpm_logger";
 }

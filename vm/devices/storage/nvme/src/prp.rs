@@ -3,15 +3,15 @@
 
 //! Types for parsing NVMe PRP (Physical Region Page) entries and lists.
 
-use crate::error::NvmeError;
-use crate::spec;
 use crate::PAGE_MASK;
 use crate::PAGE_SHIFT;
 use crate::PAGE_SIZE;
 #[cfg(test)]
 use crate::PAGE_SIZE64;
-use guestmem::ranges::PagedRange;
+use crate::error::NvmeError;
+use crate::spec;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use zerocopy::IntoBytes;
 
 const PRP_PER_PAGE: usize = PAGE_SIZE / 8;

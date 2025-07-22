@@ -16,9 +16,9 @@ use std::io;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use thiserror::Error;
 
 /// Trait implemented by types that can receive datagrams.

@@ -16,9 +16,9 @@ use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use igvmfilegen_config::ResourceType;
@@ -65,7 +65,7 @@ pub struct OpenhclIgvmRecipeDetails {
     pub vtl0_kernel_type: Option<Vtl0KernelType>,
     pub with_uefi: bool,
     pub with_interactive: bool,
-    pub with_sidecar_details: bool,
+    pub with_sidecar: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -80,6 +80,7 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum OpenhclIgvmRecipe {
     LocalOnlyCustom(OpenhclIgvmRecipeDetails),
@@ -129,7 +130,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: None,
                 with_uefi: true,
                 with_interactive,
-                with_sidecar_details: false,
+                with_sidecar: true,
             },
             Self::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -140,7 +141,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: None,
                 with_uefi: true,
                 with_interactive,
-                with_sidecar_details: false,
+                with_sidecar: true,
             },
             Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -154,7 +155,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: None,
                 with_uefi: true,
                 with_interactive,
-                with_sidecar_details: false,
+                with_sidecar: false,
             },
             Self::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -168,7 +169,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: Some(Vtl0KernelType::Example),
                 with_uefi: false,
                 with_interactive,
-                with_sidecar_details: false,
+                with_sidecar: true,
             },
             Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -182,7 +183,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: Some(Vtl0KernelType::Example),
                 with_uefi: false,
                 with_interactive,
-                with_sidecar_details: false,
+                with_sidecar: true,
             },
             Self::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -196,7 +197,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: None,
                 with_uefi: true,
                 with_interactive,
-                with_sidecar_details: false,
+                with_sidecar: false,
             },
             Self::Aarch64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -209,8 +210,8 @@ impl OpenhclIgvmRecipe {
                 target: CommonTriple::AARCH64_LINUX_MUSL,
                 vtl0_kernel_type: None,
                 with_uefi: true,
-                with_interactive,
-                with_sidecar_details: false,
+                with_interactive: false, // #1234
+                with_sidecar: false,
             },
             Self::Aarch64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -223,8 +224,8 @@ impl OpenhclIgvmRecipe {
                 target: CommonTriple::AARCH64_LINUX_MUSL,
                 vtl0_kernel_type: None,
                 with_uefi: true,
-                with_interactive,
-                with_sidecar_details: false,
+                with_interactive: false, // #1234
+                with_sidecar: false,
             },
         }
     }
@@ -244,7 +245,7 @@ flowey_request! {
         pub built_openvmm_hcl: WriteVar<crate::build_openvmm_hcl::OpenvmmHclOutput>,
         pub built_openhcl_boot: WriteVar<crate::build_openhcl_boot::OpenhclBootOutput>,
         pub built_openhcl_igvm: WriteVar<crate::run_igvmfilegen::IgvmOutput>,
-        pub built_sidecar: Option<WriteVar<crate::build_sidecar::SidecarOutput>>,
+        pub built_sidecar: WriteVar<Option<crate::build_sidecar::SidecarOutput>>,
     }
 }
 
@@ -287,7 +288,7 @@ impl SimpleFlowNode for Node {
             vtl0_kernel_type,
             with_uefi,
             with_interactive,
-            ..
+            with_sidecar,
         } = recipe.recipe_details(profile);
 
         let OpenhclIgvmRecipeDetailsLocalOnly {
@@ -403,7 +404,7 @@ impl SimpleFlowNode for Node {
         });
 
         // build sidecar
-        let sidecar_bin = if let Some(built_sidecar) = built_sidecar {
+        let sidecar_bin = if with_sidecar {
             let sidecar_bin = if let Some(path) = custom_sidecar {
                 ctx.emit_rust_stepv("set custom_sidecar", |_ctx| {
                     |_rt| {
@@ -435,9 +436,10 @@ impl SimpleFlowNode for Node {
                     sidecar: v,
                 })
             };
-            sidecar_bin.write_into(ctx, built_sidecar, |x| x);
+            sidecar_bin.write_into(ctx, built_sidecar, Some);
             Some(sidecar_bin)
         } else {
+            built_sidecar.write_static(ctx, None);
             None
         };
 
@@ -462,17 +464,15 @@ impl SimpleFlowNode for Node {
             arch => anyhow::bail!("unsupported arch {arch}"),
         };
 
-        let igvmfilegen = ctx.reqv(|v| {
-            crate::build_igvmfilegen::Request {
-                build_params: crate::build_igvmfilegen::IgvmfilegenBuildParams {
-                    target: CommonTriple::Common {
-                        arch: igvmfilegen_arch,
-                        platform: CommonPlatform::LinuxGnu,
-                    },
-                    profile: CommonProfile::Release, // debug igvmfilegen is real slow
+        let igvmfilegen = ctx.reqv(|v| crate::build_igvmfilegen::Request {
+            build_params: crate::build_igvmfilegen::IgvmfilegenBuildParams {
+                target: CommonTriple::Common {
+                    arch: igvmfilegen_arch,
+                    platform: CommonPlatform::LinuxGnu,
                 },
-                igvmfilegen: v,
-            }
+                profile: BuildProfile::Light,
+            },
+            igvmfilegen: v,
         });
 
         // build openhcl_boot
@@ -578,7 +578,7 @@ impl SimpleFlowNode for Node {
                 }
             };
 
-        let resources = ctx.emit_rust_stepv("enumerate igvm resources", |ctx| {
+        let resources = ctx.emit_minor_rust_stepv("enumerate igvm resources", |ctx| {
             let initrd = initrd.claim(ctx);
             let kernel = kernel.claim(ctx);
             let openhcl_boot_bin = openhcl_boot_bin.claim(ctx);
@@ -599,7 +599,7 @@ impl SimpleFlowNode for Node {
                 if let Some(vtl0_kernel_resource) = vtl0_kernel_resource {
                     vtl0_kernel_resource.add_to_resources(&mut resources, rt);
                 }
-                Ok(resources)
+                resources
             }
         });
 

@@ -57,7 +57,8 @@ $ sudo apt install \
   binutils              \
   build-essential       \
   gcc-aarch64-linux-gnu \
-  libssl-dev
+  libssl-dev            \
+  pkg-config
 ```
 
 ## Cloning the OpenVMM source

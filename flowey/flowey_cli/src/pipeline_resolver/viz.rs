@@ -181,6 +181,7 @@ pub fn viz_flow_toposort(
             crate::flow_resolver::stage1_dag::Step::Rust {
                 idx: _,
                 label,
+                can_merge: _,
                 code: _,
             } => {
                 println!(
@@ -347,17 +348,17 @@ pub fn viz_flow_dot(
 
     impl std::fmt::Debug for VizNode {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            if self.0 .1.is_none() {
-                return write!(f, "{:?} - ???", self.0 .0);
+            if self.0.1.is_none() {
+                return write!(f, "{:?} - ???", self.0.0);
             }
 
-            let entry = &self.0 .1.as_ref().unwrap();
+            let entry = &self.0.1.as_ref().unwrap();
 
             write!(
                 f,
                 "{}:{}\n\n{}",
-                self.0 .0.step_idx,
-                self.0 .0.node.modpath(),
+                self.0.0.step_idx,
+                self.0.0.node.modpath(),
                 match &entry.step {
                     crate::flow_resolver::stage1_dag::Step::Anchor { label } => {
                         format!("<anchor:{label}>")
@@ -365,6 +366,7 @@ pub fn viz_flow_dot(
                     crate::flow_resolver::stage1_dag::Step::Rust {
                         idx,
                         label,
+                        can_merge: _,
                         code: _,
                     } => format!("rust{idx}\n\n{}", label),
                     crate::flow_resolver::stage1_dag::Step::AdoYaml {

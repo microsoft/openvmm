@@ -3,31 +3,31 @@
 
 //! TTRPC server.
 
-use crate::message::read_message;
-use crate::message::write_message;
+use crate::message::MESSAGE_TYPE_REQUEST;
+use crate::message::MESSAGE_TYPE_RESPONSE;
 use crate::message::ReadResult;
 use crate::message::Request;
 use crate::message::Response;
 use crate::message::TooLongError;
-use crate::message::MESSAGE_TYPE_REQUEST;
-use crate::message::MESSAGE_TYPE_RESPONSE;
-use crate::rpc::status_from_err;
+use crate::message::read_message;
+use crate::message::write_message;
 use crate::rpc::ProtocolError;
+use crate::rpc::status_from_err;
 use crate::service::Code;
 use crate::service::DecodedRpc;
 use crate::service::GenericRpc;
 use crate::service::ServiceRpc;
 use crate::service::ServiceRpcError;
 use crate::service::Status;
-use futures::stream::FusedStream;
 use futures::FutureExt;
 use futures::Stream;
 use futures::StreamExt;
+use futures::stream::FusedStream;
 use futures_concurrency::future::TryJoin;
 use futures_concurrency::stream::Merge;
-use mesh::local_node::Port;
 use mesh::CancelContext;
 use mesh::MeshPayload;
+use mesh::local_node::Port;
 use pal_async::driver::Driver;
 use pal_async::socket::AsSockRef;
 use pal_async::socket::Listener;
@@ -296,8 +296,8 @@ mod grpc {
     use futures::FutureExt;
     use futures::StreamExt;
     use futures_concurrency::stream::Merge;
-    use h2::server::SendResponse;
     use h2::RecvStream;
+    use h2::server::SendResponse;
     use http::HeaderMap;
     use http::HeaderValue;
     use mesh::CancelContext;
@@ -375,9 +375,9 @@ mod grpc {
                     cx: &mut std::task::Context<'_>,
                     buf: &mut tokio::io::ReadBuf<'_>,
                 ) -> std::task::Poll<std::io::Result<()>> {
-                    let n =
-                        ready!(Pin::new(&mut self.get_mut().0)
-                            .poll_read(cx, buf.initialize_unfilled()))?;
+                    let n = ready!(
+                        Pin::new(&mut self.get_mut().0).poll_read(cx, buf.initialize_unfilled())
+                    )?;
                     buf.advance(n);
                     std::task::Poll::Ready(Ok(()))
                 }
@@ -611,16 +611,16 @@ mod grpc {
 
 #[cfg(test)]
 mod tests {
+    use crate::Client;
+    use crate::Server;
     use crate::client::ExistingConnection;
     use crate::service::Code;
     use crate::service::ServiceRpc;
-    use crate::Client;
-    use crate::Server;
-    use futures::executor::block_on;
     use futures::StreamExt;
+    use futures::executor::block_on;
+    use pal_async::DefaultPool;
     use pal_async::local::block_with_io;
     use pal_async::socket::PolledSocket;
-    use pal_async::DefaultPool;
     use test_with_tracing::test;
 
     mod items {

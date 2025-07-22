@@ -13,12 +13,12 @@
 pub use self::maybe_floppy_disk_controller::MaybeStubFloppyDiskController;
 
 use self::super_io::SioController;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use floppy::DriveRibbon;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
@@ -81,7 +81,7 @@ impl<FDC: MaybeStubFloppyDiskController> Winbond83977FloppySioDevice<FDC> {
         secondary_dma: Box<dyn IsaDmaChannel>,
     ) -> Result<Self, NewWinbond83977FloppySioDeviceError<FDC::NewError>> {
         let secondary_interrupt = interrupt
-            .new_shared("floppy secondary")
+            .new_shared("floppy_secondary")
             .map_err(NewWinbond83977FloppySioDeviceError::LineShare)?;
 
         Ok(Self {
@@ -193,10 +193,10 @@ impl<FDC: MaybeStubFloppyDiskController> PortIoIntercept for Winbond83977FloppyS
 }
 
 mod maybe_floppy_disk_controller {
+    use chipset_device::ChipsetDevice;
     use chipset_device::pio::PortIoIntercept;
     use chipset_device::pio::RegisterPortIoIntercept;
     use chipset_device::poll_device::PollDevice;
-    use chipset_device::ChipsetDevice;
     use floppy::DriveRibbon;
     use guestmem::GuestMemory;
     use inspect::InspectMut;

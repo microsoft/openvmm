@@ -13,9 +13,9 @@ pub mod offer;
 pub mod resources;
 pub mod simple;
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use vmbus_ring::FlatRingMem;

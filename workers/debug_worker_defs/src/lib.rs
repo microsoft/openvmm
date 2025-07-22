@@ -6,8 +6,8 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
-use mesh::payload::Protobuf;
 use mesh::MeshPayload;
+use mesh::payload::Protobuf;
 use mesh_worker::WorkerId;
 use std::net::TcpListener;
 use vmm_core_defs::debug_rpc::DebugRequest;

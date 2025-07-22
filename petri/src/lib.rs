@@ -8,9 +8,12 @@
 
 #![forbid(unsafe_code)]
 
-mod disk_image;
+pub mod disk_image;
 mod linux_direct_serial_agent;
-mod openhcl_diag;
+// TODO: Add docs and maybe a trait interface for this, or maybe this can
+// remain crate-local somehow without violating interface privacy.
+#[expect(missing_docs)]
+pub mod openhcl_diag;
 mod test;
 mod tracing;
 mod vm;
@@ -26,12 +29,12 @@ pub use petri_artifacts_core::ResolvedOptionalArtifact;
 pub use petri_artifacts_core::TestArtifactRequirements;
 pub use petri_artifacts_core::TestArtifacts;
 pub use pipette_client as pipette;
-pub use test::test_macro_support;
-pub use test::test_main;
 pub use test::PetriTestParams;
 pub use test::RunTest;
 pub use test::SimpleTest;
 pub use test::TestCase;
+pub use test::test_macro_support;
+pub use test::test_main;
 pub use tracing::*;
 pub use vm::*;
 

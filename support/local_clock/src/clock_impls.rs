@@ -32,10 +32,11 @@ pub struct SystemTimeClock {
 }
 
 impl SystemTimeClock {
-    /// Create a new [`SystemTimeClock`], set to the current [`SystemTime`].
-    pub fn new() -> SystemTimeClock {
+    /// Create a new [`SystemTimeClock`], set to the current [`SystemTime`] plus
+    /// `initial_delta`.
+    pub fn new(initial_delta: LocalClockDelta) -> SystemTimeClock {
         SystemTimeClock {
-            offset_from_system_time: LocalClockDelta::from_millis(0),
+            offset_from_system_time: initial_delta,
         }
     }
 }
@@ -117,7 +118,7 @@ mod tests {
 
     #[test]
     fn naive_system_time() {
-        let mut clock = SystemTimeClock::new();
+        let mut clock = SystemTimeClock::new(LocalClockDelta::ZERO);
 
         let time = clock.get_time();
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -132,8 +133,23 @@ mod tests {
     }
 
     #[test]
+    fn initial_delta() {
+        let mut clock = SystemTimeClock::new(LocalClockDelta::from_millis(1000));
+
+        let time = clock.get_time();
+        let now = LocalClockTime::from(SystemTime::now());
+
+        let delta = time - now;
+
+        // cannot use assert_eq, because there is a *bit* of extra time elapsed
+        // aside from the thread sleep.
+        assert!(delta >= LocalClockDelta::from_millis(1000));
+        assert!(delta < LocalClockDelta::from_millis(2000)); // sanity check
+    }
+
+    #[test]
     fn naive_set_time_backwards() {
-        let mut clock = SystemTimeClock::new();
+        let mut clock = SystemTimeClock::new(LocalClockDelta::ZERO);
 
         clock.set_time(LocalClockTime::from_millis_since_unix_epoch(0));
 

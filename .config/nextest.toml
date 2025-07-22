@@ -19,15 +19,19 @@ threads-required = 4
 [profile.ci]
 # Set the default timeout to 1 second, with tests terminated after 5 seconds
 slow-timeout = { period = "1s", terminate-after = 5 }
-# Print out output for failing tests as soon as they fail, and also at the end
-# of the run (for easy scrollability).
-failure-output = "immediate-final"
+# Print out output for failing tests at the end of the run.
+failure-output = "final"
 # Do not cancel the test run on the first failure.
 fail-fast = false
 
 [profile.ci.junit]
 path = "junit.xml"
 store-success-output = "true"
+
+[[profile.ci.overrides]]
+# allow loom based tests more time, as they take a while
+filter = 'test(loom)'
+slow-timeout = { period = "30s", terminate-after = 2 }
 
 [[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
@@ -37,13 +41,6 @@ filter = 'package(~vmm_tests)'
 # Important Note: Petri's watchdogs need to know this value too.
 # If you change it here then change it there!
 slow-timeout = { period = "3m", terminate-after = 2 }
-
-# Add retries for known flaky tests.
-# TODO: Fix these tests and remove the retries.
-# openhcl_linux_x64_openhcl_servicing is tracked by #1092
-[[profile.ci.overrides]]
-filter = 'package(~vmm_tests) and test(~x86_64::openhcl_linux_x64_openhcl_servicing)'
-retries = 1
 
 # TEMP (hopefully): For reasons that continue to befuddle, running Windows
 # release-mode unit tests in flowey CI is resulting in seemingly-random

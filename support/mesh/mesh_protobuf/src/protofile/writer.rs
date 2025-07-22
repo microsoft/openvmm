@@ -474,8 +474,8 @@ impl OneofDescriptor<'_> {
 #[cfg(test)]
 mod tests {
     use super::DescriptorWriter;
-    use crate::protofile::message_description;
     use crate::Protobuf;
+    use crate::protofile::message_description;
     use alloc::string::String;
     use alloc::vec::Vec;
     use core::cell::RefCell;

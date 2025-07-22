@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use virt::io::CpuIo;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use x86defs::RFlags;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
@@ -39,7 +39,7 @@ pub fn long_protected_mode(user_mode: bool) -> CpuState {
         gps: [0xbadc0ffee0ddf00d; 16],
         segs: [seg; 6],
         rip: 0,
-        rflags: RFlags::default(),
+        rflags: RFlags::at_reset(),
         cr0: x86defs::X64_CR0_PE,
         efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME,
     }

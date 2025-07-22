@@ -3,17 +3,17 @@
 
 //! Resolver implementation for [`BlobDisk`].
 
-use crate::blob::http::HttpBlob;
 use crate::BlobDisk;
+use crate::blob::http::HttpBlob;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::BlobDiskFormat;
 use disk_backend_resources::BlobDiskHandle;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::DiskHandleKind;
 
 /// A resolver for blob disks.
 pub struct BlobDiskResolver;

@@ -7,9 +7,9 @@ use net_backend::resolve::ResolveEndpointParams;
 use net_backend::resolve::ResolvedEndpoint;
 use net_backend_resources::consomme::ConsommeHandle;
 use thiserror::Error;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::NetEndpointHandleKind;
-use vm_resource::ResolveResource;
 
 pub struct ConsommeResolver;
 

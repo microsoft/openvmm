@@ -478,7 +478,7 @@ impl OfferChannel {
         const SCSI: Guid = guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
         const VPCI: Guid = guid::guid!("44c4f61d-4444-4400-9d52-802e27ede19f");
 
-        let interface_type = match self.interface_id {
+        resp.field_with("interface_name", || match self.interface_id {
             SHUTDOWN_IC => "shutdown_ic",
             KVP_IC => "kvp_ic",
             VSS_IC => "vss_ic",
@@ -490,8 +490,7 @@ impl OfferChannel {
             SCSI => "scsi",
             VPCI => "vpci",
             _ => "unknown",
-        };
-        resp.field("interface_name", interface_type);
+        });
     }
 }
 

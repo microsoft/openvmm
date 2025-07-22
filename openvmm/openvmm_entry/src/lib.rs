@@ -5,9 +5,11 @@
 //! for the worker process.
 
 #![expect(missing_docs)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
 
 mod cli_args;
 mod crash_dump;
+mod kvp;
 mod meshworker;
 mod serial_io;
 mod storage_builder;
@@ -17,10 +19,11 @@ mod ttrpc;
 // `pub` so that the missing_docs warning fires for options without
 // documentation.
 pub use cli_args::Options;
+use console_relay::ConsoleLaunchOptions;
 
 use crate::cli_args::SecureBootTemplateCli;
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use chipset_resources::battery::HostBatteryUpdate;
 use clap::CommandFactory;
 use clap::FromArgMatches;
@@ -28,31 +31,39 @@ use clap::Parser;
 use cli_args::DiskCliKind;
 use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
+use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
+use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
+use disk_backend_resources::DelayDiskHandle;
+use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
 use disk_backend_resources::layer::SqliteDiskLayerHandle;
-use disk_backend_resources::DiskLayerDescription;
 use floppy_resources::FloppyDiskConfig;
-use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
-use futures::executor::block_on;
-use futures::io::AllowStdIo;
+use framebuffer::FramebufferAccess;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::executor::block_on;
+use futures::io::AllowStdIo;
 use futures_concurrency::stream::Merge;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
@@ -65,35 +76,34 @@ use hvlite_defs::config::VmbusConfig;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::Vtl2Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
+use hvlite_defs::worker::VmWorkerParameters;
+use hvlite_helpers::disk::create_disk_type;
 use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
+use mesh::CancelContext;
+use mesh::CellUpdater;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
-use mesh_worker::launch_local_worker;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
+use mesh_worker::launch_local_worker;
 use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
+use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultDriver;
-use pal_async::DefaultPool;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
@@ -131,17 +141,18 @@ use vm_manifest_builder::BaseChipsetType;
 use vm_manifest_builder::MachineArch;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
+use vm_resource::IntoResource;
+use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::kind::NetEndpointHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_resource::IntoResource;
-use vm_resource::Resource;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 use vmgs_resources::VmgsFileHandle;
+use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
@@ -179,6 +190,7 @@ struct VmResources {
     console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     #[cfg(windows)]
@@ -241,6 +253,18 @@ fn vm_config_from_command_line(
                     .unwrap();
                 Some(config)
             }
+            SerialConfigCli::File(path) => {
+                let (config, serial) = serial_io::anonymous_serial_pair(&serial_driver)?;
+                let file = fs_err::File::create(path).context("failed to create file")?;
+
+                thread::Builder::new()
+                    .name(name.to_owned())
+                    .spawn(move || {
+                        let _ = block_on(futures::io::copy(serial, &mut AllowStdIo::new(file)));
+                    })
+                    .unwrap();
+                Some(config)
+            }
             SerialConfigCli::None => None,
             SerialConfigCli::Pipe(path) => {
                 Some(serial_io::bind_serial(&path).context("failed to bind serial")?)
@@ -248,12 +272,21 @@ fn vm_config_from_command_line(
             SerialConfigCli::Tcp(addr) => {
                 Some(serial_io::bind_tcp_serial(&addr).context("failed to bind serial")?)
             }
-            SerialConfigCli::NewConsole(app) => {
+            SerialConfigCli::NewConsole(app, window_title) => {
                 let path = console_relay::random_console_path();
                 let config =
                     serial_io::bind_serial(&path).context("failed to bind console serial")?;
-                console_relay::launch_console(app.or_else(openvmm_terminal_app).as_deref(), &path)
-                    .context("failed to launch console")?;
+                let window_title =
+                    window_title.unwrap_or_else(|| name.to_uppercase() + " [OpenVMM]");
+
+                console_relay::launch_console(
+                    app.or_else(openvmm_terminal_app).as_deref(),
+                    &path,
+                    ConsoleLaunchOptions {
+                        window_title: Some(window_title + " [OpenVMM]"),
+                    },
+                )
+                .context("failed to launch console")?;
 
                 Some(config)
             }
@@ -283,6 +316,15 @@ fn vm_config_from_command_line(
                 io.config.input = None;
                 Some(io.config)
             }
+            SerialConfigCli::File(path) => {
+                let mut io = SerialIo::new().context("creating serial IO")?;
+                let file = fs_err::File::create(path).context("failed to create file")?;
+                io.spawn_copy_out(name, file);
+                // Ensure there is no input so that the serial devices don't see
+                // EOF and think the port is disconnected.
+                io.config.input = None;
+                Some(io.config)
+            }
             SerialConfigCli::None => None,
             SerialConfigCli::Pipe(path) => {
                 let mut io = SerialIo::new().context("creating serial IO")?;
@@ -292,7 +334,7 @@ fn vm_config_from_command_line(
                 Some(io.config)
             }
             SerialConfigCli::Tcp(_addr) => anyhow::bail!("TCP virtio serial not supported"),
-            SerialConfigCli::NewConsole(app) => {
+            SerialConfigCli::NewConsole(app, window_title) => {
                 let path = console_relay::random_console_path();
 
                 let mut io = SerialIo::new().context("creating serial IO")?;
@@ -300,8 +342,17 @@ fn vm_config_from_command_line(
                     .with_context(|| format!("listening on pipe {}", path.display()))?
                     .detach();
 
-                console_relay::launch_console(app.or_else(openvmm_terminal_app).as_deref(), &path)
-                    .context("failed to launch console")?;
+                let window_title =
+                    window_title.unwrap_or_else(|| name.to_uppercase() + " [OpenVMM]");
+
+                console_relay::launch_console(
+                    app.or_else(openvmm_terminal_app).as_deref(),
+                    &path,
+                    ConsoleLaunchOptions {
+                        window_title: Some(window_title),
+                    },
+                )
+                .context("failed to launch console")?;
                 Some(io.config)
             }
         })
@@ -441,7 +492,7 @@ fn vm_config_from_command_line(
         );
     }
 
-    let with_get = opt.get || opt.vtl2;
+    let with_get = opt.get || (opt.vtl2 && !opt.no_get);
 
     let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
     for &cli_args::DiskCli {
@@ -578,7 +629,7 @@ fn vm_config_from_command_line(
     for (index, switch_id) in opt.kernel_vmnic.iter().enumerate() {
         // Pick a random MAC address.
         let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
-        getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
+        getrandom::fill(&mut mac_address[3..]).expect("rng failure");
 
         // Pick a fixed instance ID based on the index.
         const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-435d-11ee-9f59-00155d5016fc");
@@ -781,6 +832,7 @@ fn vm_config_from_command_line(
                 UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
+            default_boot_always_attempt: opt.default_boot_always_attempt,
         };
     } else {
         // Linux Direct
@@ -834,6 +886,17 @@ fn vm_config_from_command_line(
         };
     }
 
+    let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
+        let disk = disk_open(kind, false).context("failed to open vmgs disk")?;
+        match provision {
+            ProvisionVmgs::OnEmpty => VmgsResource::Disk(disk),
+            ProvisionVmgs::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
+            ProvisionVmgs::True => VmgsResource::Reprovision(disk),
+        }
+    } else {
+        VmgsResource::Ephemeral
+    });
+
     if with_get && with_hv {
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
@@ -847,14 +910,9 @@ fn vm_config_from_command_line(
 
         let (send, guest_request_recv) = mesh::channel();
         resources.ged_rpc = Some(send);
-        let vmgs_disk = if let Some(disk) = &opt.get_vmgs {
-            disk_open(disk, false).context("failed to open GET vmgs disk")?
-        } else {
-            disk_backend_resources::LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-            })
-            .into_resource()
-        };
+
+        let vmgs = vmgs.take().unwrap();
+
         vmbus_devices.extend([
             (
                 openhcl_vtl,
@@ -896,13 +954,14 @@ fn vm_config_from_command_line(
                                 UefiConsoleModeCli::Com2 => UefiConsoleMode::COM2,
                                 UefiConsoleModeCli::None => UefiConsoleMode::None,
                             },
+                            default_boot_always_attempt: opt.default_boot_always_attempt,
                         }
                     },
                     com1: with_vmbus_com1_serial,
                     com2: with_vmbus_com2_serial,
                     vtl2_settings: Some(prost::Message::encode_to_vec(&vtl2_settings)),
                     vmbus_redirection: opt.vmbus_redirect,
-                    vmgs_disk: Some(vmgs_disk),
+                    vmgs,
                     framebuffer: opt
                         .vtl2_gfx
                         .then(|| SharedFramebufferHandle.into_resource()),
@@ -915,13 +974,15 @@ fn vm_config_from_command_line(
                             get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows
                         },
                         Some(SecureBootTemplateCli::UefiCa) => {
-                            get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy
+                            get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority
                         }
                         None => {
                             get_resources::ged::GuestSecureBootTemplateType::None
                         },
                     },
                     enable_battery: opt.battery,
+                    no_persistent_secrets: true,
+                    igvm_attest_test_config: None,
                 }
                 .into_resource(),
             ),
@@ -935,7 +996,7 @@ fn vm_config_from_command_line(
             TpmRegisterLayout::Mmio
         };
 
-        let (ppi_store, nvram_store) = if opt.vmgs_file.is_some() {
+        let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
             (
                 VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
                 VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
@@ -956,6 +1017,7 @@ fn vm_config_from_command_line(
                 ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
                 register_layout,
                 guest_secret_key: None,
+                logger: None,
             }
             .into_resource(),
         });
@@ -1073,27 +1135,36 @@ fn vm_config_from_command_line(
             opt.igvm_vtl2_relocation_type,
             Vtl2BaseAddressType::Vtl2Allocate { .. },
         ) {
-        DEFAULT_MMIO_GAPS_WITH_VTL2.into()
+        if is_x86 {
+            DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into()
+        } else {
+            DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into()
+        }
+    } else if is_x86 {
+        DEFAULT_MMIO_GAPS_X86.into()
     } else {
-        DEFAULT_MMIO_GAPS.into()
+        DEFAULT_MMIO_GAPS_AARCH64.into()
     };
 
-    if let Some(path) = &opt.underhill_dump_path {
+    if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
         task.detach();
         vmbus_devices.push((openhcl_vtl, resource));
     }
 
     #[cfg(guest_arch = "aarch64")]
-    let topology_arch = hvlite_defs::config::Aarch64TopologyConfig {
-        // TODO: allow this to be configured from the command line
-        gic_config: None,
-    };
+    let topology_arch = hvlite_defs::config::ArchTopologyConfig::Aarch64(
+        hvlite_defs::config::Aarch64TopologyConfig {
+            // TODO: allow this to be configured from the command line
+            gic_config: None,
+        },
+    );
     #[cfg(guest_arch = "x86_64")]
-    let topology_arch = hvlite_defs::config::X86TopologyConfig {
-        apic_id_offset: opt.apic_id_offset,
-        x2apic: opt.x2apic,
-    };
+    let topology_arch =
+        hvlite_defs::config::ArchTopologyConfig::X86(hvlite_defs::config::X86TopologyConfig {
+            apic_id_offset: opt.apic_id_offset,
+            x2apic: opt.x2apic,
+        });
 
     let with_isolation = if let Some(isolation) = &opt.isolation {
         // TODO: For now, isolation is only supported with VTL2.
@@ -1114,12 +1185,21 @@ fn vm_config_from_command_line(
     };
 
     if with_hv {
-        let (send, recv) = mesh::channel();
-        resources.shutdown_ic = Some(send);
-        vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            hyperv_ic_resources::shutdown::ShutdownIcHandle { recv }.into_resource(),
-        ));
+        let (shutdown_send, shutdown_recv) = mesh::channel();
+        resources.shutdown_ic = Some(shutdown_send);
+        let (kvp_send, kvp_recv) = mesh::channel();
+        resources.kvp_ic = Some(kvp_send);
+        vmbus_devices.extend(
+            [
+                hyperv_ic_resources::shutdown::ShutdownIcHandle {
+                    recv: shutdown_recv,
+                }
+                .into_resource(),
+                hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_recv }.into_resource(),
+                hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
+            ]
+            .map(|r| (DeviceVtl::Vtl0, r)),
+        );
     }
 
     if let Some(hive_path) = &opt.imc {
@@ -1219,27 +1299,6 @@ fn vm_config_from_command_line(
         );
     }
 
-    let (vmgs_disk, format_vmgs) = if let Some(path) = &opt.vmgs_file {
-        let file = fs_err::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(path)
-            .context("failed to create or open vmgs file")?;
-        let format_vmgs = file.metadata()?.len() == 0;
-        if format_vmgs {
-            file.set_len(vmgs_format::VMGS_DEFAULT_CAPACITY)?;
-            disk_vhd1::Vhd1Disk::make_fixed(file.file())
-                .context("failed to format VHD1 file for VMGS")?;
-        }
-        (
-            Some(disk_backend_resources::FixedVhd1DiskHandle(file.into()).into_resource()),
-            format_vmgs,
-        )
-    } else {
-        (None, false)
-    };
-
     let mut cfg = Config {
         chipset,
         load_mode,
@@ -1259,7 +1318,7 @@ fn vm_config_from_command_line(
                 cli_args::SmtConfigCli::Force => Some(true),
                 cli_args::SmtConfigCli::Off => Some(false),
             },
-            arch: topology_arch,
+            arch: Some(topology_arch),
         },
         hypervisor: HypervisorConfig {
             with_hv,
@@ -1304,13 +1363,13 @@ fn vm_config_from_command_line(
         chipset_devices,
         #[cfg(windows)]
         vpci_resources,
-        vmgs_disk,
-        format_vmgs,
+        vmgs,
         secure_boot_enabled: opt.secure_boot,
         custom_uefi_vars,
         firmware_event_send: None,
         debugger_rpc: None,
         generation_id_recv: None,
+        rtc_delta_milliseconds: 0,
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
@@ -1402,7 +1461,7 @@ fn parse_endpoint(
 
     // Pick a random MAC address.
     let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
-    getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
+    getrandom::fill(&mut mac_address[3..]).expect("rng failure");
 
     // Pick a fixed instance ID based on the index.
     const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-da43-11ed-936a-00155d6db52f");
@@ -1490,10 +1549,16 @@ fn disk_open_inner(
         &DiskCliKind::Memory(len) => {
             layers.push(layer(RamDiskLayerHandle { len: Some(len) }));
         }
-        DiskCliKind::File(path) => layers.push(LayerOrDisk::Disk(
+        DiskCliKind::File {
+            path,
+            create_with_len,
+        } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
+            create_disk_type(path, *size)
+                .with_context(|| format!("failed to create {}", path.display()))?
+        } else {
             open_disk_type(path, read_only)
-                .with_context(|| format!("failed to open {}", path.display()))?,
-        )),
+                .with_context(|| format!("failed to open {}", path.display()))?
+        })),
         DiskCliKind::Blob { kind, url } => {
             layers.push(disk(disk_backend_resources::BlobDiskHandle {
                 url: url.to_owned(),
@@ -1510,6 +1575,13 @@ fn disk_open_inner(
         DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
             disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
         )),
+        DiskCliKind::DelayDiskWrapper {
+            delay_ms,
+            disk: inner,
+        } => layers.push(disk(DelayDiskHandle {
+            delay: CellUpdater::new(Duration::from_millis(*delay_ms)).cell(),
+            disk: disk_open(inner, read_only)?,
+        })),
         DiskCliKind::Crypt {
             disk: inner,
             cipher,
@@ -1619,7 +1691,8 @@ fn do_main() -> anyhow::Result<()> {
     }
 
     if let Some(path) = opt.relay_console_path {
-        return console_relay::relay_console(&path);
+        let console_title = opt.relay_console_title.unwrap_or_default();
+        return console_relay::relay_console(&path, console_title.as_str());
     }
 
     if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
@@ -1854,6 +1927,9 @@ enum InteractiveCommand {
 
     /// Inject an artificial panic into OpenVMM
     Panic,
+
+    /// Use KVP to interact with the guest.
+    Kvp(kvp::KvpCommand),
 }
 
 struct CommandParser {
@@ -2062,7 +2138,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                term::set_raw_console(true);
+                term::set_raw_console(true).expect("failed to set raw console mode");
 
                 if let Some(input) = console_in.as_mut() {
                     let mut buf = [0; 32];
@@ -2082,7 +2158,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     }
                 }
 
-                term::set_raw_console(false);
+                term::set_raw_console(false).expect("failed to set raw console mode");
 
                 loop {
                     let line = rl.readline("openvmm> ");
@@ -2141,6 +2217,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         Resume(bool),
         Reset(Result<(), RemoteError>),
         PulseSaveRestore(Result<(), PulseSaveRestoreError>),
+        ServiceVtl2(anyhow::Result<Duration>),
     }
 
     enum Event {
@@ -2334,6 +2411,18 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             Err(err) => tracing::error!(
                                 error = &err as &dyn std::error::Error,
                                 "pulse save/restore failed"
+                            ),
+                        },
+                        StateChange::ServiceVtl2(r) => match r {
+                            Ok(dur) => {
+                                tracing::info!(
+                                    duration = dur.as_millis() as i64,
+                                    "vtl2 servicing complete"
+                                )
+                            }
+                            Err(err) => tracing::error!(
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "vtl2 servicing failed"
                             ),
                         },
                     },
@@ -2659,6 +2748,9 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     let mut console = console_relay::Console::new(
                         driver.clone(),
                         term.or_else(openvmm_terminal_app).as_deref(),
+                        Some(ConsoleLaunchOptions {
+                            window_title: Some(format!("HVSock{} [OpenVMM]", port)),
+                        }),
                     )?;
                     driver
                         .spawn("console-relay", async move { console.relay(socket).await })
@@ -2674,35 +2766,35 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 user_mode_only,
                 igvm,
             } => {
-                let r = async {
+                let paravisor_diag = paravisor_diag.clone();
+                let vm_rpc = vm_rpc.clone();
+                let igvm = igvm.or_else(|| opt.igvm.clone());
+                let ged_rpc = resources.ged_rpc.clone();
+                let r = async move {
                     let start;
                     if user_mode_only {
                         start = Instant::now();
                         paravisor_diag.restart().await?;
                     } else {
-                        let path = igvm
-                            .as_ref()
-                            .or(opt.igvm.as_ref())
-                            .context("no igvm file loaded")?;
+                        let path = igvm.context("no igvm file loaded")?;
                         let file = fs_err::File::open(path)?;
                         start = Instant::now();
                         hvlite_helpers::underhill::service_underhill(
                             &vm_rpc,
-                            resources.ged_rpc.as_ref().context("no GED")?,
+                            ged_rpc.as_ref().context("no GED")?,
                             GuestServicingFlags::default(),
                             file.into(),
                         )
                         .await?;
                     }
-                    anyhow::Ok(start)
+                    let end = Instant::now();
+                    Ok(end - start)
                 }
-                .await;
-                let end = Instant::now();
-                match r {
-                    Ok(start) => {
-                        println!("servicing time: {}ms", (end - start).as_millis());
-                    }
-                    Err(err) => eprintln!("error: {:#}", err),
+                .map(|r| Ok(StateChange::ServiceVtl2(r)));
+                if state_change_task.is_some() {
+                    tracing::error!("state change already in progress");
+                } else {
+                    state_change_task = Some(driver.spawn("state-change", r));
                 }
             }
             InteractiveCommand::Quit => {
@@ -2816,6 +2908,15 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     eprintln!("error: {err:?}");
                 }
             }
+            InteractiveCommand::Kvp(command) => {
+                let Some(kvp) = &resources.kvp_ic else {
+                    eprintln!("error: no kvp ic configured");
+                    continue;
+                };
+                if let Err(err) = kvp::handle_kvp(kvp, command).await {
+                    eprintln!("error: {err:#}");
+                }
+            }
             InteractiveCommand::Input { .. } | InteractiveCommand::InputMode => unreachable!(),
         }
     }
@@ -2847,7 +2948,7 @@ impl mesh_rpc::client::Dial for DiagDialer {
                 ),
             )
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
 
         PolledSocket::new(&self.driver, socket)
     }

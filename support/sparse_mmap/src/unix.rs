@@ -356,7 +356,7 @@ fn new_memfd() -> io::Result<File> {
 #[cfg(not(target_os = "linux"))]
 fn new_memfd() -> io::Result<File> {
     let mut name = [0; 16];
-    getrandom::getrandom(&mut name).unwrap();
+    getrandom::fill(&mut name).unwrap();
     let mut name = format!("{:x}", u128::from_ne_bytes(name));
     // macOS limits the name length to 31 bytes, which is sufficient to ensure uniqueness.
     name.truncate(31);

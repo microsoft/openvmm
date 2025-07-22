@@ -14,16 +14,16 @@ use crate::queues::SubmissionQueue;
 use crate::registers::DeviceRegisters;
 use anyhow::Context;
 use futures::StreamExt;
-use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use inspect_counters::Counter;
+use mesh::Cancel;
+use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::Cancel;
-use mesh::CancelContext;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
@@ -33,13 +33,13 @@ use std::num::Wrapping;
 use std::sync::Arc;
 use std::task::Poll;
 use thiserror::Error;
+use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::page_allocator::PageAllocator;
 use user_driver::page_allocator::ScopedPages;
-use user_driver::DeviceBacking;
 use zerocopy::FromZeros;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
@@ -76,10 +76,11 @@ impl PendingCommands {
     const MAX_CIDS: usize = 1 << Self::CID_KEY_BITS;
     const CID_SEQ_OFFSET: Wrapping<u16> = Wrapping(1 << Self::CID_KEY_BITS);
 
-    fn new() -> Self {
+    fn new(qid: u16) -> Self {
         Self {
             commands: Slab::new(),
             next_cid_high_bits: Wrapping(0),
+            qid,
         }
     }
 
@@ -109,11 +110,13 @@ impl PendingCommands {
         let command = self
             .commands
             .try_remove((cid & Self::CID_KEY_MASK) as usize)
-            .expect("completion for unknown cid");
+            .unwrap_or_else(|| panic!("completion for unknown cid: qid={}, cid={}", self.qid, cid));
         assert_eq!(
             command.command.cdw0.cid(),
             cid,
-            "cid sequence number mismatch"
+            "cid sequence number mismatch: qid={}, command_opcode={:#x}",
+            self.qid,
+            command.command.cdw0.opcode(),
         );
         command.respond
     }
@@ -136,7 +139,7 @@ impl PendingCommands {
     }
 
     /// Restore pending commands from the saved state.
-    pub fn restore(saved_state: &PendingCommandsSavedState) -> anyhow::Result<Self> {
+    pub fn restore(saved_state: &PendingCommandsSavedState, qid: u16) -> anyhow::Result<Self> {
         let PendingCommandsSavedState {
             commands,
             next_cid_high_bits,
@@ -161,16 +164,24 @@ impl PendingCommands {
                 })
                 .collect::<Slab<PendingCommand>>(),
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
+            qid,
         })
     }
 }
 
 impl QueuePair {
-    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16; // Maximum SQ size in entries.
-    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16; // Maximum CQ size in entries.
-    const SQ_SIZE: usize = PAGE_SIZE; // Submission Queue size in bytes.
-    const CQ_SIZE: usize = PAGE_SIZE; // Completion Queue size in bytes.
-    const PER_QUEUE_PAGES: usize = 128;
+    /// Maximum SQ size in entries.
+    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
+    /// Maximum CQ size in entries.
+    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
+    /// Submission Queue size in bytes.
+    const SQ_SIZE: usize = PAGE_SIZE;
+    /// Completion Queue size in bytes.
+    const CQ_SIZE: usize = PAGE_SIZE;
+    /// Number of pages per queue if bounce buffering.
+    const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
+    /// Number of pages per queue if not bounce buffering.
+    const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 
     pub fn new(
         spawner: impl SpawnDriver,
@@ -180,9 +191,15 @@ impl QueuePair {
         cq_entries: u16, // Requested CQ size in entries.
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
-        let total_size =
-            QueuePair::SQ_SIZE + QueuePair::CQ_SIZE + QueuePair::PER_QUEUE_PAGES * PAGE_SIZE;
+        let total_size = QueuePair::SQ_SIZE
+            + QueuePair::CQ_SIZE
+            + if bounce_buffer {
+                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE
+            } else {
+                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
+            };
         let dma_client = device.dma_client();
         let mem = dma_client
             .allocate_dma_buffer(total_size)
@@ -192,7 +209,15 @@ impl QueuePair {
         assert!(cq_entries <= Self::MAX_CQ_ENTRIES);
 
         QueuePair::new_or_restore(
-            spawner, qid, sq_entries, cq_entries, interrupt, registers, mem, None,
+            spawner,
+            qid,
+            sq_entries,
+            cq_entries,
+            interrupt,
+            registers,
+            mem,
+            None,
+            bounce_buffer,
         )
     }
 
@@ -206,6 +231,7 @@ impl QueuePair {
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
@@ -219,7 +245,7 @@ impl QueuePair {
                 QueueHandler {
                     sq: SubmissionQueue::new(qid, sq_entries, sq_mem_block),
                     cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
-                    commands: PendingCommands::new(),
+                    commands: PendingCommands::new(qid),
                     stats: Default::default(),
                     drain_after_restore: false,
                 }
@@ -239,13 +265,30 @@ impl QueuePair {
             }
         });
 
-        // Page allocator uses remaining part of the buffer for dynamic allocation.
-        const _: () = assert!(
-            QueuePair::PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
-            "not enough room for an ATAPI IO plus a PRP list"
-        );
-        let alloc: PageAllocator =
-            PageAllocator::new(mem.subblock(data_offset, QueuePair::PER_QUEUE_PAGES * PAGE_SIZE));
+        // Convert the queue pages to bytes, and assert that queue size is large
+        // enough.
+        const fn pages_to_size_bytes(pages: usize) -> usize {
+            let size = pages * PAGE_SIZE;
+            assert!(
+                size >= 128 * 1024 + PAGE_SIZE,
+                "not enough room for an ATAPI IO plus a PRP list"
+            );
+            size
+        }
+
+        // Page allocator uses remaining part of the buffer for dynamic
+        // allocation. The length of the page allocator depends on if bounce
+        // buffering / double buffering is needed.
+        //
+        // NOTE: Do not remove the `const` blocks below. This is to force
+        // compile time evaluation of the assertion described above.
+        let alloc_len = if bounce_buffer {
+            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER) }
+        } else {
+            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER) }
+        };
+
+        let alloc = PageAllocator::new(mem.subblock(data_offset, alloc_len));
 
         Ok(Self {
             task,
@@ -302,6 +345,7 @@ impl QueuePair {
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -321,6 +365,7 @@ impl QueuePair {
             registers,
             mem,
             Some(handler_data),
+            bounce_buffer,
         )
     }
 }
@@ -568,6 +613,7 @@ struct PendingCommands {
     commands: Slab<PendingCommand>,
     #[inspect(hex)]
     next_cid_high_bits: Wrapping<u16>,
+    qid: u16,
 }
 
 #[derive(Inspect)]
@@ -708,7 +754,7 @@ impl QueueHandler {
         Ok(Self {
             sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
             cq: CompletionQueue::restore(cq_mem_block, cq_state)?,
-            commands: PendingCommands::restore(pending_cmds)?,
+            commands: PendingCommands::restore(pending_cmds, sq_state.sqid)?,
             stats: Default::default(),
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
