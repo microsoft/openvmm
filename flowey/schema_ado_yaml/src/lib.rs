@@ -238,7 +238,6 @@ pub struct Stage {
     #[serde(serialize_with = "validate_name")]
     pub stage: String,
     pub display_name: String,
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub depends_on: BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
@@ -260,7 +259,6 @@ pub struct Job {
     pub job: String,
     pub display_name: String,
     pub pool: Pool,
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub depends_on: BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
