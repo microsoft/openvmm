@@ -3,8 +3,10 @@ use crate::NvmeControllerCaps;
 use crate::NvmeControllerClient;
 use crate::PAGE_MASK;
 use crate::namespace::Namespace;
+use crate::queue::CompletionQueue;
 use crate::queue::DoorbellRegister;
 use crate::queue::QueueError;
+use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::workers::admin::AdminConfig;
 use crate::workers::admin::AdminHandler;
@@ -223,7 +225,7 @@ impl NvmeControllerFaultInjection {
             _ => {}
         }
 
-        // Handled all queue related jargon, let the inner controller handle the rest of the jargon
+        // Handled all queue related jargon, let the inner controller handle the rest
         self.inner.write_bar0(addr, data_original)
     }
 
@@ -240,6 +242,7 @@ impl NvmeControllerFaultInjection {
                 .with_iocqes(0b1111),
         );
         let mut cc: spec::Cc = (u32::from(cc) & mask).into();
+        if !self.admin.is_running() {}
 
         self.regs.cc = cc;
     }
@@ -342,5 +345,17 @@ impl AdminHandlerFaultInjection {
 impl InspectTask<AdminState> for AdminHandlerFaultInjection {
     fn inspect(&self, req: inspect::Request<'_>, state: Option<&AdminState>) {
         req.respond().merge(self).merge(state);
+    }
+}
+
+pub struct AdminStateFaultInjection {
+    admin_sq: SubmissionQueue,
+}
+
+impl AdminStateFaultInjection {
+    pub fn new(asq: u64, asqs: u16, acq: u64, acqs: u16) -> Self {
+        Self {
+            admin_sq: SubmissionQueue::new(handler.config.doorbells[0].clone(), asq, asqs, None),
+        }
     }
 }
