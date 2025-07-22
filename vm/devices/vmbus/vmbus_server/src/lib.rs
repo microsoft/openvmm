@@ -63,6 +63,7 @@ use std::task::Poll;
 use std::task::ready;
 use std::time::Duration;
 use unicycle::FuturesUnordered;
+use user_driver::DmaClient;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
@@ -133,6 +134,7 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
     channel_unstick_delay: Option<Duration>,
+    dma_client: Option<Arc<dyn DmaClient>>,
 }
 
 #[derive(mesh::MeshPayload)]
@@ -290,6 +292,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             force_confidential_external_memory: false,
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
+            dma_client: None,
         }
     }
 
@@ -414,6 +417,10 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
     /// If not set, the default is 100ms. If set to `None`, no interrupt will be triggered.
     pub fn channel_unstick_delay(mut self, delay: Option<Duration>) -> Self {
         self.channel_unstick_delay = delay;
+    }
+
+    pub fn dma_client(mut self, dma_client: Option<Arc<dyn DmaClient>>) -> Self {
+        self.dma_client = dma_client;
         self
     }
 
@@ -546,6 +553,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             shared_event_port: None,
             reset_done: Vec::new(),
             enable_mnf: self.enable_mnf,
+            dma_client: self.dma_client,
         };
 
         let (task_send, task_recv) = mesh::channel();
@@ -702,6 +710,7 @@ struct ServerTaskInner {
     shared_event_port: Option<Box<dyn Send>>,
     reset_done: Vec<Rpc<(), ()>>,
     enable_mnf: bool,
+    dma_client: Option<Arc<dyn DmaClient>>,
 }
 
 #[derive(Debug)]
@@ -1683,6 +1692,20 @@ impl Notifier for ServerTaskInner {
 
     fn unload_complete(&mut self) {
         self.unreserve_channels();
+    }
+
+    fn allocate_monitor_pages(&self) -> anyhow::Result<Option<user_driver::memory::MemoryBlock>> {
+        if !self.enable_mnf {
+            return Ok(None);
+        }
+
+        let block = if let Some(dma_client) = self.dma_client.as_ref() {
+            Some(dma_client.allocate_dma_buffer(PAGE_SIZE * 2)?)
+        } else {
+            None
+        };
+
+        Ok(block)
     }
 }
 

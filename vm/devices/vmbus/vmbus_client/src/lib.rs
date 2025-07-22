@@ -1018,6 +1018,10 @@ impl ClientTask {
         tracing::trace!(?msg, "received client message from synic");
 
         match msg {
+            Message::VersionResponse3(version_response, ..) => {
+                // Since the client doesn't support
+                self.handle_version_response(version_response.version_response2);
+            }
             Message::VersionResponse2(version_response, ..) => {
                 self.handle_version_response(version_response);
             }

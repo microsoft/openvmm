@@ -194,7 +194,7 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
 
                 // Restore server state, and resend server notifications if needed. If these notifications
                 // were processed before the save, it's harmless as the values will be the same.
-                let request = match self.inner.state {
+                let request = match &self.inner.state {
                     super::ConnectionState::Connecting {
                         info,
                         next_action: _,
@@ -516,6 +516,10 @@ impl Connection {
                 None
             }
             super::ConnectionState::Connecting { info, next_action } => {
+                assert!(
+                    info.allocated_monitor_page.is_none(),
+                    "cannot save allocate monitor pages"
+                );
                 Some(Connection::Connecting {
                     version: VersionInfo::save(&info.version),
                     interrupt_page: info.interrupt_page,
@@ -526,17 +530,23 @@ impl Connection {
                     trusted: info.trusted,
                 })
             }
-            super::ConnectionState::Connected(info) => Some(Connection::Connected {
-                version: VersionInfo::save(&info.version),
-                offers_sent: info.offers_sent,
-                interrupt_page: info.interrupt_page,
-                monitor_page: info.monitor_page.map(MonitorPageGpas::save),
-                target_message_vp: info.target_message_vp,
-                modifying: info.modifying,
-                client_id: Some(info.client_id),
-                trusted: info.trusted,
-                paused: info.paused,
-            }),
+            super::ConnectionState::Connected(info) => {
+                assert!(
+                    info.allocated_monitor_page.is_none(),
+                    "cannot save allocate monitor pages"
+                );
+                Some(Connection::Connected {
+                    version: VersionInfo::save(&info.version),
+                    offers_sent: info.offers_sent,
+                    interrupt_page: info.interrupt_page,
+                    monitor_page: info.monitor_page.map(MonitorPageGpas::save),
+                    target_message_vp: info.target_message_vp,
+                    modifying: info.modifying,
+                    client_id: Some(info.client_id),
+                    trusted: info.trusted,
+                    paused: info.paused,
+                })
+            }
             super::ConnectionState::Disconnecting {
                 next_action,
                 modify_sent: _,
@@ -562,6 +572,7 @@ impl Connection {
                     trusted,
                     interrupt_page,
                     monitor_page: monitor_page.map(MonitorPageGpas::restore),
+                    allocated_monitor_page: None,
                     target_message_vp,
                     offers_sent: false,
                     modifying: false,
@@ -586,6 +597,7 @@ impl Connection {
                 offers_sent,
                 interrupt_page,
                 monitor_page: monitor_page.map(MonitorPageGpas::restore),
+                allocated_monitor_page: None,
                 target_message_vp,
                 modifying,
                 client_id: client_id.unwrap_or(Guid::ZERO),

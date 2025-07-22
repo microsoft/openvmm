@@ -10,6 +10,7 @@ use crate::SINT;
 use crate::SynicMessage;
 use crate::monitor::AssignedMonitors;
 use crate::protocol::Version;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::Vtl;
 use inspect::Inspect;
 pub use saved_state::RestoreError;
@@ -27,6 +28,7 @@ use std::task::Poll;
 use std::task::ready;
 use std::time::Duration;
 use thiserror::Error;
+use user_driver::memory::MemoryBlock;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::OfferKey;
@@ -199,7 +201,7 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
     }
 }
 
-#[derive(Debug, Copy, Clone, Inspect)]
+#[derive(Debug, Clone, Inspect)]
 struct ConnectionInfo {
     version: VersionInfo,
     // Indicates if the connection is trusted for the paravisor of a hardware-isolated VM. In other
@@ -208,6 +210,8 @@ struct ConnectionInfo {
     offers_sent: bool,
     interrupt_page: Option<u64>,
     monitor_page: Option<MonitorPageGpas>,
+    #[inspect(skip)]
+    allocated_monitor_page: Option<MemoryBlock>,
     target_message_vp: u32,
     modifying: bool,
     client_id: Guid,
@@ -249,9 +253,9 @@ impl ConnectionState {
         }
     }
 
-    fn get_connected_info(&self) -> Option<ConnectionInfo> {
+    fn get_connected_info(&self) -> Option<&ConnectionInfo> {
         if let ConnectionState::Connected(info) = self {
-            Some(*info)
+            Some(info)
         } else {
             None
         }
@@ -1276,7 +1280,8 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_channel_interrupt_redirection(true)
     .with_modify_connection(true)
     .with_client_id(true)
-    .with_pause_resume(true);
+    .with_pause_resume(true)
+    .with_server_specified_monitor_pages(true);
 
 /// Trait for sending requests to devices and the guest.
 pub trait Notifier: Send {
@@ -1311,6 +1316,10 @@ pub trait Notifier: Send {
 
     /// Notifies that a guest-requested unload is complete.
     fn unload_complete(&mut self);
+
+    fn allocate_monitor_pages(&self) -> anyhow::Result<Option<MemoryBlock>> {
+        Ok(None)
+    }
 }
 
 impl Server {
@@ -1779,7 +1788,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }
 
         let mut connected_info = None;
-        let state = match self.inner.state {
+        let state = match &self.inner.state {
             ConnectionState::Connected(info) => {
                 if info.offers_sent {
                     connected_info = Some(info);
@@ -1820,7 +1829,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             self.inner
                 .pending_messages
                 .sender(self.notifier, self.inner.state.is_paused())
-                .send_offer(channel, &info);
+                .send_offer(channel, info);
         }
 
         tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
@@ -2121,6 +2130,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             MonitorPageRequest::Invalid
         } else if input.initiate_contact.parent_to_child_monitor_page_gpa != 0 {
             if self.inner.require_server_allocated_mnf {
+                // TODO: Need an update here if specifying this is allowed along with the feature bit.
+                // Or if it's not, check that too.
                 tracelimit::warn_ratelimited!(
                     "guest supplied monitor pages not supported; MNF will be disabled"
                 );
@@ -2225,12 +2236,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         // Make sure we can receive incoming interrupts on the monitor page. The parent to child
         // page is not used as this server doesn't send monitored interrupts.
-        let monitor_page = match request.monitor_page {
+        let mut monitor_page = match request.monitor_page {
             MonitorPageRequest::Some(mp) => Some(mp),
             MonitorPageRequest::None => None,
             MonitorPageRequest::Invalid => {
                 // Do not notify the relay in this case.
-                self.send_version_response(Some((
+                self.send_version_response(Some(VersionResponseData::new(
                     version,
                     protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
                 )));
@@ -2239,12 +2250,35 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
         };
 
+        // TODO: Fallback to guest supplied?
+        let allocated_monitor_page = if version.feature_flags.server_specified_monitor_pages() {
+            match self.notifier.allocate_monitor_pages() {
+                Ok(Some(buffer)) => {
+                    let new_monitor_page = MonitorPageGpas {
+                        parent_to_child: buffer.pfns()[0] << HV_PAGE_SHIFT,
+                        child_to_parent: buffer.pfns()[1] << HV_PAGE_SHIFT,
+                    };
+                    monitor_page = Some(new_monitor_page);
+                    tracelimit::info_ratelimited!(?new_monitor_page, "allocated monitor pages");
+                    Some(buffer)
+                }
+                Ok(None) => None,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(?err, "failed to allocate monitor pages");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
         self.inner.state = ConnectionState::Connecting {
             info: ConnectionInfo {
                 version,
                 trusted: request.trusted,
                 interrupt_page: request.interrupt_page,
                 monitor_page,
+                allocated_monitor_page,
                 target_message_vp: request.target_message_vp,
                 modifying: false,
                 offers_sent: false,
@@ -2265,7 +2299,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }) {
             tracelimit::error_ratelimited!(?err, "server failed to change state");
             self.inner.state = ConnectionState::Disconnected;
-            self.send_version_response(Some((
+            self.send_version_response(Some(VersionResponseData::new(
                 version,
                 protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
             )));
@@ -2276,7 +2310,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let ConnectionState::Connecting {
             mut info,
             next_action,
-        } = self.inner.state
+        } = std::mem::replace(&mut self.inner.state, ConnectionState::Disconnected)
         else {
             panic!("Invalid state for completing InitiateContact.");
         };
@@ -2284,7 +2318,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Some features are handled locally without needing relay support.
         const LOCAL_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
             .with_client_id(true)
-            .with_confidential_channels(true);
+            .with_confidential_channels(true)
+            .with_server_specified_monitor_pages(true);
 
         let relay_feature_flags = match response {
             // There is no relay, or it successfully processed our request.
@@ -2304,7 +2339,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 // are correct.
                 info.version.feature_flags &= feature_flags | LOCAL_FEATURE_FLAGS;
 
-                self.send_version_response(Some((info.version, connection_state)));
+                self.send_version_response(Some(VersionResponseData::new(
+                    info.version,
+                    connection_state,
+                )));
                 self.inner.state = ConnectionState::Disconnected;
                 return;
             }
@@ -2320,9 +2358,17 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // The relay responds with all the feature flags it supports, so limit the flags reported to
         // the guest to include only those handled by the relay or locally.
         info.version.feature_flags &= relay_feature_flags | LOCAL_FEATURE_FLAGS;
+        let version = info.version;
+        let monitor_pages = info
+            .allocated_monitor_page
+            .as_ref()
+            .map(|_| info.monitor_page.unwrap());
         self.inner.state = ConnectionState::Connected(info);
 
-        self.send_version_response(Some((info.version, protocol::ConnectionState::SUCCESSFUL)));
+        self.send_version_response(Some(
+            VersionResponseData::new(version, protocol::ConnectionState::SUCCESSFUL)
+                .with_monitor_pages(monitor_pages),
+        ));
         if !matches!(next_action, ConnectionAction::None) && self.request_disconnect(next_action) {
             self.do_next_action(next_action);
         }
@@ -2374,42 +2420,52 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         })
     }
 
-    fn send_version_response(&mut self, data: Option<(VersionInfo, protocol::ConnectionState)>) {
+    fn send_version_response(&mut self, data: Option<VersionResponseData>) {
         self.send_version_response_with_target(data, MessageTarget::Default);
     }
 
     fn send_version_response_with_target(
         &mut self,
-        data: Option<(VersionInfo, protocol::ConnectionState)>,
+        data: Option<VersionResponseData>,
         target: MessageTarget,
     ) {
-        let mut response2 = protocol::VersionResponse2::new_zeroed();
+        let mut response3 = protocol::VersionResponse3::new_zeroed();
+        let response2 = &mut response3.version_response2;
         let response = &mut response2.version_response;
-        let mut send_response2 = false;
-        if let Some((version, state)) = data {
+        let mut response_type = 1;
+        if let Some(data) = data {
             // Pre-Win8, there is no way to report failures to the guest, so those should be treated
             // as unsupported.
-            if state == protocol::ConnectionState::SUCCESSFUL || version.version >= Version::Win8 {
+            if data.state == protocol::ConnectionState::SUCCESSFUL
+                || data.version.version >= Version::Win8
+            {
                 response.version_supported = 1;
-                response.connection_state = state;
+                response.connection_state = data.state;
                 response.selected_version_or_connection_id =
-                    if version.version >= Version::Win10Rs3_1 {
+                    if data.version.version >= Version::Win10Rs3_1 {
                         self.inner.child_connection_id
                     } else {
-                        version.version as u32
+                        data.version.version as u32
                     };
 
-                if version.version >= Version::Copper {
-                    response2.supported_features = version.feature_flags.into();
-                    send_response2 = true;
+                if data.version.version >= Version::Copper {
+                    response2.supported_features = data.version.feature_flags.into();
+                    response_type = 2;
+                    if let Some(monitor_page) = data.monitor_pages {
+                        tracing::debug!("Using response type 3");
+                        assert!(data.version.feature_flags.server_specified_monitor_pages());
+                        response3.child_to_parent_monitor_page_gpa = monitor_page.child_to_parent;
+                        response3.parent_to_child_monitor_page_gpa = monitor_page.parent_to_child;
+                        response_type = 3;
+                    }
                 }
             }
         }
 
-        if send_response2 {
-            self.sender().send_message_with_target(&response2, target);
-        } else {
-            self.sender().send_message_with_target(response, target);
+        match response_type {
+            3 => self.sender().send_message_with_target(&response3, target),
+            2 => self.sender().send_message_with_target(response2, target),
+            _ => self.sender().send_message_with_target(response, target),
         }
     }
 
@@ -3060,7 +3116,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         gpadls: &mut GpadlMap,
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
-        info: Option<ConnectionInfo>,
+        info: Option<&ConnectionInfo>,
     ) -> bool {
         // Release any GPADLs that remain for this channel.
         gpadls.retain(|&(gpadl_id, gpadl_offer_id), gpadl| {
@@ -3102,7 +3158,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 if let Some(info) = info {
                     channel.state = ChannelState::Closed;
                     channel.restore_state = RestoreState::New;
-                    sender.send_offer(channel, &info);
+                    sender.send_offer(channel, info);
                     // Do not release the channel ID.
                     return false;
                 }
@@ -3488,6 +3544,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | Message::GpadlTorndown(..)
             | Message::VersionResponse(..)
             | Message::VersionResponse2(..)
+            | Message::VersionResponse3(..)
             | Message::UnloadComplete(..)
             | Message::CloseReservedChannelResponse(..)
             | Message::TlConnectResult(..)
@@ -3829,5 +3886,26 @@ impl<N: Notifier> MessageSender<'_, N> {
         self.send_message(&protocol::RescindChannelOffer {
             channel_id: info.channel_id,
         });
+    }
+}
+
+struct VersionResponseData {
+    version: VersionInfo,
+    state: protocol::ConnectionState,
+    monitor_pages: Option<MonitorPageGpas>,
+}
+
+impl VersionResponseData {
+    fn new(version: VersionInfo, state: protocol::ConnectionState) -> Self {
+        VersionResponseData {
+            version,
+            state,
+            monitor_pages: None,
+        }
+    }
+
+    fn with_monitor_pages(mut self, monitor_pages: Option<MonitorPageGpas>) -> Self {
+        self.monitor_pages = monitor_pages;
+        self
     }
 }
