@@ -15,6 +15,13 @@ filter = 'package(~vmm_tests) and test(openhcl)'
 # Mark OpenHCL VMM tests as extra heavy, as they have to also simulate VTL2.
 threads-required = 4
 
+[[profile.default.overrides]]
+# use fuzzy-matching for the package() to allow out-of-tree tests to use the
+# same profile
+filter = 'package(~vmm_tests) and test(heavy)'
+# Mark heavy tests as extra heavy, as they include up to 16 vps.
+threads-required = 16
+
 # Profile for CI runs.
 [profile.ci]
 # Set the default timeout to 1 second, with tests terminated after 5 seconds
