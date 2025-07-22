@@ -31,17 +31,21 @@ pub enum AkCertError {
 ///
 /// Returns `Ok(Vec<u8>)` on successfully validating the response, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 
     let header = parse_response_header(response).map_err(AkCertError::ParseHeader)?;
 
     // Extract payload as per header version
+    // parse_response_header above has verified the header version already
     let header_size = match header.version {
         IGVM_ATTEST_RESPONSE_VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
         _ => size_of::<IgvmAttestAkCertResponseHeader>(),
     };
+
     Ok(response[header_size..header.data_size as usize].to_vec())
 }
 
@@ -54,6 +58,10 @@ mod tests {
 
     #[test]
     fn test_undersized_response() {
+        const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
+        let properly_sized_response: [u8; HEADER_SIZE] = [1; HEADER_SIZE];
+        let undersized_response = &properly_sized_response[..HEADER_SIZE - 1];
+    
         // Empty response counts as an undersized response
         let result = parse_response(&[]);
         assert!(result.is_err());

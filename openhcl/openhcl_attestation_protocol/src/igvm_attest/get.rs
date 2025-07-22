@@ -150,6 +150,7 @@ pub struct IgvmCapabilityBitMap {
     _reserved: u32,
 }
 
+/// Unmeasured user data, used for host attestation requests (C-style struct)
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestRequestData {
@@ -163,7 +164,7 @@ pub struct IgvmAttestRequestData {
     pub report_data_hash_type: IgvmAttestHashType,
     /// Size of the appended raw runtime claims
     pub variable_data_size: u32,
-    /// Bitmap of additional request attributes
+    /// Bitmap of additional requested attributes
     pub capability_bitmap: IgvmCapabilityBitMap,
 }
 

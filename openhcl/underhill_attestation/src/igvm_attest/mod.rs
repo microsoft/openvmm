@@ -194,7 +194,7 @@ impl IgvmAttestRequestHelper {
     }
 }
 
-// Verify response header and try to extract IgvmErrorInfo from the header
+/// Verify response header and try to extract IgvmErrorInfo from the header
 pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponseHeader, Error> {
     // Extract common header fields regardless of header version or request type
     // For V1 request, response buffer should be empty in case of attestation failure
@@ -202,7 +202,7 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
         .map_err(|_| Error::ResponseSizeTooSmall {
             response_size: response.len(),
         })?
-        .0;
+        .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
     // Check header data_size and version
     if header.data_size as usize > response.len() {
@@ -227,7 +227,7 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
         .map_err(|_| Error::ResponseSizeTooSmall {
             response_size: response.len(),
         })?
-        .0;
+        .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         if 0 != error_info.error_code {
             Err(Error::Attestation {

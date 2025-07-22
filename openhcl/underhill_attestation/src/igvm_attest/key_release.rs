@@ -126,10 +126,13 @@ pub fn parse_response(
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 
     let header = parse_response_header(response).map_err(KeyReleaseError::ParseHeader)?;
 
     // Extract payload as per header version
+    // parse_response_header above has verified the header version already
     let header_size = match header.version {
         IGVM_ATTEST_RESPONSE_VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
         _ => size_of::<IgvmAttestKeyReleaseResponseHeader>(),

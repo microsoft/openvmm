@@ -39,6 +39,12 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
+    
+    // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
+    const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
+    const MINIMUM_WRAPPED_KEY_SIZE: usize = 256;
+    const MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE: usize = MINIMUM_WRAPPED_KEY_SIZE / 3 * 4;
+    const MINIMUM_PAYLOAD_SIZE: usize = CIPHER_TEXT_KEY.len() + MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE;
 
     let header = parse_response_header(response).map_err(WrappedKeyError::ParseHeader)?;
 
@@ -49,11 +55,6 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
     };
     let payload = &response[header_size..header.data_size as usize];
 
-    // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
-    const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
-    const MINIMUM_WRAPPED_KEY_SIZE: usize = 256;
-    const MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE: usize = MINIMUM_WRAPPED_KEY_SIZE / 3 * 4;
-    const MINIMUM_PAYLOAD_SIZE: usize = CIPHER_TEXT_KEY.len() + MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE;
     if payload.len() < MINIMUM_PAYLOAD_SIZE {
         Err(WrappedKeyError::PayloadSizeTooSmall)?
     }
