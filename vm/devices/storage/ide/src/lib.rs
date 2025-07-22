@@ -917,7 +917,7 @@ impl PciConfigSpace for IdeDevice {
                 HeaderType00::BAR4 => self.bus_master_state.port_addr_reg,
                 offset => {
                     tracing::debug!(?offset, "undefined type00 header read");
-                    return IoResult::Err(IoError::InvalidRegister);
+                    0
                 }
             }
         } else {
