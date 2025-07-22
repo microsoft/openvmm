@@ -6,14 +6,14 @@
 //! `IGVM_ATTEST` host request.
 
 use base64_serde::base64_serde_type;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmCapabilityBitMap;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use tee_call::TeeType;
 use thiserror::Error;
@@ -39,6 +39,8 @@ pub enum Error {
     },
     #[error("the size of the attestation response {response_size} is too small to parse")]
     ResponseSizeTooSmall { response_size: usize },
+    #[error("the header of the attestation response (size {response_size}) is not in correct format")]
+    ResponseHeaderInvalidFormat { response_size: usize },
     #[error(
         "response size {specified_size} specified in the header not match the actual size {size}"
     )]
@@ -46,10 +48,10 @@ pub enum Error {
     #[error("response header version {version} larger than current version {latest_version}")]
     InvalidResponseHeaderVersion { version: u32, latest_version: u32 },
     #[error(
-        "attest failed ({error_code}-{http_status_code}), retry recommendation ({retry_signal})"
+        "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal})"
     )]
     Attestation {
-        error_code: u32,
+        igvm_error_code: u32,
         http_status_code: u32,
         retry_signal: bool,
     },
@@ -221,19 +223,19 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
     // IgvmErrorInfo is added in response header since IGVM_ATTEST_RESPONSE_VERSION_2
     if header.version >= IGVM_ATTEST_RESPONSE_VERSION_2 {
         // Extract result info from response header
-        let error_info = IgvmErrorInfo::read_from_prefix(
+        let igvm_error_info = IgvmErrorInfo::read_from_prefix(
             &response[size_of::<IgvmAttestCommonResponseHeader>()..],
         )
-        .map_err(|_| Error::ResponseSizeTooSmall {
+        .map_err(|_| Error::ResponseHeaderInvalidFormat {
             response_size: response.len(),
         })?
         .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
-        if 0 != error_info.error_code {
+        if 0 != igvm_error_info.error_code {
             Err(Error::Attestation {
-                error_code: error_info.error_code,
-                http_status_code: error_info.http_status_code,
-                retry_signal: error_info.igvm_signal.retry(),
+                igvm_error_code: igvm_error_info.error_code,
+                http_status_code: igvm_error_info.http_status_code,
+                retry_signal: igvm_error_info.igvm_signal.retry(),
             })?
         }
     }
@@ -547,7 +549,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
-            Error::ResponseSizeTooSmall {
+            Error::ResponseHeaderInvalidFormat {
                 response_size: 0x1c
             }
             .to_string()
@@ -568,7 +570,7 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             Error::Attestation {
-                error_code: 1103,
+                igvm_error_code: 1103,
                 http_status_code: 403,
                 retry_signal: true
             }
@@ -590,7 +592,7 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             Error::Attestation {
-                error_code: 1103,
+                igvm_error_code: 1103,
                 http_status_code: 503,
                 retry_signal: false
             }

@@ -184,7 +184,7 @@ pub async fn request_vmgs_encryption_keys(
                 wrapped_key_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
                     igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
                         igvm_attest::Error::Attestation {
-                            error_code,
+                            igvm_error_code,
                             http_status_code,
                             retry_signal,
                         },
@@ -194,7 +194,7 @@ pub async fn request_vmgs_encryption_keys(
                 tracing::error!(
                     CVM_ALLOWED,
                     retry = i,
-                    igvm_error_code = &error_code,
+                    igvm_error_code = &igvm_error_code,
                     igvm_http_status_code = &http_status_code,
                     retry_signal = &retry_signal,
                     error = &wrapped_key_attest_error as &dyn std::error::Error,
@@ -208,7 +208,7 @@ pub async fn request_vmgs_encryption_keys(
                 key_release_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
                     igvm_attest::key_release::KeyReleaseError::ParseHeader(
                         igvm_attest::Error::Attestation {
-                            error_code,
+                            igvm_error_code,
                             http_status_code,
                             retry_signal,
                         },
@@ -218,7 +218,7 @@ pub async fn request_vmgs_encryption_keys(
                 tracing::error!(
                     CVM_ALLOWED,
                     retry = i,
-                    igvm_error_code = &error_code,
+                    igvm_error_code = &igvm_error_code,
                     igvm_http_status_code = &http_status_code,
                     retry_signal = &retry_signal,
                     error = &key_release_attest_error as &dyn std::error::Error,

@@ -30,7 +30,7 @@ pub(crate) enum KeyReleaseError {
     VerifyAkvJwtSignatureFailed,
     #[error("failed to get wrapped key from AKV JWT body")]
     GetWrappedKeyFromAkvJwtBody(#[source] AkvKeyReleaseJwtError),
-    #[error("error in response header")]
+    #[error("error in parsing response header")]
     ParseHeader(#[source] CommonError),
 }
 
@@ -126,8 +126,10 @@ pub fn parse_response(
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
+
+    // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
+    const AES_IC_SIZE: usize = 8;
+    const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
 
     let header = parse_response_header(response).map_err(KeyReleaseError::ParseHeader)?;
 
@@ -138,10 +140,6 @@ pub fn parse_response(
         _ => size_of::<IgvmAttestKeyReleaseResponseHeader>(),
     };
     let payload = &response[header_size..header.data_size as usize];
-
-    // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
-    const AES_IC_SIZE: usize = 8;
-    const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
     let wrapped_key_size = rsa_modulus_size + rsa_modulus_size + AES_IC_SIZE;
     let wrapped_key_base64_url_size = wrapped_key_size / 3 * 4;
     let minimum_payload_size = CIPHER_TEXT_KEY.len() + wrapped_key_base64_url_size - 1;

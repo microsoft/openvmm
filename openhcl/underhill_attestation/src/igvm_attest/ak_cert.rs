@@ -3,8 +3,8 @@
 
 //! The module for `AK_CERT_REQUEST` request type that supports parsing the
 //! response.
-use crate::igvm_attest::parse_response_header;
 use crate::igvm_attest::Error as CommonError;
+use crate::igvm_attest::parse_response_header;
 
 use thiserror::Error;
 
@@ -23,7 +23,7 @@ pub enum AkCertError {
         "AK cert response header version {version} does match the expected version {expected_version}"
     )]
     HeaderVersionMismatch { version: u32, expected_version: u32 },
-    #[error("error in response header")]
+    #[error("error in parsing response header")]
     ParseHeader(#[source] CommonError),
 }
 
@@ -31,11 +31,9 @@ pub enum AkCertError {
 ///
 /// Returns `Ok(Vec<u8>)` on successfully validating the response, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 
     let header = parse_response_header(response).map_err(AkCertError::ParseHeader)?;
 
@@ -52,8 +50,8 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use zerocopy::FromBytes;
 
     #[test]
@@ -61,7 +59,7 @@ mod tests {
         const HEADER_SIZE: usize = size_of::<IgvmAttestAkCertResponseHeader>();
         let properly_sized_response: [u8; HEADER_SIZE] = [1; HEADER_SIZE];
         let undersized_response = &properly_sized_response[..HEADER_SIZE - 1];
-    
+
         // Empty response counts as an undersized response
         let result = parse_response(&[]);
         assert!(result.is_err());
@@ -76,11 +74,10 @@ mod tests {
         assert!(undersized_parse_.is_err());
         assert_eq!(
             undersized_parse_.unwrap_err().to_string(),
-            format!(
-                "AK cert response is too small to parse. Found {} bytes but expected at least {}",
-                HEADER_SIZE - 1,
-                HEADER_SIZE
-            )
+            AkCertError::ParseHeader(CommonError::ResponseSizeTooSmall {
+                response_size: HEADER_SIZE - 1
+            })
+            .to_string()
         );
 
         // When we finally have `HEADER_SIZE` bytes, we no longer see the failure as `AkCertError::SizeTooSmall`,
@@ -111,9 +108,7 @@ mod tests {
         assert!(result.is_ok());
 
         let payload = result.unwrap();
-        let data_size = parse_response_header(&VALID_RESPONSE)
-            .unwrap()
-            .data_size as usize;
+        let data_size = parse_response_header(&VALID_RESPONSE).unwrap().data_size as usize;
         assert_eq!(payload.len(), data_size - HEADER_SIZE);
         assert_eq!(payload, &VALID_RESPONSE[HEADER_SIZE..data_size]);
     }
@@ -136,9 +131,7 @@ mod tests {
         assert!(result.is_ok());
 
         let payload = result.unwrap();
-        let data_size = parse_response_header(&VALID_RESPONSE)
-            .unwrap()
-            .data_size as usize;
+        let data_size = parse_response_header(&VALID_RESPONSE).unwrap().data_size as usize;
         assert_eq!(payload.len(), data_size - HEADER_SIZE);
         assert_eq!(payload, &VALID_RESPONSE[HEADER_SIZE..data_size]);
     }
