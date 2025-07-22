@@ -233,7 +233,7 @@ impl PetriVmConfigOpenVmm {
     ) -> anyhow::Result<Vec<Task<()>>> {
         // Our CI environment will kill tests after some time. We want to save
         // some information about the VM if it's still running at that point.
-        const TIMEOUT_DURATION_MINUTES: u64 = 6;
+        const TIMEOUT_DURATION_MINUTES: u64 = 8;
         const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60 - 10);
 
         let mut tasks = Vec::new();

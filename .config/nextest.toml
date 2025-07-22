@@ -40,7 +40,8 @@ filter = 'package(~vmm_tests)'
 # Allow VMM tests longer timeouts.
 # Important Note: Petri's watchdogs need to know this value too.
 # If you change it here then change it there!
-slow-timeout = { period = "3m", terminate-after = 2 }
+# Look for TIMEOUT_DURATION_MINUTES.
+slow-timeout = { period = "4m", terminate-after = 2 }
 
 # TEMP (hopefully): For reasons that continue to befuddle, running Windows
 # release-mode unit tests in flowey CI is resulting in seemingly-random
