@@ -15,6 +15,8 @@ use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_USED_RANGES;
 use crate::host_params::shim_params::IsolationType;
+use crate::memory::AllocationPolicy;
+use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
@@ -495,35 +497,17 @@ impl PartitionInfo {
             // ranges to figure out which VTL2 memory is free to allocate from.
             let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
 
-            let free_memory = subtract_ranges(
-                storage.vtl2_ram.iter().map(|e| e.range),
-                storage.vtl2_used_ranges.iter().copied(),
-            );
-
-            let mut pool = MemoryRange::EMPTY;
-
-            for range in free_memory {
-                if range.len() >= pool_size_bytes {
-                    pool = MemoryRange::new(range.start()..(range.start() + pool_size_bytes));
-                    break;
+            let pool = match storage.address_space_manager.allocate(
+                None,
+                pool_size_bytes,
+                AllocationType::GpaPool,
+                AllocationPolicy::LowMemory,
+            ) {
+                Some(pool) => pool.range,
+                None => {
+                    panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
                 }
-            }
-
-            if pool.is_empty() {
-                panic!(
-                    "failed to find {pool_size_bytes} bytes of free VTL2 memory for VTL2 GPA pool"
-                );
-            }
-
-            // Update the used ranges to mark the pool range as used.
-            used_ranges.clear();
-            used_ranges.extend(storage.vtl2_used_ranges.iter().copied());
-            used_ranges.push(pool);
-            used_ranges.sort_unstable_by_key(|r| r.start());
-            storage.vtl2_used_ranges.clear();
-            storage
-                .vtl2_used_ranges
-                .extend(flatten_ranges(used_ranges.iter().copied()));
+            };
 
             storage.vtl2_pool_memory = pool;
         }
@@ -533,6 +517,11 @@ impl PartitionInfo {
             storage.vtl0_alias_map = parsed.vtl0_alias_map;
         }
 
+        debug_log!(
+            "read_from_dt final storage.address_space_manager: {:#?}",
+            storage.address_space_manager
+        );
+
         // Set remaining struct fields before returning.
         let Self {
             vtl2_ram: _,
@@ -540,7 +529,6 @@ impl PartitionInfo {
             vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
             vtl2_reserved_region,
             vtl2_pool_memory: _,
-            vtl2_used_ranges,
             partition_ram: _,
             isolation,
             bsp_reg,
@@ -558,8 +546,6 @@ impl PartitionInfo {
             boot_options,
             address_space_manager: _,
         } = storage;
-
-        assert!(!vtl2_used_ranges.is_empty());
 
         *isolation = params.isolation_type;
 

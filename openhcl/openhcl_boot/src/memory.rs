@@ -4,11 +4,12 @@
 //! Address space allocator for VTL2 memory used by the bootshim.
 
 use crate::host_params::MAX_VTL2_RAM_RANGES;
+use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
-use core::alloc;
 use core::cell::RefCell;
 use core::panic;
 use host_fdt_parser::MemoryEntry;
+#[cfg(test)]
 use igvm_defs::MemoryMapEntryType;
 use igvm_defs::PAGE_SIZE_4K;
 use loader_defs::shim::MemoryVtlType;
@@ -90,34 +91,21 @@ pub struct AllocatedRange {
 
 #[derive(Debug)]
 pub struct AddressSpaceManager {
+    inner: RefCell<Inner>,
+}
+
+#[derive(Debug)]
+struct Inner {
     /// tracks address space, must be sorted
     address_space: ArrayVec<AddressRange, MAX_ADDRESS_RANGES>,
 }
 
-pub enum AllocationType {
-    GpaPool,
-    SidecarNode,
-}
-
-pub enum AllocationPolicy {
-    // prefer low memory
-    LowMemory,
-    // prefer high memory
-    HighMemory,
-}
-
-impl AddressSpaceManager {
-    pub const fn new_const() -> Self {
-        Self {
-            address_space: ArrayVec::new_const(),
-        }
-    }
-
+impl Inner {
     /// Initialize the address space manager.
     ///
     /// Some regions are known to be used at construction time, as these ranges
     /// are allocated at boot time.
-    pub fn init(
+    fn init(
         &mut self,
         vtl2_ram: &[MemoryEntry],
         bootshim_used: MemoryRange,
@@ -210,7 +198,7 @@ impl AddressSpaceManager {
         allocated
     }
 
-    pub fn allocate(
+    fn allocate(
         &mut self,
         preferred_vnode: Option<u32>,
         len: u64,
@@ -268,6 +256,78 @@ impl AddressSpaceManager {
     /// Get all of vtl2 address space
     pub fn vtl2_ranges(&self) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
         self.address_space.iter().map(|r| (r.range, r.usage.into()))
+    }
+
+    /// Get only reserved vtl2 ranges that are not described as e820 ranges
+    pub fn reserved_vtl2_ranges(
+        &self,
+    ) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
+        self.address_space
+            .iter()
+            .filter(|r| matches!(r.usage, AddressUsage::Reserved(_)))
+            .map(|r| (r.range, r.usage.into()))
+    }
+}
+
+pub enum AllocationType {
+    GpaPool,
+    SidecarNode,
+}
+
+pub enum AllocationPolicy {
+    // prefer low memory
+    LowMemory,
+    // prefer high memory
+    HighMemory,
+}
+
+impl AddressSpaceManager {
+    pub const fn new_const() -> Self {
+        Self {
+            inner: RefCell::new(Inner {
+                address_space: ArrayVec::new_const(),
+            }),
+        }
+    }
+
+    /// Initialize the address space manager.
+    ///
+    /// Some regions are known to be used at construction time, as these ranges
+    /// are allocated at boot time.
+    pub fn init(
+        &mut self,
+        vtl2_ram: &[MemoryEntry],
+        bootshim_used: MemoryRange,
+        vtl2_config: impl Iterator<Item = MemoryRange>,
+        reserved_range: Option<MemoryRange>,
+        sidecar_image: Option<MemoryRange>,
+    ) {
+        self.inner.get_mut().init(
+            vtl2_ram,
+            bootshim_used,
+            vtl2_config,
+            reserved_range,
+            sidecar_image,
+        )
+    }
+
+    pub fn allocate(
+        &self,
+        preferred_vnode: Option<u32>,
+        len: u64,
+        allocation_type: AllocationType,
+        allocation_policy: AllocationPolicy,
+    ) -> Option<AllocatedRange> {
+        self.inner
+            .borrow_mut()
+            .allocate(preferred_vnode, len, allocation_type, allocation_policy)
+    }
+
+    /// Get all of vtl2 address space
+    pub fn vtl2_ranges(&self) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
+        // We need to return an iterator that doesn't hold a borrow of the RefCell
+        let ranges = off_stack!( ArrayVec<AddressRange, MAX_ADDRESS_RANGES>, ArrayVec::new_const());
+        ranges.into_iter().map(|r| (r.range, r.usage.into()))
     }
 }
 

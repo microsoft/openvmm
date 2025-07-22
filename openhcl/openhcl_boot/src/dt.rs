@@ -159,7 +159,6 @@ fn write_vmbus<'a, T>(
 pub fn write_dt(
     buffer: &mut [u8],
     partition_info: &PartitionInfo,
-    reserved_memory: &[(MemoryRange, ReservedMemoryType)],
     accepted_ranges: impl IntoIterator<Item = MemoryRange>,
     initrd: Range<u64>,
     cmdline: &ArrayString<COMMAND_LINE_SIZE>,
