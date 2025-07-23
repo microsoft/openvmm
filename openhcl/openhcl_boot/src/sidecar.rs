@@ -10,7 +10,6 @@ use crate::host_params::shim_params::ShimParams;
 use crate::memory::AddressSpaceManager;
 use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
-use memory_range::MemoryRange;
 use sidecar_defs::SidecarNodeOutput;
 use sidecar_defs::SidecarNodeParams;
 use sidecar_defs::SidecarOutput;
@@ -27,7 +26,6 @@ const _: () = assert!(
 );
 
 pub struct SidecarConfig<'a> {
-    pub image: MemoryRange,
     pub node_params: &'a [SidecarNodeParams],
     pub nodes: &'a [SidecarNodeOutput],
     pub start_reftime: u64,
@@ -79,8 +77,6 @@ pub fn start_sidecar<'a>(
         log!("sidecar: disabled via command line");
         return None;
     }
-
-    let image = MemoryRange::new(p.sidecar_base..p.sidecar_base + p.sidecar_size);
 
     // Ensure the host didn't provide an out-of-bounds NUMA node.
     let max_vnode = partition_info
@@ -212,7 +208,6 @@ pub fn start_sidecar<'a>(
 
     let SidecarOutput { nodes, error: _ } = sidecar_output;
     Some(SidecarConfig {
-        image,
         start_reftime: boot_start_reftime,
         end_reftime: boot_end_reftime,
         node_params: &sidecar_params.nodes[..node_count],

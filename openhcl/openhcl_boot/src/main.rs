@@ -44,9 +44,7 @@ use hvdef::Vtl;
 use loader_defs::linux::SETUP_DTB;
 use loader_defs::linux::setup_data;
 use loader_defs::shim::ShimParamsRaw;
-use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
-use memory_range::merge_adjacent_ranges;
 use memory_range::walk_ranges;
 use minimal_rt::enlightened_panic::enable_enlightened_panic;
 use sidecar::SidecarConfig;
@@ -861,8 +859,6 @@ mod test {
     use loader_defs::linux::boot_params;
     use loader_defs::linux::e820entry;
     use memory_range::MemoryRange;
-    use memory_range::RangeWalkResult;
-    use memory_range::walk_ranges;
     use zerocopy::FromZeros;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB
@@ -885,9 +881,6 @@ mod test {
 
         PartitionInfo {
             vtl2_ram: ArrayVec::new(),
-            vtl2_full_config_region: MemoryRange::EMPTY,
-            vtl2_config_region_reclaim: MemoryRange::EMPTY,
-            vtl2_reserved_region: MemoryRange::EMPTY,
             vtl2_pool_memory: MemoryRange::EMPTY,
             partition_ram: ArrayVec::new(),
             isolation: IsolationType::None,
@@ -1065,12 +1058,6 @@ mod test {
                 vnode: 0,
             })
             .collect();
-
-        info.vtl2_full_config_region = parameter_range;
-
-        info.vtl2_config_region_reclaim = reclaim
-            .map(|r| MemoryRange::try_new(r).unwrap())
-            .unwrap_or(MemoryRange::EMPTY);
 
         info
     }
