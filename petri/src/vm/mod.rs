@@ -25,8 +25,8 @@ use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
 use std::collections::hash_map::DefaultHasher;
-use std::future::Future;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::PathBuf;
 use vmm_core_defs::HaltReason;
 
