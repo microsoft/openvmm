@@ -7,10 +7,9 @@ use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
 use crate::host_params::shim_params::ShimParams;
+use crate::memory::AddressSpaceManager;
 use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
-use crate::single_threaded::off_stack;
-use arrayvec::ArrayVec;
 use memory_range::MemoryRange;
 use sidecar_defs::SidecarNodeOutput;
 use sidecar_defs::SidecarNodeParams;
@@ -63,6 +62,7 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
 pub fn start_sidecar<'a>(
     p: &ShimParams,
     partition_info: &PartitionInfo,
+    address_space: &mut AddressSpaceManager,
     sidecar_params: &'a mut SidecarParams,
     sidecar_output: &'a mut SidecarOutput,
 ) -> Option<SidecarConfig<'a>> {
@@ -148,7 +148,7 @@ pub fn start_sidecar<'a>(
             // as the first CPU.
             let local_vnode = cpus[0].vnode as usize;
 
-            let mem = match partition_info.address_space_manager.allocate(
+            let mem = match address_space.allocate(
                 Some(local_vnode as u32),
                 required_ram,
                 AllocationType::SidecarNode,
@@ -157,7 +157,7 @@ pub fn start_sidecar<'a>(
                 Some(mem) => mem,
                 None => {
                     // Fallback to no numa requirement.
-                    match partition_info.address_space_manager.allocate(
+                    match address_space.allocate(
                         None,
                         required_ram,
                         AllocationType::SidecarNode,
