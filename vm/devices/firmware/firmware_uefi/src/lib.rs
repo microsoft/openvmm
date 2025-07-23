@@ -284,7 +284,7 @@ impl UefiDevice {
             if let Some(v) = v {
                 let should_process: bool = v.parse().with_context(|| "expected true or false")?;
                 if should_process {
-                    self.inspect_diagnostics(DEFAULT_LOGS_PER_PERIOD, "inspect");
+                    self.inspect_diagnostics("inspect");
                 }
                 anyhow::Ok(should_process)
             } else {

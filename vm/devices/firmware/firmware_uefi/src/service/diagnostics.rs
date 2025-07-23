@@ -528,9 +528,8 @@ impl UefiDevice {
     /// The traces here are not rate-limited.
     ///
     /// # Arguments
-    /// * `_limit` - Maximum number of logs to process per period (unused for unrestricted logging)
     /// * `triggered_by` - String to indicate who triggered the diagnostics processing
-    pub(crate) fn inspect_diagnostics(&mut self, _limit: u32, triggered_by: &str) {
+    pub(crate) fn inspect_diagnostics(&mut self, triggered_by: &str) {
         if let Err(error) =
             self.service
                 .diagnostics
