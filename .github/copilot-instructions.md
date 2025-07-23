@@ -7,6 +7,10 @@ This is a Rust based repository. Please follow these guidelines when contributin
 - This will ensure all source code and generated pipeline files maintain consistent style and content.
 - Cross-compile by targeting `x86_64` and `aarch64` processors, and Windows and Linux environments.
 
+### Important context
+- Read [clippy.toml](../clippy.toml) and [rustfmt.toml](../rustfmt.toml) for linting rules and guidelines.
+- Read each file in the [contrib](../Guide/src/dev_guide/contrib/) folder of the developer guide for higher level design and implementation guidance.
+
 ## Key Guidelines
 1. Follow Rust best practices and idiomatic patterns.
 2. Maintain existing code structure and organization.
