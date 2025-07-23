@@ -39,7 +39,9 @@ pub enum Error {
     },
     #[error("the size of the attestation response {response_size} is too small to parse")]
     ResponseSizeTooSmall { response_size: usize },
-    #[error("the header of the attestation response (size {response_size}) is not in correct format")]
+    #[error(
+        "the header of the attestation response (size {response_size}) is not in correct format"
+    )]
     ResponseHeaderInvalidFormat { response_size: usize },
     #[error(
         "response size {specified_size} specified in the header not match the actual size {size}"
@@ -200,7 +202,7 @@ impl IgvmAttestRequestHelper {
 pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponseHeader, Error> {
     // Extract common header fields regardless of header version or request type
     // For V1 request, response buffer should be empty in case of attestation failure
-    let header = IgvmAttestCommonResponseHeader::read_from_prefix(&response)
+    let header = IgvmAttestCommonResponseHeader::read_from_prefix(response)
         .map_err(|_| Error::ResponseSizeTooSmall {
             response_size: response.len(),
         })?

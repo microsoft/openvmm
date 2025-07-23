@@ -5,8 +5,8 @@
 //! runtime claims, which is a part of the request, and parsing the response, which
 //! can be either in JSON or JSON web token (JWT) format defined by Azure Key Vault (AKV).
 
-use crate::igvm_attest::parse_response_header;
 use crate::igvm_attest::Error as CommonError;
+use crate::igvm_attest::parse_response_header;
 use base64::Engine;
 use openhcl_attestation_protocol::igvm_attest::akv;
 use openssl::hash::MessageDigest;
@@ -123,9 +123,9 @@ pub fn parse_response(
     response: &[u8],
     rsa_modulus_size: usize,
 ) -> Result<Vec<u8>, KeyReleaseError> {
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
 
     // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
     const AES_IC_SIZE: usize = 8;

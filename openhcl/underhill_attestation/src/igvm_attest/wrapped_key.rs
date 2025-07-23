@@ -4,8 +4,8 @@
 //! The module for `WRAPPED_KEY_REQUEST` request type that supports parsing the
 //! response in JSON format defined by Azure CVM Provisioning Service (CPS).
 
-use crate::igvm_attest::parse_response_header;
 use crate::igvm_attest::Error as CommonError;
+use crate::igvm_attest::parse_response_header;
 use openhcl_attestation_protocol::igvm_attest::cps;
 use thiserror::Error;
 
@@ -36,10 +36,10 @@ pub struct IgvmWrappedKeyParsedResponse {
 /// Returns `Ok(IgvmWrappedKeyParsedResponse)` on successfully extracting a wrapped DiskEncryptionSettings
 /// key from `response`, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, WrappedKeyError> {
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
-    
+
     // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
     const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
     const MINIMUM_WRAPPED_KEY_SIZE: usize = 256;
@@ -169,8 +169,8 @@ mod tests {
     }
 
     fn mock_response() -> Vec<u8> {
-        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
         use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 
         const WRAPPED_KEY: [u8; 256] = [
             0x9d, 0x72, 0x81, 0xbc, 0x6d, 0x0c, 0xeb, 0x8f, 0x32, 0xb9, 0xc3, 0xd0, 0xd2, 0x58,
