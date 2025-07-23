@@ -6,7 +6,6 @@
 
 use crate::cmdline::BootCommandLineOptions;
 use crate::host_params::shim_params::IsolationType;
-use crate::memory::AddressSpaceManager;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use host_fdt_parser::CpuEntry;
@@ -41,9 +40,6 @@ const MAX_PARTITION_RAM_RANGES: usize = 1024;
 
 /// Maximum size of the host-provided entropy
 pub const MAX_ENTROPY_SIZE: usize = 256;
-
-/// Maximum number of supported VTL2 used ranges.
-pub const MAX_VTL2_USED_RANGES: usize = 16;
 
 /// Information about the guest partition.
 #[derive(Debug)]
@@ -98,11 +94,6 @@ pub struct PartitionInfo {
     pub nvme_keepalive: bool,
     /// Parsed boot command line options.
     pub boot_options: BootCommandLineOptions,
-
-    /// The address space manager for VTL2.
-    ///
-    /// TODO: replace all fields above with this as needed.
-    pub address_space_manager: AddressSpaceManager,
 }
 
 impl PartitionInfo {
@@ -135,15 +126,6 @@ impl PartitionInfo {
             vtl0_alias_map: None,
             nvme_keepalive: false,
             boot_options: BootCommandLineOptions::new(),
-            address_space_manager: AddressSpaceManager::new_const(),
         }
-    }
-
-    /// Returns the parameter regions that are not being reclaimed.
-    pub fn vtl2_config_regions(&self) -> impl Iterator<Item = MemoryRange> + use<> {
-        subtract_ranges(
-            [self.vtl2_full_config_region],
-            [self.vtl2_config_region_reclaim],
-        )
     }
 }
