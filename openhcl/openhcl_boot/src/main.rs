@@ -847,6 +847,7 @@ mod test {
     use crate::host_params::MAX_CPU_COUNT;
     use crate::host_params::PartitionInfo;
     use crate::host_params::shim_params::IsolationType;
+    use crate::memory::AddressSpaceManager;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
@@ -859,6 +860,7 @@ mod test {
     use loader_defs::linux::boot_params;
     use loader_defs::linux::e820entry;
     use memory_range::MemoryRange;
+    use memory_range::subtract_ranges;
     use zerocopy::FromZeros;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB
@@ -1043,23 +1045,31 @@ mod test {
         assert!(success);
     }
 
-    fn partition_info_ram_ranges(
-        ram: &[Range<u64>],
+    fn new_address_space_manager(
+        ram: &[MemoryRange],
+        bootshim_used: MemoryRange,
         parameter_range: MemoryRange,
-        reclaim: Option<Range<u64>>,
-    ) -> PartitionInfo {
-        let mut info = PartitionInfo::new();
-
-        info.vtl2_ram = ram
+        reclaim: Option<MemoryRange>,
+    ) -> AddressSpaceManager {
+        let ram = ram
             .iter()
-            .map(|r| MemoryEntry {
-                range: MemoryRange::try_new(r.clone()).unwrap(),
+            .cloned()
+            .map(|range| MemoryEntry {
+                range,
                 mem_type: MemoryMapEntryType::VTL2_PROTECTABLE,
                 vnode: 0,
             })
-            .collect();
-
-        info
+            .collect::<Vec<_>>();
+        let mut address_space = AddressSpaceManager::new_const();
+        address_space.init(
+            &ram,
+            bootshim_used,
+            subtract_ranges([parameter_range], reclaim.into_iter()),
+            None,
+            None,
+            None,
+        );
+        address_space
     }
 
     fn check_e820(boot_params: &boot_params, ext: &E820Ext, expected: &[(Range<u64>, u32)]) {
@@ -1090,11 +1100,16 @@ mod test {
         // memmap with no param reclaim
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
+        let bootshim_used = MemoryRange::try_new(ONE_MB..3 * ONE_MB).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..3 * ONE_MB).unwrap();
-        let partition_info =
-            partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
+        let address_space = new_address_space_manager(
+            &[MemoryRange::new(ONE_MB..4 * ONE_MB)],
+            bootshim_used,
+            parameter_range,
+            None,
+        );
 
-        assert!(build_e820_map(todo!(), todo!(), todo!()).is_ok());
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
 
         check_e820(
             &boot_params,
@@ -1109,14 +1124,17 @@ mod test {
         // memmap with reclaim
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
+        let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
-        let partition_info = partition_info_ram_ranges(
-            &[ONE_MB..6 * ONE_MB],
+        let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
+        let address_space = new_address_space_manager(
+            &[MemoryRange::new(ONE_MB..6 * ONE_MB)],
+            bootshim_used,
             parameter_range,
-            Some(3 * ONE_MB..4 * ONE_MB),
+            Some(reclaim),
         );
 
-        assert!(build_e820_map(todo!(), todo!(), todo!()).is_ok());
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
 
         check_e820(
             &boot_params,
@@ -1133,14 +1151,20 @@ mod test {
         // two mem ranges
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
+        let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
-        let partition_info = partition_info_ram_ranges(
-            &[ONE_MB..4 * ONE_MB, 4 * ONE_MB..10 * ONE_MB],
+        let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
+        let address_space = new_address_space_manager(
+            &[
+                MemoryRange::new(ONE_MB..4 * ONE_MB),
+                MemoryRange::new(4 * ONE_MB..10 * ONE_MB),
+            ],
+            bootshim_used,
             parameter_range,
-            Some(3 * ONE_MB..4 * ONE_MB),
+            Some(reclaim),
         );
 
-        assert!(build_e820_map(todo!(), todo!(), todo!()).is_ok());
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
 
         check_e820(
             &boot_params,
@@ -1157,22 +1181,25 @@ mod test {
         // memmap in 1 mb chunks
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
+        let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
-        let partition_info = partition_info_ram_ranges(
+        let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
+        let address_space = new_address_space_manager(
             &[
-                ONE_MB..2 * ONE_MB,
-                2 * ONE_MB..3 * ONE_MB,
-                3 * ONE_MB..4 * ONE_MB,
-                4 * ONE_MB..5 * ONE_MB,
-                5 * ONE_MB..6 * ONE_MB,
-                6 * ONE_MB..7 * ONE_MB,
-                7 * ONE_MB..8 * ONE_MB,
+                MemoryRange::new(ONE_MB..2 * ONE_MB),
+                MemoryRange::new(2 * ONE_MB..3 * ONE_MB),
+                MemoryRange::new(3 * ONE_MB..4 * ONE_MB),
+                MemoryRange::new(4 * ONE_MB..5 * ONE_MB),
+                MemoryRange::new(5 * ONE_MB..6 * ONE_MB),
+                MemoryRange::new(6 * ONE_MB..7 * ONE_MB),
+                MemoryRange::new(7 * ONE_MB..8 * ONE_MB),
             ],
+            bootshim_used,
             parameter_range,
-            Some(3 * ONE_MB..4 * ONE_MB),
+            Some(reclaim),
         );
 
-        assert!(build_e820_map(todo!(), todo!(), todo!()).is_ok());
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
 
         check_e820(
             &boot_params,
