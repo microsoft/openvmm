@@ -531,9 +531,6 @@ impl PartitionInfo {
         // Set remaining struct fields before returning.
         let Self {
             vtl2_ram: _,
-            vtl2_full_config_region: vtl2_config_region,
-            vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
-            vtl2_reserved_region,
             vtl2_pool_memory: _,
             partition_ram: _,
             isolation,
@@ -554,16 +551,6 @@ impl PartitionInfo {
 
         *isolation = params.isolation_type;
 
-        *vtl2_config_region = MemoryRange::new(
-            params.parameter_region_start
-                ..(params.parameter_region_start + params.parameter_region_size),
-        );
-        *vtl2_config_region_reclaim_struct = vtl2_config_region_reclaim;
-        assert!(vtl2_config_region.contains(&vtl2_config_region_reclaim));
-        *vtl2_reserved_region = MemoryRange::new(
-            params.vtl2_reserved_region_start
-                ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
-        );
         *bsp_reg = parsed.boot_cpuid_phys;
         cpus.extend(parsed.cpus.iter().copied());
         *com3_serial = parsed.com3_serial;
