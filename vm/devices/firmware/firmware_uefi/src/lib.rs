@@ -56,6 +56,7 @@ pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
 
+use anyhow::Context as AnyhowContext;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -143,6 +144,7 @@ pub struct UefiRuntimeDeps<'a> {
 
 /// The Hyper-V UEFI services chipset device.
 #[derive(InspectMut)]
+#[inspect(extra = "UefiDevice::inspect_extra")]
 pub struct UefiDevice {
     // Fixed configuration
     use_mmio: bool,
@@ -270,10 +272,25 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(false, DEFAULT_LOGS_PER_PERIOD, "guest")
+                self.process_diagnostics(DEFAULT_LOGS_PER_PERIOD, "guest")
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
+    }
+
+    /// Extra inspection fields for the UEFI device.
+    fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
+        resp.field_mut_with("process_diagnostics", |v| {
+            if let Some(v) = v {
+                let should_process: bool = v.parse().with_context(|| "expected true or false")?;
+                if should_process {
+                    self.inspect_diagnostics(DEFAULT_LOGS_PER_PERIOD, "inspect");
+                }
+                anyhow::Ok(should_process)
+            } else {
+                anyhow::Ok(false)
+            }
+        });
     }
 }
 
@@ -318,7 +335,7 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            self.process_diagnostics(false, DEFAULT_LOGS_PER_PERIOD, "watchdog timeout");
+            self.process_diagnostics(DEFAULT_LOGS_PER_PERIOD, "watchdog timeout");
         }
     }
 }

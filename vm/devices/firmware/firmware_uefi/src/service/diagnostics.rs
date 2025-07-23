@@ -105,8 +105,8 @@ fn phase_to_string(phase: u16) -> &'static str {
         .unwrap_or("UNKNOWN")
 }
 
-/// Defines how we want EfiDiagnosticsLog entries to be handled.
-pub fn handle_efi_diagnostics_log(log: EfiDiagnosticsLog<'_>, limit: u32) {
+/// Rate-limited handler for EFI diagnostics logs during normal processing.
+pub fn log_diagnostic_ratelimited(log: EfiDiagnosticsLog<'_>, limit: u32) {
     let debug_level_str = debug_level_to_string(log.debug_level);
     let phase_str = phase_to_string(log.phase);
 
@@ -129,6 +129,36 @@ pub fn handle_efi_diagnostics_log(log: EfiDiagnosticsLog<'_>, limit: u32) {
         ),
         _ => tracelimit::info_ratelimited!(
             limit: limit,
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+    }
+}
+
+/// Unrestricted handler for EFI diagnostics logs during inspection.
+pub fn log_diagnostic_unrestricted(log: EfiDiagnosticsLog<'_>) {
+    let debug_level_str = debug_level_to_string(log.debug_level);
+    let phase_str = phase_to_string(log.phase);
+
+    match log.debug_level {
+        DEBUG_WARN => tracing::warn!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        DEBUG_ERROR => tracing::error!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        _ => tracing::info!(
             debug_level = %debug_level_str,
             ticks = log.ticks,
             phase = %phase_str,
@@ -470,23 +500,44 @@ impl DiagnosticsServices {
 }
 
 impl UefiDevice {
-    /// Processes UEFI diagnostics from guest memory
+    /// Processes UEFI diagnostics from guest memory.
+    ///
+    /// The traces here are rate-limited to avoid spam.
     ///
     /// # Arguments
-    /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `limit` - Maximum number of logs to process per period
     /// * `triggered_by` - String to indicate who triggered the diagnostics processing
-    pub(crate) fn process_diagnostics(
-        &mut self,
-        allow_reprocess: bool,
-        limit: u32,
-        triggered_by: &str,
-    ) {
-        if let Err(error) = self.service.diagnostics.process_diagnostics(
-            allow_reprocess,
-            triggered_by,
-            &self.gm,
-            |log| handle_efi_diagnostics_log(log, limit),
-        ) {
+    pub(crate) fn process_diagnostics(&mut self, limit: u32, triggered_by: &str) {
+        if let Err(error) =
+            self.service
+                .diagnostics
+                .process_diagnostics(false, triggered_by, &self.gm, |log| {
+                    log_diagnostic_ratelimited(log, limit)
+                })
+        {
+            tracelimit::error_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                triggered_by,
+                "failed to process diagnostics buffer"
+            );
+        }
+    }
+
+    /// Inspects UEFI diagnostics from guest memory.
+    ///
+    /// The traces here are not rate-limited.
+    ///
+    /// # Arguments
+    /// * `_limit` - Maximum number of logs to process per period (unused for unrestricted logging)
+    /// * `triggered_by` - String to indicate who triggered the diagnostics processing
+    pub(crate) fn inspect_diagnostics(&mut self, _limit: u32, triggered_by: &str) {
+        if let Err(error) =
+            self.service
+                .diagnostics
+                .process_diagnostics(true, triggered_by, &self.gm, |log| {
+                    log_diagnostic_unrestricted(log)
+                })
+        {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
                 triggered_by,
