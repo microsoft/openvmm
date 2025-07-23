@@ -189,7 +189,7 @@ impl IgvmAttestRequestData {
 }
 
 /// Bitmap indicates a signal to requestor
-/// [0] IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
+/// 0 - IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
