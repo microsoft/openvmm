@@ -3,10 +3,9 @@
 
 //! Address space allocator for VTL2 memory used by the bootshim.
 
+use crate::boot_logger::debug_log;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
-use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
-use core::cell::RefCell;
 use core::panic;
 use host_fdt_parser::MemoryEntry;
 #[cfg(test)]
@@ -18,8 +17,8 @@ use memory_range::RangeWalkResult;
 use memory_range::walk_ranges;
 
 /// The maximum number of reserved memory ranges that we might use.
-/// See ReservedMemoryType definition for details.
-const MAX_RESERVED_MEM_RANGES: usize = 5 + sidecar_defs::MAX_NODES;
+/// See [`ReservedMemoryType`] definition for details.
+pub const MAX_RESERVED_MEM_RANGES: usize = 6 + sidecar_defs::MAX_NODES;
 
 const MAX_MEMORY_RANGES: usize = MAX_VTL2_RAM_RANGES + MAX_RESERVED_MEM_RANGES;
 
@@ -28,7 +27,7 @@ const MAX_MEMORY_RANGES: usize = MAX_VTL2_RAM_RANGES + MAX_RESERVED_MEM_RANGES;
 const MAX_ADDRESS_RANGES: usize = MAX_MEMORY_RANGES * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReservedMemoryType {
+pub enum ReservedMemoryType {
     /// VTL2 parameter regions (could be up to 2).
     Vtl2Config,
     /// Reserved memory that should not be used by the kernel or usermode. There
@@ -42,6 +41,8 @@ enum ReservedMemoryType {
     /// memory is persisted, both location and contents, across servicing.
     /// Today, we only support a single range.
     Vtl2GpaPool,
+    /// Page tables that are used for AP startup, on TDX.
+    TdxPageTables,
 }
 
 impl From<ReservedMemoryType> for MemoryVtlType {
@@ -52,6 +53,7 @@ impl From<ReservedMemoryType> for MemoryVtlType {
             ReservedMemoryType::SidecarNode => MemoryVtlType::VTL2_SIDECAR_NODE,
             ReservedMemoryType::Vtl2Reserved => MemoryVtlType::VTL2_RESERVED,
             ReservedMemoryType::Vtl2GpaPool => MemoryVtlType::VTL2_GPA_POOL,
+            ReservedMemoryType::TdxPageTables => MemoryVtlType::VTL2_TDX_PAGE_TABLES,
         }
     }
 }
@@ -91,30 +93,33 @@ pub struct AllocatedRange {
 
 #[derive(Debug)]
 pub struct AddressSpaceManager {
-    inner: RefCell<Inner>,
-}
-
-#[derive(Debug)]
-struct Inner {
     /// tracks address space, must be sorted
     address_space: ArrayVec<AddressRange, MAX_ADDRESS_RANGES>,
 }
 
-impl Inner {
+impl AddressSpaceManager {
+    pub const fn new_const() -> Self {
+        Self {
+            address_space: ArrayVec::new_const(),
+        }
+    }
+
     /// Initialize the address space manager.
     ///
     /// Some regions are known to be used at construction time, as these ranges
-    /// are allocated at boot time.
-    fn init(
+    /// are allocated at build time.
+    pub fn init(
         &mut self,
         vtl2_ram: &[MemoryEntry],
         bootshim_used: MemoryRange,
         vtl2_config: impl Iterator<Item = MemoryRange>,
         reserved_range: Option<MemoryRange>,
         sidecar_image: Option<MemoryRange>,
+        page_tables: Option<MemoryRange>,
     ) {
         // assert!(vtl2_config.len() <= 2);
         assert!(vtl2_ram.len() <= MAX_VTL2_RAM_RANGES);
+        assert!(self.address_space.is_empty());
 
         // put all the pre-used ranges into a single arrayvec, and walk thru it with the selected vtl2 ram
         let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), 5> = ArrayVec::new();
@@ -132,7 +137,14 @@ impl Inner {
                 .into_iter()
                 .map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::SidecarImage))),
         );
+        used_ranges.extend(
+            page_tables
+                .into_iter()
+                .map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::TdxPageTables))),
+        );
+
         used_ranges.sort_unstable_by_key(|(r, _)| r.start());
+        debug_log!("used ranges {:#?}", used_ranges);
 
         // Construct the initial state of VTL2 address space by walking ram and reserved ranges
         assert!(self.address_space.is_empty());
@@ -163,6 +175,8 @@ impl Inner {
                 RangeWalkResult::Neither => {}
             }
         }
+
+        debug_log!("asm done");
     }
 
     /// Split a free range into two, with the allocated range coming from the top end of the range.
@@ -198,7 +212,7 @@ impl Inner {
         allocated
     }
 
-    fn allocate(
+    pub fn allocate(
         &mut self,
         preferred_vnode: Option<u32>,
         len: u64,
@@ -235,8 +249,7 @@ impl Inner {
         };
 
         index.map(|index| {
-            dbg!(index);
-            let range = self.allocate_range(
+            self.allocate_range(
                 index,
                 len,
                 match allocation_type {
@@ -247,9 +260,7 @@ impl Inner {
                         AddressUsage::Reserved(ReservedMemoryType::SidecarNode)
                     }
                 },
-            );
-
-            range
+            )
         })
     }
 
@@ -261,11 +272,11 @@ impl Inner {
     /// Get only reserved vtl2 ranges that are not described as e820 ranges
     pub fn reserved_vtl2_ranges(
         &self,
-    ) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
-        self.address_space
-            .iter()
-            .filter(|r| matches!(r.usage, AddressUsage::Reserved(_)))
-            .map(|r| (r.range, r.usage.into()))
+    ) -> impl Iterator<Item = (MemoryRange, ReservedMemoryType)> + use<'_> {
+        self.address_space.iter().filter_map(|r| match r.usage {
+            AddressUsage::Reserved(typ) => Some((r.range, typ)),
+            _ => None,
+        })
     }
 }
 
@@ -279,56 +290,6 @@ pub enum AllocationPolicy {
     LowMemory,
     // prefer high memory
     HighMemory,
-}
-
-impl AddressSpaceManager {
-    pub const fn new_const() -> Self {
-        Self {
-            inner: RefCell::new(Inner {
-                address_space: ArrayVec::new_const(),
-            }),
-        }
-    }
-
-    /// Initialize the address space manager.
-    ///
-    /// Some regions are known to be used at construction time, as these ranges
-    /// are allocated at boot time.
-    pub fn init(
-        &mut self,
-        vtl2_ram: &[MemoryEntry],
-        bootshim_used: MemoryRange,
-        vtl2_config: impl Iterator<Item = MemoryRange>,
-        reserved_range: Option<MemoryRange>,
-        sidecar_image: Option<MemoryRange>,
-    ) {
-        self.inner.get_mut().init(
-            vtl2_ram,
-            bootshim_used,
-            vtl2_config,
-            reserved_range,
-            sidecar_image,
-        )
-    }
-
-    pub fn allocate(
-        &self,
-        preferred_vnode: Option<u32>,
-        len: u64,
-        allocation_type: AllocationType,
-        allocation_policy: AllocationPolicy,
-    ) -> Option<AllocatedRange> {
-        self.inner
-            .borrow_mut()
-            .allocate(preferred_vnode, len, allocation_type, allocation_policy)
-    }
-
-    /// Get all of vtl2 address space
-    pub fn vtl2_ranges(&self) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
-        // We need to return an iterator that doesn't hold a borrow of the RefCell
-        let ranges = off_stack!( ArrayVec<AddressRange, MAX_ADDRESS_RANGES>, ArrayVec::new_const());
-        ranges.into_iter().map(|r| (r.range, r.usage.into()))
-    }
 }
 
 #[cfg(test)]
@@ -353,6 +314,7 @@ mod tests {
             .cloned(),
             Some(MemoryRange::new(0x8000..0xA000)),
             Some(MemoryRange::new(0xA000..0xC000)),
+            None,
         );
 
         let range = address_space
@@ -422,6 +384,7 @@ mod tests {
             .cloned(),
             Some(MemoryRange::new(0x8000..0xA000)),
             Some(MemoryRange::new(0xA000..0xC000)),
+            None,
         );
 
         let range = address_space

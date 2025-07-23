@@ -13,8 +13,8 @@ use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
-use crate::host_params::MAX_VTL2_USED_RANGES;
 use crate::host_params::shim_params::IsolationType;
+use crate::memory::AddressSpaceManager;
 use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
@@ -30,7 +30,6 @@ use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
 use memory_range::MemoryRange;
-use memory_range::flatten_ranges;
 use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
 
@@ -327,9 +326,10 @@ impl PartitionInfo {
     pub fn read_from_dt<'a>(
         params: &'a ShimParams,
         storage: &'a mut Self,
+        address_space: &'a mut AddressSpaceManager,
         mut options: BootCommandLineOptions,
         can_trust_host: bool,
-    ) -> Result<Option<&'a mut Self>, DtError> {
+    ) -> Result<Option<(&'a mut Self, &'a mut AddressSpaceManager)>, DtError> {
         let dt = params.device_tree();
 
         if dt[0] == 0 {
@@ -472,18 +472,27 @@ impl PartitionInfo {
         } else {
             None
         };
-        storage.address_space_manager.init(
+
+        // Only specify pagetables as a reserved region on TDX, as they are used
+        // for AP startup via the mailbox protocol. On other platforms, the
+        // memory is free to be reclaimed.
+        let page_tables = if params.isolation_type == IsolationType::Tdx {
+            assert!(params.page_tables.is_some());
+            params.page_tables
+        } else {
+            None
+        };
+
+        address_space.init(
             &storage.vtl2_ram,
             params.used,
             subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
             vtl2_reserved_range,
             sidecar_image,
+            page_tables,
         );
 
-        debug_log!(
-            "init storage.address_space_manager: {:#?}",
-            storage.address_space_manager
-        );
+        debug_log!("init address_space: {:#?}", address_space);
 
         // Decide if we will reserve memory for a VTL2 private pool. Parse this
         // from the final command line, or the host provided device tree value.
@@ -497,7 +506,7 @@ impl PartitionInfo {
             // ranges to figure out which VTL2 memory is free to allocate from.
             let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
 
-            let pool = match storage.address_space_manager.allocate(
+            let pool = match address_space.allocate(
                 None,
                 pool_size_bytes,
                 AllocationType::GpaPool,
@@ -517,10 +526,7 @@ impl PartitionInfo {
             storage.vtl0_alias_map = parsed.vtl0_alias_map;
         }
 
-        debug_log!(
-            "read_from_dt final storage.address_space_manager: {:#?}",
-            storage.address_space_manager
-        );
+        debug_log!("read_from_dt final address_space: {:#?}", address_space);
 
         // Set remaining struct fields before returning.
         let Self {
@@ -544,7 +550,6 @@ impl PartitionInfo {
             vtl0_alias_map: _,
             nvme_keepalive,
             boot_options,
-            address_space_manager: _,
         } = storage;
 
         *isolation = params.isolation_type;
@@ -568,6 +573,6 @@ impl PartitionInfo {
         *nvme_keepalive = parsed.nvme_keepalive;
         *boot_options = options;
 
-        Ok(Some(storage))
+        Ok(Some((storage, address_space)))
     }
 }
