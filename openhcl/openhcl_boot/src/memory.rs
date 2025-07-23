@@ -106,6 +106,7 @@ impl AddressSpaceManager {
 
     /// Initialize the address space manager.
     ///
+    /// `bootshim_used`
     /// Some regions are known to be used at construction time, as these ranges
     /// are allocated at build time.
     pub fn init(
@@ -121,30 +122,51 @@ impl AddressSpaceManager {
         assert!(vtl2_ram.len() <= MAX_VTL2_RAM_RANGES);
         assert!(self.address_space.is_empty());
 
-        // put all the pre-used ranges into a single arrayvec, and walk thru it with the selected vtl2 ram
-        let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), 5> = ArrayVec::new();
-        used_ranges.push((bootshim_used, AddressUsage::Used));
-        used_ranges.extend(
-            vtl2_config.map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::Vtl2Config))),
-        );
-        used_ranges.extend(
+        // The other ranges are reserved, and may overlap with the used range.
+        let mut reserved: ArrayVec<(MemoryRange, ReservedMemoryType), 5> = ArrayVec::new();
+        reserved.extend(vtl2_config.map(|r| (r, ReservedMemoryType::Vtl2Config)));
+        reserved.extend(
             reserved_range
                 .into_iter()
-                .map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::Vtl2Reserved))),
+                .map(|r| (r, ReservedMemoryType::Vtl2Reserved)),
         );
-        used_ranges.extend(
+        reserved.extend(
             sidecar_image
                 .into_iter()
-                .map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::SidecarImage))),
+                .map(|r| (r, ReservedMemoryType::SidecarImage)),
         );
-        used_ranges.extend(
+        reserved.extend(
             page_tables
                 .into_iter()
-                .map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::TdxPageTables))),
+                .map(|r| (r, ReservedMemoryType::TdxPageTables)),
         );
+        reserved.sort_unstable_by_key(|(r, _)| r.start());
 
-        used_ranges.sort_unstable_by_key(|(r, _)| r.start());
-        debug_log!("used ranges {:#?}", used_ranges);
+        let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), 10> = ArrayVec::new();
+
+        // Construct initial used ranges by walking both the bootshim_used range
+        // and all reserved ranges that overlap.
+        for (entry, r) in walk_ranges(
+            core::iter::once((bootshim_used, AddressUsage::Used)),
+            reserved.iter().cloned(),
+        ) {
+            match r {
+                RangeWalkResult::Left(_) => {
+                    used_ranges.push((entry, AddressUsage::Used));
+                }
+                RangeWalkResult::Both(_, reserved_type) => {
+                    used_ranges.push((entry, AddressUsage::Reserved(reserved_type)));
+                }
+                RangeWalkResult::Right(usage) => {
+                    panic!(
+                        "reserved range {r:#x?} used by {usage:?} not contained in bootshim_used {bootshim_used:#x?}"
+                    );
+                }
+                RangeWalkResult::Neither => {}
+            }
+        }
+
+        debug_log!("used ranges {:#x?}", used_ranges);
 
         // Construct the initial state of VTL2 address space by walking ram and reserved ranges
         assert!(self.address_space.is_empty());
@@ -179,14 +201,33 @@ impl AddressSpaceManager {
         debug_log!("asm done");
     }
 
-    /// Split a free range into two, with the allocated range coming from the top end of the range.
-    fn allocate_range(&mut self, index: usize, len: u64, usage: AddressUsage) -> AllocatedRange {
+    /// Split a free range into two, with allocation policy deciding if we
+    /// allocate the low part or high part.
+    fn allocate_range(
+        &mut self,
+        index: usize,
+        len: u64,
+        usage: AddressUsage,
+        allocation_policy: AllocationPolicy,
+    ) -> AllocatedRange {
         assert!(usage != AddressUsage::Free);
         let range = self.address_space.get_mut(index).expect("valid index");
         assert_eq!(range.usage, AddressUsage::Free);
+        assert!(range.range.len() >= len);
 
-        let offset = range.range.len() - len;
-        let (remainder, used) = range.range.split_at_offset(offset);
+        let (used, remainder) = match allocation_policy {
+            AllocationPolicy::LowMemory => {
+                // Allocate from the beginning (low addresses)
+                range.range.split_at_offset(len)
+            }
+            AllocationPolicy::HighMemory => {
+                // Allocate from the end (high addresses)
+                let offset = range.range.len() - len;
+                let (remainder, used) = range.range.split_at_offset(offset);
+                (used, remainder)
+            }
+        };
+
         let remainder = if !remainder.is_empty() {
             Some(AddressRange {
                 range: remainder,
@@ -206,7 +247,18 @@ impl AddressSpaceManager {
         };
 
         if let Some(remainder) = remainder {
-            self.address_space.insert(index, remainder);
+            match allocation_policy {
+                AllocationPolicy::LowMemory => {
+                    // When allocating from low memory, the remainder goes after
+                    // the allocated range
+                    self.address_space.insert(index + 1, remainder);
+                }
+                AllocationPolicy::HighMemory => {
+                    // When allocating from high memory, the remainder goes
+                    // before the allocated range
+                    self.address_space.insert(index, remainder);
+                }
+            }
         }
 
         allocated
@@ -260,12 +312,14 @@ impl AddressSpaceManager {
                         AddressUsage::Reserved(ReservedMemoryType::SidecarNode)
                     }
                 },
+                allocation_policy,
             )
         })
     }
 
     /// Get all of vtl2 address space
     pub fn vtl2_ranges(&self) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
+        // FIXME FLATTEN RANGES via flatten_ranges
         self.address_space.iter().map(|r| (r.range, r.usage.into()))
     }
 
@@ -305,7 +359,7 @@ mod tests {
                 vnode: 0,
                 mem_type: MemoryMapEntryType::MEMORY,
             }],
-            MemoryRange::new(0x0..0x1000),
+            MemoryRange::new(0x0..0xF000),
             [
                 MemoryRange::new(0x3000..0x4000),
                 MemoryRange::new(0x5000..0x6000),
@@ -345,7 +399,17 @@ mod tests {
                 AllocationPolicy::LowMemory,
             )
             .unwrap();
-        assert_eq!(range.range, MemoryRange::new(0xC000..0xF000));
+        assert_eq!(range.range, MemoryRange::new(0xF000..0x12000));
+
+        let range = address_space
+            .allocate(
+                None,
+                0x1000,
+                AllocationType::GpaPool,
+                AllocationPolicy::LowMemory,
+            )
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x12000..0x13000));
     }
 
     // test numa allocation
@@ -375,7 +439,7 @@ mod tests {
                     mem_type: MemoryMapEntryType::MEMORY,
                 },
             ],
-            MemoryRange::new(0x0..0x1000),
+            MemoryRange::new(0x0..0x10000),
             [
                 MemoryRange::new(0x3000..0x4000),
                 MemoryRange::new(0x5000..0x6000),
