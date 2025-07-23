@@ -355,7 +355,6 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
-
     // Act: Write 1024 bytes of data to disk starting at LBA 1.
     let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
     payload_mem.write_at(0, &[0xcc; 4096]).unwrap();
