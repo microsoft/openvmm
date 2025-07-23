@@ -139,8 +139,8 @@ impl IgvmAttestRequestHeader {
 const IGVM_ATTEST_VERSION_CURRENT: u32 = 2;
 
 /// Bitmap of additional Igvm request attributes.
-/// [0] error_code: Requesting IGVM Agent Error code
-/// [1] retry: Retry preference
+/// 0 - error_code: Requesting IGVM Agent Error code
+/// 1 - retry: Retry preference
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
