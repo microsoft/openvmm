@@ -52,6 +52,7 @@ use virt::x86::MsrErrorExt;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vm_topology::memory::AddressType;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
@@ -2469,6 +2470,94 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             });
 
         self.request_sint_notifications(vtl, pending_sints);
+    }
+
+    /// Checks if a memory fault for the given VTL and GPA should be emulated,
+    /// or otherwise handled. Returns true if emulation is required, false if
+    /// all the necessary work is now done.
+    pub(crate) fn check_mem_fault(&mut self, vtl: GuestVtl, gpa: u64) -> bool {
+        let vtom = self.partition.caps.vtom.unwrap_or(0);
+        let is_shared = (gpa & vtom) == vtom && vtom != 0;
+        let canonical_gpa = gpa & !vtom;
+
+        // Only emulate the access if the gpa is mmio or outside of ram.
+        let address_type = self
+            .partition
+            .lower_vtl_memory_layout
+            .probe_address(canonical_gpa);
+
+        match address_type {
+            Some(AddressType::Mmio) => {
+                // Emulate the access.
+                true
+            }
+            Some(AddressType::Ram) => {
+                // TODO TDX: This path changes when we support VTL page
+                // protections and MNF. That will require injecting events to
+                // VTL1 or other handling.
+                //
+                // For now, we just check if the exit was suprious or if we
+                // should inject a machine check. An exit is considered spurious
+                // if the gpa is accessible.
+                if self.partition.gm[vtl].probe_gpa_readable(gpa).is_ok() {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        gpa,
+                        "possible spurious memory violation, ignoring"
+                    );
+                    false
+                } else {
+                    // TODO: It would be better to show what exact bitmap check
+                    // failed, but that requires some refactoring of how the
+                    // different bitmaps are stored. Do this when we support VTL
+                    // protections or MNF.
+                    //
+                    // If we entered this path, it means the bitmap check on
+                    // `check_gpa_readable` failed, so we can assume that if the
+                    // address is shared, the actual state of the page is
+                    // private, and vice versa. This is because the address
+                    // should have already been checked to be valid memory
+                    // described to the guest or not.
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        gpa,
+                        is_shared,
+                        "guest accessed inaccessible gpa, injecting MC"
+                    );
+
+                    // TODO: Implement IA32_MCG_STATUS MSR for more reporting
+                    B::set_pending_exception(
+                        self,
+                        vtl,
+                        HvX64PendingExceptionEvent::new()
+                            .with_vector(x86defs::Exception::MACHINE_CHECK.0 as u16),
+                    );
+                    false
+                }
+            }
+            None => {
+                if !self.cvm_partition().hide_isolation {
+                    // TODO: Addresses outside of ram and mmio probably should
+                    // not be accessed by the guest, if it has been told about
+                    // isolation. While it's okay as we will return FFs or
+                    // discard writes for addresses that are not mmio, we should
+                    // consider if instead we should also inject a machine check
+                    // for such accesses. The guest should not access any
+                    // addresses not described to it.
+                    //
+                    // For now, log that the guest did this.
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        gpa,
+                        is_shared,
+                        "guest accessed gpa not described in memory layout, emulating anyways"
+                    );
+                }
+
+                // Emulate the access.
+                true
+            }
+        }
     }
 }
 

@@ -1422,7 +1422,7 @@ impl UhProcessor<'_, SnpBacked> {
                 let interruption_pending = vmsa.event_inject().valid()
                     || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
                 let exit_message = self.runner.exit_message();
-                let emulate = match exit_message.header.typ {
+                let real = match exit_message.header.typ {
                     HvMessageType::HvMessageTypeExceptionIntercept => {
                         let exception_message =
                             exit_message.as_message::<hvdef::HvX64ExceptionInterceptMessage>();
@@ -1446,10 +1446,12 @@ impl UhProcessor<'_, SnpBacked> {
                     _ => false,
                 };
 
-                if emulate {
+                if real {
                     has_intercept = false;
-                    self.emulate(dev, interruption_pending, entered_from_vtl, ())
-                        .await?;
+                    if self.check_mem_fault(entered_from_vtl, exit_info2) {
+                        self.emulate(dev, interruption_pending, entered_from_vtl, ())
+                            .await?;
+                    }
                     &mut self.backing.exit_stats[entered_from_vtl].npf
                 } else {
                     &mut self.backing.exit_stats[entered_from_vtl].npf_spurious
