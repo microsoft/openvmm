@@ -30,7 +30,6 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing;
 use vmm_core_defs::HaltReason;
 
 /// The set of artifacts and resources needed to instantiate a
