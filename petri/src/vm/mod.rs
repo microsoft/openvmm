@@ -15,6 +15,7 @@ use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use pal_async::DefaultDriver;
+use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::IsOpenhclIgvm;
 use petri_artifacts_common::tags::IsTestVmgs;
@@ -28,6 +29,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing;
 use vmm_core_defs::HaltReason;
 
@@ -139,8 +141,9 @@ pub trait PetriVmmBackend {
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
     arch: MachineArch,
-    _resources: PetriVmResources,
+    resources: PetriVmResources,
     runtime: T::VmRuntime,
+    quirks: GuestQuirks,
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -197,14 +200,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
         let arch = self.config.arch;
+        let quirks = self.config.firmware.quirks();
         let runtime = self
             .backend
             .run(self.config, self.modify_vmm_config, &self.resources)
             .await?;
         Ok(PetriVm {
             arch,
-            _resources: self.resources,
+            resources: self.resources,
             runtime,
+            quirks,
         })
     }
 
@@ -464,8 +469,21 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime.wait_for_boot_event().await
     }
 
-    /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
+    /// Wait for the Hyper-V shutdown IC to be ready and use it to instruct
+    /// the guest to shutdown.
     pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        self.runtime.wait_for_enlightened_shutdown_ready().await?;
+        // always wait at least one second to avoid hanging
+        let mut wait_time = Duration::from_secs(1);
+        // some guests need more time
+        if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
+            tracing::info!("QUIRK: Waiting for an extra {:?}", duration);
+            wait_time += duration;
+        }
+        PolledTimer::new(&self.resources.driver)
+            .sleep(wait_time)
+            .await;
+
         self.runtime.send_enlightened_shutdown(kind).await
     }
 
@@ -541,6 +559,9 @@ pub trait PetriVmRuntime {
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>;
+    /// Waits for the Hyper-V shutdown IC to be ready
+    // TODO: return a receiver that will be closed when it is no longer ready.
+    async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()>;
     /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>;
     /// Instruct the OpenHCL to restart the VTL2 paravisor. Will fail if the VM

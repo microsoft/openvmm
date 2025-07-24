@@ -130,7 +130,6 @@ impl PetriVmConfigOpenVmm {
                 mesh,
                 worker,
                 watchdog_tasks,
-                quirks: firmware.quirks(),
             },
             halt_notif,
         );
