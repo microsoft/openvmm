@@ -390,7 +390,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }));
 
-        vm.start().await?;
+        vm.start()?;
 
         Ok(HyperVPetriRuntime {
             vm,
@@ -465,10 +465,14 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.wait_for_boot_event().await
     }
 
+    async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
+        self.vm.wait_for_enlightened_shutdown_ready().await
+    }
+
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
         match kind {
-            ShutdownKind::Shutdown => self.vm.stop().await?,
-            ShutdownKind::Reboot => self.vm.restart().await?,
+            ShutdownKind::Shutdown => self.vm.stop()?,
+            ShutdownKind::Reboot => self.vm.restart()?,
         }
 
         Ok(())
