@@ -1956,6 +1956,14 @@ impl GuestMemory {
         self.read_at_inner(gpa, &mut b).map_err(|err| err.kind)
     }
 
+    /// Check if a given GPA is writeable or not.
+    /// Note that this does read the given address first.
+    pub fn probe_gpa_writable(&self, gpa: u64) -> Result<(), GuestMemoryErrorKind> {
+        let mut b = [0];
+        self.read_at_inner(gpa, &mut b).map_err(|err| err.kind)?;
+        self.write_at_inner(gpa, &b).map_err(|err| err.kind)
+    }
+
     /// Gets a slice of guest memory assuming the memory was already locked via
     /// [`GuestMemory::lock_gpns`].
     ///

@@ -75,6 +75,7 @@ use x86defs::snp::SevInvlpgbEcx;
 use x86defs::snp::SevInvlpgbEdx;
 use x86defs::snp::SevInvlpgbRax;
 use x86defs::snp::SevIoAccessInfo;
+use x86defs::snp::SevNpfInfo;
 use x86defs::snp::SevSelector;
 use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
@@ -1418,9 +1419,10 @@ impl UhProcessor<'_, SnpBacked> {
                 // #VC inside the guest for accesses to unmapped memory. This
                 // means that accesses to unmapped memory for lower VTLs will be
                 // forwarded to underhill as a #VC exception.
-                let exit_info2 = vmsa.exit_info2();
+                let gpa = vmsa.exit_info2();
                 let interruption_pending = vmsa.event_inject().valid()
                     || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
+                let exit_info = SevNpfInfo::from(vmsa.exit_info1());
                 let exit_message = self.runner.exit_message();
                 let real = match exit_message.header.typ {
                     HvMessageType::HvMessageTypeExceptionIntercept => {
@@ -1441,14 +1443,15 @@ impl UhProcessor<'_, SnpBacked> {
 
                         // Only the page numbers need to match.
                         (gpa_message.guest_physical_address >> hvdef::HV_PAGE_SHIFT)
-                            == (exit_info2 >> hvdef::HV_PAGE_SHIFT)
+                            == (gpa >> hvdef::HV_PAGE_SHIFT)
                     }
                     _ => false,
                 };
 
                 if real {
                     has_intercept = false;
-                    if self.check_mem_fault(entered_from_vtl, exit_info2) {
+                    if self.check_mem_fault(entered_from_vtl, gpa, exit_info.is_write(), exit_info)
+                    {
                         self.emulate(dev, interruption_pending, entered_from_vtl, ())
                             .await?;
                     }

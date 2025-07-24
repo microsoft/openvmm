@@ -2062,7 +2062,8 @@ impl UhProcessor<'_, TdxBacked> {
                         .into();
                     assert!(!old_interruptibility.blocked_by_nmi());
                 } else {
-                    if self.check_mem_fault(intercepted_vtl, gpa) {
+                    let is_write = ept_info.access_mask() & 0b10 != 0;
+                    if self.check_mem_fault(intercepted_vtl, gpa, is_write, ept_info) {
                         self.emulate(
                             dev,
                             self.backing.vtls[intercepted_vtl]

@@ -2475,7 +2475,13 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// Checks if a memory fault for the given VTL and GPA should be emulated,
     /// or otherwise handled. Returns true if emulation is required, false if
     /// all the necessary work is now done.
-    pub(crate) fn check_mem_fault(&mut self, vtl: GuestVtl, gpa: u64) -> bool {
+    pub(crate) fn check_mem_fault(
+        &mut self,
+        vtl: GuestVtl,
+        gpa: u64,
+        is_write: bool,
+        extra_info: impl std::fmt::Debug,
+    ) -> bool {
         let vtom = self.partition.caps.vtom.unwrap_or(0);
         let is_shared = (gpa & vtom) == vtom && vtom != 0;
         let canonical_gpa = gpa & !vtom;
@@ -2499,11 +2505,20 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 // For now, we just check if the exit was suprious or if we
                 // should inject a machine check. An exit is considered spurious
                 // if the gpa is accessible.
-                if self.partition.gm[vtl].probe_gpa_readable(gpa).is_ok() {
+                if is_write && self.partition.gm[vtl].probe_gpa_writable(gpa).is_ok() {
                     tracelimit::warn_ratelimited!(
                         CVM_ALLOWED,
                         gpa,
-                        "possible spurious memory violation, ignoring"
+                        ?extra_info,
+                        "possible spurious memory violation write, ignoring"
+                    );
+                    false
+                } else if !is_write && self.partition.gm[vtl].probe_gpa_readable(gpa).is_ok() {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        gpa,
+                        ?extra_info,
+                        "possible spurious memory violation read, ignoring"
                     );
                     false
                 } else {
@@ -2522,6 +2537,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         CVM_ALLOWED,
                         gpa,
                         is_shared,
+                        ?extra_info,
                         "guest accessed inaccessible gpa, injecting MC"
                     );
 
@@ -2550,6 +2566,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         CVM_ALLOWED,
                         gpa,
                         is_shared,
+                        ?extra_info,
                         "guest accessed gpa not described in memory layout, emulating anyways"
                     );
                 }
