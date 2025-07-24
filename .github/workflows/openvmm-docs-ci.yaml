@@ -525,9 +525,9 @@ jobs:
       id-token: write
       pages: write
     needs:
+    - job0
     - job1
     - job2
-    - job0
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts

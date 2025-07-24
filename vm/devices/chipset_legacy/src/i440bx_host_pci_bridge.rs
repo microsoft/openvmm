@@ -171,23 +171,33 @@ impl PciConfigSpace for HostPciBridge {
             _ if offset < 0x40 => return self.cfg_space.read_u32(offset, value),
             ConfigSpace::PAM1 => self.state.pam_reg1,
             ConfigSpace::PAM2 => self.state.pam_reg2,
-            ConfigSpace::DRAM1 => self.state.host_pci_dram1,
-            ConfigSpace::DRAM2 => self.state.host_pci_dram2,
-            // Specify the default value: No AGP, fast CPU startup
-            ConfigSpace::PAGING_POLICY => 0x380A0000,
-            ConfigSpace::BIOS_SCRATCH1 => self.state.bios_scratch1,
-            ConfigSpace::BIOS_SCRATCH2 => self.state.bios_scratch2,
-            ConfigSpace::SYS_MNG => {
-                // Bits 7 and 2, 0 are always clear.
-                // Bit 13-12, 1 are always set.
-                (self.state.smm_config_word as u32 & 0xC77C | 0x3802) << 16
+            ConfigSpace::DRB_1 => self.state.host_pci_dram1,
+            ConfigSpace::DRB_2 => self.state.host_pci_dram2,
+            // Specify the default value: No AGP, fast CPU startup,
+            // and default low byte of SCRR in our top byte.
+            ConfigSpace::PGPOL => 0x380A0000,
+            ConfigSpace::BSPAD_1 => self.state.bios_scratch1,
+            ConfigSpace::BSPAD_2 => self.state.bios_scratch2,
+            ConfigSpace::SMRAM => {
+                // Bits 7, 2 & 0 are always clear.
+                // Bit 13-11 & 1 are always set.
+                ((self.state.smm_config_word & 0b01111010 | 0b00111000_00000010) as u32) << 16
             }
             ConfigSpace::MANUFACTURER_ID => 0x00000F20,
-            ConfigSpace::BUFFER_CONTROL
-            | ConfigSpace::SDRAM_CONTROL
-            | ConfigSpace::CACHE
-            | ConfigSpace::DRAM_C
-            | ConfigSpace::DRAM_RT1
+            ConfigSpace::BUFFC
+            | ConfigSpace::SDRAMC
+            | ConfigSpace::NBXCFG
+            | ConfigSpace::DRAMC
+            | ConfigSpace::MBSC_1
+            | ConfigSpace::SCRR_2
+            | ConfigSpace::ERR
+            | ConfigSpace::ACAPID
+            | ConfigSpace::AGPSTAT
+            | ConfigSpace::AGPCMD
+            | ConfigSpace::AGPCTRL
+            | ConfigSpace::APSIZE
+            | ConfigSpace::ATTBASE
+            | ConfigSpace::UNKNOWN_BC
             | ConfigSpace::UNKNOWN_F4 => 0, // Hyper-V always returns 0, so do we.
             _ => {
                 tracing::debug!(?offset, "unimplemented config space read");
@@ -201,17 +211,17 @@ impl PciConfigSpace for HostPciBridge {
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         match ConfigSpace(offset) {
             _ if offset < 0x40 => return self.cfg_space.write_u32(offset, value),
-            ConfigSpace::DRAM1 => self.state.host_pci_dram1 = value,
-            ConfigSpace::DRAM2 => self.state.host_pci_dram2 = value,
+            ConfigSpace::DRB_1 => self.state.host_pci_dram1 = value,
+            ConfigSpace::DRB_2 => self.state.host_pci_dram2 = value,
             ConfigSpace::PAM1 => {
                 self.adjust_bios_override_ranges(value, self.state.pam_reg2, false);
             }
             ConfigSpace::PAM2 => {
                 self.adjust_bios_override_ranges(self.state.pam_reg1, value, false);
             }
-            ConfigSpace::BIOS_SCRATCH1 => self.state.bios_scratch1 = value,
-            ConfigSpace::BIOS_SCRATCH2 => self.state.bios_scratch2 = value,
-            ConfigSpace::SYS_MNG => {
+            ConfigSpace::BSPAD_1 => self.state.bios_scratch1 = value,
+            ConfigSpace::BSPAD_2 => self.state.bios_scratch2 = value,
+            ConfigSpace::SMRAM => {
                 // Configuration registers 70-71 are reserved. Only 72-73 (the top 16
                 // bits of this four-byte range) are defined. We'll therefore shift
                 // off the bottom portion.
@@ -221,34 +231,47 @@ impl PciConfigSpace for HostPciBridge {
                 // all of the other bits become read-only.
                 if self.state.smm_config_word & 0x10 == 0 {
                     // Make sure they aren't enabling features we don't currently support.
-                    if new_smm_word & 0x8700 != 0 {
-                        tracelimit::warn_ratelimited!(bits = ?new_smm_word & !0x8700, "guest set unsupported feature bits");
+                    const UNSUPPORTED_BITS: u16 = 0b10000111_00000000;
+                    if new_smm_word & UNSUPPORTED_BITS != 0 {
+                        tracelimit::warn_ratelimited!(
+                            bits = new_smm_word & !UNSUPPORTED_BITS,
+                            "guest set unsupported feature bits"
+                        );
                     }
 
-                    new_smm_word &= !0x8700;
-                    // Bits 7 and 2, 0 are always clear.
-                    new_smm_word &= 0xC77C;
-                    // Bit 13-12, 1 are always set.
-                    new_smm_word |= 0x3802;
+                    new_smm_word &= !UNSUPPORTED_BITS;
+                    // Bits 7, 2 & 0 are always clear.
+                    new_smm_word &= 0b01111010;
+                    // Bit 13-11 & 1 are always set.
+                    new_smm_word |= 0b00111000_00000010;
                     // We never set bit 14 that indicates that SMM memory was accessed
                     // by the CPU when not in SMM mode.
-                    new_smm_word &= !0x4000;
+                    new_smm_word &= !0b01000000_00000000;
 
                     // Make sure no one is trying to enable SMM RAM.
-                    if new_smm_word & 0x0040 != 0 {
+                    if new_smm_word & 0b01000000 != 0 {
                         tracelimit::warn_ratelimited!("guest attempted to enable SMM RAM");
                     }
-                    new_smm_word &= !0x0040;
+                    new_smm_word &= !0b01000000;
 
                     self.state.smm_config_word = new_smm_word;
                 }
             }
-            ConfigSpace::BUFFER_CONTROL
-            | ConfigSpace::SDRAM_CONTROL
-            | ConfigSpace::CACHE
-            | ConfigSpace::DRAM_C
-            | ConfigSpace::DRAM_RT1
-            | ConfigSpace::PAGING_POLICY
+            ConfigSpace::BUFFC
+            | ConfigSpace::SDRAMC
+            | ConfigSpace::NBXCFG
+            | ConfigSpace::DRAMC
+            | ConfigSpace::MBSC_1
+            | ConfigSpace::PGPOL
+            | ConfigSpace::SCRR_2
+            | ConfigSpace::ERR
+            | ConfigSpace::ACAPID
+            | ConfigSpace::AGPSTAT
+            | ConfigSpace::AGPCMD
+            | ConfigSpace::AGPCTRL
+            | ConfigSpace::APSIZE
+            | ConfigSpace::ATTBASE
+            | ConfigSpace::UNKNOWN_BC
             | ConfigSpace::UNKNOWN_F4 => {} // Hyper-V ignores these, so do we.
             _ => {
                 tracing::debug!(?offset, ?value, "unimplemented config space write");
@@ -265,24 +288,52 @@ impl PciConfigSpace for HostPciBridge {
 }
 
 open_enum! {
+    /// Note that all accesses will be 4-byte aligned, so this enum sets values
+    /// to the expected offsets we will receive. When the actual register is not
+    /// a full 4 bytes aligned to 4 bytes it is documented here.
     enum ConfigSpace: u16 {
-        CACHE           = 0x50,
-        DRAM_C          = 0x54,
-        TIMING          = 0x58,
+        NBXCFG          = 0x50,
+        /// Only comprises offset 0x57.
+        DRAMC           = 0x54,
+        /// Only comprises offset 0x58.
+        DRAMT           = 0x58,
+        /// Comprises offsets 0x59-0x5B.
         PAM1            = 0x58,
         PAM2            = 0x5C,
-        DRAM1           = 0x60,
-        DRAM2           = 0x64,
-        DRAM_RT1        = 0x68,
-        DRAM_RT2        = 0x6C,
-        SYS_MNG         = 0x70,
-        SDRAM_CONTROL   = 0x74,
-        PAGING_POLICY   = 0x78,
-        SUSPEND_CBR     = 0x7C, // Register spans 7B-7C
-        MEM_BUFF_FREQ   = 0xCC,
-        BIOS_SCRATCH1   = 0xD0,
-        BIOS_SCRATCH2   = 0xD4,
-        BUFFER_CONTROL  = 0xF0,
+        DRB_1           = 0x60,
+        DRB_2           = 0x64,
+        /// Only comprises offset 0x68.
+        FDHC            = 0x68,
+        /// Comprises offsets 0x69-0x6B.
+        MBSC_1          = 0x68,
+        /// Comprises offsets 0x6C-0x6E.
+        MBSC_2          = 0x6C,
+        /// Comprises offsets 0x72-0x73.
+        SMRAM           = 0x70,
+        SDRAMC          = 0x74,
+        /// Comprises offsets 0x78-0x7A.
+        PGPOL           = 0x78,
+        /// Only comprises offset 0x7B.
+        SCRR_1          = 0x78,
+        /// Only comprises offset 0x7C.
+        SCRR_2          = 0x7C,
+        /// Comprises offsets 0x90-0x92.
+        ERR             = 0x90,
+        ACAPID          = 0xA0,
+        AGPSTAT         = 0xA4,
+        AGPCMD          = 0xA8,
+        AGPCTRL         = 0xB0,
+        /// Only comprises offset 0xB4.
+        APSIZE          = 0xB4,
+        ATTBASE         = 0xB8,
+        /// Documented as Reserved.
+        UNKNOWN_BC      = 0xBC,
+        MBFS            = 0xCC,
+        BSPAD_1         = 0xD0,
+        BSPAD_2         = 0xD4,
+        /// Comprises offsets 0xF0-0xF1.
+        BUFFC           = 0xF0,
+        /// Documented as Intel Reserved.
         UNKNOWN_F4      = 0xF4,
         MANUFACTURER_ID = 0xF8,
     }
