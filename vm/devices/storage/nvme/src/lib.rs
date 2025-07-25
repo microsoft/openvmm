@@ -6,9 +6,9 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod fault_injection;
 mod namespace;
 mod pci;
-mod pci_fault_injection;
 mod prp;
 mod queue;
 pub mod resolver;
@@ -17,10 +17,10 @@ pub mod workers;
 #[cfg(test)]
 mod tests;
 
+pub use fault_injection::pci::FaultInjectionAction;
+pub use fault_injection::pci::NvmeControllerFaultInjection;
 pub use pci::NvmeController;
 pub use pci::NvmeControllerCaps;
-pub use pci_fault_injection::FaultInjectionAction;
-pub use pci_fault_injection::NvmeControllerFaultInjection;
 pub use workers::NsidConflict;
 pub use workers::NvmeControllerClient;
 

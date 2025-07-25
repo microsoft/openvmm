@@ -5,11 +5,11 @@ use crate::NvmeControllerCaps;
 use crate::NvmeControllerClient;
 use crate::PAGE_MASK;
 use crate::VENDOR_ID;
+use crate::fault_injection::admin::AdminConfigFaultInjection;
+use crate::fault_injection::admin::AdminHandlerFaultInjection;
+use crate::fault_injection::admin::AdminStateFaultInjection;
 use crate::queue::DoorbellRegister;
 use crate::queue::ILLEGAL_DOORBELL_VALUE;
-use crate::queue::QueueError;
-use crate::queue::ShadowDoorbell;
-use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::workers::IoQueueEntrySizes;
 use chipset_device::ChipsetDevice;
@@ -19,7 +19,6 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use futures::FutureExt;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
@@ -36,10 +35,6 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::any::Any;
 use std::sync::Arc;
-use task_control::AsyncRun;
-use task_control::Cancelled;
-use task_control::InspectTask;
-use task_control::StopTask;
 use task_control::TaskControl;
 use user_driver_emulated_mock::DeviceTestMemory;
 use vmcore::device_state::ChangeDeviceState;
@@ -86,28 +81,6 @@ pub struct NvmeControllerFaultInjection {
     cfg_space: ConfigSpaceType0Emulator,
     #[inspect(skip)]
     doorbell_write: mesh::CellUpdater<(u16, u32)>,
-}
-
-#[derive(Inspect)]
-pub struct AdminConfigFaultInjection {
-    #[inspect(skip)]
-    pub driver_source: VmTaskDriverSource,
-    #[inspect(skip)]
-    pub mem: GuestMemory,
-    pub inner_mem: GuestMemory,
-    #[inspect(skip)]
-    pub interrupts: Vec<Interrupt>,
-    #[inspect(skip)]
-    pub doorbells: Vec<Arc<DoorbellRegister>>,
-    #[inspect(display)]
-    pub subsystem_id: Guid,
-    pub max_sqs: u16,
-    pub max_cqs: u16,
-    pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
-    #[inspect(skip)]
-    pub controller: Arc<Mutex<NvmeController>>,
-    #[inspect(skip)]
-    pub doorbell_write: mesh::Cell<(u16, u32)>,
 }
 
 #[derive(Inspect)]
@@ -168,7 +141,6 @@ impl NvmeControllerFaultInjection {
                 max_cqs: caps.max_io_queues,
                 qe_sizes: Arc::clone(&qe_sizes),
                 controller: inner.clone(),
-                doorbell_write: doorbell_write.cell(),
             },
         );
 
@@ -370,11 +342,11 @@ impl ChangeDeviceState for NvmeControllerFaultInjection {
     }
 
     async fn stop(&mut self) {
-        // TODO: Leaving this intentionally empty because the inner fn is also empty
+        // NOTE: Left intentionally empty because the inner fn is also empty
     }
 
     async fn reset(&mut self) {
-        // TODO: Leaving this intentionally empty because the inner fn is also empty
+        // NOTE: Left intentionally empty because the inner fn is also empty
     }
 }
 
@@ -437,186 +409,5 @@ impl SaveRestore for NvmeControllerFaultInjection {
     ) -> Result<(), vmcore::save_restore::RestoreError> {
         let mut inner = self.inner.lock();
         inner.restore(state)
-    }
-}
-
-/// An admin handler shim layer for fault injection.
-#[derive(Inspect)]
-pub struct AdminHandlerFaultInjection {
-    driver: VmTaskDriver,
-    config: AdminConfigFaultInjection,
-}
-
-impl AdminHandlerFaultInjection {
-    pub fn new(driver: VmTaskDriver, config: AdminConfigFaultInjection) -> Self {
-        Self { driver, config }
-    }
-}
-
-impl AsyncRun<AdminStateFaultInjection> for AdminHandlerFaultInjection {
-    async fn run(
-        &mut self,
-        stop: &mut StopTask<'_>,
-        state: &mut AdminStateFaultInjection,
-    ) -> Result<(), Cancelled> {
-        loop {
-            let event = stop.until_stopped(self.next_event(state)).await?;
-            tracing::debug!(
-                "THIS IS YOUR CAPTAIN SPEAKING: admin handler is intercepting, I repeat, admin handler is intercepting",
-            );
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-enum Event {
-    Command(Result<spec::Command, QueueError>),
-}
-
-impl AdminHandlerFaultInjection {
-    async fn next_event(
-        &mut self,
-        state: &mut AdminStateFaultInjection,
-    ) -> Result<Event, QueueError> {
-        // A little bit of an explanation here: From the looks of it, the underlying admin handler
-        // is actually handling 3 different types of commands. The sq_delete_response, admin_sq, and changed_namespace.
-        // For now we are only concerned with the admin_sq because that is the driver->controller communication that we are interested in.
-        let next_command = state
-            .admin_sq
-            .next(&self.config.mem)
-            .map(Event::Command)
-            .await;
-        Ok(next_command)
-    }
-}
-
-impl InspectTask<AdminStateFaultInjection> for AdminHandlerFaultInjection {
-    fn inspect(&self, req: inspect::Request<'_>, state: Option<&AdminStateFaultInjection>) {
-        req.respond().merge(self).merge(state);
-    }
-}
-
-#[derive(Inspect)]
-pub struct AdminStateFaultInjection {
-    pub admin_sq: SubmissionQueueFaultInjection,
-    // pub admin_cq: CompletionQueue, Coming soon!
-    // #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]  TODO: These will be used in the future.
-    // io_sqs: Vec<IoSq>,
-    // #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
-    // io_cqs: Vec<Option<IoCq>>,
-    // #[inspect(skip)]
-    // sq_delete_response: mesh::Receiver<u16>,  TODO: What is this for?
-    // #[inspect(with = "Option::is_some")]
-    // shadow_db_evt_gpa_base: Option<ShadowDoorbell>,  TODO: What is this used for?
-    // #[inspect(iter_by_index)]
-    // asynchronous_event_requests: Vec<u16>,  TODO: No idea what this is for either
-    // #[inspect(
-    //     rename = "namespaces",
-    //     with = "|x| inspect::iter_by_key(x.iter().map(|v| (v, ChangedNamespace { changed: true })))"
-    // )]
-    // changed_namespaces: Vec<u32>,
-    // notified_changed_namespaces: bool,
-    // #[inspect(skip)]
-    // recv_changed_namespace: futures::channel::mpsc::Receiver<u32>,
-    // #[inspect(skip)]
-    // send_changed_namespace: futures::channel::mpsc::Sender<u32>,
-    // #[inspect(skip)]
-    // poll_namespace_change: BTreeMap<u32, Task<()>>,  All this will be used in the future.
-}
-
-impl AdminStateFaultInjection {
-    pub fn new(
-        handler: &AdminHandlerFaultInjection,
-        asq: u64,
-        asqs: u16,
-        doorbell_write: mesh::Cell<(u16, u32)>,
-    ) -> Self {
-        Self {
-            admin_sq: SubmissionQueueFaultInjection::new(
-                handler.config.doorbells[0].clone(),
-                asq,
-                asqs,
-                None,
-                handler.config.controller.clone(),
-                doorbell_write,
-            ),
-            // admin_cq: CompletionQueue::new(handler.config.doorbells[1].clone(), acq, acqs, None),
-        }
-    }
-}
-
-#[derive(Inspect)]
-pub struct SubmissionQueueFaultInjection {
-    inner: SubmissionQueue,
-    gpa: u64,
-    #[inspect(skip)]
-    controller: Arc<Mutex<NvmeController>>,
-    #[inspect(skip)]
-    doorbell_write: mesh::Cell<(u16, u32)>,
-}
-
-impl SubmissionQueueFaultInjection {
-    pub fn new(
-        tail: Arc<DoorbellRegister>,
-        gpa: u64,
-        len: u16,
-        shadow_db_evt_idx: Option<ShadowDoorbell>,
-        controller: Arc<Mutex<NvmeController>>,
-        doorbell_write: mesh::Cell<(u16, u32)>,
-    ) -> Self {
-        Self {
-            inner: SubmissionQueue::new(tail, gpa, len, shadow_db_evt_idx),
-            gpa,
-            controller,
-            doorbell_write,
-        }
-    }
-
-    /// This function returns a future for the next entry in the submission queue.  It also
-    /// has a side effect of updating the tail.
-    ///
-    /// Note that this function returns a future that must be cancellable, which means that the
-    /// parts after an await may never run.  The tail update side effect is benign, so
-    /// that can happen before the await.
-    /// TODO: This approach will only work for a single admin command at a time. If multiple commands
-    /// are placed at the same time, this will not work as expected!
-    pub async fn next(&mut self, mem: &GuestMemory) -> Result<spec::Command, QueueError> {
-        let head_cached = self.inner.sqhd();
-        // let mut changed_command = spec::Command::default();
-        let command = self.inner.next(mem).await?;
-        // changed_command = command.clone();
-        // changed_command.cdw0.set_opcode(0x06);
-        tracing::debug!(
-            "GETTING THE NEXT OPERATION IN THE CHAIN with gpa: {:#x}",
-            self.gpa
-        );
-        // mem.write_plain(
-        //     self.gpa.wrapping_add(head_cached as u64 * 64),
-        //     &changed_command,
-        // )
-        // .map_err(QueueError::Memory)?;
-        let (addr, data) = self.doorbell_write.get();
-        let mut inner_controller = self.controller.lock();
-        tracing::debug!("INVOKING INNER WRITE BAR0 FOR DOORBELL WITH DATA {addr}, data: {data:?}");
-        let data = u32::to_ne_bytes(data);
-        inner_controller.write_bar0(addr, &data);
-        Ok(command)
-    }
-
-    pub fn sqhd(&self) -> u16 {
-        self.inner.sqhd()
-    }
-
-    /// This function lets the driver know what doorbell value we consumed, allowing
-    /// it to elide the next ring, maybe.
-    pub fn advance_evt_idx(&mut self, mem: &GuestMemory) -> Result<(), QueueError> {
-        self.inner.advance_evt_idx(mem)
-    }
-
-    /// This function updates the shadow doorbell values of a queue that is
-    /// potentially already in use.
-    pub fn update_shadow_db(&mut self, mem: &GuestMemory, sdb: ShadowDoorbell) {
-        self.inner.update_shadow_db(mem, sdb)
     }
 }
