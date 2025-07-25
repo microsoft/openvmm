@@ -129,7 +129,7 @@ pub struct Aqa {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect, Default)]
 pub struct Command {
     pub cdw0: Cdw0,
     pub nsid: u32,
