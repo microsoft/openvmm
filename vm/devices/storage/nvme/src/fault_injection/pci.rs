@@ -178,7 +178,7 @@ impl NvmeControllerFaultInjection {
         }
     }
 
-    /// Returns a client for manipulating the NVMe controller at runtime.
+    /// Returns a client for manipulating the NVMe controller at runtime. This is mainly to add more namespaces
     pub fn client(&self) -> NvmeControllerClient {
         let inner = self.inner.lock();
         inner.client()
@@ -233,8 +233,6 @@ impl NvmeControllerFaultInjection {
             return IoResult::Ok;
         }
 
-        let data_original = data.clone();
-
         let update_reg = |x: u64| {
             if data.len() == 8 {
                 u64::from_ne_bytes(data.try_into().unwrap())
@@ -249,14 +247,13 @@ impl NvmeControllerFaultInjection {
         };
 
         // Intercept and duplicate admin queue setup!
-        let handled = match spec::Register(addr & !7) {
+        match spec::Register(addr & !7) {
             spec::Register::ASQ => {
                 if !self.regs.cc.en() {
                     self.regs.asq = update_reg(self.regs.asq) & PAGE_MASK;
                 } else {
                     tracelimit::warn_ratelimited!("attempt to set asq while enabled");
                 }
-                true
             }
             spec::Register::ACQ => {
                 if !self.regs.cc.en() {
@@ -264,9 +261,8 @@ impl NvmeControllerFaultInjection {
                 } else {
                     tracelimit::warn_ratelimited!("attempt to set acq while enabled");
                 }
-                true
             }
-            _ => false,
+            _ => {}
         };
 
         let Ok(data) = data.try_into() else {
@@ -280,9 +276,8 @@ impl NvmeControllerFaultInjection {
             _ => {}
         }
 
-        // Handled all queue related jargon, let the inner controller handle the rest
-        let mut inner = self.inner.lock();
-        inner.write_bar0(addr, data_original)
+        // Don't pass this function call down since that will be handled by the mmio_write function.
+        IoResult::Ok
     }
 
     pub fn fatal_error(&mut self) {
