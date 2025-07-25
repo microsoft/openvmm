@@ -12,11 +12,10 @@ use std::sync::Arc;
 #[derive(Inspect)]
 pub struct SubmissionQueueFaultInjection {
     inner: SubmissionQueue,
-    gpa: u64,
     #[inspect(skip)]
     controller: Arc<Mutex<NvmeController>>,
     #[inspect(skip)]
-    doorbell_write: mesh::Cell<(u16, u32)>,
+    doorbell_write: mesh::Cell<(u16, u32)>, // TODO: If it knows it's own address and the tail to ding, we don't need this anymore
 }
 
 impl SubmissionQueueFaultInjection {
@@ -30,7 +29,6 @@ impl SubmissionQueueFaultInjection {
     ) -> Self {
         Self {
             inner: SubmissionQueue::new(tail, gpa, len, shadow_db_evt_idx),
-            gpa,
             controller,
             doorbell_write,
         }
@@ -45,40 +43,25 @@ impl SubmissionQueueFaultInjection {
     /// TODO: This approach will only work for a single admin command at a time. If multiple commands
     /// are placed at the same time, this will not work as expected!
     pub async fn next(&mut self, mem: &GuestMemory) -> Result<spec::Command, QueueError> {
-        let head_cached = self.inner.sqhd();
-        // let mut changed_command = spec::Command::default();
         let command = self.inner.next(mem).await?;
-        // changed_command = command.clone();
-        // changed_command.cdw0.set_opcode(0x06);
-        tracing::debug!(
-            "GETTING THE NEXT OPERATION IN THE CHAIN with gpa: {:#x}",
-            self.gpa
-        );
-        // mem.write_plain(
-        //     self.gpa.wrapping_add(head_cached as u64 * 64),
-        //     &changed_command,
-        // )
-        // .map_err(QueueError::Memory)?;
         let (addr, data) = self.doorbell_write.get();
         let mut inner_controller = self.controller.lock();
-        tracing::debug!("INVOKING INNER WRITE BAR0 FOR DOORBELL WITH DATA {addr}, data: {data:?}");
         let data = u32::to_ne_bytes(data);
         inner_controller.write_bar0(addr, &data);
         Ok(command)
     }
 
+    /// Passthrough
     pub fn sqhd(&self) -> u16 {
         self.inner.sqhd()
     }
 
-    /// This function lets the driver know what doorbell value we consumed, allowing
-    /// it to elide the next ring, maybe.
+    /// Passthrough
     pub fn advance_evt_idx(&mut self, mem: &GuestMemory) -> Result<(), QueueError> {
         self.inner.advance_evt_idx(mem)
     }
 
-    /// This function updates the shadow doorbell values of a queue that is
-    /// potentially already in use.
+    /// Passthorugh
     pub fn update_shadow_db(&mut self, mem: &GuestMemory, sdb: ShadowDoorbell) {
         self.inner.update_shadow_db(mem, sdb)
     }

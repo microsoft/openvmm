@@ -35,12 +35,6 @@ pub(crate) struct AdminStateFaultInjection {
     pub admin_sq: SubmissionQueueFaultInjection,
 }
 
-impl AdminHandlerFaultInjection {
-    pub fn new(driver: VmTaskDriver, config: AdminConfigFaultInjection) -> Self {
-        Self { driver, config }
-    }
-}
-
 #[derive(Inspect)]
 pub(crate) struct AdminConfigFaultInjection {
     #[inspect(skip)] // TODO: What all do we want to be able to inspect?
@@ -48,8 +42,6 @@ pub(crate) struct AdminConfigFaultInjection {
     #[inspect(skip)]
     pub mem: GuestMemory,
     pub inner_mem: GuestMemory,
-    #[inspect(skip)]
-    pub interrupts: Vec<Interrupt>,
     #[inspect(skip)]
     pub doorbells: Vec<Arc<DoorbellRegister>>,
     #[inspect(display)]
@@ -68,10 +60,7 @@ impl AsyncRun<AdminStateFaultInjection> for AdminHandlerFaultInjection {
         state: &mut AdminStateFaultInjection,
     ) -> Result<(), Cancelled> {
         loop {
-            let event = stop.until_stopped(self.next_event(state)).await?;
-            tracing::debug!(
-                "THIS IS YOUR CAPTAIN SPEAKING: admin handler is intercepting, I repeat, admin handler is intercepting",
-            );
+            stop.until_stopped(self.next_event(state)).await?;
         }
         Ok(())
     }
@@ -91,6 +80,12 @@ impl AdminHandlerFaultInjection {
             .map(Event::Command)
             .await;
         Ok(next_command)
+    }
+}
+
+impl AdminHandlerFaultInjection {
+    pub fn new(driver: VmTaskDriver, config: AdminConfigFaultInjection) -> Self {
+        Self { driver, config }
     }
 }
 
