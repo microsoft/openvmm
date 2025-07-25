@@ -41,7 +41,6 @@ pub(crate) struct AdminConfigFaultInjection {
     pub driver_source: VmTaskDriverSource, // TODO: Do we need to keep this?
     #[inspect(skip)]
     pub mem: GuestMemory,
-    pub inner_mem: GuestMemory,
     #[inspect(skip)]
     pub doorbells: Vec<Arc<DoorbellRegister>>,
     #[inspect(display)]

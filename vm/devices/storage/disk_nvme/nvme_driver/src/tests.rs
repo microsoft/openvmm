@@ -342,7 +342,6 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
             subsystem_id: Guid::new_random(),
         },
         Box::new(fault_controller),
-        pages,
     );
 
     nvme.read_bar0(0, vec![0; 4].as_mut_slice()).unwrap();
