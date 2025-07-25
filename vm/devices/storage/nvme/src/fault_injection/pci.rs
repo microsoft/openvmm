@@ -224,8 +224,6 @@ impl NvmeControllerFaultInjection {
 
     /// Writes to the virtual BAR 0.
     pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
-        tracing::debug!("IN THE WRITE BAR 0 FUNCTION");
-
         if addr >= 0x1000 {
             // Doorbell write.
             let base = addr - 0x1000;
@@ -238,9 +236,6 @@ impl NvmeControllerFaultInjection {
             };
             let data = u32::from_ne_bytes(data);
             if let Some(doorbell) = self.doorbells.get(index as usize) {
-                tracing::debug!(
-                    "DINGING MY OWN DOORBELL REAL QUICK WITH {addr}, data: {data}, and index: {index}"
-                );
                 self.doorbell_write.set((addr, data));
                 doorbell.write(data);
             } else {
@@ -315,7 +310,6 @@ impl NvmeControllerFaultInjection {
                 .with_iocqes(0b1111),
         );
         let mut cc: spec::Cc = (u32::from(cc) & mask).into();
-        tracing::debug!("IN THE SET CC FUNCTION");
 
         // Admin queue has not yet been started, set it up here.
         if !self.admin.is_running() {
@@ -327,7 +321,6 @@ impl NvmeControllerFaultInjection {
             );
             self.admin
                 .insert(&self.driver, "nvme-admin-fault-injection", state);
-            tracing::debug!("SETTING UP THE ADMIN HANDLER FOR FAULT INJECTION");
             self.admin.start();
         }
 
@@ -370,7 +363,6 @@ impl MmioIntercept for NvmeControllerFaultInjection {
         if let Some((0, offset)) = self.cfg_space.find_bar(addr) {
             let ret_bar0 = self.write_bar0(offset, data); // TODO: This means that we are calling the inner write_bar0 function twice, fix that later.
             if self.is_doorbell_write(addr as u16) {
-                tracing::debug!("ISSUING DOORBELL MMIO WRITE");
                 return ret_bar0;
             }
         }
