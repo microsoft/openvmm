@@ -45,6 +45,10 @@ impl SubmissionQueueFaultInjection {
     pub async fn next(&mut self, mem: &GuestMemory) -> Result<spec::Command, QueueError> {
         let command = self.inner.next(mem).await?;
         let (addr, data) = self.doorbell_write.get();
+
+        // Explanation: We want to serialize any batched requests to the doorbell register. This logic can be more
+        // complex in order to allow/disallow batching. However, for the time being this would allow us to ensure that
+        // all the commands are being passed through
         let mut inner_controller = self.controller.lock();
         let data = u32::to_ne_bytes(data);
         inner_controller.write_bar0(addr, &data);
