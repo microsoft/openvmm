@@ -1232,8 +1232,8 @@ mod tests {
 
     #[test]
     fn test_different_names_different_hashes() {
-        let name1 = "very_long_test_name_that_exceeds_the_100_character_limit_and_should_be_truncated_version_1";
-        let name2 = "very_long_test_name_that_exceeds_the_100_character_limit_and_should_be_truncated_version_2";
+        let name1 = "very_long_test_name_that_definitely_exceeds_the_100_character_limit_and_should_be_truncated_by_the_function_version_1";
+        let name2 = "very_long_test_name_that_definitely_exceeds_the_100_character_limit_and_should_be_truncated_by_the_function_version_2";
 
         let result1 = make_vm_safe_name(name1);
         let result2 = make_vm_safe_name(name2);
