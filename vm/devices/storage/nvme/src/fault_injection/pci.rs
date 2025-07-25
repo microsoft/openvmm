@@ -70,8 +70,7 @@ pub struct NvmeControllerFaultInjection {
     fi: Box<
         dyn Fn(&str, Vec<Box<dyn Any>>) -> (FaultInjectionAction, Vec<Box<dyn Any>>) + Send + Sync,
     >,
-    memory_inner: GuestMemory,
-    memory_outer: GuestMemory,
+    mem: GuestMemory,
     driver: VmTaskDriver,
     #[inspect(skip)]
     doorbells: Vec<Arc<DoorbellRegister>>,
@@ -104,20 +103,13 @@ impl NvmeControllerFaultInjection {
                 + Send
                 + Sync,
         >,
-        pages: u64,
     ) -> Self {
-        // Create memory for inner
-        let memory_inner =
-            DeviceTestMemory::new(pages * 2, false, "test_nvme_driver").guest_memory();
-
         // Deal with Doorbell registers copy
         let num_qids = 2 + caps.max_io_queues * 2; // Assumes that max_sqs == max_cqs
         let doorbells: Vec<_> = (0..num_qids)
             .map(|_| Arc::new(DoorbellRegister::new()))
             .collect();
 
-        // TODO: Unused, but will probably need to update the AdminConfig -> AdminConfigFaultInjection and not pass this in anymore!
-        let interrupts = vec![];
         let inner = Arc::new(Mutex::new(NvmeController::new(
             driver_source,
             guest_memory.clone(), // Communication with the inner controller will always be through the inner memory component.
@@ -133,8 +125,6 @@ impl NvmeControllerFaultInjection {
             AdminConfigFaultInjection {
                 driver_source: driver_source.clone(),
                 mem: guest_memory.clone(),
-                inner_mem: memory_inner.clone(),
-                interrupts,
                 doorbells: doorbells.clone(),
                 subsystem_id: caps.subsystem_id,
                 max_sqs: caps.max_io_queues,
@@ -173,8 +163,7 @@ impl NvmeControllerFaultInjection {
         Self {
             inner: inner.clone(),
             fi,
-            memory_inner,
-            memory_outer: guest_memory.clone(),
+            mem: guest_memory.clone(),
             driver: driver_source.simple(),
             doorbells,
             regs: Regs {
