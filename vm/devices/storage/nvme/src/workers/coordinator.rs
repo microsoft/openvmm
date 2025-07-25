@@ -110,7 +110,6 @@ impl NvmeWorkers {
     }
 
     pub fn enable(&mut self, asq: u64, asqs: u16, acq: u64, acqs: u16) {
-        tracing::debug!("RUNNING ENABLE FOR ADMIN QUEUE THROUGH THE NVME WORKER");
         if let EnableState::Disabled = self.state {
             self.state = EnableState::Enabling(self.send.call(
                 CoordinatorRequest::EnableAdmin,

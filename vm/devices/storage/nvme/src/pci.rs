@@ -459,10 +459,7 @@ impl MmioIntercept for NvmeController {
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
         match self.cfg_space.find_bar(addr) {
-            Some((0, offset)) => {
-                tracing::debug!("writing to bar 0 in the inner mmio write");
-                self.write_bar0(offset, data)
-            }
+            Some((0, offset)) => self.write_bar0(offset, data),
             Some((4, offset)) => {
                 write_as_u32_chunks(offset, data, |offset, ty| match ty {
                     ReadWriteRequestType::Read => Some(self.msix.read_u32(offset)),

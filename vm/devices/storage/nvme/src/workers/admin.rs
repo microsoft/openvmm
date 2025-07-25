@@ -85,8 +85,8 @@ pub struct AdminHandler {
 
 #[derive(Inspect)]
 pub struct AdminState {
-    pub admin_sq: SubmissionQueue,
-    pub admin_cq: CompletionQueue,
+    admin_sq: SubmissionQueue,
+    admin_cq: CompletionQueue,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
     io_sqs: Vec<IoSq>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
