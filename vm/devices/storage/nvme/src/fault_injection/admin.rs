@@ -14,7 +14,6 @@ use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTask;
 use task_control::StopTask;
-use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -37,8 +36,6 @@ pub(crate) struct AdminStateFaultInjection {
 
 #[derive(Inspect)]
 pub(crate) struct AdminConfigFaultInjection {
-    #[inspect(skip)] // TODO: What all do we want to be able to inspect?
-    pub driver_source: VmTaskDriverSource, // TODO: Do we need to keep this?
     #[inspect(skip)]
     pub mem: GuestMemory,
     #[inspect(skip)]
@@ -99,7 +96,7 @@ impl AdminStateFaultInjection {
         handler: &AdminHandlerFaultInjection,
         asq: u64,
         asqs: u16,
-        doorbell_write: mesh::Cell<(u16, u32)>,
+        // doorbell_write: mesh::Cell<u32>,
     ) -> Self {
         Self {
             admin_sq: SubmissionQueueFaultInjection::new(
@@ -108,7 +105,7 @@ impl AdminStateFaultInjection {
                 asqs,
                 None,
                 handler.config.controller.clone(),
-                doorbell_write,
+                // doorbell_write,
             ),
         }
     }

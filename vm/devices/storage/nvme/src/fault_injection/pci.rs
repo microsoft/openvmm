@@ -78,8 +78,8 @@ pub struct NvmeControllerFaultInjection {
     #[inspect(skip)]
     admin: TaskControl<AdminHandlerFaultInjection, AdminStateFaultInjection>,
     cfg_space: ConfigSpaceType0Emulator,
-    #[inspect(skip)]
-    doorbell_write: mesh::CellUpdater<(u16, u32)>,
+    // #[inspect(skip)]
+    // admin_sq_latest_tail: mesh::CellUpdater<u32>,
 }
 
 #[derive(Inspect)]
@@ -119,11 +119,10 @@ impl NvmeControllerFaultInjection {
         )));
 
         let qe_sizes = Arc::new(Default::default());
-        let mut doorbell_write = mesh::CellUpdater::new((0, ILLEGAL_DOORBELL_VALUE));
+        let mut doorbell_write = mesh::CellUpdater::new(ILLEGAL_DOORBELL_VALUE);
         let handler: AdminHandlerFaultInjection = AdminHandlerFaultInjection::new(
             driver_source.simple(),
             AdminConfigFaultInjection {
-                driver_source: driver_source.clone(),
                 mem: guest_memory.clone(),
                 doorbells: doorbells.clone(),
                 subsystem_id: caps.subsystem_id,
@@ -174,7 +173,7 @@ impl NvmeControllerFaultInjection {
             },
             admin: TaskControl::new(handler),
             cfg_space,
-            doorbell_write,
+            // admin_sq_latest_tail: doorbell_write,
         }
     }
 
@@ -191,7 +190,7 @@ impl NvmeControllerFaultInjection {
         inner.read_bar0(addr, data)
     }
 
-    fn is_doorbell_write(&mut self, addr: u16) -> bool {
+    fn is_admin_sq_doorbell_write(&mut self, addr: u16) -> bool {
         if addr >= 0x1000 {
             // Doorbell write.
             let base = addr - 0x1000;
@@ -225,7 +224,7 @@ impl NvmeControllerFaultInjection {
             };
             let data = u32::from_ne_bytes(data);
             if let Some(doorbell) = self.doorbells.get(index as usize) {
-                self.doorbell_write.set((addr, data));
+                // self.admin_sq_latest_tail.set(data);
                 doorbell.write(data);
             } else {
                 tracelimit::warn_ratelimited!(index, data, "unknown doorbell");
@@ -251,6 +250,7 @@ impl NvmeControllerFaultInjection {
             spec::Register::ASQ => {
                 if !self.regs.cc.en() {
                     self.regs.asq = update_reg(self.regs.asq) & PAGE_MASK;
+                    tracing::debug!("ASQ set to {:#x}", self.regs.asq);
                 } else {
                     tracelimit::warn_ratelimited!("attempt to set asq while enabled");
                 }
@@ -301,7 +301,7 @@ impl NvmeControllerFaultInjection {
                 self.admin.task(),
                 self.regs.asq,
                 self.regs.aqa.asqs_z().max(1) + 1,
-                self.doorbell_write.cell(),
+                // self.admin_sq_latest_tail.cell(),
             );
             self.admin
                 .insert(&self.driver, "nvme-admin-fault-injection", state);
@@ -346,7 +346,7 @@ impl MmioIntercept for NvmeControllerFaultInjection {
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
         if let Some((0, offset)) = self.cfg_space.find_bar(addr) {
             let ret_bar0 = self.write_bar0(offset, data); // TODO: This means that we are calling the inner write_bar0 function twice, fix that later.
-            if self.is_doorbell_write(addr as u16) {
+            if self.is_admin_sq_doorbell_write(addr as u16) {
                 return ret_bar0;
             }
         }

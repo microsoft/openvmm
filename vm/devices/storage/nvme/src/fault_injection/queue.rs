@@ -14,8 +14,9 @@ pub struct SubmissionQueueFaultInjection {
     inner: SubmissionQueue,
     #[inspect(skip)]
     controller: Arc<Mutex<NvmeController>>,
-    #[inspect(skip)]
-    doorbell_write: mesh::Cell<(u16, u32)>, // TODO: If it knows it's own address and the tail to ding, we don't need this anymore
+    addr: u16,
+    // #[inspect(skip)]
+    // doorbell_write: mesh::Cell<u32>, // TODO: If it knows it's own address and the tail to ding, we don't need this anymore
 }
 
 impl SubmissionQueueFaultInjection {
@@ -25,12 +26,14 @@ impl SubmissionQueueFaultInjection {
         len: u16,
         shadow_db_evt_idx: Option<ShadowDoorbell>,
         controller: Arc<Mutex<NvmeController>>,
-        doorbell_write: mesh::Cell<(u16, u32)>,
+        // doorbell_write: mesh::Cell<u32>,
     ) -> Self {
+        let gpa_offset: u16 = 0x1000;
         Self {
             inner: SubmissionQueue::new(tail, gpa, len, shadow_db_evt_idx),
+            addr: gpa_offset.wrapping_add(gpa as u16), // TODO: This is a hack to get the address. We could also just pass it through and save it.
             controller,
-            doorbell_write,
+            // doorbell_write,
         }
     }
 
@@ -44,14 +47,17 @@ impl SubmissionQueueFaultInjection {
     /// are placed at the same time, this will not work as expected!
     pub async fn next(&mut self, mem: &GuestMemory) -> Result<spec::Command, QueueError> {
         let command = self.inner.next(mem).await?;
-        let (addr, data) = self.doorbell_write.get();
+        // let data = self.doorbell_write.get();
+        let data = self.sqhd() as u32; // IMPORTANT! Ensures 1 doorbell write per command!
+
+        // TODO: Invoke the given fault function right here!!
 
         // Explanation: We want to serialize any batched requests to the doorbell register. This logic can be more
         // complex in order to allow/disallow batching. However, for the time being this would allow us to ensure that
-        // all the commands are being passed through
+        // all the commands are being passed through.
         let mut inner_controller = self.controller.lock();
         let data = u32::to_ne_bytes(data);
-        inner_controller.write_bar0(addr, &data);
+        inner_controller.write_bar0(self.addr, &data);
         Ok(command)
     }
 
