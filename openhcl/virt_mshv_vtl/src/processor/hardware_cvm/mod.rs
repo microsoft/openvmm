@@ -2509,7 +2509,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     tracelimit::warn_ratelimited!(
                         CVM_ALLOWED,
                         gpa,
-                        vtl,
+                        ?vtl,
                         ?extra_info,
                         "possible spurious memory violation write, ignoring"
                     );
@@ -2518,7 +2518,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     tracelimit::warn_ratelimited!(
                         CVM_ALLOWED,
                         gpa,
-                        vtl,
+                        ?vtl,
                         ?extra_info,
                         "possible spurious memory violation read, ignoring"
                     );
@@ -2538,7 +2538,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     tracelimit::warn_ratelimited!(
                         CVM_ALLOWED,
                         gpa,
-                        vtl,
+                        ?vtl,
                         is_shared,
                         ?extra_info,
                         "guest accessed inaccessible gpa, injecting MC"
@@ -2568,7 +2568,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     tracelimit::warn_ratelimited!(
                         CVM_ALLOWED,
                         gpa,
-                        vtl,
+                        ?vtl,
                         is_shared,
                         ?extra_info,
                         "guest accessed gpa not described in memory layout, emulating anyways"
