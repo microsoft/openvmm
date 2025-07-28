@@ -2539,6 +2539,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             "guest accessed protected gpa, sending intercept"
                         );
                         let state = B::intercept_message_state(self, vtl, false);
+                        // TODO: We may want to fill in tpr_priority and gva
+                        // but tests pass without them.
                         self.send_intercept_message(
                             GuestVtl::Vtl1,
                             &HvMessage::new(
@@ -2560,9 +2562,9 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                                     },
                                     cache_type: HvCacheType::HvCacheTypeWriteBack,
                                     memory_access_info: HvX64MemoryAccessInfo::new(),
-                                    tpr_priority: 0, // TODO?
+                                    tpr_priority: 0,
                                     reserved: 0,
-                                    guest_virtual_address: 0, // TODO?
+                                    guest_virtual_address: 0,
                                     guest_physical_address: gpa,
                                     instruction_byte_count: 0,
                                     instruction_bytes: [0; 16],
