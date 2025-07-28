@@ -3,7 +3,6 @@
 
 //! Address space allocator for VTL2 memory used by the bootshim.
 
-use crate::boot_logger::debug_log;
 use crate::host_params::MAX_VTL2_RAM_RANGES;
 use arrayvec::ArrayVec;
 use core::panic;
@@ -166,8 +165,6 @@ impl AddressSpaceManager {
             }
         }
 
-        debug_log!("used ranges {:#x?}", used_ranges);
-
         // Construct the initial state of VTL2 address space by walking ram and reserved ranges
         assert!(self.address_space.is_empty());
         for (entry, r) in walk_ranges(
@@ -197,8 +194,6 @@ impl AddressSpaceManager {
                 RangeWalkResult::Neither => {}
             }
         }
-
-        debug_log!("asm done");
     }
 
     /// Split a free range into two, with allocation policy deciding if we
@@ -343,6 +338,8 @@ pub enum AllocationPolicy {
     // prefer low memory
     LowMemory,
     // prefer high memory
+    // TODO: only used in tests, but will be used in an upcoming change
+    #[allow(dead_code)]
     HighMemory,
 }
 

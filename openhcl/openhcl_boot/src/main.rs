@@ -941,7 +941,7 @@ mod test {
         write_dt(
             &mut buf,
             &new_partition_info(MAX_CPUS),
-            todo!(),
+            &AddressSpaceManager::new_const(),
             [],
             0..0,
             &ArrayString::from("test").unwrap_or_default(),
@@ -1015,7 +1015,7 @@ mod test {
         write_dt(
             &mut buf,
             &new_partition_info(MAX_CPUS),
-            todo!(),
+            &AddressSpaceManager::new_const(),
             [],
             0..0,
             &ArrayString::from("test").unwrap_or_default(),
@@ -1044,7 +1044,7 @@ mod test {
         write_dt(
             &mut buf,
             &new_partition_info(MAX_CPUS),
-            todo!(),
+            &AddressSpaceManager::new_const(),
             [],
             0..0,
             &ArrayString::from("test").unwrap_or_default(),
@@ -1084,7 +1084,7 @@ mod test {
         address_space.init(
             &ram,
             bootshim_used,
-            subtract_ranges([parameter_range], reclaim.into_iter()),
+            subtract_ranges([parameter_range], reclaim),
             None,
             None,
             None,
