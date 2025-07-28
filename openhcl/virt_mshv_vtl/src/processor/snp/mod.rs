@@ -281,8 +281,15 @@ impl HardwareIsolatedBacking for SnpBacked {
     ) -> InterceptMessageState {
         let vmsa = this.runner.vmsa(vtl);
 
+        // next_rip may not be set properly for NPFs, so don't read it.
+        let instr_len = if SevExitCode(vmsa.guest_error_code()) == SevExitCode::NPF {
+            0
+        } else {
+            (vmsa.next_rip() - vmsa.rip()) as u8
+        };
+
         InterceptMessageState {
-            instruction_length_and_cr8: (vmsa.next_rip() - vmsa.rip()) as u8,
+            instruction_length_and_cr8: instr_len,
             cpl: vmsa.cpl(),
             efer_lma: vmsa.efer() & x86defs::X64_EFER_LMA != 0,
             cs: virt_seg_from_snp(vmsa.cs()).into(),
