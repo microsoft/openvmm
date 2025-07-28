@@ -12,7 +12,7 @@ mod pci;
 mod prp;
 mod queue;
 pub mod resolver;
-pub mod workers;
+mod workers;
 
 #[cfg(test)]
 mod tests;
