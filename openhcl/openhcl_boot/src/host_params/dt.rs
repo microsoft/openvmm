@@ -5,7 +5,6 @@
 
 use super::PartitionInfo;
 use super::shim_params::ShimParams;
-use crate::boot_logger::debug_log;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
@@ -492,8 +491,6 @@ impl PartitionInfo {
             page_tables,
         );
 
-        debug_log!("init address_space: {:#?}", address_space);
-
         // Decide if we will reserve memory for a VTL2 private pool. Parse this
         // from the final command line, or the host provided device tree value.
         let vtl2_gpa_pool_size = {
@@ -525,8 +522,6 @@ impl PartitionInfo {
         if can_trust_host {
             storage.vtl0_alias_map = parsed.vtl0_alias_map;
         }
-
-        debug_log!("read_from_dt final address_space: {:#?}", address_space);
 
         // Set remaining struct fields before returning.
         let Self {
