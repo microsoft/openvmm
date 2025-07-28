@@ -4877,6 +4877,7 @@ dependencies = [
  "sha2",
  "sidecar_defs",
  "tdcall",
+ "thiserror 2.0.12",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.24",

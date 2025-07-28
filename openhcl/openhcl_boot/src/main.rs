@@ -1061,14 +1061,16 @@ mod test {
             })
             .collect::<Vec<_>>();
         let mut address_space = AddressSpaceManager::new_const();
-        address_space.init(
-            &ram,
-            bootshim_used,
-            subtract_ranges([parameter_range], reclaim),
-            None,
-            None,
-            None,
-        );
+        address_space
+            .init(
+                &ram,
+                bootshim_used,
+                subtract_ranges([parameter_range], reclaim),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         address_space
     }
 
@@ -1216,85 +1218,89 @@ mod test {
         );
     }
 
-    // #[test]
-    // fn test_e820_param_not_covered() {
-    //     // parameter range not covered by ram at all
-    //     let mut boot_params: boot_params = FromZeros::new_zeroed();
-    //     // let mut ext = FromZeros::new_zeroed();
-    //     let parameter_range = MemoryRange::try_new(5 * ONE_MB..6 * ONE_MB).unwrap();
-    //     let partition_info =
-    //         partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
+    // test e820 with spillover into ext
+    #[test]
+    fn test_e820_huge() {
+        use crate::memory::AllocationPolicy;
+        use crate::memory::AllocationType;
 
-    //     assert!(build_e820_map(todo!(), todo!(), todo!()).is_err());
+        // Create 64 RAM ranges, then allocate 256 ranges to test spillover
+        // boot_params.e820_map has E820_MAX_ENTRIES_ZEROPAGE (128) entries
+        const E820_MAX_ENTRIES_ZEROPAGE: usize = 128;
+        const RAM_RANGES: usize = 64;
+        const TOTAL_ALLOCATIONS: usize = 256;
 
-    //     // parameter range start partial coverage
-    //     let mut boot_params: boot_params = FromZeros::new_zeroed();
-    //     let mut ext = FromZeros::new_zeroed();
-    //     let parameter_range = MemoryRange::try_new(3 * ONE_MB..6 * ONE_MB).unwrap();
-    //     let partition_info =
-    //         partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
+        // Create 64 large RAM ranges (64MB each = 64 * 1MB pages per range)
+        let mut ranges = Vec::new();
+        for i in 0..RAM_RANGES {
+            let start = (i as u64) * 64 * ONE_MB;
+            let end = start + 64 * ONE_MB;
+            ranges.push(MemoryRange::new(start..end));
+        }
 
-    //     assert!(build_e820_map(todo!(), todo!(), todo!()).is_err());
+        let bootshim_used = MemoryRange::try_new(0..ONE_MB).unwrap();
+        let parameter_range = MemoryRange::try_new(0..ONE_MB).unwrap();
 
-    //     // parameter range end partial coverage
-    //     let mut boot_params: boot_params = FromZeros::new_zeroed();
-    //     let mut ext = FromZeros::new_zeroed();
-    //     let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
-    //     let partition_info =
-    //         partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
+        let mut address_space = {
+            let ram = ranges
+                .iter()
+                .cloned()
+                .map(|range| MemoryEntry {
+                    range,
+                    mem_type: MemoryMapEntryType::VTL2_PROTECTABLE,
+                    vnode: 0,
+                })
+                .collect::<Vec<_>>();
+            let mut address_space = AddressSpaceManager::new_const();
+            address_space
+                .init(
+                    &ram,
+                    bootshim_used,
+                    subtract_ranges([parameter_range], None),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            address_space
+        };
 
-    //     assert!(build_e820_map(todo!(), todo!(), todo!()).is_err());
+        for i in 0..TOTAL_ALLOCATIONS {
+            // Intersperse sidecar node allocations with gpa pool allocations,
+            // as otherwise the address space manager will collapse adjacent
+            // ranges of the same type.
+            let _allocated = address_space
+                .allocate(
+                    None,
+                    ONE_MB,
+                    if i % 2 == 0 {
+                        AllocationType::GpaPool
+                    } else {
+                        AllocationType::SidecarNode
+                    },
+                    AllocationPolicy::LowMemory,
+                )
+                .expect("should be able to allocate sidecar node");
+        }
 
-    //     // parameter range larger than ram
-    //     let mut boot_params: boot_params = FromZeros::new_zeroed();
-    //     let mut ext = FromZeros::new_zeroed();
-    //     let parameter_range = MemoryRange::try_new(2 * ONE_MB..8 * ONE_MB).unwrap();
-    //     let partition_info =
-    //         partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
+        let total_ranges = address_space.vtl2_ranges().count();
 
-    //     assert!(build_e820_map(todo!(), todo!(), todo!()).is_err());
+        let used_ext = build_e820_map(&mut boot_params, &mut ext, &address_space).unwrap();
 
-    //     // ram has gap inside param range
-    //     let mut boot_params: boot_params = FromZeros::new_zeroed();
-    //     let mut ext = FromZeros::new_zeroed();
-    //     let parameter_range = MemoryRange::try_new(2 * ONE_MB..8 * ONE_MB).unwrap();
-    //     let partition_info = partition_info_ram_ranges(
-    //         &[ONE_MB..6 * ONE_MB, 7 * ONE_MB..10 * ONE_MB],
-    //         parameter_range,
-    //         None,
-    //     );
-    //     assert!(build_e820_map(todo!(), todo!(), todo!()).is_err());
-    // }
+        // Verify that we used the extension
+        assert!(used_ext, "should use extension when there are many ranges");
 
-    // #[test]
-    // fn test_e820_huge() {
-    //     // memmap with no param reclaim
-    //     let mut boot_params: boot_params = FromZeros::new_zeroed();
-    //     let mut ext = FromZeros::new_zeroed();
-    //     let ram = MemoryRange::new(0..32 * ONE_MB);
-    //     let partition_info = partition_info_ram_ranges(&[ram.into()], MemoryRange::EMPTY, None);
-    //     let reserved = (0..256)
-    //         .map(|i| {
-    //             (
-    //                 MemoryRange::from_4k_gpn_range(i * 8 + 1..i * 8 + 3),
-    //                 ReservedMemoryType::Vtl2Config,
-    //             )
-    //         })
-    //         .collect::<Vec<_>>();
+        // Verify the standard e820_map is full
+        assert_eq!(boot_params.e820_entries, E820_MAX_ENTRIES_ZEROPAGE as u8);
 
-    //     build_e820_map(todo!(), todo!(), todo!()).unwrap();
+        // Verify the extension has the overflow entries
+        let ext_entries = (ext.header.len as usize) / size_of::<e820entry>();
+        assert_eq!(ext_entries, total_ranges - E820_MAX_ENTRIES_ZEROPAGE);
 
-    //     assert!(ext.header.len > 0);
-
-    //     let expected = walk_ranges([(ram, ())], reserved.iter().map(|&(r, _)| (r, ())))
-    //         .flat_map(|(range, r)| match r {
-    //             RangeWalkResult::Neither => None,
-    //             RangeWalkResult::Left(_) => Some((range.into(), E820_RAM)),
-    //             RangeWalkResult::Right(_) => unreachable!(),
-    //             RangeWalkResult::Both(_, _) => Some((range.into(), E820_RESERVED)),
-    //         })
-    //         .collect::<Vec<_>>();
-
-    //     check_e820(&boot_params, &ext, &expected);
-    // }
+        // Verify we have the expected number of total ranges
+        let total_e820_entries = boot_params.e820_entries as usize + ext_entries;
+        assert_eq!(total_e820_entries, total_ranges);
+    }
 }

@@ -14,6 +14,7 @@ use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
 use memory_range::walk_ranges;
+use thiserror::Error;
 
 /// The maximum number of reserved memory ranges that we might use.
 /// See [`ReservedMemoryType`] definition for details.
@@ -90,6 +91,22 @@ pub struct AllocatedRange {
     pub vnode: u32,
 }
 
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("ram len {len} greater than maximum {max}")]
+    RamLen { len: u64, max: u64 },
+    #[error("already initialized")]
+    AlreadyInitialized,
+    #[error(
+        "reserved range {reserved:#x?}, type {typ:?} outside of bootshim used {bootshim_used:#x?}"
+    )]
+    ReservedRangeOutsideBootshimUsed {
+        reserved: MemoryRange,
+        typ: ReservedMemoryType,
+        bootshim_used: MemoryRange,
+    },
+}
+
 #[derive(Debug)]
 pub struct AddressSpaceManager {
     /// tracks address space, must be sorted
@@ -105,9 +122,13 @@ impl AddressSpaceManager {
 
     /// Initialize the address space manager.
     ///
-    /// `bootshim_used`
-    /// Some regions are known to be used at construction time, as these ranges
-    /// are allocated at build time.
+    /// `vtl2_ram` is the list of ram ranges for VTL2, which must be sorted.
+    ///
+    /// `bootshim_used` is the range used by the bootshim, but may be reclaimed
+    /// as ram by the kernel.
+    ///
+    /// Each other range must lie within `bootshim_used`, and denotes a range
+    /// that must be reported as reserved to the kernel.
     pub fn init(
         &mut self,
         vtl2_ram: &[MemoryEntry],
@@ -116,12 +137,19 @@ impl AddressSpaceManager {
         reserved_range: Option<MemoryRange>,
         sidecar_image: Option<MemoryRange>,
         page_tables: Option<MemoryRange>,
-    ) {
-        // assert!(vtl2_config.len() <= 2);
-        assert!(vtl2_ram.len() <= MAX_VTL2_RAM_RANGES);
-        assert!(self.address_space.is_empty());
+    ) -> Result<(), Error> {
+        if vtl2_ram.len() > MAX_VTL2_RAM_RANGES {
+            return Err(Error::RamLen {
+                len: vtl2_ram.len() as u64,
+                max: MAX_VTL2_RAM_RANGES as u64,
+            });
+        }
 
-        // The other ranges are reserved, and may overlap with the used range.
+        if !self.address_space.is_empty() {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        // The other ranges are reserved, and must overlap with the used range.
         let mut reserved: ArrayVec<(MemoryRange, ReservedMemoryType), 5> = ArrayVec::new();
         reserved.extend(vtl2_config.map(|r| (r, ReservedMemoryType::Vtl2Config)));
         reserved.extend(
@@ -156,10 +184,12 @@ impl AddressSpaceManager {
                 RangeWalkResult::Both(_, reserved_type) => {
                     used_ranges.push((entry, AddressUsage::Reserved(reserved_type)));
                 }
-                RangeWalkResult::Right(usage) => {
-                    panic!(
-                        "reserved range {r:#x?} used by {usage:?} not contained in bootshim_used {bootshim_used:#x?}"
-                    );
+                RangeWalkResult::Right(typ) => {
+                    return Err(Error::ReservedRangeOutsideBootshimUsed {
+                        reserved: entry,
+                        typ,
+                        bootshim_used,
+                    });
                 }
                 RangeWalkResult::Neither => {}
             }
@@ -194,6 +224,8 @@ impl AddressSpaceManager {
                 RangeWalkResult::Neither => {}
             }
         }
+
+        Ok(())
     }
 
     /// Split a free range into two, with allocation policy deciding if we
@@ -314,8 +346,9 @@ impl AddressSpaceManager {
 
     /// Get all of vtl2 address space
     pub fn vtl2_ranges(&self) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
-        // FIXME FLATTEN RANGES via flatten_ranges
-        self.address_space.iter().map(|r| (r.range, r.usage.into()))
+        memory_range::merge_adjacent_ranges(
+            self.address_space.iter().map(|r| (r.range, r.usage.into())),
+        )
     }
 
     /// Get only reserved vtl2 ranges that are not described as e820 ranges
@@ -350,23 +383,25 @@ mod tests {
     #[test]
     fn test_allocate() {
         let mut address_space = AddressSpaceManager::new_const();
-        address_space.init(
-            &[MemoryEntry {
-                range: MemoryRange::new(0x0..0x20000),
-                vnode: 0,
-                mem_type: MemoryMapEntryType::MEMORY,
-            }],
-            MemoryRange::new(0x0..0xF000),
-            [
-                MemoryRange::new(0x3000..0x4000),
-                MemoryRange::new(0x5000..0x6000),
-            ]
-            .iter()
-            .cloned(),
-            Some(MemoryRange::new(0x8000..0xA000)),
-            Some(MemoryRange::new(0xA000..0xC000)),
-            None,
-        );
+        address_space
+            .init(
+                &[MemoryEntry {
+                    range: MemoryRange::new(0x0..0x20000),
+                    vnode: 0,
+                    mem_type: MemoryMapEntryType::MEMORY,
+                }],
+                MemoryRange::new(0x0..0xF000),
+                [
+                    MemoryRange::new(0x3000..0x4000),
+                    MemoryRange::new(0x5000..0x6000),
+                ]
+                .iter()
+                .cloned(),
+                Some(MemoryRange::new(0x8000..0xA000)),
+                Some(MemoryRange::new(0xA000..0xC000)),
+                None,
+            )
+            .unwrap();
 
         let range = address_space
             .allocate(
@@ -413,40 +448,42 @@ mod tests {
     #[test]
     fn test_allocate_numa() {
         let mut address_space = AddressSpaceManager::new_const();
-        address_space.init(
-            &[
-                MemoryEntry {
-                    range: MemoryRange::new(0x0..0x20000),
-                    vnode: 0,
-                    mem_type: MemoryMapEntryType::MEMORY,
-                },
-                MemoryEntry {
-                    range: MemoryRange::new(0x20000..0x40000),
-                    vnode: 1,
-                    mem_type: MemoryMapEntryType::MEMORY,
-                },
-                MemoryEntry {
-                    range: MemoryRange::new(0x40000..0x60000),
-                    vnode: 2,
-                    mem_type: MemoryMapEntryType::MEMORY,
-                },
-                MemoryEntry {
-                    range: MemoryRange::new(0x60000..0x80000),
-                    vnode: 3,
-                    mem_type: MemoryMapEntryType::MEMORY,
-                },
-            ],
-            MemoryRange::new(0x0..0x10000),
-            [
-                MemoryRange::new(0x3000..0x4000),
-                MemoryRange::new(0x5000..0x6000),
-            ]
-            .iter()
-            .cloned(),
-            Some(MemoryRange::new(0x8000..0xA000)),
-            Some(MemoryRange::new(0xA000..0xC000)),
-            None,
-        );
+        address_space
+            .init(
+                &[
+                    MemoryEntry {
+                        range: MemoryRange::new(0x0..0x20000),
+                        vnode: 0,
+                        mem_type: MemoryMapEntryType::MEMORY,
+                    },
+                    MemoryEntry {
+                        range: MemoryRange::new(0x20000..0x40000),
+                        vnode: 1,
+                        mem_type: MemoryMapEntryType::MEMORY,
+                    },
+                    MemoryEntry {
+                        range: MemoryRange::new(0x40000..0x60000),
+                        vnode: 2,
+                        mem_type: MemoryMapEntryType::MEMORY,
+                    },
+                    MemoryEntry {
+                        range: MemoryRange::new(0x60000..0x80000),
+                        vnode: 3,
+                        mem_type: MemoryMapEntryType::MEMORY,
+                    },
+                ],
+                MemoryRange::new(0x0..0x10000),
+                [
+                    MemoryRange::new(0x3000..0x4000),
+                    MemoryRange::new(0x5000..0x6000),
+                ]
+                .iter()
+                .cloned(),
+                Some(MemoryRange::new(0x8000..0xA000)),
+                Some(MemoryRange::new(0xA000..0xC000)),
+                None,
+            )
+            .unwrap();
 
         let range = address_space
             .allocate(
@@ -503,5 +540,49 @@ mod tests {
             range.is_none(),
             "allocation should fail, no space left for node 3"
         );
+    }
+
+    // test invalid init ranges
+    #[test]
+    fn test_invalid_init_ranges() {
+        let vtl2_ram = [MemoryEntry {
+            range: MemoryRange::new(0x0..0x20000),
+            vnode: 0,
+            mem_type: MemoryMapEntryType::MEMORY,
+        }];
+        let bootshim_used = MemoryRange::new(0x0..0xF000);
+
+        // test config range completely outside of bootshim_used
+        let mut address_space = AddressSpaceManager::new_const();
+        let result = address_space.init(
+            &vtl2_ram,
+            bootshim_used,
+            [MemoryRange::new(0x10000..0x11000)].iter().cloned(), // completely outside
+            None,
+            None,
+            None,
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error::ReservedRangeOutsideBootshimUsed { .. })
+        ));
+
+        // test config range partially overlapping with bootshim_used
+
+        let mut address_space = AddressSpaceManager::new_const();
+        let result = address_space.init(
+            &vtl2_ram,
+            bootshim_used,
+            [MemoryRange::new(0xE000..0x10000)].iter().cloned(), // partially overlapping
+            None,
+            None,
+            None,
+        );
+
+        assert!(matches!(
+            result,
+            Err(Error::ReservedRangeOutsideBootshimUsed { .. })
+        ));
     }
 }
