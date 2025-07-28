@@ -21,18 +21,25 @@ use crate::processor::UhHypercallHandler;
 use crate::validate_vtl_gpa_flags;
 use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryErrorKind;
 use hv1_emulator::RequestInterrupt;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::HvCacheType;
 use hvdef::HvError;
+use hvdef::HvInterceptAccessType;
 use hvdef::HvInterruptType;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvMessage;
+use hvdef::HvMessageType;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmVpSecureVtlConfig;
 use hvdef::HvResult;
 use hvdef::HvVtlEntryReason;
+use hvdef::HvX64InterceptMessageHeader;
+use hvdef::HvX64MemoryAccessInfo;
+use hvdef::HvX64MemoryInterceptMessage;
 use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
@@ -56,6 +63,7 @@ use vm_topology::memory::AddressType;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
@@ -2345,7 +2353,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
     }
 
-    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
+    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &HvMessage) {
         tracing::trace!(?message, "sending intercept to {:?}", vtl);
 
         if let Err(e) = self.backing.cvm_state_mut().hv[vtl]
@@ -2498,61 +2506,92 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 true
             }
             Some(AddressType::Ram) => {
-                // TODO TDX: This path changes when we support VTL page
-                // protections and MNF. That will require injecting events to
-                // VTL1 or other handling.
-                //
-                // For now, we just check if the exit was suprious or if we
-                // should inject a machine check. An exit is considered spurious
-                // if the gpa is accessible.
-                if is_write && self.partition.gm[vtl].probe_gpa_writable(gpa).is_ok() {
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        ?vtl,
-                        ?extra_info,
-                        "possible spurious memory violation write, ignoring"
-                    );
-                    false
-                } else if !is_write && self.partition.gm[vtl].probe_gpa_readable(gpa).is_ok() {
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        ?vtl,
-                        ?extra_info,
-                        "possible spurious memory violation read, ignoring"
-                    );
-                    false
+                let (access_check, access_type) = if is_write {
+                    (
+                        self.partition.gm[vtl].probe_gpa_writable(gpa),
+                        HvInterceptAccessType::WRITE,
+                    )
                 } else {
-                    // TODO: It would be better to show what exact bitmap check
-                    // failed, but that requires some refactoring of how the
-                    // different bitmaps are stored. Do this when we support VTL
-                    // protections or MNF.
-                    //
-                    // If we entered this path, it means the bitmap check on
-                    // `check_gpa_readable` failed, so we can assume that if the
-                    // address is shared, the actual state of the page is
-                    // private, and vice versa. This is because the address
-                    // should have already been checked to be valid memory
-                    // described to the guest or not.
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        ?vtl,
-                        is_shared,
-                        ?extra_info,
-                        "guest accessed inaccessible gpa, injecting MC"
-                    );
+                    (
+                        self.partition.gm[vtl].probe_gpa_readable(gpa),
+                        HvInterceptAccessType::READ,
+                    )
+                };
 
-                    // TODO: Implement IA32_MCG_STATUS MSR for more reporting
-                    B::set_pending_exception(
-                        self,
-                        vtl,
-                        HvX64PendingExceptionEvent::new()
-                            .with_vector(x86defs::Exception::MACHINE_CHECK.0 as u16),
-                    );
-                    false
+                match access_check {
+                    Ok(()) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            ?extra_info,
+                            ?access_type,
+                            "possible spurious memory access violation, ignoring"
+                        );
+                    }
+                    Err(GuestMemoryErrorKind::VtlProtected) if vtl == GuestVtl::Vtl0 => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            ?extra_info,
+                            ?access_type,
+                            "guest accessed protected gpa, sending intercept"
+                        );
+                        let state = B::intercept_message_state(self, vtl, false);
+                        self.send_intercept_message(
+                            GuestVtl::Vtl1,
+                            &HvMessage::new(
+                                HvMessageType::HvMessageTypeGpaIntercept,
+                                0,
+                                HvX64MemoryInterceptMessage {
+                                    header: HvX64InterceptMessageHeader {
+                                        vp_index: self.vp_index().index(),
+                                        instruction_length_and_cr8: state
+                                            .instruction_length_and_cr8,
+                                        intercept_access_type: access_type,
+                                        execution_state: hvdef::HvX64VpExecutionState::new()
+                                            .with_cpl(state.cpl)
+                                            .with_vtl(vtl.into())
+                                            .with_efer_lma(state.efer_lma),
+                                        cs_segment: state.cs,
+                                        rip: state.rip,
+                                        rflags: state.rflags,
+                                    },
+                                    cache_type: HvCacheType::HvCacheTypeWriteBack,
+                                    memory_access_info: HvX64MemoryAccessInfo::new(),
+                                    tpr_priority: 0, // TODO?
+                                    reserved: 0,
+                                    guest_virtual_address: 0, // TODO?
+                                    guest_physical_address: gpa,
+                                    instruction_byte_count: 0,
+                                    instruction_bytes: [0; 16],
+                                }
+                                .as_bytes(),
+                            ),
+                        );
+                    }
+                    // TODO: Handle other error kinds differently?
+                    Err(_) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            ?access_type,
+                            "guest accessed inaccessible gpa, injecting MC"
+                        );
+                        // TODO: Implement IA32_MCG_STATUS MSR for more reporting
+                        B::set_pending_exception(
+                            self,
+                            vtl,
+                            HvX64PendingExceptionEvent::new()
+                                .with_vector(x86defs::Exception::MACHINE_CHECK.0 as u16),
+                        );
+                    }
                 }
+                false
             }
             None => {
                 if !self.cvm_partition().hide_isolation {
