@@ -20,7 +20,6 @@ use scsi_buffers::OwnedRequestBuffers;
 use std::any::Any;
 use std::sync::Arc;
 use test_with_tracing::test;
-use tracing::debug;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
@@ -332,7 +331,6 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    debug!("Created msi_set len: {}", msi_set.len());
     let mut nvme = nvme::NvmeControllerFaultInjection::new(
         &driver_source,
         guest_mem.clone(),
@@ -449,11 +447,6 @@ fn fault_controller(
             let addr = input[0].downcast_ref::<u32>().unwrap();
             let data: &[u8] = input[1].downcast_ref::<Vec<u8>>().unwrap();
             // Change Output. FaultInjectionAction::Return
-            tracing::debug!(
-                "read_bar0 called with input addr: {}, data: {:?}",
-                addr,
-                data
-            );
             (FaultInjectionAction::Drop, vec![])
         }
         _ => {

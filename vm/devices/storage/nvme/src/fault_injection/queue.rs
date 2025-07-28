@@ -4,13 +4,10 @@ use crate::queue::QueueError;
 use crate::queue::ShadowDoorbell;
 use crate::queue::SubmissionQueue;
 use crate::spec;
-use chipset_device::mmio::MmioIntercept;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tracing::debug;
-use tracing::field::debug;
 
 #[derive(Inspect)]
 pub struct SubmissionQueueFaultInjection {
@@ -50,11 +47,8 @@ impl SubmissionQueueFaultInjection {
     /// are placed at the same time, this will not work as expected!
     pub async fn next(&mut self, mem: &GuestMemory) -> Result<spec::Command, QueueError> {
         let command = self.inner.next(mem).await?;
-        debug!("SubmissionQueueFaultInjection: next command: {:?}", command);
         // let data = self.doorbell_write.get();
         let data = self.sqhd() as u32; // IMPORTANT! Ensures 1 doorbell write per command!
-        debug!("target doorbell write next: {:?}", &data);
-
         // TODO: Invoke the given fault function right here!!
 
         // Explanation: We want to serialize any batched requests to the doorbell register. This logic can be more
