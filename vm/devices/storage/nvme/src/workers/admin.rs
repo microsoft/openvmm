@@ -46,7 +46,6 @@ use task_control::InspectTask;
 use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
-use tracing::debug;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -761,10 +760,6 @@ impl AdminHandler {
         let interrupt = if cdw11.ien() {
             let iv = cdw11.iv();
             if iv as usize >= self.config.interrupts.len() {
-                debug!(
-                    "INVALID INTERRUPT VECTOR BEING CREATED! P A N I K! {}",
-                    cdw11.iv()
-                );
                 return Err(spec::Status::INVALID_INTERRUPT_VECTOR.into());
             };
             Some(iv)
