@@ -1536,6 +1536,7 @@ async fn new_underhill_vm(
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
 
     // Perform a quick validation to make sure each range is appropriately accessible.
+    tracing::info!("starting guest memory self test");
     for range in mem_layout.ram() {
         let gpa = range.range.start();
         // Standard RAM is accessible.
@@ -1565,6 +1566,7 @@ async fn new_underhill_vm(
                 .with_context(|| format!("failed to read shared RAM at {gpa:#x} above VTOM"))?;
         }
     }
+    tracing::info!("guest memory self test complete");
 
     // Set the gpa allocator to GET that is required by the attestation message.
     //
