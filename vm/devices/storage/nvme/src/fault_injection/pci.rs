@@ -35,7 +35,6 @@ use pci_core::spec::hwid::Subclass;
 use std::any::Any;
 use std::sync::Arc;
 use task_control::TaskControl;
-use tracing::debug;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -225,11 +224,6 @@ impl NvmeControllerFaultInjection {
             };
             let data = u32::from_ne_bytes(data);
             if let Some(doorbell) = self.doorbells.get(index as usize) {
-                // self.admin_sq_latest_tail.set(data);
-                debug!(
-                    "Writing doobell data: {:#x} to doorbell index: {}",
-                    data, index
-                );
                 doorbell.write(data);
             } else {
                 tracelimit::warn_ratelimited!(index, data, "unknown doorbell");
@@ -255,7 +249,6 @@ impl NvmeControllerFaultInjection {
             spec::Register::ASQ => {
                 if !self.regs.cc.en() {
                     self.regs.asq = update_reg(self.regs.asq) & PAGE_MASK;
-                    tracing::debug!("ASQ set to {:#x}", self.regs.asq);
                 } else {
                     tracelimit::warn_ratelimited!("attempt to set asq while enabled");
                 }
