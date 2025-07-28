@@ -40,7 +40,6 @@ use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
-use tracing::debug;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
