@@ -4669,7 +4669,6 @@ dependencies = [
  "tracing",
  "unicycle",
  "user_driver",
- "user_driver_emulated_mock",
  "vm_resource",
  "vmcore",
  "zerocopy 0.8.24",
