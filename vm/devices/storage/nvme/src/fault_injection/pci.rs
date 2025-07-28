@@ -11,7 +11,6 @@ use crate::fault_injection::admin::AdminStateFaultInjection;
 use crate::queue::DoorbellRegister;
 use crate::queue::ILLEGAL_DOORBELL_VALUE;
 use crate::spec;
-use crate::workers::IoQueueEntrySizes;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoError::InvalidRegister;
@@ -20,7 +19,6 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
-use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
@@ -28,6 +26,7 @@ use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
+use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::RegisterMsi;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
@@ -36,9 +35,8 @@ use pci_core::spec::hwid::Subclass;
 use std::any::Any;
 use std::sync::Arc;
 use task_control::TaskControl;
-use user_driver_emulated_mock::DeviceTestMemory;
+use tracing::debug;
 use vmcore::device_state::ChangeDeviceState;
-use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
@@ -133,7 +131,10 @@ impl NvmeControllerFaultInjection {
             },
         );
 
-        let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
+        // TODO: This is hack because we don't want to register the interrupt vectors here. In a future implementation this could prove quite useful actually!
+        let mut msi_set_dummy = MsiInterruptSet::new();
+        let register_msi_dummy: &mut dyn RegisterMsi = &mut msi_set_dummy;
+        let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi_dummy);
         let bars = DeviceBars::new()
             .bar0(
                 BAR0_LEN,
@@ -225,6 +226,10 @@ impl NvmeControllerFaultInjection {
             let data = u32::from_ne_bytes(data);
             if let Some(doorbell) = self.doorbells.get(index as usize) {
                 // self.admin_sq_latest_tail.set(data);
+                debug!(
+                    "Writing doobell data: {:#x} to doorbell index: {}",
+                    data, index
+                );
                 doorbell.write(data);
             } else {
                 tracelimit::warn_ratelimited!(index, data, "unknown doorbell");

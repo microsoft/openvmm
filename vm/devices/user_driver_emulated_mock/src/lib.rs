@@ -26,6 +26,7 @@ use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
+use tracing::debug;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
@@ -80,6 +81,7 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
     /// shared with the device.
     pub fn new(mut device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
+        debug!("msi set len being used is {}", msi_set.len());
         // Connect an interrupt controller.
         let controller = MsiController::new(msi_set.len());
         msi_set.connect(&controller);

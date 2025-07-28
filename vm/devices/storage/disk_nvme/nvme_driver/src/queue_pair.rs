@@ -33,6 +33,7 @@ use std::num::Wrapping;
 use std::sync::Arc;
 use std::task::Poll;
 use thiserror::Error;
+use tracing::debug;
 use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
@@ -443,6 +444,7 @@ impl Issuer {
         guest_memory: &GuestMemory,
         mem: PagedRange<'_>,
     ) -> Result<spec::Completion, RequestError> {
+        debug!("Issuing command: {:?}", command);
         let mut double_buffer_pages = None;
         let opcode = spec::Opcode(command.cdw0.opcode());
         assert!(
