@@ -141,11 +141,6 @@ impl NvmeController {
             bars,
         );
 
-        debug!(
-            "Caps msix count is: {}, and the max_io_queue is: {}",
-            caps.msix_count, caps.max_io_queues
-        );
-
         let interrupts = (0..caps.msix_count)
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
