@@ -249,7 +249,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
                     };
 
                     if !check_bitmap.page_state(gpn) {
-                        tracing::warn!(?address, ?len, ?write, ?self.view_type, "VTL 1 permissions violation");
+                        tracelimit::warn_ratelimited!(?address, ?len, ?write, ?self.view_type, "VTL 1 permissions violation");
 
                         return guestmem::PageFaultAction::Fail(guestmem::PageFaultError::new(
                             guestmem::GuestMemoryErrorKind::VtlProtected,
