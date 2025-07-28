@@ -32,7 +32,6 @@ use task_control::InspectTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use tracing::Instrument;
-use tracing::debug;
 use tracing::info_span;
 use user_driver::DeviceBacking;
 use user_driver::backoff::Backoff;
@@ -890,7 +889,6 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         state: &mut WorkerState,
         cpu: u32,
     ) -> anyhow::Result<IoIssuer> {
-        debug!("max io queues for the state is {}", state.max_io_queues);
         if self.io.len() >= state.max_io_queues as usize {
             anyhow::bail!("no more io queues available");
         }
