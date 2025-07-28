@@ -22,6 +22,7 @@ cvm_tracing.workspace = true
 inspect.workspace = true
 pal_async.workspace = true
 sparse_mmap.workspace = true
+tracelimit.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
