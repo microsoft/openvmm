@@ -482,14 +482,16 @@ impl PartitionInfo {
             None
         };
 
-        address_space.init(
-            &storage.vtl2_ram,
-            params.used,
-            subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
-            vtl2_reserved_range,
-            sidecar_image,
-            page_tables,
-        );
+        address_space
+            .init(
+                &storage.vtl2_ram,
+                params.used,
+                subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
+                vtl2_reserved_range,
+                sidecar_image,
+                page_tables,
+            )
+            .expect("failed to initialize address space manager");
 
         // Decide if we will reserve memory for a VTL2 private pool. Parse this
         // from the final command line, or the host provided device tree value.
