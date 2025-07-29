@@ -102,7 +102,7 @@ unsafe extern "C" {
     #[expect(dead_code)]
     pub fn hv_vcpu_get_vtimer_mask(vcpu: u64, vtimer_is_masked: *mut bool) -> HvfResult;
     pub fn hv_vcpu_set_vtimer_mask(vcpu: u64, vtimer_is_masked: bool) -> HvfResult;
-    pub fn hv_gic_get_intd(interrupt: HvGicIntId, intd: *mut u32) -> HvfResult;
+    pub fn hv_gic_get_intid(interrupt: HvGicIntId, intd: *mut u32) -> HvfResult;
 }
 
 open_enum! {

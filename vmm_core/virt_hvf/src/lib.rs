@@ -122,7 +122,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         unsafe {
             let interrupt = abi::HvGicIntId::PerformanceMonitor;
             let mut intd = 0;
-            abi::hv_gic_get_intd(interrupt, &mut intd)
+            abi::hv_gic_get_intid(interrupt, &mut intd)
                 .chk()
                 .context("failed to get GIC interrupt ID")?;
             tracing::error!("GIC interrupt ID: {:#x}", intd);
