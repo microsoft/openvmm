@@ -1,7 +1,8 @@
 use crate::NvmeController;
-use crate::fault_injection::queue::SubmissionQueueFaultInjection;
+// use crate::fault_injection::queue::SubmissionQueueFaultInjection;
 use crate::queue::DoorbellRegister;
 use crate::queue::QueueError;
+use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::workers::IoQueueEntrySizes;
 use futures::FutureExt;
@@ -30,7 +31,7 @@ pub(crate) struct AdminHandlerFaultInjection {
 
 #[derive(Inspect)]
 pub(crate) struct AdminStateFaultInjection {
-    pub admin_sq: SubmissionQueueFaultInjection,
+    pub admin_sq: SubmissionQueue,
 }
 
 #[derive(Inspect)]
@@ -46,6 +47,7 @@ pub(crate) struct AdminConfigFaultInjection {
     pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
     #[inspect(skip)]
     pub controller: Arc<Mutex<NvmeController>>,
+    pub sq_doorbell_addr: u16, // The address of the submission queue doorbell in the device's BAR0.
 }
 
 impl AsyncRun<AdminStateFaultInjection> for AdminHandlerFaultInjection {
@@ -55,7 +57,14 @@ impl AsyncRun<AdminStateFaultInjection> for AdminHandlerFaultInjection {
         state: &mut AdminStateFaultInjection,
     ) -> Result<(), Cancelled> {
         loop {
-            stop.until_stopped(self.next_event(state)).await?;
+            let event = stop.until_stopped(self.next_event(state)).await?;
+            if let Err(err) = self.process_event(state, event).await {
+                tracing::error!(
+                    error = &err as &dyn std::error::Error,
+                    "admin fault injection queue failure"
+                );
+                break;
+            }
         }
         Ok(())
     }
@@ -74,6 +83,25 @@ impl AdminHandlerFaultInjection {
             .await;
         Ok(next_command)
     }
+
+    async fn process_event(
+        &mut self,
+        state: &mut AdminStateFaultInjection,
+        event: Result<Event, QueueError>,
+    ) -> Result<(), QueueError> {
+        let event = event?;
+        match event {
+            Event::Command(_command_result) => {
+                let data = state.admin_sq.sqhd() as u32;
+                let mut inner_controller = self.config.controller.lock();
+                let data = u32::to_ne_bytes(data);
+
+                // Write to doorbell register address
+                let _ = inner_controller.write_bar0(self.config.sq_doorbell_addr, &data);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl AdminHandlerFaultInjection {
@@ -91,13 +119,13 @@ impl InspectTask<AdminStateFaultInjection> for AdminHandlerFaultInjection {
 impl AdminStateFaultInjection {
     pub fn new(handler: &AdminHandlerFaultInjection, asq: u64, asqs: u16) -> Self {
         Self {
-            admin_sq: SubmissionQueueFaultInjection::new(
-                handler.config.doorbells[0].clone(),
-                asq,
-                asqs,
-                None,
-                handler.config.controller.clone(),
-            ),
+            admin_sq: SubmissionQueue::new(handler.config.doorbells[0].clone(), asq, asqs, None),
         }
+    }
+
+    /// Returns the doorbells that need to be fault injected to. In this case it is just the admin submission queue
+    /// TODO: Can be extended in the future to return a Vec<u16> of doorbell indices.
+    pub fn get_intercept_doorbell(&self) -> u16 {
+        0
     }
 }
