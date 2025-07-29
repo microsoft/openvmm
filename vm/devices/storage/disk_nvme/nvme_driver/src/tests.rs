@@ -16,7 +16,6 @@ use pal_async::async_test;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
-use std::any::Any;
 use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
@@ -330,7 +329,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    let mut nvme = nvme::NvmeControllerFaultInjection::new(
+    let nvme = nvme::NvmeControllerFaultInjection::new(
         &driver_source,
         guest_mem.clone(),
         &mut msi_set,
