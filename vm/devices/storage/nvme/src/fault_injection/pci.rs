@@ -74,7 +74,7 @@ impl NvmeControllerFaultInjection {
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
-        sq_fault_injector: Box<dyn FaultInjector + Send + Sync>,
+        sq_fault_injector: async Box<Send + Sync>,
     ) -> Self {
         // Setup Doorbell intercept.
         let num_qids = 2 + caps.max_io_queues * 2; // Assumes that max_sqs == max_cqs
