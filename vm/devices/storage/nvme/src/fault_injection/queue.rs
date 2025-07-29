@@ -8,6 +8,7 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use tracing::info;
 
 #[derive(Inspect)]
 pub struct SubmissionQueueFaultInjection {
@@ -42,6 +43,7 @@ impl SubmissionQueueFaultInjection {
         let data = self.sqhd() as u32; // Ensures 1 doorbell write per command!
         let mut inner_controller = self.controller.lock();
         let data = u32::to_ne_bytes(data);
+
         inner_controller.write_bar0(self.addr, &data);
         Ok(command)
     }

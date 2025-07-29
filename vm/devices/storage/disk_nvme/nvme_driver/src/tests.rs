@@ -8,7 +8,6 @@ use chipset_device::pci::PciConfigSpace;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use nvme::FaultInjectionAction;
 use nvme::NvmeControllerCaps;
 use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
@@ -341,7 +340,6 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
         },
-        Box::new(fault_controller),
     );
 
     nvme.client() // 2MB namespace
@@ -420,15 +418,15 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
 
-    // assert_eq!(driver.fallback_cpu_count(), 1);
+    assert_eq!(driver.fallback_cpu_count(), 1);
 
-    // let mut v = [0; 4096];
-    // payload_mem.read_at(0, &mut v).unwrap();
-    // assert_eq!(&v[..512], &[0; 512]);
-    // assert_eq!(&v[512..1024], &[0xcc; 512]);
-    // assert!(v[1024..].iter().all(|&x| x == 0));
+    let mut v = [0; 4096];
+    payload_mem.read_at(0, &mut v).unwrap();
+    assert_eq!(&v[..512], &[0; 512]);
+    assert_eq!(&v[512..1024], &[0xcc; 512]);
+    assert!(v[1024..].iter().all(|&x| x == 0));
 
-    // driver.shutdown().await;
+    driver.shutdown().await;
 }
 
 /// A fault injection function where fn_name is the name of the function being invoked and
@@ -436,25 +434,25 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
 /// this controller can respond with types of actions: FaultInjectionAction
 /// This function is used to mock the behavior of the NVMe controller for testing purposes.
 /// I might have to wrap this in a struct to control some Mesh::Cell objects.
-fn fault_controller(
-    fn_name: &str,
-    input: Vec<Box<dyn Any>>,
-) -> (FaultInjectionAction, Vec<Box<dyn Any>>) {
-    match fn_name {
-        "read_bar0_input" => {
-            // Get the input address and data
-            assert_eq!(input.len(), 2);
-            let addr = input[0].downcast_ref::<u32>().unwrap();
-            let data: &[u8] = input[1].downcast_ref::<Vec<u8>>().unwrap();
-            // Change Output. FaultInjectionAction::Return
-            (FaultInjectionAction::Drop, vec![])
-        }
-        _ => {
-            // Undefined bheaviour is always passthrough
-            (FaultInjectionAction::No_Op, vec![])
-        }
-    }
-}
+// fn fault_controller(
+//     fn_name: &str,
+//     input: Vec<Box<dyn Any>>,
+// ) -> (FaultInjectionAction, Vec<Box<dyn Any>>) {
+//     match fn_name {
+//         "read_bar0_input" => {
+//             // Get the input address and data
+//             assert_eq!(input.len(), 2);
+//             let addr = input[0].downcast_ref::<u32>().unwrap();
+//             let data: &[u8] = input[1].downcast_ref::<Vec<u8>>().unwrap();
+//             // Change Output. FaultInjectionAction::Return
+//             (FaultInjectionAction::Drop, vec![])
+//         }
+//         _ => {
+//             // Undefined bheaviour is always passthrough
+//             (FaultInjectionAction::No_Op, vec![])
+//         }
+//     }
+// }
 
 #[derive(Inspect)]
 pub struct NvmeTestEmulatedDevice<T: InspectMut, U: DmaClient> {

@@ -35,6 +35,7 @@ use pci_core::spec::hwid::Subclass;
 use std::any::Any;
 use std::sync::Arc;
 use task_control::TaskControl;
+use tracing::info;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -42,31 +43,10 @@ use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-// The function can respond with two types of actions.
-#[derive(Debug, Clone)]
-pub enum FaultInjectionAction {
-    /// No-fault. Will always run the underlying function with the given input to the function. A direct passthrough
-    No_Op,
-    /// Drops the request to the underlying function but expects to be given some output for the caller.
-    Drop,
-    /// Underlying function is called. Given output is passed along to the caller. Output can be different from that of the function that was run.
-    Fault,
-    // TODO: There are many other types of faults that can be added in the long run. For eg, change output of the underlying function,
-    // change input to the underlying function, call the underlying function several times, etc. This is meant to be a flexible model for invoking faults
-    // Not every scenario needs to be supported when calling the underlying function for faults.
-    // FaultInjectionAction::Delay is a special case that should be implemented by the custom fault injection function. Keep in mind that
-    // delay can also be modeled as FaultInjectionAction::Drop for a given duration of time depending on the required outcome.
-}
-
 #[derive(InspectMut)]
 pub struct NvmeControllerFaultInjection {
     #[inspect(skip)]
     inner: Arc<Mutex<NvmeController>>,
-    /// Fault injection callback for NVMe controller operations
-    #[inspect(skip)]
-    fi: Box<
-        dyn Fn(&str, Vec<Box<dyn Any>>) -> (FaultInjectionAction, Vec<Box<dyn Any>>) + Send + Sync,
-    >,
     mem: GuestMemory,
     driver: VmTaskDriver,
     #[inspect(skip)]
@@ -75,8 +55,6 @@ pub struct NvmeControllerFaultInjection {
     #[inspect(skip)]
     admin: TaskControl<AdminHandlerFaultInjection, AdminStateFaultInjection>,
     cfg_space: ConfigSpaceType0Emulator,
-    // #[inspect(skip)]
-    // admin_sq_latest_tail: mesh::CellUpdater<u32>,
 }
 
 #[derive(Inspect)]
@@ -95,18 +73,14 @@ impl NvmeControllerFaultInjection {
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
-        fi: Box<
-            dyn Fn(&str, Vec<Box<dyn Any>>) -> (FaultInjectionAction, Vec<Box<dyn Any>>)
-                + Send
-                + Sync,
-        >,
     ) -> Self {
-        // Deal with Doorbell registers copy
+        // Setup Doorbell intercept.
         let num_qids = 2 + caps.max_io_queues * 2; // Assumes that max_sqs == max_cqs
         let doorbells: Vec<_> = (0..num_qids)
             .map(|_| Arc::new(DoorbellRegister::new()))
             .collect();
 
+        // We want to be able to share the inner controller with the admin handler.
         let inner = Arc::new(Mutex::new(NvmeController::new(
             driver_source,
             guest_memory.clone(), // Communication with the inner controller will always be through the inner memory component.
@@ -116,7 +90,6 @@ impl NvmeControllerFaultInjection {
         )));
 
         let qe_sizes = Arc::new(Default::default());
-        let mut doorbell_write = mesh::CellUpdater::new(ILLEGAL_DOORBELL_VALUE);
         let handler: AdminHandlerFaultInjection = AdminHandlerFaultInjection::new(
             driver_source.simple(),
             AdminConfigFaultInjection {
@@ -130,10 +103,11 @@ impl NvmeControllerFaultInjection {
             },
         );
 
-        // TODO: This is hack because we don't want to register the interrupt vectors here. In a future implementation this could prove quite useful actually!
-        let mut msi_set_dummy = MsiInterruptSet::new();
-        let register_msi_dummy: &mut dyn RegisterMsi = &mut msi_set_dummy;
+        // Don't register the interrupt vectors multiple times. Fixes issues calculating max queues.
+        let mut register_msi_dummy: &mut dyn RegisterMsi = &mut MsiInterruptSet::new();
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi_dummy);
+
+        // TODO: Do we need to set up the bars here?
         let bars = DeviceBars::new()
             .bar0(
                 BAR0_LEN,
@@ -161,7 +135,6 @@ impl NvmeControllerFaultInjection {
 
         Self {
             inner: inner.clone(),
-            fi,
             mem: guest_memory.clone(),
             driver: driver_source.simple(),
             doorbells,
@@ -173,64 +146,55 @@ impl NvmeControllerFaultInjection {
             },
             admin: TaskControl::new(handler),
             cfg_space,
-            // admin_sq_latest_tail: doorbell_write,
         }
     }
 
-    /// Returns a client for manipulating the NVMe controller at runtime. This is mainly to add more namespaces
+    /// Passthrough
     pub fn client(&self) -> NvmeControllerClient {
         let inner = self.inner.lock();
         inner.client()
     }
 
-    /// Reads from the virtual BAR 0.
+    /// Passthrough
     pub fn read_bar0(&mut self, addr: u16, data: &mut [u8]) -> IoResult {
         // Normal Behaviour.
         let mut inner = self.inner.lock();
         inner.read_bar0(addr, data)
     }
 
-    fn is_admin_sq_doorbell_write(&mut self, addr: u16) -> bool {
+    // Tries to write to the admin submission queue doorbell register. If write is successful, return the IoResult.
+    fn intercept_admin_doorbell(&mut self, addr: u16, data: &[u8]) -> Result<IoResult, ()> {
         if addr >= 0x1000 {
             // Doorbell write.
             let base = addr - 0x1000;
             let index = base >> DOORBELL_STRIDE_BITS;
             if (index << DOORBELL_STRIDE_BITS) != base {
-                return false;
-            }
-            if index != 0 {
-                return false;
-            }
-            if let Some(_) = self.doorbells.get(index as usize) {
-                return true;
-            } else {
-                tracelimit::warn_ratelimited!(index, "unknown doorbell");
-            }
-        }
-        false
-    }
-
-    /// Writes to the virtual BAR 0.
-    pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
-        if addr >= 0x1000 {
-            // Doorbell write.
-            let base = addr - 0x1000;
-            let index = base >> DOORBELL_STRIDE_BITS;
-            if (index << DOORBELL_STRIDE_BITS) != base {
-                return IoResult::Err(InvalidRegister);
+                return Err(());
             }
             let Ok(data) = data.try_into() else {
-                return IoResult::Err(IoError::InvalidAccessSize);
+                return Err(());
             };
             let data = u32::from_ne_bytes(data);
             if let Some(doorbell) = self.doorbells.get(index as usize) {
                 doorbell.write(data);
+                return Ok(IoResult::Ok);
             } else {
                 tracelimit::warn_ratelimited!(index, data, "unknown doorbell");
             }
-            return IoResult::Ok;
+        }
+        Err(())
+    }
+
+    /// Writes to the virtual BAR 0. Does NOT handle doorbell writes. Those should be handled through mmio_write.
+    /// This does NOT handle doorbell writes, use mmio_write instead.
+    /// this does NOT handle write_bar0() to inner, use mmio_write instead.
+    pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
+        // Doorbell writes should be handled through mmio_write.
+        if addr >= 0x1000 {
+            return IoResult::Err(InvalidRegister);
         }
 
+        // Duplicate admin queue setup!
         let update_reg = |x: u64| {
             if data.len() == 8 {
                 u64::from_ne_bytes(data.try_into().unwrap())
@@ -244,7 +208,6 @@ impl NvmeControllerFaultInjection {
             }
         };
 
-        // Intercept and duplicate admin queue setup!
         match spec::Register(addr & !7) {
             spec::Register::ASQ => {
                 if !self.regs.cc.en() {
@@ -263,18 +226,19 @@ impl NvmeControllerFaultInjection {
             _ => {}
         };
 
+        // Admin Queue setup flow
         let Ok(data) = data.try_into() else {
             return IoResult::Err(IoError::InvalidAccessSize);
         };
+
         let data = u32::from_ne_bytes(data);
-        // Handle 32-bit registers.
         match spec::Register(addr) {
             spec::Register::CC => self.set_cc(data.into()),
             spec::Register::AQA => self.regs.aqa = data.into(),
             _ => {}
         }
 
-        // Don't pass this function call down since that will be handled by the mmio_write function.
+        // Don't passthrough, that will be handled by mmio_write.
         IoResult::Ok
     }
 
@@ -343,10 +307,14 @@ impl MmioIntercept for NvmeControllerFaultInjection {
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
         if let Some((0, offset)) = self.cfg_space.find_bar(addr) {
-            let ret_bar0 = self.write_bar0(offset, data); // TODO: This means that we are calling the inner write_bar0 function twice, fix that later.
-            if self.is_admin_sq_doorbell_write(addr as u16) {
-                return ret_bar0;
+            // Don't passthrough admin sq doorbell writes.
+            let admin_doorbell_intercept = self.intercept_admin_doorbell(offset, data);
+            if let Ok(intercept_result) = admin_doorbell_intercept {
+                return intercept_result;
             }
+
+            // Not an admin doorbell write, duplicate admin queue setup and write to the inner controller.
+            self.write_bar0(offset, data);
         }
 
         let mut inner = self.inner.lock();
