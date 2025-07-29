@@ -34,6 +34,7 @@ use thiserror::Error;
 use tracing::Instrument;
 use tracing::info_span;
 use user_driver::DeviceBacking;
+use user_driver::DmaClientAllocStats;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
@@ -170,6 +171,8 @@ enum NvmeWorkerRequest {
     CreateIssuer(Rpc<u32, ()>),
     /// Save worker state.
     Save(Rpc<(), anyhow::Result<NvmeDriverWorkerSavedState>>),
+    /// Query how much memory was allocated with fallback allocator.
+    QueryAllocatorStats(Rpc<(), DmaClientAllocStats>),
 }
 
 impl<T: DeviceBacking> NvmeDriver<T> {
@@ -739,6 +742,19 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
         self.nvme_keepalive = nvme_keepalive;
     }
+
+    /// Queries worker task if memory allocator ever fell back.
+    pub async fn get_alloc_stats(&self) -> DmaClientAllocStats {
+        let fb = self
+            .io_issuers
+            .send
+            .call(NvmeWorkerRequest::QueryAllocatorStats, ())
+            .await;
+        fb.unwrap_or(DmaClientAllocStats {
+            total_alloc: 0,
+            fallback_alloc: 0,
+        })
+    }
 }
 
 async fn handle_asynchronous_events(
@@ -837,6 +853,12 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
                     }
                     Some(NvmeWorkerRequest::Save(rpc)) => {
                         rpc.handle(async |_| self.save(state).await).await
+                    }
+                    Some(NvmeWorkerRequest::QueryAllocatorStats(rpc)) => {
+                        rpc.complete(DmaClientAllocStats {
+                            total_alloc: self.device.dma_client().alloc_size(),
+                            fallback_alloc: self.device.dma_client().fallback_alloc_size(),
+                        })
                     }
                     None => break,
                 }

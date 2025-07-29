@@ -69,4 +69,21 @@ pub trait DmaClient: Send + Sync + Inspect {
 
     /// Attach all previously allocated memory blocks.
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<MemoryBlock>>;
+
+    /// Query if this client supports persistent allocations.
+    fn is_persistent(&self) -> bool;
+
+    /// How much memory was allocated during session.
+    fn alloc_size(&self) -> u64;
+
+    /// How much backup memory was allocated during session (fallback).
+    fn fallback_alloc_size(&self) -> u64;
+}
+
+/// DMA allocator statistics per client.
+pub struct DmaClientAllocStats {
+    /// How much memory (bytes) was allocated by a main allocator.
+    pub total_alloc: u64,
+    /// How much memory (bytes) was allocated by a fallback allocator.
+    pub fallback_alloc: u64,
 }
