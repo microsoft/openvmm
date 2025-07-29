@@ -1,5 +1,6 @@
 use crate::NvmeController;
 // use crate::fault_injection::queue::SubmissionQueueFaultInjection;
+use crate::fault_injection::FaultInjector;
 use crate::queue::DoorbellRegister;
 use crate::queue::QueueError;
 use crate::queue::SubmissionQueue;
@@ -9,8 +10,10 @@ use futures::FutureExt;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::time::Duration;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTask;
@@ -27,6 +30,8 @@ enum Event {
 pub(crate) struct AdminHandlerFaultInjection {
     driver: VmTaskDriver,
     config: AdminConfigFaultInjection,
+    #[inspect(skip)]
+    admin_sq_fault: Box<dyn FaultInjector + Send + Sync>,
 }
 
 #[derive(Inspect)]
@@ -91,7 +96,10 @@ impl AdminHandlerFaultInjection {
     ) -> Result<(), QueueError> {
         let event = event?;
         match event {
-            Event::Command(_command_result) => {
+            Event::Command(command_result) => {
+                let command = command_result?;
+                let opcode = spec::AdminOpcode(command.cdw0.opcode());
+
                 let data = state.admin_sq.sqhd() as u32;
                 let mut inner_controller = self.config.controller.lock();
                 let data = u32::to_ne_bytes(data);
@@ -105,8 +113,16 @@ impl AdminHandlerFaultInjection {
 }
 
 impl AdminHandlerFaultInjection {
-    pub fn new(driver: VmTaskDriver, config: AdminConfigFaultInjection) -> Self {
-        Self { driver, config }
+    pub fn new(
+        driver: VmTaskDriver,
+        config: AdminConfigFaultInjection,
+        admin_sq_fault: Box<dyn FaultInjector + Send + Sync>,
+    ) -> Self {
+        Self {
+            driver,
+            config,
+            admin_sq_fault,
+        }
     }
 }
 
