@@ -3,15 +3,14 @@ use alloc::{
     boxed::Box,
     collections::{btree_map::BTreeMap, btree_set::BTreeSet, linked_list::LinkedList},
 };
-use core::{alloc::Layout, arch::asm, ops::Range};
+use core::{alloc::Layout, arch::asm, fmt::Display, ops::Range};
 
 use hvdef::{
-    hypercall::{self, HvInputVtl, InitialVpContextX64},
-    HvRegisterValue, Vtl,
+    hypercall::{HvInputVtl, InitialVpContextX64},
+    AlignedU128, Vtl,
 };
 use memory_range::MemoryRange;
 use minimal_rt::arch::{
-    hypercall::HYPERCALL_PAGE,
     msr::{read_msr, write_msr},
 };
 use sync_nostd::Mutex;
@@ -47,9 +46,20 @@ fn register_command_queue(vp_index: u32) {
 
 pub struct HvTestCtx {
     pub hvcall: HvCall,
+    // BUG: make this static
     pub vp_runing: BTreeSet<u32>,
     pub my_vp_idx: u32,
     pub my_vtl: Vtl,
+}
+
+impl Display for HvTestCtx {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "HvTestCtx {{ vp_idx: {}, vtl: {:?} }}",
+            self.my_vp_idx, self.my_vtl
+        )
+    }
 }
 
 impl SecureInterceptPlatformTrait for HvTestCtx {
@@ -173,7 +183,6 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         Ok(())
     }
 
-    
     #[inline(never)]
     /// Ensure the target VP is running in the requested VTL and queue
     /// the command for execution.  
@@ -190,18 +199,12 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         if vtl >= Vtl::Vtl2 {
             return Err(TmkError(TmkErrorType::InvalidParameter));
         }
-        log::debug!(
-            "VP{}: Queued command for VP{} in VTL{:?}",
-            self.my_vp_idx,
-            vp_index,
-            vtl
-        );
         let is_vp_running = self.vp_runing.get(&vp_index);
         if let Some(_running_vtl) = is_vp_running {
             log::debug!("both vtl0 and vtl1 are running for VP: {:?}", vp_index);
         } else {
             if vp_index == 0 {
-                let vp_context = self.get_default_context()?;
+                let vp_context = self.get_default_context(Vtl::Vtl1)?;
                 self.hvcall.enable_vp_vtl(0, Vtl::Vtl1, Some(vp_context))?;
 
                 cmdt().lock().get_mut(&vp_index).unwrap().push_back((
@@ -213,12 +216,6 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                 log::info!("self addr: {:p}", self as *const _);
                 self.switch_to_high_vtl();
                 log::info!("self addr after switch: {:p}", self as *const _);
-                log::debug!(
-                    "VP{}: Queued command for VP{} in VTL{:?}",
-                    self.my_vp_idx,
-                    vp_index,
-                    vtl
-                );
                 self.vp_runing.insert(vp_index);
             } else {
                 let (tx, rx) = sync_nostd::Channel::<TmkResult<()>>::new().split();
@@ -249,11 +246,6 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                     Vtl::Vtl1,
                 ));
                 self.switch_to_high_vtl();
-                log::debug!(
-                    "VP{} waiting for start confirmation for vp from VTL1: {}",
-                    self.my_vp_idx,
-                    vp_index
-                );
                 let rx = rx.recv();
                 if let Ok(r) = rx {
                     r?;
@@ -261,13 +253,6 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                 self.vp_runing.insert(vp_index);
             }
         }
-
-        log::debug!(
-            "VP{}: Queued command for VP{} in VTL{:?}",
-            self.my_vp_idx,
-            vp_index,
-            vtl
-        );
         cmdt()
             .lock()
             .get_mut(&vp_index)
@@ -291,7 +276,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         cmd: VpExecutor<HvTestCtx>,
     ) -> TmkResult<()> {
         let (vp_index, vtl, _cmd) = cmd.get();
-        let vp_ctx = self.get_default_context()?;
+        let vp_ctx: InitialVpContextX64 = self.get_default_context(vtl)?;
         self.hvcall
             .start_virtual_processor(vp_index, vtl, Some(vp_ctx))?;
         Ok(())
@@ -315,7 +300,7 @@ impl VtlPlatformTrait for HvTestCtx {
     /// Enable the specified VTL on a VP and seed it with a default
     /// context captured from the current execution environment.
     fn enable_vp_vtl_with_default_context(&mut self, vp_index: u32, vtl: Vtl) -> TmkResult<()> {
-        let vp_ctx = self.get_default_context()?;
+        let vp_ctx = self.get_default_context(vtl)?;
         self.hvcall.enable_vp_vtl(vp_index, vtl, Some(vp_ctx))?;
         Ok(())
     }
@@ -332,7 +317,7 @@ impl VtlPlatformTrait for HvTestCtx {
             Vtl::Vtl1 => 1,
             Vtl::Vtl2 => 2,
         };
-        let vp_context = self.get_default_context()?;
+        let vp_context = self.get_default_context(vtl)?;
         self.hvcall.set_vp_registers(
             vp_index,
             Some(
@@ -362,17 +347,46 @@ impl VtlPlatformTrait for HvTestCtx {
 
     /// Switch execution from the current (low) VTL to the next higher
     /// one (`vtl_call`).
+    #[inline(never)]
     fn switch_to_high_vtl(&mut self) {
-        self.print_rsp();
-        HvCall::vtl_call();
-        let rsp: u64;
         unsafe {
             asm!(
-                "mov {}, rsp",
-                out(reg) rsp,
+                "
+                push rax
+                push rbx
+                push rcx
+                push rdx
+                push rdi
+                push rsi
+                push rbp
+                push r8
+                push r9
+                push r10
+                push r11
+                push r12
+                push r13
+                push r14
+                push r15
+                call {call_address}
+                pop r15
+                pop r14
+                pop r13
+                pop r12
+                pop r11
+                pop r10
+                pop r9
+                pop r8
+                pop rbp
+                pop rsi
+                pop rdi
+                pop rdx
+                pop rcx
+                pop rbx
+                pop rax",
+                call_address = sym HvCall::vtl_call,
             );
         }
-        log::debug!("switched back to low VTL");
+
         // let reg = self
         //     .get_register(hvdef::HvAllArchRegisterName::VsmCodePageOffsets.0)
         //     .unwrap();
@@ -395,17 +409,51 @@ impl VtlPlatformTrait for HvTestCtx {
     }
 
     /// Return from a high VTL back to the low VTL (`vtl_return`).
+    #[inline(never)]
     fn switch_to_low_vtl(&mut self) {
-        log::debug!("switching to low VTL");
-        HvCall::vtl_return();
-
+        // HvCall::vtl_return();
+        unsafe {
+            asm!(
+                "
+                push rax
+                push rbx
+                push rcx
+                push rdx
+                push rdi
+                push rsi
+                push rbp
+                push r8
+                push r9
+                push r10
+                push r11
+                push r12
+                push r13
+                push r14
+                push r15
+                call {call_address}
+                pop r15
+                pop r14
+                pop r13
+                pop r12
+                pop r11
+                pop r10
+                pop r9
+                pop r8
+                pop rbp
+                pop rsi
+                pop rdi
+                pop rdx
+                pop rcx
+                pop rbx
+                pop rax",
+                call_address = sym HvCall::vtl_return,
+            );
+        }
         // let reg = self
         //     .get_register(hvdef::HvAllArchRegisterName::VsmCodePageOffsets.0)
         //     .unwrap();
         // let reg = HvRegisterValue::from(reg);
         // let offset = hvdef::HvRegisterVsmCodePageOffsets::from_bits(reg.as_u64());
-
-        // log::debug!("ret_offset: {:?}", offset);
 
         // let call_offset = offset.return_offset();
         // unsafe {
@@ -419,6 +467,39 @@ impl VtlPlatformTrait for HvTestCtx {
         //     );
         // }
     }
+
+    fn set_vp_state_with_vtl(
+        &mut self,
+        register_index: u32,
+        value: u64,
+        vtl: Vtl,
+    ) -> TmkResult<()> {
+        let vtl = vtl_transform(vtl);
+        let value = AlignedU128::from(value);
+        let reg_value = hvdef::HvRegisterValue(value);
+        self.hvcall
+            .set_register(hvdef::HvRegisterName(register_index), reg_value, Some(vtl))
+            .map_err(|e| e.into())
+    }
+
+    fn get_vp_state_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64> {
+        let vtl = vtl_transform(vtl);
+        self.hvcall
+            .get_register(hvdef::HvRegisterName(register_index), Some(vtl))
+            .map(|v| v.as_u64())
+            .map_err(|e| e.into())
+    }
+}
+
+fn vtl_transform(vtl: Vtl) -> HvInputVtl {
+    let vtl = match vtl {
+        Vtl::Vtl0 => 0,
+        Vtl::Vtl1 => 1,
+        Vtl::Vtl2 => 2,
+    };
+    HvInputVtl::new()
+        .with_target_vtl_value(vtl)
+        .with_use_target_vtl(true)
 }
 
 impl HvTestCtx {
@@ -437,91 +518,88 @@ impl HvTestCtx {
     /// – initialise the hypercall page,  
     /// – discover the VP count and create command queues,  
     /// – record the current VTL.
-    pub fn init(&mut self) -> TmkResult<()> {
+    pub fn init(&mut self, vtl: Vtl) -> TmkResult<()> {
         self.hvcall.initialize();
         let vp_count = self.get_vp_count()?;
         for i in 0..vp_count {
             register_command_queue(i);
         }
-        self.my_vtl = self.hvcall.vtl();
-        let reg = self
-            .hvcall
-            .get_register(hvdef::HvAllArchRegisterName::VpIndex.into(), None)
-            .expect("error: failed to get vp index");
-        let reg = reg.as_u64();
-        self.my_vp_idx = reg as u32;
+        self.my_vtl = vtl;
+        // let reg = self
+        //     .hvcall
+        //     .get_register(hvdef::HvAllArchRegisterName::VpIndex.into(), None)
+        //     .expect("error: failed to get vp index");
+        // let reg = reg.as_u64();
+        // self.my_vp_idx = reg as u32;
+
+        let result = unsafe { core::arch::x86_64::__cpuid(0x1) };
+        self.my_vp_idx = (result.ebx >> 24) & 0xFF;
         Ok(())
+    }
+
+    fn secure_exec_handler() {
+        HvTestCtx::exec_handler(Vtl::Vtl1);
+    }
+
+    fn general_exec_handler() {
+        HvTestCtx::exec_handler(Vtl::Vtl0);
     }
 
     /// Busy-loop executor that runs on every VP.  
     /// Extracts commands from the per-VP queue and executes them in the
     /// appropriate VTL, switching VTLs when necessary.
-    fn exec_handler() {
+    fn exec_handler(vtl: Vtl) {
         let mut ctx = HvTestCtx::new();
-        ctx.init().expect("error: failed to init on a VP");
+        ctx.init(vtl).expect("error: failed to init on a VP");
+
+        ctx.print_rbp();
+        ctx.print_rsp();
 
         loop {
             let mut vtl: Option<Vtl> = None;
             let mut cmd: Option<Box<dyn FnOnce(&mut HvTestCtx) + 'static>> = None;
 
             {
-                log::info!("pop1");
                 let mut cmdt = cmdt().lock();
-                log::debug!("pop2");
                 let d = cmdt.get_mut(&ctx.my_vp_idx);
-                log::debug!("pop3");
                 if let Some(d) = d {
-                    log::debug!("pop4");
                     if !d.is_empty() {
                         let (_c, v) = d.front().unwrap();
-                        log::debug!("pop5: vtl={:?}", v);
-                        log::debug!("pop5: my_vtl={:?}", ctx.my_vtl);
-                        log::debug!("pop5: vtl_={}", *v == Vtl::Vtl1);
                         if *v == ctx.my_vtl {
                             let (c, _v) = d.pop_front().unwrap();
                             cmd = Some(c);
                         } else {
                             vtl = Some(*v);
                         }
-
-                        log::debug!("pop6: cmd_is_none={:?}", cmd.is_none());
                     }
                 }
             }
 
-            log::debug!("pop7: vtl={:?}, cmd={:?}", vtl, cmd.is_some());
             if let Some(vtl) = vtl {
-                log::debug!("switching to vtl {:?} for vp {}", vtl, ctx.my_vp_idx);
                 if vtl == Vtl::Vtl0 {
                     ctx.switch_to_low_vtl();
                 } else {
                     ctx.switch_to_high_vtl();
                 }
             }
-            log::debug!("pop8: vtl={:?}, cmd={:?}", vtl, cmd.is_some());
 
             if let Some(cmd) = cmd {
-                log::debug!(
-                    "executing command on vp {} VTL{:?}",
-                    ctx.my_vp_idx,
-                    ctx.my_vtl
-                );
                 cmd(&mut ctx);
-                log::debug!(
-                    "executed command on vp {} VTL{:?}",
-                    ctx.my_vp_idx,
-                    ctx.my_vtl
-                );
             }
-            log::debug!("pop9");
         }
     }
 
     #[cfg(target_arch = "x86_64")]
     /// Capture the current VP context, patch the entry point and stack
     /// so that the new VP starts in `exec_handler`.
-    fn get_default_context(&mut self) -> Result<InitialVpContextX64, TmkError> {
-        self.run_fn_with_current_context(HvTestCtx::exec_handler)
+    fn get_default_context(&mut self, vtl: Vtl) -> Result<InitialVpContextX64, TmkError> {
+        let handler = match vtl {
+            Vtl::Vtl0 => HvTestCtx::general_exec_handler,
+            Vtl::Vtl1 => HvTestCtx::secure_exec_handler,
+            _ => return Err(TmkErrorType::InvalidParameter.into()),
+            
+        };
+        self.run_fn_with_current_context(handler)
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -550,7 +628,25 @@ impl HvTestCtx {
     // function to print the current register states for x64
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
-    fn print_rsp(&self) {
+    pub fn print_rbp(&self) {
+        let rbp: u64;
+        unsafe {
+            asm!(
+                "mov {}, rbp",
+                out(reg) rbp,
+            );
+        }
+        log::debug!(
+            "Current RBP: 0x{:#x}, VP:{} VTL:{:?}",
+            rbp,
+            self.my_vp_idx,
+            self.my_vtl
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    pub fn print_rsp(&self) {
         let rsp: u64;
         unsafe {
             asm!(
@@ -558,7 +654,12 @@ impl HvTestCtx {
                 out(reg) rsp,
             );
         }
-        log::debug!("Current RSP: 0x{:#x}", rsp);
+        log::debug!(
+            "Current RSP: 0x{:#x}, VP:{} VTL:{:?}",
+            rsp,
+            self.my_vp_idx,
+            self.my_vtl
+        );
     }
 }
 

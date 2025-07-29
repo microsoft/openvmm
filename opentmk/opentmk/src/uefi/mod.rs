@@ -18,5 +18,5 @@ fn uefi_main() -> Status {
     log::warn!("TEST_START");
     crate::tests::run_test();
     log::warn!("TEST_END");
-    Status::SUCCESS
+    loop{}
 }

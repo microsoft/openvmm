@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 use core::{
+    arch::asm,
     mem::size_of,
     sync::atomic::{AtomicU16, Ordering},
 };
@@ -12,7 +13,8 @@ use core::{
 use arrayvec::ArrayVec;
 use hvdef::{
     hypercall::{EnablePartitionVtlFlags, HvInputVtl, InitialVpContextX64},
-    HvRegisterValue, HvRegisterVsmPartitionConfig, HvX64RegisterName, Vtl, HV_PAGE_SIZE,
+    HvRegisterValue, HvRegisterVsmPartitionConfig, HvX64RegisterName, HvX64SegmentRegister, Vtl,
+    HV_PAGE_SIZE,
 };
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::{invoke_hypercall, HYPERCALL_PAGE};
@@ -301,12 +303,11 @@ impl HvCall {
 
     /// Enables VTL protection for the specified VTL.
     pub fn enable_vtl_protection(&mut self, vtl: HvInputVtl) -> Result<(), hvdef::HvError> {
-        let hvreg = self.get_register(HvX64RegisterName::VsmPartitionConfig.into(), Some(vtl))?;
-        let mut hvreg: HvRegisterVsmPartitionConfig =
-            HvRegisterVsmPartitionConfig::from_bits(hvreg.as_u64());
+        // let hvreg = self.get_register(HvX64RegisterName::VsmPartitionConfig.into(), Some(vtl))?;
+        let mut hvreg: HvRegisterVsmPartitionConfig = HvRegisterVsmPartitionConfig::new();
         hvreg.set_enable_vtl_protection(true);
         // hvreg.set_intercept_page(true);
-        // hvreg.set_default_vtl_protection_mask(0b11);
+        hvreg.set_default_vtl_protection_mask(0xF);
         // hvreg.set_intercept_enable_vtl_protection(true);
         let bits = hvreg.into_bits();
         let hvre: HvRegisterValue = HvRegisterValue::from(bits);
@@ -366,60 +367,248 @@ impl HvCall {
         }
     }
 
+    fn get_segment_descriptor(segment_reg: &str) -> HvX64SegmentRegister {
+        unsafe {
+            use core::arch::asm;
+            let mut descriptor = HvX64SegmentRegister {
+                base: 0,
+                limit: 0,
+                selector: 0,
+                attributes: 0,
+            };
+            match segment_reg {
+                "cs" => {
+                    asm!("mov {0:x}, cs", out(reg) descriptor.selector, options(nomem, nostack))
+                }
+                "ds" => {
+                    asm!("mov {0:x}, ds", out(reg) descriptor.selector, options(nomem, nostack))
+                }
+                "es" => {
+                    asm!("mov {0:x}, es", out(reg) descriptor.selector, options(nomem, nostack))
+                }
+                "ss" => {
+                    asm!("mov {0:x}, ss", out(reg) descriptor.selector, options(nomem, nostack))
+                }
+                "fs" => {
+                    asm!("mov {0:x}, fs", out(reg) descriptor.selector, options(nomem, nostack))
+                }
+                "gs" => {
+                    asm!("mov {0:x}, gs", out(reg) descriptor.selector, options(nomem, nostack))
+                }
+                "tr" => asm!("str {0:x}", out(reg) descriptor.selector, options(nomem, nostack)),
+                _ => panic!("Invalid segment register"),
+            }
+
+            // For FS and GS in 64-bit mode, we can get the base directly via MSRs
+            if segment_reg == "fs" {
+                let mut base_low: u32;
+                let mut base_high: u32;
+                asm!(
+                    "mov ecx, 0xC0000100", // FS_BASE MSR
+                    "rdmsr",
+                    out("eax") base_low,
+                    out("edx") base_high,
+                    options(nomem, nostack)
+                );
+                descriptor.base = ((base_high as u64) << 32) | (base_low as u64);
+            } else if segment_reg == "gs" {
+                let mut base_low: u32;
+                let mut base_high: u32;
+                asm!(
+                    "mov ecx, 0xC0000101", // GS_BASE MSR
+                    "rdmsr",
+                    out("eax") base_low,
+                    out("edx") base_high,
+                    options(nomem, nostack)
+                );
+                descriptor.base = ((base_high as u64) << 32) | (base_low as u64);
+            } else {
+                // For other segments, need to look up in GDT/LDT
+                // Allocate 10 bytes for storing GDTR/LDTR content
+                let mut descriptor_table = [0u8; 10];
+
+                // Determine if selector is in GDT or LDT
+                let table_indicator = descriptor.selector & 0x04;
+
+                if table_indicator == 0 {
+                    // Get GDT base
+                    asm!("sgdt [{}]", in(reg) descriptor_table.as_mut_ptr(), options(nostack));
+                } else {
+                    // Get LDT base
+                    asm!("sldt [{}]", in(reg) descriptor_table.as_mut_ptr(), options(nostack));
+                }
+
+                // Extract GDT/LDT base (bytes 2-9 of descriptor_table)
+                let table_base = u64::from_ne_bytes([
+                    descriptor_table[2],
+                    descriptor_table[3],
+                    descriptor_table[4],
+                    descriptor_table[5],
+                    descriptor_table[6],
+                    descriptor_table[7],
+                    descriptor_table[8],
+                    descriptor_table[9],
+                ]);
+
+                // Calculate descriptor entry address
+                let index = (descriptor.selector & 0xFFF8) as u64; // Clear RPL and TI bits
+                let desc_addr = table_base + index;
+
+                // Read the 8-byte descriptor
+                let desc_bytes = alloc::slice::from_raw_parts(desc_addr as *const u8, 8);
+                let desc_low = u32::from_ne_bytes([
+                    desc_bytes[0],
+                    desc_bytes[1],
+                    desc_bytes[2],
+                    desc_bytes[3],
+                ]);
+                let desc_high = u32::from_ne_bytes([
+                    desc_bytes[4],
+                    desc_bytes[5],
+                    desc_bytes[6],
+                    desc_bytes[7],
+                ]);
+
+                // Extract base (bits 16-39 and 56-63)
+                let base_low = ((desc_low >> 16) & 0xFFFF) as u64;
+                let base_mid = (desc_high & 0xFF) as u64;
+                let base_high = ((desc_high >> 24) & 0xFF) as u64;
+                descriptor.base = base_low | (base_mid << 16) | (base_high << 24);
+
+                // Extract limit (bits 0-15 and 48-51)
+                let limit_low = desc_low & 0xFFFF;
+                let limit_high = (desc_high >> 16) & 0x0F;
+                descriptor.limit = limit_low | (limit_high << 16);
+
+                // Extract attributes (bits 40-47 and 52-55)
+                let attr_low = (desc_high >> 8) & 0xFF;
+                let attr_high = (desc_high >> 20) & 0x0F;
+                descriptor.attributes = (attr_low as u16) | ((attr_high as u16) << 8);
+
+                // If G bit is set (bit 55), the limit is in 4K pages
+                if (desc_high & 0x00800000) != 0 {
+                    descriptor.limit = (descriptor.limit << 12) | 0xFFF;
+                }
+
+                // For TR, which is a system segment in 64-bit mode, read the second 8 bytes to get the high 32 bits of base
+                if segment_reg == "tr" {
+                    // Check if it's a system descriptor (bit 4 of attributes is 0)
+                    if (descriptor.attributes & 0x10) == 0 {
+                        // Read the next 8 bytes of the descriptor (high part of 16-byte descriptor)
+                        let high_desc_bytes =
+                            alloc::slice::from_raw_parts((desc_addr + 8) as *const u8, 8);
+                        let high_base = u32::from_ne_bytes([
+                            high_desc_bytes[0],
+                            high_desc_bytes[1],
+                            high_desc_bytes[2],
+                            high_desc_bytes[3],
+                        ]) as u64;
+
+                        // Combine with existing base to get full 64-bit base
+                        descriptor.base |= high_base << 32;
+                    }
+                }
+            }
+
+            descriptor
+        }
+    }
+
     #[cfg(target_arch = "x86_64")]
     /// Hypercall to get the current VTL VP context
     pub fn get_current_vtl_vp_context(&mut self) -> Result<InitialVpContextX64, hvdef::HvError> {
+        use minimal_rt::arch::msr::read_msr;
         use zerocopy::FromZeros;
-        use HvX64RegisterName;
         let mut context: InitialVpContextX64 = FromZeros::new_zeroed();
-        context.cr0 = self
-            .get_register(HvX64RegisterName::Cr0.into(), None)?
-            .as_u64();
-        context.cr3 = self
-            .get_register(HvX64RegisterName::Cr3.into(), None)?
-            .as_u64();
-        context.cr4 = self
-            .get_register(HvX64RegisterName::Cr4.into(), None)?
-            .as_u64();
-        context.rip = self
-            .get_register(HvX64RegisterName::Rip.into(), None)?
-            .as_u64();
-        context.rsp = self
-            .get_register(HvX64RegisterName::Rsp.into(), None)?
-            .as_u64();
-        context.rflags = self
-            .get_register(HvX64RegisterName::Rflags.into(), None)?
-            .as_u64();
-        context.cs = self
-            .get_register(HvX64RegisterName::Cs.into(), None)?
-            .as_segment();
-        context.ss = self
-            .get_register(HvX64RegisterName::Ss.into(), None)?
-            .as_segment();
-        context.ds = self
-            .get_register(HvX64RegisterName::Ds.into(), None)?
-            .as_segment();
-        context.es = self
-            .get_register(HvX64RegisterName::Es.into(), None)?
-            .as_segment();
-        context.fs = self
-            .get_register(HvX64RegisterName::Fs.into(), None)?
-            .as_segment();
-        context.gs = self
-            .get_register(HvX64RegisterName::Gs.into(), None)?
-            .as_segment();
-        context.gdtr = self
-            .get_register(HvX64RegisterName::Gdtr.into(), None)?
-            .as_table();
-        context.idtr = self
-            .get_register(HvX64RegisterName::Idtr.into(), None)?
-            .as_table();
-        context.tr = self
-            .get_register(HvX64RegisterName::Tr.into(), None)?
-            .as_segment();
-        context.efer = self
-            .get_register(HvX64RegisterName::Efer.into(), None)?
-            .as_u64();
+
+        let rsp: u64;
+        unsafe { asm!("mov {0:r}, rsp", out(reg) rsp, options(nomem, nostack)) };
+
+        let cr0;
+        unsafe { asm!("mov {0:r}, cr0", out(reg) cr0, options(nomem, nostack)) };
+        let cr3;
+        unsafe { asm!("mov {0:r}, cr3", out(reg) cr3, options(nomem, nostack)) };
+        let cr4;
+        unsafe { asm!("mov {0:r}, cr4", out(reg) cr4, options(nomem, nostack)) };
+
+        let rflags: u64;
+        unsafe {
+            asm!(
+                "pushfq",
+                "pop {0}",
+                out(reg) rflags,
+            );
+        }
+
+        context.cr0 = cr0;
+        context.cr3 = cr3;
+        context.cr4 = cr4;
+
+        context.rsp = rsp;
+        context.rip = 0;
+
+        context.rflags = rflags;
+
+        // load segment registers
+
+        let cs: u16;
+        let ss: u16;
+        let ds: u16;
+        let es: u16;
+        let fs: u16;
+        let gs: u16;
+
+        unsafe {
+            asm!("
+                mov {0:x}, cs
+                mov {1:x}, ss
+                mov {2:x}, ds
+                mov {3:x}, es
+                mov {4:x}, fs
+                mov {5:x}, gs
+            ", out(reg) cs, out(reg) ss, out(reg) ds, out(reg) es, out(reg) fs, out(reg) gs, options(nomem, nostack))
+        }
+
+        context.cs.selector = cs;
+        context.cs.attributes = 0xA09B;
+        context.cs.limit = 0xFFFFFFFF;
+
+        context.ss.selector = ss;
+        context.ss.attributes = 0xC093;
+        context.ss.limit = 0xFFFFFFFF;
+
+        context.ds.selector = ds;
+        context.ds.attributes = 0xC093;
+        context.ds.limit = 0xFFFFFFFF;
+
+        context.es.selector = es;
+        context.es.attributes = 0xC093;
+        context.es.limit = 0xFFFFFFFF;
+
+        context.fs.selector = fs;
+        context.fs.attributes = 0xC093;
+        context.fs.limit = 0xFFFFFFFF;
+
+        context.gs.selector = gs;
+        context.gs.attributes = 0xC093;
+        context.gs.limit = 0xFFFFFFFF;
+
+        context.tr.selector = 0;
+        context.tr.attributes = 0x8B;
+        context.tr.limit = 0xFFFF;
+
+        let idt = x86_64::instructions::tables::sidt();
+        context.idtr.base = idt.base.as_u64();
+        context.idtr.limit = idt.limit;
+
+        let gdtr = x86_64::instructions::tables::sgdt();
+        context.gdtr.base = gdtr.base.as_u64();
+        context.gdtr.limit = gdtr.limit;
+
+        let efer = unsafe { read_msr(0xC0000080) };
+        context.efer = efer;
+
+        log::info!("Current VTL VP context: {:?}", context);
         Ok(context)
     }
 

@@ -19,11 +19,20 @@ memory_range.workspace = true
 minimal_rt.workspace = true
 serde = { version = "1.0", default-features = false, features = ["derive"]}
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+thiserror.workspace = true
 uefi = { workspace = true, features = ["alloc"] }
 x86_64.workspace = true
 x86defs.workspace = true
 zerocopy.workspace = true
 sync_nostd.workspace = true
+
+
+[dependencies.iced-x86]
+version = "1.21.0"
+default-features = false
+# See below for all features
+features = ["decoder", "nasm", "no_std"]
+
 
 [lints]
 workspace = true
@@ -37,7 +46,7 @@ opt-level = 0           # No optimizations (same as debug)
 debug = true            # Include debug symbols
 debug-assertions = true # Enable debug assertions
 overflow-checks = true  # Enable integer overflow checks
-lto = "off"            # Disable link-time optrimization
+ltso = "offz"            # Disable link-time optrimization
 codegen-units = 256    # Use more codegen units (faster compilation)
 
 [profile.release.package."*"]

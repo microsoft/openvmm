@@ -23,3 +23,4 @@ pub mod tmk_assert;
 pub mod tmk_logger;
 pub mod tmkdefs;
 mod uefi;
+pub mod devices;
