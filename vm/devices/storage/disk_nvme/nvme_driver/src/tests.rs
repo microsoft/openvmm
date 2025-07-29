@@ -13,11 +13,15 @@ use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::driver::Driver;
+use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
+use std::time::Duration;
 use test_with_tracing::test;
+use tracing::info;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
@@ -26,6 +30,7 @@ use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
 use vmcore::vm_task::SingleDriverBackend;
+use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
 
@@ -339,6 +344,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
         },
+        Box::new(|driver| Box::pin(fault_controller(driver))), // Fault injection function
     );
 
     nvme.client() // 2MB namespace
@@ -433,24 +439,10 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
 /// this controller can respond with types of actions: FaultInjectionAction
 /// This function is used to mock the behavior of the NVMe controller for testing purposes.
 /// I might have to wrap this in a struct to control some Mesh::Cell objects.
-async fn fault_controller(
-    fn_name: &str,
-    input: &mut Box<spec::Command>,
-) -> (FaultInjectionAction, Vec<Box<dyn Any>>) {
-    match fn_name {
-        "read_bar0_input" => {
-            // Get the input address and data
-            assert_eq!(input.len(), 2);
-            let addr = input[0].downcast_ref::<u32>().unwrap();
-            let data: &[u8] = input[1].downcast_ref::<Vec<u8>>().unwrap();
-            // Change Output. FaultInjectionAction::Return
-            (FaultInjectionAction::Drop, vec![])
-        }
-        _ => {
-            // Undefined bheaviour is always passthrough
-            (FaultInjectionAction::No_Op, vec![])
-        }
-    }
+async fn fault_controller(driver: VmTaskDriver) {
+    info!("DELAYING ADMIN COMMANDS FOR 5 SECONDS");
+    // TODO: This should be a reference
+    PolledTimer::new(&driver).sleep(Duration::new(5, 0)).await;
 }
 
 #[derive(Inspect)]
