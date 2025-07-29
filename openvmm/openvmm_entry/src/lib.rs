@@ -1158,6 +1158,7 @@ fn vm_config_from_command_line(
             // TODO: allow this to be configured from the command line
             gic_config: None,
             // TODO: needs to be queried from each platform
+            // pmu_gsiv: Some(0x17),
             pmu_gsiv: None,
         },
     );
