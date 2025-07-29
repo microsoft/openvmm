@@ -102,7 +102,6 @@ unsafe extern "C" {
     #[expect(dead_code)]
     pub fn hv_vcpu_get_vtimer_mask(vcpu: u64, vtimer_is_masked: *mut bool) -> HvfResult;
     pub fn hv_vcpu_set_vtimer_mask(vcpu: u64, vtimer_is_masked: bool) -> HvfResult;
-    pub fn hv_gic_get_intid(interrupt: HvGicIntId, intd: *mut u32) -> HvfResult;
 }
 
 open_enum! {
@@ -125,16 +124,6 @@ open_enum! {
         EXCEPTION = 1,
         VTIMER_ACTIVATED = 2,
         UNKNOWN = 3,
-    }
-}
-
-open_enum! {
-    pub enum HvGicIntId: u16 {
-        PerformanceMonitor = 23,
-        Maintenance = 25,
-        EL2PhysicalTimer = 26,
-        EL1VirtualTimer = 27,
-        EL1PhysicalTimer = 30,
     }
 }
 
