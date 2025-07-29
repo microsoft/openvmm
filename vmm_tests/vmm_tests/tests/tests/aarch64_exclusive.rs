@@ -26,7 +26,7 @@ async fn pmu_gsiv<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), a
 
     // Check dmesg for logs about the PMU.
     let shell = agent.unix_shell();
-    let dmesg = cmd!(shell, "dmesg | grep -i pmu").read().await?;
+    let dmesg = cmd!(shell, "dmesg").read().await?;
 
     // There should be no lines that look like the following:
     //  "No ACPI PMU IRQ for CPU0"
