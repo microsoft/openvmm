@@ -19,6 +19,7 @@ use vmm_test_macros::vmm_test;
     // openvmm_linux_direct_aarch64,
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
 )]
 async fn pmu_gsiv<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (vm, agent) = config.run().await?;
