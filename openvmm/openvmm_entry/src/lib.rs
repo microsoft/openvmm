@@ -1157,6 +1157,8 @@ fn vm_config_from_command_line(
         hvlite_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
             gic_config: None,
+            // TODO: needs to be queried from each platform
+            pmu_gsiv: None,
         },
     );
     #[cfg(guest_arch = "x86_64")]
