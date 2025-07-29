@@ -56,7 +56,6 @@ pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
 
-use anyhow::Context as AnyhowContext;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -281,14 +280,14 @@ impl UefiDevice {
     /// Extra inspection fields for the UEFI device.
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
         resp.field_mut_with("process_diagnostics", |v| {
-            if let Some(v) = v {
-                let should_process: bool = v.parse().with_context(|| "expected true or false")?;
-                if should_process {
-                    self.inspect_diagnostics("inspect");
-                }
-                anyhow::Ok(should_process)
+            // NOTE: Today, the inspect source code will fail if we invoke like below
+            // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
+            // mutable paths in the inspect graph.
+            if v.is_some() {
+                self.inspect_diagnostics("inspect");
+                anyhow::Ok("attempted to process diagnostics".to_string())
             } else {
-                anyhow::Ok(false)
+                anyhow::Ok("Use: inspect -u 1 vm/uefi/process_diagnostics".to_string())
             }
         });
     }
