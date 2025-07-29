@@ -291,23 +291,23 @@ impl HyperVVM {
     }
 
     /// Start the VM
-    pub async fn start(&self) -> anyhow::Result<()> {
+    pub fn start(&self) -> anyhow::Result<()> {
         self.check_state(VmState::Off)?;
         hvc::hvc_start(&self.vmid)?;
         Ok(())
     }
 
     /// Attempt to gracefully shut down the VM
-    pub async fn stop(&self) -> anyhow::Result<()> {
-        self.wait_for_shutdown_ic().await?;
+    pub fn stop(&self) -> anyhow::Result<()> {
+        self.check_shutdown_ic()?;
         self.check_state(VmState::Running)?;
         hvc::hvc_stop(&self.vmid)?;
         Ok(())
     }
 
     /// Attempt to gracefully restart the VM
-    pub async fn restart(&self) -> anyhow::Result<()> {
-        self.wait_for_shutdown_ic().await?;
+    pub fn restart(&self) -> anyhow::Result<()> {
+        self.check_shutdown_ic()?;
         self.check_state(VmState::Running)?;
         hvc::hvc_restart(&self.vmid)?;
         Ok(())
@@ -342,18 +342,26 @@ impl HyperVVM {
     }
 
     /// Wait for the VM shutdown ic
-    async fn wait_for_shutdown_ic(&self) -> anyhow::Result<()> {
+    pub async fn wait_for_enlightened_shutdown_ready(&self) -> anyhow::Result<()> {
         self.wait_for(
             Self::shutdown_ic_status,
             powershell::VmShutdownIcStatus::Ok,
             240.seconds(),
         )
         .await
-        .context("wait_for_shutdown_ic")
+        .context("wait_for_enlightened_shutdown_ready")
     }
 
     fn shutdown_ic_status(&self) -> anyhow::Result<powershell::VmShutdownIcStatus> {
         powershell::vm_shutdown_ic_status(&self.vmid)
+    }
+
+    fn check_shutdown_ic(&self) -> anyhow::Result<()> {
+        let status = self.shutdown_ic_status()?;
+        if status != powershell::VmShutdownIcStatus::Ok {
+            anyhow::bail!("unexpected shutdown ic status {status:?}, should be Ok");
+        }
+        Ok(())
     }
 
     // TODO: replace timeouts throughout the hyper-v petri infrastructure

@@ -143,8 +143,8 @@ mod tests {
 
         // cannot use assert_eq, because there is a *bit* of extra time elapsed
         // aside from the thread sleep.
-        assert!(delta >= LocalClockDelta::from_millis(1000));
-        assert!(delta < LocalClockDelta::from_millis(2000)); // sanity check
+        assert!(delta >= LocalClockDelta::from_millis(1000), "{delta:?}");
+        assert!(delta < LocalClockDelta::from_millis(2000), "{delta:?}"); // sanity check
     }
 
     #[test]

@@ -1536,6 +1536,7 @@ async fn new_underhill_vm(
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
 
     // Perform a quick validation to make sure each range is appropriately accessible.
+    tracing::info!("starting guest memory self test");
     for range in mem_layout.ram() {
         let gpa = range.range.start();
         // Standard RAM is accessible.
@@ -1565,6 +1566,7 @@ async fn new_underhill_vm(
                 .with_context(|| format!("failed to read shared RAM at {gpa:#x} above VTOM"))?;
         }
     }
+    tracing::info!("guest memory self test complete");
 
     // Set the gpa allocator to GET that is required by the attestation message.
     //
@@ -2335,26 +2337,18 @@ async fn new_underhill_vm(
             adjust_gpa_range: {
                 // TODO: improve slot range allocation, when there are more API consumers
                 let base_slot = 0;
-                let rom_bios_offset = {
-                    // Find the highest ram region before 4GB.
-                    let highest_ram_before_4gb = {
-                        let mut found: Option<MemoryRange> = None;
-
-                        const SIZE_4_GB: u64 = 4 * 1024 * 1024 * 1024;
-                        for ram in mem_layout.ram() {
-                            if ram.range.end() < SIZE_4_GB
-                                && ram.range.end() > found.map(|ram| ram.end()).unwrap_or_default()
-                            {
-                                found = Some(ram.range);
-                            }
-                        }
-
-                        found.context("no ram exist below 4GB for adjust_gpa_range")?
-                    };
-
-                    let top = highest_ram_before_4gb.end();
-                    top - 0x100000
-                };
+                // The host will only consider the first available RAM block when
+                // creating PCAT mappings, so we need to do the same. This only
+                // works because everybody keeps things sorted.
+                const SIZE_1_MB: u64 = 1024 * 1024;
+                const SIZE_4_GB: u64 = 4 * 1024 * SIZE_1_MB;
+                let first_mem_block = &mem_layout.ram()[0];
+                anyhow::ensure!(
+                    first_mem_block.range.end() < SIZE_4_GB,
+                    "first memory block must be below 4GB for adjust_gpa_range"
+                );
+                // Reserve 1MB off the top.
+                let rom_bios_offset = first_mem_block.range.end() - SIZE_1_MB;
 
                 let adjust_gpa_range = GetBackedAdjustGpaRange::new(
                     get_client.clone(),

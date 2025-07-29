@@ -26,8 +26,6 @@ use mesh_process::Mesh;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
-use pal_async::timer::PolledTimer;
-use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::future::Future;
@@ -100,6 +98,12 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::wait_for_boot_event(self).await
     }
 
+    async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<()> {
+        Self::wait_for_enlightened_shutdown_ready(self)
+            .await
+            .map(|_| ())
+    }
+
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
         Self::send_enlightened_shutdown(self, kind).await
     }
@@ -118,7 +122,6 @@ pub(super) struct PetriVmInner {
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
     pub(super) watchdog_tasks: Vec<Task<()>>,
-    pub(super) quirks: GuestQuirks,
 }
 
 struct PetriVmHaltReceiver {
@@ -364,14 +367,6 @@ impl PetriVmInner {
     }
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
-        self.wait_for_enlightened_shutdown_ready().await?;
-        if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
-            tracing::info!("QUIRK: Waiting for {:?}", duration);
-            PolledTimer::new(&self.resources.driver)
-                .sleep(duration)
-                .await;
-        }
-
         tracing::info!("Sending shutdown command");
         let shutdown_result = self
             .resources
