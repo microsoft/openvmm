@@ -15,7 +15,6 @@ use task_control::Cancelled;
 use task_control::InspectTask;
 use task_control::StopTask;
 use vmcore::vm_task::VmTaskDriver;
-use vmcore::vm_task::VmTaskDriverSource;
 
 #[derive(Debug)]
 enum Event {
@@ -67,9 +66,7 @@ impl AdminHandlerFaultInjection {
         &mut self,
         state: &mut AdminStateFaultInjection,
     ) -> Result<Event, QueueError> {
-        // A little bit of an explanation here: From the looks of it, the underlying admin handler
-        // is actually handling 3 different types of commands. The sq_delete_response, admin_sq, and changed_namespace.
-        // For now we are only concerned with the admin_sq because that is the driver->controller communication that we are interested in.
+        // TODO: Why is the inner controller handling 3 different types of events? This seems to work for now.
         let next_command = state
             .admin_sq
             .next(&self.config.mem)
@@ -92,12 +89,7 @@ impl InspectTask<AdminStateFaultInjection> for AdminHandlerFaultInjection {
 }
 
 impl AdminStateFaultInjection {
-    pub fn new(
-        handler: &AdminHandlerFaultInjection,
-        asq: u64,
-        asqs: u16,
-        // doorbell_write: mesh::Cell<u32>,
-    ) -> Self {
+    pub fn new(handler: &AdminHandlerFaultInjection, asq: u64, asqs: u16) -> Self {
         Self {
             admin_sq: SubmissionQueueFaultInjection::new(
                 handler.config.doorbells[0].clone(),
@@ -105,7 +97,6 @@ impl AdminStateFaultInjection {
                 asqs,
                 None,
                 handler.config.controller.clone(),
-                // doorbell_write,
             ),
         }
     }
