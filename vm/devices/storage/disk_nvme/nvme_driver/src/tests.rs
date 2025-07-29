@@ -433,25 +433,25 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
 /// this controller can respond with types of actions: FaultInjectionAction
 /// This function is used to mock the behavior of the NVMe controller for testing purposes.
 /// I might have to wrap this in a struct to control some Mesh::Cell objects.
-// fn fault_controller(
-//     fn_name: &str,
-//     input: Vec<Box<dyn Any>>,
-// ) -> (FaultInjectionAction, Vec<Box<dyn Any>>) {
-//     match fn_name {
-//         "read_bar0_input" => {
-//             // Get the input address and data
-//             assert_eq!(input.len(), 2);
-//             let addr = input[0].downcast_ref::<u32>().unwrap();
-//             let data: &[u8] = input[1].downcast_ref::<Vec<u8>>().unwrap();
-//             // Change Output. FaultInjectionAction::Return
-//             (FaultInjectionAction::Drop, vec![])
-//         }
-//         _ => {
-//             // Undefined bheaviour is always passthrough
-//             (FaultInjectionAction::No_Op, vec![])
-//         }
-//     }
-// }
+async fn fault_controller(
+    fn_name: &str,
+    input: &mut Box<spec::Command>,
+) -> (FaultInjectionAction, Vec<Box<dyn Any>>) {
+    match fn_name {
+        "read_bar0_input" => {
+            // Get the input address and data
+            assert_eq!(input.len(), 2);
+            let addr = input[0].downcast_ref::<u32>().unwrap();
+            let data: &[u8] = input[1].downcast_ref::<Vec<u8>>().unwrap();
+            // Change Output. FaultInjectionAction::Return
+            (FaultInjectionAction::Drop, vec![])
+        }
+        _ => {
+            // Undefined bheaviour is always passthrough
+            (FaultInjectionAction::No_Op, vec![])
+        }
+    }
+}
 
 #[derive(Inspect)]
 pub struct NvmeTestEmulatedDevice<T: InspectMut, U: DmaClient> {

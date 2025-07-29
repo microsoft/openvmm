@@ -74,6 +74,7 @@ impl NvmeControllerFaultInjection {
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
+        sq_fault_injector: Box<dyn FaultInjector + Send + Sync>,
     ) -> Self {
         // Setup Doorbell intercept.
         let num_qids = 2 + caps.max_io_queues * 2; // Assumes that max_sqs == max_cqs
@@ -103,6 +104,7 @@ impl NvmeControllerFaultInjection {
                 controller: inner.clone(),
                 sq_doorbell_addr: 0x1000, // The address of the submission queue doorbell in the device's BAR0.
             },
+            sq_fault_injector,
         );
 
         // Don't register the interrupt vectors multiple times. Fixes issues calculating max queues.
@@ -182,7 +184,6 @@ impl NvmeControllerFaultInjection {
             };
             let data = u32::from_ne_bytes(data);
             if let Some(doorbell) = self.doorbells.get(index as usize) {
-                tracelimit::warn_ratelimited!(index, data, "Intercepted doorbell write");
                 doorbell.write(data);
                 return Ok(IoResult::Ok);
             } else {
