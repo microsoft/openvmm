@@ -1157,9 +1157,16 @@ fn vm_config_from_command_line(
         hvlite_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
             gic_config: None,
-            // TODO: needs to be queried from each platform
-            // pmu_gsiv: Some(0x17),
+            // TODO: This value is platform specific, and needs to be queried
+            // from each platform. Additionally, enabling it on HVF with the
+            // correct platform value does not work, so more investigation is
+            // needed.
+            #[cfg(not(windows))]
             pmu_gsiv: None,
+            // TODO: On WHP, the value supported is 0x17, and is
+            // not configurable today.
+            #[cfg(windows)]
+            pmu_gsiv: Some(0x17),
         },
     );
     #[cfg(guest_arch = "x86_64")]
