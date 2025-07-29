@@ -119,6 +119,15 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         self,
         config: virt::PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        unsafe {
+            let interrupt = abi::HvGicIntId::PerformanceMonitor;
+            let mut intd = 0;
+            abi::hv_gic_get_intd(interrupt, &mut intd)
+                .chk()
+                .context("failed to get GIC interrupt ID")?;
+            tracing::error!("GIC interrupt ID: {:#x}", intd);
+        }
+
         // SAFETY: no safety requirements.
         unsafe { abi::hv_vm_create(null_mut()) }.chk()?;
 

@@ -451,6 +451,7 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
                     gic_distributor_base: self.gic_distributor_base(),
                     gic_redistributors_base: self.gic_redistributors_base(),
                 }),
+                pmu_gsiv: Some(self.pmu_gsiv()),
             })),
         }
     }
@@ -474,8 +475,9 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
                 gic_redistributors_base: hvlite_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
             }
         };
+        let pmu_gsiv = arch.pmu_gsiv.unwrap_or(0);
 
-        let mut builder = TopologyBuilder::new_aarch64(gic);
+        let mut builder = TopologyBuilder::new_aarch64(gic, pmu_gsiv);
         if let Some(smt) = self.enable_smt {
             builder.smt_enabled(smt);
         }
