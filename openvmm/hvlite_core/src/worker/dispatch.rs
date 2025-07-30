@@ -477,6 +477,13 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
         };
         let pmu_gsiv = arch.pmu_gsiv.unwrap_or(0);
 
+        // TODO: When this value is supported on all platforms, we should change
+        // the arch config to not be an option. For now, warn since the ARM VBSA
+        // expects this to be available.
+        if pmu_gsiv == 0 {
+            tracing::warn!("PMU GSIV is set to 0");
+        }
+
         let mut builder = TopologyBuilder::new_aarch64(gic, pmu_gsiv);
         if let Some(smt) = self.enable_smt {
             builder.smt_enabled(smt);
