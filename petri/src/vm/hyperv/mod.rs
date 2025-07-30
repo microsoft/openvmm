@@ -19,6 +19,7 @@ use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
 use crate::UefiConfig;
+use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::vm::append_cmdline;
@@ -267,35 +268,35 @@ impl PetriVmmBackend for HyperVPetriBackend {
         if let Some(agent_image) = agent_image {
             // Construct the agent disk.
             let agent_disk_path = temp_dir.path().join("cidata.vhd");
-            {
-                let agent_disk = agent_image.build().context("failed to build agent image")?;
-                disk_vhd1::Vhd1Disk::make_fixed(agent_disk.as_file())
-                    .context("failed to make vhd for agent image")?;
-                agent_disk.persist(&agent_disk_path)?;
-            }
 
-            if matches!(firmware.os_flavor(), OsFlavor::Windows) {
-                // Make a file for the IMC hive. It's not guaranteed to be at a fixed
-                // location at runtime.
-                let imc_hive = temp_dir.path().join("imc.hiv");
+            if build_and_persist_agent_image(agent_image, &agent_disk_path)
+                .context("vtl0 agent disk")?
+            {
+                if agent_image.contains_pipette()
+                    && matches!(firmware.os_flavor(), OsFlavor::Windows)
                 {
-                    let mut imc_hive_file = fs::File::create_new(&imc_hive)?;
-                    imc_hive_file
-                        .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
-                        .context("failed to write imc hive")?;
+                    // Make a file for the IMC hive. It's not guaranteed to be at a fixed
+                    // location at runtime.
+                    let imc_hive = temp_dir.path().join("imc.hiv");
+                    {
+                        let mut imc_hive_file = fs::File::create_new(&imc_hive)?;
+                        imc_hive_file
+                            .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
+                            .context("failed to write imc hive")?;
+                    }
+
+                    // Set the IMC
+                    vm.set_imc(&imc_hive)?;
                 }
 
-                // Set the IMC
-                vm.set_imc(&imc_hive)?;
+                let controller_number = vm.add_scsi_controller(0)?;
+                vm.add_vhd(
+                    &agent_disk_path,
+                    powershell::ControllerType::Scsi,
+                    Some(0),
+                    Some(controller_number),
+                )?;
             }
-
-            let controller_number = vm.add_scsi_controller(0)?;
-            vm.add_vhd(
-                &agent_disk_path,
-                powershell::ControllerType::Scsi,
-                Some(0),
-                Some(controller_number),
-            )?;
         }
 
         let openhcl_diag_handler = if let Some((
@@ -332,24 +333,20 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
             vm.set_vmbus_redirect(*vmbus_redirect)?;
 
-            if let Some(openhcl_agent_image) = openhcl_agent_image {
+            if let Some(agent_image) = openhcl_agent_image {
                 let agent_disk_path = temp_dir.path().join("paravisor_cidata.vhd");
-                {
-                    let agent_disk = openhcl_agent_image
-                        .build()
-                        .context("failed to build openhcl agent image")?;
-                    disk_vhd1::Vhd1Disk::make_fixed(agent_disk.as_file())
-                        .context("failed to make vhd for agent image")?;
-                    agent_disk.persist(&agent_disk_path)?;
-                }
 
-                let controller_number = vm.add_scsi_controller(2)?;
-                vm.add_vhd(
-                    &agent_disk_path,
-                    powershell::ControllerType::Scsi,
-                    Some(0),
-                    Some(controller_number),
-                )?;
+                if build_and_persist_agent_image(agent_image, &agent_disk_path)
+                    .context("vtl2 agent disk")?
+                {
+                    let controller_number = vm.add_scsi_controller(2)?;
+                    vm.add_vhd(
+                        &agent_disk_path,
+                        powershell::ControllerType::Scsi,
+                        Some(0),
+                        Some(controller_number),
+                    )?;
+                }
             }
 
             let openhcl_log_file = log_source.log_file("openhcl")?;
@@ -508,4 +505,20 @@ fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {
         anyhow::bail!("icacls failed: {stderr}");
     }
     Ok(())
+}
+
+fn build_and_persist_agent_image(
+    agent_image: &AgentImage,
+    agent_disk_path: &Path,
+) -> anyhow::Result<bool> {
+    Ok(
+        if let Some(agent_disk) = agent_image.build().context("failed to build agent image")? {
+            disk_vhd1::Vhd1Disk::make_fixed(agent_disk.as_file())
+                .context("failed to make vhd for agent image")?;
+            agent_disk.persist(agent_disk_path)?;
+            true
+        } else {
+            false
+        },
+    )
 }

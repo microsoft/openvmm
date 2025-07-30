@@ -57,36 +57,38 @@ impl PetriVmConfigOpenVmm {
             const UH_CIDATA_SCSI_INSTANCE: Guid =
                 guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7c");
 
-            let uh_agent_disk = resources
+            if let Some(openhcl_agent_disk) = resources
                 .openhcl_agent_image
                 .as_ref()
                 .unwrap()
                 .build()
-                .context("failed to build agent image")?;
-
-            config.vmbus_devices.push((
-                DeviceVtl::Vtl2,
-                ScsiControllerHandle {
-                    instance_id: UH_CIDATA_SCSI_INSTANCE,
-                    max_sub_channel_count: 1,
-                    io_queue_depth: None,
-                    devices: vec![ScsiDeviceAndPath {
-                        path: ScsiPath {
-                            path: 0,
-                            target: 0,
-                            lun: 0,
-                        },
-                        device: SimpleScsiDiskHandle {
-                            read_only: true,
-                            parameters: Default::default(),
-                            disk: FileDiskHandle(uh_agent_disk.into_file()).into_resource(),
-                        }
-                        .into_resource(),
-                    }],
-                    requests: None,
-                }
-                .into_resource(),
-            ));
+                .context("failed to build agent image")?
+            {
+                config.vmbus_devices.push((
+                    DeviceVtl::Vtl2,
+                    ScsiControllerHandle {
+                        instance_id: UH_CIDATA_SCSI_INSTANCE,
+                        max_sub_channel_count: 1,
+                        io_queue_depth: None,
+                        devices: vec![ScsiDeviceAndPath {
+                            path: ScsiPath {
+                                path: 0,
+                                target: 0,
+                                lun: 0,
+                            },
+                            device: SimpleScsiDiskHandle {
+                                read_only: true,
+                                parameters: Default::default(),
+                                disk: FileDiskHandle(openhcl_agent_disk.into_file())
+                                    .into_resource(),
+                            }
+                            .into_resource(),
+                        }],
+                        requests: None,
+                    }
+                    .into_resource(),
+                ));
+            }
         }
 
         // Add the GED and VTL 2 settings.
@@ -160,34 +162,34 @@ impl PetriVmConfigOpenVmm {
             const CIDATA_SCSI_INSTANCE: Guid = guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7b");
 
             // Construct the agent disk.
-            let agent_disk = agent_image.build().context("failed to build agent image")?;
-
-            // Add a SCSI controller to contain the agent disk. Don't reuse an
-            // existing controller so that we can avoid interfering with
-            // test-specific configuration.
-            self.config.vmbus_devices.push((
-                DeviceVtl::Vtl0,
-                ScsiControllerHandle {
-                    instance_id: CIDATA_SCSI_INSTANCE,
-                    max_sub_channel_count: 1,
-                    io_queue_depth: None,
-                    devices: vec![ScsiDeviceAndPath {
-                        path: ScsiPath {
-                            path: 0,
-                            target: 0,
-                            lun: 0,
-                        },
-                        device: SimpleScsiDiskHandle {
-                            read_only: true,
-                            parameters: Default::default(),
-                            disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
-                        }
-                        .into_resource(),
-                    }],
-                    requests: None,
-                }
-                .into_resource(),
-            ));
+            if let Some(agent_disk) = agent_image.build().context("failed to build agent image")? {
+                // Add a SCSI controller to contain the agent disk. Don't reuse an
+                // existing controller so that we can avoid interfering with
+                // test-specific configuration.
+                self.config.vmbus_devices.push((
+                    DeviceVtl::Vtl0,
+                    ScsiControllerHandle {
+                        instance_id: CIDATA_SCSI_INSTANCE,
+                        max_sub_channel_count: 1,
+                        io_queue_depth: None,
+                        devices: vec![ScsiDeviceAndPath {
+                            path: ScsiPath {
+                                path: 0,
+                                target: 0,
+                                lun: 0,
+                            },
+                            device: SimpleScsiDiskHandle {
+                                read_only: true,
+                                parameters: Default::default(),
+                                disk: FileDiskHandle(agent_disk.into_file()).into_resource(),
+                            }
+                            .into_resource(),
+                        }],
+                        requests: None,
+                    }
+                    .into_resource(),
+                ));
+            }
 
             if matches!(self.firmware.os_flavor(), OsFlavor::Windows) {
                 // Make a file for the IMC hive. It's not guaranteed to be at a fixed
@@ -208,7 +210,7 @@ impl PetriVmConfigOpenVmm {
                 ));
             }
 
-            self.firmware.is_linux_direct()
+            self.firmware.is_linux_direct() && agent_image.contains_pipette()
         } else {
             false
         };
