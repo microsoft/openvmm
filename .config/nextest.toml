@@ -23,8 +23,6 @@ slow-timeout = { period = "1s", terminate-after = 5 }
 failure-output = "final"
 # Do not cancel the test run on the first failure.
 fail-fast = false
-# Set the leak timeout to 500ms
-leak-timeout = "500ms"
 
 [profile.ci.junit]
 path = "junit.xml"
