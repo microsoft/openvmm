@@ -17,6 +17,7 @@ use inspect::Inspect;
 use open_enum::open_enum;
 use storage_string::AsciiString;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -129,7 +130,7 @@ pub struct Aqa {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect, Default)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect, FromZeros)]
 pub struct Command {
     pub cdw0: Cdw0,
     pub nsid: u32,
