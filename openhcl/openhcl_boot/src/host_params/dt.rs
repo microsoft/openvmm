@@ -12,8 +12,10 @@ use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
-use crate::host_params::MAX_VTL2_USED_RANGES;
 use crate::host_params::shim_params::IsolationType;
+use crate::memory::AddressSpaceManager;
+use crate::memory::AllocationPolicy;
+use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
@@ -27,7 +29,6 @@ use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
 use memory_range::MemoryRange;
-use memory_range::flatten_ranges;
 use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
 
@@ -324,9 +325,10 @@ impl PartitionInfo {
     pub fn read_from_dt<'a>(
         params: &'a ShimParams,
         storage: &'a mut Self,
+        address_space: &'a mut AddressSpaceManager,
         mut options: BootCommandLineOptions,
         can_trust_host: bool,
-    ) -> Result<Option<&'a mut Self>, DtError> {
+    ) -> Result<Option<(&'a mut Self, &'a mut AddressSpaceManager)>, DtError> {
         let dt = params.device_tree();
 
         if dt[0] == 0 {
@@ -449,15 +451,47 @@ impl PartitionInfo {
             storage.partition_ram.push(*entry);
         }
 
-        // Add all the ranges are not free for further allocation.
-        let mut used_ranges =
-            off_stack!(ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>, ArrayVec::new_const());
-        used_ranges.push(params.used);
-        used_ranges.sort_unstable_by_key(|r| r.start());
-        storage.vtl2_used_ranges.clear();
-        storage
-            .vtl2_used_ranges
-            .extend(flatten_ranges(used_ranges.iter().copied()));
+        // initialize address space manager
+        let vtl2_config_region = MemoryRange::new(
+            params.parameter_region_start
+                ..(params.parameter_region_start + params.parameter_region_size),
+        );
+        let vtl2_reserved_range = if params.vtl2_reserved_region_size != 0 {
+            Some(MemoryRange::new(
+                params.vtl2_reserved_region_start
+                    ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
+            ))
+        } else {
+            None
+        };
+        let sidecar_image = if params.sidecar_size != 0 {
+            Some(MemoryRange::new(
+                params.sidecar_base..(params.sidecar_base + params.sidecar_size),
+            ))
+        } else {
+            None
+        };
+
+        // Only specify pagetables as a reserved region on TDX, as they are used
+        // for AP startup via the mailbox protocol. On other platforms, the
+        // memory is free to be reclaimed.
+        let page_tables = if params.isolation_type == IsolationType::Tdx {
+            assert!(params.page_tables.is_some());
+            params.page_tables
+        } else {
+            None
+        };
+
+        address_space
+            .init(
+                &storage.vtl2_ram,
+                params.used,
+                subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
+                vtl2_reserved_range,
+                sidecar_image,
+                page_tables,
+            )
+            .expect("failed to initialize address space manager");
 
         // Decide if we will reserve memory for a VTL2 private pool. Parse this
         // from the final command line, or the host provided device tree value.
@@ -470,35 +504,18 @@ impl PartitionInfo {
             // Reserve the specified number of pages for the pool. Use the used
             // ranges to figure out which VTL2 memory is free to allocate from.
             let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
-            let free_memory = subtract_ranges(
-                storage.vtl2_ram.iter().map(|e| e.range),
-                storage.vtl2_used_ranges.iter().copied(),
-            );
 
-            let mut pool = MemoryRange::EMPTY;
-
-            for range in free_memory {
-                if range.len() >= pool_size_bytes {
-                    pool = MemoryRange::new(range.start()..(range.start() + pool_size_bytes));
-                    break;
+            let pool = match address_space.allocate(
+                None,
+                pool_size_bytes,
+                AllocationType::GpaPool,
+                AllocationPolicy::LowMemory,
+            ) {
+                Some(pool) => pool.range,
+                None => {
+                    panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
                 }
-            }
-
-            if pool.is_empty() {
-                panic!(
-                    "failed to find {pool_size_bytes} bytes of free VTL2 memory for VTL2 GPA pool"
-                );
-            }
-
-            // Update the used ranges to mark the pool range as used.
-            used_ranges.clear();
-            used_ranges.extend(storage.vtl2_used_ranges.iter().copied());
-            used_ranges.push(pool);
-            used_ranges.sort_unstable_by_key(|r| r.start());
-            storage.vtl2_used_ranges.clear();
-            storage
-                .vtl2_used_ranges
-                .extend(flatten_ranges(used_ranges.iter().copied()));
+            };
 
             storage.vtl2_pool_memory = pool;
         }
@@ -511,11 +528,7 @@ impl PartitionInfo {
         // Set remaining struct fields before returning.
         let Self {
             vtl2_ram: _,
-            vtl2_full_config_region: vtl2_config_region,
-            vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
-            vtl2_reserved_region,
             vtl2_pool_memory: _,
-            vtl2_used_ranges,
             partition_ram: _,
             isolation,
             bsp_reg,
@@ -532,20 +545,8 @@ impl PartitionInfo {
             boot_options,
         } = storage;
 
-        assert!(!vtl2_used_ranges.is_empty());
-
         *isolation = params.isolation_type;
 
-        *vtl2_config_region = MemoryRange::new(
-            params.parameter_region_start
-                ..(params.parameter_region_start + params.parameter_region_size),
-        );
-        *vtl2_config_region_reclaim_struct = vtl2_config_region_reclaim;
-        assert!(vtl2_config_region.contains(&vtl2_config_region_reclaim));
-        *vtl2_reserved_region = MemoryRange::new(
-            params.vtl2_reserved_region_start
-                ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
-        );
         *bsp_reg = parsed.boot_cpuid_phys;
         cpus.extend(parsed.cpus.iter().copied());
         *com3_serial = parsed.com3_serial;
@@ -554,6 +555,6 @@ impl PartitionInfo {
         *nvme_keepalive = parsed.nvme_keepalive;
         *boot_options = options;
 
-        Ok(Some(storage))
+        Ok(Some((storage, address_space)))
     }
 }
