@@ -312,6 +312,18 @@ fn build_dt(
         .add_null(p_always_on)?;
     root_builder = timer.end_node()?;
 
+    // Add PMU, if the interrupt is non-zero.
+    let pmu_gsiv = processor_topology.pmu_gsiv();
+    if pmu_gsiv != 0 {
+        // TODO: This assumes the GSIV is a PPI. On all platforms, that seems to
+        // be the case today.
+        let pmu = root_builder
+            .start_node("pmu")?
+            .add_str(p_compatible, "arm,armv8-pmuv3")?
+            .add_u32_array(p_interrupts, &[GIC_PPI, pmu_gsiv, IRQ_TYPE_LEVEL_HIGH])?;
+        root_builder = pmu.end_node()?;
+    }
+
     let mut soc = root_builder
         .start_node("openvmm")?
         .add_str(p_compatible, "simple-bus")?

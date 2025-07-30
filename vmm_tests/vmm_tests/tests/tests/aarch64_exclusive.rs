@@ -11,15 +11,12 @@ use vmm_test_macros::vmm_test;
 
 /// Boot Linux and verify the PMU interrupt is available.
 ///
-/// TODO: Linux direct support requires device tree support, which is not
-/// implemented yet.
-///
 /// TODO: This is only supported on WHP and Hyper-V.
 #[vmm_test(
-    // openvmm_linux_direct_aarch64,
+    openvmm_linux_direct_aarch64,
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn pmu_gsiv<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (vm, agent) = config.run().await?;
