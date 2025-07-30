@@ -19,7 +19,7 @@ use vmcore::vm_task::VmTaskDriver;
 
 #[derive(Debug)]
 enum Event {
-    Command(Result<spec::Command, QueueError>), // TODO: Is this really needed?
+    Command(Result<spec::Command, QueueError>),
 }
 
 /// An admin handler shim layer for fault injection.
@@ -50,7 +50,10 @@ pub(crate) struct AdminConfigFaultInjection {
     pub sq_doorbell_addr: u16, // The address of the submission queue doorbell in the device's BAR0.
     #[inspect(skip)]
     pub sq_fault_injector: Box<
-        dyn Fn(VmTaskDriver) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        dyn Fn(
+                VmTaskDriver,
+                spec::Command,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
             + Send
             + Sync,
     >,
@@ -99,7 +102,7 @@ impl AdminHandlerFaultInjection {
         match event {
             Event::Command(command_result) => {
                 let command = command_result?;
-                (self.config.sq_fault_injector)(self.driver.clone()).await;
+                (self.config.sq_fault_injector)(self.driver.clone(), command).await; // TODO: Is there a good way to avoid cloning the driver here?
 
                 let data = state.admin_sq.sqhd() as u32;
                 let mut inner_controller = self.config.controller.lock();

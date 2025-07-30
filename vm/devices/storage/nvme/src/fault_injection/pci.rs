@@ -1,5 +1,7 @@
 use crate::BAR0_LEN;
 use crate::DOORBELL_STRIDE_BITS;
+use crate::IOCQES;
+use crate::IOSQES;
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
 use crate::NvmeControllerClient;
@@ -75,7 +77,11 @@ impl NvmeControllerFaultInjection {
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
         sq_fault_injector: Box<
-            dyn Fn(VmTaskDriver) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            dyn Fn(
+                    VmTaskDriver,
+                    spec::Command,
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
                 + Send
                 + Sync,
         >,
@@ -270,18 +276,59 @@ impl NvmeControllerFaultInjection {
         );
         let cc: spec::Cc = (u32::from(cc) & mask).into();
 
-        // Admin queue has not yet been started, set it up here.
-        if !self.admin.is_running() {
-            let state = AdminStateFaultInjection::new(
-                self.admin.task(),
-                self.regs.asq,
-                self.regs.aqa.asqs_z().max(1) + 1,
-            );
-            self.doorbells_intercept
-                .insert(state.get_intercept_doorbell());
-            self.admin
-                .insert(&self.driver, "nvme-admin-fault-injection", state);
-            self.admin.start();
+        if cc.en() != self.regs.cc.en() {
+            if cc.en() {
+                // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.
+                if cc.iocqes() == 0 {
+                    cc.set_iocqes(IOCQES);
+                } else if cc.iocqes() != IOCQES {
+                    tracelimit::warn_ratelimited!(
+                        "This implementation only supports CQEs of the default size."
+                    );
+                    self.fatal_error();
+                    return;
+                }
+
+                if cc.iosqes() == 0 {
+                    cc.set_iosqes(IOSQES);
+                } else if cc.iosqes() != IOSQES {
+                    tracelimit::warn_ratelimited!(
+                        "This implementation only supports SQEs of the default size."
+                    );
+                    self.fatal_error();
+                    return;
+                }
+
+                if self.regs.csts.rdy() {
+                    tracelimit::warn_ratelimited!("enabling during reset");
+                    return;
+                }
+                if cc.shn() == 0 {
+                    self.regs.csts.set_shst(0);
+                }
+
+                // Enable the admin fault injection queue
+                if !self.admin.is_running() {
+                    let state = AdminStateFaultInjection::new(
+                        self.admin.task(),
+                        self.regs.asq,
+                        self.regs.aqa.asqs_z().max(1) + 1,
+                    );
+                    self.doorbells_intercept
+                        .insert(state.get_intercept_doorbell());
+                    self.admin
+                        .insert(&self.driver, "nvme-admin-fault-injection", state);
+                    self.admin.start();
+                }
+            } else if self.regs.csts.rdy() {
+                // TODO: What does this mean for the admin queue setup?
+                // I think we need to stop the admin queue that
+                self.admin.stop();
+                self.doorbells_intercept.clear();
+            } else {
+                tracelimit::warn_ratelimited!("disabling while not ready");
+                return;
+            }
         }
 
         self.regs.cc = cc;

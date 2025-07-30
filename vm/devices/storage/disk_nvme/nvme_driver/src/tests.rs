@@ -13,7 +13,6 @@ use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pal_async::driver::Driver;
 use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
@@ -344,7 +343,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
         },
-        Box::new(|driver| Box::pin(fault_controller(driver))), // Fault injection function
+        Box::new(|driver, command| Box::pin(fault_controller(driver, command))), // Fault injection function
     );
 
     nvme.client() // 2MB namespace
@@ -434,15 +433,40 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
     driver.shutdown().await;
 }
 
-/// A fault injection function where fn_name is the name of the function being invoked and
-/// input is the input provided to that function
-/// this controller can respond with types of actions: FaultInjectionAction
-/// This function is used to mock the behavior of the NVMe controller for testing purposes.
-/// I might have to wrap this in a struct to control some Mesh::Cell objects.
-async fn fault_controller(driver: VmTaskDriver) {
-    info!("DELAYING ADMIN COMMANDS FOR 5 SECONDS");
+/// A fault injection function for nvme queue commands with the following actions (per command)
+/// IDENTIFY => Delays by 1s
+/// GET_FEATURES => Delays by 2s
+/// CREATE_IO_COMPLETION_QUEUE => Sets cid = 0
+async fn fault_controller(
+    driver: VmTaskDriver,
+    mut command: nvme_spec::Command,
+) -> Option<nvme_spec::Command> {
+    let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
     // TODO: This should be a reference
-    PolledTimer::new(&driver).sleep(Duration::new(5, 0)).await;
+    match opcode {
+        nvme_spec::AdminOpcode::IDENTIFY => {
+            tracing::info!("Delaying IDENTIFY command for 1 second");
+            PolledTimer::new(&driver).sleep(Duration::new(1, 0)).await;
+            None
+        }
+        nvme_spec::AdminOpcode::GET_FEATURES => {
+            tracing::info!("Delaying GET_FEATURES command for 2 seconds");
+            PolledTimer::new(&driver).sleep(Duration::new(2, 0)).await;
+            None
+        }
+        nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
+            tracing::info!(
+                "Changing cid bit for CREATE_IO_COMPLETION_QUEUE command to 0. New Command: {:?}",
+                command
+            );
+            command.cdw0.set_cid(0);
+            Some(command)
+        }
+        _ => {
+            tracing::info!("Unhandled command: {:?}", command);
+            None
+        }
+    }
 }
 
 #[derive(Inspect)]
