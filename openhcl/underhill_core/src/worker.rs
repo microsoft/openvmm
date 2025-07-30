@@ -44,6 +44,7 @@ use crate::loader::vtl2_config::RuntimeParameters;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::nvme_manager::NvmeDiskResolver;
 use crate::nvme_manager::NvmeManager;
+use crate::nvme_manager::RealNvmeDriverFactory;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -1885,10 +1886,12 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             save_restore_supported,
-            env_cfg.nvme_always_flr,
-            isolation.is_isolated(),
             servicing_state.nvme_state.unwrap_or(None),
-            dma_manager.client_spawner(),
+            Arc::new(RealNvmeDriverFactory {
+                nvme_always_flr: env_cfg.nvme_always_flr,
+                is_isolated: isolation.is_isolated(),
+                dma_client_spawner: dma_manager.client_spawner(),
+            }),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
