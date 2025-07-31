@@ -441,7 +441,6 @@ async fn fault_controller(
     mut command: nvme_spec::Command,
 ) -> Option<nvme_spec::Command> {
     let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-    // TODO: This should be a reference
     match opcode {
         nvme_spec::AdminOpcode::IDENTIFY => {
             tracing::info!("Delaying IDENTIFY command for 1 second");
