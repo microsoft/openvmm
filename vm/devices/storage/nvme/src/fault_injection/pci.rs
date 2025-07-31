@@ -339,10 +339,7 @@ impl NvmeControllerFaultInjection {
                     self.regs.csts.set_rdy(true);
                 }
             } else if self.regs.csts.rdy() {
-                // TODO: Figure out a disable flow for the fault controller
-                // self.regs.csts.set_rdy(false);
-                // self.admin_stop_state = Some(self.admin.stop());
-                // self.doorbells_intercept.clear();
+                // Fault Controller does not yet support controller resets. This functionality will be coming in the future.
             } else {
                 tracelimit::warn_ratelimited!("disabling while not ready");
                 return;
