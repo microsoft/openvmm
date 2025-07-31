@@ -43,7 +43,7 @@ use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
 /// Fault injection for the NVMe controller meant for testing. Allows for delaying and changing admin queue commands
-/// This is a minimaly implemented controller that relies on the inner controller for most functionality.
+/// This is a minimally implemented controller that relies on the inner controller for most functionality.
 #[derive(InspectMut)]
 pub struct NvmeControllerFaultInjection {
     #[inspect(skip)]
