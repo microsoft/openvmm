@@ -458,6 +458,9 @@ async fn fault_controller(
                 "Changing cid bit for CREATE_IO_COMPLETION_QUEUE command to 0. New Command: {:?}",
                 command
             );
+
+            // Overwrite the previous command that was processed using the given head.
+            command.cdw0.set_cid(0);
             Some(command)
         }
         _ => {
