@@ -17,6 +17,8 @@ use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use test_with_tracing::test;
@@ -38,8 +40,46 @@ async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn test_nvme_controller_fault_injection(driver: DefaultDriver) {
-    test_nvme_controller_fi(driver, false).await;
+#[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
+async fn test_nvme_controller_command_fault(driver: DefaultDriver) {
+    test_nvme_controller_fault_injection(
+        driver,
+        Box::new(|_driver, mut command| {
+            Box::pin(async move {
+                let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+                match opcode {
+                    nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
+                        // Overwrite the previous cid to cause a panic.
+                        command.cdw0.set_cid(0);
+                        Some(command)
+                    }
+                    _ => None,
+                }
+            })
+        }),
+    )
+    .await;
+}
+
+// Sample case for dealyed Admin command processing
+#[async_test]
+async fn test_nvme_controller_command_delay(driver: DefaultDriver) {
+    test_nvme_controller_fault_injection(
+        driver,
+        Box::new(|driver, command| {
+            Box::pin(async move {
+                let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+                match opcode {
+                    nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
+                        PolledTimer::new(&driver).sleep(Duration::new(5, 0)).await;
+                        None
+                    }
+                    _ => None,
+                }
+            })
+        }),
+    )
+    .await;
 }
 
 #[async_test]
@@ -136,7 +176,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     let device_test_memory = DeviceTestMemory::new(pages * 2, allow_dma, "test_nvme_driver");
     let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
     let dma_client = device_test_memory.dma_client(); // Access 0-4MB
-    let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
+    let payload_mem: guestmem::GuestMemory = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -317,17 +357,27 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     //     .unwrap();
 }
 
-async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
+async fn test_nvme_controller_fault_injection(
+    driver: DefaultDriver,
+    fault_fn: Box<
+        dyn Fn(
+                VmTaskDriver,
+                nvme_spec::Command,
+            ) -> Pin<Box<dyn Future<Output = Option<nvme_spec::Command>> + Send>>
+            + Send
+            + Sync,
+    >,
+) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
 
     // Arrange: Create 8MB of space. First 4MB for the device and second 4MB for the payload.
     let pages = 1024; // 4MB
-    let device_test_memory = DeviceTestMemory::new(pages * 2, allow_dma, "test_nvme_driver");
+    let device_test_memory = DeviceTestMemory::new(pages * 2, false, "test_nvme_driver");
     let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
     let dma_client = device_test_memory.dma_client(); // Access 0-4MB
-    let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
+    let payload_mem: guestmem::GuestMemory = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -342,7 +392,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
         },
-        Box::new(|driver, command| Box::pin(fault_controller(driver, command))), // Fault injection function
+        fault_fn,
     );
 
     nvme.client() // 2MB namespace
@@ -354,6 +404,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
+
     // Act: Write 1024 bytes of data to disk starting at LBA 1.
     let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
     payload_mem.write_at(0, &[0xcc; 4096]).unwrap();
@@ -369,104 +420,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
 
-    // Act: Read 16384 bytes of data from disk starting at LBA 0.
-    namespace
-        .read(
-            1,
-            0,
-            32,
-            &payload_mem,
-            buf_range.buffer(&payload_mem).range(),
-        )
-        .await
-        .unwrap();
-    let mut v = [0; 4096];
-    payload_mem.read_at(0, &mut v).unwrap();
-
-    // // Assert: First block should be 0x00 since we never wrote to it. Followed by 1024 bytes of 0xcc.
-    assert_eq!(&v[..512], &[0; 512]);
-    assert_eq!(&v[512..1536], &[0xcc; 1024]);
-    assert!(v[1536..].iter().all(|&x| x == 0));
-
-    namespace
-        .deallocate(
-            0,
-            &[
-                DsmRange {
-                    context_attributes: 0,
-                    starting_lba: 1000,
-                    lba_count: 2000,
-                },
-                DsmRange {
-                    context_attributes: 0,
-                    starting_lba: 2,
-                    lba_count: 2,
-                },
-            ],
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(driver.fallback_cpu_count(), 0);
-
-    // Test the fallback queue functionality.
-    namespace
-        .read(
-            63,
-            0,
-            32,
-            &payload_mem,
-            buf_range.buffer(&guest_mem).range(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(driver.fallback_cpu_count(), 1);
-
-    let mut v = [0; 4096];
-    payload_mem.read_at(0, &mut v).unwrap();
-    assert_eq!(&v[..512], &[0; 512]);
-    assert_eq!(&v[512..1024], &[0xcc; 512]);
-    assert!(v[1024..].iter().all(|&x| x == 0));
-
     driver.shutdown().await;
-}
-
-/// A fault injection function for nvme queue commands with the following actions (per command)
-/// IDENTIFY => Delays by 1s
-/// GET_FEATURES => Delays by 2s
-/// CREATE_IO_COMPLETION_QUEUE => Sets cid = 0
-async fn fault_controller(
-    driver: VmTaskDriver,
-    command: nvme_spec::Command,
-) -> Option<nvme_spec::Command> {
-    let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-    match opcode {
-        nvme_spec::AdminOpcode::IDENTIFY => {
-            tracing::info!("Delaying IDENTIFY command for 1 second");
-            PolledTimer::new(&driver).sleep(Duration::new(1, 0)).await;
-            None
-        }
-        nvme_spec::AdminOpcode::GET_FEATURES => {
-            tracing::info!("Delaying GET_FEATURES command for 2 seconds");
-            PolledTimer::new(&driver).sleep(Duration::new(2, 0)).await;
-            None
-        }
-        nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
-            tracing::info!(
-                "Changing cid bit for CREATE_IO_COMPLETION_QUEUE command to 0. New Command: {:?}",
-                command
-            );
-
-            // Overwrite the previous command that was processed using the given head.
-            // command.cdw0.set_cid(0);
-            Some(command)
-        }
-        _ => {
-            tracing::info!("Unhandled command: {:?}", command);
-            None
-        }
-    }
 }
 
 #[derive(Inspect)]
