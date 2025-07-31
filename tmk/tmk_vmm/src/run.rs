@@ -60,13 +60,15 @@ impl CommonState {
             .context("failed to build processor topology")?;
 
         #[cfg(guest_arch = "aarch64")]
-        let processor_topology =
-            TopologyBuilder::new_aarch64(vm_topology::processor::arch::GicInfo {
+        let processor_topology = TopologyBuilder::new_aarch64(
+            vm_topology::processor::arch::GicInfo {
                 gic_distributor_base: 0xff000000,
                 gic_redistributors_base: 0xff020000,
-            })
-            .build(1)
-            .context("failed to build processor topology")?;
+            },
+            0,
+        )
+        .build(1)
+        .context("failed to build processor topology")?;
 
         let ram_size = 0x400000;
         let memory_layout = MemoryLayout::new(ram_size, &[], None).context("bad memory layout")?;

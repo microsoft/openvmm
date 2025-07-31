@@ -340,8 +340,20 @@ impl PetriVmConfigOpenVmm {
                             ..Default::default()
                         },
                     ),
+                    #[cfg(not(windows))]
                     MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
                         hvlite_defs::config::Aarch64TopologyConfig::default(),
+                    ),
+                    #[cfg(windows)]
+                    MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                        hvlite_defs::config::Aarch64TopologyConfig {
+                            // TODO: The PMU GSIV value is currently hardcoded
+                            // to be 0x17 on WHP. This shouldn't be required to
+                            // be set, but a future change will set the platform
+                            // default if None was specified.
+                            pmu_gsiv: Some(0x17),
+                            ..Default::default()
+                        },
                     ),
                 }),
             }

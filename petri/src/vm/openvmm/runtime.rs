@@ -453,7 +453,15 @@ impl PetriVmInner {
         // On linux direct pipette won't auto start, start it over serial
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
-            self.launch_linux_direct_pipette().await?;
+
+            if self
+                .resources
+                .agent_image
+                .as_ref()
+                .is_some_and(|x| x.contains_pipette())
+            {
+                self.launch_linux_direct_pipette().await?;
+            }
         }
         Ok(())
     }

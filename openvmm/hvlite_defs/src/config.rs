@@ -205,6 +205,7 @@ pub enum X2ApicConfig {
 #[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
+    pub pmu_gsiv: Option<u32>,
 }
 
 #[derive(Debug, Protobuf, Clone)]
