@@ -10,6 +10,7 @@ use crate::igvm_attest;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
@@ -179,6 +180,54 @@ pub async fn request_vmgs_encryption_keys(
                     "Failed to get VMGS key-encryption due to invalid key format"
                 )
             }
+            Err(
+                wrapped_key_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
+                    igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
+                        igvm_attest::Error::Attestation {
+                            igvm_error_code,
+                            http_status_code,
+                            retry_signal,
+                        },
+                    ),
+                ),
+            ) => {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    retry = i,
+                    igvm_error_code = &igvm_error_code,
+                    igvm_http_status_code = &http_status_code,
+                    retry_signal = &retry_signal,
+                    error = &wrapped_key_attest_error as &dyn std::error::Error,
+                    "VMGS key-encryption failed due to igvm attest error"
+                );
+                if !retry_signal || i == (max_retry - 1) {
+                    Err(wrapped_key_attest_error)?
+                }
+            }
+            Err(
+                key_release_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
+                    igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                        igvm_attest::Error::Attestation {
+                            igvm_error_code,
+                            http_status_code,
+                            retry_signal,
+                        },
+                    ),
+                ),
+            ) => {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    retry = i,
+                    igvm_error_code = &igvm_error_code,
+                    igvm_http_status_code = &http_status_code,
+                    retry_signal = &retry_signal,
+                    error = &key_release_attest_error as &dyn std::error::Error,
+                    "VMGS key-encryption failed due to igvm attest error"
+                );
+                if !retry_signal || i == (max_retry - 1) {
+                    Err(key_release_attest_error)?
+                }
+            }
             Err(e) if i == (max_retry - 1) => {
                 tracing::error!(
                     CVM_ALLOWED,
@@ -251,9 +300,7 @@ async fn make_igvm_attest_requests(
     let wrapped_key_required = vmgs_encrypted && agent_data.iter().all(|&x| x == 0);
 
     // Attempt to get wrapped DiskEncryptionSettings key
-    igvm_attest_request_helper.set_request_type(
-        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
-    );
+    igvm_attest_request_helper.set_request_type(IgvmAttestRequestType::WRAPPED_KEY_REQUEST);
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
@@ -305,7 +352,12 @@ async fn make_igvm_attest_requests(
 
             Some(parsed_response.wrapped_key)
         }
-        Err(igvm_attest::wrapped_key::WrappedKeyError::ResponseSizeTooSmall) => {
+        Err(
+            igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
+                igvm_attest::Error::ResponseSizeTooSmall { .. },
+            )
+            | igvm_attest::wrapped_key::WrappedKeyError::PayloadSizeTooSmall,
+        ) => {
             // The request does not succeed.
             // Return an error if WrappedKey is required, otherwise ignore the error and set the `wrapped_des_key` to None.
             if wrapped_key_required {
@@ -331,9 +383,7 @@ async fn make_igvm_attest_requests(
         }
     };
 
-    igvm_attest_request_helper.set_request_type(
-        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::KEY_RELEASE_REQUEST,
-    );
+    igvm_attest_request_helper.set_request_type(IgvmAttestRequestType::KEY_RELEASE_REQUEST);
     let request = igvm_attest_request_helper
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestKeyReleaseRequest)?;
@@ -362,7 +412,12 @@ async fn make_igvm_attest_requests(
             rsa_aes_wrapped_key: Some(rsa_aes_wrapped_key),
             wrapped_des_key,
         }),
-        Err(igvm_attest::key_release::KeyReleaseError::ResponseSizeTooSmall) => {
+        Err(
+            igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                igvm_attest::Error::ResponseSizeTooSmall { .. },
+            )
+            | igvm_attest::key_release::KeyReleaseError::PayloadSizeTooSmall,
+        ) => {
             // Notify host for diagnosis.
             get.event_log_fatal(EventLogId::KEY_NOT_RELEASED).await;
 

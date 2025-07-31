@@ -60,6 +60,7 @@ use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERS
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -959,6 +960,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                         data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
                             as u32,
                         version: AK_CERT_RESPONSE_HEADER_VERSION,
+                        error_info: IgvmErrorInfo::default(),
                     };
                     let payload = [header.as_bytes(), &data].concat();
 
