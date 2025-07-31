@@ -53,7 +53,8 @@ pub(crate) struct AdminConfigFaultInjection {
         dyn Fn(
                 VmTaskDriver,
                 spec::Command,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            )
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<spec::Command>> + Send>>
             + Send
             + Sync,
     >,

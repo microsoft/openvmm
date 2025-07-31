@@ -66,6 +66,7 @@ struct Regs {
     acq: u64,
     aqa: spec::Aqa,
     cc: spec::Cc,
+    csts: spec::Csts,
 }
 
 impl NvmeControllerFaultInjection {
@@ -80,9 +81,9 @@ impl NvmeControllerFaultInjection {
             dyn Fn(
                     VmTaskDriver,
                     spec::Command,
-                )
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-                + Send
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Option<spec::Command>> + Send>,
+                > + Send
                 + Sync,
         >,
     ) -> Self {
@@ -157,6 +158,7 @@ impl NvmeControllerFaultInjection {
                 acq: 0,
                 aqa: spec::Aqa::default(),
                 cc: spec::Cc::default(),
+                csts: spec::Csts::default(),
             },
             admin: TaskControl::new(handler),
             cfg_space,
@@ -175,6 +177,8 @@ impl NvmeControllerFaultInjection {
         // Normal Behaviour.
         let mut inner = self.inner.lock();
         inner.read_bar0(addr, data)
+
+        // If shim controller is not ready yet,
     }
 
     // Tries to write to the admin submission queue doorbell register. If write is successful, return the IoResult.
@@ -274,7 +278,7 @@ impl NvmeControllerFaultInjection {
                 .with_iosqes(0b1111)
                 .with_iocqes(0b1111),
         );
-        let cc: spec::Cc = (u32::from(cc) & mask).into();
+        let mut cc: spec::Cc = (u32::from(cc) & mask).into();
 
         if cc.en() != self.regs.cc.en() {
             if cc.en() {
@@ -319,12 +323,13 @@ impl NvmeControllerFaultInjection {
                     self.admin
                         .insert(&self.driver, "nvme-admin-fault-injection", state);
                     self.admin.start();
+                    self.regs.csts.set_rdy(true);
                 }
             } else if self.regs.csts.rdy() {
-                // TODO: What does this mean for the admin queue setup?
-                // I think we need to stop the admin queue that
-                self.admin.stop();
-                self.doorbells_intercept.clear();
+                // TODO: Figure out a disable flow for the fault controller
+                // self.regs.csts.set_rdy(false);
+                // self.admin_stop_state = Some(self.admin.stop());
+                // self.doorbells_intercept.clear();
             } else {
                 tracelimit::warn_ratelimited!("disabling while not ready");
                 return;
