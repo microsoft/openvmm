@@ -69,8 +69,37 @@ struct Regs {
     csts: spec::Csts,
 }
 
+/// NvmeController with fault injection capabilities for testing and validation. This implementation
+/// wraps a standard NVMe controller and provides the ability to inject faults into submission queue
+/// commands for testing purposes.
+///
+/// ## Usage
+///
+/// The `sq_fault_injector` parameter is a closure that is provided nvme_spec::Command(s) before they
+/// are processed by the controller. Returning any nvme_spec::Command will change overwrite the provided
+/// command and returning None will leave the command unchanged.
+///
+/// ### Example sq_fault_injector Usage
+///
+/// ```rust
+/// // Delay all commands by 100ms
+/// let fault_injector = Box::new(|driver, command| {
+///     Box::pin(async move {
+///         tokio::time::sleep(Duration::from_millis(100)).await;
+///         Some(command)
+///     })
+/// });
+/// // Corrupt command data
+/// let fault_injector = Box::new(|driver, mut command| {
+///     Box::pin(async move {
+///         // Modify command to introduce errors
+///         command.cdw10 = 0xDEADBEEF;
+///         Some(command)
+///     })
+/// });
 impl NvmeControllerFaultInjection {
-    /// Creates a new NVMe controller with fault injection.
+    /// Creates a new NvmeController with fault injection capabilities. For all intents and purposes this should
+    /// behave like any other nvme controller with the
     pub fn new(
         driver_source: &VmTaskDriverSource,
         guest_memory: GuestMemory,

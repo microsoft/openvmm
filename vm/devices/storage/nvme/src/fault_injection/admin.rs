@@ -1,5 +1,4 @@
 use crate::NvmeController;
-// use crate::fault_injection::queue::SubmissionQueueFaultInjection;
 use crate::queue::DoorbellRegister;
 use crate::queue::QueueError;
 use crate::queue::SubmissionQueue;
@@ -113,7 +112,6 @@ impl AdminHandlerFaultInjection {
                 if let Some(output_command) = output_command {
                     let gpa = state.admin_sq_gpa.wrapping_add(event_head as u64 * 64);
 
-                    // let data: u64 = output_command;
                     self.config
                         .mem
                         .write_plain(gpa, &output_command)
