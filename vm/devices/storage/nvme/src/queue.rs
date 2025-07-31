@@ -159,6 +159,13 @@ impl SubmissionQueue {
         if self.cached_tail >= self.len {
             return Err(QueueError::InvalidTail(self.cached_tail));
         }
+        println!(
+            "SQ is reading command from mem at gpa: {:#x}, head: {}, tail: {}, base_gpa: {:#x}",
+            self.gpa.wrapping_add(self.head as u64 * 64),
+            self.head,
+            self.cached_tail,
+            self.gpa
+        );
         let command: spec::Command = mem
             .read_plain(self.gpa.wrapping_add(self.head as u64 * 64))
             .map_err(QueueError::Memory)?;
