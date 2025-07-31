@@ -83,7 +83,7 @@ struct RealNvmeDriver {
     /// The NVMe driver that this object manages. This must
     /// be an `Option` because the NVMe manager shutdown
     /// process wants to control explicitly when this device
-    /// is dropped.
+    /// is dropped and to allow for delayed initialization.
     driver: Option<nvme_driver::NvmeDriver<VfioDevice>>,
 }
 
@@ -172,13 +172,13 @@ impl NvmeDriverFactory for RealNvmeDriverFactory {
                 },
                 persistent_allocations: save_restore_supported,
             })
-            .map_err(|source| NvmeFactoryError::DmaClient(source))?;
+            .map_err(NvmeFactoryError::DmaClient)?;
 
         let nvme_driver = if let Some(saved_state) = saved_state {
             let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_client)
                 .instrument(tracing::info_span!("vfio_device_restore", pci_id))
                 .await
-                .map_err(|source| NvmeFactoryError::Vfio(source))?;
+                .map_err(NvmeFactoryError::Vfio)?;
 
             // TODO: For now, any isolation means use bounce buffering. This
             // needs to change when we have nvme devices that support DMA to
@@ -192,7 +192,7 @@ impl NvmeDriverFactory for RealNvmeDriverFactory {
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await
-            .map_err(|source| NvmeFactoryError::DeviceInitFailed(anyhow::Error::from(source)))?
+            .map_err(NvmeFactoryError::DeviceInitFailed)?
         } else {
             Self::create_nvme_device(
                 driver_source,
@@ -287,7 +287,7 @@ impl RealNvmeDriverFactory {
         let device = VfioDevice::new(driver_source, pci_id, dma_client)
             .instrument(tracing::info_span!("vfio_device_open", pci_id))
             .await
-            .map_err(|source| NvmeFactoryError::Vfio(source))?;
+            .map_err(NvmeFactoryError::Vfio)?;
 
         // TODO: For now, any isolation means use bounce buffering. This
         // needs to change when we have nvme devices that support DMA to
@@ -295,7 +295,7 @@ impl RealNvmeDriverFactory {
         nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
             .instrument(tracing::info_span!("nvme_driver_init", pci_id))
             .await
-            .map_err(|source| NvmeFactoryError::DeviceInitFailed(anyhow::Error::from(source)))
+            .map_err(NvmeFactoryError::DeviceInitFailed)
     }
 }
 
@@ -1163,8 +1163,8 @@ mod tests {
 
         // Create some devices by calling GetNamespace
         let device_ids = vec!["inspect-device-1", "inspect-device-2", "inspect-device-3"];
-        for pci_id in &device_ids {
-            let _ = client.get_namespace(pci_id.to_string(), 1).await; // Ignore mock "error"
+        for pci_id in device_ids {
+            let _ = client.get_namespace(pci_id.into(), 1).await; // Ignore mock "error"
         }
 
         // Verify devices were created
