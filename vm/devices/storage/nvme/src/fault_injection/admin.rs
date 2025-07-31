@@ -32,6 +32,7 @@ pub(crate) struct AdminHandlerFaultInjection {
 #[derive(Inspect)]
 pub(crate) struct AdminStateFaultInjection {
     pub admin_sq: SubmissionQueue,
+    pub admin_sq_gpa: u64, // The guest physical address of the admin submission queue.
 }
 
 #[derive(Inspect)]
@@ -67,8 +68,9 @@ impl AsyncRun<AdminStateFaultInjection> for AdminHandlerFaultInjection {
         state: &mut AdminStateFaultInjection,
     ) -> Result<(), Cancelled> {
         loop {
+            let curr_head = state.admin_sq.sqhd();
             let event = stop.until_stopped(self.next_event(state)).await?;
-            if let Err(err) = self.process_event(state, event).await {
+            if let Err(err) = self.process_event(state, event, curr_head).await {
                 tracing::error!(
                     error = &err as &dyn std::error::Error,
                     "admin fault injection queue failure"
@@ -98,12 +100,25 @@ impl AdminHandlerFaultInjection {
         &mut self,
         state: &mut AdminStateFaultInjection,
         event: Result<Event, QueueError>,
+        event_head: u16,
     ) -> Result<(), QueueError> {
         let event = event?;
         match event {
             Event::Command(command_result) => {
                 let command = command_result?;
-                (self.config.sq_fault_injector)(self.driver.clone(), command).await; // TODO: Is there a good way to avoid cloning the driver here?
+                let output_command =
+                    (self.config.sq_fault_injector)(self.driver.clone(), command).await; // TODO: Is there a good way to avoid cloning the driver here?
+
+                // Fault inject a changed Command
+                if let Some(output_command) = output_command {
+                    let gpa = state.admin_sq_gpa.wrapping_add(event_head as u64 * 64);
+
+                    // let data: u64 = output_command;
+                    self.config
+                        .mem
+                        .write_plain(gpa, &output_command)
+                        .map_err(QueueError::Memory)?;
+                }
 
                 let data = state.admin_sq.sqhd() as u32;
                 let mut inner_controller = self.config.controller.lock();
@@ -133,6 +148,7 @@ impl AdminStateFaultInjection {
     pub fn new(handler: &AdminHandlerFaultInjection, asq: u64, asqs: u16) -> Self {
         Self {
             admin_sq: SubmissionQueue::new(handler.config.doorbells[0].clone(), asq, asqs, None),
+            admin_sq_gpa: asq,
         }
     }
 
