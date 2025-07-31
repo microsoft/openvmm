@@ -61,7 +61,7 @@ async fn test_nvme_controller_command_fault(driver: DefaultDriver) {
     .await;
 }
 
-// Sample case for dealyed Admin command processing
+// Sample case for delayed Admin command processing
 #[async_test]
 async fn test_nvme_controller_command_delay(driver: DefaultDriver) {
     test_nvme_controller_fault_injection(
