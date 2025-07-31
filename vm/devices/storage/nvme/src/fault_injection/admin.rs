@@ -3,10 +3,8 @@ use crate::queue::DoorbellRegister;
 use crate::queue::QueueError;
 use crate::queue::SubmissionQueue;
 use crate::spec;
-use crate::workers::IoQueueEntrySizes;
 use futures::FutureExt;
 use guestmem::GuestMemory;
-use guid::Guid;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -21,7 +19,7 @@ enum Event {
     Command(Result<spec::Command, QueueError>),
 }
 
-/// An admin handler shim layer for fault injection.
+/// An admin handler built for fault injection.
 #[derive(Inspect)]
 pub(crate) struct AdminHandlerFaultInjection {
     driver: VmTaskDriver,
@@ -31,7 +29,7 @@ pub(crate) struct AdminHandlerFaultInjection {
 #[derive(Inspect)]
 pub(crate) struct AdminStateFaultInjection {
     pub admin_sq: SubmissionQueue,
-    pub admin_sq_gpa: u64, // The guest physical address of the admin submission queue.
+    pub admin_sq_gpa: u64,
 }
 
 #[derive(Inspect)]
@@ -39,15 +37,8 @@ pub(crate) struct AdminConfigFaultInjection {
     #[inspect(skip)]
     pub mem: GuestMemory,
     #[inspect(skip)]
-    pub doorbells: Vec<Arc<DoorbellRegister>>,
-    #[inspect(display)]
-    pub subsystem_id: Guid,
-    pub max_sqs: u16,
-    pub max_cqs: u16,
-    pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
-    #[inspect(skip)]
     pub controller: Arc<Mutex<NvmeController>>,
-    pub sq_doorbell_addr: u16, // The address of the submission queue doorbell in the device's BAR0.
+    pub admin_sq_doorbell_addr: u16,
     #[inspect(skip)]
     pub sq_fault_injector: Box<
         dyn Fn(
@@ -106,7 +97,7 @@ impl AdminHandlerFaultInjection {
             Event::Command(command_result) => {
                 let command = command_result?;
                 let output_command =
-                    (self.config.sq_fault_injector)(self.driver.clone(), command).await; // TODO: Is there a good way to avoid cloning the driver here?
+                    (self.config.sq_fault_injector)(self.driver.clone(), command).await;
 
                 // Fault inject a changed Command
                 if let Some(output_command) = output_command {
@@ -123,7 +114,7 @@ impl AdminHandlerFaultInjection {
                 let data = u32::to_ne_bytes(data);
 
                 // Write to doorbell register address
-                let _ = inner_controller.write_bar0(self.config.sq_doorbell_addr, &data);
+                let _ = inner_controller.write_bar0(self.config.admin_sq_doorbell_addr, &data);
             }
         }
         Ok(())
@@ -143,16 +134,10 @@ impl InspectTask<AdminStateFaultInjection> for AdminHandlerFaultInjection {
 }
 
 impl AdminStateFaultInjection {
-    pub fn new(handler: &AdminHandlerFaultInjection, asq: u64, asqs: u16) -> Self {
+    pub fn new(asq: u64, asqs: u16, admin_sq_doorbell: Arc<DoorbellRegister>) -> Self {
         Self {
-            admin_sq: SubmissionQueue::new(handler.config.doorbells[0].clone(), asq, asqs, None),
+            admin_sq: SubmissionQueue::new(admin_sq_doorbell, asq, asqs, None),
             admin_sq_gpa: asq,
         }
-    }
-
-    /// Returns the doorbells that need to be fault injected to. In this case it is just the admin submission queue
-    /// TODO: Can be extended in the future to return a Vec<u16> of doorbell indices.
-    pub fn get_intercept_doorbell(&self) -> u16 {
-        0
     }
 }
