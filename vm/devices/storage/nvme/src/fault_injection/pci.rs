@@ -74,9 +74,9 @@ struct Regs {
 ///
 /// ## Usage
 ///
-/// The `sq_fault_injector` parameter is a closure that is provided nvme_spec::Command(s) before they
-/// are processed by the controller. Returning any nvme_spec::Command will change overwrite the provided
-/// command and returning None will leave the command unchanged.
+/// The `sq_fault_injector` parameter is a closure that is provided `nvme_spec::Command` instances before they
+/// are processed by the controller. Returning `Some(command)` will overwrite the provided command in guest memory,
+/// while returning `None` will leave the command unchanged.
 ///
 /// ### Example sq_fault_injector Usage
 ///
