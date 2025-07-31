@@ -438,7 +438,7 @@ async fn test_nvme_controller_fi(driver: DefaultDriver, allow_dma: bool) {
 /// CREATE_IO_COMPLETION_QUEUE => Sets cid = 0
 async fn fault_controller(
     driver: VmTaskDriver,
-    mut command: nvme_spec::Command,
+    command: nvme_spec::Command,
 ) -> Option<nvme_spec::Command> {
     let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
     match opcode {
@@ -459,7 +459,7 @@ async fn fault_controller(
             );
 
             // Overwrite the previous command that was processed using the given head.
-            command.cdw0.set_cid(0);
+            // command.cdw0.set_cid(0);
             Some(command)
         }
         _ => {

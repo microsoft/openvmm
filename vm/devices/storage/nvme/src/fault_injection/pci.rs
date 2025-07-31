@@ -33,7 +33,6 @@ use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
-use std::collections::HashSet;
 use std::sync::Arc;
 use task_control::TaskControl;
 use vmcore::device_state::ChangeDeviceState;
@@ -43,7 +42,8 @@ use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-/// Fault injection for the NVMe controller. Allows for intercepting and changing admin queue commands
+/// Fault injection for the NVMe controller meant for testing. Allows for delaying and changing admin queue commands
+/// This is a minimaly implemented controller that relies on the inner controller for most functionality.
 #[derive(InspectMut)]
 pub struct NvmeControllerFaultInjection {
     #[inspect(skip)]
@@ -51,15 +51,14 @@ pub struct NvmeControllerFaultInjection {
     mem: GuestMemory,
     driver: VmTaskDriver,
     #[inspect(skip)]
-    doorbells: Vec<Arc<DoorbellRegister>>,
-    #[inspect(iter_by_index)]
-    doorbells_intercept: HashSet<u16>,
+    sq_doorbell: Arc<DoorbellRegister>,
     regs: Regs,
     #[inspect(skip)]
     admin: TaskControl<AdminHandlerFaultInjection, AdminStateFaultInjection>,
     cfg_space: ConfigSpaceType0Emulator,
 }
 
+/// Thes
 #[derive(Inspect)]
 struct Regs {
     asq: u64,
@@ -116,11 +115,8 @@ impl NvmeControllerFaultInjection {
                 + Sync,
         >,
     ) -> Self {
-        // Setup Doorbell intercept.
-        let num_qids = 2 + caps.max_io_queues * 2; // Assumes that max_sqs == max_cqs
-        let doorbells: Vec<_> = (0..num_qids)
-            .map(|_| Arc::new(DoorbellRegister::new()))
-            .collect();
+        // Setup Doorbell intercept for the admin submission queue.
+        let sq_doorbell = Arc::new(DoorbellRegister::new());
 
         // We want to be able to share the inner controller with the admin handler.
         let inner = Arc::new(Mutex::new(NvmeController::new(
@@ -131,18 +127,12 @@ impl NvmeControllerFaultInjection {
             caps,
         )));
 
-        let qe_sizes = Arc::new(Default::default());
         let handler: AdminHandlerFaultInjection = AdminHandlerFaultInjection::new(
             driver_source.simple(),
             AdminConfigFaultInjection {
                 mem: guest_memory.clone(),
-                doorbells: doorbells.clone(),
-                subsystem_id: caps.subsystem_id,
-                max_sqs: caps.max_io_queues,
-                max_cqs: caps.max_io_queues,
-                qe_sizes: Arc::clone(&qe_sizes),
                 controller: inner.clone(),
-                sq_doorbell_addr: 0x1000, // The address of the submission queue doorbell in the device's BAR0.
+                admin_sq_doorbell_addr: 0x1000, // The address of the submission queue doorbell in the device's BAR0.
                 sq_fault_injector,
             },
         );
@@ -181,7 +171,7 @@ impl NvmeControllerFaultInjection {
             inner: inner.clone(),
             mem: guest_memory.clone(),
             driver: driver_source.simple(),
-            doorbells,
+            sq_doorbell,
             regs: Regs {
                 asq: 0,
                 acq: 0,
@@ -191,7 +181,6 @@ impl NvmeControllerFaultInjection {
             },
             admin: TaskControl::new(handler),
             cfg_space,
-            doorbells_intercept: HashSet::new(),
         }
     }
 
@@ -219,19 +208,16 @@ impl NvmeControllerFaultInjection {
             if (index << DOORBELL_STRIDE_BITS) != base || index != 0 {
                 return Err(());
             }
-            if !self.doorbells_intercept.contains(&index) {
+            if index != 0 {
+                // As of now the driver only supports a single doorbell (For the Admin Submission Queue).
                 return Err(());
             }
             let Ok(data) = data.try_into() else {
                 return Err(());
             };
             let data = u32::from_ne_bytes(data);
-            if let Some(doorbell) = self.doorbells.get(index as usize) {
-                doorbell.write(data);
-                return Ok(IoResult::Ok);
-            } else {
-                tracelimit::warn_ratelimited!(index, data, "unknown doorbell");
-            }
+            self.sq_doorbell.write(data);
+            return Ok(IoResult::Ok);
         }
         Err(())
     }
@@ -343,12 +329,10 @@ impl NvmeControllerFaultInjection {
                 // Enable the admin fault injection queue
                 if !self.admin.is_running() {
                     let state = AdminStateFaultInjection::new(
-                        self.admin.task(),
                         self.regs.asq,
                         self.regs.aqa.asqs_z().max(1) + 1,
+                        self.sq_doorbell.clone(), // Admin Submission Queue Doorbell
                     );
-                    self.doorbells_intercept
-                        .insert(state.get_intercept_doorbell());
                     self.admin
                         .insert(&self.driver, "nvme-admin-fault-injection", state);
                     self.admin.start();
@@ -424,7 +408,6 @@ impl PciConfigSpace for NvmeControllerFaultInjection {
         inner.pci_cfg_read(offset, value)
     }
 
-    // DONE: Copy any writes going to inner.
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         let _ = self.cfg_space.write_u32(offset, value);
         let mut inner = self.inner.lock();
