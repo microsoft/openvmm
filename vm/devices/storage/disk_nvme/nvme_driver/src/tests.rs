@@ -20,7 +20,6 @@ use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use std::time::Duration;
 use test_with_tracing::test;
-use tracing::info;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
