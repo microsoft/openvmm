@@ -17,7 +17,7 @@ mod workers;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+pub use fault_injection::FaultFn;
 pub use fault_injection::pci::NvmeControllerFaultInjection;
 pub use pci::NvmeController;
 pub use pci::NvmeControllerCaps;

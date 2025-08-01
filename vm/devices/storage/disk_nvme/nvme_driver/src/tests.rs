@@ -17,8 +17,6 @@ use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use test_with_tracing::test;
@@ -30,7 +28,6 @@ use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
 use vmcore::vm_task::SingleDriverBackend;
-use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
 
@@ -63,8 +60,8 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
 
 // Sample case for delayed Admin command processing
 #[async_test]
-async fn test_nvme_controller_command_delay(driver: DefaultDriver) {
-    test_nvme_controller_fault_injection(
+async fn test_nvme_command_delay(driver: DefaultDriver) {
+    test_nvme_fault_injection(
         driver,
         Box::new(|driver, command| {
             Box::pin(async move {
@@ -358,17 +355,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 }
 
 #[cfg(test)]
-async fn test_nvme_fault_injection(
-    driver: DefaultDriver,
-    fault_fn: Box<
-        dyn Fn(
-                VmTaskDriver,
-                nvme_spec::Command,
-            ) -> Pin<Box<dyn Future<Output = Option<nvme_spec::Command>> + Send>>
-            + Send
-            + Sync,
-    >,
-) {
+async fn test_nvme_fault_injection(driver: DefaultDriver, fault_fn: nvme::FaultFn) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
