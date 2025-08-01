@@ -795,7 +795,6 @@ impl<T: DeviceBacking> ManaQueue<T> {
             }
             Err(_) => {
                 tracelimit::error_ratelimited!("failed to read tx s_oob");
-                return;
             }
         }
     }
