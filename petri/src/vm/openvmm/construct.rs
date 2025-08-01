@@ -295,12 +295,16 @@ impl PetriVmConfigOpenVmm {
                 proc_count: 2,
                 vps_per_socket: None,
                 enable_smt: None,
-                arch: match arch {
-                    MachineArch::X86_64 => None,
+                arch: Some(match arch {
+                    MachineArch::X86_64 => hvlite_defs::config::ArchTopologyConfig::X86(
+                        hvlite_defs::config::X86TopologyConfig::default(),
+                    ),
                     #[cfg(not(windows))]
-                    MachineArch::Aarch64 => None,
+                    MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                        hvlite_defs::config::Aarch64TopologyConfig::default(),
+                    ),
                     #[cfg(windows)]
-                    MachineArch::Aarch64 => Some(hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                    MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
                         hvlite_defs::config::Aarch64TopologyConfig {
                             // TODO: The PMU GSIV value is currently hardcoded
                             // to be 0x17 on WHP. This shouldn't be required to
@@ -309,8 +313,8 @@ impl PetriVmConfigOpenVmm {
                             pmu_gsiv: Some(0x17),
                             ..Default::default()
                         },
-                    )),
-                },
+                    ),
+                }),
             },
 
             // Base chipset
