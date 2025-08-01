@@ -1383,7 +1383,7 @@ mod vp_state {
         vtl: Vtl,
         gva: u64,
         buf: &mut [u8],
-    ) -> Result<(), anyhow::Error> {
+    ) -> anyhow::Result<()> {
         let mut offset = 0;
         while offset < buf.len() {
             let gpa = translate_gva(guest_memory, debug, vtl, gva + offset as u64)
@@ -1401,7 +1401,7 @@ mod vp_state {
         vtl: Vtl,
         gva: u64,
         buf: &[u8],
-    ) -> Result<(), anyhow::Error> {
+    ) -> anyhow::Result<()> {
         let mut offset = 0;
         while offset < buf.len() {
             let gpa = translate_gva(guest_memory, debug, vtl, gva + offset as u64)

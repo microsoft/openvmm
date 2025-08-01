@@ -702,9 +702,9 @@ pub enum Error {
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
     #[error("resetting memory mappings failed")]
-    ResetMemoryMapping(#[source] virt::Error),
+    ResetMemoryMapping(#[source] anyhow::Error),
     #[error("accepting pages failed")]
-    AcceptPages(#[source] virt::Error),
+    AcceptPages(#[source] anyhow::Error),
     #[error("invalid apic base")]
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
 }
