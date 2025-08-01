@@ -301,7 +301,7 @@ impl NvmeControllerFaultInjection {
                     self.registers.csts.set_rdy(true);
                 }
             } else if self.registers.csts.rdy() {
-                // Fault Controller does not yet support controller resets. This functionality will be coming in the future.
+                // Fault Controller does not yet support controller resets. See #1802 to track this issue.
             } else {
                 tracelimit::warn_ratelimited!("disabling while not ready");
                 return;
