@@ -296,7 +296,7 @@ impl Wq {
     }
 
     fn get_offset_in_buffer_in_bytes(&self, offset: u32) -> usize {
-        return (offset as usize * WQE_ALIGNMENT) & self.mask as usize;
+        (offset as usize * WQE_ALIGNMENT) & self.mask as usize
     }
 
     /// Reads from the offset, the first `n` bytes.
