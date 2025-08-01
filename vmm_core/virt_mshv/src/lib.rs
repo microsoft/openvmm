@@ -1067,6 +1067,7 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
     }
 }
 
+// TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("operation not supported")]
@@ -1075,8 +1076,6 @@ pub enum Error {
     CreateVMFailed,
     #[error("failed to create VCPU")]
     CreateVcpu(#[source] MshvError),
-    #[error("emulator GPA translation error")]
-    EmulatorTranslateGPA,
     #[error("vtl2 not supported")]
     Vtl2NotSupported,
     #[error("isolation not supported")]
@@ -1087,8 +1086,6 @@ pub enum Error {
     OpenMshv(#[source] MshvError),
     #[error("register access error")]
     Register(#[source] MshvError),
-    #[error("interrupt assertion failed")]
-    AssertInterrupt(#[source] MshvError),
     #[error("install instercept failed")]
     InstallIntercept(#[source] MshvError),
 }

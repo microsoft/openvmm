@@ -90,13 +90,11 @@ struct KvmPartitionInner {
 }
 
 #[derive(Debug, Error)]
-pub enum KvmRunVpError {
+enum KvmRunVpError {
     #[error("KVM internal error: {0:#x}")]
     InternalError(u32),
     #[error("invalid vp state")]
     InvalidVpState,
-    #[error("failed to run VP")]
-    Run(#[source] kvm::Error),
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),
 }

@@ -683,7 +683,6 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
 mod x86 {
     use super::WhpHypercallExit;
     use crate::WhpProcessor;
-    use crate::WhpRunVpError;
     use crate::regs;
     use crate::vtl2;
     use arrayvec::ArrayVec;
@@ -809,7 +808,7 @@ mod x86 {
             bus: &'a T,
             info: &whp::abi::WHV_HYPERCALL_CONTEXT,
             exit_context: &'a whp::abi::WHV_VP_EXIT_CONTEXT,
-        ) -> Result<(), WhpRunVpError> {
+        ) {
             let vpref = vp.vp;
 
             let is_64bit =
@@ -832,7 +831,7 @@ mod x86 {
             this.flush()
         }
 
-        fn flush(&mut self) -> Result<(), WhpRunVpError> {
+        fn flush(&mut self) {
             let registers = &mut self.registers;
             let mut pairs = (
                 ArrayVec::<_, 14>::new(),
@@ -868,10 +867,7 @@ mod x86 {
 
             let (names, values) = &pairs;
             if !names.is_empty() {
-                self.vp
-                    .current_whp()
-                    .set_registers(names, values)
-                    .map_err(WhpRunVpError::Event)?;
+                self.vp.current_whp().set_registers(names, values).unwrap();
 
                 registers.gp_dirty = false;
                 registers.rip_dirty = false;
@@ -890,12 +886,10 @@ mod x86 {
                 self.vp
                     .current_whp()
                     .set_register(whp::Register128::PendingEvent, exception_event.into())
-                    .map_err(WhpRunVpError::Event)?;
+                    .unwrap();
 
                 self.registers.invalid_opcode = false;
             }
-
-            Ok(())
         }
     }
 
