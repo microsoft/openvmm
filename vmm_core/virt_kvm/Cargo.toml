@@ -28,6 +28,7 @@ safe_intrinsics.workspace = true
 inspect.workspace = true
 pal_event.workspace = true
 
+anyhow.workspace = true
 jiff.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true

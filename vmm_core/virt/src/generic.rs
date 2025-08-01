@@ -43,8 +43,6 @@ use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptParameters;
 
-pub type Error = anyhow::Error;
-
 pub trait Hypervisor: 'static {
     /// The prototype partition type.
     type ProtoPartition<'a>: ProtoPartition<Partition = Self::Partition>;
