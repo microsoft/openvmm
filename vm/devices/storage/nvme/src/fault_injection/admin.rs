@@ -6,7 +6,10 @@ use crate::NvmeController;
 use crate::queue::DoorbellRegister;
 use crate::queue::QueueError;
 use crate::queue::SubmissionQueue;
+use chipset_device::io::IoError;
+use chipset_device::io::IoResult;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -14,7 +17,19 @@ use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTask;
 use task_control::StopTask;
+use thiserror::Error;
 use vmcore::vm_task::VmTaskDriver;
+
+#[derive(Debug, Error)]
+
+pub enum FaultInjectionError {
+    #[error("failed to write doorbell to bar0 of inner controller: {0:?}")]
+    DoorbellWrite(IoError),
+    #[error("failed to write command to the submission queue: {0}")]
+    CommandWrite(GuestMemoryError),
+    #[error("failed to read command from the submission queue: {0}")]
+    CommandRead(QueueError),
+}
 
 /// An admin handler built for fault injection.
 #[derive(Inspect)]
@@ -63,9 +78,13 @@ impl AdminHandlerFaultInjection {
     async fn process_next_command(
         &mut self,
         state: &mut AdminStateFaultInjection,
-    ) -> Result<(), QueueError> {
+    ) -> Result<(), FaultInjectionError> {
         let original_head = state.admin_sq.sqhd();
-        let command = state.admin_sq.next(&self.config.mem).await?;
+        let command = state
+            .admin_sq
+            .next(&self.config.mem)
+            .await
+            .map_err(FaultInjectionError::CommandRead)?;
 
         let fault_command = (self.config.sq_fault_injector)(self.driver.clone(), command).await;
 
@@ -76,7 +95,7 @@ impl AdminHandlerFaultInjection {
             self.config
                 .mem
                 .write_plain(gpa, &fault_command)
-                .map_err(QueueError::Memory)?;
+                .map_err(FaultInjectionError::CommandWrite)?;
         }
 
         let data = state.admin_sq.sqhd() as u32;
@@ -84,7 +103,12 @@ impl AdminHandlerFaultInjection {
         let data = u32::to_ne_bytes(data);
 
         // Write to inner doorbell register to process only 1 command
-        let _ = inner_controller.write_bar0(self.config.admin_sq_doorbell_addr, &data);
+        if let IoResult::Err(e) =
+            inner_controller.write_bar0(self.config.admin_sq_doorbell_addr, &data)
+        {
+            // If setup for admin queue was the same, no reason for the write to fail.
+            return Err(FaultInjectionError::DoorbellWrite(e));
+        }
 
         Ok(())
     }
