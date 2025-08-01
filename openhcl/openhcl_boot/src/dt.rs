@@ -399,17 +399,19 @@ pub fn write_dt(
 
         // Add PMU.
         // FIXME: Parse this from the host dt
-        // TODO: default on hyper-v is 0x17
+        // TODO: default on hyper-v is 0x17 for PPI, so it's actually that minus 16.
         let pmu_gsiv = 0x17;
         if pmu_gsiv != 0 {
             // TODO: This assumes the GSIV is a PPI. On all platforms, that seems to
             // be the case today.
+            assert!((16..32).contains(&pmu_gsiv));
+            let ppi_index = pmu_gsiv - 16;
             let pmu = root_builder
                 .start_node("pmu")?
                 .add_str(p_compatible, "arm,armv8-pmuv3")?
                 .add_u32_array(
                     p_interrupts,
-                    &[aarch64::GIC_PPI, pmu_gsiv, aarch64::IRQ_TYPE_LEVEL_HIGH],
+                    &[aarch64::GIC_PPI, ppi_index, aarch64::IRQ_TYPE_LEVEL_HIGH],
                 )?;
             root_builder = pmu.end_node()?;
         }

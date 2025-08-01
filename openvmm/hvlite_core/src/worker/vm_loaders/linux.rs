@@ -317,10 +317,12 @@ fn build_dt(
     if pmu_gsiv != 0 {
         // TODO: This assumes the GSIV is a PPI. On all platforms, that seems to
         // be the case today.
+        assert!((16..32).contains(&pmu_gsiv));
+        let ppi_index = pmu_gsiv - 16;
         let pmu = root_builder
             .start_node("pmu")?
             .add_str(p_compatible, "arm,armv8-pmuv3")?
-            .add_u32_array(p_interrupts, &[GIC_PPI, pmu_gsiv, IRQ_TYPE_LEVEL_HIGH])?;
+            .add_u32_array(p_interrupts, &[GIC_PPI, ppi_index, IRQ_TYPE_LEVEL_HIGH])?;
         root_builder = pmu.end_node()?;
     }
 
