@@ -89,12 +89,14 @@ struct KvmPartitionInner {
     cpuid: virt::CpuidLeafSet,
 }
 
+// TODO: Chunk this up into smaller types.
 #[derive(Debug, Error)]
 enum KvmRunVpError {
     #[error("KVM internal error: {0:#x}")]
     InternalError(u32),
     #[error("invalid vp state")]
     InvalidVpState,
+    #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),
 }
