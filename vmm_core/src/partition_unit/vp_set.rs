@@ -150,13 +150,19 @@ where
                 })
             }
             VpHaltReason::InvalidVmState(err) => {
-                tracing::error!(err, "invalid VM state");
+                tracing::error!(
+                    err = err.as_ref() as &dyn std::error::Error,
+                    "invalid VM state"
+                );
                 Err(HaltReason::InvalidVmState {
                     vp: self.vp_index.index(),
                 })
             }
             VpHaltReason::EmulationFailure(err) => {
-                tracing::error!(err, "emulation failure");
+                tracing::error!(
+                    err = err.as_ref() as &dyn std::error::Error,
+                    "emulation failure"
+                );
                 Err(HaltReason::VpError {
                     vp: self.vp_index.index(),
                 })
