@@ -72,6 +72,7 @@ use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
 use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::PciDeviceResetMethod;
@@ -405,11 +406,18 @@ mod namespace {
             save_restore_supported: bool,
             device: Option<Box<dyn NvmeDevice>>,
             factory: Arc<dyn CreateNvmeDriver>,
+            worker_vp: Option<u32>, // Option to make this experiment eaiser..
         ) -> anyhow::Result<Self> {
-            // todo: dedicate a vp for each instance of this
-            // todo: deal with inspect
             let (send, recv) = mesh::channel();
-            let driver = driver_source.simple();
+            let driver = if let Some(vp) = worker_vp {
+                driver_source
+                    .builder()
+                    .run_on_target(true)
+                    .target_vp(vp)
+                    .build(format!("nvme-driver-manager-worker-{pci_id}"))
+            } else {
+                driver_source.simple()
+            };
 
             let mut worker = NvmeDriverManagerWorker {
                 driver_source: driver_source.clone(),
@@ -691,6 +699,7 @@ impl NvmeManager {
                 driver_source: driver_source.clone(),
                 devices: Arc::new(RwLock::new(HashMap::new())),
                 factory: factory.clone(),
+                next_worker_vp: Arc::new(AtomicU32::new(1)), // try to get off vp 0, which other things use...
             },
         };
         let task = driver.spawn("nvme-manager", async move {
@@ -815,6 +824,7 @@ struct NvmeWorkerContext {
     devices: Arc<RwLock<HashMap<String, NvmeDriverManager>>>,
     #[inspect(skip)]
     factory: Arc<dyn CreateNvmeDriver>,
+    next_worker_vp: Arc<AtomicU32>,
 }
 
 #[derive(Inspect)]
@@ -985,6 +995,10 @@ impl NvmeManagerWorker {
                 match guard.entry(pci_id.to_owned()) {
                     hash_map::Entry::Occupied(_) => unreachable!(), // We checked above that this entry does not exist.
                     hash_map::Entry::Vacant(entry) => {
+                        let worker_vp = context
+                            .next_worker_vp
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
                         let driver = NvmeDriverManager::new(
                             &context.driver_source,
                             &pci_id,
@@ -992,6 +1006,7 @@ impl NvmeManagerWorker {
                             context.save_restore_supported,
                             None, // No device yet,
                             context.factory.clone(),
+                            Some(worker_vp),
                         )?;
 
                         Ok(entry.insert(driver).client().clone())
@@ -1090,6 +1105,11 @@ impl NvmeManagerWorker {
                 )
                 .await?;
 
+            let worker_vp = &self
+                .context
+                .next_worker_vp
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
             restored_devices.insert(
                 disk.pci_id.clone(),
                 NvmeDriverManager::new(
@@ -1099,6 +1119,7 @@ impl NvmeManagerWorker {
                     true, // save_restore_supported is always `true` when restoring. TODO: validate
                     Some(nvme_driver),
                     self.context.factory.clone(),
+                    Some(*worker_vp),
                 )?,
             );
         }
