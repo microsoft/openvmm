@@ -999,8 +999,6 @@ impl<T: CpuIo> hv1_hypercall::SignalEvent for KvmHypercallExit<'_, T> {
 }
 
 impl Processor for KvmProcessor<'_> {
-    type Error = KvmError;
-    type RunVpError = KvmRunVpError;
     type StateAccess<'a>
         = KvmVpStateAccess<'a>
     where
@@ -1010,7 +1008,7 @@ impl Processor for KvmProcessor<'_> {
         &mut self,
         _vtl: Vtl,
         state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <KvmVpStateAccess<'_> as AccessVpState>::Error> {
         let mut control = 0;
         let mut db = [0; 4];
         let mut dr7 = 0;
@@ -1037,7 +1035,7 @@ impl Processor for KvmProcessor<'_> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<KvmRunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         loop {
             self.inner.needs_yield.maybe_yield().await;
             stop.check()?;
@@ -1063,7 +1061,7 @@ impl Processor for KvmProcessor<'_> {
                     .store(false, Ordering::Relaxed);
                 if self.runner.check_or_request_interrupt_window() {
                     self.deliver_pic_interrupt(dev)
-                        .map_err(VpHaltReason::Hypervisor)?;
+                        .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
                 }
             }
 
@@ -1093,7 +1091,7 @@ impl Processor for KvmProcessor<'_> {
                     self.runner.run()
                 };
 
-                let exit = exit.map_err(|err| VpHaltReason::Hypervisor(KvmRunVpError::Run(err)))?;
+                let exit = exit.unwrap();
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
@@ -1102,7 +1100,7 @@ impl Processor for KvmProcessor<'_> {
                     }
                     kvm::Exit::InterruptWindow => {
                         self.deliver_pic_interrupt(dev)
-                            .map_err(VpHaltReason::Hypervisor)?;
+                            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
                     }
                     kvm::Exit::IoIn { port, data, size } => {
                         for data in data.chunks_mut(size as usize) {
@@ -1192,9 +1190,9 @@ impl Processor for KvmProcessor<'_> {
                         dev.handle_eoi(irq.into());
                     }
                     kvm::Exit::InternalError { error, .. } => {
-                        return Err(VpHaltReason::Hypervisor(KvmRunVpError::InternalError(
-                            error,
-                        )));
+                        return Err(VpHaltReason::InvalidVmState(
+                            KvmRunVpError::InternalError(error).into(),
+                        ));
                     }
                     kvm::Exit::EmulationFailure { instruction_bytes } => {
                         return Err(VpHaltReason::EmulationFailure(
@@ -1208,16 +1206,16 @@ impl Processor for KvmProcessor<'_> {
                         hardware_entry_failure_reason,
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
-                        return Err(VpHaltReason::InvalidVmState(KvmRunVpError::InvalidVpState));
+                        return Err(VpHaltReason::InvalidVmState(
+                            KvmRunVpError::InvalidVpState.into(),
+                        ));
                     }
                 }
             }
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
-        Ok(())
-    }
+    fn flush_async_requests(&mut self) {}
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
