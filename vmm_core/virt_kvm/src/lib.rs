@@ -137,7 +137,7 @@ impl KvmPartitionInner {
         size: usize,
         addr: u64,
         readonly: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> Result<(), anyhow::Error> {
         let mut state = self.memory.lock();
 
         // Memory slots cannot be resized but can be moved within the guest
@@ -186,12 +186,12 @@ impl virt::PartitionMemoryMap for KvmPartitionInner {
         addr: u64,
         writable: bool,
         _exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> Result<(), anyhow::Error> {
         // SAFETY: guaranteed by caller.
         unsafe { self.map_region(data, size, addr, !writable) }
     }
 
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), anyhow::Error> {
         let range = MemoryRange::new(addr..addr + size);
         let mut state = self.memory.lock();
         for (slot, entry) in state.ranges.iter_mut().enumerate() {
