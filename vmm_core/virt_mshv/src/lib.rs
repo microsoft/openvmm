@@ -1146,7 +1146,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), anyhow::Error> {
+    ) -> anyhow::Result<()> {
         let mut state = self.memory.lock();
 
         // Memory slots cannot be resized but can be moved within the guest
@@ -1189,7 +1189,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         Ok(())
     }
 
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), anyhow::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let mut state = self.memory.lock();
         let (slot, range) = state
             .ranges

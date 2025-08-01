@@ -369,7 +369,7 @@ impl virt::PartitionMemoryMapper for HvfPartition {
 }
 
 impl virt::PartitionMemoryMap for HvfPartitionInner {
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let range = MemoryRange::new(addr..addr + size);
         self.mappings.lock().retain(|mapping| {
             if !range.overlaps(mapping) {
@@ -392,7 +392,7 @@ impl virt::PartitionMemoryMap for HvfPartitionInner {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let mut mappings = self.mappings.lock();
         let mut flags = abi::HvMemoryFlags::READ.0;
         if writable {
