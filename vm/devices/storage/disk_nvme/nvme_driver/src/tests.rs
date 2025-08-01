@@ -41,8 +41,8 @@ async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
 
 #[async_test]
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
-async fn test_nvme_controller_command_fault(driver: DefaultDriver) {
-    test_nvme_controller_fault_injection(
+async fn test_nvme_command_fault(driver: DefaultDriver) {
+    test_nvme_fault_injection(
         driver,
         Box::new(|_driver, mut command| {
             Box::pin(async move {
@@ -357,7 +357,8 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     //     .unwrap();
 }
 
-async fn test_nvme_controller_fault_injection(
+#[cfg(test)]
+async fn test_nvme_fault_injection(
     driver: DefaultDriver,
     fault_fn: Box<
         dyn Fn(
