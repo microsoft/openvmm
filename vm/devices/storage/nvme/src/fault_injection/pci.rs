@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use crate::BAR0_LEN;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::FaultFn;

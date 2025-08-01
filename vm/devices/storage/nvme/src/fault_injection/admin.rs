@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use crate::FaultFn;
 use crate::NvmeController;
 use crate::queue::DoorbellRegister;
