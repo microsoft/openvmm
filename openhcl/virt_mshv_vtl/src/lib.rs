@@ -1007,12 +1007,7 @@ impl virt::Synic for UhPartition {
     }
 
     fn monitor_support(&self) -> Option<&dyn virt::SynicMonitor> {
-        // TODO: MNF does not work on CVM, tracked by GH issue 1711.
-        if self.inner.isolation.is_hardware_isolated() {
-            None
-        } else {
-            Some(self)
-        }
+        Some(self)
     }
 }
 
@@ -1021,115 +1016,119 @@ impl virt::SynicMonitor for UhPartition {
         let _vtl = GuestVtl::try_from(vtl).unwrap();
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
 
-        if let Some(old_gpa) = old_gpa {
-            let old_gpn = old_gpa.checked_div(HV_PAGE_SIZE).unwrap();
+        // if let Some(old_gpa) = old_gpa {
+        //     let old_gpn = old_gpa.checked_div(HV_PAGE_SIZE).unwrap();
 
-            match &self.inner.backing_shared {
-                #[cfg(guest_arch = "x86_64")]
-                BackingShared::Snp(snp_backed_shared) => snp_backed_shared
-                    .cvm
-                    .isolated_memory_protector
-                    .unregister_overlay_page(
-                        _vtl,
-                        old_gpn,
-                        &mut SnpBacked::tlb_flush_lock_access(
-                            None,
-                            self.inner.as_ref(),
-                            snp_backed_shared,
-                        ),
-                    )
-                    .map_err(|e| anyhow::anyhow!(e)),
-                #[cfg(guest_arch = "x86_64")]
-                BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
-                    .cvm
-                    .isolated_memory_protector
-                    .unregister_overlay_page(
-                        _vtl,
-                        old_gpn,
-                        &mut TdxBacked::tlb_flush_lock_access(
-                            None,
-                            self.inner.as_ref(),
-                            tdx_backed_shared,
-                        ),
-                    )
-                    .map_err(|e| anyhow::anyhow!(e)),
-                BackingShared::Hypervisor(_) => self
-                    .inner
-                    .hcl
-                    .modify_vtl_protection_mask(
-                        MemoryRange::from_4k_gpn_range(old_gpn..old_gpn + 1),
-                        hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-                        HvInputVtl::CURRENT_VTL,
-                    )
-                    .map_err(|e| anyhow::anyhow!(e)),
-            }
-            .context("failed to unregister old monitor page")?;
+        //     match &self.inner.backing_shared {
+        //         #[cfg(guest_arch = "x86_64")]
+        //         BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+        //             .cvm
+        //             .isolated_memory_protector
+        //             .change_vtl_protections(
+        //                 vtl,
+        //                 _vtl,
+        //                 &[old_gpn],
+        //                 hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+        //                 &mut SnpBacked::tlb_flush_lock_access(
+        //                     None,
+        //                     self.inner.as_ref(),
+        //                     snp_backed_shared,
+        //                 ),
+        //             )
+        //             .map_err(|(e, _)| anyhow::anyhow!(e)),
+        //         #[cfg(guest_arch = "x86_64")]
+        //         BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+        //             .cvm
+        //             .isolated_memory_protector
+        //             .change_vtl_protections(
+        //                 vtl,
+        //                 _vtl,
+        //                 &[old_gpn],
+        //                 hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+        //                 &mut TdxBacked::tlb_flush_lock_access(
+        //                     None,
+        //                     self.inner.as_ref(),
+        //                     tdx_backed_shared,
+        //                 ),
+        //             )
+        //             .map_err(|(e, _)| anyhow::anyhow!(e)),
+        //         BackingShared::Hypervisor(_) => self
+        //             .inner
+        //             .hcl
+        //             .modify_vtl_protection_mask(
+        //                 MemoryRange::from_4k_gpn_range(old_gpn..old_gpn + 1),
+        //                 hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+        //                 HvInputVtl::CURRENT_VTL,
+        //             )
+        //             .map_err(|e| anyhow::anyhow!(e)),
+        //     }
+        //     .context("failed to unregister old monitor page")?;
 
-            tracing::debug!(old_gpa, "unregistered monitor page");
-        }
+        //     tracing::debug!(old_gpa, "unregistered monitor page");
+        // }
 
-        if let Some(gpa) = gpa {
-            let gpn = gpa.checked_div(HV_PAGE_SIZE).unwrap();
-            let _check_perms = HvMapGpaFlags::new().with_readable(true).with_writable(true);
-            // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
-            // permissions must be enabled or this doesn't work correctly.
-            let new_perms = HvMapGpaFlags::new()
-                .with_readable(true)
-                .with_writable(false);
+        // if let Some(gpa) = gpa {
+        //     let gpn = gpa.checked_div(HV_PAGE_SIZE).unwrap();
+        //     let _check_perms = HvMapGpaFlags::new().with_readable(true).with_writable(true);
+        //     // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
+        //     // permissions must be enabled or this doesn't work correctly.
+        //     let new_perms = HvMapGpaFlags::new()
+        //         .with_readable(true)
+        //         .with_writable(false);
 
-            let result = match &self.inner.backing_shared {
-                #[cfg(guest_arch = "x86_64")]
-                BackingShared::Snp(snp_backed_shared) => snp_backed_shared
-                    .cvm
-                    .isolated_memory_protector
-                    .register_overlay_page(
-                        _vtl,
-                        gpn,
-                        _check_perms,
-                        Some(new_perms),
-                        &mut SnpBacked::tlb_flush_lock_access(
-                            None,
-                            self.inner.as_ref(),
-                            snp_backed_shared,
-                        ),
-                    )
-                    .map_err(|e| anyhow::anyhow!(e)),
-                #[cfg(guest_arch = "x86_64")]
-                BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
-                    .cvm
-                    .isolated_memory_protector
-                    .register_overlay_page(
-                        _vtl,
-                        gpn,
-                        _check_perms,
-                        Some(new_perms),
-                        &mut TdxBacked::tlb_flush_lock_access(
-                            None,
-                            self.inner.as_ref(),
-                            tdx_backed_shared,
-                        ),
-                    )
-                    .map_err(|e| anyhow::anyhow!(e)),
-                BackingShared::Hypervisor(_) => self
-                    .inner
-                    .hcl
-                    .modify_vtl_protection_mask(
-                        MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
-                        new_perms,
-                        HvInputVtl::CURRENT_VTL,
-                    )
-                    .map_err(|e| anyhow::anyhow!(e)),
-            }
-            .context("failed to register monitor page");
+        //     let result = match &self.inner.backing_shared {
+        //         #[cfg(guest_arch = "x86_64")]
+        //         BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+        //             .cvm
+        //             .isolated_memory_protector
+        //             .change_vtl_protections(
+        //                 Vtl::Vtl2,
+        //                 _vtl,
+        //                 &[gpn],
+        //                 new_perms,
+        //                 &mut SnpBacked::tlb_flush_lock_access(
+        //                     None,
+        //                     self.inner.as_ref(),
+        //                     snp_backed_shared,
+        //                 ),
+        //             )
+        //             .map_err(|(e, _)| anyhow::anyhow!(e)),
+        //         #[cfg(guest_arch = "x86_64")]
+        //         BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+        //             .cvm
+        //             .isolated_memory_protector
+        //             .change_vtl_protections(
+        //                 Vtl::Vtl0,
+        //                 _vtl,
+        //                 &[gpn],
+        //                 new_perms,
+        //                 &mut TdxBacked::tlb_flush_lock_access(
+        //                     None,
+        //                     self.inner.as_ref(),
+        //                     tdx_backed_shared,
+        //                 ),
+        //             )
+        //             .map_err(|(e, _)| anyhow::anyhow!(e)),
+        //         BackingShared::Hypervisor(_) => self
+        //             .inner
+        //             .hcl
+        //             .modify_vtl_protection_mask(
+        //                 MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
+        //                 new_perms,
+        //                 HvInputVtl::CURRENT_VTL,
+        //             )
+        //             .map_err(|e| anyhow::anyhow!(e)),
+        //     }
+        //     .context("failed to register monitor page");
 
-            if result.is_err() {
-                // Unset the page so trying to remove it later won't fail too.
-                self.inner.monitor_page.set_gpa(None);
-                return result;
-            }
+        //     if result.is_err() {
+        //         // Unset the page so trying to remove it later won't fail too.
+        //         self.inner.monitor_page.set_gpa(None);
+        //         return result;
+        //     }
 
-            tracing::debug!(gpa, "registered monitor page");
-        }
+        //     tracing::debug!(gpa, "registered monitor page");
+        // }
 
         Ok(())
     }
