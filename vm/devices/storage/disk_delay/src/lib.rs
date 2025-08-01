@@ -117,7 +117,7 @@ impl DiskIo for DelayDisk {
         sector: u64,
         count: u64,
         block_level_only: bool,
-    ) -> impl std::future::Future<Output = Result<(), DiskError>> + Send {
+    ) -> impl Future<Output = Result<(), DiskError>> + Send {
         self.inner.unmap(sector, count, block_level_only)
     }
 
