@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
 use gdma_defs::Cqe;
+use gdma_defs::CqeParams;
 use gdma_defs::GDMA_EQE_COMPLETION;
 use gdma_defs::Sge;
 use gdma_defs::Wqe;
@@ -727,13 +728,14 @@ impl<T: DeviceBacking> ManaQueue<T> {
         }
     }
 
-    fn trace_tx_error(&mut self, tx_oob: ManaTxCompOob, done_length: usize) {
+    fn trace_tx_error(&mut self, cqe_params: CqeParams, tx_oob: ManaTxCompOob, done_length: usize) {
         tracelimit::error_ratelimited!(
-            cqe_hdr_type = tx_oob.cqe_hdr.cqe_type(),
-            cqe_hdr_vendor_err = tx_oob.cqe_hdr.vendor_err(),
-            tx_oob_data_offset = tx_oob.tx_data_offset,
-            tx_oob_sgl_offset = tx_oob.offsets.tx_sgl_offset(),
-            tx_oob_wqe_offset = tx_oob.offsets.tx_wqe_offset(),
+            cqe_type = tx_oob.cqe_hdr.cqe_type(),
+            vendor_err = tx_oob.cqe_hdr.vendor_err(),
+            wq_number = cqe_params.wq_number(),
+            tx_data_offset = tx_oob.tx_data_offset,
+            tx_sgl_offset = tx_oob.offsets.tx_sgl_offset(),
+            tx_wqe_offset = tx_oob.offsets.tx_wqe_offset(),
             done_length,
             posted_tx_len = self.posted_tx.len(),
             "tx completion error"
@@ -996,7 +998,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
                         self.stats.tx_errors += 1;
                         self.stats.tx_stuck += 1;
-                        self.trace_tx_error(tx_oob, done.len());
+                        self.trace_tx_error(cqe.params, tx_oob, done.len());
                         // Return a TryRestart error to indicate that the queue needs to be restarted.
                         return Err(TxError::TryRestart(anyhow::anyhow!("GDMA error")));
                     }
@@ -1004,7 +1006,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         // Invalid OOB means the metadata didn't match how the Hardware parsed the packet.
                         // This is somewhat common, usually due to Encapsulation, and only the affects the specific packet.
                         self.stats.tx_errors += 1;
-                        self.trace_tx_error(tx_oob, done.len());
+                        self.trace_tx_error(cqe.params, tx_oob, done.len());
                     }
                     ty => {
                         tracelimit::error_ratelimited!(
