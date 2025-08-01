@@ -213,7 +213,7 @@ impl NvmeControllerFaultInjection {
         Err(())
     }
 
-    /// Writes to the virtual BAR 0. Does NOT handle doorbell writes. Those should be handled through mmio_write.
+    /// Writes to the virtual BAR 0.
     /// This does NOT handle doorbell writes, use mmio_write instead.
     /// this does NOT handle write_bar0() to inner, use mmio_write instead.
     pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
