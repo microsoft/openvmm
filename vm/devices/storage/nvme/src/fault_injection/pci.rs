@@ -58,8 +58,7 @@ pub struct NvmeControllerFaultInjection {
     cfg_space: ConfigSpaceType0Emulator,
 }
 
-// Need to only track a subset of registers for the fault controller. Full set
-// is tracked by the inner controller.
+// Need to only track a subset of registers for the fault controller.
 #[derive(Inspect)]
 struct Registers {
     #[inspect(hex)]

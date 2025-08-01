@@ -3,7 +3,6 @@ use crate::queue::DoorbellRegister;
 use crate::queue::QueueError;
 use crate::queue::SubmissionQueue;
 use crate::spec;
-use futures::FutureExt;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use parking_lot::Mutex;
@@ -13,12 +12,6 @@ use task_control::Cancelled;
 use task_control::InspectTask;
 use task_control::StopTask;
 use vmcore::vm_task::VmTaskDriver;
-
-#[derive(Debug)]
-enum Event {
-    Command(Result<spec::Command, QueueError>),
-}
-
 /// An admin handler built for fault injection.
 #[derive(Inspect)]
 pub(crate) struct AdminHandlerFaultInjection {
@@ -58,9 +51,7 @@ impl AsyncRun<AdminStateFaultInjection> for AdminHandlerFaultInjection {
         state: &mut AdminStateFaultInjection,
     ) -> Result<(), Cancelled> {
         loop {
-            let curr_head = state.admin_sq.sqhd();
-            let event = stop.until_stopped(self.next_event(state)).await?;
-            if let Err(err) = self.process_event(state, event, curr_head).await {
+            if let Err(err) = stop.until_stopped(self.process_next_command(state)).await? {
                 tracing::error!(
                     error = &err as &dyn std::error::Error,
                     "admin fault injection queue failure"
@@ -73,50 +64,32 @@ impl AsyncRun<AdminStateFaultInjection> for AdminHandlerFaultInjection {
 }
 
 impl AdminHandlerFaultInjection {
-    async fn next_event(
+    async fn process_next_command(
         &mut self,
         state: &mut AdminStateFaultInjection,
-    ) -> Result<Event, QueueError> {
-        // TODO: Why is the inner controller handling 3 different types of events? This seems to work for now.
-        let next_command = state
-            .admin_sq
-            .next(&self.config.mem)
-            .map(Event::Command)
-            .await;
-        Ok(next_command)
-    }
-
-    async fn process_event(
-        &mut self,
-        state: &mut AdminStateFaultInjection,
-        event: Result<Event, QueueError>,
-        event_head: u16,
     ) -> Result<(), QueueError> {
-        let event = event?;
-        match event {
-            Event::Command(command_result) => {
-                let command = command_result?;
-                let output_command =
-                    (self.config.sq_fault_injector)(self.driver.clone(), command).await;
+        let original_head = state.admin_sq.sqhd();
+        let command = state.admin_sq.next(&self.config.mem).await?;
 
-                // Fault inject a changed Command
-                if let Some(output_command) = output_command {
-                    let gpa = state.admin_sq_gpa.wrapping_add(event_head as u64 * 64);
+        let fault_command = (self.config.sq_fault_injector)(self.driver.clone(), command).await;
 
-                    self.config
-                        .mem
-                        .write_plain(gpa, &output_command)
-                        .map_err(QueueError::Memory)?;
-                }
+        // Fault inject a changed Command
+        if let Some(fault_command) = fault_command {
+            let gpa = state.admin_sq_gpa.wrapping_add(original_head as u64 * 64);
 
-                let data = state.admin_sq.sqhd() as u32;
-                let mut inner_controller = self.config.controller.lock();
-                let data = u32::to_ne_bytes(data);
-
-                // Write to doorbell register address
-                let _ = inner_controller.write_bar0(self.config.admin_sq_doorbell_addr, &data);
-            }
+            self.config
+                .mem
+                .write_plain(gpa, &fault_command)
+                .map_err(QueueError::Memory)?;
         }
+
+        let data = state.admin_sq.sqhd() as u32;
+        let mut inner_controller = self.config.controller.lock();
+        let data = u32::to_ne_bytes(data);
+
+        // Write to inner doorbell register to process only 1 command
+        let _ = inner_controller.write_bar0(self.config.admin_sq_doorbell_addr, &data);
+
         Ok(())
     }
 }
