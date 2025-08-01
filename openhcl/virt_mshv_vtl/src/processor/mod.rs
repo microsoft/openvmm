@@ -632,6 +632,7 @@ impl<T: Backing> UhProcessor<'_, T> {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 #[derive(Debug, Error)]
 #[error("unexpected debug exception with dr6 value {dr6:#x}")]
 struct UnexpectedDebugException {
@@ -649,8 +650,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
-        anyhow::bail!("not supported")
+    ) -> Result<(), <T::StateAccess<'p, '_> as virt::vp::AccessVpState>::Error> {
+        unimplemented!()
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -1081,7 +1082,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         intercept_state: &aarch64emu::InterceptState,
         vtl: GuestVtl,
         cache: T::EmulationCache,
-    ) -> Result<(), VpHaltReason<UhRunVpError>>
+    ) -> Result<(), VpHaltReason>
     where
         for<'b> UhEmulationState<'b, 'a, D, T>: virt_support_aarch64emu::emulate::EmulatorSupport,
     {

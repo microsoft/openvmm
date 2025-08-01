@@ -741,7 +741,7 @@ impl HvfProcessor<'_> {
         }
     }
 
-    fn handle_psci(&mut self, fc: FastCall) -> Result<(), VpHaltReason<Error>> {
+    fn handle_psci(&mut self, fc: FastCall) -> Result<(), VpHaltReason> {
         let mask = if fc.smc64() {
             u64::MAX
         } else {
@@ -819,9 +819,6 @@ impl HvfProcessor<'_> {
 }
 
 impl<'p> Processor for HvfProcessor<'p> {
-    type Error = Error;
-    type RunVpError = Error;
-
     type StateAccess<'a>
         = vp_state::HvfVpStateAccess<'a, 'p>
     where
@@ -831,7 +828,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <vp_state::HvfVpStateAccess<'_, 'p> as AccessVpState>::Error> {
         Ok(())
     }
 
@@ -839,7 +836,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<Error>> {
+    ) -> Result<Infallible, VpHaltReason> {
         let vp_index = self.inner.vp_info.base.vp_index;
         let mut last_waker = None;
         loop {
@@ -910,7 +907,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             )
                         }
                         .chk()
-                        .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                        .unwrap();
                         self.wfi = false;
                     }
 
@@ -923,7 +920,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                         continue;
                     }
 
-                    break Poll::Ready(Result::<_, VpHaltReason<_>>::Ok(()));
+                    break Poll::Ready(Result::<_, VpHaltReason>::Ok(()));
                 }
             })
             .await?;
@@ -933,14 +930,12 @@ impl<'p> Processor for HvfProcessor<'p> {
                 unsafe {
                     abi::hv_vcpu_set_vtimer_mask(self.vcpu.vcpu, false)
                         .chk()
-                        .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                        .unwrap();
                 }
             }
 
             // SAFETY: we are not concurrently accessing `exit`.
-            unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }
-                .chk()
-                .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+            unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }.chk().unwrap();
 
             match self.vcpu.exit.reason {
                 abi::HvExitReason::CANCELED => {
@@ -1118,7 +1113,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             advance(&mut self.vcpu);
                         }
                         class => {
-                            return Err(VpHaltReason::Hypervisor(
+                            return Err(VpHaltReason::InvalidVmState(
                                 anyhow::anyhow!(
                                     "unsupported exception class: {class:?} {iss:#x}",
                                     iss = exception.syndrome.iss()
@@ -1132,7 +1127,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                     self.gicr.raise(PPI_VTIMER);
                 }
                 reason => {
-                    return Err(VpHaltReason::Hypervisor(
+                    return Err(VpHaltReason::InvalidVmState(
                         anyhow::anyhow!("unsupported exit reason: {reason:?}").into(),
                     ));
                 }
@@ -1140,9 +1135,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
-        Ok(())
-    }
+    fn flush_async_requests(&mut self) {}
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
