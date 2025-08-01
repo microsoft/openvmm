@@ -166,7 +166,7 @@ enum EmulationError<E> {
     Emulator {
         bytes: Vec<u8>,
         #[source]
-        error: aarch64emu::Error<E>,
+        error: aarch64emu::Error<Error<E>>,
     },
 }
 
@@ -174,9 +174,20 @@ enum EmulationError<E> {
 pub async fn emulate<T: EmulatorSupport>(
     support: &mut T,
     intercept_state: &InterceptState,
+    emu_mem: &GuestMemory,
+    dev: &impl CpuIo,
+) -> Result<(), VpHaltReason> {
+    emulate_core(support, intercept_state, emu_mem, dev)
+        .await
+        .map_err(|e| VpHaltReason::EmulationFailure(e.into()))
+}
+
+async fn emulate_core<T: EmulatorSupport>(
+    support: &mut T,
+    intercept_state: &InterceptState,
     gm: &GuestMemory,
     dev: &impl CpuIo,
-) -> Result<(), VpHaltReason<T::Error>> {
+) -> Result<(), EmulationError<T::Error>> {
     tracing::trace!(physical_address = support.physical_address(), "emulating");
 
     if support.interruption_pending() {
@@ -193,9 +204,7 @@ pub async fn emulate<T: EmulatorSupport>(
         // cause an infinite loop (as the processor tries to get the trap
         // vector out of the mmio-ed vector table).  Just give up.
 
-        return Err(VpHaltReason::EmulationFailure(
-            EmulationError::<T::Error>::InterruptionPending.into(),
-        ));
+        return Err(EmulationError::InterruptionPending);
     }
 
     let mut cpu = EmulatorCpu::new(gm, dev, support, intercept_state.syndrome);
@@ -218,13 +227,10 @@ pub async fn emulate<T: EmulatorSupport>(
                 if inject_memory_access_fault(addr, &err, support, intercept_state.syndrome) {
                     return Ok(());
                 } else {
-                    return Err(VpHaltReason::EmulationFailure(
-                        EmulationError::Emulator {
-                            bytes: instruction_bytes,
-                            error: aarch64emu::Error::MemoryAccess(addr, kind, err),
-                        }
-                        .into(),
-                    ));
+                    return Err(EmulationError::Emulator {
+                        bytes: instruction_bytes,
+                        error: aarch64emu::Error::MemoryAccess(addr, kind, err),
+                    });
                 };
             }
             err => {

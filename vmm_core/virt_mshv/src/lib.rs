@@ -453,8 +453,8 @@ impl MshvProcessor<'_> {
         message: &hv_message,
         devices: &impl CpuIo,
         interruption_pending: bool,
-    ) -> Result<(), VpHaltReason<MshvError>> {
-        let cache = self.emulation_cache().map_err(VpHaltReason::Hypervisor)?;
+    ) -> Result<(), VpHaltReason> {
+        let cache = self.emulation_cache();
         let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
             gm: &self.partition.gm,
             kx_gm: &self.partition.gm,
@@ -476,7 +476,7 @@ impl MshvProcessor<'_> {
         &self,
         message: &hv_message,
         devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvError>> {
+    ) -> Result<(), VpHaltReason> {
         let info = message.to_ioport_info().unwrap();
         let access_info = info.access_info;
         // SAFETY: This union only contains one field.
@@ -512,8 +512,7 @@ impl MshvProcessor<'_> {
                 (mshv_bindings::hv_register_name_HV_X64_REGISTER_RAX, ret_rax),
             ];
 
-            set_registers_64!(self.inner.vcpufd, arr_reg_name_value)
-                .map_err(VpHaltReason::Hypervisor)?;
+            set_registers_64!(self.inner.vcpufd, arr_reg_name_value).unwrap();
         }
 
         Ok(())
@@ -523,33 +522,21 @@ impl MshvProcessor<'_> {
         &self,
         message: &hv_message,
         devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvError>> {
+    ) -> Result<(), VpHaltReason> {
         let execution_state = message.to_memory_info().unwrap().header.execution_state;
         // SAFETY: This union only contains one field.
         let mmio_execution_state = unsafe { execution_state.__bindgen_anon_1 };
         let interruption_pending = mmio_execution_state.interruption_pending() != 0;
 
-        self.emulate(message, devices, interruption_pending).await?;
-
-        Ok(())
+        self.emulate(message, devices, interruption_pending).await
     }
 
-    fn handle_synic_deliverable_exit(
-        &self,
-        message: &hv_message,
-        _devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvError>> {
+    fn handle_synic_deliverable_exit(&self, message: &hv_message, _devices: &impl CpuIo) {
         let info = message.to_sint_deliverable_info().unwrap();
-
         self.flush_messages(info.deliverable_sints);
-        Ok(())
     }
 
-    fn handle_hypercall_intercept(
-        &self,
-        message: &hv_message,
-        devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvError>> {
+    fn handle_hypercall_intercept(&self, message: &hv_message, devices: &impl CpuIo) {
         let info = message.to_hypercall_intercept_info().unwrap();
         let execution_state = info.header.execution_state;
         // SAFETY: Accessing the raw field of this union is always safe.
@@ -659,8 +646,6 @@ impl MshvProcessor<'_> {
                 .set_reg(&dirty_regs)
                 .expect("RIP setting is not a fallable operation");
         }
-
-        Ok(())
     }
 
     fn flush_messages(&self, deliverable_sints: u16) {
@@ -698,8 +683,8 @@ impl MshvProcessor<'_> {
         }
     }
 
-    fn emulation_cache(&self) -> Result<MshvEmuCache, MshvError> {
-        let regs = self.inner.vcpufd.get_regs()?;
+    fn emulation_cache(&self) -> MshvEmuCache {
+        let regs = self.inner.vcpufd.get_regs().unwrap();
         let gps = [
             regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
             regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
@@ -719,14 +704,14 @@ impl MshvProcessor<'_> {
         let cr0 = sregs.cr0;
         let efer = sregs.efer;
 
-        Ok(MshvEmuCache {
+        MshvEmuCache {
             gps,
             segs,
             rip,
             rflags: rflags.into(),
             cr0,
             efer,
-        })
+        }
     }
 }
 
@@ -740,8 +725,6 @@ struct MshvEmulationState<'a> {
 }
 
 impl EmulatorSupport for MshvEmulationState<'_> {
-    type Error = MshvError;
-
     fn vp_index(&self) -> VpIndex {
         self.vp_index
     }
@@ -800,7 +783,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         hvu128_to_u128(unsafe { &reg.value.reg128 })
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, reg: usize, value: u128) {
         assert!(reg < 16);
         let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
         // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same layout.
@@ -809,11 +792,10 @@ impl EmulatorSupport for MshvEmulationState<'_> {
                 name, value,
             )))
         };
-        self.processor.vcpufd.set_reg(&[reg])?;
-        Ok(())
+        self.processor.vcpufd.set_reg(&[reg]).unwrap();
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
+    fn flush(&mut self) {
         let arr_reg_name_value = [
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RIP,
@@ -889,8 +871,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
             ),
         ];
 
-        set_registers_64!(self.processor.vcpufd, arr_reg_name_value)?;
-        Ok(())
+        set_registers_64!(self.processor.vcpufd, arr_reg_name_value).unwrap();
     }
 
     fn instruction_bytes(&self) -> &[u8] {
@@ -983,7 +964,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
-    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError> {
         // TODO: No VTL2 supported so always return Ok.
         Ok(())
     }
@@ -992,7 +973,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         &mut self,
         gva: u64,
         mode: TranslateMode,
-    ) -> Result<Result<EmuTranslateResult, EmuTranslateError>, Self::Error> {
+    ) -> Result<EmuTranslateResult, EmuTranslateError> {
         emulate_translate_gva(self, gva, mode)
     }
 
@@ -1042,8 +1023,6 @@ impl EmulatorSupport for MshvEmulationState<'_> {
 }
 
 impl TranslateGvaSupport for MshvEmulationState<'_> {
-    type Error = MshvError;
-
     fn guest_memory(&self) -> &GuestMemory {
         &self.partition.gm
     }
@@ -1052,7 +1031,7 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
         // The hypervisor automatically acquires the TLB lock for exo partitions.
     }
 
-    fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
+    fn registers(&mut self) -> TranslationRegisters {
         let mut reg = [
             HvX64RegisterName::Cr0,
             HvX64RegisterName::Cr4,
@@ -1065,15 +1044,18 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
 
         // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same size.
         unsafe {
-            self.processor.vcpufd.get_reg(std::mem::transmute::<
-                &mut [HvRegisterAssoc],
-                &mut [hv_register_assoc],
-            >(&mut reg[..]))?;
+            self.processor
+                .vcpufd
+                .get_reg(std::mem::transmute::<
+                    &mut [HvRegisterAssoc],
+                    &mut [hv_register_assoc],
+                >(&mut reg[..]))
+                .unwrap();
         }
 
         let [cr0, cr4, efer, cr3, rflags, ss] = reg.map(|v| v.value);
 
-        Ok(TranslationRegisters {
+        TranslationRegisters {
             cr0: cr0.as_u64(),
             cr4: cr4.as_u64(),
             efer: efer.as_u64(),
@@ -1081,7 +1063,7 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
             rflags: rflags.as_u64(),
             ss: from_seg(ss.as_segment()),
             encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
-        })
+        }
     }
 }
 
@@ -1369,8 +1351,6 @@ impl InspectMut for MshvProcessor<'_> {
 }
 
 impl virt::Processor for MshvProcessor<'_> {
-    type Error = Error;
-    type RunVpError = MshvError;
     type StateAccess<'a>
         = &'a mut Self
     where
@@ -1380,7 +1360,7 @@ impl virt::Processor for MshvProcessor<'_> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
         Err(Error::NotSupported)
     }
 
@@ -1388,7 +1368,7 @@ impl virt::Processor for MshvProcessor<'_> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<MshvError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         let vpinner = self.inner;
         let _cleaner = MshvVpInnerCleaner { vpinner };
         let vcpufd = &vpinner.vcpufd;
@@ -1415,11 +1395,11 @@ impl virt::Processor for MshvProcessor<'_> {
                     }
                     HvMessageType::HvMessageTypeSynicSintDeliverable => {
                         tracing::trace!("SYNIC_SINT_DELIVERABLE");
-                        self.handle_synic_deliverable_exit(&exit, dev)?;
+                        self.handle_synic_deliverable_exit(&exit, dev);
                     }
                     HvMessageType::HvMessageTypeHypercallIntercept => {
                         tracing::trace!("HYPERCALL_INTERCEPT");
-                        self.handle_hypercall_intercept(&exit, dev)?;
+                        self.handle_hypercall_intercept(&exit, dev);
                     }
                     exit => {
                         panic!("Unhandled vcpu exit code {exit:?}");
@@ -1437,9 +1417,7 @@ impl virt::Processor for MshvProcessor<'_> {
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
-        Ok(())
-    }
+    fn flush_async_requests(&mut self) {}
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);

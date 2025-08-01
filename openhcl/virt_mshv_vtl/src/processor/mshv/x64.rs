@@ -10,7 +10,6 @@ type VpRegisterName = HvX64RegisterName;
 use super::super::BackingParams;
 use super::super::BackingPrivate;
 use super::super::UhEmulationState;
-use super::super::UhRunVpError;
 use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
@@ -196,7 +195,7 @@ impl BackingPrivate for HypervisorBackedX86 {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         stop: &mut StopVp<'_>,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         if this.backing.deliverability_notifications
             != this.backing.next_deliverability_notifications
         {
@@ -218,7 +217,7 @@ impl BackingPrivate for HypervisorBackedX86 {
             let mut run = this
                 .runner
                 .run_sidecar()
-                .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
+                .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
             match stop.until_stop(run.wait()).await {
                 Ok(r) => r,
                 Err(stop) => {
@@ -231,19 +230,17 @@ impl BackingPrivate for HypervisorBackedX86 {
                     r
                 }
             }
-            .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Sidecar(e)))?
+            .map_err(|e| VpHaltReason::InvalidVmState(ioctl::Error::Sidecar(e).into()))?
         } else {
             this.unlock_tlb_lock(Vtl::Vtl2);
-            this.runner
-                .run()
-                .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?
+            this.runner.run().unwrap()
         };
 
         if intercepted {
             let message_type = this.runner.exit_message().header.typ;
 
             let mut intercept_handler =
-                InterceptHandler::new(this).map_err(VpHaltReason::InvalidVmState)?;
+                InterceptHandler::new(this).map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
 
             let stat = match message_type {
                 HvMessageType::HvMessageTypeX64IoPortIntercept => {
@@ -262,7 +259,7 @@ impl BackingPrivate for HypervisorBackedX86 {
                     &mut this.backing.stats.unaccepted_gpa
                 }
                 HvMessageType::HvMessageTypeHypercallIntercept => {
-                    intercept_handler.handle_hypercall_exit(dev)?;
+                    intercept_handler.handle_hypercall_exit(dev);
                     &mut this.backing.stats.hypercall
                 }
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
@@ -274,15 +271,15 @@ impl BackingPrivate for HypervisorBackedX86 {
                     &mut this.backing.stats.interrupt_deliverable
                 }
                 HvMessageType::HvMessageTypeX64CpuidIntercept => {
-                    intercept_handler.handle_cpuid_intercept()?;
+                    intercept_handler.handle_cpuid_intercept();
                     &mut this.backing.stats.cpuid
                 }
                 HvMessageType::HvMessageTypeMsrIntercept => {
-                    intercept_handler.handle_msr_intercept()?;
+                    intercept_handler.handle_msr_intercept();
                     &mut this.backing.stats.msr
                 }
                 HvMessageType::HvMessageTypeX64ApicEoi => {
-                    intercept_handler.handle_eoi(dev)?;
+                    intercept_handler.handle_eoi(dev);
                     &mut this.backing.stats.eoi
                 }
                 HvMessageType::HvMessageTypeUnrecoverableException => {
@@ -319,21 +316,15 @@ impl BackingPrivate for HypervisorBackedX86 {
         Ok(())
     }
 
-    fn poll_apic(
-        _this: &mut UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
-        _scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
-        Ok(())
-    }
+    fn poll_apic(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl, _scan_irr: bool) {}
 
     fn process_interrupts(
         _this: &mut UhProcessor<'_, Self>,
         _scan_irr: hv1_structs::VtlArray<bool, 2>,
         _first_scan_irr: &mut bool,
         _dev: &impl CpuIo,
-    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
-        Ok(false)
+    ) -> bool {
+        false
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
@@ -356,10 +347,7 @@ impl BackingPrivate for HypervisorBackedX86 {
         None
     }
 
-    fn handle_vp_start_enable_vtl_wake(
-        _this: &mut UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
+    fn handle_vp_start_enable_vtl_wake(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl) {
         unimplemented!()
     }
 
@@ -427,14 +415,24 @@ struct InterceptHandler<'a, 'b> {
     intercepted_vtl: GuestVtl,
 }
 
+#[derive(Debug, Error)]
+#[error("invalid intercepted vtl {0:?}")]
+struct InvalidInterceptedVtl(u8);
+
+#[derive(Debug, Error)]
+#[error("guest accessed unaccepted gpa {0}")]
+struct UnacceptedMemoryAccess(u64);
+
 impl<'a, 'b> InterceptHandler<'a, 'b> {
-    fn new(vp: &'a mut UhProcessor<'b, HypervisorBackedX86>) -> Result<Self, UhRunVpError> {
+    fn new(
+        vp: &'a mut UhProcessor<'b, HypervisorBackedX86>,
+    ) -> Result<Self, InvalidInterceptedVtl> {
         let message_type = vp.runner.exit_message().header.typ;
 
         let intercepted_vtl = match vp.runner.reg_page_vtl() {
             Ok(vtl) => vtl,
             Err(ioctl::x64::RegisterPageVtlError::InvalidVtl(vtl)) => {
-                return Err(UhRunVpError::InvalidInterceptedVtl(vtl));
+                return Err(InvalidInterceptedVtl(vtl));
             }
             Err(ioctl::x64::RegisterPageVtlError::NoRegisterPage) => {
                 if matches!(&message_type, &HvMessageType::HvMessageTypeX64ApicEoi) {
@@ -513,9 +511,11 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                         reason => unreachable!("unknown exit reason: {:#x?}", reason),
                     };
 
-                    message_header.execution_state.vtl().try_into().map_err(
-                        |hcl::UnsupportedGuestVtl(vtl)| UhRunVpError::InvalidInterceptedVtl(vtl),
-                    )?
+                    message_header
+                        .execution_state
+                        .vtl()
+                        .try_into()
+                        .map_err(|hcl::UnsupportedGuestVtl(vtl)| InvalidInterceptedVtl(vtl))?
                 }
             }
         };
@@ -526,10 +526,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         })
     }
 
-    fn handle_interrupt_deliverable_exit(
-        &mut self,
-        bus: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_interrupt_deliverable_exit(&mut self, bus: &impl CpuIo) -> Result<(), VpHaltReason> {
         let message = self
             .vp
             .runner
@@ -564,7 +561,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                     HvX64RegisterName::PendingEvent0,
                     u128::from(event).into(),
                 )
-                .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Event(e)))?;
+                .unwrap();
         }
 
         Ok(())
@@ -597,10 +594,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             .deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
-    fn handle_hypercall_exit(
-        &mut self,
-        bus: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_hypercall_exit(&mut self, bus: &impl CpuIo) {
         let message = self
             .vp
             .runner
@@ -623,14 +617,9 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             guest_memory,
             hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
         );
-
-        Ok(())
     }
 
-    async fn handle_mmio_exit(
-        &mut self,
-        dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    async fn handle_mmio_exit(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason> {
         let message = self
             .vp
             .runner
@@ -663,7 +652,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 dev,
                 interruption_pending,
                 tlb_lock_held,
-            )? {
+            ) {
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                     signal_mnf(dev, connection_id);
                 }
@@ -674,14 +663,10 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let cache = self.vp.emulation_cache(self.intercepted_vtl);
         self.vp
             .emulate(dev, interruption_pending, self.intercepted_vtl, cache)
-            .await?;
-        Ok(())
+            .await
     }
 
-    async fn handle_io_port_exit(
-        &mut self,
-        dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    async fn handle_io_port_exit(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason> {
         let message = self
             .vp
             .runner
@@ -711,14 +696,15 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 dev,
             )
             .await;
-            self.vp.set_rip(self.intercepted_vtl, next_rip)
+            self.vp.set_rip(self.intercepted_vtl, next_rip);
+            Ok(())
         }
     }
 
     async fn handle_unaccepted_gpa_intercept(
         &mut self,
         dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let gpa = self
             .vp
             .runner
@@ -735,17 +721,14 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             // no longer included in the lower_vtl_memory_layout, make sure the
             // appropriate changes are reflected here.
             Err(VpHaltReason::InvalidVmState(
-                UhRunVpError::UnacceptedMemoryAccess(gpa),
+                UnacceptedMemoryAccess(gpa).into(),
             ))
         } else {
-            // TODO SNP: for hardware isolation, if the intercept is due to a guest
-            // error, inject a machine check
-            self.handle_mmio_exit(dev).await?;
-            Ok(())
+            self.handle_mmio_exit(dev).await
         }
     }
 
-    fn handle_cpuid_intercept(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_cpuid_intercept(&mut self) {
         let message = self
             .vp
             .runner
@@ -772,10 +755,10 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         self.vp.runner.cpu_context_mut().gps[protocol::RCX] = ecx.into();
         self.vp.runner.cpu_context_mut().gps[protocol::RDX] = edx.into();
 
-        self.vp.set_rip(self.intercepted_vtl, next_rip)
+        self.vp.set_rip(self.intercepted_vtl, next_rip);
     }
 
-    fn handle_msr_intercept(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_msr_intercept(&mut self) {
         let message = self
             .vp
             .runner
@@ -798,7 +781,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                     Err(MsrError::InvalidAccess) => {
                         self.vp.inject_gpf(self.intercepted_vtl);
                         // Do not advance RIP.
-                        return Ok(());
+                        return;
                     }
                 };
 
@@ -816,17 +799,17 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                     Err(MsrError::InvalidAccess) => {
                         self.vp.inject_gpf(self.intercepted_vtl);
                         // Do not advance RIP.
-                        return Ok(());
+                        return;
                     }
                 }
             }
             _ => unreachable!(),
         }
 
-        self.vp.set_rip(self.intercepted_vtl, rip)
+        self.vp.set_rip(self.intercepted_vtl, rip);
     }
 
-    fn handle_eoi(&self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_eoi(&self, dev: &impl CpuIo) {
         let message = self
             .vp
             .runner
@@ -836,16 +819,15 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         tracing::trace!(msg = %format_args!("{:x?}", message), "eoi");
 
         dev.handle_eoi(message.interrupt_vector);
-        Ok(())
     }
 
-    fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_unrecoverable_exception(&self) -> Result<(), VpHaltReason> {
         Err(VpHaltReason::TripleFault {
             vtl: self.intercepted_vtl.into(),
         })
     }
 
-    fn handle_exception(&mut self) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_exception(&mut self) -> Result<(), VpHaltReason> {
         let message = self
             .vp
             .runner
@@ -863,12 +845,10 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 }
 
 impl UhProcessor<'_, HypervisorBackedX86> {
-    fn set_rip(&mut self, vtl: GuestVtl, rip: u64) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn set_rip(&mut self, vtl: GuestVtl, rip: u64) {
         self.runner
             .set_vp_register(vtl, HvX64RegisterName::Rip, rip.into())
-            .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::AdvanceRip(e)))?;
-
-        Ok(())
+            .unwrap();
     }
 
     fn inject_gpf(&mut self, vtl: GuestVtl) {
@@ -1047,9 +1027,7 @@ fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
 }
 
 impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
-    type Error = UhRunVpError;
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
+    fn flush(&mut self) {
         self.vp
             .runner
             .set_vp_registers(
@@ -1061,7 +1039,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 ],
             )
             .unwrap();
-        Ok(())
     }
 
     fn vp_index(&self) -> VpIndex {
@@ -1090,9 +1067,8 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         u128::from_le_bytes(self.vp.runner.cpu_context().fx_state.xmm[index])
     }
 
-    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, index: usize, v: u128) {
         self.vp.runner.cpu_context_mut().fx_state.xmm[index] = v.to_le_bytes();
-        Ok(())
     }
 
     fn rip(&mut self) -> u64 {
@@ -1218,7 +1194,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         &mut self,
         gpa: u64,
         mode: virt_support_x86emu::emulate::TranslateMode,
-    ) -> Result<(), EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), EmuCheckVtlAccessError> {
         // Underhill currently doesn't set VTL 2 protections against execute exclusively, it removes
         // all permissions from a page. So for VTL 1, no need to check the permissions; if VTL 1
         // doesn't have permissions to a page, Underhill should appropriately fail when it tries
@@ -1245,7 +1221,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 .vp
                 .runner
                 .get_vp_register(self.vtl, HvX64RegisterName::InstructionEmulationHints)
-                .map_err(UhRunVpError::EmulationState)?;
+                .unwrap();
 
             let flags =
                 if hvdef::HvInstructionEmulatorHintsRegister::from(mbec_user_execute.as_u64())
@@ -1261,7 +1237,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
                 .partition
                 .hcl
                 .check_vtl_access(gpa, self.vtl, flags)
-                .map_err(|e| EmuCheckVtlAccessError::Hypervisor(UhRunVpError::VtlAccess(e)))?;
+                .unwrap();
 
             if let Some(ioctl::CheckVtlAccessResult { vtl, denied_flags }) = access_result {
                 return Err(EmuCheckVtlAccessError::AccessDenied { vtl, denied_flags });
@@ -1275,7 +1251,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         &mut self,
         gva: u64,
         mode: virt_support_x86emu::emulate::TranslateMode,
-    ) -> Result<Result<EmuTranslateResult, EmuTranslateError>, Self::Error> {
+    ) -> Result<EmuTranslateResult, EmuTranslateError> {
         let mut control_flags = hypercall::TranslateGvaControlFlagsX64::new();
         match mode {
             virt_support_x86emu::emulate::TranslateMode::Read => {
@@ -1313,22 +1289,22 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             .vp
             .runner
             .translate_gva_to_gpa(gva, control_flags)
-            .map_err(|e| UhRunVpError::TranslateGva(ioctl::Error::TranslateGvaToGpa(e)))?
+            .unwrap()
         {
             Ok(ioctl::TranslateResult {
                 gpa_page,
                 overlay_page,
             }) => {
                 self.vp.mark_tlb_locked(Vtl::Vtl2, self.vtl);
-                Ok(Ok(EmuTranslateResult {
+                Ok(EmuTranslateResult {
                     gpa: (gpa_page << hvdef::HV_PAGE_SHIFT) + (gva & (HV_PAGE_SIZE - 1)),
                     overlay_page: Some(overlay_page),
-                }))
+                })
             }
-            Err(ioctl::x64::TranslateErrorX64 { code, event_info }) => Ok(Err(EmuTranslateError {
+            Err(ioctl::x64::TranslateErrorX64 { code, event_info }) => Err(EmuTranslateError {
                 code: hypercall::TranslateGvaResultCode(code),
                 event_info: Some(event_info),
-            })),
+            }),
         }
     }
 
@@ -1400,7 +1376,7 @@ impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, Hyperv
     }
 
     fn set_rip(&mut self, rip: u64) {
-        self.vp.set_rip(self.intercepted_vtl, rip).unwrap()
+        self.vp.set_rip(self.intercepted_vtl, rip)
     }
 
     fn gp(&mut self, n: hv1_hypercall::X64HypercallRegister) -> u64 {
@@ -1942,9 +1918,7 @@ mod save_restore {
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             // Ensure all async requests are reflected in the saved state.
-            self.flush_async_requests()
-                .context("failed to flush async requests")
-                .map_err(SaveError::Other)?;
+            self.flush_async_requests();
 
             let dr6_shared = self.partition.hcl.dr6_shared();
             let mut values = [FromZeros::new_zeroed(); SHARED_REGISTERS.len()];

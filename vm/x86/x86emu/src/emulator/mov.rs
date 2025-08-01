@@ -3,7 +3,6 @@
 
 use super::AlignmentMode;
 use super::Emulator;
-use super::Error;
 use super::InternalError;
 use crate::Cpu;
 use crate::Segment;
@@ -47,9 +46,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 let reg = instr.op0_register();
                 assert!(reg.is_xmm());
                 let xmm_index = reg.number();
-                self.cpu.set_xmm(xmm_index, value).map_err(|err| {
-                    Error::XmmRegister(xmm_index, super::OperationKind::Write, err)
-                })?
+                self.cpu.set_xmm(xmm_index, value)
             }
             _ => Err(self.unsupported_instruction(instr))?,
         };
