@@ -50,6 +50,7 @@ mod aarch64 {
     pub const GIC_PPI: u32 = 1;
     pub const IRQ_TYPE_EDGE_FALLING: u32 = 2;
     pub const IRQ_TYPE_LEVEL_LOW: u32 = 8;
+    pub const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
 }
 
 #[derive(Debug)]
@@ -395,6 +396,23 @@ pub fn write_dt(
             )?
             .add_null(p_always_on)?;
         root_builder = timer.end_node()?;
+
+        // Add PMU.
+        // FIXME: Parse this from the host dt
+        // TODO: default on hyper-v is 0x17
+        let pmu_gsiv = 0x17;
+        if pmu_gsiv != 0 {
+            // TODO: This assumes the GSIV is a PPI. On all platforms, that seems to
+            // be the case today.
+            let pmu = root_builder
+                .start_node("pmu")?
+                .add_str(p_compatible, "arm,armv8-pmuv3")?
+                .add_u32_array(
+                    p_interrupts,
+                    &[aarch64::GIC_PPI, pmu_gsiv, aarch64::IRQ_TYPE_LEVEL_HIGH],
+                )?;
+            root_builder = pmu.end_node()?;
+        }
     }
 
     // Linux requires vmbus to be under a simple-bus node.
