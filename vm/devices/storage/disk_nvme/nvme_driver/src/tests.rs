@@ -13,10 +13,12 @@ use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
+use std::time::Duration;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
@@ -32,6 +34,49 @@ use zerocopy::IntoBytes;
 #[async_test]
 async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
     test_nvme_driver(driver, true).await;
+}
+
+#[async_test]
+#[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
+async fn test_nvme_command_fault(driver: DefaultDriver) {
+    test_nvme_fault_injection(
+        driver,
+        Box::new(|_driver, mut command| {
+            Box::pin(async move {
+                let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+                match opcode {
+                    nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
+                        // Overwrite the previous cid to cause a panic.
+                        command.cdw0.set_cid(0);
+                        Some(command)
+                    }
+                    _ => None,
+                }
+            })
+        }),
+    )
+    .await;
+}
+
+// Sample case for delayed Admin command processing
+#[async_test]
+async fn test_nvme_command_delay(driver: DefaultDriver) {
+    test_nvme_fault_injection(
+        driver,
+        Box::new(|driver, command| {
+            Box::pin(async move {
+                let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+                match opcode {
+                    nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
+                        PolledTimer::new(&driver).sleep(Duration::new(5, 0)).await;
+                        None
+                    }
+                    _ => None,
+                }
+            })
+        }),
+    )
+    .await;
 }
 
 #[async_test]
@@ -307,6 +352,62 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
     //     .await
     //     .unwrap();
+}
+
+async fn test_nvme_fault_injection(driver: DefaultDriver, fault_fn: nvme::FaultFn) {
+    const MSIX_COUNT: u16 = 2;
+    const IO_QUEUE_COUNT: u16 = 64;
+    const CPU_COUNT: u32 = 64;
+
+    // Arrange: Create 8MB of space. First 4MB for the device and second 4MB for the payload.
+    let pages = 1024; // 4MB
+    let device_test_memory = DeviceTestMemory::new(pages * 2, false, "test_nvme_driver");
+    let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
+    let dma_client = device_test_memory.dma_client(); // Access 0-4MB
+    let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
+
+    // Arrange: Create the NVMe controller and driver.
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mut msi_set = MsiInterruptSet::new();
+    let nvme = nvme::NvmeControllerFaultInjection::new(
+        &driver_source,
+        guest_mem.clone(),
+        &mut msi_set,
+        &mut ExternallyManagedMmioIntercepts,
+        NvmeControllerCaps {
+            msix_count: MSIX_COUNT,
+            max_io_queues: IO_QUEUE_COUNT,
+            subsystem_id: Guid::new_random(),
+        },
+        fault_fn,
+    );
+
+    nvme.client() // 2MB namespace
+        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .await
+        .unwrap();
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
+        .await
+        .unwrap();
+    let namespace = driver.namespace(1).await.unwrap();
+
+    // Act: Write 1024 bytes of data to disk starting at LBA 1.
+    let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
+    payload_mem.write_at(0, &[0xcc; 4096]).unwrap();
+    namespace
+        .write(
+            0,
+            1,
+            2,
+            false,
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
+        )
+        .await
+        .unwrap();
+
+    driver.shutdown().await;
 }
 
 #[derive(Inspect)]
