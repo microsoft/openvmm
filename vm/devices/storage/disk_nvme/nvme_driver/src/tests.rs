@@ -354,7 +354,6 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     //     .unwrap();
 }
 
-#[cfg(test)]
 async fn test_nvme_fault_injection(driver: DefaultDriver, fault_fn: nvme::FaultFn) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
