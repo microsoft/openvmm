@@ -143,6 +143,7 @@ pub struct UefiRuntimeDeps<'a> {
 
 /// The Hyper-V UEFI services chipset device.
 #[derive(InspectMut)]
+#[inspect(extra = "UefiDevice::inspect_extra")]
 pub struct UefiDevice {
     // Fixed configuration
     use_mmio: bool,
@@ -270,10 +271,25 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(false, DEFAULT_LOGS_PER_PERIOD, "guest")
+                self.process_diagnostics(DEFAULT_LOGS_PER_PERIOD, "guest")
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
+    }
+
+    /// Extra inspection fields for the UEFI device.
+    fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
+        resp.field_mut_with("process_diagnostics", |v| {
+            // NOTE: Today, the inspect source code will fail if we invoke like below
+            // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
+            // mutable paths in the inspect graph.
+            if v.is_some() {
+                self.inspect_diagnostics("inspect");
+                anyhow::Ok("attempted to process diagnostics".to_string())
+            } else {
+                anyhow::Ok("Use: inspect -u 1 vm/uefi/process_diagnostics".to_string())
+            }
+        });
     }
 }
 
@@ -318,7 +334,7 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            self.process_diagnostics(false, DEFAULT_LOGS_PER_PERIOD, "watchdog timeout");
+            self.process_diagnostics(DEFAULT_LOGS_PER_PERIOD, "watchdog timeout");
         }
     }
 }
