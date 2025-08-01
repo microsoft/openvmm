@@ -68,7 +68,7 @@ pub enum NvmeFactoryError {
 /// The object that the [`NvmeManager`] manages. This is an NVMe driver.
 /// Abstracted away to make it easier to test the [`NvmeManager`].
 #[async_trait]
-pub trait BackingNvmeDriver: Inspect + Send + Sync {
+pub trait NvmeDevice: Inspect + Send + Sync {
     async fn namespace(
         &self,
         nsid: u32,
@@ -79,7 +79,7 @@ pub trait BackingNvmeDriver: Inspect + Send + Sync {
 }
 
 #[derive(Inspect)]
-struct RealNvmeDriver {
+struct VfioNvmeDevice {
     /// The NVMe driver that this object manages. This must
     /// be an `Option` because the NVMe manager shutdown
     /// process wants to control explicitly when this device
@@ -88,7 +88,7 @@ struct RealNvmeDriver {
 }
 
 #[async_trait]
-impl BackingNvmeDriver for RealNvmeDriver {
+impl NvmeDevice for VfioNvmeDevice {
     /// Get an instance of the supplied namespace (an nvme `nsid`).
     /// Panics if the driver is not loaded (this is a programming error).
     async fn namespace(
@@ -131,7 +131,7 @@ impl BackingNvmeDriver for RealNvmeDriver {
 }
 
 #[async_trait]
-pub trait NvmeDriverFactory: Inspect + Send + Sync {
+pub trait CreateNvmeDriver: Inspect + Send + Sync {
     async fn create_driver(
         &self,
         driver_source: &VmTaskDriverSource,
@@ -139,11 +139,11 @@ pub trait NvmeDriverFactory: Inspect + Send + Sync {
         vp_count: u32,
         save_restore_supported: bool,
         saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
-    ) -> Result<Box<dyn BackingNvmeDriver>, NvmeFactoryError>;
+    ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError>;
 }
 
 #[derive(Inspect)]
-pub struct RealNvmeDriverFactory {
+pub struct VfioNvmeDriverFactory {
     pub nvme_always_flr: bool,
     pub is_isolated: bool,
     #[inspect(skip)]
@@ -151,7 +151,7 @@ pub struct RealNvmeDriverFactory {
 }
 
 #[async_trait]
-impl NvmeDriverFactory for RealNvmeDriverFactory {
+impl CreateNvmeDriver for VfioNvmeDriverFactory {
     async fn create_driver(
         &self,
         driver_source: &VmTaskDriverSource,
@@ -159,7 +159,7 @@ impl NvmeDriverFactory for RealNvmeDriverFactory {
         vp_count: u32,
         save_restore_supported: bool,
         saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
-    ) -> Result<Box<dyn BackingNvmeDriver>, NvmeFactoryError> {
+    ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError> {
         let dma_client = self
             .dma_client_spawner
             .new_client(DmaClientParameters {
@@ -205,13 +205,13 @@ impl NvmeDriverFactory for RealNvmeDriverFactory {
             .await?
         };
 
-        Ok(Box::new(RealNvmeDriver {
+        Ok(Box::new(VfioNvmeDevice {
             driver: Some(nvme_driver),
         }))
     }
 }
 
-impl RealNvmeDriverFactory {
+impl VfioNvmeDriverFactory {
     async fn create_nvme_device(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
@@ -333,7 +333,7 @@ impl NvmeManager {
         vp_count: u32,
         save_restore_supported: bool,
         saved_state: Option<NvmeSavedState>,
-        factory: Arc<dyn NvmeDriverFactory>,
+        factory: Arc<dyn CreateNvmeDriver>,
     ) -> Self {
         let (send, recv) = mesh::channel();
         let driver = driver_source.simple();
@@ -454,11 +454,11 @@ struct NvmeManagerWorker {
     #[inspect(skip)]
     driver_source: VmTaskDriverSource,
     #[inspect(iter_by_key)]
-    devices: HashMap<String, Box<dyn BackingNvmeDriver>>,
+    devices: HashMap<String, Box<dyn NvmeDevice>>,
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
-    factory: Arc<dyn NvmeDriverFactory>,
+    factory: Arc<dyn CreateNvmeDriver>,
 }
 
 impl NvmeManagerWorker {
@@ -533,7 +533,7 @@ impl NvmeManagerWorker {
     async fn get_driver(
         &mut self,
         pci_id: String,
-    ) -> Result<&mut Box<dyn BackingNvmeDriver>, NvmeFactoryError> {
+    ) -> Result<&mut Box<dyn NvmeDevice>, NvmeFactoryError> {
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
@@ -765,7 +765,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl BackingNvmeDriver for MockNvmeDriver {
+    impl NvmeDevice for MockNvmeDriver {
         async fn namespace(&self, _nsid: u32) -> Result<Namespace, nvme_driver::NamespaceError> {
             // Record start time for concurrency analysis
             {
@@ -874,7 +874,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl NvmeDriverFactory for MockNvmeDriverFactory {
+    impl CreateNvmeDriver for MockNvmeDriverFactory {
         async fn create_driver(
             &self,
             driver_source: &VmTaskDriverSource,
@@ -882,7 +882,7 @@ mod tests {
             _vp_count: u32,
             _save_restore_supported: bool,
             _saved_state: Option<&NvmeDriverSavedState>,
-        ) -> Result<Box<dyn BackingNvmeDriver>, NvmeFactoryError> {
+        ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError> {
             if self.fail_create.load(Ordering::SeqCst) {
                 return Err(NvmeFactoryError::MockDriverCreationFailed(anyhow::anyhow!(
                     "Mock create failure for {}",
