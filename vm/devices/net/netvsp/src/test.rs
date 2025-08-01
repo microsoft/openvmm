@@ -1919,6 +1919,110 @@ async fn initialize_rndis_with_vf(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn initialize_without_vf_association_completion(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf_state = test_vf.state();
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let initialize_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(initialize_complete.request_id, 123);
+    assert_eq!(initialize_complete.status, rndisprot::STATUS_SUCCESS);
+    assert_eq!(initialize_complete.major_version, rndisprot::MAJOR_VERSION);
+    assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
+
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(data) => {
+                let mut reader = data.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION,
+                );
+                let association_data: protocol::Message4SendVfAssociation =
+                    reader.read_plain().unwrap();
+                assert_eq!(association_data.vf_allocated, 1);
+                assert_eq!(association_data.serial_number, test_vf_state.id().unwrap());
+                data.transaction_id().expect("should request completion")
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("association packet");
+
+    // Device will be made ready after packet is sent
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
+
+    // Here is where an OutgoingPacketType::Completion with a transaction id matching the vf association packet
+    // would normally be sent. Even without sending one, the VF should be ready.
+    assert_eq!(transaction_id, VF_ASSOCIATION_TRANSACTION_ID);
+    assert!(test_vf_state.is_ready_unchanged());
+
+    // send switch data path message
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH,
+        },
+        data: protocol::Message4SwitchDataPath {
+            active_data_path: protocol::DataPath::VF.0,
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 123,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(_) => (),
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
+
+    assert_eq!(endpoint_state.lock().use_vf.take().unwrap(), true);
+}
+
+#[async_test]
 async fn initialize_rndis_with_vf_alternate_id(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
