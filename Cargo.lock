@@ -4435,6 +4435,7 @@ dependencies = [
  "mana_driver",
  "mesh",
  "net_backend",
+ "page_pool_alloc",
  "pal_async",
  "pci_core",
  "safeatomic",
