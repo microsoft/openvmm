@@ -377,7 +377,7 @@ async fn test_nvme_controller_fault_injection(
     let device_test_memory = DeviceTestMemory::new(pages * 2, false, "test_nvme_driver");
     let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
     let dma_client = device_test_memory.dma_client(); // Access 0-4MB
-    let payload_mem: guestmem::GuestMemory = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
+    let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
 
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
