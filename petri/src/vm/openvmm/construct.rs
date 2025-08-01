@@ -17,7 +17,6 @@ use crate::IsolationType;
 use crate::PcatGuest;
 use crate::PetriLogSource;
 use crate::PetriTestParams;
-use crate::ProcessorTopology;
 use crate::SIZE_1_GB;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
@@ -425,8 +424,7 @@ impl PetriVmConfigOpenVmm {
             ged,
             vtl2_settings,
             framebuffer_access,
-        }
-        .with_processor_topology(ProcessorTopology::default()))
+        })
     }
 }
 
