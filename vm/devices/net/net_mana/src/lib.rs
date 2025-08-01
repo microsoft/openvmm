@@ -765,6 +765,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         };
 
         tracelimit::error_ratelimited!(
+            last_vbytes = wqe.header.last_vbytes,
             num_sgl_entries = wqe.header.params.num_sgl_entries(),
             inline_client_oob_size = wqe.header.params.inline_client_oob_size(),
             client_oob_in_sgl = wqe.header.params.client_oob_in_sgl(),
