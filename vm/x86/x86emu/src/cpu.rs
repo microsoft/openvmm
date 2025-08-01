@@ -64,7 +64,7 @@ pub trait Cpu {
     fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64;
     fn set_gp(&mut self, reg: RegisterIndex, v: u64);
     fn xmm(&mut self, index: usize) -> u128;
-    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error>;
+    fn set_xmm(&mut self, index: usize, v: u128);
     fn rip(&mut self) -> u64;
     fn set_rip(&mut self, v: u64);
     fn segment(&mut self, index: Segment) -> SegmentRegister;
@@ -137,7 +137,7 @@ impl<T: Cpu + ?Sized> Cpu for &mut T {
         (*self).xmm(index)
     }
 
-    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, index: usize, v: u128) {
         (*self).set_xmm(index, v)
     }
 

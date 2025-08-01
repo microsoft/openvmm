@@ -377,8 +377,6 @@ impl virt::vm::AccessVmState for &KvmPartition {
 }
 
 impl virt::Processor for KvmProcessor<'_> {
-    type Error = KvmError;
-    type RunVpError = KvmRunVpError;
     type StateAccess<'a>
         = &'a mut Self
     where
@@ -388,7 +386,7 @@ impl virt::Processor for KvmProcessor<'_> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
         unimplemented!()
     }
 
@@ -396,7 +394,7 @@ impl virt::Processor for KvmProcessor<'_> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<Self::RunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         loop {
             self.inner.needs_yield.maybe_yield().await;
             stop.check()?;
@@ -421,7 +419,7 @@ impl virt::Processor for KvmProcessor<'_> {
                     self.runner.run()
                 };
 
-                let exit = exit.map_err(|err| VpHaltReason::Hypervisor(KvmRunVpError::Run(err)))?;
+                let exit = exit.unwrap();
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
@@ -440,15 +438,17 @@ impl virt::Processor for KvmProcessor<'_> {
                         dev.handle_eoi(irq.into());
                     }
                     kvm::Exit::InternalError { error, .. } => {
-                        return Err(VpHaltReason::Hypervisor(KvmRunVpError::InternalError(
-                            error,
-                        )));
+                        return Err(VpHaltReason::InvalidVmState(
+                            KvmRunVpError::InternalError(error).into(),
+                        ));
                     }
                     kvm::Exit::FailEntry {
                         hardware_entry_failure_reason,
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
-                        return Err(VpHaltReason::InvalidVmState(KvmRunVpError::InvalidVpState));
+                        return Err(VpHaltReason::InvalidVmState(
+                            KvmRunVpError::InvalidVpState.into(),
+                        ));
                     }
                     _ => panic!("unhandled exit: {:?}", exit),
                 }
@@ -456,9 +456,7 @@ impl virt::Processor for KvmProcessor<'_> {
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
-        Ok(())
-    }
+    fn flush_async_requests(&mut self) {}
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         debug_assert_eq!(vtl, Vtl::Vtl0);
