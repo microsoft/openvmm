@@ -1,5 +1,6 @@
 use crate::BAR0_LEN;
 use crate::DOORBELL_STRIDE_BITS;
+use crate::FaultFn;
 use crate::IOCQES;
 use crate::IOSQES;
 use crate::NvmeController;
@@ -73,48 +74,17 @@ struct Registers {
 /// NvmeController with fault injection capabilities for testing and validation. This implementation
 /// wraps a standard NVMe controller and provides the ability to inject faults into submission queue
 /// commands for testing purposes.
-///
-/// ## Usage
-///
-/// The `sq_fault_injector` parameter is a closure that is provided `nvme_spec::Command` instances before they
-/// are processed by the controller. Returning `Some(command)` will overwrite the provided command in guest memory,
-/// while returning `None` will leave the command unchanged.
-///
-/// ### Example sq_fault_injector Usage
-///
-/// ```rust
-/// // Delay all commands by 100ms
-/// let fault_injector = Box::new(|driver, command| {
-///     Box::pin(async move {
-///         tokio::time::sleep(Duration::from_millis(100)).await;
-///         Some(command)
-///     })
-/// });
-/// // Corrupt command data
-/// let fault_injector = Box::new(|driver, mut command| {
-///     Box::pin(async move {
-///         // Modify command to introduce errors
-///         command.cdw10 = 0xDEADBEEF;
-///         Some(command)
-///     })
-/// });
 impl NvmeControllerFaultInjection {
-    /// Creates a new NVMe controller with fault injection capabilities.
+    /// The `FaultFn` is provided `nvme_spec::Command` instances before they
+    /// are processed by the inner controller. Returning `Some(command)` will overwrite the provided command in guest memory,
+    /// while returning `None` will leave the command unchanged.
     pub fn new(
         driver_source: &VmTaskDriverSource,
         guest_memory: GuestMemory,
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
-        sq_fault_injector: Box<
-            dyn Fn(
-                    VmTaskDriver,
-                    spec::Command,
-                ) -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Option<spec::Command>> + Send>,
-                > + Send
-                + Sync,
-        >,
+        sq_fault_injector: FaultFn,
     ) -> Self {
         let sq_doorbell = Arc::new(DoorbellRegister::new());
 

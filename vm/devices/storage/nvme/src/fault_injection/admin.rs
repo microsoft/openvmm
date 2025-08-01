@@ -1,8 +1,8 @@
+use crate::FaultFn;
 use crate::NvmeController;
 use crate::queue::DoorbellRegister;
 use crate::queue::QueueError;
 use crate::queue::SubmissionQueue;
-use crate::spec;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use parking_lot::Mutex;
@@ -33,15 +33,7 @@ pub(crate) struct AdminConfigFaultInjection {
     pub controller: Arc<Mutex<NvmeController>>,
     pub admin_sq_doorbell_addr: u16,
     #[inspect(skip)]
-    pub sq_fault_injector: Box<
-        dyn Fn(
-                VmTaskDriver,
-                spec::Command,
-            )
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<spec::Command>> + Send>>
-            + Send
-            + Sync,
-    >,
+    pub sq_fault_injector: FaultFn,
 }
 
 impl AsyncRun<AdminStateFaultInjection> for AdminHandlerFaultInjection {
