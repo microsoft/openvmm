@@ -7576,6 +7576,7 @@ dependencies = [
  "storvsp",
  "storvsp_resources",
  "tee_call",
+ "test_with_tracing",
  "thiserror 2.0.12",
  "time",
  "tpm",

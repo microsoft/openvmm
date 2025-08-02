@@ -1,9 +1,53 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Provides access to NVMe namespaces that are backed by the user-mode NVMe
-//! VFIO driver. Keeps track of all the NVMe drivers.
+//! Multi-threaded NVMe namespace manager for user-mode VFIO drivers.
+//!
+//! # Architecture Overview
+//!
+//! This module implements a multi-threaded actor-based architecture for managing NVMe devices:
+//!
+//! ```text
+//! NvmeManager (coordinator)
+//!   ├── NvmeManagerWorker (device registry via mesh RPC)
+//!   │   └── Arc<RwLock<HashMap<String, NvmeDriverManager>>> (device lookup)
+//!   │
+//!   └── Per-device: NvmeDriverManager
+//!       └── NvmeDriverManagerWorker (serialized per device via mesh RPC)
+//!           └── RealNvmeDriver (VFIO device wrapper)
+//! ```
+//!
+//! # Key Objects
+//!
+//! - **`NvmeManager`**: Main coordinator, creates worker task and provides client interface
+//! - **`NvmeManagerWorker`**: Handles device registry, spawns tasks for concurrent operations
+//! - **`NvmeDriverManager`**: Per-device manager with dedicated worker task for serialization
+//! - **`NvmeDriverManagerWorker`**: Serializes requests per device, handles driver lifecycle
+//! - **`RealNvmeDriver`**: Wraps the actual NVMe VFIO driver implementation
+//! - **`NvmeDriverFactory`**: Factory pattern for creating/restoring drivers
+//!
+//! # Concurrency Model
+//!
+//! - **Cross-device operations**: Run concurrently via spawned tasks
+//! - **Same-device operations**: Serialized through per-device worker tasks
+//! - **Device registry**: Protected by `Arc<RwLock<HashMap<String, NvmeDriverManager>>>`
+//! - **Shutdown coordination**: `Arc<AtomicBool>` prevents new operations during shutdown
+//!
+//! # Lock Order (to prevent deadlocks)
+//!
+//! 1. `context.devices.read()` - Fast path for existing devices
+//! 2. `context.devices.write()` - Only for device creation/removal
+//! 3. No nested locks - mesh RPC calls made outside lock scope
+//!
+//! # Subtle Behaviors
+//!
+//! - **Idempotent operations**: Multiple `load_driver()` calls are safe (mesh serialization)
+//! - **Graceful shutdown**: Mesh RPC handles shutdown races, devices drain before exit
+//! - **Error propagation**: Mesh channel errors indicate shutdown
+//! - **Save/restore**: Supported when `save_restore_supported=true`, implies nvme_keepalive
 
+use crate::nvme_manager::namespace::NvmeDriverManager;
+use crate::nvme_manager::namespace::NvmeDriverManagerClient;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
@@ -12,7 +56,6 @@ use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use futures::StreamExt;
-use futures::TryFutureExt;
 use futures::future::join_all;
 use inspect::Inspect;
 use mesh::MeshPayload;
@@ -24,9 +67,12 @@ use openhcl_dma_manager::DmaClientSpawner;
 use openhcl_dma_manager::LowerVtlPermissionPolicy;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
 use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::PciDeviceResetMethod;
@@ -43,11 +89,11 @@ use vmcore::vm_task::VmTaskDriverSource;
 pub struct NamespaceError {
     pci_id: String,
     #[source]
-    source: InnerError,
+    source: NvmeFactoryError,
 }
 
 #[derive(Debug, Error)]
-enum InnerError {
+pub enum NvmeFactoryError {
     #[error("failed to initialize vfio device")]
     Vfio(#[source] anyhow::Error),
     #[error("failed to initialize nvme device")]
@@ -60,6 +106,581 @@ enum InnerError {
         #[source]
         source: nvme_driver::NamespaceError,
     },
+    #[cfg(test)]
+    #[error("failed to create mock nvme driver")]
+    MockDriverCreationFailed(#[source] anyhow::Error),
+}
+
+/// The object that the [`NvmeManager`] manages. This is an NVMe driver.
+/// Abstracted away to make it easier to test the [`NvmeManager`].
+#[async_trait]
+pub trait NvmeDevice: Inspect + Send + Sync {
+    async fn namespace(
+        &self,
+        nsid: u32,
+    ) -> Result<nvme_driver::Namespace, nvme_driver::NamespaceError>;
+    async fn save(&mut self) -> anyhow::Result<nvme_driver::NvmeDriverSavedState>;
+    async fn shutdown(&mut self);
+    fn update_servicing_flags(&mut self, do_not_restart: bool);
+}
+
+#[derive(Inspect)]
+struct VfioNvmeDevice {
+    /// The NVMe driver that this object manages. This must
+    /// be an `Option` because the NVMe manager shutdown
+    /// process wants to control explicitly when this device
+    /// is dropped and to allow for delayed initialization.
+    driver: Option<nvme_driver::NvmeDriver<VfioDevice>>,
+}
+
+#[async_trait]
+impl NvmeDevice for VfioNvmeDevice {
+    /// Get an instance of the supplied namespace (an nvme `nsid`).
+    /// Panics if the driver is not loaded (this is a programming error).
+    async fn namespace(
+        &self,
+        nsid: u32,
+    ) -> Result<nvme_driver::Namespace, nvme_driver::NamespaceError> {
+        self.driver
+            .as_ref()
+            .expect("call to `namespace` when driver is not loaded")
+            .namespace(nsid)
+            .await
+    }
+
+    /// Save the NVMe driver state.
+    /// Panics if the driver is not loaded (this is a programming error).
+    async fn save(&mut self) -> anyhow::Result<nvme_driver::NvmeDriverSavedState> {
+        self.driver
+            .as_mut()
+            .expect("call to `save` when driver is not loaded")
+            .save()
+            .await
+            .with_context(|| format!("failed to save NVMe driver state")) // todo: include pci_id
+    }
+
+    async fn shutdown(&mut self) {
+        // Shutdown can be called in the event of a failure to create the driver, so do not panic in this case.
+        if let Some(driver) = self.driver.take() {
+            driver.shutdown().await;
+        }
+    }
+
+    /// Configure how the underlying driver should behave during servicing operations.
+    /// Panics if the driver is not loaded (this is a programming error).
+    fn update_servicing_flags(&mut self, keep_alive: bool) {
+        self.driver
+            .as_mut()
+            .expect("call to `update_servicing_flags` when driver is not loaded")
+            .update_servicing_flags(keep_alive);
+    }
+}
+
+#[async_trait]
+pub trait CreateNvmeDriver: Inspect + Send + Sync {
+    async fn create_driver(
+        &self,
+        driver_source: &VmTaskDriverSource,
+        pci_id: &str,
+        vp_count: u32,
+        save_restore_supported: bool,
+        saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
+    ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError>;
+}
+
+#[derive(Inspect)]
+pub struct VfioNvmeDriverFactory {
+    pub nvme_always_flr: bool,
+    pub is_isolated: bool,
+    #[inspect(skip)]
+    pub dma_client_spawner: DmaClientSpawner,
+}
+
+#[async_trait]
+impl CreateNvmeDriver for VfioNvmeDriverFactory {
+    async fn create_driver(
+        &self,
+        driver_source: &VmTaskDriverSource,
+        pci_id: &str,
+        vp_count: u32,
+        save_restore_supported: bool,
+        saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
+    ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError> {
+        let dma_client = self
+            .dma_client_spawner
+            .new_client(DmaClientParameters {
+                device_name: format!("nvme_{}", pci_id),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: if self.is_isolated {
+                    AllocationVisibility::Shared
+                } else {
+                    AllocationVisibility::Private
+                },
+                persistent_allocations: save_restore_supported,
+            })
+            .map_err(NvmeFactoryError::DmaClient)?;
+
+        let nvme_driver = if let Some(saved_state) = saved_state {
+            let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_client)
+                .instrument(tracing::info_span!("vfio_device_restore", pci_id))
+                .await
+                .map_err(NvmeFactoryError::Vfio)?;
+
+            // TODO: For now, any isolation means use bounce buffering. This
+            // needs to change when we have nvme devices that support DMA to
+            // confidential memory.
+            nvme_driver::NvmeDriver::restore(
+                driver_source,
+                vp_count,
+                vfio_device,
+                saved_state,
+                self.is_isolated,
+            )
+            .instrument(tracing::info_span!("nvme_driver_restore"))
+            .await
+            .map_err(NvmeFactoryError::DeviceInitFailed)?
+        } else {
+            Self::create_nvme_device(
+                driver_source,
+                pci_id,
+                vp_count,
+                self.nvme_always_flr,
+                self.is_isolated,
+                dma_client,
+            )
+            .await?
+        };
+
+        Ok(Box::new(VfioNvmeDevice {
+            driver: Some(nvme_driver),
+        }))
+    }
+}
+
+impl VfioNvmeDriverFactory {
+    async fn create_nvme_device(
+        driver_source: &VmTaskDriverSource,
+        pci_id: &str,
+        vp_count: u32,
+        nvme_always_flr: bool,
+        is_isolated: bool,
+        dma_client: Arc<dyn user_driver::DmaClient>,
+    ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeFactoryError> {
+        // Disable FLR on vfio attach/detach; this allows faster system
+        // startup/shutdown with the caveat that the device needs to be properly
+        // sent through the shutdown path during servicing operations, as that is
+        // the only cleanup performed. If the device fails to initialize, turn FLR
+        // on and try again, so that the reset is invoked on the next attach.
+        let update_reset = |method: PciDeviceResetMethod| {
+            if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
+                tracing::warn!(
+                    ?method,
+                    err = &err as &dyn std::error::Error,
+                    "failed to update reset_method"
+                );
+            }
+        };
+        let mut last_err = None;
+        let reset_methods = if nvme_always_flr {
+            &[PciDeviceResetMethod::Flr][..]
+        } else {
+            // If this code can't create a device without resetting it, then still try to issue an FLR
+            // in case that unwedges something weird in the device state.
+            // (This is implicit when the code in [`try_create_nvme_device`] opens a handle to the
+            // Vfio device).
+            &[PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr][..]
+        };
+        for reset_method in reset_methods {
+            update_reset(*reset_method);
+            match Self::try_create_nvme_device(
+                driver_source,
+                pci_id,
+                vp_count,
+                is_isolated,
+                dma_client.clone(),
+            )
+            .await
+            {
+                Ok(device) => {
+                    if !nvme_always_flr && !matches!(reset_method, PciDeviceResetMethod::NoReset) {
+                        update_reset(PciDeviceResetMethod::NoReset);
+                    }
+                    return Ok(device);
+                }
+                Err(err) => {
+                    tracing::error!(
+                        pci_id,
+                        ?reset_method,
+                        %err,
+                        "failed to create nvme device"
+                    );
+                    last_err = Some(err);
+                }
+            }
+        }
+        // Return the most reliable error (this code assumes that the reset methods are in increasing order
+        // of reliability).
+        Err(last_err.unwrap())
+    }
+
+    async fn try_create_nvme_device(
+        driver_source: &VmTaskDriverSource,
+        pci_id: &str,
+        vp_count: u32,
+        is_isolated: bool,
+        dma_client: Arc<dyn user_driver::DmaClient>,
+    ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeFactoryError> {
+        let device = VfioDevice::new(driver_source, pci_id, dma_client)
+            .instrument(tracing::info_span!("vfio_device_open", pci_id))
+            .await
+            .map_err(NvmeFactoryError::Vfio)?;
+
+        // TODO: For now, any isolation means use bounce buffering. This
+        // needs to change when we have nvme devices that support DMA to
+        // confidential memory.
+        nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
+            .instrument(tracing::info_span!("nvme_driver_init", pci_id))
+            .await
+            .map_err(NvmeFactoryError::DeviceInitFailed)
+    }
+}
+
+mod namespace {
+    use super::*;
+    use inspect::Deferred;
+    use mesh::rpc::RpcError;
+    use nvme_driver::NvmeDriverSavedState;
+    use tracing::Span;
+
+    #[derive(Debug, Clone)]
+    pub struct NvmeDriverShutdownOptions {
+        /// If true, the device will not reset on shutdown.
+        pub do_not_reset: bool,
+
+        /// If true, skip the underlying nvme device shutdown path when tearing
+        /// down the driver. Used for NVMe keepalive.
+        pub skip_device_shutdown: bool,
+    }
+
+    enum NvmeDriverRequest {
+        Inspect(Deferred),
+        LoadDriver(Rpc<Span, anyhow::Result<()>>),
+        /// Get an instance of the supplied namespace (an nvme `nsid`).
+        GetNamespace(Rpc<(Span, u32), Result<nvme_driver::Namespace, NamespaceError>>),
+        Save(Rpc<Span, anyhow::Result<NvmeDriverSavedState>>),
+        /// Shutdown the NVMe driver, and the manager of that driver. Takes a single `bool`: whether this device should reset
+        Shutdown(Rpc<(Span, NvmeDriverShutdownOptions), ()>),
+    }
+
+    pub struct NvmeDriverManager {
+        task: Task<()>,
+        pci_id: String,
+        pub client: NvmeDriverManagerClient,
+    }
+
+    impl Inspect for NvmeDriverManager {
+        fn inspect(&self, req: inspect::Request<'_>) {
+            let mut resp = req.respond();
+            // Pull out the field that force loads a driver on a device and handle
+            // it separately.
+            resp.child("pci_id", |req| req.value(&self.pci_id));
+
+            // Send the remaining fields directly to the worker.
+            resp.merge(inspect::adhoc(|req| {
+                self.client
+                    .sender
+                    .send(NvmeDriverRequest::Inspect(req.defer()))
+            }));
+        }
+    }
+
+    impl NvmeDriverManager {
+        pub fn client(&self) -> &NvmeDriverManagerClient {
+            &self.client
+        }
+
+        /// Creates the [`NvmeController`].
+        pub fn new(
+            driver_source: &VmTaskDriverSource,
+            pci_id: &str,
+            vp_count: u32,
+            save_restore_supported: bool,
+            device: Option<Box<dyn NvmeDevice>>,
+            factory: Arc<dyn CreateNvmeDriver>,
+            worker_vp: Option<u32>, // Option to make this experiment eaiser..
+        ) -> anyhow::Result<Self> {
+            let (send, recv) = mesh::channel();
+            let driver = if let Some(vp) = worker_vp {
+                driver_source
+                    .builder()
+                    .run_on_target(true)
+                    .target_vp(vp)
+                    .build(format!("nvme-driver-manager-worker-{pci_id}"))
+            } else {
+                driver_source.simple()
+            };
+
+            let mut worker = NvmeDriverManagerWorker {
+                driver_source: driver_source.clone(),
+                pci_id: pci_id.into(),
+                vp_count,
+                save_restore_supported,
+                driver: device,
+                factory,
+                worker_vp,
+            };
+            let task = driver.spawn("nvme-driver-manager", async move { worker.run(recv).await });
+            Ok(Self {
+                task,
+                pci_id: pci_id.into(),
+                client: NvmeDriverManagerClient {
+                    pci_id: pci_id.into(),
+                    sender: send,
+                },
+            })
+        }
+
+        pub async fn shutdown(self, opts: NvmeDriverShutdownOptions) {
+            // Early return is faster way to skip shutdown.
+            // but we need to thoroughly test the data integrity.
+            // TODO: Enable this once tested and approved.
+            //
+            // if self.nvme_keepalive { return }
+
+            let span = tracing::info_span!(
+                "nvme_driver_manager_shutdown",
+                pci_id = self.pci_id,
+                do_not_reset = opts.do_not_reset,
+                skip_device_shutdown = opts.skip_device_shutdown
+            );
+
+            if let Err(e) = self
+                .client()
+                .sender
+                .call(NvmeDriverRequest::Shutdown, (span.clone(), opts.clone()))
+                .instrument(span)
+                .await
+            {
+                tracing::warn!(
+                    pci_id = self.pci_id,
+                    error = &e as &dyn std::error::Error,
+                    "nvme driver manager already shut down"
+                );
+            }
+
+            self.task.await;
+        }
+    }
+
+    #[derive(Inspect, Debug, Clone)]
+    pub struct NvmeDriverManagerClient {
+        pci_id: String,
+        #[inspect(skip)]
+        sender: mesh::Sender<NvmeDriverRequest>,
+    }
+
+    impl NvmeDriverManagerClient {
+        pub fn send_inspect(&self, deferred: Deferred) {
+            self.sender.send(NvmeDriverRequest::Inspect(deferred));
+        }
+
+        pub async fn get_namespace(&self, nsid: u32) -> anyhow::Result<nvme_driver::Namespace> {
+            let span = tracing::info_span!(
+                "nvme_driver_client_get_namespace",
+                pci_id = self.pci_id,
+                nsid
+            );
+            match self
+                .sender
+                .call_failable(NvmeDriverRequest::GetNamespace, (span.clone(), nsid))
+                .instrument(span)
+                .await
+            {
+                Err(RpcError::Channel(_)) => {
+                    Err(anyhow::anyhow!("nvme driver manager worker is shut down")) // todo include pci_id
+                }
+                Err(RpcError::Call(e)) => Err(anyhow::Error::from(e)),
+                Ok(ns) => Ok(ns),
+            }
+        }
+
+        pub async fn load_driver(&self) -> anyhow::Result<()> {
+            let span = tracing::info_span!("nvme_driver_client_load_driver", pci_id = self.pci_id);
+            match self
+                .sender
+                .call_failable(NvmeDriverRequest::LoadDriver, span.clone())
+                .instrument(span)
+                .await
+            {
+                Err(RpcError::Channel(_)) => {
+                    Err(anyhow::anyhow!("nvme driver manager worker is shut down")) // todo include pci_id
+                }
+                Err(RpcError::Call(e)) => Err(e),
+                Ok(()) => Ok(()),
+            }
+        }
+
+        pub(crate) async fn save(&self) -> anyhow::Result<NvmeDriverSavedState> {
+            let span = tracing::info_span!("nvme_driver_client_save", pci_id = self.pci_id);
+            match self
+                .sender
+                .call_failable(NvmeDriverRequest::Save, span.clone())
+                .instrument(span)
+                .await
+            {
+                Err(RpcError::Channel(_)) => {
+                    Err(anyhow::anyhow!("nvme driver manager worker is shut down")) // todo include pci_id
+                }
+                Err(RpcError::Call(e)) => Err(e),
+                Ok(state) => Ok(state),
+            }
+        }
+    }
+
+    #[derive(Inspect)]
+    struct NvmeDriverManagerWorker {
+        #[inspect(skip)]
+        driver_source: VmTaskDriverSource,
+        pci_id: String,
+        vp_count: u32,
+        /// Running environment (memory layout) allows save/restore.
+        save_restore_supported: bool,
+        #[inspect(skip)]
+        factory: Arc<dyn CreateNvmeDriver>,
+        driver: Option<Box<dyn NvmeDevice>>,
+        worker_vp: Option<u32>,
+    }
+
+    impl NvmeDriverManagerWorker {
+        async fn run(&mut self, mut recv: mesh::Receiver<NvmeDriverRequest>) {
+            loop {
+                let Some(req) = recv.next().await else {
+                    break;
+                };
+                // Handle requests for this specific NVMe device. Each device has its own
+                // worker task, so requests are naturally serialized per device.
+                match req {
+                    NvmeDriverRequest::Inspect(deferred) => deferred.inspect(&self),
+                    NvmeDriverRequest::LoadDriver(rpc) => {
+                        let load_driver_span = tracing::debug_span!(parent: rpc.input(),
+                            "nvme_driver_manager_load_driver",
+                            %self.pci_id,
+                            ?self.worker_vp
+                        );
+
+                        rpc.handle(async |_span| {
+                            // Multiple threads could have raced to call this driver.
+                            // Just let the winning thread create the driver.
+                            if self.driver.is_some() {
+                                tracing::debug!(
+                                    "nvme driver manager worker load driver called for {} with existing driver (worker_vp = {:?})",
+                                    self.pci_id,
+                                    self.worker_vp
+                                );
+                                return Ok(());
+                            }
+
+                            let driver = self
+                                .factory
+                                .create_driver(
+                                    &self.driver_source,
+                                    &self.pci_id,
+                                    self.vp_count,
+                                    self.save_restore_supported,
+                                    None,
+                                )
+                                .instrument(
+                                    tracing::trace_span!("nvme_driver_manager_create_driver", %self.pci_id),
+                                )
+                                .await?;
+                            self.driver = Some(driver);
+
+                            Ok(())
+                        })
+                        .instrument(load_driver_span)
+                        .await
+                    }
+                    NvmeDriverRequest::GetNamespace(rpc) => {
+                        let namespace_span = tracing::debug_span!(parent: &rpc.input().0,
+                            "nvme_driver_manager_get_namespace",
+                            %self.pci_id,
+                            nsid = rpc.input().1,
+                            ?self.worker_vp
+                        );
+
+                        rpc.handle(async |(_, nsid)| {
+                            self.driver
+                                .as_ref()
+                                .unwrap()
+                                .namespace(nsid)
+                                .await
+                                .map_err(|source| NamespaceError {
+                                    pci_id: self.pci_id.clone(),
+                                    source: NvmeFactoryError::Namespace { nsid, source },
+                                })
+                        })
+                        .instrument(namespace_span)
+                        .await
+                    }
+                    NvmeDriverRequest::Save(rpc) => {
+                        let save_span = tracing::debug_span!(parent: rpc.input(),
+                            "nvme_driver_manager_save",
+                            %self.pci_id,
+                            ?self.worker_vp
+                        );
+                        rpc.handle(async |_span| {
+                            self.driver
+                                .as_mut()
+                                .unwrap()
+                                .save()
+                                .instrument(
+                                    tracing::debug_span!("nvme_driver_manager_save", %self.pci_id),
+                                )
+                                .await
+                        })
+                        .instrument(save_span)
+                        .await
+                    }
+                    NvmeDriverRequest::Shutdown(rpc) => {
+                        let shutdown_span = tracing::debug_span!(parent: &rpc.input().0,
+                            "nvme_driver_manager_shutdown",
+                            %self.pci_id,
+                            ?self.worker_vp
+                        );
+                        rpc.handle(async |(_span, options)| {
+                            // Driver may be `None` here if there was a failure during driver creation.
+                            // In that case, we just skip the shutdown rather than panic.
+                            match self.driver.take() {
+                                None => {
+                                    tracing::debug!(
+                                        "nvme driver manager worker shutdown called for {pci_id} with no driver",
+                                        pci_id = self.pci_id
+                                    );
+                                },
+                                Some(mut me) => {
+                                    me.update_servicing_flags(options.do_not_reset);
+
+                                    if !options.skip_device_shutdown {
+                                        // todo: make sure that `drop` happens at the right time (e.g. why did the code call `shutdown`
+                                        // at all if we are skipping the reset). And, do_not_reset is the same as skip_shutdown at the caller
+                                        me.shutdown()
+                                            .instrument(
+                                                tracing::info_span!("shutdown_nvme_controller", %self.pci_id),
+                                            )
+                                            .await;
+                                    }
+                                }
+                            }
+                        })
+                        .instrument(shutdown_span)
+                        .await;
+
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -95,21 +716,22 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         save_restore_supported: bool,
-        nvme_always_flr: bool,
-        is_isolated: bool,
         saved_state: Option<NvmeSavedState>,
-        dma_client_spawner: DmaClientSpawner,
+        factory: Arc<dyn CreateNvmeDriver>,
     ) -> Self {
         let (send, recv) = mesh::channel();
         let driver = driver_source.simple();
         let mut worker = NvmeManagerWorker {
-            driver_source: driver_source.clone(),
-            devices: HashMap::new(),
-            vp_count,
-            save_restore_supported,
-            nvme_always_flr,
-            is_isolated,
-            dma_client_spawner,
+            tasks: Vec::new(),
+            context: NvmeWorkerContext {
+                shutdown: Arc::new(AtomicBool::new(false)),
+                vp_count,
+                save_restore_supported,
+                driver_source: driver_source.clone(),
+                devices: Arc::new(RwLock::new(HashMap::new())),
+                factory: factory.clone(),
+                next_worker_vp: Arc::new(AtomicU32::new(1)), // try to get off vp 0, which other things use...
+            },
         };
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
@@ -170,7 +792,7 @@ impl NvmeManager {
     ) -> anyhow::Result<()> {
         worker
             .restore(&saved_state.nvme_state)
-            .instrument(tracing::info_span!("nvme_worker_restore"))
+            .instrument(tracing::info_span!("nvme_manager_worker_restore"))
             .await?;
 
         Ok(())
@@ -180,8 +802,8 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(Rpc<(String, u32), Result<nvme_driver::Namespace, NamespaceError>>),
-    Save(Rpc<(), Result<NvmeManagerSavedState, anyhow::Error>>),
+    GetNamespace(Rpc<(String, u32), anyhow::Result<nvme_driver::Namespace>>),
+    Save(Rpc<(), anyhow::Result<NvmeManagerSavedState>>),
     Shutdown {
         span: tracing::Span,
         nvme_keepalive: bool,
@@ -202,7 +824,11 @@ impl NvmeManagerClient {
         Ok(self
             .sender
             .call(Request::GetNamespace, (pci_id.clone(), nsid))
-            .instrument(tracing::info_span!("nvme_get_namespace", pci_id, nsid))
+            .instrument(tracing::info_span!(
+                "nvme_manager_get_namespace",
+                pci_id,
+                nsid
+            ))
             .await
             .context("nvme manager is shut down")??)
     }
@@ -216,109 +842,50 @@ impl NvmeManagerClient {
     }
 }
 
-#[derive(Inspect)]
-struct NvmeManagerWorker {
-    #[inspect(skip)]
-    driver_source: VmTaskDriverSource,
-    #[inspect(iter_by_key)]
-    devices: HashMap<String, nvme_driver::NvmeDriver<VfioDevice>>,
+#[derive(Clone, Inspect)]
+struct NvmeWorkerContext {
+    /// Shutdown flag, set to true when the worker is shutting down.
+    shutdown: Arc<AtomicBool>,
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
-    nvme_always_flr: bool,
-    /// If this VM is isolated or not. This influences DMA client allocations.
-    is_isolated: bool,
     #[inspect(skip)]
-    dma_client_spawner: DmaClientSpawner,
+    driver_source: VmTaskDriverSource,
+    #[inspect(skip)]
+    devices: Arc<RwLock<HashMap<String, NvmeDriverManager>>>,
+    #[inspect(skip)]
+    factory: Arc<dyn CreateNvmeDriver>,
+    next_worker_vp: Arc<AtomicU32>,
 }
 
-async fn create_nvme_device(
-    driver_source: &VmTaskDriverSource,
-    pci_id: &str,
-    vp_count: u32,
-    nvme_always_flr: bool,
-    is_isolated: bool,
-    dma_client: Arc<dyn user_driver::DmaClient>,
-) -> Result<nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
-    // Disable FLR on vfio attach/detach; this allows faster system
-    // startup/shutdown with the caveat that the device needs to be properly
-    // sent through the shutdown path during servicing operations, as that is
-    // the only cleanup performed. If the device fails to initialize, turn FLR
-    // on and try again, so that the reset is invoked on the next attach.
-    let update_reset = |method: PciDeviceResetMethod| {
-        if let Err(err) = vfio_set_device_reset_method(pci_id, method) {
-            tracing::warn!(
-                ?method,
-                err = &err as &dyn std::error::Error,
-                "Failed to update reset_method"
-            );
-        }
-    };
-    let mut last_err = None;
-    let reset_methods = if nvme_always_flr {
-        &[PciDeviceResetMethod::Flr][..]
-    } else {
-        // If this code can't create a device without resetting it, then still try to issue an FLR
-        // in case that unwedges something weird in the device state.
-        // (This is implicit when the code in [`try_create_nvme_device`] opens a handle to the
-        // Vfio device).
-        &[PciDeviceResetMethod::NoReset, PciDeviceResetMethod::Flr][..]
-    };
-    for reset_method in reset_methods {
-        update_reset(*reset_method);
-        match try_create_nvme_device(
-            driver_source,
-            pci_id,
-            vp_count,
-            is_isolated,
-            dma_client.clone(),
-        )
-        .await
-        {
-            Ok(device) => {
-                if !nvme_always_flr && !matches!(reset_method, PciDeviceResetMethod::NoReset) {
-                    update_reset(PciDeviceResetMethod::NoReset);
-                }
-                return Ok(device);
-            }
-            Err(err) => {
-                tracing::error!(
-                    pci_id,
-                    ?reset_method,
-                    err = &err as &dyn std::error::Error,
-                    "failed to create nvme device"
-                );
-                last_err = Some(err);
-            }
-        }
-    }
-    // Return the most reliable error (this code assumes that the reset methods are in increasing order
-    // of reliability).
-    Err(last_err.unwrap())
-}
-
-async fn try_create_nvme_device(
-    driver_source: &VmTaskDriverSource,
-    pci_id: &str,
-    vp_count: u32,
-    is_isolated: bool,
-    dma_client: Arc<dyn user_driver::DmaClient>,
-) -> Result<nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
-    let device = VfioDevice::new(driver_source, pci_id, dma_client)
-        .instrument(tracing::info_span!("vfio_device_open", pci_id))
-        .await
-        .map_err(InnerError::Vfio)?;
-
-    // TODO: For now, any isolation means use bounce buffering. This
-    // needs to change when we have nvme devices that support DMA to
-    // confidential memory.
-    nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
-        .instrument(tracing::info_span!("nvme_driver_init", pci_id))
-        .await
-        .map_err(InnerError::DeviceInitFailed)
+#[derive(Inspect)]
+#[inspect(extra = "NvmeManagerWorker::inspect_extra")]
+struct NvmeManagerWorker {
+    #[inspect(skip)]
+    tasks: Vec<Task<()>>,
+    context: NvmeWorkerContext,
 }
 
 impl NvmeManagerWorker {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.child("outstanding-tasks", |req| {
+            req.value(self.tasks.len());
+        });
+
+        resp.child("devices", |req| {
+            let devices = self.context.devices.read();
+            let mut resp = req.respond();
+            for (pci_id, driver) in devices.iter() {
+                resp.field(
+                    pci_id,
+                    inspect::adhoc(|req| {
+                        driver.client().send_inspect(req.defer());
+                    }),
+                );
+            }
+        });
+    }
+
     async fn run(&mut self, mut recv: mesh::Receiver<Request>) {
         let (join_span, nvme_keepalive) = loop {
             let Some(req) = recv.next().await else {
@@ -327,7 +894,9 @@ impl NvmeManagerWorker {
             match req {
                 Request::Inspect(deferred) => deferred.inspect(&self),
                 Request::ForceLoadDriver(update) => {
-                    match self.get_driver(update.new_value().to_owned()).await {
+                    match Self::load_driver(update.new_value().to_owned(), self.context.clone())
+                        .await
+                    {
                         Ok(_) => {
                             let pci_id = update.new_value().to_string();
                             update.succeed(pci_id);
@@ -338,113 +907,205 @@ impl NvmeManagerWorker {
                     }
                 }
                 Request::GetNamespace(rpc) => {
-                    rpc.handle(async |(pci_id, nsid)| {
-                        self.get_namespace(pci_id.clone(), nsid)
-                            .map_err(|source| NamespaceError { pci_id, source })
-                            .await
-                    })
-                    .await
+                    let context = self.context.clone();
+                    self.tasks.push(self.context.driver_source.simple().spawn(
+                        "get-namespace",
+                        rpc.handle(async move |(pci_id, nsid)| {
+                            Self::get_namespace(pci_id.clone(), nsid, context).await
+                        }),
+                    ));
                 }
                 // Request to save worker data for servicing.
                 Request::Save(rpc) => {
                     rpc.handle(async |_| self.save().await)
-                        .instrument(tracing::info_span!("nvme_save_state"))
+                        .instrument(tracing::info_span!("nvme_manager_worker_save_state"))
                         .await
                 }
                 Request::Shutdown {
                     span,
                     nvme_keepalive,
                 } => {
-                    // nvme_keepalive is received from host but it is only valid
-                    // when memory pool allocator supports save/restore.
-                    let do_not_reset = nvme_keepalive && self.save_restore_supported;
-                    // Update the flag for all connected devices.
-                    for (_s, dev) in self.devices.iter_mut() {
-                        // Prevent devices from originating controller reset in drop().
-                        dev.update_servicing_flags(do_not_reset);
-                    }
+                    // Make sure shutdown is only called once, and then flag that no further requests should
+                    // be processed.
+                    assert!(
+                        !self
+                            .context
+                            .shutdown
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                    );
+                    self.context
+                        .shutdown
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    tracing::info!(nvme_keepalive, "nvme manager worker shutdown requested");
                     break (span, nvme_keepalive);
                 }
             }
         };
 
-        // When nvme_keepalive flag is set then this block is unreachable
-        // because the Shutdown request is never sent.
+        // Wait for any pending tasks to complete. Otherwise, we will see the tasks get dropped
+        // without completions.
         //
-        // Tear down all the devices if nvme_keepalive is not set.
-        if !nvme_keepalive || !self.save_restore_supported {
-            async {
-                join_all(self.devices.drain().map(|(pci_id, driver)| {
-                    driver
-                        .shutdown()
-                        .instrument(tracing::info_span!("shutdown_nvme_driver", pci_id))
-                }))
-                .await
-            }
-            .instrument(join_span)
+        // This is not strictly required for correctness (a dropped task will drop any in-progress state,
+        // and this code is written to handle that). But, it's reasonable to do this so that we don't
+        // see things that look like missing telemetry in our production logs.
+        join_all(self.tasks.drain(..))
+            .instrument(tracing::info_span!("nvme_manager_worker_wait_for_tasks"))
             .await;
+
+        // Send, and wait for completion, any shutdown requests to the individual drivers.
+        // After this completes, the `NvmeDriverManager` instances will remain alive, but the
+        // drivers they control will be shutdown (as appropriate).
+        //
+        // This is required even if `nvme_keepalive` is set, since the underlying drivers
+        // need to be told to not reset. In that case, the shutdown is ultimately a no-op.
+        let mut devices_to_shutdown: Vec<(String, NvmeDriverManager)> = Vec::new();
+        {
+            let mut guard = self.context.devices.write();
+            devices_to_shutdown.reserve(guard.len());
+            guard.drain().for_each(|(pci_id, driver)| {
+                devices_to_shutdown.push((pci_id.clone(), driver));
+            });
         }
+
+        async {
+            join_all(devices_to_shutdown.into_iter().map(|(_pci_id, driver)| {
+                driver
+                    .shutdown(namespace::NvmeDriverShutdownOptions {
+                        // nvme_keepalive is received from host but it is only valid
+                        // when memory pool allocator supports save/restore.
+                        do_not_reset: nvme_keepalive && self.context.save_restore_supported,
+                        skip_device_shutdown: nvme_keepalive && self.context.save_restore_supported,
+                    })
+                    .instrument(tracing::info_span!("shutdown_nvme_driver"))
+            }))
+            .await
+        }
+        .instrument(join_span)
+        .await;
     }
 
-    async fn get_driver(
-        &mut self,
-        pci_id: String,
-    ) -> Result<&mut nvme_driver::NvmeDriver<VfioDevice>, InnerError> {
-        let driver = match self.devices.entry(pci_id.to_owned()) {
-            hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            hash_map::Entry::Vacant(entry) => {
-                let dma_client = self
-                    .dma_client_spawner
-                    .new_client(DmaClientParameters {
-                        device_name: format!("nvme_{}", pci_id),
-                        lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                        allocation_visibility: if self.is_isolated {
-                            AllocationVisibility::Shared
-                        } else {
-                            AllocationVisibility::Private
-                        },
-                        persistent_allocations: self.save_restore_supported,
-                    })
-                    .map_err(InnerError::DmaClient)?;
+    async fn load_driver(pci_id: String, context: NvmeWorkerContext) -> anyhow::Result<()> {
+        if context.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!(
+                "nvme driver manager worker is shut down, cannot load driver for {}",
+                pci_id
+            );
+        }
 
-                let driver = create_nvme_device(
-                    &self.driver_source,
-                    &pci_id,
-                    self.vp_count,
-                    self.nvme_always_flr,
-                    self.is_isolated,
-                    dma_client,
-                )
-                .instrument(
-                    tracing::info_span!("create_nvme_device", %pci_id, self.nvme_always_flr),
-                )
-                .await?;
-
-                entry.insert(driver)
+        // If the driver is already loaded, we can just return.
+        {
+            let guard = context.devices.read();
+            if guard.get(&pci_id).is_some() {
+                // If the driver is already loaded, we can just return.
+                return Ok(());
             }
-        };
-        Ok(driver)
+        }
+
+        // Now we don't think there is a driver yet, so we need to create one. Get exclusive access
+        // to update the hash map. If a shutdown call comes in while the lock is not held, then
+        // this code will add an entry for the device in the hashmap, but the `load_driver` call
+        // will return an appropriate error.
+        //
+        // Note: `client` exists outside of the devices write lock. This is safe:
+        // the mesh client will fail appropriately if shutdown comes in between inserting
+        // this entry and the call to `load_driver()`.
+        let client = {
+            let mut guard = context.devices.write();
+
+            // Check if another thread created the driver while we were waiting for the lock.
+            if let Some(driver) = guard.get(&pci_id) {
+                Ok::<_, anyhow::Error>(driver.client().clone())
+            } else if context.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                // No driver AND there's now a shutdown in progress, just bail.
+                anyhow::bail!(
+                    "nvme driver manager worker is shut down, cannot load driver for {}",
+                    pci_id
+                );
+            } else {
+                // We're first! Create a new driver manager and place it in the map.
+                match guard.entry(pci_id.to_owned()) {
+                    hash_map::Entry::Occupied(_) => unreachable!(), // We checked above that this entry does not exist.
+                    hash_map::Entry::Vacant(entry) => {
+                        let worker_vp = context
+                            .next_worker_vp
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                        let driver = NvmeDriverManager::new(
+                            &context.driver_source,
+                            &pci_id,
+                            context.vp_count,
+                            context.save_restore_supported,
+                            None, // No device yet,
+                            context.factory.clone(),
+                            Some(worker_vp),
+                        )?;
+
+                        Ok(entry.insert(driver).client().clone())
+                    }
+                }
+            }
+        }?;
+
+        // At this point, there may be multiple threads who will execute this call. That's fine: `load_driver`
+        // is idempotent.
+        //
+        // If a shutdown came in between dropping the lock and executing this call: mesh will notice and
+        // return an error.
+        client.load_driver().await
     }
 
     async fn get_namespace(
-        &mut self,
         pci_id: String,
         nsid: u32,
-    ) -> Result<nvme_driver::Namespace, InnerError> {
-        let driver = self.get_driver(pci_id.to_owned()).await?;
-        driver
-            .namespace(nsid)
-            .await
-            .map_err(|source| InnerError::Namespace { nsid, source })
+        context: NvmeWorkerContext,
+    ) -> anyhow::Result<nvme_driver::Namespace> {
+        // If the driver is already created, use it.
+        let mut client: Option<NvmeDriverManagerClient> = None;
+        {
+            let guard = context.devices.read();
+            if let Some(manager) = guard.get(&pci_id) {
+                client = Some(manager.client().clone());
+            }
+        }
+
+        if client.is_none() {
+            // No driver loaded yet, so load it.
+            Self::load_driver(pci_id.to_owned(), context.clone()).await?;
+
+            // This time, if there is no entry, then we know that the driver failed to load OR a shutdown came in
+            // since we loaded the driver (so we should fail).
+            {
+                let guard = context.devices.read();
+                if let Some(manager) = guard.get(&pci_id) {
+                    client = Some(manager.client().clone());
+                }
+            }
+        }
+
+        match client {
+            Some(client) => client.get_namespace(nsid).await,
+            None => Err(anyhow::anyhow!(
+                "nvme driver manager worker is shut down, can't get namespace {} for {}",
+                nsid,
+                pci_id
+            )),
+        }
     }
 
     /// Saves NVMe device's states into buffer during servicing.
     pub async fn save(&mut self) -> anyhow::Result<NvmeManagerSavedState> {
         let mut nvme_disks: Vec<NvmeSavedDiskConfig> = Vec::new();
-        for (pci_id, driver) in self.devices.iter_mut() {
+        let mut devices_to_save: HashMap<String, NvmeDriverManagerClient> = self
+            .context
+            .devices
+            .write()
+            .iter()
+            .map(|(pci_id, driver)| (pci_id.clone(), driver.client().clone()))
+            .collect();
+        for (pci_id, client) in devices_to_save.iter_mut() {
             nvme_disks.push(NvmeSavedDiskConfig {
                 pci_id: pci_id.clone(),
-                driver_state: driver
+                driver_state: client
                     .save()
                     .instrument(tracing::info_span!("nvme_driver_save", %pci_id))
                     .await?,
@@ -452,51 +1113,55 @@ impl NvmeManagerWorker {
         }
 
         Ok(NvmeManagerSavedState {
-            cpu_count: self.vp_count,
+            cpu_count: self.context.vp_count,
             nvme_disks,
         })
     }
 
     /// Restore NVMe manager and device states from the buffer after servicing.
     pub async fn restore(&mut self, saved_state: &NvmeManagerSavedState) -> anyhow::Result<()> {
-        self.devices = HashMap::new();
+        let mut restored_devices: HashMap<String, NvmeDriverManager> = HashMap::new();
+
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
+            let nvme_driver = self
+                .context
+                .factory
+                .create_driver(
+                    &self.context.driver_source,
+                    &pci_id,
+                    saved_state.cpu_count,
+                    true, // save_restore_supported is always `true` when restoring. TODO: validate
+                    Some(&disk.driver_state),
+                )
+                .await?;
 
-            let dma_client = self.dma_client_spawner.new_client(DmaClientParameters {
-                device_name: format!("nvme_{}", pci_id),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                allocation_visibility: if self.is_isolated {
-                    AllocationVisibility::Shared
-                } else {
-                    AllocationVisibility::Private
-                },
-                persistent_allocations: true,
-            })?;
+            let worker_vp = &self
+                .context
+                .next_worker_vp
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-            // This code can wait on each VFIO device until it is arrived.
-            // A potential optimization would be to delay VFIO operation
-            // until it is ready, but a redesign of VfioDevice is needed.
-            let vfio_device =
-                VfioDevice::restore(&self.driver_source, &disk.pci_id.clone(), true, dma_client)
-                    .instrument(tracing::info_span!("vfio_device_restore", pci_id))
-                    .await?;
-
-            // TODO: For now, any isolation means use bounce buffering. This
-            // needs to change when we have nvme devices that support DMA to
-            // confidential memory.
-            let nvme_driver = nvme_driver::NvmeDriver::restore(
-                &self.driver_source,
-                saved_state.cpu_count,
-                vfio_device,
-                &disk.driver_state,
-                self.is_isolated,
-            )
-            .instrument(tracing::info_span!("nvme_driver_restore"))
-            .await?;
-
-            self.devices.insert(disk.pci_id.clone(), nvme_driver);
+            restored_devices.insert(
+                disk.pci_id.clone(),
+                NvmeDriverManager::new(
+                    &self.context.driver_source,
+                    &pci_id,
+                    self.context.vp_count,
+                    true, // save_restore_supported is always `true` when restoring. TODO: validate
+                    Some(nvme_driver),
+                    self.context.factory.clone(),
+                    Some(*worker_vp),
+                )?,
+            );
         }
+
+        tracing::info!(
+            "nvme manager worker restored {} devices",
+            restored_devices.len()
+        );
+
+        self.context.devices = Arc::new(RwLock::new(restored_devices));
+
         Ok(())
     }
 }
@@ -562,5 +1227,511 @@ pub mod save_restore {
         pub pci_id: String,
         #[mesh(2)]
         pub driver_state: nvme_driver::NvmeDriverSavedState,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::future::join_all;
+    use inspect::Inspect;
+    use inspect::InspectionBuilder;
+    use nvme_driver::Namespace;
+    use nvme_driver::NvmeDriverSavedState;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use std::time::Instant;
+    use test_with_tracing::test;
+    use vmcore::vm_task::VmTaskDriverSource;
+    use vmcore::vm_task::thread::ThreadDriverBackend;
+
+    /// Mock NVMe driver for testing that simulates realistic delays and tracks call patterns
+    #[derive(Inspect, Clone)]
+    struct MockNvmeDriver {
+        pci_id: String,
+        /// Simulated delay for namespace operations
+        #[inspect(skip)]
+        namespace_delay: Duration,
+        /// Simulated delay for shutdown operations
+        #[inspect(skip)]
+        shutdown_delay: Duration,
+        /// Track when operations start (for concurrency validation)
+        #[inspect(skip)]
+        namespace_start_times: Arc<RwLock<Vec<Instant>>>,
+        #[inspect(skip)]
+        shutdown_start_time: Arc<RwLock<Option<Instant>>>,
+        /// Counters for verification
+        namespace_call_count: Arc<AtomicU32>,
+        shutdown_call_count: Arc<AtomicU32>,
+        save_call_count: Arc<AtomicU32>,
+        /// Allow tests to inject failures
+        fail_namespace: Arc<AtomicBool>,
+        namespace_delay_sync: Arc<AtomicBool>,
+        fail_save: Arc<AtomicBool>,
+        /// Success mode for testing
+        success_mode: Arc<AtomicBool>,
+        /// Driver source for creating timers
+        #[inspect(skip)]
+        driver_source: VmTaskDriverSource,
+    }
+
+    impl MockNvmeDriver {
+        fn new(
+            pci_id: &str,
+            namespace_delay: Duration,
+            shutdown_delay: Duration,
+            driver_source: VmTaskDriverSource,
+        ) -> Self {
+            Self {
+                pci_id: pci_id.to_string(),
+                namespace_delay,
+                shutdown_delay,
+                namespace_start_times: Arc::new(RwLock::new(Vec::new())),
+                shutdown_start_time: Arc::new(RwLock::new(None)),
+                namespace_call_count: Arc::new(AtomicU32::new(0)),
+                shutdown_call_count: Arc::new(AtomicU32::new(0)),
+                save_call_count: Arc::new(AtomicU32::new(0)),
+                fail_namespace: Arc::new(AtomicBool::new(false)),
+                namespace_delay_sync: Arc::new(AtomicBool::new(false)), // todo: tests fail when this is `true` since NvmeDriverManager does not force this to run on multiple VPs.
+                fail_save: Arc::new(AtomicBool::new(false)),
+                success_mode: Arc::new(AtomicBool::new(false)),
+                driver_source,
+            }
+        }
+
+        fn namespace_call_count(&self) -> u32 {
+            self.namespace_call_count.load(Ordering::SeqCst)
+        }
+
+        fn shutdown_call_count(&self) -> u32 {
+            self.shutdown_call_count.load(Ordering::SeqCst)
+        }
+
+        fn set_fail_namespace(&self, fail: bool) {
+            self.fail_namespace.store(fail, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl NvmeDevice for MockNvmeDriver {
+        async fn namespace(&self, _nsid: u32) -> Result<Namespace, nvme_driver::NamespaceError> {
+            // Record start time for concurrency analysis
+            {
+                let mut start_times = self.namespace_start_times.write();
+                start_times.push(Instant::now());
+            }
+
+            self.namespace_call_count.fetch_add(1, Ordering::SeqCst);
+
+            if self.fail_namespace.load(Ordering::SeqCst) {
+                return Err(nvme_driver::NamespaceError::NotFound);
+            }
+
+            // Simulate realistic work with delay
+            // namespace_delay_sync == true simulates cases where the vmexit is blocked
+            if self.namespace_delay_sync.load(Ordering::SeqCst) {
+                std::thread::sleep(self.namespace_delay);
+            } else {
+                let mut timer = pal_async::timer::PolledTimer::new(&self.driver_source.simple());
+                timer.sleep(self.namespace_delay).await;
+            }
+
+            if self.success_mode.load(Ordering::SeqCst) {
+                // For successful tests, we can't return a real Namespace easily
+                // So we'll just return an error but with a success indicator in the message
+                return Err(nvme_driver::NamespaceError::NotFound);
+            } else {
+                return Err(nvme_driver::NamespaceError::NotFound);
+            }
+        }
+
+        async fn save(&mut self) -> anyhow::Result<NvmeDriverSavedState> {
+            self.save_call_count.fetch_add(1, Ordering::SeqCst);
+
+            if self.fail_save.load(Ordering::SeqCst) {
+                anyhow::bail!("Mock save failure for {}", self.pci_id);
+            }
+
+            // Simulate work
+            let mut timer = pal_async::timer::PolledTimer::new(&self.driver_source.simple());
+            timer.sleep(Duration::from_millis(10)).await;
+
+            anyhow::bail!("MOCK_SUCCESS: save operation completed for {}", self.pci_id);
+        }
+
+        async fn shutdown(&mut self) {
+            // Record shutdown start time
+            {
+                let mut shutdown_time = self.shutdown_start_time.write();
+                *shutdown_time = Some(Instant::now());
+            }
+
+            self.shutdown_call_count.fetch_add(1, Ordering::SeqCst);
+
+            // Simulate shutdown work
+            let mut timer = pal_async::timer::PolledTimer::new(&self.driver_source.simple());
+            timer.sleep(self.shutdown_delay).await;
+        }
+
+        fn update_servicing_flags(&mut self, _do_not_restart: bool) {
+            // No-op for testing
+        }
+    }
+
+    #[derive(Inspect)]
+    #[inspect(skip)]
+    /// Mock factory that creates MockNvmeDriver instances
+    struct MockNvmeDriverFactory {
+        namespace_delay: Duration,
+        shutdown_delay: Duration,
+        /// Store references to created drivers for test verification
+        created_drivers: Arc<RwLock<Vec<Arc<MockNvmeDriver>>>>,
+        /// Allow injection of creation failures
+        fail_create: Arc<AtomicBool>,
+    }
+
+    impl MockNvmeDriverFactory {
+        fn new(namespace_delay: Duration, shutdown_delay: Duration) -> Self {
+            Self {
+                namespace_delay,
+                shutdown_delay,
+                created_drivers: Arc::new(RwLock::new(Vec::new())),
+                fail_create: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        fn get_driver(&self, pci_id: &str) -> Option<Arc<MockNvmeDriver>> {
+            let drivers = self.created_drivers.read();
+            drivers.iter().find(|d| d.pci_id == pci_id).cloned()
+        }
+
+        fn set_fail_create(&self, fail: bool) {
+            self.fail_create.store(fail, Ordering::SeqCst);
+        }
+
+        fn driver_count(&self) -> usize {
+            self.created_drivers.read().len()
+        }
+    }
+
+    #[async_trait]
+    impl CreateNvmeDriver for MockNvmeDriverFactory {
+        async fn create_driver(
+            &self,
+            driver_source: &VmTaskDriverSource,
+            pci_id: &str,
+            _vp_count: u32,
+            _save_restore_supported: bool,
+            _saved_state: Option<&NvmeDriverSavedState>,
+        ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError> {
+            if self.fail_create.load(Ordering::SeqCst) {
+                return Err(NvmeFactoryError::MockDriverCreationFailed(anyhow::anyhow!(
+                    "Mock create failure for {}",
+                    pci_id
+                )));
+            }
+
+            let driver = Arc::new(MockNvmeDriver::new(
+                pci_id,
+                self.namespace_delay,
+                self.shutdown_delay,
+                driver_source.clone(),
+            ));
+
+            // Store reference for test verification
+            {
+                let mut drivers = self.created_drivers.write();
+                drivers.push(driver.clone());
+            }
+
+            Ok(Box::new((*driver).clone()))
+        }
+    }
+
+    // Helper to create test VmTaskDriverSource
+    fn create_test_driver_source(driver: DefaultDriver) -> VmTaskDriverSource {
+        VmTaskDriverSource::new(ThreadDriverBackend::new(driver))
+    }
+
+    #[async_test]
+    async fn test_concurrent_get_namespace_calls(driver: DefaultDriver) {
+        // Test that multiple GetNamespace calls to different devices run concurrently
+        let driver_source = create_test_driver_source(driver);
+
+        // Create factory with realistic delays to observe concurrency
+        let factory = Arc::new(MockNvmeDriverFactory::new(
+            Duration::from_millis(100), // namespace delay
+            Duration::from_millis(50),  // shutdown delay
+        ));
+
+        let manager = NvmeManager::new(
+            &driver_source,
+            4,     // vp_count
+            false, // save_restore_supported
+            None,  // no saved state
+            factory.clone(),
+        );
+
+        let client = manager.client().clone();
+
+        // Launch multiple concurrent GetNamespace calls to different devices
+        let start_time = Instant::now();
+        let tasks = (0..3).map(|i| {
+            let client = client.clone();
+            let pci_id = format!("test-device-{}", i);
+            async move { client.get_namespace(pci_id, 1).await }
+        });
+
+        // Wait for all to complete
+        let results: Vec<_> = join_all(tasks).await;
+        let total_time = start_time.elapsed();
+
+        // Verify all completed (even if they "failed" with our mock)
+        assert_eq!(results.len(), 3);
+
+        // Verify concurrency: total time should be much less than 3 * 100ms if concurrent
+        assert!(
+            total_time < Duration::from_millis(250),
+            "Total time {:?} suggests operations were not concurrent",
+            total_time
+        );
+
+        // Verify we created 3 separate drivers
+        assert_eq!(factory.driver_count(), 3);
+
+        manager.shutdown(false).await;
+    }
+
+    #[async_test]
+    async fn test_concurrent_shutdown(driver: DefaultDriver) {
+        // Test that shutdown operations on multiple devices run concurrently
+        let driver_source = create_test_driver_source(driver);
+
+        let factory = Arc::new(MockNvmeDriverFactory::new(
+            Duration::from_millis(10),  // namespace delay
+            Duration::from_millis(100), // shutdown delay - this is what we're testing
+        ));
+
+        let manager = NvmeManager::new(&driver_source, 4, false, None, factory.clone());
+
+        let client = manager.client().clone();
+
+        // First, create several devices by calling GetNamespace
+        for i in 0..4 {
+            let pci_id = format!("test-device-{}", i);
+            let _ = client.get_namespace(pci_id, 1).await; // Ignore the mock "error"
+        }
+
+        // Verify we have 4 drivers
+        assert_eq!(factory.driver_count(), 4);
+
+        // Now test concurrent shutdown
+        let start_time = Instant::now();
+        manager.shutdown(false).await;
+        let shutdown_time = start_time.elapsed();
+
+        // Verify concurrency: with 4 devices each taking 100ms to shutdown,
+        // serial would take 400ms, concurrent should be ~100ms
+        assert!(
+            shutdown_time < Duration::from_millis(200),
+            "Shutdown time {:?} suggests shutdowns were not concurrent",
+            shutdown_time
+        );
+
+        // Verify all drivers were shutdown exactly once
+        for i in 0..4 {
+            let pci_id = format!("test-device-{}", i);
+            let driver = factory.get_driver(&pci_id).unwrap();
+            assert_eq!(driver.shutdown_call_count(), 1);
+        }
+    }
+
+    #[async_test]
+    async fn test_same_device_namespace_serialization(driver: DefaultDriver) {
+        // Test that multiple calls to the same device are properly handled
+        let driver_source = create_test_driver_source(driver);
+
+        let factory = Arc::new(MockNvmeDriverFactory::new(
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+        ));
+
+        let manager = NvmeManager::new(&driver_source, 4, false, None, factory.clone());
+        let client = manager.client().clone();
+
+        let pci_id = "test-device-same".to_string();
+
+        // Launch multiple concurrent calls to the same device
+        let tasks = (0..3).map(|nsid| {
+            let client = client.clone();
+            let pci_id = pci_id.clone();
+            async move { client.get_namespace(pci_id, nsid + 1).await }
+        });
+
+        let results: Vec<_> = join_all(tasks).await;
+
+        // All should complete
+        assert_eq!(results.len(), 3);
+
+        // Should have created only one driver (same device)
+        assert_eq!(factory.driver_count(), 1);
+
+        let driver = factory.get_driver(&pci_id).unwrap();
+        // Should have received 3 namespace calls
+        assert_eq!(driver.namespace_call_count(), 3);
+
+        manager.shutdown(false).await;
+    }
+
+    #[async_test]
+    async fn test_error_handling(driver: DefaultDriver) {
+        // Test error handling in various scenarios
+        let driver_source = create_test_driver_source(driver);
+
+        let factory = Arc::new(MockNvmeDriverFactory::new(
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+        ));
+
+        let manager = NvmeManager::new(&driver_source, 4, false, None, factory.clone());
+        let client = manager.client().clone();
+
+        // Test factory creation failure
+        factory.set_fail_create(true);
+        let result = client.get_namespace("failing-device".to_string(), 1).await;
+        assert!(result.is_err());
+
+        // Reset and create a working device
+        factory.set_fail_create(false);
+        let _ = client.get_namespace("working-device".to_string(), 1).await;
+
+        // Test namespace operation failure
+        let driver = factory.get_driver("working-device").unwrap();
+        driver.set_fail_namespace(true);
+
+        let result = client.get_namespace("working-device".to_string(), 2).await;
+        assert!(result.is_err());
+
+        manager.shutdown(false).await;
+    }
+
+    #[async_test]
+    async fn test_shutdown_before_operations(driver: DefaultDriver) {
+        // Test that operations fail gracefully after shutdown
+        let driver_source = create_test_driver_source(driver);
+
+        let factory = Arc::new(MockNvmeDriverFactory::new(
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+        ));
+
+        let manager = NvmeManager::new(&driver_source, 4, false, None, factory.clone());
+        let client = manager.client().clone();
+
+        // Shutdown immediately
+        manager.shutdown(false).await;
+
+        // Now try to use the client - should fail gracefully
+        let result = client.get_namespace("test-device".to_string(), 1).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("nvme manager is shut down")
+        );
+    }
+
+    #[async_test]
+    async fn test_concurrent_namespace_timing(driver: DefaultDriver) {
+        // More focused test on timing to prove concurrency
+        let driver_source = create_test_driver_source(driver);
+
+        let factory = Arc::new(MockNvmeDriverFactory::new(
+            Duration::from_millis(200), // Longer delay to make timing differences clear
+            Duration::from_millis(50),
+        ));
+
+        let manager = NvmeManager::new(&driver_source, 4, false, None, factory.clone());
+        let client = manager.client().clone();
+
+        // Test concurrent calls to different devices
+        let start_time = Instant::now();
+        let tasks = (0..4).map(|i| {
+            let client = client.clone();
+            let pci_id = format!("timing-device-{}", i);
+            async move {
+                let start = Instant::now();
+                let _ = client.get_namespace(pci_id, 1).await;
+                (i, start.elapsed())
+            }
+        });
+
+        let results: Vec<_> = join_all(tasks).await;
+        let total_time = start_time.elapsed();
+
+        // If sequential: 4 * 200ms = 800ms
+        // If concurrent: ~200ms (all running in parallel)
+        println!("Total time for 4 concurrent calls: {:?}", total_time);
+        assert!(
+            total_time < Duration::from_millis(400),
+            "Total time {:?} suggests operations were sequential, not concurrent",
+            total_time
+        );
+
+        // Verify each call took approximately the expected time
+        for (i, duration) in results {
+            println!("Device {} took {:?}", i, duration);
+            assert!(
+                duration >= Duration::from_millis(190) && duration <= Duration::from_millis(250),
+                "Device {} timing {:?} outside expected range",
+                i,
+                duration
+            );
+        }
+
+        manager.shutdown(false).await;
+    }
+
+    #[async_test]
+    async fn test_nvme_manager_inspect(driver: DefaultDriver) {
+        // Test that NvmeManager's Inspect implementation provides access to device information
+        let driver_source = create_test_driver_source(driver);
+
+        let factory = Arc::new(MockNvmeDriverFactory::new(
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+        ));
+
+        let manager = NvmeManager::new(&driver_source, 4, false, None, factory.clone());
+        let client = manager.client().clone();
+
+        // Create some devices by calling GetNamespace
+        let device_ids = vec!["inspect-device-1", "inspect-device-2", "inspect-device-3"];
+        for pci_id in device_ids {
+            let _ = client.get_namespace(pci_id.into(), 1).await; // Ignore mock "error"
+        }
+
+        // Verify devices were created
+        assert_eq!(factory.driver_count(), 3);
+
+        let mut i = InspectionBuilder::new("/").inspect(&manager);
+
+        i.resolve().await;
+
+        // For example:
+        // {"devices":{"inspect-device-1":{..},"inspect-device-2":{..},"inspect-device-3":{..}},"factory":{},"force_load_pci_id":"","save_restore_supported":false,"vp_count":4}
+        let results = i.results();
+        let string = results.to_string();
+        assert!(string.contains("devices"));
+        assert!(string.contains("inspect-device-1"));
+        assert!(string.contains("inspect-device-2"));
+        assert!(string.contains("inspect-device-3"));
+        assert!(string.contains("vp_count"));
+
+        manager.shutdown(false).await;
     }
 }

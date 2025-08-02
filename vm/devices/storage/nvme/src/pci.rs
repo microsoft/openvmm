@@ -367,6 +367,10 @@ impl NvmeController {
                     self.registers.csts.set_shst(0);
                 }
 
+                tracing::warn!("** CC.EN ENABLE ARTIFICIAL 100ms DELAY BEGIN **");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                tracing::warn!("** CC.EN ENABLE ARTIFICIAL 100ms DELAY END **");
+
                 self.workers.enable(
                     self.registers.asq,
                     self.registers.aqa.asqs_z().max(1) + 1,
@@ -374,6 +378,10 @@ impl NvmeController {
                     self.registers.aqa.acqs_z().max(1) + 1,
                 );
             } else if self.registers.csts.rdy() {
+                tracing::warn!("** CC.EN DISABLE ARTIFICIAL 100ms DELAY BEGIN **");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                tracing::warn!("** CC.EN DISABLE ARTIFICIAL 100ms DELAY END **");
+
                 self.workers.controller_reset();
             } else {
                 tracelimit::warn_ratelimited!("disabling while not ready");
