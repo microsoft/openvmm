@@ -350,6 +350,7 @@ mod namespace {
     use inspect::Deferred;
     use mesh::rpc::RpcError;
     use nvme_driver::NvmeDriverSavedState;
+    use tracing::Span;
 
     #[derive(Debug, Clone)]
     pub struct NvmeDriverShutdownOptions {
@@ -363,12 +364,12 @@ mod namespace {
 
     enum NvmeDriverRequest {
         Inspect(Deferred),
-        LoadDriver(Rpc<(), anyhow::Result<()>>),
+        LoadDriver(Rpc<Span, anyhow::Result<()>>),
         /// Get an instance of the supplied namespace (an nvme `nsid`).
-        GetNamespace(Rpc<u32, Result<nvme_driver::Namespace, NamespaceError>>),
-        Save(Rpc<(), anyhow::Result<NvmeDriverSavedState>>),
+        GetNamespace(Rpc<(Span, u32), Result<nvme_driver::Namespace, NamespaceError>>),
+        Save(Rpc<Span, anyhow::Result<NvmeDriverSavedState>>),
         /// Shutdown the NVMe driver, and the manager of that driver. Takes a single `bool`: whether this device should reset
-        Shutdown(Rpc<NvmeDriverShutdownOptions, ()>),
+        Shutdown(Rpc<(Span, NvmeDriverShutdownOptions), ()>),
     }
 
     pub struct NvmeDriverManager {
@@ -426,6 +427,7 @@ mod namespace {
                 save_restore_supported,
                 driver: device,
                 factory,
+                worker_vp,
             };
             let task = driver.spawn("nvme-driver-manager", async move { worker.run(recv).await });
             Ok(Self {
@@ -445,16 +447,18 @@ mod namespace {
             //
             // if self.nvme_keepalive { return }
 
+            let span = tracing::info_span!(
+                "nvme_driver_manager_shutdown",
+                pci_id = self.pci_id,
+                do_not_reset = opts.do_not_reset,
+                skip_device_shutdown = opts.skip_device_shutdown
+            );
+
             if let Err(e) = self
                 .client()
                 .sender
-                .call(NvmeDriverRequest::Shutdown, opts.clone())
-                .instrument(tracing::info_span!(
-                    "nvme_driver_manager_shutdown",
-                    pci_id = self.pci_id,
-                    do_not_reset = opts.do_not_reset,
-                    skip_device_shutdown = opts.skip_device_shutdown
-                ))
+                .call(NvmeDriverRequest::Shutdown, (span.clone(), opts.clone()))
+                .instrument(span)
                 .await
             {
                 tracing::warn!(
@@ -481,14 +485,15 @@ mod namespace {
         }
 
         pub async fn get_namespace(&self, nsid: u32) -> anyhow::Result<nvme_driver::Namespace> {
+            let span = tracing::info_span!(
+                "nvme_driver_client_get_namespace",
+                pci_id = self.pci_id,
+                nsid
+            );
             match self
                 .sender
-                .call_failable(NvmeDriverRequest::GetNamespace, nsid)
-                .instrument(tracing::info_span!(
-                    "nvme_driver_client_get_namespace",
-                    pci_id = self.pci_id,
-                    nsid
-                ))
+                .call_failable(NvmeDriverRequest::GetNamespace, (span.clone(), nsid))
+                .instrument(span)
                 .await
             {
                 Err(RpcError::Channel(_)) => {
@@ -500,13 +505,11 @@ mod namespace {
         }
 
         pub async fn load_driver(&self) -> anyhow::Result<()> {
+            let span = tracing::info_span!("nvme_driver_client_load_driver", pci_id = self.pci_id);
             match self
                 .sender
-                .call_failable(NvmeDriverRequest::LoadDriver, ())
-                .instrument(tracing::info_span!(
-                    "nvme_driver_client_load_driver",
-                    pci_id = self.pci_id
-                ))
+                .call_failable(NvmeDriverRequest::LoadDriver, span.clone())
+                .instrument(span)
                 .await
             {
                 Err(RpcError::Channel(_)) => {
@@ -518,13 +521,11 @@ mod namespace {
         }
 
         pub(crate) async fn save(&self) -> anyhow::Result<NvmeDriverSavedState> {
+            let span = tracing::info_span!("nvme_driver_client_save", pci_id = self.pci_id);
             match self
                 .sender
-                .call_failable(NvmeDriverRequest::Save, ())
-                .instrument(tracing::info_span!(
-                    "nvme_driver_client_save",
-                    pci_id = self.pci_id
-                ))
+                .call_failable(NvmeDriverRequest::Save, span.clone())
+                .instrument(span)
                 .await
             {
                 Err(RpcError::Channel(_)) => {
@@ -547,6 +548,7 @@ mod namespace {
         #[inspect(skip)]
         factory: Arc<dyn CreateNvmeDriver>,
         driver: Option<Box<dyn NvmeDevice>>,
+        worker_vp: Option<u32>,
     }
 
     impl NvmeDriverManagerWorker {
@@ -560,15 +562,21 @@ mod namespace {
                 match req {
                     NvmeDriverRequest::Inspect(deferred) => deferred.inspect(&self),
                     NvmeDriverRequest::LoadDriver(rpc) => {
-                        rpc.handle(async |_| {
-                            tracing::trace!(
-                                "nvme driver manager worker load driver {pci_id}",
-                                pci_id = self.pci_id
-                            );
+                        let load_driver_span = tracing::debug_span!(parent: rpc.input(),
+                            "nvme_driver_manager_load_driver",
+                            %self.pci_id,
+                            ?self.worker_vp
+                        );
 
+                        rpc.handle(async |_span| {
                             // Multiple threads could have raced to call this driver.
                             // Just let the winning thread create the driver.
                             if self.driver.is_some() {
+                                tracing::debug!(
+                                    "nvme driver manager worker load driver called for {} with existing driver (worker_vp = {:?})",
+                                    self.pci_id,
+                                    self.worker_vp
+                                );
                                 return Ok(());
                             }
 
@@ -581,20 +589,26 @@ mod namespace {
                                     self.save_restore_supported,
                                     None,
                                 )
+                                .instrument(
+                                    tracing::trace_span!("nvme_driver_manager_create_driver", %self.pci_id),
+                                )
                                 .await?;
                             self.driver = Some(driver);
 
                             Ok(())
                         })
+                        .instrument(load_driver_span)
                         .await
                     }
                     NvmeDriverRequest::GetNamespace(rpc) => {
-                        tracing::trace!(
-                            "nvme driver manager worker get namespace {nsid} {pci_id}",
-                            pci_id = self.pci_id,
-                            nsid = rpc.input().clone()
+                        let namespace_span = tracing::debug_span!(parent: &rpc.input().0,
+                            "nvme_driver_manager_get_namespace",
+                            %self.pci_id,
+                            nsid = rpc.input().1,
+                            ?self.worker_vp
                         );
-                        rpc.handle(async |nsid| {
+
+                        rpc.handle(async |(_, nsid)| {
                             self.driver
                                 .as_ref()
                                 .unwrap()
@@ -605,19 +619,35 @@ mod namespace {
                                     source: NvmeFactoryError::Namespace { nsid, source },
                                 })
                         })
+                        .instrument(namespace_span)
                         .await
                     }
                     NvmeDriverRequest::Save(rpc) => {
-                        tracing::trace!("nvme driver manager save {pci_id}", pci_id = self.pci_id);
-                        rpc.handle(async |()| self.driver.as_mut().unwrap().save().await)
-                            .await
+                        let save_span = tracing::debug_span!(parent: rpc.input(),
+                            "nvme_driver_manager_save",
+                            %self.pci_id,
+                            ?self.worker_vp
+                        );
+                        rpc.handle(async |_span| {
+                            self.driver
+                                .as_mut()
+                                .unwrap()
+                                .save()
+                                .instrument(
+                                    tracing::debug_span!("nvme_driver_manager_save", %self.pci_id),
+                                )
+                                .await
+                        })
+                        .instrument(save_span)
+                        .await
                     }
                     NvmeDriverRequest::Shutdown(rpc) => {
-                        tracing::trace!(
-                            "nvme driver manager shutdown {pci_id}",
-                            pci_id = self.pci_id
+                        let shutdown_span = tracing::debug_span!(parent: &rpc.input().0,
+                            "nvme_driver_manager_shutdown",
+                            %self.pci_id,
+                            ?self.worker_vp
                         );
-                        rpc.handle(async |options| {
+                        rpc.handle(async |(_span, options)| {
                             // Driver may be `None` here if there was a failure during driver creation.
                             // In that case, we just skip the shutdown rather than panic.
                             match self.driver.take() {
@@ -642,6 +672,7 @@ mod namespace {
                                 }
                             }
                         })
+                        .instrument(shutdown_span)
                         .await;
 
                         break;
