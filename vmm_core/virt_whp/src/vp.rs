@@ -19,6 +19,7 @@ use std::future::poll_fn;
 use std::mem::offset_of;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
+use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
 use virt::StopVp;
 use virt::VpHaltReason;
