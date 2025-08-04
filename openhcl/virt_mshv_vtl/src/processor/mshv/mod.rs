@@ -6,10 +6,15 @@
 use crate::HypervisorBacked;
 use crate::UhProcessor;
 use hcl::GuestVtl;
+use thiserror::Error;
 
 pub mod arm64;
 mod tlb_lock;
 pub mod x64;
+
+#[derive(Debug, Error)]
+#[error("failed to run")]
+struct MshvRunVpError(#[source] hcl::ioctl::Error);
 
 #[derive(Default, inspect::Inspect)]
 pub(crate) struct VbsIsolatedVtl1State {

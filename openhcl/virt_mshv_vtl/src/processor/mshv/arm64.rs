@@ -157,7 +157,10 @@ impl BackingPrivate for HypervisorBackedArm64 {
         }
 
         this.unlock_tlb_lock(Vtl::Vtl2);
-        let intercepted = this.runner.run().unwrap();
+        let intercepted = this
+            .runner
+            .run()
+            .map_err(|e| VpHaltReason::Hypervisor(MshvRunVpError(e).into()))?;
 
         if intercepted {
             let stat = match this.runner.exit_message().header.typ {

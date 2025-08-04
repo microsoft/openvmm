@@ -167,6 +167,15 @@ where
                     vp: self.vp_index.index(),
                 })
             }
+            VpHaltReason::Hypervisor(err) => {
+                tracing::error!(
+                    err = err.as_ref() as &dyn std::error::Error,
+                    "fatal vp error"
+                );
+                Err(HaltReason::VpError {
+                    vp: self.vp_index.index(),
+                })
+            }
             VpHaltReason::SingleStep => {
                 tracing::debug!("single step");
                 Err(HaltReason::SingleStep {

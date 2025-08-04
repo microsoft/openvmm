@@ -96,6 +96,8 @@ enum KvmRunVpError {
     InternalError(u32),
     #[error("invalid vp state")]
     InvalidVpState,
+    #[error("failed to run VP")]
+    Run(#[source] kvm::Error),
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),

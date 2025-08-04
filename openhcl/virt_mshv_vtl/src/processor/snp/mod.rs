@@ -90,6 +90,8 @@ enum SnpError {
     GhcbPageAccess(#[source] guestmem::GuestMemoryError),
     #[error("ghcb page used for vmgexit does not match overlay page")]
     GhcbMisconfiguration,
+    #[error("failed to run")]
+    Run(#[source] hcl::ioctl::Error),
 }
 
 /// A backing for SNP partitions.
@@ -1208,7 +1210,10 @@ impl UhProcessor<'_, SnpBacked> {
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
 
-        let mut has_intercept = self.runner.run().unwrap();
+        let mut has_intercept = self
+            .runner
+            .run()
+            .map_err(|e| VpHaltReason::Hypervisor(SnpError::Run(e).into()))?;
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
