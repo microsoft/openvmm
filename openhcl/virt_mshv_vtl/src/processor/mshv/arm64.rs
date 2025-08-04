@@ -12,6 +12,7 @@ use super::super::BackingPrivate;
 use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
+use super::MshvRunVpError;
 use super::VbsIsolatedVtl1State;
 use crate::BackingShared;
 use crate::Error;
