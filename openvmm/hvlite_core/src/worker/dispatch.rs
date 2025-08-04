@@ -611,7 +611,7 @@ fn platform_gsiv(hypervisor: Hypervisor) -> u32 {
     };
 
     if gsiv == 0 {
-        tracing::warn!("No platform GSIV available for hypervisor {:?}", hypervisor);
+        tracing::warn!(?hypervisor, "no platform GSIV available for hypervisor");
     }
 
     gsiv
