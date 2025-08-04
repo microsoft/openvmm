@@ -18,7 +18,9 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::openvmm_test_no_agent;
 use vmm_test_macros::vmm_test;
+use vmm_test_macros::vmm_test_no_agent;
 
 /// Basic boot test with the VTL 0 alias map.
 // TODO: Remove once #73 is fixed.
@@ -174,7 +176,7 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 // }
 
 /// Basic VBS boot test with TPM enabled.
-#[openvmm_test(
+#[openvmm_test_no_agent(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
 )]
@@ -343,7 +345,7 @@ fn configure_for_sidecar<T: PetriVmmBackend>(
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
-#[vmm_test(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
+#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
 async fn sidecar_aps_unused<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {

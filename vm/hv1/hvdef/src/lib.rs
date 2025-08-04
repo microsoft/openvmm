@@ -288,6 +288,7 @@ open_enum! {
         HvCallPostMessage = 0x005C,
         HvCallSignalEvent = 0x005D,
         HvCallOutputDebugCharacter = 0x0071,
+        HvCallGetSystemProperty = 0x007b,
         HvCallRetargetDeviceInterrupt = 0x007e,
         HvCallNotifyPartitionEvent = 0x0087,
         HvCallAssertVirtualInterrupt = 0x0094,

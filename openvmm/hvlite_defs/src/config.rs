@@ -54,6 +54,8 @@ pub struct Config {
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
+    /// allow the guest to reset without notifying the client
+    pub automatic_guest_reset: bool,
 }
 
 // ARM64 needs a larger low gap.
@@ -203,6 +205,7 @@ pub enum X2ApicConfig {
 #[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
+    pub pmu_gsiv: Option<u32>,
 }
 
 #[derive(Debug, Protobuf, Clone)]

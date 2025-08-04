@@ -188,7 +188,7 @@ pub struct SevIoAccessInfo {
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct SevNpfInfo {
     pub present: bool,
-    pub read_write: bool,
+    pub is_write: bool,
     pub user: bool,
     pub reserved_bit_set: bool,
     pub fetch: bool,

@@ -1157,6 +1157,16 @@ fn vm_config_from_command_line(
         hvlite_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
             gic_config: None,
+            // TODO: This value is platform specific, and needs to be queried
+            // from each platform. Additionally, enabling it on HVF with the
+            // correct platform value does not work, so more investigation is
+            // needed.
+            #[cfg(not(windows))]
+            pmu_gsiv: None,
+            // TODO: On WHP, the value supported is 0x17, and is
+            // not configurable today.
+            #[cfg(windows)]
+            pmu_gsiv: Some(0x17),
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1370,6 +1380,7 @@ fn vm_config_from_command_line(
         debugger_rpc: None,
         generation_id_recv: None,
         rtc_delta_milliseconds: 0,
+        automatic_guest_reset: !opt.halt_on_reset,
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
@@ -2312,23 +2323,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             Event::Quit => break,
             Event::Halt(reason) => {
-                match reason {
-                    vmm_core_defs::HaltReason::Reset
-                        if !opt.halt_on_reset && state_change_task.is_none() =>
-                    {
-                        tracing::info!("guest-initiated reset");
-                        state_change(
-                            driver,
-                            &vm_rpc,
-                            &mut state_change_task,
-                            VmRpc::Reset,
-                            StateChange::Reset,
-                        );
-                    }
-                    _ => {
-                        tracing::info!(?reason, "guest halted");
-                    }
-                }
+                tracing::info!(?reason, "guest halted");
                 continue;
             }
             Event::PulseSaveRestore => {

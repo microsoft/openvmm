@@ -1,0 +1,16 @@
+#cloud-config
+
+users:
+  # Allow logins via petri/petri for debugging.
+  - name: petri
+    passwd: "$6$EO8qjMcfYFra1zR8$ZHzeU29UoO49S3gJMivhgsP7farZgEbfOkKeXfswZeT7go1SpyPbL68whWCG5.YEdS4NeyPYYZYiLo5Fq4igV0"
+    lock_passwd: false
+    groups: users, admin
+
+bootcmd:
+  # Mounts module is not configured in some (all?) distros, so mount /cidata manually.
+  - [mkdir, -p, /cidata]
+  - [mount, LABEL=cidata, /cidata, -o, ro]
+  # Disable snapd, which takes a long time to start and is not needed.
+  - systemctl disable snapd.service snapd.apparmor snapd.seeded.service || true
+  - systemctl mask snapd.service || true

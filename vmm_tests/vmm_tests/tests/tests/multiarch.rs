@@ -25,13 +25,15 @@ use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::openvmm_test_no_agent;
 use vmm_test_macros::vmm_test;
+use vmm_test_macros::vmm_test_no_agent;
 
 // Servicing tests.
 pub(crate) mod openhcl_servicing;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
-#[vmm_test(
+#[vmm_test_no_agent(
     openvmm_uefi_x64(none),
     openvmm_openhcl_uefi_x64(none),
     openvmm_uefi_aarch64(none),
@@ -100,7 +102,7 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 
 /// Verify that secure boot fails with a mismatched template.
 /// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
-#[vmm_test(
+#[vmm_test_no_agent(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
@@ -163,7 +165,7 @@ async fn boot_reset_expected(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 ///   - kmsg support in Hyper-V
 ///   - openhcl_uefi_aarch64 support
 ///   - uefi_x64 + uefi_aarch64 trace searching support
-#[openvmm_test(openhcl_uefi_x64(none))]
+#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
 async fn efi_diagnostics_no_boot(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
@@ -352,7 +354,7 @@ async fn reboot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyho
 /// Basic boot test without agent
 // TODO: investigate why the shutdown ic doesn't work reliably with hyper-v
 // in our ubuntu image
-#[vmm_test(
+#[vmm_test_no_agent(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
@@ -384,7 +386,7 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
 }
 
 // Basic vp "heavy" boot test without agent with 16 VPs.
-#[vmm_test(
+#[vmm_test_no_agent(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
@@ -430,7 +432,7 @@ async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> a
 
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
-#[vmm_test(
+#[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
@@ -474,7 +476,7 @@ async fn vmbus_relay_force_mnf<T: PetriVmmBackend>(
 //
 // TODO: Shortened test name to make it work on Hyper-V, but it should use the
 // full name once petri is fixed.
-#[vmm_test(
+#[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
@@ -494,7 +496,7 @@ async fn vmbr_force_mnf_no_agent<T: PetriVmmBackend>(
 
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
-#[vmm_test(
+#[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
@@ -515,7 +517,7 @@ async fn vmbus_relay_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> any
 }
 
 /// Basic boot test without agent and with a single VP.
-#[vmm_test(
+#[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
@@ -540,7 +542,7 @@ async fn boot_no_agent_single_proc<T: PetriVmmBackend>(
 
 /// Basic reboot test without agent
 // TODO: Reenable guests that use the framebuffer once #74 is fixed.
-#[openvmm_test(
+#[openvmm_test_no_agent(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
     // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -569,7 +571,7 @@ async fn reboot_no_agent(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow:
 /// Boot our guest-test UEFI image, which will run some tests,
 /// and then purposefully triple fault itself via an expiring
 /// watchdog timer.
-#[vmm_test(
+#[vmm_test_no_agent(
     openvmm_uefi_x64(guest_test_uefi_x64),
     openvmm_uefi_aarch64(guest_test_uefi_aarch64),
     openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
@@ -717,7 +719,7 @@ async fn clear_vmgs(
 ///
 /// This test exists to ensure we are not getting a false positive for
 /// the `default_boot` and `clear_vmgs` test above.
-#[openvmm_test(
+#[openvmm_test_no_agent(
     // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],

@@ -340,8 +340,20 @@ impl PetriVmConfigOpenVmm {
                             ..Default::default()
                         },
                     ),
+                    #[cfg(not(windows))]
                     MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
                         hvlite_defs::config::Aarch64TopologyConfig::default(),
+                    ),
+                    #[cfg(windows)]
+                    MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                        hvlite_defs::config::Aarch64TopologyConfig {
+                            // TODO: The PMU GSIV value is currently hardcoded
+                            // to be 0x17 on WHP. This shouldn't be required to
+                            // be set, but a future change will set the platform
+                            // default if None was specified.
+                            pmu_gsiv: Some(0x17),
+                            ..Default::default()
+                        },
                     ),
                 }),
             }
@@ -427,6 +439,9 @@ impl PetriVmConfigOpenVmm {
             secure_boot_enabled,
             custom_uefi_vars,
             vmgs,
+
+            // Don't automatically reset the guest by default
+            automatic_guest_reset: false,
 
             // Disabled for VMM tests by default
             #[cfg(windows)]

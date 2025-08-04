@@ -77,7 +77,6 @@ use virt_support_x86emu::emulate::emulate_insn_memory_op;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
-use vm_topology::memory::AddressType;
 use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
 use x86defs::X64_CR0_ET;
@@ -2063,7 +2062,18 @@ impl UhProcessor<'_, TdxBacked> {
                         .into();
                     assert!(!old_interruptibility.blocked_by_nmi());
                 } else {
-                    self.handle_ept(intercepted_vtl, dev, gpa, ept_info).await?;
+                    let is_write = ept_info.access_mask() & 0b10 != 0;
+                    if self.check_mem_fault(intercepted_vtl, gpa, is_write, ept_info) {
+                        self.emulate(
+                            dev,
+                            self.backing.vtls[intercepted_vtl]
+                                .interruption_information
+                                .valid(),
+                            intercepted_vtl,
+                            TdxEmulationCache::default(),
+                        )
+                        .await?;
+                    }
                 }
 
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.ept_violation
@@ -2443,120 +2453,6 @@ impl UhProcessor<'_, TdxBacked> {
             .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION)
             .with_deliver_error_code(true);
         self.backing.vtls[vtl].exception_error_code = 0;
-    }
-
-    fn inject_mc(&mut self, vtl: GuestVtl) {
-        self.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
-            .with_valid(true)
-            .with_vector(x86defs::Exception::MACHINE_CHECK.0)
-            .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION);
-    }
-
-    async fn handle_ept(
-        &mut self,
-        intercepted_vtl: GuestVtl,
-        dev: &impl CpuIo,
-        gpa: u64,
-        ept_info: VmxEptExitQualification,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let vtom = self.partition.caps.vtom.unwrap_or(0);
-        let is_shared = (gpa & vtom) == vtom && vtom != 0;
-        let canonical_gpa = gpa & !vtom;
-
-        // Only emulate the access if the gpa is mmio or outside of ram.
-        let address_type = self
-            .partition
-            .lower_vtl_memory_layout
-            .probe_address(canonical_gpa);
-
-        match address_type {
-            Some(AddressType::Mmio) => {
-                // Emulate the access.
-                self.emulate(
-                    dev,
-                    self.backing.vtls[intercepted_vtl]
-                        .interruption_information
-                        .valid(),
-                    intercepted_vtl,
-                    TdxEmulationCache::default(),
-                )
-                .await?;
-            }
-            Some(AddressType::Ram) => {
-                // TODO TDX: This path changes when we support VTL page
-                // protections and MNF. That will require injecting events to
-                // VTL1 or other handling.
-                //
-                // For now, we just check if the exit was suprious or if we
-                // should inject a machine check. An exit is considered spurious
-                // if the gpa is accessible.
-                if self.partition.gm[intercepted_vtl]
-                    .probe_gpa_readable(gpa)
-                    .is_ok()
-                {
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        "possible spurious EPT violation, ignoring"
-                    );
-                } else {
-                    // TODO: It would be better to show what exact bitmap check
-                    // failed, but that requires some refactoring of how the
-                    // different bitmaps are stored. Do this when we support VTL
-                    // protections or MNF.
-                    //
-                    // If we entered this path, it means the bitmap check on
-                    // `check_gpa_readable` failed, so we can assume that if the
-                    // address is shared, the actual state of the page is
-                    // private, and vice versa. This is because the address
-                    // should have already been checked to be valid memory
-                    // described to the guest or not.
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        is_shared,
-                        ?ept_info,
-                        "guest accessed inaccessible gpa, injecting MC"
-                    );
-
-                    // TODO: Implement IA32_MCG_STATUS MSR for more reporting
-                    self.inject_mc(intercepted_vtl);
-                }
-            }
-            None => {
-                if !self.cvm_partition().hide_isolation {
-                    // TODO: Addresses outside of ram and mmio probably should
-                    // not be accessed by the guest, if it has been told about
-                    // isolation. While it's okay as we will return FFs or
-                    // discard writes for addresses that are not mmio, we should
-                    // consider if instead we should also inject a machine check
-                    // for such accesses. The guest should not access any
-                    // addresses not described to it.
-                    //
-                    // For now, log that the guest did this.
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        is_shared,
-                        ?ept_info,
-                        "guest accessed gpa not described in memory layout, emulating anyways"
-                    );
-                }
-
-                // Emulate the access.
-                self.emulate(
-                    dev,
-                    self.backing.vtls[intercepted_vtl]
-                        .interruption_information
-                        .valid(),
-                    intercepted_vtl,
-                    TdxEmulationCache::default(),
-                )
-                .await?;
-            }
-        }
-
-        Ok(())
     }
 
     fn handle_tdvmcall(&mut self, dev: &impl CpuIo, intercepted_vtl: GuestVtl) {
