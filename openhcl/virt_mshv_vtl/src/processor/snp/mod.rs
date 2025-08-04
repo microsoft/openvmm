@@ -83,16 +83,20 @@ use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
-enum SnpError {
-    #[error("invalid vmcb")]
-    InvalidVmcb,
+#[error("invalid vmcb")]
+struct InvalidVmcb;
+
+#[derive(Debug, Error)]
+enum SnpGhcbError {
     #[error("failed to access GHCB page")]
     GhcbPageAccess(#[source] guestmem::GuestMemoryError),
     #[error("ghcb page used for vmgexit does not match overlay page")]
     GhcbMisconfiguration,
-    #[error("failed to run")]
-    Run(#[source] hcl::ioctl::Error),
 }
+
+#[derive(Debug, Error)]
+#[error("failed to run")]
+struct SnpRunVpError(#[source] hcl::ioctl::Error);
 
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
@@ -924,7 +928,7 @@ impl UhProcessor<'_, SnpBacked> {
         &mut self,
         dev: &impl CpuIo,
         intercepted_vtl: GuestVtl,
-    ) -> Result<(), SnpError> {
+    ) -> Result<(), SnpGhcbError> {
         let message = self
             .runner
             .exit_message()
@@ -950,7 +954,7 @@ impl UhProcessor<'_, SnpBacked> {
                         "ghcb page used for vmgexit does not match overlay page"
                     );
 
-                    return Err(SnpError::GhcbMisconfiguration);
+                    return Err(SnpGhcbError::GhcbMisconfiguration);
                 }
 
                 match x86defs::snp::GhcbUsage(message.ghcb_page.ghcb_usage) {
@@ -967,7 +971,7 @@ impl UhProcessor<'_, SnpBacked> {
                                 overlay_base
                                     + x86defs::snp::GHCB_PAGE_HYPERCALL_PARAMETERS_OFFSET as u64,
                             )
-                            .map_err(SnpError::GhcbPageAccess)?;
+                            .map_err(SnpGhcbError::GhcbPageAccess)?;
 
                         let mut handler = GhcbEnlightenedHypercall {
                             handler: UhHypercallHandler {
@@ -998,7 +1002,7 @@ impl UhProcessor<'_, SnpBacked> {
                                     + x86defs::snp::GHCB_PAGE_HYPERCALL_OUTPUT_OFFSET as u64,
                                 handler.result.as_bytes(),
                             )
-                            .map_err(SnpError::GhcbPageAccess)?;
+                            .map_err(SnpGhcbError::GhcbPageAccess)?;
                     }
                     usage => unimplemented!("ghcb usage {usage:?}"),
                 }
@@ -1213,7 +1217,7 @@ impl UhProcessor<'_, SnpBacked> {
         let mut has_intercept = self
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(SnpError::Run(e).into()))?;
+            .map_err(|e| VpHaltReason::Hypervisor(SnpRunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
@@ -1476,7 +1480,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::INVALID_VMCB => {
-                return Err(VpHaltReason::InvalidVmState(SnpError::InvalidVmcb.into()));
+                return Err(VpHaltReason::InvalidVmState(InvalidVmcb.into()));
             }
 
             SevExitCode::INVLPGB | SevExitCode::ILLEGAL_INVLPGB => {

@@ -159,14 +159,16 @@ const MSR_ALLOWED_READ_WRITE: &[u32] = &[
 ];
 
 #[derive(Debug, Error)]
-enum TdxError {
-    #[error("unknown exit {0:#x?}")]
-    UnknownVmxExit(VmxExit),
-    #[error("bad guest state on VP.ENTER")]
-    VmxBadGuestState,
-    #[error("failed to run")]
-    Run(#[source] hcl::ioctl::Error),
-}
+#[error("unknown exit {0:#x?}")]
+struct UnknownVmxExit(VmxExit);
+
+#[derive(Debug, Error)]
+#[error("bad guest state on VP.ENTER")]
+struct VmxBadGuestState;
+
+#[derive(Debug, Error)]
+#[error("failed to run")]
+struct TdxRunVpError(#[source] hcl::ioctl::Error);
 
 #[derive(Debug)]
 struct TdxExit<'a>(&'a tdx_tdg_vp_enter_exit_info);
@@ -1564,7 +1566,7 @@ impl UhProcessor<'_, TdxBacked> {
         let has_intercept = self
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(TdxError::Run(e).into()))?;
+            .map_err(|e| VpHaltReason::Hypervisor(TdxRunVpError(e).into()))?;
 
         // TLB flushes can only target lower VTLs, so it is fine to use a relaxed
         // ordering here. The worst that can happen is some spurious wakes, due
@@ -2181,7 +2183,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
             _ => {
                 return Err(VpHaltReason::InvalidVmState(
-                    TdxError::UnknownVmxExit(exit_info.code().vmx_exit()).into(),
+                    UnknownVmxExit(exit_info.code().vmx_exit()).into(),
                 ));
             }
         };
@@ -2413,9 +2415,9 @@ impl UhProcessor<'_, TdxBacked> {
                 tracing::error!(CVM_ALLOWED, "VP.ENTER failed with bad guest state");
                 self.trace_processor_state(vtl);
 
-                VpHaltReason::InvalidVmState(TdxError::VmxBadGuestState.into())
+                VpHaltReason::InvalidVmState(VmxBadGuestState.into())
             }
-            _ => VpHaltReason::InvalidVmState(TdxError::UnknownVmxExit(vmx_exit).into()),
+            _ => VpHaltReason::InvalidVmState(UnknownVmxExit(vmx_exit).into()),
         }
     }
 
