@@ -601,7 +601,12 @@ fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
 
 fn platform_gsiv(hypervisor: Hypervisor) -> u32 {
     let gsiv = match hypervisor {
-        #[cfg(all(target_os = "windows", guest_is_native, guest_arch = "aarch64"))]
+        #[cfg(all(
+            feature = "virt_whp",
+            target_os = "windows",
+            guest_is_native,
+            guest_arch = "aarch64"
+        ))]
         Hypervisor::Whp => virt_whp::WHP_PMU_GSIV,
         // TODO: hvf supports the PMU interrupt, but enabling it didn't seem to
         // make it work it a Linux guest. More investigation required.
