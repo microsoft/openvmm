@@ -1867,58 +1867,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 "setting up vp with initial registers"
             );
 
-            if vtl == GuestVtl::Vtl0 {
-                let hvdef::hypercall::InitialVpContextX64 {
-                    rip: _,
-                    rsp: _,
-                    rflags: _,
-                    cs: _,
-                    ds: _,
-                    es: _,
-                    fs: _,
-                    gs: _,
-                    ss: _,
-                    tr,
-                    ldtr,
-                    idtr,
-                    gdtr,
-                    efer: _,
-                    cr0,
-                    cr3: _,
-                    cr4,
-                    msr_cr_pat: _,
-                } = start_enable_vtl_state.context;
-
-                for (reg, value) in [
-                    (HvX64RegisterName::Cr0, cr0),
-                    (HvX64RegisterName::Cr4, cr4),
-                    (
-                        HvX64RegisterName::Gdtr,
-                        HvRegisterValue::from(gdtr).as_u64(),
-                    ),
-                    (
-                        HvX64RegisterName::Idtr,
-                        HvRegisterValue::from(idtr).as_u64(),
-                    ),
-                    (
-                        HvX64RegisterName::Ldtr,
-                        HvRegisterValue::from(ldtr).as_u64(),
-                    ),
-                    (HvX64RegisterName::Tr, HvRegisterValue::from(tr).as_u64()),
-                ] {
-                    if self.cvm_is_protected_register_write(vtl, reg, value) {
-                        // In this case, it doesn't matter what VTL the calling
-                        // VP was in, just fail the startup. No need to send an
-                        // intercept message.
-                        tracelimit::error_ratelimited!(
-                            ?reg,
-                            "Attempted to write to protected register during VTL 0 startup",
-                        );
-                        return;
-                    }
-                }
-            }
-
             hv1_emulator::hypercall::set_x86_vp_context(
                 &mut self.access_state(vtl.into()),
                 &(start_enable_vtl_state.context),
