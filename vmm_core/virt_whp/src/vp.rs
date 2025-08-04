@@ -47,6 +47,10 @@ pub(crate) struct ExitStats {
     other: Counter,
 }
 
+#[derive(Debug, Error)]
+#[error("failed to run")]
+pub struct WhpRunVpError(#[source] whp::WHvError);
+
 impl<'a> WhpProcessor<'a> {
     pub(crate) fn current_vtlp(&self) -> &'a VtlPartition {
         self.vp.partition.vtlp(self.state.active_vtl)
@@ -379,7 +383,9 @@ impl<'a> WhpProcessor<'a> {
             let lazy_eoi = self.sync_lazy_eoi();
 
             let mut runner = self.current_whp().runner();
-            let exit = runner.run().unwrap();
+            let exit = runner
+                .run()
+                .map_err(|err| VpHaltReason::Hypervisor(WhpRunVpError(err).into()))?;
 
             // Clear lazy EOI before processing the exit.
             if lazy_eoi {

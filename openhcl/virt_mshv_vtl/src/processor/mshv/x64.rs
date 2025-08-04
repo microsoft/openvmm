@@ -13,6 +13,7 @@ use super::super::UhEmulationState;
 use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
+use super::MshvRunVpError;
 use super::VbsIsolatedVtl1State;
 use crate::BackingShared;
 use crate::Error;
@@ -233,7 +234,9 @@ impl BackingPrivate for HypervisorBackedX86 {
             .map_err(|e| VpHaltReason::InvalidVmState(ioctl::Error::Sidecar(e).into()))?
         } else {
             this.unlock_tlb_lock(Vtl::Vtl2);
-            this.runner.run().unwrap()
+            this.runner
+                .run()
+                .map_err(|e| VpHaltReason::Hypervisor(MshvRunVpError(e).into()))?
         };
 
         if intercepted {

@@ -164,6 +164,8 @@ enum TdxError {
     UnknownVmxExit(VmxExit),
     #[error("bad guest state on VP.ENTER")]
     VmxBadGuestState,
+    #[error("failed to run")]
+    Run(#[source] hcl::ioctl::Error),
 }
 
 #[derive(Debug)]
@@ -1559,7 +1561,10 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .write_private_regs(&self.backing.vtls[next_vtl].private_regs);
 
-        let has_intercept = self.runner.run().unwrap();
+        let has_intercept = self
+            .runner
+            .run()
+            .map_err(|e| VpHaltReason::Hypervisor(TdxError::Run(e).into()))?;
 
         // TLB flushes can only target lower VTLs, so it is fine to use a relaxed
         // ordering here. The worst that can happen is some spurious wakes, due

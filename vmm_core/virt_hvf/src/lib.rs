@@ -935,7 +935,9 @@ impl<'p> Processor for HvfProcessor<'p> {
             }
 
             // SAFETY: we are not concurrently accessing `exit`.
-            unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }.chk().unwrap();
+            unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }
+                .chk()
+                .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
 
             match self.vcpu.exit.reason {
                 abi::HvExitReason::CANCELED => {

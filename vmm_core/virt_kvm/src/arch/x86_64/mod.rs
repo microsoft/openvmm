@@ -1091,7 +1091,8 @@ impl Processor for KvmProcessor<'_> {
                     self.runner.run()
                 };
 
-                let exit = exit.unwrap();
+                let exit =
+                    exit.map_err(|err| VpHaltReason::Hypervisor(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
