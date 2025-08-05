@@ -35,14 +35,14 @@ impl SimpleFlowNode for Node {
             repo_path,
             github_commit_hash,
             gh_workflow,
-            pipeline_name,
             gh_token,
+            pipeline_name,
         } = request;
 
         let pipeline_name = pipeline_name.clone();
 
         ctx.req(crate::use_gh_cli::Request::WithAuth(
-            crate::use_gh_cli::GhCliAuth::AuthToken(gh_token.clone()),
+            crate::use_gh_cli::GhCliAuth::AuthToken(gh_token),
         ));
         let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
 
