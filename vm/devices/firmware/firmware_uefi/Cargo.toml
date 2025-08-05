@@ -39,8 +39,6 @@ mesh.workspace = true
 open_enum.workspace = true
 pal_async.workspace = true
 ucs2.workspace = true
-
-anyhow.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
 der = { workspace = true, features = ["derive", "alloc", "oid"], optional = true }
