@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use fast_select::FastSelect;
 use futures::FutureExt;
 use futures::StreamExt;
-use futures::select_biased;
+use futures_concurrency::future::Race;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
@@ -873,9 +873,15 @@ impl<T: RingMem> Worker<T> {
             match current_state {
                 ProtocolState::Ready { version, .. } => {
                     break loop {
-                        select_biased! {
-                            r = self.inner.process_ready(&mut self.queue, version).fuse() => break r,
-                            _ = self.fast_select.select((self.rescan_notification.select_next_some(),)).fuse() => {
+                        match (
+                            self.inner.process_ready(&mut self.queue, version),
+                            self.fast_select.select((self.rescan_notification.select_next_some(),)),
+                        )
+                            .race()
+                            .await
+                        {
+                            futures_concurrency::future::RaceResult::First(r) => break r,
+                            futures_concurrency::future::RaceResult::Second(_) => {
                                 if version >= Version::Win7
                                 {
                                     self.inner.send_packet(&mut self.queue.split().1, storvsp_protocol::Operation::ENUMERATE_BUS, storvsp_protocol::NtStatus::SUCCESS, &())?;
