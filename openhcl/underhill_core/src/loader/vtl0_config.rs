@@ -60,10 +60,19 @@ pub struct LinuxInfo {
 }
 
 #[derive(Debug)]
+pub struct StaticElfInfo {
+    /// The region of memory used by the static ELF.
+    pub elf_range: MemoryRange,
+    /// The VP context for the static ELF.
+    pub vp_context: VpContext,
+}
+
+#[derive(Debug)]
 pub struct MeasuredVtl0Info {
     pub supports_pcat: bool,
     pub supports_uefi: Option<UefiInfo>,
     pub supports_linux: Option<LinuxInfo>,
+    pub supports_static_elf: Option<StaticElfInfo>,
 }
 
 impl MeasuredVtl0Info {
@@ -155,6 +164,35 @@ impl MeasuredVtl0Info {
             None
         };
 
+        let supports_static_elf = if measured_config.supported_vtl0.static_elf_supported() {
+            let static_elf = &measured_config.static_elf;
+            let vp_context = match static_elf.vp_context.pages() {
+                Some((vtl0_vp_context_page_base, vtl0_vp_context_page_count)) => {
+                    assert!(vtl0_vp_context_page_base != 0);
+                    assert_eq!(vtl0_vp_context_page_count, 1);
+
+                    let mut vtl0_vp_context_raw: Vec<u8> = vec![0; HV_PAGE_SIZE as usize];
+                    gm.read_at(
+                        vtl0_vp_context_page_base * HV_PAGE_SIZE,
+                        vtl0_vp_context_raw.as_mut_slice(),
+                    )
+                    .map_err(Error::GuestMemoryAccess)?;
+                    config_pages.push(vtl0_vp_context_page_base);
+
+                    parse_vtl0_vp_context(vtl0_vp_context_raw)?
+                }
+                None => VpContext::Vbs(Vec::new()),
+            };
+
+            Some(StaticElfInfo {
+                elf_range: memory_range_from_page_region(&static_elf.region)
+                    .ok_or(Error::UefiFirmwareRegion)?,
+                vp_context,
+            })
+        } else {
+            None
+        };
+
         // Clear measured info from VTL0 memory.
         gm.zero_range(
             &PagedRange::new(0, config_pages.len() * HV_PAGE_SIZE as usize, &config_pages)
@@ -166,6 +204,7 @@ impl MeasuredVtl0Info {
             supports_pcat,
             supports_uefi,
             supports_linux,
+            supports_static_elf,
         })
     }
 
@@ -197,6 +236,18 @@ impl MeasuredVtl0Info {
                     gm.fill_at(initrd_base, 0, initrd_len as usize)
                         .map_err(Error::GuestMemoryAccess)?;
                 }
+            }
+        }
+
+        if let Some(static_elf) = &self.supports_static_elf {
+            if load_kind != LoadKind::StaticElf {
+                // Clear out the memory used by the static ELF.
+                gm.fill_at(
+                    static_elf.elf_range.start(),
+                    0,
+                    static_elf.elf_range.len() as usize,
+                )
+                .map_err(Error::GuestMemoryAccess)?;
             }
         }
 

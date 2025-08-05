@@ -263,7 +263,7 @@ pub struct UnderhillEnvCfg {
     /// Force load the specified image in VTL0. The image must support the
     /// option specified.
     ///
-    /// Valid options are "pcat, uefi, linux".
+    /// Valid options are "pcat, uefi, linux, static_elf".
     pub force_load_vtl0_image: Option<String>,
     /// Use the user-mode NVMe driver.
     pub nvme_vfio: bool,
@@ -1724,6 +1724,7 @@ async fn new_underhill_vm(
                     "pcat" => LoadKind::Pcat,
                     "uefi" => LoadKind::Uefi,
                     "linux" => LoadKind::Linux,
+                    "static_elf" => LoadKind::StaticElf,
                     _ => anyhow::bail!("unexpected force load vtl0 type {kind}"),
                 }
             } else {
