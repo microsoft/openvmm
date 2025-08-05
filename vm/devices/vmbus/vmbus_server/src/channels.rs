@@ -1806,9 +1806,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     /// Revokes a channel by ID.
-    pub fn revoke_channel(&mut self, offer_id: OfferId) {
+    pub fn revoke_channel(&mut self, offer_id: OfferId, retain_id: bool) {
         let channel = &mut self.inner.channels[offer_id];
-        let retain = revoke(
+        let guest_referenced = revoke(
             self.inner
                 .pending_messages
                 .sender(self.notifier, self.inner.state.is_paused()),
@@ -1816,7 +1816,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             channel,
             &mut self.inner.gpadls,
         );
-        if !retain {
+        if !guest_referenced && !retain_id {
             self.inner.channels.remove(offer_id);
         }
 
@@ -4473,7 +4473,9 @@ mod tests {
 
         assert!(notifier.messages.is_empty());
 
-        server.with_notifier(&mut notifier).revoke_channel(offer_id);
+        server
+            .with_notifier(&mut notifier)
+            .revoke_channel(offer_id, false);
 
         server
             .with_notifier(&mut notifier)
@@ -4993,13 +4995,13 @@ mod tests {
         env.complete_reset();
         env.notifier.check_reset();
 
-        env.c().revoke_channel(offer_id5);
-        env.c().revoke_channel(offer_id6);
+        env.c().revoke_channel(offer_id5, false);
+        env.c().revoke_channel(offer_id6, false);
 
         env.c().restore(state.clone()).unwrap();
 
-        env.c().revoke_channel(offer_id1);
-        env.c().revoke_channel(offer_id4);
+        env.c().revoke_channel(offer_id1, false);
+        env.c().revoke_channel(offer_id4, false);
         env.c().restore_channel(offer_id3, false).unwrap();
         let offer_id5 = env.offer_with_mnf(5);
         env.c().restore_channel(offer_id5, true).unwrap();

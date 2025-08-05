@@ -770,15 +770,18 @@ impl ServerTask {
         Ok(())
     }
 
-    fn handle_revoke(&mut self, offer_id: OfferId) {
+    fn handle_revoke(&mut self, offer_id: OfferId, retain_id: bool) {
         // The channel may or may not exist in the map depending on whether it's been explicitly
         // revoked before being dropped.
         if self.inner.channels.remove(&offer_id).is_some() {
             tracing::info!(?offer_id, "revoking channel");
-            self.server
-                .with_notifier(&mut self.inner)
-                .revoke_channel(offer_id);
+        } else {
+            assert!(!retain_id);
         }
+
+        self.server
+            .with_notifier(&mut self.inner)
+            .revoke_channel(offer_id, retain_id);
     }
 
     fn handle_response(
@@ -1156,10 +1159,12 @@ impl ServerTask {
                                 self.handle_restore_channel(id, open)
                             }),
                             ChannelServerRequest::Revoke(rpc) => rpc.handle_sync(|_| {
-                                self.handle_revoke(id);
+                                // During an explicit revoke, we must retain the offer ID so that
+                                // it cannot be reused before the request stream is dropped.
+                                self.handle_revoke(id, true);
                             })
                         },
-                        (id, None) => self.handle_revoke(id),
+                        (id, None) => self.handle_revoke(id, false),
                     }
                 }
                 r = channel_response => {
