@@ -4612,7 +4612,7 @@ mod tests {
             self.server.with_notifier(&mut self.notifier)
         }
 
-        // Completes a reset operation if the server send a modify request as part of it.
+        // Completes a reset operation if the server sends a modify request as part of it.
         fn complete_reset(&mut self) {
             let _ = self.next_action();
             self.c()
