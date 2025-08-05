@@ -1920,19 +1920,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 modify_sent: false,
             } => {
                 if self.are_channels_reset(matches!(next_action, ConnectionAction::Reset)) {
-                    self.inner.state = ConnectionState::Disconnecting {
-                        next_action,
-                        modify_sent: true,
-                    };
-
-                    // Reset server state and disconnect the relay if there is one.
-                    self.notifier
-                        .modify_connection(ModifyConnectionRequest {
-                            monitor_page: Update::Reset,
-                            interrupt_page: Update::Reset,
-                            ..Default::default()
-                        })
-                        .expect("resetting state should not fail");
+                    self.notify_disconnect(next_action);
                 }
             }
             ConnectionState::Disconnecting {
@@ -1942,6 +1930,25 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ConnectionState::Connected { .. }
             | ConnectionState::Connecting { .. } => (),
         }
+    }
+
+    /// Informs the notifier to reset the connection state when disconnecting.
+    fn notify_disconnect(&mut self, next_action: ConnectionAction) {
+        // Assert this on debug only because it is an expensive check if there are many channels.
+        debug_assert!(self.are_channels_reset(matches!(next_action, ConnectionAction::Reset)));
+        self.inner.state = ConnectionState::Disconnecting {
+            next_action,
+            modify_sent: true,
+        };
+
+        // Reset server state and disconnect the relay if there is one.
+        self.notifier
+            .modify_connection(ModifyConnectionRequest {
+                monitor_page: Update::Reset,
+                interrupt_page: Update::Reset,
+                ..Default::default()
+            })
+            .expect("resetting state should not fail");
     }
 
     /// If true, the server is mid-reset and cannot take certain actions such
@@ -2421,7 +2428,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
             ConnectionState::Connected { .. } => {
                 if self.are_channels_reset(vm_reset) {
-                    self.inner.state = ConnectionState::Disconnected;
+                    self.notify_disconnect(new_action);
                 } else {
                     self.inner.state = ConnectionState::Disconnecting {
                         next_action: new_action,
