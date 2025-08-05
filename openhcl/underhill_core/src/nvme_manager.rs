@@ -80,10 +80,7 @@ pub trait NvmeDevice: Inspect + Send + Sync {
 
 #[derive(Inspect)]
 struct VfioNvmeDevice {
-    /// The NVMe driver that this object manages. This must
-    /// be an `Option` because the NVMe manager shutdown
-    /// process wants to control explicitly when this device
-    /// is dropped and to allow for delayed initialization.
+    /// The NVMe driver that this object manages.
     driver: nvme_driver::NvmeDriver<VfioDevice>,
 }
 
