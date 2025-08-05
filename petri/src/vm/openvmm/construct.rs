@@ -17,7 +17,6 @@ use crate::IsolationType;
 use crate::PcatGuest;
 use crate::PetriLogSource;
 use crate::PetriTestParams;
-use crate::ProcessorTopology;
 use crate::SIZE_1_GB;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
@@ -296,7 +295,26 @@ impl PetriVmConfigOpenVmm {
                 proc_count: 2,
                 vps_per_socket: None,
                 enable_smt: None,
-                arch: None,
+                arch: Some(match arch {
+                    MachineArch::X86_64 => hvlite_defs::config::ArchTopologyConfig::X86(
+                        hvlite_defs::config::X86TopologyConfig::default(),
+                    ),
+                    #[cfg(not(windows))]
+                    MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                        hvlite_defs::config::Aarch64TopologyConfig::default(),
+                    ),
+                    #[cfg(windows)]
+                    MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                        hvlite_defs::config::Aarch64TopologyConfig {
+                            // TODO: The PMU GSIV value is currently hardcoded
+                            // to be 0x17 on WHP. This shouldn't be required to
+                            // be set, but a future change will set the platform
+                            // default if None was specified.
+                            pmu_gsiv: Some(0x17),
+                            ..Default::default()
+                        },
+                    ),
+                }),
             },
 
             // Base chipset
@@ -410,8 +428,7 @@ impl PetriVmConfigOpenVmm {
             ged,
             vtl2_settings,
             framebuffer_access,
-        }
-        .with_processor_topology(ProcessorTopology::default()))
+        })
     }
 }
 

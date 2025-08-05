@@ -24,7 +24,7 @@ pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
 pub const RUSTUP_TOOLCHAIN: &str = "1.86.0";
 pub const MU_MSVM: &str = "25.1.3";
-pub const NEXTEST: &str = "0.9.74";
+pub const NEXTEST: &str = "0.9.101";
 pub const NODEJS: &str = "18.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit

@@ -7635,6 +7635,7 @@ dependencies = [
  "parking_lot",
  "sparse_mmap",
  "thiserror 2.0.12",
+ "tracelimit",
  "tracing",
  "underhill_threadpool",
  "virt",

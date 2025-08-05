@@ -1129,11 +1129,12 @@ fn new_x86_topology(
 fn new_aarch64_topology(
     gic: GicInfo,
     cpus: &[bootloader_fdt_parser::Cpu],
+    pmu_gsiv: u32,
 ) -> anyhow::Result<ProcessorTopology<vm_topology::processor::aarch64::Aarch64Topology>> {
     // TODO SMP: Query the MT property from the host topology somehow. Device Tree
     // doesn't specify that.
     let gic_redistributors_base = gic.gic_redistributors_base;
-    TopologyBuilder::new_aarch64(gic)
+    TopologyBuilder::new_aarch64(gic, pmu_gsiv)
         .vps_per_socket(cpus.len() as u32)
         .build_with_vp_info(cpus.iter().enumerate().map(|(vp_index, cpu)| {
             let mpidr = aarch64defs::MpidrEl1::from(
@@ -1149,6 +1150,7 @@ fn new_aarch64_topology(
                 mpidr,
                 gicr: gic_redistributors_base
                     + vp_index as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                pmu_gsiv,
             }
         }))
         .context("failed to construct the processor topology")
@@ -1342,13 +1344,23 @@ async fn new_underhill_vm(
         .context("failed to construct the processor topology")?;
 
     #[cfg(guest_arch = "aarch64")]
-    let processor_topology = new_aarch64_topology(
-        boot_info
-            .gic
-            .context("did not get gic state from bootloader")?,
-        &boot_info.cpus,
-    )
-    .context("failed to construct the processor topology")?;
+    let processor_topology = {
+        // TODO: Hyper-V does not yet support reporting the PMU GSIV via device
+        // tree. For now, since OpenHCL is only supported on Hyper-V on aarch64,
+        // assume the value is the Hyper-V default.
+        //
+        // This value should instead come from openhcl_boot via device tree, as
+        // we may want to even use the PMU within OpenHCL itself.
+        const HYPERV_PMU_GSIV: u32 = 0x17;
+        new_aarch64_topology(
+            boot_info
+                .gic
+                .context("did not get gic state from bootloader")?,
+            &boot_info.cpus,
+            HYPERV_PMU_GSIV,
+        )
+        .context("failed to construct the processor topology")?
+    };
 
     let mut with_vmbus: bool = false;
     let mut with_vmbus_relay = false;
