@@ -638,7 +638,8 @@ struct ServerTask {
     task_recv: mesh::Receiver<VmbusRequest>,
     offer_recv: mesh::Receiver<OfferRequest>,
     message_recv: mpsc::Receiver<SynicMessage>,
-    server_request_recv: SelectAll<TaggedStream<OfferId, mesh::Receiver<ChannelServerRequest>>>,
+    server_request_recv:
+        SelectAll<TaggedStream<(OfferId, u64), mesh::Receiver<ChannelServerRequest>>>,
     inner: ServerTaskInner,
     external_requests: Option<mesh::Receiver<InitiateContactRequest>>,
     /// Next value for [`Channel::seq`].
@@ -765,19 +766,22 @@ impl ServerTask {
         );
 
         self.server_request_recv
-            .push(TaggedStream::new(offer_id, info.server_request_recv));
+            .push(TaggedStream::new((offer_id, id), info.server_request_recv));
 
         Ok(())
     }
 
-    fn handle_revoke(&mut self, offer_id: OfferId) {
+    fn handle_revoke(&mut self, offer_id: OfferId, seq: u64) {
         // The channel may or may not exist in the map depending on whether it's been explicitly
         // revoked before being dropped.
-        if self.inner.channels.remove(&offer_id).is_some() {
-            tracing::info!(?offer_id, "revoking channel");
-            self.server
-                .with_notifier(&mut self.inner)
-                .revoke_channel(offer_id);
+        if let Some(channel) = self.inner.channels.get(&offer_id) {
+            if channel.seq == seq {
+                tracing::info!(?offer_id, "revoking channel");
+                self.inner.channels.remove(&offer_id);
+                self.server
+                    .with_notifier(&mut self.inner)
+                    .revoke_channel(offer_id);
+            }
         }
     }
 
@@ -1151,15 +1155,15 @@ impl ServerTask {
                 }
                 r = self.server_request_recv.select_next_some() => {
                     match r {
-                        (id, Some(request)) => match request {
+                        ((id, seq), Some(request)) => match request {
                             ChannelServerRequest::Restore(rpc) => rpc.handle_failable_sync(|open| {
                                 self.handle_restore_channel(id, open)
                             }),
                             ChannelServerRequest::Revoke(rpc) => rpc.handle_sync(|_| {
-                                self.handle_revoke(id);
+                                self.handle_revoke(id, seq);
                             })
                         },
-                        (id, None) => self.handle_revoke(id),
+                        ((id, seq), None) => self.handle_revoke(id, seq),
                     }
                 }
                 r = channel_response => {
