@@ -1345,19 +1345,14 @@ async fn new_underhill_vm(
 
     #[cfg(guest_arch = "aarch64")]
     let processor_topology = {
-        // TODO: Hyper-V does not yet support reporting the PMU GSIV via device
-        // tree. For now, since OpenHCL is only supported on Hyper-V on aarch64,
-        // assume the value is the Hyper-V default.
-        //
-        // This value should instead come from openhcl_boot via device tree, as
-        // we may want to even use the PMU within OpenHCL itself.
-        const HYPERV_PMU_GSIV: u32 = 0x17;
         new_aarch64_topology(
             boot_info
                 .gic
                 .context("did not get gic state from bootloader")?,
             &boot_info.cpus,
-            HYPERV_PMU_GSIV,
+            boot_info
+                .pmu_gsiv
+                .context("did not get pmu gsiv from bootloader")?,
         )
         .context("failed to construct the processor topology")?
     };

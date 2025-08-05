@@ -46,6 +46,11 @@ mod aarch64 {
     pub const VMBUS_INTID: u32 = 2; // Note: the hardware INTID will be 16 + 2
     pub const TIMER_INTID: u32 = 4; // Note: the hardware INTID will be 16 + 4
 
+    // TODO: The PMU GSIV is always 0x17 on Hyper-V, but we should instead read
+    // it from the host provided device tree, if available.
+    pub const PMU_GSIV: u32 = 0x17;
+    pub const PMU_GSIV_INT_INDEX: u32 = PMU_GSIV - 16;
+
     pub const GIC_PHANDLE: u32 = 1;
     pub const GIC_PPI: u32 = 1;
     pub const IRQ_TYPE_EDGE_FALLING: u32 = 2;
@@ -398,23 +403,22 @@ pub fn write_dt(
         root_builder = timer.end_node()?;
 
         // Add PMU.
-        // FIXME: Parse this from the host dt
-        // TODO: default on hyper-v is 0x17 for PPI, so it's actually that minus 16.
-        let pmu_gsiv = 0x17;
-        if pmu_gsiv != 0 {
-            // TODO: This assumes the GSIV is a PPI. On all platforms, that seems to
-            // be the case today.
-            assert!((16..32).contains(&pmu_gsiv));
-            let ppi_index = pmu_gsiv - 16;
-            let pmu = root_builder
-                .start_node("pmu")?
-                .add_str(p_compatible, "arm,armv8-pmuv3")?
-                .add_u32_array(
-                    p_interrupts,
-                    &[aarch64::GIC_PPI, ppi_index, aarch64::IRQ_TYPE_LEVEL_HIGH],
-                )?;
-            root_builder = pmu.end_node()?;
-        }
+        //
+        // TODO: This may be insufficient to get perf to work as the kernel prints:
+        // `armv8-pmu pmu: hw perfevents: no irqs for PMU, sampling events not supported`
+        // Tracked by issue 1808.
+        let pmu = root_builder
+            .start_node("pmu")?
+            .add_str(p_compatible, "arm,armv8-pmuv3")?
+            .add_u32_array(
+                p_interrupts,
+                &[
+                    aarch64::GIC_PPI,
+                    aarch64::PMU_GSIV_INT_INDEX,
+                    aarch64::IRQ_TYPE_LEVEL_HIGH,
+                ],
+            )?;
+        root_builder = pmu.end_node()?;
     }
 
     // Linux requires vmbus to be under a simple-bus node.
