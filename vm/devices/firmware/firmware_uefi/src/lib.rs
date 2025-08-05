@@ -271,7 +271,7 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(DEFAULT_LOGS_PER_PERIOD, "guest")
+                self.process_diagnostics(Some(DEFAULT_LOGS_PER_PERIOD))
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
@@ -284,10 +284,14 @@ impl UefiDevice {
             // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
             // mutable paths in the inspect graph.
             if v.is_some() {
-                self.inspect_diagnostics("inspect");
-                anyhow::Ok("attempted to process diagnostics".to_string())
+                self.process_diagnostics(None);
+                Result::<_, std::convert::Infallible>::Ok(
+                    "attempted to process diagnostics".to_string(),
+                )
             } else {
-                anyhow::Ok("Use: inspect -u 1 vm/uefi/process_diagnostics".to_string())
+                Result::<_, std::convert::Infallible>::Ok(
+                    "Use: inspect -u 1 vm/uefi/process_diagnostics".to_string(),
+                )
             }
         });
     }
@@ -334,7 +338,7 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            self.process_diagnostics(DEFAULT_LOGS_PER_PERIOD, "watchdog timeout");
+            self.process_diagnostics(Some(DEFAULT_LOGS_PER_PERIOD));
         }
     }
 }

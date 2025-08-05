@@ -319,13 +319,11 @@ impl DiagnosticsServices {
     ///
     /// # Arguments
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
-    /// * `triggered_by` - String to indicate who triggered the diagnostics processing
     /// * `gm` - Guest memory to read diagnostics from
     /// * `log_handler` - Function to handle each parsed log entry
     fn process_diagnostics<F>(
         &mut self,
         allow_reprocess: bool,
-        triggered_by: &str,
         gm: &GuestMemory,
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
@@ -488,12 +486,7 @@ impl DiagnosticsServices {
         }
 
         // Print summary statistics
-        tracelimit::info_ratelimited!(
-            triggered_by,
-            entries_processed,
-            bytes_read,
-            "processed EFI log entries"
-        );
+        tracelimit::info_ratelimited!(entries_processed, bytes_read, "processed EFI log entries");
 
         Ok(())
     }
@@ -502,44 +495,22 @@ impl DiagnosticsServices {
 impl UefiDevice {
     /// Processes UEFI diagnostics from guest memory.
     ///
-    /// The traces here are rate-limited to avoid spam.
+    /// When a limit is provided, traces are rate-limited to avoid spam.
+    /// When no limit is provided, traces are unrestricted.
     ///
     /// # Arguments
-    /// * `limit` - Maximum number of logs to process per period
-    /// * `triggered_by` - String to indicate who triggered the diagnostics processing
-    pub(crate) fn process_diagnostics(&mut self, limit: u32, triggered_by: &str) {
-        if let Err(error) =
-            self.service
-                .diagnostics
-                .process_diagnostics(false, triggered_by, &self.gm, |log| {
-                    log_diagnostic_ratelimited(log, limit)
-                })
+    /// * `limit` - Maximum number of logs to process per period, or `None` for no limit
+    pub(crate) fn process_diagnostics(&mut self, limit: Option<u32>) {
+        if let Err(error) = self
+            .service
+            .diagnostics
+            .process_diagnostics(false, &self.gm, |log| match limit {
+                Some(limit) => log_diagnostic_ratelimited(log, limit),
+                None => log_diagnostic_unrestricted(log),
+            })
         {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
-                triggered_by,
-                "failed to process diagnostics buffer"
-            );
-        }
-    }
-
-    /// Inspects UEFI diagnostics from guest memory.
-    ///
-    /// The traces here are not rate-limited.
-    ///
-    /// # Arguments
-    /// * `triggered_by` - String to indicate who triggered the diagnostics processing
-    pub(crate) fn inspect_diagnostics(&mut self, triggered_by: &str) {
-        if let Err(error) =
-            self.service
-                .diagnostics
-                .process_diagnostics(true, triggered_by, &self.gm, |log| {
-                    log_diagnostic_unrestricted(log)
-                })
-        {
-            tracelimit::error_ratelimited!(
-                error = &error as &dyn std::error::Error,
-                triggered_by,
                 "failed to process diagnostics buffer"
             );
         }
