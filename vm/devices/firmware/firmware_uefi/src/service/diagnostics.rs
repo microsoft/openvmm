@@ -499,15 +499,16 @@ impl UefiDevice {
     /// When no limit is provided, traces are unrestricted.
     ///
     /// # Arguments
+    /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `limit` - Maximum number of logs to process per period, or `None` for no limit
-    pub(crate) fn process_diagnostics(&mut self, limit: Option<u32>) {
-        if let Err(error) = self
-            .service
-            .diagnostics
-            .process_diagnostics(false, &self.gm, |log| match limit {
-                Some(limit) => log_diagnostic_ratelimited(log, limit),
-                None => log_diagnostic_unrestricted(log),
-            })
+    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: Option<u32>) {
+        if let Err(error) =
+            self.service
+                .diagnostics
+                .process_diagnostics(allow_reprocess, &self.gm, |log| match limit {
+                    Some(limit) => log_diagnostic_ratelimited(log, limit),
+                    None => log_diagnostic_unrestricted(log),
+                })
         {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
