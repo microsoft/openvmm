@@ -291,7 +291,7 @@ pub mod artifacts {
                 GuestQuirks {
                     // FreeBSD will ignore shutdown requests that arrive too
                     // early in the boot process.
-                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(15)),
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
                 }
             }
         }

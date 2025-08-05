@@ -1453,15 +1453,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job9
-    - job7
-    - job7
     - job4
     - job5
-    - job5
-    - job5
+    - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -1689,15 +1684,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job9
-    - job7
-    - job7
     - job4
     - job5
-    - job5
-    - job5
+    - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -1923,15 +1913,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job9
-    - job7
-    - job7
     - job4
     - job5
-    - job5
-    - job5
+    - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -2159,15 +2144,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job9
-    - job7
-    - job7
     - job4
     - job5
-    - job5
-    - job5
+    - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -2393,13 +2373,9 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job9
-    - job9
-    - job7
-    - job7
-    - job7
     - job5
     - job7
+    - job9
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
@@ -2629,15 +2605,10 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - job8
-    - job8
-    - job8
-    - job6
-    - job6
     - job2
     - job3
-    - job3
-    - job3
+    - job6
+    - job8
     if: github.event.pull_request.draft == false
     steps:
     - run: |

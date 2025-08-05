@@ -1129,11 +1129,12 @@ fn new_x86_topology(
 fn new_aarch64_topology(
     gic: GicInfo,
     cpus: &[bootloader_fdt_parser::Cpu],
+    pmu_gsiv: u32,
 ) -> anyhow::Result<ProcessorTopology<vm_topology::processor::aarch64::Aarch64Topology>> {
     // TODO SMP: Query the MT property from the host topology somehow. Device Tree
     // doesn't specify that.
     let gic_redistributors_base = gic.gic_redistributors_base;
-    TopologyBuilder::new_aarch64(gic)
+    TopologyBuilder::new_aarch64(gic, pmu_gsiv)
         .vps_per_socket(cpus.len() as u32)
         .build_with_vp_info(cpus.iter().enumerate().map(|(vp_index, cpu)| {
             let mpidr = aarch64defs::MpidrEl1::from(
@@ -1149,6 +1150,7 @@ fn new_aarch64_topology(
                 mpidr,
                 gicr: gic_redistributors_base
                     + vp_index as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                pmu_gsiv,
             }
         }))
         .context("failed to construct the processor topology")
@@ -1342,13 +1344,23 @@ async fn new_underhill_vm(
         .context("failed to construct the processor topology")?;
 
     #[cfg(guest_arch = "aarch64")]
-    let processor_topology = new_aarch64_topology(
-        boot_info
-            .gic
-            .context("did not get gic state from bootloader")?,
-        &boot_info.cpus,
-    )
-    .context("failed to construct the processor topology")?;
+    let processor_topology = {
+        // TODO: Hyper-V does not yet support reporting the PMU GSIV via device
+        // tree. For now, since OpenHCL is only supported on Hyper-V on aarch64,
+        // assume the value is the Hyper-V default.
+        //
+        // This value should instead come from openhcl_boot via device tree, as
+        // we may want to even use the PMU within OpenHCL itself.
+        const HYPERV_PMU_GSIV: u32 = 0x17;
+        new_aarch64_topology(
+            boot_info
+                .gic
+                .context("did not get gic state from bootloader")?,
+            &boot_info.cpus,
+            HYPERV_PMU_GSIV,
+        )
+        .context("failed to construct the processor topology")?
+    };
 
     let mut with_vmbus: bool = false;
     let mut with_vmbus_relay = false;
@@ -1536,6 +1548,7 @@ async fn new_underhill_vm(
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
 
     // Perform a quick validation to make sure each range is appropriately accessible.
+    tracing::info!("starting guest memory self test");
     for range in mem_layout.ram() {
         let gpa = range.range.start();
         // Standard RAM is accessible.
@@ -1565,6 +1578,7 @@ async fn new_underhill_vm(
                 .with_context(|| format!("failed to read shared RAM at {gpa:#x} above VTOM"))?;
         }
     }
+    tracing::info!("guest memory self test complete");
 
     // Set the gpa allocator to GET that is required by the attestation message.
     //
@@ -2335,26 +2349,18 @@ async fn new_underhill_vm(
             adjust_gpa_range: {
                 // TODO: improve slot range allocation, when there are more API consumers
                 let base_slot = 0;
-                let rom_bios_offset = {
-                    // Find the highest ram region before 4GB.
-                    let highest_ram_before_4gb = {
-                        let mut found: Option<MemoryRange> = None;
-
-                        const SIZE_4_GB: u64 = 4 * 1024 * 1024 * 1024;
-                        for ram in mem_layout.ram() {
-                            if ram.range.end() < SIZE_4_GB
-                                && ram.range.end() > found.map(|ram| ram.end()).unwrap_or_default()
-                            {
-                                found = Some(ram.range);
-                            }
-                        }
-
-                        found.context("no ram exist below 4GB for adjust_gpa_range")?
-                    };
-
-                    let top = highest_ram_before_4gb.end();
-                    top - 0x100000
-                };
+                // The host will only consider the first available RAM block when
+                // creating PCAT mappings, so we need to do the same. This only
+                // works because everybody keeps things sorted.
+                const SIZE_1_MB: u64 = 1024 * 1024;
+                const SIZE_4_GB: u64 = 4 * 1024 * SIZE_1_MB;
+                let first_mem_block = &mem_layout.ram()[0];
+                anyhow::ensure!(
+                    first_mem_block.range.end() < SIZE_4_GB,
+                    "first memory block must be below 4GB for adjust_gpa_range"
+                );
+                // Reserve 1MB off the top.
+                let rom_bios_offset = first_mem_block.range.end() - SIZE_1_MB;
 
                 let adjust_gpa_range = GetBackedAdjustGpaRange::new(
                     get_client.clone(),

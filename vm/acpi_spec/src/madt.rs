@@ -237,7 +237,12 @@ pub struct MadtGicc {
 const_assert_eq!(size_of::<MadtGicc>(), 80);
 
 impl MadtGicc {
-    pub fn new(acpi_processor_uid: u32, mpidr: u64, gicr: u64) -> Self {
+    pub fn new(
+        acpi_processor_uid: u32,
+        mpidr: u64,
+        gicr: u64,
+        performance_monitoring_gsiv: u32,
+    ) -> Self {
         Self {
             typ: MadtType::GICC,
             length: size_of::<Self>() as u8,
@@ -245,6 +250,7 @@ impl MadtGicc {
             acpi_processor_uid: acpi_processor_uid.into(),
             mpidr: mpidr.into(),
             gicr_base_address: gicr.into(),
+            performance_monitoring_gsiv: performance_monitoring_gsiv.into(),
             ..Self::new_zeroed()
         }
     }

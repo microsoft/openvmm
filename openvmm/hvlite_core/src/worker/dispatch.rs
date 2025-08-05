@@ -33,6 +33,7 @@ use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
 use hvlite_defs::config::VirtioBus;
@@ -191,6 +192,7 @@ impl Manifest {
             chipset_devices: config.chipset_devices,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
+            automatic_guest_reset: config.automatic_guest_reset,
         }
     }
 }
@@ -231,6 +233,7 @@ pub struct Manifest {
     chipset_devices: Vec<ChipsetDeviceHandle>,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
+    automatic_guest_reset: bool,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -382,7 +385,7 @@ struct InitializedVm {
 }
 
 trait BuildTopology<T: ArchTopology + Inspect> {
-    fn to_topology(&self) -> anyhow::Result<ProcessorTopology<T>>;
+    fn to_topology(&self, hypervisor: Hypervisor) -> anyhow::Result<ProcessorTopology<T>>;
 }
 
 trait ExtractTopologyConfig {
@@ -410,7 +413,10 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
 }
 
 impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
-    fn to_topology(&self) -> anyhow::Result<ProcessorTopology<X86Topology>> {
+    fn to_topology(
+        &self,
+        _hypervisor: Hypervisor,
+    ) -> anyhow::Result<ProcessorTopology<X86Topology>> {
         let arch = match &self.arch {
             None => Default::default(),
             Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
@@ -449,13 +455,17 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
                     gic_distributor_base: self.gic_distributor_base(),
                     gic_redistributors_base: self.gic_redistributors_base(),
                 }),
+                pmu_gsiv: PmuGsivConfig::Gsiv(self.pmu_gsiv()),
             })),
         }
     }
 }
 
 impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
-    fn to_topology(&self) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
+    fn to_topology(
+        &self,
+        hypervisor: Hypervisor,
+    ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
         let arch = match &self.arch {
             None => Default::default(),
             Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
@@ -472,8 +482,19 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
                 gic_redistributors_base: hvlite_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
             }
         };
+        let pmu_gsiv = match arch.pmu_gsiv {
+            PmuGsivConfig::Gsiv(gsiv) => gsiv,
+            PmuGsivConfig::Platform => platform_gsiv(hypervisor),
+        };
 
-        let mut builder = TopologyBuilder::new_aarch64(gic);
+        // TODO: When this value is supported on all platforms, we should change
+        // the arch config to not be an option. For now, warn since the ARM VBSA
+        // expects this to be available.
+        if pmu_gsiv == 0 {
+            tracing::warn!("PMU GSIV is set to 0");
+        }
+
+        let mut builder = TopologyBuilder::new_aarch64(gic, pmu_gsiv);
         if let Some(smt) = self.enable_smt {
             builder.smt_enabled(smt);
         }
@@ -544,6 +565,12 @@ struct LoadedVmInner {
     next_igvm_file: Option<IgvmFile>,
     _vmgs_task: Option<Task<()>>,
     vmgs_client_inspect_handle: Option<vmgs_broker::VmgsClient>,
+
+    // relay halt messages, intercepting reset if configured.
+    halt_recv: mesh::Receiver<HaltReason>,
+    client_notify_send: mesh::Sender<HaltReason>,
+    /// allow the guest to reset without notifying the client
+    automatic_guest_reset: bool,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -570,6 +597,29 @@ fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
         }
     }
     anyhow::bail!("no hypervisor available");
+}
+
+fn platform_gsiv(hypervisor: Hypervisor) -> u32 {
+    let gsiv = match hypervisor {
+        #[cfg(all(
+            feature = "virt_whp",
+            target_os = "windows",
+            guest_is_native,
+            guest_arch = "aarch64"
+        ))]
+        Hypervisor::Whp => virt_whp::WHP_PMU_GSIV,
+        // TODO: hvf supports the PMU interrupt, but enabling it didn't seem to
+        // make it work it a Linux guest. More investigation required.
+        #[cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))]
+        Hypervisor::Hvf => 0,
+        _ => 0,
+    };
+
+    if gsiv == 0 {
+        tracing::warn!(?hypervisor, "no platform GSIV available for hypervisor");
+    }
+
+    gsiv
 }
 
 fn convert_vtl2_config(
@@ -764,7 +814,7 @@ impl InitializedVm {
             None
         };
 
-        let processor_topology = cfg.processor_topology.to_topology()?;
+        let processor_topology = cfg.processor_topology.to_topology(hypervisor_type)?;
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
@@ -2198,6 +2248,9 @@ impl InitializedVm {
         let (chipset, devices) = chipset_builder.build()?;
         let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(synic.clone(), chipset);
 
+        // create a new channel to intercept guest resets
+        let (halt_send, halt_recv) = mesh::channel();
+
         let (partition_unit, vp_runners) = PartitionUnit::new(
             driver_source.simple(),
             state_units
@@ -2209,7 +2262,7 @@ impl InitializedVm {
                 processor_topology: &processor_topology,
                 halt_vps,
                 halt_request_recv,
-                client_notify_send,
+                client_notify_send: halt_send,
                 vtl_guest_memory: [
                     Some(&gm),
                     None,
@@ -2293,6 +2346,9 @@ impl InitializedVm {
                 next_igvm_file: None,
                 _vmgs_task: vmgs_task,
                 vmgs_client_inspect_handle,
+                halt_recv,
+                client_notify_send,
+                automatic_guest_reset: cfg.automatic_guest_reset,
             },
         };
 
@@ -2559,6 +2615,7 @@ impl LoadedVm {
         enum Event {
             WorkerRpc(Result<WorkerRpc<RestartState>, mesh::RecvError>),
             VmRpc(Result<VmRpc, mesh::RecvError>),
+            Halt(Result<HaltReason, mesh::RecvError>),
         }
 
         // Start a task to handle state unit inspections by filtering the worker
@@ -2586,7 +2643,8 @@ impl LoadedVm {
             let event: Event = {
                 let a = rpc_recv.recv().map(Event::VmRpc);
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
-                (a, b).race().await
+                let c = self.inner.halt_recv.recv().map(Event::Halt);
+                (a, b, c).race().await
             };
 
             match event {
@@ -2743,6 +2801,18 @@ impl LoadedVm {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
                 },
+                Event::Halt(Err(_)) => break,
+                Event::Halt(Ok(reason)) => {
+                    if matches!(reason, HaltReason::Reset) && self.inner.automatic_guest_reset {
+                        tracing::info!("guest-initiated reset");
+                        if let Err(err) = self.reset(true).await {
+                            tracing::error!(?err, "failed to reset VM");
+                            break;
+                        }
+                    } else {
+                        self.inner.client_notify_send.send(reason);
+                    }
+                }
             }
         }
 
@@ -2895,6 +2965,7 @@ impl LoadedVm {
             chipset_devices: vec![],   // TODO
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
+            automatic_guest_reset: self.inner.automatic_guest_reset,
         };
         RestartState {
             hypervisor: self.inner.hypervisor,

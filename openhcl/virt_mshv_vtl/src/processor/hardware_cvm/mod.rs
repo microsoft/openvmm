@@ -21,18 +21,25 @@ use crate::processor::UhHypercallHandler;
 use crate::validate_vtl_gpa_flags;
 use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryErrorKind;
 use hv1_emulator::RequestInterrupt;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::HvCacheType;
 use hvdef::HvError;
+use hvdef::HvInterceptAccessType;
 use hvdef::HvInterruptType;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvMessage;
+use hvdef::HvMessageType;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmVpSecureVtlConfig;
 use hvdef::HvResult;
 use hvdef::HvVtlEntryReason;
+use hvdef::HvX64InterceptMessageHeader;
+use hvdef::HvX64MemoryAccessInfo;
+use hvdef::HvX64MemoryInterceptMessage;
 use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
@@ -52,9 +59,11 @@ use virt::x86::MsrErrorExt;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vm_topology::memory::AddressType;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
@@ -2344,7 +2353,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
     }
 
-    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
+    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &HvMessage) {
         tracing::trace!(?message, "sending intercept to {:?}", vtl);
 
         if let Err(e) = self.backing.cvm_state_mut().hv[vtl]
@@ -2469,6 +2478,148 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             });
 
         self.request_sint_notifications(vtl, pending_sints);
+    }
+
+    /// Checks if a memory fault for the given VTL and GPA should be emulated,
+    /// or otherwise handled. Returns true if emulation is required, false if
+    /// all the necessary work is now done.
+    pub(crate) fn check_mem_fault(
+        &mut self,
+        vtl: GuestVtl,
+        gpa: u64,
+        is_write: bool,
+        extra_info: impl std::fmt::Debug,
+    ) -> bool {
+        let vtom = self.partition.caps.vtom.unwrap_or(0);
+        let is_shared = (gpa & vtom) == vtom && vtom != 0;
+        let canonical_gpa = gpa & !vtom;
+
+        // Only emulate the access if the gpa is mmio or outside of ram.
+        let address_type = self
+            .partition
+            .lower_vtl_memory_layout
+            .probe_address(canonical_gpa);
+
+        match address_type {
+            Some(AddressType::Mmio) => {
+                // Emulate the access.
+                true
+            }
+            Some(AddressType::Ram) => {
+                let (access_check, access_type) = if is_write {
+                    (
+                        self.partition.gm[vtl].probe_gpa_writable(gpa),
+                        HvInterceptAccessType::WRITE,
+                    )
+                } else {
+                    (
+                        self.partition.gm[vtl].probe_gpa_readable(gpa),
+                        HvInterceptAccessType::READ,
+                    )
+                };
+
+                match access_check {
+                    Ok(()) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            ?extra_info,
+                            ?access_type,
+                            "possible spurious memory access violation, ignoring"
+                        );
+                    }
+                    Err(GuestMemoryErrorKind::VtlProtected) if vtl == GuestVtl::Vtl0 => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            ?extra_info,
+                            ?access_type,
+                            "guest accessed protected gpa, sending intercept"
+                        );
+                        let state = B::intercept_message_state(self, vtl, false);
+                        // TODO: We may want to fill in tpr_priority and gva
+                        // but tests pass without them.
+                        self.send_intercept_message(
+                            GuestVtl::Vtl1,
+                            &HvMessage::new(
+                                HvMessageType::HvMessageTypeGpaIntercept,
+                                0,
+                                HvX64MemoryInterceptMessage {
+                                    header: HvX64InterceptMessageHeader {
+                                        vp_index: self.vp_index().index(),
+                                        instruction_length_and_cr8: state
+                                            .instruction_length_and_cr8,
+                                        intercept_access_type: access_type,
+                                        execution_state: hvdef::HvX64VpExecutionState::new()
+                                            .with_cpl(state.cpl)
+                                            .with_vtl(vtl.into())
+                                            .with_efer_lma(state.efer_lma),
+                                        cs_segment: state.cs,
+                                        rip: state.rip,
+                                        rflags: state.rflags,
+                                    },
+                                    cache_type: HvCacheType::HvCacheTypeWriteBack,
+                                    memory_access_info: HvX64MemoryAccessInfo::new(),
+                                    tpr_priority: 0,
+                                    reserved: 0,
+                                    guest_virtual_address: 0,
+                                    guest_physical_address: gpa,
+                                    instruction_byte_count: 0,
+                                    instruction_bytes: [0; 16],
+                                }
+                                .as_bytes(),
+                            ),
+                        );
+                    }
+                    // TODO: Handle other error kinds differently?
+                    Err(_) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            ?access_type,
+                            "guest accessed inaccessible gpa, injecting MC"
+                        );
+                        // TODO: Implement IA32_MCG_STATUS MSR for more reporting
+                        B::set_pending_exception(
+                            self,
+                            vtl,
+                            HvX64PendingExceptionEvent::new()
+                                .with_vector(x86defs::Exception::MACHINE_CHECK.0 as u16),
+                        );
+                    }
+                }
+                false
+            }
+            None => {
+                if !self.cvm_partition().hide_isolation {
+                    // TODO: Addresses outside of ram and mmio probably should
+                    // not be accessed by the guest, if it has been told about
+                    // isolation. While it's okay as we will return FFs or
+                    // discard writes for addresses that are not mmio, we should
+                    // consider if instead we should also inject a machine check
+                    // for such accesses. The guest should not access any
+                    // addresses not described to it.
+                    //
+                    // For now, log that the guest did this.
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        gpa,
+                        ?vtl,
+                        is_shared,
+                        ?extra_info,
+                        "guest accessed gpa not described in memory layout, emulating anyways"
+                    );
+                }
+
+                // Emulate the access.
+                true
+            }
+        }
     }
 }
 

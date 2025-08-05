@@ -78,7 +78,7 @@ for pr, backports in backported_prs.items():
         if update:
             subprocess.check_output(
                 ['gh', 'pr', 'comment', pr,
-                 '-b', f'Backported in #{backport_pr}']
+                 '-b', f'Backported to [release/{release}](https://github.com/microsoft/openvmm/tree/release/{release}) in #{backport_pr}']
             )
             subprocess.check_output(
                 ['gh', 'pr', 'edit', pr,
