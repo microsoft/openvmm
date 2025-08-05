@@ -52,16 +52,22 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         resolver: &ArtifactResolver<'_>,
         firmware: Firmware,
         arch: MachineArch,
+        with_vtl0_pipette: bool,
     ) -> Option<Self> {
         if !T::check_compat(&firmware, arch) {
             return None;
         }
+
         Some(Self {
             backend: T::new(resolver),
             arch,
-            agent_image: Some(AgentImage::new(resolver, arch, firmware.os_flavor())),
+            agent_image: Some(if with_vtl0_pipette {
+                AgentImage::new(firmware.os_flavor()).with_pipette(resolver, arch)
+            } else {
+                AgentImage::new(firmware.os_flavor())
+            }),
             openhcl_agent_image: if firmware.is_openhcl() {
-                Some(AgentImage::new(resolver, arch, OsFlavor::Linux))
+                Some(AgentImage::new(OsFlavor::Linux).with_pipette(resolver, arch))
             } else {
                 None
             },
@@ -174,8 +180,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Build and boot the requested VM. Does not configure and start pipette.
     /// Should only be used for testing platforms that pipette does not support.
-    pub async fn run_without_agent(mut self) -> anyhow::Result<PetriVm<T>> {
-        self.config.agent_image = None;
+    pub async fn run_without_agent(self) -> anyhow::Result<PetriVm<T>> {
         self.run_core().await
     }
 
@@ -184,6 +189,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// is expected to not succeed, but pipette functionality is still desired.
     pub async fn run_with_lazy_pipette(self) -> anyhow::Result<PetriVm<T>> {
         assert!(self.config.agent_image.is_some());
+        assert!(self.config.agent_image.as_ref().unwrap().contains_pipette());
         self.run_core().await
     }
 

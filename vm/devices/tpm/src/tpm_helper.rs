@@ -1883,14 +1883,22 @@ mod tests {
     use crate::TPM_AZURE_AIK_HANDLE;
     use crate::TPM_NV_INDEX_AIK_CERT;
     use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
+    use crate::Tpm;
+    use crate::ak_cert::RequestAkCert;
+    use crate::ak_cert::TpmAkCertType;
     use crate::tpm20proto::ResponseCode;
     use crate::tpm20proto::TPM20_HT_PERSISTENT;
     use crate::tpm20proto::TPM20_RH_ENDORSEMENT;
     use crate::tpm20proto::TPM20_RH_OWNER;
     use crate::tpm20proto::TPM20_RH_PLATFORM;
+    use guestmem::GuestMemory;
     use ms_tpm_20_ref::DynResult;
+    use pal_async::async_test;
+    use std::sync::Arc;
     use std::time::Instant;
+    use tpm_resources::TpmRegisterLayout;
     use tpm20proto::AlgId;
+    use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
     const TPM_AZURE_EK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x010001);
     const AUTH_VALUE: u64 = 0x7766554433221100;
@@ -3661,5 +3669,92 @@ mod tests {
             .expect("AKCert NV index present");
         let nv_bits = TpmaNvBits::from(result.nv_public.nv_public.attributes.0.get());
         assert!(!nv_bits.nv_platformcreate());
+    }
+
+    struct TestRequestAkCertHelper {}
+
+    #[async_trait::async_trait]
+    impl RequestAkCert for TestRequestAkCertHelper {
+        fn create_ak_cert_request(
+            &self,
+            _ak_pub_modulus: &[u8],
+            _ak_pub_exponent: &[u8],
+            _ek_pub_modulus: &[u8],
+            _ek_pub_exponent: &[u8],
+            _guest_input: &[u8],
+        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(Vec::new())
+        }
+
+        async fn request_ak_cert(
+            &self,
+            _request: Vec<u8>,
+        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_test]
+    async fn test_fix_corrupted_vmgs() {
+        // Take a corrupt TPM NVRAM and go through OpenHCL TPM init. This should uncorrupt
+        // the vTPM state and resize the AKCert index to fit its contents.
+
+        // To generate a corrupted vTpmState blob:
+        // 1. Create a test VM with a VMGS file with a 16 kB vTPM blob
+        // 2. (Depending on how the vTPM blob was created, the AKCert NVRAM index may not
+        //     contain an actual certificate. If not, create some sort of cert and load it
+        //     into that index. Do the following steps in the test VM. Note that it should
+        //     be a DER-encoded X.509 certificate.)
+        //   a. openssl req -x509 -newkey rsa:4096 -keyout key.der -out cert.der -outform DER -sha256 -days 3650 -nodes -subj "/C=XX/ST=StateName/L=CityName/O=CompanyName/OU=CompanySectionName/CN=CommonNameOrHostname"
+        //   b. tpm2_nvwrite -C o -i cert.der 0x1c101d0
+        // 3. Boot the VM with a version of OpenHCL that does not include PR 1452.
+        // 4. In the guest, fill up the TPM NVRAM space:
+        //   a. tpm2_nvdefine -s 2048 0x1000001
+        //   b. tpm2_nvdefine -s 2048 0x1000002
+        //   c. (repeat until the VM crashes)
+        // 5. Extract the TPM state from the VMGS file:
+        //   vmgstool dump -f test.vmgs -i 3 --raw-stdout > vTpmState-corrupt.blob
+
+        let tpm_state_blob = include_bytes!("../test_data/vTpmState-corrupt.blob");
+        let tpm_state_vec = tpm_state_blob.to_vec();
+        let mut store = EphemeralNonVolatileStore::new_boxed();
+        store.persist(tpm_state_vec).await.unwrap();
+
+        let ppi_store = EphemeralNonVolatileStore::new_boxed();
+        let gm = GuestMemory::allocate(0x10000);
+        let monotonic_timer = Box::new(move || std::time::Duration::new(0, 0));
+
+        let mut tpm = Tpm::new(
+            TpmRegisterLayout::IoPort,
+            gm,
+            ppi_store,
+            store,
+            monotonic_timer,
+            false,
+            false,
+            TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper {})),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Check that the AKCert exists
+        let result = tpm
+            .tpm_engine_helper
+            .find_nv_index(TPM_NV_INDEX_AIK_CERT)
+            .expect("find_nv_index should succeed")
+            .expect("AKCert NV index present");
+
+        // AKCert should be owner-defined and resized to fit its contents (1419 bytes, in this example)
+        let nv_bits = TpmaNvBits::from(result.nv_public.nv_public.attributes.0.get());
+        assert!(!nv_bits.nv_platformcreate());
+        assert!(result.nv_public.nv_public.data_size.get() == 1419);
+
+        // Mitigation marker should be there
+        tpm.tpm_engine_helper
+            .find_nv_index(TPM_NV_INDEX_MITIGATED)
+            .expect("find_nv_index should succeed")
+            .expect("mitigation marker NV index present");
     }
 }

@@ -211,6 +211,7 @@ fn resolve_openhcl_tmks<T: PetriVmmBackend>(
             openhcl_config: Default::default(),
         },
         arch,
+        false,
     )?;
     Some(OpenhclTmkArtifacts { vm, tmk_vmm, tmk })
 }

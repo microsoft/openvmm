@@ -18,6 +18,9 @@ use aarch64defs::MpidrEl1;
 #[non_exhaustive]
 pub struct Aarch64Topology {
     gic: GicInfo,
+    /// Performance Interrupt GSIV (PMU)
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pmu_gsiv: u32,
 }
 
 impl ArchTopology for Aarch64Topology {
@@ -36,6 +39,7 @@ impl ArchTopology for Aarch64Topology {
 /// Aarch64-specific [`TopologyBuilder`] state.
 pub struct Aarch64TopologyBuilderState {
     gic: GicInfo,
+    pmu_gsiv: u32,
 }
 
 /// GIC information
@@ -63,6 +67,9 @@ pub struct Aarch64VpInfo {
     /// GIC Redistributor Address
     #[cfg_attr(feature = "inspect", inspect(hex))]
     pub gicr: u64,
+    /// Performance Interrupt GSIV (PMU)
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub pmu_gsiv: u32,
 }
 
 impl AsRef<VpInfo> for Aarch64VpInfo {
@@ -73,11 +80,11 @@ impl AsRef<VpInfo> for Aarch64VpInfo {
 
 impl TopologyBuilder<Aarch64Topology> {
     /// Returns a builder for creating an x86 processor topology.
-    pub fn new_aarch64(gic: GicInfo) -> Self {
+    pub fn new_aarch64(gic: GicInfo, pmu_gsiv: u32) -> Self {
         Self {
             vps_per_socket: 1,
             smt_enabled: false,
-            arch: Aarch64TopologyBuilderState { gic },
+            arch: Aarch64TopologyBuilderState { gic, pmu_gsiv },
         }
     }
 
@@ -113,6 +120,7 @@ impl TopologyBuilder<Aarch64Topology> {
             mpidr,
             gicr: self.arch.gic.gic_redistributors_base
                 + id as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+            pmu_gsiv: self.arch.pmu_gsiv,
         }))
     }
 
@@ -137,7 +145,10 @@ impl TopologyBuilder<Aarch64Topology> {
             vps,
             smt_enabled,
             vps_per_socket: self.vps_per_socket,
-            arch: Aarch64Topology { gic: self.arch.gic },
+            arch: Aarch64Topology {
+                gic: self.arch.gic,
+                pmu_gsiv: self.arch.pmu_gsiv,
+            },
         })
     }
 }
@@ -151,5 +162,10 @@ impl ProcessorTopology<Aarch64Topology> {
     /// Returns the GIC redistributors base
     pub fn gic_redistributors_base(&self) -> u64 {
         self.arch.gic.gic_redistributors_base
+    }
+
+    /// Returns the PMU GSIV
+    pub fn pmu_gsiv(&self) -> u32 {
+        self.arch.pmu_gsiv
     }
 }
