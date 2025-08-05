@@ -1620,7 +1620,7 @@ impl Inspect for std::fs::File {
     }
 }
 
-impl Inspect for std::time::Duration {
+impl Inspect for core::time::Duration {
     fn inspect(&self, req: Request<'_>) {
         req.value(format!("{}.{:09}s", self.as_secs(), self.subsec_nanos()));
     }

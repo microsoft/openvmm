@@ -895,7 +895,6 @@ enum VmTimerPeriodicInner {
     Stopped,
     Running {
         last_timeout: VmTime,
-        #[inspect(debug)]
         period: Duration,
     },
 }
