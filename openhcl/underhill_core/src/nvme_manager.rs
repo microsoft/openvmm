@@ -43,11 +43,11 @@ use vmcore::vm_task::VmTaskDriverSource;
 pub struct NamespaceError {
     pci_id: String,
     #[source]
-    source: NvmeFactoryError,
+    source: NvmeSpawnerError,
 }
 
 #[derive(Debug, Error)]
-pub enum NvmeFactoryError {
+pub enum NvmeSpawnerError {
     #[error("failed to initialize vfio device")]
     Vfio(#[source] anyhow::Error),
     #[error("failed to initialize nvme device")]
@@ -74,7 +74,7 @@ pub trait NvmeDevice: Inspect + Send + Sync {
         nsid: u32,
     ) -> Result<nvme_driver::Namespace, nvme_driver::NamespaceError>;
     async fn save(&mut self) -> anyhow::Result<nvme_driver::NvmeDriverSavedState>;
-    async fn shutdown(&mut self);
+    async fn shutdown(mut self: Box<Self>);
     fn update_servicing_flags(&mut self, do_not_restart: bool);
 }
 
@@ -84,7 +84,7 @@ struct VfioNvmeDevice {
     /// be an `Option` because the NVMe manager shutdown
     /// process wants to control explicitly when this device
     /// is dropped and to allow for delayed initialization.
-    driver: Option<nvme_driver::NvmeDriver<VfioDevice>>,
+    driver: nvme_driver::NvmeDriver<VfioDevice>,
 }
 
 #[async_trait]
@@ -95,38 +95,27 @@ impl NvmeDevice for VfioNvmeDevice {
         &self,
         nsid: u32,
     ) -> Result<nvme_driver::Namespace, nvme_driver::NamespaceError> {
-        self.driver
-            .as_ref()
-            .expect("call to `namespace` when driver is not loaded")
-            .namespace(nsid)
-            .await
+        self.driver.namespace(nsid).await
     }
 
     /// Save the NVMe driver state.
     /// Panics if the driver is not loaded (this is a programming error).
     async fn save(&mut self) -> anyhow::Result<nvme_driver::NvmeDriverSavedState> {
         self.driver
-            .as_mut()
-            .expect("call to `save` when driver is not loaded")
             .save()
             .await
             .context("failed to save NVMe driver state")
     }
 
-    async fn shutdown(&mut self) {
+    async fn shutdown(mut self: Box<Self>) {
         // Shutdown can be called in the event of a failure to create the driver, so do not panic in this case.
-        if let Some(driver) = self.driver.take() {
-            driver.shutdown().await;
-        }
+        self.driver.shutdown().await;
     }
 
     /// Configure how the underlying driver should behave during servicing operations.
     /// Panics if the driver is not loaded (this is a programming error).
     fn update_servicing_flags(&mut self, keep_alive: bool) {
-        self.driver
-            .as_mut()
-            .expect("call to `update_servicing_flags` when driver is not loaded")
-            .update_servicing_flags(keep_alive);
+        self.driver.update_servicing_flags(keep_alive);
     }
 }
 
@@ -139,11 +128,11 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
         vp_count: u32,
         save_restore_supported: bool,
         saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
-    ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError>;
+    ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError>;
 }
 
 #[derive(Inspect)]
-pub struct VfioNvmeDriverFactory {
+pub struct VfioNvmeDriverSpawner {
     pub nvme_always_flr: bool,
     pub is_isolated: bool,
     #[inspect(skip)]
@@ -151,7 +140,7 @@ pub struct VfioNvmeDriverFactory {
 }
 
 #[async_trait]
-impl CreateNvmeDriver for VfioNvmeDriverFactory {
+impl CreateNvmeDriver for VfioNvmeDriverSpawner {
     async fn create_driver(
         &self,
         driver_source: &VmTaskDriverSource,
@@ -159,7 +148,7 @@ impl CreateNvmeDriver for VfioNvmeDriverFactory {
         vp_count: u32,
         save_restore_supported: bool,
         saved_state: Option<&nvme_driver::NvmeDriverSavedState>,
-    ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError> {
+    ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError> {
         let dma_client = self
             .dma_client_spawner
             .new_client(DmaClientParameters {
@@ -172,13 +161,13 @@ impl CreateNvmeDriver for VfioNvmeDriverFactory {
                 },
                 persistent_allocations: save_restore_supported,
             })
-            .map_err(NvmeFactoryError::DmaClient)?;
+            .map_err(NvmeSpawnerError::DmaClient)?;
 
         let nvme_driver = if let Some(saved_state) = saved_state {
             let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_client)
                 .instrument(tracing::info_span!("vfio_device_restore", pci_id))
                 .await
-                .map_err(NvmeFactoryError::Vfio)?;
+                .map_err(NvmeSpawnerError::Vfio)?;
 
             // TODO: For now, any isolation means use bounce buffering. This
             // needs to change when we have nvme devices that support DMA to
@@ -192,7 +181,7 @@ impl CreateNvmeDriver for VfioNvmeDriverFactory {
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await
-            .map_err(NvmeFactoryError::DeviceInitFailed)?
+            .map_err(NvmeSpawnerError::DeviceInitFailed)?
         } else {
             Self::create_nvme_device(
                 driver_source,
@@ -206,12 +195,12 @@ impl CreateNvmeDriver for VfioNvmeDriverFactory {
         };
 
         Ok(Box::new(VfioNvmeDevice {
-            driver: Some(nvme_driver),
+            driver: nvme_driver,
         }))
     }
 }
 
-impl VfioNvmeDriverFactory {
+impl VfioNvmeDriverSpawner {
     async fn create_nvme_device(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
@@ -219,7 +208,7 @@ impl VfioNvmeDriverFactory {
         nvme_always_flr: bool,
         is_isolated: bool,
         dma_client: Arc<dyn user_driver::DmaClient>,
-    ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeFactoryError> {
+    ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
         // Disable FLR on vfio attach/detach; this allows faster system
         // startup/shutdown with the caveat that the device needs to be properly
         // sent through the shutdown path during servicing operations, as that is
@@ -283,11 +272,11 @@ impl VfioNvmeDriverFactory {
         vp_count: u32,
         is_isolated: bool,
         dma_client: Arc<dyn user_driver::DmaClient>,
-    ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeFactoryError> {
+    ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
         let device = VfioDevice::new(driver_source, pci_id, dma_client)
             .instrument(tracing::info_span!("vfio_device_open", pci_id))
             .await
-            .map_err(NvmeFactoryError::Vfio)?;
+            .map_err(NvmeSpawnerError::Vfio)?;
 
         // TODO: For now, any isolation means use bounce buffering. This
         // needs to change when we have nvme devices that support DMA to
@@ -295,7 +284,7 @@ impl VfioNvmeDriverFactory {
         nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
             .instrument(tracing::info_span!("nvme_driver_init", pci_id))
             .await
-            .map_err(NvmeFactoryError::DeviceInitFailed)
+            .map_err(NvmeSpawnerError::DeviceInitFailed)
     }
 }
 
@@ -517,7 +506,7 @@ impl NvmeManagerWorker {
         // Tear down all the devices if nvme_keepalive is not set.
         if !nvme_keepalive || !self.save_restore_supported {
             async {
-                join_all(self.devices.drain().map(|(pci_id, mut driver)| async move {
+                join_all(self.devices.drain().map(|(pci_id, driver)| async move {
                     driver
                         .shutdown()
                         .instrument(tracing::info_span!("shutdown_nvme_driver", pci_id))
@@ -533,7 +522,7 @@ impl NvmeManagerWorker {
     async fn get_driver(
         &mut self,
         pci_id: String,
-    ) -> Result<&mut Box<dyn NvmeDevice>, NvmeFactoryError> {
+    ) -> Result<&mut Box<dyn NvmeDevice>, NvmeSpawnerError> {
         let driver = match self.devices.entry(pci_id.to_owned()) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
@@ -559,12 +548,12 @@ impl NvmeManagerWorker {
         &mut self,
         pci_id: String,
         nsid: u32,
-    ) -> Result<nvme_driver::Namespace, NvmeFactoryError> {
+    ) -> Result<nvme_driver::Namespace, NvmeSpawnerError> {
         let driver = self.get_driver(pci_id.to_owned()).await?;
         driver
             .namespace(nsid)
             .await
-            .map_err(|source| NvmeFactoryError::Namespace { nsid, source })
+            .map_err(|source| NvmeSpawnerError::Namespace { nsid, source })
     }
 
     /// Saves NVMe device's states into buffer during servicing.
@@ -815,7 +804,7 @@ mod tests {
             anyhow::bail!("MOCK_SUCCESS: save operation completed for {}", self.pci_id);
         }
 
-        async fn shutdown(&mut self) {
+        async fn shutdown(mut self: Box<Self>) {
             // Record shutdown start time
             {
                 let mut shutdown_time = self.shutdown_start_time.write();
@@ -882,9 +871,9 @@ mod tests {
             _vp_count: u32,
             _save_restore_supported: bool,
             _saved_state: Option<&NvmeDriverSavedState>,
-        ) -> Result<Box<dyn NvmeDevice>, NvmeFactoryError> {
+        ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError> {
             if self.fail_create.load(Ordering::SeqCst) {
-                return Err(NvmeFactoryError::MockDriverCreationFailed(anyhow::anyhow!(
+                return Err(NvmeSpawnerError::MockDriverCreationFailed(anyhow::anyhow!(
                     "Mock create failure for {}",
                     pci_id
                 )));
