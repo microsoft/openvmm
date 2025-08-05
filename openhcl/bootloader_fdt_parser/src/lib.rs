@@ -508,7 +508,7 @@ fn parse_pmu(node: &Node<'_>) -> anyhow::Result<u32> {
 
     // The index is the index off of the PPI base of 16. PPIs only exist from 16
     // to 31, so the index should be < 16.
-    if interrupts_ppi_index > 16 {
+    if interrupts_ppi_index >= 16 {
         bail!("pmu node has unexpected interrupt index {interrupts_ppi_index}");
     }
 
