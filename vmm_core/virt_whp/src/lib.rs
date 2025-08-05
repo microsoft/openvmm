@@ -74,6 +74,9 @@ use vp::WhpRunVpError;
 use vp_state::WhpVpStateAccess;
 use x86defs::cpuid::Vendor;
 
+#[cfg(guest_arch = "aarch64")]
+pub use aarch64::WHP_PMU_GSIV;
+
 #[derive(Debug)]
 pub struct Whp;
 
@@ -1675,6 +1678,9 @@ mod aarch64 {
     use hvdef::Vtl;
     use virt::VpIndex;
     use virt::irqcon::MsiRequest;
+
+    /// On aarch64, the platform configured GSIV value for the PMU.
+    pub const WHP_PMU_GSIV: u32 = 0x17;
 
     impl WhpPartitionInner {
         pub(crate) fn synic_interrupt(

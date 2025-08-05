@@ -203,9 +203,18 @@ pub enum X2ApicConfig {
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
+pub enum PmuGsivConfig {
+    #[default]
+    /// Use the hypervisor's platform GSIV value for the PMU.
+    Platform,
+    /// Use the specified GSIV value for the PMU.
+    Gsiv(u32),
+}
+
+#[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
-    pub pmu_gsiv: Option<u32>,
+    pub pmu_gsiv: PmuGsivConfig,
 }
 
 #[derive(Debug, Protobuf, Clone)]
