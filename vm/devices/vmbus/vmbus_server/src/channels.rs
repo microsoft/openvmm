@@ -5480,7 +5480,7 @@ mod tests {
                 interrupt_page_or_target_info: TargetInfo::new().with_sint(SINT).with_vtl(0).into(),
                 child_to_parent_monitor_page_gpa: 0x123f000,
                 parent_to_child_monitor_page_gpa: 0x321f000,
-                ..FromZeros::new_zeroed()
+                ..FromZeroes::new_zeroed()
             },
             false,
             false,
