@@ -5964,8 +5964,6 @@ mod tests {
     #[test]
     fn test_disconnect_open_channels() {
         let mut env = TestEnv::new();
-
-        // Offer and connect channels
         let offer_id1 = env.offer(1);
         let offer_id2 = env.offer(2);
         let _offer_id3 = env.offer(3);
@@ -5973,14 +5971,14 @@ mod tests {
         env.connect(Version::Win10, FeatureFlags::new());
         env.c().handle_request_offers().unwrap();
 
-        // Open two channels
+        // Open two channels.
         env.open(1);
         env.open(2);
 
         env.c().open_complete(offer_id1, 0);
         env.c().open_complete(offer_id2, 0);
 
-        // Send unload message
+        // Send unload message with channels still open.
         env.c().handle_unload();
 
         assert!(env.notifier.modify_requests.is_empty());
@@ -6009,8 +6007,6 @@ mod tests {
     #[test]
     fn test_reinitiate_contact() {
         let mut env = TestEnv::new();
-
-        // Offer and connect channels
         let _offer_id1 = env.offer(1);
         let _offer_id2 = env.offer(2);
         let _offer_id3 = env.offer(3);
