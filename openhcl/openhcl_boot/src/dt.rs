@@ -46,8 +46,7 @@ mod aarch64 {
     pub const VMBUS_INTID: u32 = 2; // Note: the hardware INTID will be 16 + 2
     pub const TIMER_INTID: u32 = 4; // Note: the hardware INTID will be 16 + 4
 
-    // TODO: The PMU GSIV is always 0x17 on Hyper-V, but we should instead read
-    // it from the host provided device tree, if available.
+    /// The Hyper-V default PMU_GSIV value.
     pub const PMU_GSIV: u32 = 0x17;
     pub const PMU_GSIV_INT_INDEX: u32 = PMU_GSIV - 16;
 
@@ -404,9 +403,24 @@ pub fn write_dt(
 
         // Add PMU.
         //
-        // TODO: This may be insufficient to get perf to work as the kernel prints:
+        // TODO: This may be insufficient to get perf to work as the kernel
+        // prints:
         // `armv8-pmu pmu: hw perfevents: no irqs for PMU, sampling events not supported`
+        //
         // Tracked by issue 1808.
+        //
+        // NOTE: The host may not provide this value in device tree, so use the
+        // Hyper-V platform default if not provided.
+        let pmu_gsiv_index = partition_info
+            .pmu_gsiv
+            .map(|gsiv| {
+                assert!(
+                    (16..32).contains(&gsiv),
+                    "PMU GSIV must be a PPI in [16, 32) range"
+                );
+                gsiv - 16
+            })
+            .unwrap_or(aarch64::PMU_GSIV_INT_INDEX);
         let pmu = root_builder
             .start_node("pmu")?
             .add_str(p_compatible, "arm,armv8-pmuv3")?
@@ -414,7 +428,7 @@ pub fn write_dt(
                 p_interrupts,
                 &[
                     aarch64::GIC_PPI,
-                    aarch64::PMU_GSIV_INT_INDEX,
+                    pmu_gsiv_index,
                     aarch64::IRQ_TYPE_LEVEL_HIGH,
                 ],
             )?;
