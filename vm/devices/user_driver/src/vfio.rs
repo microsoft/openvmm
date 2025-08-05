@@ -83,7 +83,7 @@ impl VfioDevice {
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
-        keepalive: bool,
+        vf_keepalive: bool,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<Self> {
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
@@ -110,7 +110,7 @@ impl VfioDevice {
         }
 
         container.set_iommu(IommuType::NoIommu)?;
-        if keepalive {
+        if vf_keepalive {
             // Prevent physical hardware interaction when restoring.
             group.set_keep_alive(pci_id)?;
         }

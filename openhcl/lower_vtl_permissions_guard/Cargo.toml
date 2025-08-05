@@ -9,6 +9,7 @@ rust-version.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 hvdef.workspace = true
 inspect.workspace = true
+parking_lot.workspace = true
 user_driver.workspace = true
 virt.workspace = true
 

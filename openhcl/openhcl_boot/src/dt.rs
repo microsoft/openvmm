@@ -507,6 +507,11 @@ pub fn write_dt(
         openhcl_builder = openhcl_builder.add_u64(p_vtl0_alias_map, data)?;
     }
 
+    if partition_info.dma_hint_self {
+        let p_dma_hint = openhcl_builder.add_string("dma-hint")?;
+        openhcl_builder = openhcl_builder.add_str(p_dma_hint, "self")?;
+    }
+
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     struct Vtl2MemoryEntry {
         range: MemoryRange,
