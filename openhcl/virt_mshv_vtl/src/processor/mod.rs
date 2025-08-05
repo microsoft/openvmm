@@ -1057,7 +1057,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     control: self.crash_control,
                     parameters: self.crash_reg,
                 };
-                tracelimit::info_ratelimited!(?crash, "Guest has reported system crash");
                 tracelimit::warn_ratelimited!(
                     CVM_ALLOWED,
                     ?crash,
