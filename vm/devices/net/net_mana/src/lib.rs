@@ -1000,7 +1000,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         self.stats.tx_stuck += 1;
                         self.trace_tx_error(cqe.params, tx_oob, done.len());
                         // Return a TryRestart error to indicate that the queue needs to be restarted.
-                        return Err(TxError::TryRestart(anyhow::anyhow!("GDMA error")));
+                        return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
                     }
                     CQE_TX_INVALID_OOB => {
                         // Invalid OOB means the metadata didn't match how the Hardware parsed the packet.
