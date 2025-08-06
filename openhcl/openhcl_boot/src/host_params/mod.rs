@@ -85,8 +85,6 @@ pub struct PartitionInfo {
     pub cmdline: ArrayString<COMMAND_LINE_SIZE>,
     /// Com3 serial device is available
     pub com3_serial_available: bool,
-    /// GIC information
-    pub gic: Option<GicInfo>,
     /// Memory allocation mode that was performed.
     pub memory_allocation_mode: MemoryAllocationMode,
     /// Entropy from the host to be used by the OpenHCL kernel
@@ -97,6 +95,11 @@ pub struct PartitionInfo {
     pub nvme_keepalive: bool,
     /// Parsed boot command line options.
     pub boot_options: BootCommandLineOptions,
+
+    /// GIC information on AArch64.
+    pub gic: Option<GicInfo>,
+    /// PMU GSIV on AArch64.
+    pub pmu_gsiv: Option<u32>,
 }
 
 impl PartitionInfo {
@@ -123,12 +126,13 @@ impl PartitionInfo {
             },
             cmdline: ArrayString::new_const(),
             com3_serial_available: false,
-            gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
             boot_options: BootCommandLineOptions::new(),
+            gic: None,
+            pmu_gsiv: None,
         }
     }
 

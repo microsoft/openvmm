@@ -525,6 +525,7 @@ impl PartitionInfo {
             cmdline: _,
             com3_serial_available: com3_serial,
             gic,
+            pmu_gsiv,
             memory_allocation_mode: _,
             entropy,
             vtl0_alias_map: _,
@@ -550,6 +551,7 @@ impl PartitionInfo {
         cpus.extend(parsed.cpus.iter().copied());
         *com3_serial = parsed.com3_serial;
         *gic = parsed.gic.clone();
+        *pmu_gsiv = parsed.pmu_gsiv;
         *entropy = parsed.entropy.clone();
         *nvme_keepalive = parsed.nvme_keepalive;
         *boot_options = options;

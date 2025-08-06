@@ -129,15 +129,15 @@ pub struct Options {
     #[clap(long_help = r#"
 e.g: --disk memdiff:file:/path/to/disk.vhd
 
-syntax: \<path\> | kind:<arg>[,flag,opt=arg,...]
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
 valid disk kinds:
     `mem:<len>`                    memory backed disk
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                  file-backed disk
+        <path>: path to file
 
 flags:
     `ro`                           open disk as read-only
@@ -152,15 +152,15 @@ flags:
     #[clap(long_help = r#"
 e.g: --nvme memdiff:file:/path/to/disk.vhd
 
-syntax: \<path\> | kind:<arg>[,flag,opt=arg,...]
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
 valid disk kinds:
     `mem:<len>`                    memory backed disk
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                  file-backed disk
+        <path>: path to file
 
 flags:
     `ro`                           open disk as read-only
@@ -392,19 +392,19 @@ flags:
     #[clap(long_help = r#"
 e.g: --vmgs memdiff:file:/path/to/file.vmgs
 
-syntax: \<path\> | kind:<arg>[,flag]
+syntax: <path> | kind:<arg>[,flag]
 
 valid disk kinds:
-    `mem:<len>`                    memory backed disk
-        <len>: length of ramdisk, e.g.: `1G`
-    `memdiff:<disk>`               memory backed diff disk
+    `mem:<len>`                     memory backed disk
+        <len>: length of ramdisk, e.g.: `1G` or `VMGS_DEFAULT`
+    `memdiff:<disk>[;create=<len>]` memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                   file-backed disk
+        <path>: path to file
 
 flags:
-    `fmt`                          reprovision the VMGS before boot
-    `fmt-on-fail`                  reprovision the VMGS before boot if it is corrupted
+    `fmt`                           reprovision the VMGS before boot
+    `fmt-on-fail`                   reprovision the VMGS before boot if it is corrupted
 "#)]
     #[clap(long)]
     pub vmgs: Option<VmgsCli>,
@@ -472,15 +472,15 @@ flags:
     #[clap(long_help = r#"
 e.g: --ide memdiff:file:/path/to/disk.vhd
 
-syntax: \<path\> | kind:<arg>[,flag,opt=arg,...]
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
 valid disk kinds:
     `mem:<len>`                    memory backed disk
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                  file-backed disk
+        <path>: path to file
 
 flags:
     `ro`                           open disk as read-only
@@ -495,15 +495,15 @@ flags:
     #[clap(long_help = r#"
 e.g: --floppy memdiff:/path/to/disk.vfd,ro
 
-syntax: \<path\> | kind:<arg>[,flag,opt=arg,...]
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
 valid disk kinds:
     `mem:<len>`                    memory backed disk
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                  file-backed disk
+        <path>: path to file
 
 flags:
     `ro`                           open disk as read-only
@@ -611,28 +611,32 @@ pub enum SecureBootTemplateCli {
 }
 
 fn parse_memory(s: &str) -> anyhow::Result<u64> {
-    || -> Option<u64> {
-        let mut b = s.as_bytes();
-        if s.ends_with('B') {
-            b = &b[..b.len() - 1]
-        }
-        if b.is_empty() {
-            return None;
-        }
-        let multi = match b[b.len() - 1] as char {
-            'T' => Some(1024 * 1024 * 1024 * 1024),
-            'G' => Some(1024 * 1024 * 1024),
-            'M' => Some(1024 * 1024),
-            'K' => Some(1024),
-            _ => None,
-        };
-        if multi.is_some() {
-            b = &b[..b.len() - 1]
-        }
-        let n: u64 = std::str::from_utf8(b).ok()?.parse().ok()?;
-        Some(n * multi.unwrap_or(1))
-    }()
-    .with_context(|| format!("invalid memory size '{0}'", s))
+    if s == "VMGS_DEFAULT" {
+        Ok(vmgs_format::VMGS_DEFAULT_CAPACITY)
+    } else {
+        || -> Option<u64> {
+            let mut b = s.as_bytes();
+            if s.ends_with('B') {
+                b = &b[..b.len() - 1]
+            }
+            if b.is_empty() {
+                return None;
+            }
+            let multi = match b[b.len() - 1] as char {
+                'T' => Some(1024 * 1024 * 1024 * 1024),
+                'G' => Some(1024 * 1024 * 1024),
+                'M' => Some(1024 * 1024),
+                'K' => Some(1024),
+                _ => None,
+            };
+            if multi.is_some() {
+                b = &b[..b.len() - 1]
+            }
+            let n: u64 = std::str::from_utf8(b).ok()?.parse().ok()?;
+            Some(n * multi.unwrap_or(1))
+        }()
+        .with_context(|| format!("invalid memory size '{0}'", s))
+    }
 }
 
 /// Parse a number from a string that could be prefixed with 0x to indicate hex.
@@ -710,11 +714,7 @@ fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
                 anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
             };
 
-            let len: u64 = if len == "VMGS_DEFAULT" {
-                vmgs_format::VMGS_DEFAULT_CAPACITY
-            } else {
-                parse_memory(len)?
-            };
+            let len = parse_memory(len)?;
 
             (path.into(), Some(len))
         }

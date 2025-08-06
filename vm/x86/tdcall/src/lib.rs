@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use thiserror::Error;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
@@ -86,7 +87,7 @@ pub fn tdcall_hypercall(
     control: hvdef::hypercall::Control,
     input_gpa: u64,
     output_gpa: u64,
-) -> Result<(), TdVmCallR10Result> {
+) -> HypercallOutput {
     let input = TdcallInput {
         leaf: TdCallLeaf::VP_VMCALL,
         rcx: 0x0d04, // pass RDX, R8, R10, R11
@@ -114,12 +115,7 @@ pub fn tdcall_hypercall(
     }
 
     // TD.VMCALL for Hypercall passes return code in r11
-    let result = TdVmCallR10Result(output.r11);
-
-    match result {
-        TdVmCallR10Result::SUCCESS => Ok(()),
-        val => Err(val),
-    }
+    HypercallOutput::from(output.r11)
 }
 
 /// Perform a tdcall based MSR read. This is done by issuing a TDG.VP.VMCALL.
