@@ -8,6 +8,7 @@ use super::admin::AdminConfig;
 use super::admin::AdminHandler;
 use super::admin::AdminState;
 use super::admin::NsidConflict;
+use crate::pci::FaultConfiguration;
 use crate::queue::DoorbellRegister;
 use disk_backend::Disk;
 use futures::FutureExt;
@@ -60,6 +61,7 @@ impl NvmeWorkers {
         max_cqs: u16,
         qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
         subsystem_id: Guid,
+        fault_configuration: FaultConfiguration,
     ) -> Self {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
         let doorbells: Vec<_> = (0..num_qids)
@@ -78,6 +80,7 @@ impl NvmeWorkers {
                 max_sqs,
                 max_cqs,
                 qe_sizes,
+                fault_configuration,
             },
         );
         let coordinator = Coordinator {

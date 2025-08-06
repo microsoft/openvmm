@@ -6,7 +6,6 @@
 #![forbid(unsafe_code)]
 
 mod error;
-mod fault_injection;
 mod namespace;
 mod pci;
 mod prp;
@@ -17,14 +16,13 @@ mod workers;
 #[cfg(test)]
 mod tests;
 
-pub use fault_injection::FaultFn;
+pub use pci::FaultConfiguration;
 pub use pci::NvmeController;
 pub use pci::NvmeControllerCaps;
+pub use pci::QueueFault;
+pub use pci::QueueFaultType;
 pub use workers::NsidConflict;
 pub use workers::NvmeControllerClient;
-
-#[cfg(feature = "fault_injection")]
-pub use fault_injection::pci::NvmeControllerFaultInjection;
 
 use guestmem::ranges::PagedRange;
 use nvme_spec as spec;

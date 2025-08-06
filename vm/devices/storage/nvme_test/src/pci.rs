@@ -46,19 +46,42 @@ use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
 
+/// Represents a fault type for queues. Can be applied to either submission or completion queues.
+#[derive(Debug, Clone, Copy)]
+pub enum QueueFaultType<T> {
+    Update(T),
+    Drop,
+    NoOp,
+}
+
+/// A queue fault applies a fault to a pair of submission and completion queues.
+#[async_trait::async_trait]
+pub trait QueueFault {
+    async fn fault_submission_queue(&self, command: spec::Command)
+    -> QueueFaultType<spec::Command>;
+    async fn fault_completion_queue(
+        &self,
+        completion: spec::Completion,
+    ) -> QueueFaultType<spec::Completion>;
+}
+
+/// Configuration for NVMe controller faults.
+pub struct FaultConfiguration {
+    /// Fault to apply to the admin queues
+    pub admin_fault: Option<Box<dyn QueueFault + Send + Sync>>,
+}
+
 /// An NVMe controller.
 #[derive(InspectMut)]
 pub struct NvmeController {
     cfg_space: ConfigSpaceType0Emulator,
     #[inspect(skip)]
     msix: MsixEmulator,
-
     registers: RegState,
     #[inspect(skip)]
     qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
-    fault_injector: FaultInjector,
 }
 
 #[derive(Inspect)]
@@ -114,6 +137,7 @@ impl NvmeController {
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeControllerCaps,
+        fault_configuration: FaultConfiguration,
     ) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
         let bars = DeviceBars::new()
@@ -154,6 +178,7 @@ impl NvmeController {
             caps.max_io_queues,
             Arc::clone(&qe_sizes),
             caps.subsystem_id,
+            fault_configuration,
         );
 
         Self {

@@ -16,6 +16,8 @@ use crate::VENDOR_ID;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
 use crate::namespace::Namespace;
+use crate::pci::FaultConfiguration;
+use crate::pci::QueueFaultType;
 use crate::prp::PrpRange;
 use crate::queue::CompletionQueue;
 use crate::queue::DoorbellRegister;
@@ -73,6 +75,8 @@ pub struct AdminConfig {
     pub max_sqs: u16,
     pub max_cqs: u16,
     pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
+    #[inspect(skip)] // TODO: Inspect this.
+    pub fault_configuration: FaultConfiguration,
 }
 
 #[derive(Inspect)]
@@ -457,10 +461,31 @@ impl AdminHandler {
 
         let (cid, result) = match event? {
             Event::Command(command) => {
-                let command = command?;
+                let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
-                tracing::debug!(?opcode, ?command, "command");
+                if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
+                    let fault = admin_fault.fault_submission_queue(command).await;
+
+                    match fault {
+                        QueueFaultType::Update(command_updated) => {
+                            tracelimit::warn_ratelimited!(
+                                "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
+                                &command,
+                                &command_updated
+                            );
+                            command = command_updated;
+                        }
+                        QueueFaultType::Drop => {
+                            tracelimit::warn_ratelimited!(
+                                "configured fault: admin command dropped from sq {:?}",
+                                &command
+                            );
+                            return Ok(());
+                        }
+                        QueueFaultType::NoOp => {}
+                    }
+                }
 
                 let result = match opcode {
                     spec::AdminOpcode::IDENTIFY => self
@@ -540,7 +565,7 @@ impl AdminHandler {
 
         let status = spec::CompletionStatus::new().with_status(result.status.0);
 
-        let completion = spec::Completion {
+        let mut completion = spec::Completion {
             dw0: result.dw[0],
             dw1: result.dw[1],
             sqid: 0,
@@ -548,6 +573,29 @@ impl AdminHandler {
             status,
             cid,
         };
+
+        if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
+            let fault = admin_fault.fault_completion_queue(completion).await;
+
+            match fault {
+                QueueFaultType::Update(completion_new) => {
+                    tracelimit::warn_ratelimited!(
+                        "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
+                        &completion,
+                        &completion_new
+                    );
+                    completion = completion_new;
+                }
+                QueueFaultType::Drop => {
+                    tracelimit::warn_ratelimited!(
+                        "configured fault: admin completion dropped from cq {:?}",
+                        &completion
+                    );
+                    return Ok(());
+                }
+                QueueFaultType::NoOp => {}
+            }
+        }
 
         state.admin_cq.write(&self.config.mem, completion)?;
         // Again, for simplicity, update EVT_IDX here.

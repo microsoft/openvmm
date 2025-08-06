@@ -4688,6 +4688,7 @@ name = "nvme_driver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chipset_device",
  "disklayer_ram",
  "event-listener",
@@ -4699,6 +4700,7 @@ dependencies = [
  "mesh",
  "nvme",
  "nvme_spec",
+ "nvme_test",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -4733,6 +4735,40 @@ dependencies = [
  "inspect",
  "open_enum",
  "storage_string",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "nvme_test"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chipset_device",
+ "device_emulators",
+ "disk_backend",
+ "event-listener",
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "guid",
+ "inspect",
+ "mesh",
+ "nvme_common",
+ "nvme_resources",
+ "nvme_spec",
+ "pal_async",
+ "parking_lot",
+ "pci_core",
+ "pci_resources",
+ "scsi_buffers",
+ "task_control",
+ "thiserror 2.0.12",
+ "tracelimit",
+ "tracing",
+ "unicycle",
+ "user_driver",
+ "vm_resource",
+ "vmcore",
  "zerocopy 0.8.24",
 ]
 

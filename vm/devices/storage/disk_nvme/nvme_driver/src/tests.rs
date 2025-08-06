@@ -10,7 +10,11 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use nvme::NvmeControllerCaps;
 use nvme_spec::Cap;
+use nvme_spec::Command;
+use nvme_spec::Completion;
 use nvme_spec::nvm::DsmRange;
+use nvme_test::FaultConfiguration;
+use nvme_test::QueueFaultType;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
@@ -28,55 +32,57 @@ use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
 use vmcore::vm_task::SingleDriverBackend;
+use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
 
-#[async_test]
-async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
-    test_nvme_driver(driver, true).await;
+struct AdminQueueFault {
+    pub driver: VmTaskDriver,
+}
+
+#[async_trait::async_trait]
+impl nvme_test::QueueFault for AdminQueueFault {
+    async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultType<Command> {
+        tracing::info!("Faulting submission queue using cid sequence number mismatch");
+        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+        match opcode {
+            nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
+                // Overwrite the previous cid to cause a panic.
+                command.cdw0.set_cid(0);
+                QueueFaultType::Update(command)
+            }
+            _ => QueueFaultType::NoOp,
+        }
+    }
+
+    async fn fault_completion_queue(&self, _completion: Completion) -> QueueFaultType<Completion> {
+        tracing::info!("Faulting completion queue using delay");
+        PolledTimer::new(&self.driver)
+            .sleep(Duration::from_millis(100))
+            .await;
+        QueueFaultType::NoOp
+    }
 }
 
 #[async_test]
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
 async fn test_nvme_command_fault(driver: DefaultDriver) {
+    let task_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple();
+
     test_nvme_fault_injection(
         driver,
-        Box::new(|_driver, mut command| {
-            Box::pin(async move {
-                let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-                match opcode {
-                    nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
-                        // Overwrite the previous cid to cause a panic.
-                        command.cdw0.set_cid(0);
-                        Some(command)
-                    }
-                    _ => None,
-                }
-            })
-        }),
+        FaultConfiguration {
+            admin_fault: Some(Box::new(AdminQueueFault {
+                driver: task_driver,
+            })),
+        },
     )
     .await;
 }
 
-// Sample case for delayed Admin command processing
 #[async_test]
-async fn test_nvme_command_delay(driver: DefaultDriver) {
-    test_nvme_fault_injection(
-        driver,
-        Box::new(|driver, command| {
-            Box::pin(async move {
-                let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-                match opcode {
-                    nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
-                        PolledTimer::new(&driver).sleep(Duration::new(5, 0)).await;
-                        None
-                    }
-                    _ => None,
-                }
-            })
-        }),
-    )
-    .await;
+async fn test_nvme_driver_direct_dma(driver: DefaultDriver) {
+    test_nvme_driver(driver, true).await;
 }
 
 #[async_test]
@@ -354,7 +360,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     //     .unwrap();
 }
 
-async fn test_nvme_fault_injection(driver: DefaultDriver, fault_fn: nvme::FaultFn) {
+async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: FaultConfiguration) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
@@ -369,17 +375,17 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_fn: nvme::FaultF
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    let nvme = nvme::NvmeControllerFaultInjection::new(
+    let nvme = nvme_test::NvmeController::new(
         &driver_source,
         guest_mem.clone(),
         &mut msi_set,
         &mut ExternallyManagedMmioIntercepts,
-        NvmeControllerCaps {
+        nvme_test::NvmeControllerCaps {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
         },
-        fault_fn,
+        fault_configuration,
     );
 
     nvme.client() // 2MB namespace

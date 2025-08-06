@@ -6,6 +6,7 @@
 use crate::NsidConflict;
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
+use crate::pci::FaultConfiguration;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use nvme_resources::NamespaceDefinition;
@@ -62,6 +63,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
             },
+            FaultConfiguration { admin_fault: None },
         );
         for NamespaceDefinition {
             nsid,

@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "nvme"
+name = "nvme_test"
 edition.workspace = true
 rust-version.workspace = true
 
@@ -43,6 +43,3 @@ user_driver.workspace = true
 
 [lints]
 workspace = true
-
-[features]
-fault_injection = []

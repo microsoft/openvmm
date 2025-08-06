@@ -6,6 +6,7 @@ use crate::BAR0_LEN;
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
 use crate::PAGE_SIZE64;
+use crate::pci::FaultConfiguration;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::tests::test_helpers::read_completion_from_queue;
@@ -43,6 +44,7 @@ fn instantiate_controller(
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
         },
+        FaultConfiguration { admin_fault: None },
     );
 
     if let Some(intc) = int_controller {
