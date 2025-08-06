@@ -282,8 +282,6 @@ pub mod artifacts {
 
             fn quirks() -> GuestQuirks {
                 GuestQuirks {
-                    // FreeBSD will ignore shutdown requests that arrive too
-                    // early in the boot process.
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
                 }
             }
@@ -302,6 +300,11 @@ pub mod artifacts {
         impl IsTestVhd for UBUNTU_2204_SERVER_X64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                }
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2204_SERVER_X64 {
@@ -317,6 +320,11 @@ pub mod artifacts {
         impl IsTestVhd for UBUNTU_2404_SERVER_AARCH64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::Aarch64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                }
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_AARCH64 {
@@ -361,11 +369,6 @@ pub mod artifacts {
 
             fn quirks() -> GuestQuirks {
                 GuestQuirks {
-                    // FreeBSD will ignore shutdown requests that arrive too
-                    // early in the boot process.
-                    //
-                    // Time is set to 5s longer than the VHD, to account for ISO
-                    // boot being slower.
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
                 }
             }

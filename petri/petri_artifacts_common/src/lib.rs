@@ -68,6 +68,9 @@ pub mod tags {
     pub struct GuestQuirks {
         /// How long to wait after the shutdown IC reports ready before sending
         /// the shutdown command.
+        ///
+        /// This is necessary because some guests will ignore shutdown requests
+        /// that arrive too early in the boot process.
         pub hyperv_shutdown_ic_sleep: Option<std::time::Duration>,
     }
 

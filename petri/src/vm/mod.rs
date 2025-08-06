@@ -474,18 +474,30 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the Hyper-V shutdown IC to be ready and use it to instruct
     /// the guest to shutdown.
     pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        tracing::info!("Waiting for enlightened shutdown to be ready");
         self.runtime.wait_for_enlightened_shutdown_ready().await?;
-        // always wait at least one second to avoid hanging
-        let mut wait_time = Duration::from_secs(1);
-        // some guests need more time
+
+        // all guests used in testing have been observed to intermittently
+        // drop shutdown requests if they are sent too soon after the shutdown
+        // ic comes online. give them a little extra time.
+        // TODO: use a different method of determining whether the VM has booted
+        // or debug and fix the shutdown IC.
+        let mut wait_time = Duration::from_secs(5);
+
+        // some guests need even more time
         if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
-            tracing::info!("QUIRK: Waiting for an extra {:?}", duration);
             wait_time += duration;
         }
+
+        tracing::info!(
+            "Shutdown IC reported ready, waiting for an extra {}s",
+            wait_time.as_secs()
+        );
         PolledTimer::new(&self.resources.driver)
             .sleep(wait_time)
             .await;
 
+        tracing::info!("Sending enlightened shutdown command");
         self.runtime.send_enlightened_shutdown(kind).await
     }
 
