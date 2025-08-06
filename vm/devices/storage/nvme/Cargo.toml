@@ -43,6 +43,3 @@ user_driver.workspace = true
 
 [lints]
 workspace = true
-
-[features]
-fault_injection = []
