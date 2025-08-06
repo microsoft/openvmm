@@ -781,7 +781,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         );
 
         let bytes = &bytes[header_size..];
-        let tx_s_oob = ManaTxShortOob::read_from_prefix(&bytes);
+        let tx_s_oob = ManaTxShortOob::read_from_prefix(bytes);
         match tx_s_oob {
             Ok((tx_s_oob, _)) => {
                 tracelimit::error_ratelimited!(
