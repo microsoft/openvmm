@@ -12,7 +12,7 @@ use gdma_defs::Cqe;
 use gdma_defs::CqeParams;
 use gdma_defs::GDMA_EQE_COMPLETION;
 use gdma_defs::Sge;
-use gdma_defs::Wqe;
+use gdma_defs::WqeHeader;
 use gdma_defs::bnic::CQE_RX_OKAY;
 use gdma_defs::bnic::CQE_TX_GDMA_ERR;
 use gdma_defs::bnic::CQE_TX_INVALID_OOB;
@@ -755,30 +755,33 @@ impl<T: DeviceBacking> ManaQueue<T> {
     }
 
     fn trace_tx_wqe_from_offset(&mut self, wqe_offset: u32) {
-        let size = size_of::<Wqe>(); // WQE is 512 bytes
+        let header_size = size_of::<WqeHeader>(); // 8 bytes
+        let s_oob_size = size_of::<ManaTxShortOob>(); // 8 bytes
+        let size = header_size + s_oob_size;
         let bytes = self.tx_wq.read(wqe_offset, size);
-        let wqe = Wqe::read_from_prefix(&bytes);
-        let wqe = match wqe {
-            Ok((wqe, _)) => wqe,
+        let wqe_header = WqeHeader::read_from_prefix(&bytes);
+        let wqe_header = match wqe_header {
+            Ok((wqe_header, _)) => wqe_header,
             Err(_) => {
-                tracelimit::error_ratelimited!(size, wqe_offset, "failed to read tx WQE");
+                tracelimit::error_ratelimited!(size, wqe_offset, "failed to read tx WQE header");
                 return;
             }
         };
 
         tracelimit::error_ratelimited!(
-            last_vbytes = wqe.header.last_vbytes,
-            num_sgl_entries = wqe.header.params.num_sgl_entries(),
-            inline_client_oob_size = wqe.header.params.inline_client_oob_size(),
-            client_oob_in_sgl = wqe.header.params.client_oob_in_sgl(),
-            reserved = wqe.header.params.reserved(),
-            gd_client_unit_data = wqe.header.params.gd_client_unit_data(),
-            reserved2 = wqe.header.params.reserved2(),
-            sgl_direct = wqe.header.params.sgl_direct(),
-            "wqe header params"
+            last_vbytes = wqe_header.last_vbytes,
+            num_sgl_entries = wqe_header.params.num_sgl_entries(),
+            inline_client_oob_size = wqe_header.params.inline_client_oob_size(),
+            client_oob_in_sgl = wqe_header.params.client_oob_in_sgl(),
+            reserved = wqe_header.params.reserved(),
+            gd_client_unit_data = wqe_header.params.gd_client_unit_data(),
+            reserved2 = wqe_header.params.reserved2(),
+            sgl_direct = wqe_header.params.sgl_direct(),
+            "tx wqe header"
         );
 
-        let tx_s_oob = ManaTxShortOob::read_from_prefix(wqe.oob());
+        let bytes = &bytes[header_size..];
+        let tx_s_oob = ManaTxShortOob::read_from_prefix(&bytes);
         match tx_s_oob {
             Ok((tx_s_oob, _)) => {
                 tracelimit::error_ratelimited!(
