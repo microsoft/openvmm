@@ -7,6 +7,8 @@ use crate::FaultConfiguration;
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
 use crate::PAGE_SIZE64;
+use crate::QueueFault;
+use crate::QueueFaultBehavior;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::tests::test_helpers::read_completion_from_queue;
@@ -16,6 +18,8 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
+use nvme_spec::Command;
+use nvme_spec::Completion;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
@@ -30,6 +34,7 @@ fn instantiate_controller(
     driver: DefaultDriver,
     gm: &GuestMemory,
     int_controller: Option<&TestPciInterruptController>,
+    fault_configuration: FaultConfiguration,
 ) -> NvmeController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -44,7 +49,7 @@ fn instantiate_controller(
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
         },
-        FaultConfiguration { admin_fault: None },
+        fault_configuration,
     );
 
     if let Some(intc) = int_controller {
@@ -109,8 +114,9 @@ pub async fn instantiate_and_build_admin_queue(
     int_controller: Option<&TestPciInterruptController>,
     driver: DefaultDriver,
     gm: &GuestMemory,
+    fault_configuration: FaultConfiguration,
 ) -> NvmeController {
-    let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller);
+    let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller, fault_configuration);
     // Set the BARs.
     nvmec.pci_cfg_write(0x10, 0).unwrap();
     nvmec.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
@@ -198,7 +204,8 @@ pub async fn instantiate_and_build_admin_queue(
 #[async_test]
 async fn test_basic_registers(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
 
     // Read controller caps, version.
@@ -222,7 +229,8 @@ async fn test_basic_registers(driver: DefaultDriver) {
 #[async_test]
 async fn test_invalid_configuration(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
     nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     // Set MPS to some disallowed value
@@ -236,7 +244,8 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
 #[async_test]
 async fn test_enable_controller(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x2000.
     let mut qword = 0x1000;
@@ -263,7 +272,8 @@ async fn test_enable_controller(driver: DefaultDriver) {
 #[async_test]
 async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x3000.
     let mut qword = 0x1000;
@@ -287,8 +297,10 @@ async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     assert!(dword & 2 == 0);
 }
 
-#[async_test]
-async fn test_send_identify(driver: DefaultDriver) {
+async fn send_identify(
+    driver: DefaultDriver,
+    fault_configuration: FaultConfiguration,
+) -> Completion {
     let dm1 = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
     let dm2 = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
     let gm = test_memory();
@@ -304,6 +316,7 @@ async fn test_send_identify(driver: DefaultDriver) {
         Some(&int_controller),
         driver.clone(),
         &gm,
+        fault_configuration,
     )
     .await;
 
@@ -312,7 +325,7 @@ async fn test_send_identify(driver: DefaultDriver) {
     assert!(next_int.is_none());
 
     // Construct an admin queue command into the first entry in the ASQ, which is at 0x1000 in the "test memory".
-    let mut entry = spec::Command::new_zeroed();
+    let mut entry = Command::new_zeroed();
     entry.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
     let cdw10 = spec::Cdw10Identify::new().with_cns(spec::Cns::CONTROLLER.0);
     entry.cdw10 = u32::from(cdw10);
@@ -325,6 +338,82 @@ async fn test_send_identify(driver: DefaultDriver) {
 
     wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
 
-    let cqe = read_completion_from_queue(&gm, &dm1, 0);
+    read_completion_from_queue(&gm, &dm1, 0)
+}
+
+#[async_test]
+async fn test_send_identify_no_fault(driver: DefaultDriver) {
+    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let cqe = send_identify(driver, fault_configuration).await;
+
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(cqe.cid, 0);
+}
+
+struct TestAdminSQFault;
+
+#[async_trait::async_trait]
+impl QueueFault for TestAdminSQFault {
+    async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultBehavior<Command> {
+        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+        match opcode {
+            nvme_spec::AdminOpcode::IDENTIFY => {
+                // Overwrite the previous cid to cause a panic.
+                command.cdw0.set_cid(10);
+                QueueFaultBehavior::Update(command)
+            }
+            _ => QueueFaultBehavior::Default,
+        }
+    }
+
+    async fn fault_completion_queue(
+        &self,
+        _completion: Completion,
+    ) -> QueueFaultBehavior<Completion> {
+        QueueFaultBehavior::Default
+    }
+}
+
+#[async_test]
+async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
+    let fault_configuration = FaultConfiguration {
+        admin_fault: Some(Box::new(TestAdminSQFault)),
+    };
+    let cqe = send_identify(driver, fault_configuration).await;
+
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    assert_eq!(cqe.cid, 10); // The CID should have been overwritten by the fault.
+}
+
+struct TestAdminCQFault;
+
+#[async_trait::async_trait]
+impl QueueFault for TestAdminCQFault {
+    async fn fault_submission_queue(&self, _command: Command) -> QueueFaultBehavior<Command> {
+        QueueFaultBehavior::Default
+    }
+
+    async fn fault_completion_queue(
+        &self,
+        mut completion: Completion,
+    ) -> QueueFaultBehavior<Completion> {
+        let status = spec::Status(completion.status.status());
+        match status {
+            spec::Status::SUCCESS => {
+                // Overwrite the CID to cause a panic.
+                completion.status.set_status(spec::Status::INVALID_FORMAT.0);
+                QueueFaultBehavior::Update(completion)
+            }
+            _ => QueueFaultBehavior::Default,
+        }
+    }
+}
+
+#[async_test]
+async fn test_cq_fault(driver: DefaultDriver) {
+    let fault_configuration = FaultConfiguration {
+        admin_fault: Some(Box::new(TestAdminCQFault)),
+    };
+    let cqe = send_identify(driver, fault_configuration).await;
+    assert_eq!(cqe.status.status(), spec::Status::INVALID_FORMAT.0); // Status should be overwritten by the fault.
 }
