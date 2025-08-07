@@ -31,7 +31,7 @@ pub trait DescribeMessage<T> {
 }
 
 /// A description of a message type.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum MessageDescription<'a> {
     /// An internally-defined type, described by the descriptor.
     Internal(&'a TopLevelDescriptor<'a>),
@@ -120,7 +120,7 @@ enum SequenceType<'a> {
     Map(&'a str),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone)]
 enum FieldKind<'a> {
     Builtin(&'a str),
     Local(&'a str),
@@ -131,6 +131,67 @@ enum FieldKind<'a> {
     Message(fn() -> MessageDescription<'a>),
     Tuple(&'a [FieldType<'a>]),
     KeyValue(&'a [FieldType<'a>; 2]),
+}
+
+// Implement PartialEq and Hash manually for FieldKind because it contains
+// function pointers, whose impls can not be relied on. Instead, call
+// the function pointers and compare the results.
+
+impl PartialEq for FieldKind<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FieldKind::Builtin(a), FieldKind::Builtin(b)) => a == b,
+            (FieldKind::Local(a), FieldKind::Local(b)) => a == b,
+            (
+                FieldKind::External {
+                    name: a_name,
+                    import_path: a_import_path,
+                },
+                FieldKind::External {
+                    name: b_name,
+                    import_path: b_import_path,
+                },
+            ) => a_name == b_name && a_import_path == b_import_path,
+            (FieldKind::Message(a), FieldKind::Message(b)) => a() == b(),
+            (FieldKind::Tuple(a), FieldKind::Tuple(b)) => a == b,
+            (FieldKind::KeyValue(a), FieldKind::KeyValue(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for FieldKind<'_> {}
+
+impl core::hash::Hash for FieldKind<'_> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            FieldKind::Builtin(name) => {
+                0u8.hash(state);
+                name.hash(state);
+            }
+            FieldKind::Local(name) => {
+                1u8.hash(state);
+                name.hash(state);
+            }
+            FieldKind::External { name, import_path } => {
+                2u8.hash(state);
+                name.hash(state);
+                import_path.hash(state);
+            }
+            FieldKind::Message(f) => {
+                3u8.hash(state);
+                f().hash(state);
+            }
+            FieldKind::Tuple(fields) => {
+                4u8.hash(state);
+                fields.hash(state);
+            }
+            FieldKind::KeyValue(kv) => {
+                5u8.hash(state);
+                kv.hash(state);
+            }
+        }
+    }
 }
 
 impl<'a> FieldType<'a> {
