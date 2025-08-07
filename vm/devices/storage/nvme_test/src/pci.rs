@@ -10,7 +10,7 @@ use crate::IOCQES;
 use crate::IOSQES;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
-use crate::NvmeControllerClient;
+use crate::NvmeFaultControllerClient;
 use crate::PAGE_MASK;
 use crate::VENDOR_ID;
 use crate::spec;
@@ -49,7 +49,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 
 /// An NVMe controller.
 #[derive(InspectMut)]
-pub struct NvmeController {
+pub struct NvmeFaultController {
     cfg_space: ConfigSpaceType0Emulator,
     #[inspect(skip)]
     msix: MsixEmulator,
@@ -95,7 +95,7 @@ const CAP: spec::Cap = spec::Cap::new()
 
 /// The NVMe controller's capabilities.
 #[derive(Debug, Copy, Clone)]
-pub struct NvmeControllerCaps {
+pub struct NvmeFaultControllerCaps {
     /// The number of entries in the MSI-X table.
     pub msix_count: u16,
     /// The maximum number of IO submission and completion queues.
@@ -105,14 +105,14 @@ pub struct NvmeControllerCaps {
     pub subsystem_id: Guid,
 }
 
-impl NvmeController {
+impl NvmeFaultController {
     /// Creates a new NVMe controller.
     pub fn new(
         driver_source: &VmTaskDriverSource,
         guest_memory: GuestMemory,
         register_msi: &mut dyn RegisterMsi,
         register_mmio: &mut dyn RegisterMmioIntercept,
-        caps: NvmeControllerCaps,
+        caps: NvmeFaultControllerCaps,
         fault_configuration: FaultConfiguration,
     ) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
@@ -167,7 +167,7 @@ impl NvmeController {
     }
 
     /// Returns a client for manipulating the NVMe controller at runtime.
-    pub fn client(&self) -> NvmeControllerClient {
+    pub fn client(&self) -> NvmeFaultControllerClient {
         self.workers.client()
     }
 
@@ -417,7 +417,7 @@ impl NvmeController {
     }
 }
 
-impl ChangeDeviceState for NvmeController {
+impl ChangeDeviceState for NvmeFaultController {
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}
@@ -437,7 +437,7 @@ impl ChangeDeviceState for NvmeController {
     }
 }
 
-impl ChipsetDevice for NvmeController {
+impl ChipsetDevice for NvmeFaultController {
     fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
         Some(self)
     }
@@ -447,7 +447,7 @@ impl ChipsetDevice for NvmeController {
     }
 }
 
-impl MmioIntercept for NvmeController {
+impl MmioIntercept for NvmeFaultController {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         match self.cfg_space.find_bar(addr) {
             Some((0, offset)) => self.read_bar0(offset, data),
@@ -477,7 +477,7 @@ impl MmioIntercept for NvmeController {
     }
 }
 
-impl PciConfigSpace for NvmeController {
+impl PciConfigSpace for NvmeFaultController {
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
         self.cfg_space.read_u32(offset, value)
     }
@@ -487,7 +487,7 @@ impl PciConfigSpace for NvmeController {
     }
 }
 
-impl SaveRestore for NvmeController {
+impl SaveRestore for NvmeFaultController {
     type SavedState = SavedStateNotSupported;
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {

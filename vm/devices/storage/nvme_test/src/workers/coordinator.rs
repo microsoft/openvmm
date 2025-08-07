@@ -98,8 +98,8 @@ impl NvmeWorkers {
         }
     }
 
-    pub fn client(&self) -> NvmeControllerClient {
-        NvmeControllerClient {
+    pub fn client(&self) -> NvmeFaultControllerClient {
+        NvmeFaultControllerClient {
             send: self.send.clone(),
         }
     }
@@ -186,11 +186,11 @@ impl NvmeWorkers {
 
 /// Client for modifying the NVMe controller state at runtime.
 #[derive(Debug)]
-pub struct NvmeControllerClient {
+pub struct NvmeFaultControllerClient {
     send: mesh::Sender<CoordinatorRequest>,
 }
 
-impl NvmeControllerClient {
+impl NvmeFaultControllerClient {
     /// Adds a namespace.
     pub async fn add_namespace(&self, nsid: u32, disk: Disk) -> Result<(), NsidConflict> {
         self.send

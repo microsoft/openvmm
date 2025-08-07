@@ -4,8 +4,8 @@
 use super::test_helpers::TestNvmeMmioRegistration;
 use crate::BAR0_LEN;
 use crate::FaultConfiguration;
-use crate::NvmeController;
-use crate::NvmeControllerCaps;
+use crate::NvmeFaultController;
+use crate::NvmeFaultControllerCaps;
 use crate::PAGE_SIZE64;
 use crate::QueueFault;
 use crate::QueueFaultBehavior;
@@ -35,16 +35,16 @@ fn instantiate_controller(
     gm: &GuestMemory,
     int_controller: Option<&TestPciInterruptController>,
     fault_configuration: FaultConfiguration,
-) -> NvmeController {
+) -> NvmeFaultController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_interrupt_set = MsiInterruptSet::new();
-    let controller = NvmeController::new(
+    let controller = NvmeFaultController::new(
         vm_task_driver,
         gm.clone(),
         &mut msi_interrupt_set,
         &mut mmio_reg,
-        NvmeControllerCaps {
+        NvmeFaultControllerCaps {
             msix_count: 64,
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
@@ -59,7 +59,7 @@ fn instantiate_controller(
 }
 
 fn write_msix_table_entry(
-    controller: &mut NvmeController,
+    controller: &mut NvmeFaultController,
     table_index: u16,
     address: u64,
     data: u32,
@@ -115,7 +115,7 @@ pub async fn instantiate_and_build_admin_queue(
     driver: DefaultDriver,
     gm: &GuestMemory,
     fault_configuration: FaultConfiguration,
-) -> NvmeController {
+) -> NvmeFaultController {
     let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller, fault_configuration);
     // Set the BARs.
     nvmec.pci_cfg_write(0x10, 0).unwrap();

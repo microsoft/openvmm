@@ -8,7 +8,7 @@ mod coordinator;
 mod io;
 
 pub use admin::NsidConflict;
-pub use coordinator::NvmeControllerClient;
+pub use coordinator::NvmeFaultControllerClient;
 pub use coordinator::NvmeWorkers;
 
 use crate::PAGE_SIZE;

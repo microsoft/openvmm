@@ -378,12 +378,12 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
     // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    let nvme = nvme_test::NvmeController::new(
+    let nvme = nvme_test::NvmeFaultController::new(
         &driver_source,
         guest_mem.clone(),
         &mut msi_set,
         &mut ExternallyManagedMmioIntercepts,
-        nvme_test::NvmeControllerCaps {
+        nvme_test::NvmeFaultControllerCaps {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),

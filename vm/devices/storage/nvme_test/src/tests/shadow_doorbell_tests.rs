@@ -36,7 +36,7 @@ async fn setup_shadow_doorbells(
     gm: &GuestMemory,
     int_controller: &TestPciInterruptController,
     dq_bases: Option<(u64, u64)>,
-) -> crate::NvmeController {
+) -> crate::NvmeFaultController {
     let fault_configuration = FaultConfiguration { admin_fault: None };
     // Build a controller with 64 entries in the admin queue (just so that the ASQ fits in one page).
     let mut nvmec = instantiate_and_build_admin_queue(

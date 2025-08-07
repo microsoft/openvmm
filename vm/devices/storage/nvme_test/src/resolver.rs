@@ -5,8 +5,8 @@
 
 use crate::FaultConfiguration;
 use crate::NsidConflict;
-use crate::NvmeController;
-use crate::NvmeControllerCaps;
+use crate::NvmeFaultController;
+use crate::NvmeFaultControllerCaps;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use nvme_resources::NamespaceDefinition;
@@ -53,12 +53,12 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
         resource: NvmeControllerHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let controller = NvmeController::new(
+        let controller = NvmeFaultController::new(
             input.driver_source,
             input.guest_memory.clone(),
             input.register_msi,
             input.register_mmio,
-            NvmeControllerCaps {
+            NvmeFaultControllerCaps {
                 msix_count: resource.msix_count,
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,

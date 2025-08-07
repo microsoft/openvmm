@@ -16,13 +16,13 @@ mod workers;
 #[cfg(test)]
 mod tests;
 
-pub use pci::NvmeController;
-pub use pci::NvmeControllerCaps;
-pub use workers::NsidConflict;
-pub use workers::NvmeControllerClient;
+pub use pci::NvmeFaultController;
+pub use pci::NvmeFaultControllerCaps;
+pub use workers::NvmeFaultControllerClient;
 
 use guestmem::ranges::PagedRange;
 use nvme_spec as spec;
+use workers::NsidConflict;
 
 // Device configuration shared by PCI and NVMe.
 const DOORBELL_STRIDE_BITS: u8 = 2;
