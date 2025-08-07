@@ -44,8 +44,6 @@ impl<'a> DescriptorWriter<'a> {
 
         // Sort the descriptors to get a consistent order from run to run and build to build.
         descriptors.sort_by_key(|desc| (desc.package, desc.message.name));
-        // Deduplicate by package and name. TODO: ensure duplicates match.
-        descriptors.dedup_by_key(|desc| (desc.package, desc.message.name));
 
         Self {
             descriptors,
@@ -193,17 +191,22 @@ fn referenced_descriptors<'a>(
             MessageDescription::Internal(tld) => Some(tld),
             MessageDescription::External { .. } => None,
         }));
-    let mut inserted = HashSet::from_iter(descriptors.iter().copied());
+    // Deduplicate by package and name. TODO: ensure duplicates match.
+    let mut inserted = HashSet::from_iter(
+        descriptors
+            .iter()
+            .map(|desc| (desc.package, desc.message.name)),
+    );
 
     fn process_field_type<'a>(
         field_type: &FieldType<'a>,
         descriptors: &mut Vec<&'a TopLevelDescriptor<'a>>,
-        inserted: &mut HashSet<&'a TopLevelDescriptor<'a>>,
+        inserted: &mut HashSet<(&'a str, &'a str)>,
     ) {
         match field_type.kind {
             FieldKind::Message(tld) => {
                 if let MessageDescription::Internal(tld) = tld() {
-                    if inserted.insert(tld) {
+                    if inserted.insert((tld.package, tld.message.name)) {
                         descriptors.push(tld);
                     }
                 }
@@ -225,7 +228,7 @@ fn referenced_descriptors<'a>(
     fn process_message<'a>(
         message: &MessageDescriptor<'a>,
         descriptors: &mut Vec<&'a TopLevelDescriptor<'a>>,
-        inserted: &mut HashSet<&'a TopLevelDescriptor<'a>>,
+        inserted: &mut HashSet<(&'a str, &'a str)>,
     ) {
         for field in message
             .fields
