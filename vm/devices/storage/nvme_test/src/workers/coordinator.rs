@@ -8,7 +8,7 @@ use super::admin::AdminConfig;
 use super::admin::AdminHandler;
 use super::admin::AdminState;
 use super::admin::NsidConflict;
-use crate::pci::FaultConfiguration;
+use crate::FaultConfiguration;
 use crate::queue::DoorbellRegister;
 use disk_backend::Disk;
 use futures::FutureExt;

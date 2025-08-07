@@ -8,16 +8,16 @@ use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
 use crate::DOORBELL_STRIDE_BITS;
+use crate::FaultConfiguration;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
 use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
+use crate::QueueFaultBehavior;
 use crate::VENDOR_ID;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
 use crate::namespace::Namespace;
-use crate::pci::FaultConfiguration;
-use crate::pci::QueueFaultType;
 use crate::prp::PrpRange;
 use crate::queue::CompletionQueue;
 use crate::queue::DoorbellRegister;
@@ -75,7 +75,7 @@ pub struct AdminConfig {
     pub max_sqs: u16,
     pub max_cqs: u16,
     pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
-    #[inspect(skip)] // TODO: Inspect this.
+    #[inspect(skip)]
     pub fault_configuration: FaultConfiguration,
 }
 
@@ -468,22 +468,22 @@ impl AdminHandler {
                     let fault = admin_fault.fault_submission_queue(command).await;
 
                     match fault {
-                        QueueFaultType::Update(command_updated) => {
-                            tracelimit::warn_ratelimited!(
+                        QueueFaultBehavior::Update(command_updated) => {
+                            tracing::warn!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
                                 &command_updated
                             );
                             command = command_updated;
                         }
-                        QueueFaultType::Drop => {
-                            tracelimit::warn_ratelimited!(
+                        QueueFaultBehavior::Drop => {
+                            tracing::warn!(
                                 "configured fault: admin command dropped from sq {:?}",
                                 &command
                             );
                             return Ok(());
                         }
-                        QueueFaultType::NoOp => {}
+                        QueueFaultBehavior::Default => {}
                     }
                 }
 
@@ -578,7 +578,7 @@ impl AdminHandler {
             let fault = admin_fault.fault_completion_queue(completion).await;
 
             match fault {
-                QueueFaultType::Update(completion_new) => {
+                QueueFaultBehavior::Update(completion_new) => {
                     tracelimit::warn_ratelimited!(
                         "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
                         &completion,
@@ -586,14 +586,14 @@ impl AdminHandler {
                     );
                     completion = completion_new;
                 }
-                QueueFaultType::Drop => {
+                QueueFaultBehavior::Drop => {
                     tracelimit::warn_ratelimited!(
                         "configured fault: admin completion dropped from cq {:?}",
                         &completion
                     );
                     return Ok(());
                 }
-                QueueFaultType::NoOp => {}
+                QueueFaultBehavior::Default => {}
             }
         }
 

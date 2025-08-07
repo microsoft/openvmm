@@ -14,7 +14,7 @@ use nvme_spec::Command;
 use nvme_spec::Completion;
 use nvme_spec::nvm::DsmRange;
 use nvme_test::FaultConfiguration;
-use nvme_test::QueueFaultType;
+use nvme_test::QueueFaultBehavior;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
@@ -42,25 +42,28 @@ struct AdminQueueFault {
 
 #[async_trait::async_trait]
 impl nvme_test::QueueFault for AdminQueueFault {
-    async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultType<Command> {
+    async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultBehavior<Command> {
         tracing::info!("Faulting submission queue using cid sequence number mismatch");
         let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
         match opcode {
             nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
                 // Overwrite the previous cid to cause a panic.
                 command.cdw0.set_cid(0);
-                QueueFaultType::Update(command)
+                QueueFaultBehavior::Update(command)
             }
-            _ => QueueFaultType::NoOp,
+            _ => QueueFaultBehavior::Default,
         }
     }
 
-    async fn fault_completion_queue(&self, _completion: Completion) -> QueueFaultType<Completion> {
+    async fn fault_completion_queue(
+        &self,
+        _completion: Completion,
+    ) -> QueueFaultBehavior<Completion> {
         tracing::info!("Faulting completion queue using delay");
         PolledTimer::new(&self.driver)
             .sleep(Duration::from_millis(100))
             .await;
-        QueueFaultType::NoOp
+        QueueFaultBehavior::Default
     }
 }
 

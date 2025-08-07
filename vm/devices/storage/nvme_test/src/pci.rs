@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The NVMe PCI device implementation.
+//! The NVMe (Fault Injection) PCI device implementation.
 
 use crate::BAR0_LEN;
 use crate::DOORBELL_STRIDE_BITS;
+use crate::FaultConfiguration;
 use crate::IOCQES;
 use crate::IOSQES;
 use crate::MAX_QES;
@@ -45,31 +46,6 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
-
-/// Represents a fault type for queues. Can be applied to either submission or completion queues.
-#[derive(Debug, Clone, Copy)]
-pub enum QueueFaultType<T> {
-    Update(T),
-    Drop,
-    NoOp,
-}
-
-/// A queue fault applies a fault to a pair of submission and completion queues.
-#[async_trait::async_trait]
-pub trait QueueFault {
-    async fn fault_submission_queue(&self, command: spec::Command)
-    -> QueueFaultType<spec::Command>;
-    async fn fault_completion_queue(
-        &self,
-        completion: spec::Completion,
-    ) -> QueueFaultType<spec::Completion>;
-}
-
-/// Configuration for NVMe controller faults.
-pub struct FaultConfiguration {
-    /// Fault to apply to the admin queues
-    pub admin_fault: Option<Box<dyn QueueFault + Send + Sync>>,
-}
 
 /// An NVMe controller.
 #[derive(InspectMut)]

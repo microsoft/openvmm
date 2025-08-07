@@ -3,10 +3,10 @@
 
 use super::test_helpers::TestNvmeMmioRegistration;
 use crate::BAR0_LEN;
+use crate::FaultConfiguration;
 use crate::NvmeController;
 use crate::NvmeControllerCaps;
 use crate::PAGE_SIZE64;
-use crate::pci::FaultConfiguration;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::tests::test_helpers::read_completion_from_queue;
