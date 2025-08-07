@@ -308,7 +308,6 @@ impl VpContextBuilder for TdxHardwareContext {
         reset_page[jump_offset.wrapping_sub(1)] = (byte_offset.wrapping_sub(jump_offset)) as u8;
 
         // L4:
-
         reset_page[(l4_offset as usize).wrapping_sub(1)] =
             (byte_offset.wrapping_sub(l4_offset as usize)) as u8;
 
