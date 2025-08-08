@@ -96,7 +96,9 @@ pub enum Error<'a> {
     #[error("device tree contained more memory ranges than can be parsed")]
     TooManyMemoryEntries,
     /// Invalid u32 property value
-    #[error("{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}")]
+    #[error(
+        "{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}"
+    )]
     PropInvalidU32 {
         node_name: &'a str,
         prop_name: &'a str,
@@ -104,7 +106,9 @@ pub enum Error<'a> {
         actual: u32,
     },
     /// Invalid string property value
-    #[error("{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}")]
+    #[error(
+        "{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}"
+    )]
     PropInvalidStr {
         node_name: &'a str,
         prop_name: &'a str,
@@ -113,15 +117,10 @@ pub enum Error<'a> {
     },
     /// Unexpected VMBUS VTL
     #[error("{node_name} has an unexpected vtl {vtl}")]
-    UnexpectedVmbusVtl {
-        node_name: &'a str,
-        vtl: u32,
-    },
+    UnexpectedVmbusVtl { node_name: &'a str, vtl: u32 },
     /// Multiple VMBUS nodes
     #[error("{node_name} specifies a duplicate vmbus node")]
-    MultipleVmbusNode {
-        node_name: &'a str,
-    },
+    MultipleVmbusNode { node_name: &'a str },
     /// VMBUS ranges child/parent mismatch
     #[error("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")]
     VmbusRangesChildParent {
@@ -138,16 +137,10 @@ pub enum Error<'a> {
     },
     /// Too many VMBUS MMIO ranges
     #[error("vmbus {node_name} has more than 2 mmio ranges {ranges}")]
-    TooManyVmbusMmioRanges {
-        node_name: &'a str,
-        ranges: usize,
-    },
+    TooManyVmbusMmioRanges { node_name: &'a str, ranges: usize },
     /// VMBUS MMIO overlaps RAM
     #[error("vmbus mmio at {}..{} overlaps ram at {}..{}", mmio.start(), mmio.end(), ram.range.start(), ram.range.end())]
-    VmbusMmioOverlapsRam {
-        mmio: MemoryRange,
-        ram: MemoryEntry,
-    },
+    VmbusMmioOverlapsRam { mmio: MemoryRange, ram: MemoryEntry },
     /// VMBUS MMIO overlaps VMBUS MMIO
     #[error("vmbus mmio at {}..{} overlaps vmbus mmio at {}..{}", mmio_a.start(), mmio_a.end(), mmio_b.start(), mmio_b.end())]
     VmbusMmioOverlapsVmbusMmio {
@@ -159,9 +152,7 @@ pub enum Error<'a> {
     CmdlineSize,
     /// Unexpected memory allocation mode
     #[error("unexpected memory allocation mode: {mode}")]
-    UnexpectedMemoryAllocationMode {
-        mode: &'a str,
-    },
+    UnexpectedMemoryAllocationMode { mode: &'a str },
 }
 
 const COM3_REG_BASE: u64 = 0x3E8;
@@ -398,13 +389,12 @@ impl<
                         // NOTE: For x86, Underhill will need to query the hypervisor for
                         // the vp_index to apic_id mapping. There's no
                         // correlation in the device tree about this at all.
-                        let reg_property = cpu
-                            .find_property("reg")
-                            .map_err(Error::Prop)?
-                            .ok_or(Error::PropMissing {
+                        let reg_property = cpu.find_property("reg").map_err(Error::Prop)?.ok_or(
+                            Error::PropMissing {
                                 node_name: cpu.name,
                                 prop_name: "reg",
-                            })?;
+                            },
+                        )?;
 
                         let reg = if address_cells == 1 {
                             reg_property.read_u32(0).map_err(Error::Prop)? as u64
@@ -592,8 +582,7 @@ impl<
                         .transpose()?
                         .unwrap_or("");
 
-                    write!(storage.command_line, "{}", cmdline)
-                        .map_err(|_| Error::CmdlineSize)?;
+                    write!(storage.command_line, "{}", cmdline).map_err(|_| Error::CmdlineSize)?;
                 }
                 _ if child.name.starts_with("intc@") => {
                     validate_property_str(&child, "compatible", "arm,gic-v3")?;
@@ -612,17 +601,14 @@ impl<
                         .read_u64(0)
                         .map_err(Error::Prop)?;
 
-                    let gic_reg_property = child
-                        .find_property("reg")
-                        .map_err(Error::Prop)?
-                        .ok_or(Error::PropMissing {
+                    let gic_reg_property = child.find_property("reg").map_err(Error::Prop)?.ok_or(
+                        Error::PropMissing {
                             node_name: child.name,
                             prop_name: "reg",
-                        })?;
-                    let gic_distributor_base =
-                        gic_reg_property.read_u64(0).map_err(Error::Prop)?;
-                    let gic_distributor_size =
-                        gic_reg_property.read_u64(1).map_err(Error::Prop)?;
+                        },
+                    )?;
+                    let gic_distributor_base = gic_reg_property.read_u64(0).map_err(Error::Prop)?;
+                    let gic_distributor_size = gic_reg_property.read_u64(1).map_err(Error::Prop)?;
                     let gic_redistributors_base =
                         gic_reg_property.read_u64(2).map_err(Error::Prop)?;
                     let gic_redistributors_size =
@@ -798,68 +784,67 @@ fn parse_vmbus<'a>(node: &fdt::parser::Node<'a>) -> Result<VmbusInfo, Error<'a>>
         });
     }
 
-    let mmio: ArrayVec<MemoryRange, 2> =
-        match node.find_property("ranges").map_err(Error::Prop)? {
-            Some(ranges) => {
-                // Determine how many mmio ranges this describes. Valid numbers are
-                // 0, 1 or 2.
-                let ranges_tuple_size = size_of::<u64>() * 3;
-                let number_of_ranges = ranges.data.len() / ranges_tuple_size;
-                let mut mmio = ArrayVec::new();
+    let mmio: ArrayVec<MemoryRange, 2> = match node.find_property("ranges").map_err(Error::Prop)? {
+        Some(ranges) => {
+            // Determine how many mmio ranges this describes. Valid numbers are
+            // 0, 1 or 2.
+            let ranges_tuple_size = size_of::<u64>() * 3;
+            let number_of_ranges = ranges.data.len() / ranges_tuple_size;
+            let mut mmio = ArrayVec::new();
 
-                if number_of_ranges > 2 {
-                    return Err(Error::TooManyVmbusMmioRanges {
+            if number_of_ranges > 2 {
+                return Err(Error::TooManyVmbusMmioRanges {
+                    node_name: node.name,
+                    ranges: number_of_ranges,
+                });
+            }
+
+            for i in 0..number_of_ranges {
+                let child_base = ranges.read_u64(i * 3).map_err(Error::Prop)?;
+                let parent_base = ranges.read_u64(i * 3 + 1).map_err(Error::Prop)?;
+                let len = ranges.read_u64(i * 3 + 2).map_err(Error::Prop)?;
+
+                if child_base != parent_base {
+                    return Err(Error::VmbusRangesChildParent {
                         node_name: node.name,
-                        ranges: number_of_ranges,
+                        child_base,
+                        parent_base,
                     });
                 }
 
-                for i in 0..number_of_ranges {
-                    let child_base = ranges.read_u64(i * 3).map_err(Error::Prop)?;
-                    let parent_base = ranges.read_u64(i * 3 + 1).map_err(Error::Prop)?;
-                    let len = ranges.read_u64(i * 3 + 2).map_err(Error::Prop)?;
-
-                    if child_base != parent_base {
-                        return Err(Error::VmbusRangesChildParent {
-                            node_name: node.name,
-                            child_base,
-                            parent_base,
-                        });
-                    }
-
-                    if child_base % HV_PAGE_SIZE != 0 || len % HV_PAGE_SIZE != 0 {
-                        return Err(Error::VmbusRangesNotAligned {
-                            node_name: node.name,
-                            base: child_base,
-                            len,
-                        });
-                    }
-
-                    mmio.push(
-                        MemoryRange::try_new(child_base..(child_base + len)).expect("valid range"),
-                    );
-                }
-
-                // The DT ranges field might not have been sorted. Swap them if the
-                // low gap was described 2nd.
-                if number_of_ranges > 1 && mmio[0].start() > mmio[1].start() {
-                    mmio.swap(0, 1);
-                }
-
-                if number_of_ranges > 1 && mmio[0].overlaps(&mmio[1]) {
-                    return Err(Error::VmbusMmioOverlapsVmbusMmio {
-                        mmio_a: mmio[0],
-                        mmio_b: mmio[1],
+                if child_base % HV_PAGE_SIZE != 0 || len % HV_PAGE_SIZE != 0 {
+                    return Err(Error::VmbusRangesNotAligned {
+                        node_name: node.name,
+                        base: child_base,
+                        len,
                     });
                 }
 
-                mmio
+                mmio.push(
+                    MemoryRange::try_new(child_base..(child_base + len)).expect("valid range"),
+                );
             }
-            None => {
-                // No mmio is acceptable.
-                ArrayVec::new()
+
+            // The DT ranges field might not have been sorted. Swap them if the
+            // low gap was described 2nd.
+            if number_of_ranges > 1 && mmio[0].start() > mmio[1].start() {
+                mmio.swap(0, 1);
             }
-        };
+
+            if number_of_ranges > 1 && mmio[0].overlaps(&mmio[1]) {
+                return Err(Error::VmbusMmioOverlapsVmbusMmio {
+                    mmio_a: mmio[0],
+                    mmio_b: mmio[1],
+                });
+            }
+
+            mmio
+        }
+        None => {
+            // No mmio is acceptable.
+            ArrayVec::new()
+        }
+    };
 
     let connection_id = node
         .find_property("microsoft,message-connection-id")
@@ -949,10 +934,7 @@ fn parse_simple_bus<'a>(
     Ok(())
 }
 
-fn parse_io_bus<'a>(
-    node: &fdt::parser::Node<'a>,
-    com3_serial: &mut bool,
-) -> Result<(), Error<'a>> {
+fn parse_io_bus<'a>(node: &fdt::parser::Node<'a>, com3_serial: &mut bool) -> Result<(), Error<'a>> {
     for io_bus_child in node.children() {
         let io_bus_child = io_bus_child.map_err(|error| Error::Node {
             parent_name: node.name,

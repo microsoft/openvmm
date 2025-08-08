@@ -64,13 +64,17 @@ pub enum Error<'a> {
     #[error("Unexpected token when parsing children nodes {0}")]
     NodeChildren(u32),
     /// Property data buffer len is not a multiple of requested type size
-    #[error("Property {prop_name} data buffer len is not multiple of type size for node {node_name}")]
+    #[error(
+        "Property {prop_name} data buffer len is not multiple of type size for node {node_name}"
+    )]
     PropertyDataTypeBuffer {
         node_name: &'a str,
         prop_name: &'a str,
     },
     /// Property requested at offset is larger than data buffer
-    #[error("Property {prop_name} requested at offset is larger than data buffer for node {node_name}")]
+    #[error(
+        "Property {prop_name} requested at offset is larger than data buffer for node {node_name}"
+    )]
     PropertyOffset {
         node_name: &'a str,
         prop_name: &'a str,
@@ -605,11 +609,9 @@ impl<'a> Property<'a> {
 
     /// Read the data as a `&str`.
     pub fn read_str(&self) -> Result<&'a str, Error<'a>> {
-        extract_str_from_bytes(self.data).map_err(|error| {
-            Error::PropertyStr {
-                node_name: self.node_name,
-                error,
-            }
+        extract_str_from_bytes(self.data).map_err(|error| Error::PropertyStr {
+            node_name: self.node_name,
+            error,
         })
     }
 
