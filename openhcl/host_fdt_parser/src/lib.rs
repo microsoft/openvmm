@@ -21,6 +21,7 @@ use igvm_defs::MemoryMapEntryType;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
 use memory_range::MemoryRange;
+use thiserror::Error;
 
 /// Information about VMBUS.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,134 +57,113 @@ pub struct GicInfo {
 }
 
 /// Errors returned by parsing.
-#[derive(Debug)]
-pub struct Error<'a>(ErrorKind<'a>);
-
-impl Display for Error<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("Parsing failed due to: {}", self.0))
-    }
-}
-
-impl core::error::Error for Error<'_> {}
-
-#[derive(Debug)]
-enum ErrorKind<'a> {
+#[derive(Debug, Error)]
+pub enum Error<'a> {
+    /// Invalid device tree
+    #[error("invalid device tree: {0}")]
     Dt(fdt::parser::Error<'a>),
+    /// Invalid device tree node  
+    #[error("invalid device tree node with parent {parent_name}: {error}")]
     Node {
         parent_name: &'a str,
+        #[source]
         error: fdt::parser::Error<'a>,
     },
+    /// Required property missing
+    #[error("{node_name} did not have the following required property {prop_name}")]
     PropMissing {
         node_name: &'a str,
         prop_name: &'static str,
     },
+    /// Reading node property failed
+    #[error("reading node property failed: {0}")]
     Prop(fdt::parser::Error<'a>),
+    /// Too many CPUs
+    #[error("device tree contained more enabled CPUs than can be parsed")]
     TooManyCpus,
+    /// Memory region not aligned
+    #[error("memory node {node_name} contains 4K unaligned base {base} or len {len}")]
     MemoryRegUnaligned {
         node_name: &'a str,
         base: u64,
         len: u64,
     },
+    /// Memory regions overlap
+    #[error("ram at {}..{} of type {:?} overlaps ram at {}..{} of type {:?}", lower.range.start(), lower.range.end(), lower.mem_type, upper.range.start(), upper.range.end(), upper.mem_type)]
     MemoryRegOverlap {
         lower: MemoryEntry,
         upper: MemoryEntry,
     },
+    /// Too many memory entries
+    #[error("device tree contained more memory ranges than can be parsed")]
     TooManyMemoryEntries,
+    /// Invalid u32 property value
+    #[error("{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}")]
     PropInvalidU32 {
         node_name: &'a str,
         prop_name: &'a str,
         expected: u32,
         actual: u32,
     },
+    /// Invalid string property value
+    #[error("{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}")]
     PropInvalidStr {
         node_name: &'a str,
         prop_name: &'a str,
         expected: &'a str,
         actual: &'a str,
     },
+    /// Unexpected VMBUS VTL
+    #[error("{node_name} has an unexpected vtl {vtl}")]
     UnexpectedVmbusVtl {
         node_name: &'a str,
         vtl: u32,
     },
+    /// Multiple VMBUS nodes
+    #[error("{node_name} specifies a duplicate vmbus node")]
     MultipleVmbusNode {
         node_name: &'a str,
     },
+    /// VMBUS ranges child/parent mismatch
+    #[error("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")]
     VmbusRangesChildParent {
         node_name: &'a str,
         child_base: u64,
         parent_base: u64,
     },
+    /// VMBUS ranges not aligned
+    #[error("vmbus {node_name} base {base} or len {len} not aligned to 4K")]
     VmbusRangesNotAligned {
         node_name: &'a str,
         base: u64,
         len: u64,
     },
+    /// Too many VMBUS MMIO ranges
+    #[error("vmbus {node_name} has more than 2 mmio ranges {ranges}")]
     TooManyVmbusMmioRanges {
         node_name: &'a str,
         ranges: usize,
     },
+    /// VMBUS MMIO overlaps RAM
+    #[error("vmbus mmio at {}..{} overlaps ram at {}..{}", mmio.start(), mmio.end(), ram.range.start(), ram.range.end())]
     VmbusMmioOverlapsRam {
         mmio: MemoryRange,
         ram: MemoryEntry,
     },
+    /// VMBUS MMIO overlaps VMBUS MMIO
+    #[error("vmbus mmio at {}..{} overlaps vmbus mmio at {}..{}", mmio_a.start(), mmio_a.end(), mmio_b.start(), mmio_b.end())]
     VmbusMmioOverlapsVmbusMmio {
         mmio_a: MemoryRange,
         mmio_b: MemoryRange,
     },
+    /// Command line size error
+    #[error("commandline too small to parse /chosen bootargs")]
     CmdlineSize,
+    /// Unexpected memory allocation mode
+    #[error("unexpected memory allocation mode: {mode}")]
     UnexpectedMemoryAllocationMode {
         mode: &'a str,
     },
-}
-
-impl Display for ErrorKind<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            ErrorKind::Dt(e) => f.write_fmt(format_args!("invalid device tree: {}", e)),
-            ErrorKind::Node { parent_name, error } => {
-                f.write_fmt(format_args!("invalid device tree node with parent {parent_name}: {error}"))
-            }
-            ErrorKind::PropMissing {
-                node_name,
-                prop_name,
-            } => f.write_fmt(format_args!(
-                "{node_name} did not have the following required property {prop_name}",
-            )),
-            ErrorKind::Prop(e) => f.write_fmt(format_args!("reading node property failed: {e}")),
-            ErrorKind::TooManyCpus => {
-                f.write_str("device tree contained more enabled CPUs than can be parsed")
-            }
-            ErrorKind::MemoryRegUnaligned {
-                node_name,
-                base,
-                len,
-            } => f.write_fmt(format_args!(
-                "memory node {node_name} contains 4K unaligned base {base} or len {len}"
-            )),
-            ErrorKind::MemoryRegOverlap { lower, upper,  } => {
-                f.write_fmt(format_args!("ram at {}..{} of type {:?} overlaps ram at {}..{} of type {:?}", lower.range.start(), lower.range.end(), lower.mem_type, upper.range.start(), upper.range.end(), upper.mem_type))
-            }
-            ErrorKind::TooManyMemoryEntries => {
-                f.write_str("device tree contained more memory ranges than can be parsed")
-            }
-            ErrorKind::PropInvalidU32 { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}")),
-            ErrorKind::PropInvalidStr { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}")),
-            ErrorKind::UnexpectedVmbusVtl { node_name, vtl } => f.write_fmt(format_args!("{node_name} has an unexpected vtl {vtl}")),
-            ErrorKind::MultipleVmbusNode { node_name } => f.write_fmt(format_args!("{node_name} specifies a duplicate vmbus node")),
-            ErrorKind::VmbusRangesChildParent { node_name, child_base, parent_base } => f.write_fmt(format_args!("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")),
-            ErrorKind::VmbusRangesNotAligned { node_name, base, len } => f.write_fmt(format_args!("vmbus {node_name} base {base} or len {len} not aligned to 4K")),
-            ErrorKind::TooManyVmbusMmioRanges { node_name, ranges } => f.write_fmt(format_args!("vmbus {node_name} has more than 2 mmio ranges {ranges}")),
-            ErrorKind::VmbusMmioOverlapsRam { mmio, ram } => {
-                f.write_fmt(format_args!("vmbus mmio at {}..{} overlaps ram at {}..{}", mmio.start(), mmio.end(), ram.range.start(), ram.range.end()))
-            }
-            ErrorKind::VmbusMmioOverlapsVmbusMmio { mmio_a, mmio_b } => {
-                f.write_fmt(format_args!("vmbus mmio at {}..{} overlaps vmbus mmio at {}..{}", mmio_a.start(), mmio_a.end(), mmio_b.start(), mmio_b.end()))
-            }
-            ErrorKind::CmdlineSize => f.write_str("commandline too small to parse /chosen bootargs"),
-            ErrorKind::UnexpectedMemoryAllocationMode { mode } => f.write_fmt(format_args!("unexpected memory allocation mode: {}", mode)),
-        }
-    }
 }
 
 const COM3_REG_BASE: u64 = 0x3E8;

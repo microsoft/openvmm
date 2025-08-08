@@ -2879,6 +2879,7 @@ dependencies = [
  "igvm_defs",
  "inspect",
  "memory_range",
+ "thiserror 2.0.12",
  "tracing",
 ]
 
@@ -2974,6 +2975,7 @@ dependencies = [
  "bitfield-struct 0.10.1",
  "open_enum",
  "static_assertions",
+ "thiserror 2.0.12",
  "zerocopy 0.8.24",
 ]
 
