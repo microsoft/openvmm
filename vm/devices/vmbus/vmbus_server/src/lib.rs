@@ -651,6 +651,13 @@ pub struct SynicMessage {
     trusted: bool,
 }
 
+/// Disambiguates offer instances that may have reused the same offer ID.
+#[derive(Debug, Clone, Copy)]
+struct OfferInstanceId {
+    offer_id: OfferId,
+    seq: u64,
+}
+
 struct ServerTask {
     driver: Box<dyn Driver>,
     server: channels::Server,
@@ -658,13 +665,13 @@ struct ServerTask {
     offer_recv: mesh::Receiver<OfferRequest>,
     message_recv: mpsc::Receiver<SynicMessage>,
     server_request_recv:
-        SelectAll<TaggedStream<(OfferId, u64), mesh::Receiver<ChannelServerRequest>>>,
+        SelectAll<TaggedStream<OfferInstanceId, mesh::Receiver<ChannelServerRequest>>>,
     inner: ServerTaskInner,
     external_requests: Option<mesh::Receiver<InitiateContactRequest>>,
     /// Next value for [`Channel::seq`].
     next_seq: u64,
     unstick_on_start: bool,
-    channel_unstickers: FuturesUnordered<Pin<Box<dyn Send + Future<Output = OfferId>>>>,
+    channel_unstickers: FuturesUnordered<Pin<Box<dyn Send + Future<Output = OfferInstanceId>>>>,
     channel_unstick_delay: Option<Duration>,
 }
 
@@ -702,6 +709,13 @@ enum ChannelResponse {
     Modify(i32),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ChannelUnstickState {
+    None,
+    Queued,
+    NeedsRequeue,
+}
+
 struct Channel {
     key: OfferKey,
     send: mesh::Sender<ChannelRequest>,
@@ -714,6 +728,7 @@ struct Channel {
     // close reserved channel response. The reserved state is cleared when the channel is revoked,
     // reopened, or the guest sends an unload message.
     reserved_state: ReservedState,
+    unstick_state: ChannelUnstickState,
 }
 
 struct ReservedState {
@@ -768,7 +783,7 @@ impl ServerTask {
 
         tracing::debug!(?offer_id, %key, "offered channel");
 
-        let id = self.next_seq;
+        let seq = self.next_seq;
         self.next_seq += 1;
         self.inner.channels.insert(
             offer_id,
@@ -777,31 +792,34 @@ impl ServerTask {
                 send: info.request_send,
                 state: ChannelState::Closed,
                 gpadls: GpadlMap::new(),
-                seq: id,
+                seq,
                 flags,
                 reserved_state: ReservedState {
                     message_port: None,
                     target: ConnectionTarget { vp: 0, sint: 0 },
                 },
+                unstick_state: ChannelUnstickState::None,
             },
         );
 
-        self.server_request_recv
-            .push(TaggedStream::new((offer_id, id), info.server_request_recv));
+        self.server_request_recv.push(TaggedStream::new(
+            OfferInstanceId { offer_id, seq },
+            info.server_request_recv,
+        ));
 
         Ok(())
     }
 
-    fn handle_revoke(&mut self, offer_id: OfferId, seq: u64) {
+    fn handle_revoke(&mut self, id: OfferInstanceId) {
         // The channel may or may not exist in the map depending on whether it's been explicitly
         // revoked before being dropped.
-        if let Some(channel) = self.inner.channels.get(&offer_id) {
-            if channel.seq == seq {
-                tracing::info!(?offer_id, "revoking channel");
-                self.inner.channels.remove(&offer_id);
+        if let Some(channel) = self.inner.channels.get(&id.offer_id) {
+            if channel.seq == id.seq {
+                tracing::info!(?id.offer_id, "revoking channel");
+                self.inner.channels.remove(&id.offer_id);
                 self.server
                     .with_notifier(&mut self.inner)
-                    .revoke_channel(offer_id);
+                    .revoke_channel(id.offer_id);
             }
         }
     }
@@ -851,28 +869,38 @@ impl ServerTask {
         } else {
             protocol::STATUS_UNSUCCESSFUL
         };
-        if let Err(err) = self.inner.complete_open(offer_id, result) {
-            tracelimit::error_ratelimited!(
-                error = err.as_ref() as &dyn std::error::Error,
-                "failed to complete open"
-            );
-            // If complete_open failed, the channel is now in FailedOpen state and the device needs
-            // to notified to close it. Calling open_complete is postponed until the device responds
-            // to the close request.
-            self.inner.notify(offer_id, channels::Action::Close);
-        } else {
-            self.server
-                .with_notifier(&mut self.inner)
-                .open_complete(offer_id, status);
 
-            // Some guests ignore interrupts before they receive the OpenResult message. To avoid
-            // a potential hang, signal the channel after a delay if needed.
-            if let Some(delay) = self.channel_unstick_delay {
-                let mut timer = PolledTimer::new(&self.driver);
-                self.channel_unstickers.push(Box::pin(async move {
-                    timer.sleep(delay).await;
-                    offer_id
-                }));
+        match self.inner.complete_open(offer_id, result) {
+            Ok(channel) => {
+                // Some guests ignore interrupts before they receive the OpenResult message. To avoid
+                // a potential hang, signal the channel after a delay if needed.
+                if let Some(delay) = self.channel_unstick_delay {
+                    if channel.unstick_state == ChannelUnstickState::None {
+                        channel.unstick_state = ChannelUnstickState::Queued;
+                        let seq = channel.seq;
+                        let mut timer = PolledTimer::new(&self.driver);
+                        self.channel_unstickers.push(Box::pin(async move {
+                            timer.sleep(delay).await;
+                            OfferInstanceId { offer_id, seq }
+                        }));
+                    } else {
+                        channel.unstick_state = ChannelUnstickState::NeedsRequeue;
+                    }
+                }
+
+                self.server
+                    .with_notifier(&mut self.inner)
+                    .open_complete(offer_id, status);
+            }
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to complete open"
+                );
+                // If complete_open failed, the channel is now in FailedOpen state and the device needs
+                // to notified to close it. Calling open_complete is postponed until the device responds
+                // to the close request.
+                self.inner.notify(offer_id, channels::Action::Close);
             }
         }
     }
@@ -1191,15 +1219,15 @@ impl ServerTask {
                 }
                 r = self.server_request_recv.select_next_some() => {
                     match r {
-                        ((id, seq), Some(request)) => match request {
+                        (id, Some(request)) => match request {
                             ChannelServerRequest::Restore(rpc) => rpc.handle_failable_sync(|open| {
-                                self.handle_restore_channel(id, open)
+                                self.handle_restore_channel(id.offer_id, open)
                             }),
                             ChannelServerRequest::Revoke(rpc) => rpc.handle_sync(|_| {
-                                self.handle_revoke(id, seq);
+                                self.handle_revoke(id);
                             })
                         },
-                        ((id, seq), None) => self.handle_revoke(id, seq),
+                        (id, None) => self.handle_revoke(id),
                     }
                 }
                 r = channel_response => {
@@ -1233,8 +1261,14 @@ impl ServerTask {
     /// them. If `!force`, only wake for rings that are in the state where a notification is
     /// expected.
     fn unstick_channels(&self, force: bool) {
+        let Some(version) = self.server.get_version() else {
+            tracing::warn!("cannot unstick when not connected");
+            return;
+        };
+
         for channel in self.inner.channels.values() {
-            if let Err(err) = self.unstick_channel(channel, force, true) {
+            let gm = self.inner.get_gm_for_channel(version, channel);
+            if let Err(err) = Self::unstick_channel(gm, channel, force, true) {
                 tracing::warn!(
                     channel = %channel.key,
                     error = err.as_ref() as &dyn std::error::Error,
@@ -1246,9 +1280,40 @@ impl ServerTask {
 
     /// Wakes the guest for the specified channel if it's open and the rings are in a state where
     /// notification is expected.
-    fn unstick_channel_by_id(&self, offer_id: OfferId) {
-        if let Some(channel) = self.inner.channels.get(&offer_id) {
-            if let Err(err) = self.unstick_channel(channel, false, false) {
+    fn unstick_channel_by_id(&mut self, id: OfferInstanceId) {
+        let Some(version) = self.server.get_version() else {
+            tracelimit::warn_ratelimited!("cannot unstick when not connected");
+            return;
+        };
+
+        if let Some(channel) = self.inner.channels.get_mut(&id.offer_id) {
+            if channel.seq != id.seq {
+                // The channel was revoked.
+                return;
+            }
+
+            // The channel was closed and reopened before the delay expired, so wait again to ensure
+            // we don't signal too early.
+            if channel.unstick_state == ChannelUnstickState::NeedsRequeue {
+                channel.unstick_state = ChannelUnstickState::Queued;
+                let mut timer = PolledTimer::new(&self.driver);
+                let delay = self.channel_unstick_delay.unwrap();
+                self.channel_unstickers.push(Box::pin(async move {
+                    timer.sleep(delay).await;
+                    id
+                }));
+
+                return;
+            }
+
+            channel.unstick_state = ChannelUnstickState::None;
+            let gm = select_gm_for_channel(
+                &self.inner.gm,
+                self.inner.private_gm.as_ref(),
+                version,
+                channel,
+            );
+            if let Err(err) = Self::unstick_channel(gm, channel, false, false) {
                 tracelimit::warn_ratelimited!(
                     channel = %channel.key,
                     error = err.as_ref() as &dyn std::error::Error,
@@ -1259,7 +1324,7 @@ impl ServerTask {
     }
 
     fn unstick_channel(
-        &self,
+        gm: &GuestMemory,
         channel: &Channel,
         force: bool,
         unstick_host: bool,
@@ -1295,7 +1360,8 @@ impl ServerTask {
                 .ok()
                 .context("couldn't split ring")?;
 
-            if let Err(err) = self.unstick_incoming_ring(
+            if let Err(err) = Self::unstick_incoming_ring(
+                gm,
                 channel,
                 in_gpadl,
                 unstick_host.then_some(guest_to_host_event),
@@ -1307,7 +1373,8 @@ impl ServerTask {
                     "could not unstick incoming ring"
                 );
             }
-            if let Err(err) = self.unstick_outgoing_ring(
+            if let Err(err) = Self::unstick_outgoing_ring(
+                gm,
                 channel,
                 out_gpadl,
                 unstick_host.then_some(guest_to_host_event),
@@ -1324,42 +1391,42 @@ impl ServerTask {
     }
 
     fn unstick_incoming_ring(
-        &self,
+        gm: &GuestMemory,
         channel: &Channel,
         in_gpadl: AlignedGpadlView,
         guest_to_host_event: Option<&ChannelEvent>,
         host_to_guest_interrupt: &Interrupt,
     ) -> Result<(), anyhow::Error> {
-        let incoming_mem = GpadlRingMem::new(in_gpadl, &self.inner.gm)?;
+        let incoming_mem = GpadlRingMem::new(in_gpadl, gm)?;
         if let Some(guest_to_host_event) = guest_to_host_event {
             if ring::reader_needs_signal(&incoming_mem) {
-                tracing::debug!(channel = %channel.key, "waking host for incoming ring");
+                tracelimit::info_ratelimited!(channel = %channel.key, "waking host for incoming ring");
                 guest_to_host_event.0.deliver();
             }
         }
 
         if ring::writer_needs_signal(&incoming_mem) {
-            tracing::debug!(channel = %channel.key, "waking guest for incoming ring");
+            tracelimit::info_ratelimited!(channel = %channel.key, "waking guest for incoming ring");
             host_to_guest_interrupt.deliver();
         }
         Ok(())
     }
 
     fn unstick_outgoing_ring(
-        &self,
+        gm: &GuestMemory,
         channel: &Channel,
         out_gpadl: AlignedGpadlView,
         guest_to_host_event: Option<&ChannelEvent>,
         host_to_guest_interrupt: &Interrupt,
     ) -> Result<(), anyhow::Error> {
-        let outgoing_mem = GpadlRingMem::new(out_gpadl, &self.inner.gm)?;
+        let outgoing_mem = GpadlRingMem::new(out_gpadl, gm)?;
         if ring::reader_needs_signal(&outgoing_mem) {
-            tracing::debug!(channel = %channel.key, "waking guest for outgoing ring");
+            tracelimit::info_ratelimited!(channel = %channel.key, "waking guest for outgoing ring");
             host_to_guest_interrupt.deliver();
         }
         if let Some(guest_to_host_event) = guest_to_host_event {
             if ring::writer_needs_signal(&outgoing_mem) {
-                tracing::debug!(channel = %channel.key, "waking host for outgoing ring");
+                tracelimit::info_ratelimited!(channel = %channel.key, "waking host for outgoing ring");
                 guest_to_host_event.0.deliver();
             }
         }
@@ -1542,18 +1609,7 @@ impl Notifier for ServerTaskInner {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
         if let ChannelState::Open { open_params, .. } = &channel.state {
-            let mem = if self.private_gm.is_some()
-                && channel.flags.confidential_ring_buffer()
-                && version
-                    .expect("must be connected")
-                    .feature_flags
-                    .confidential_channels()
-            {
-                self.private_gm.as_ref().unwrap()
-            } else {
-                &self.gm
-            };
-
+            let mem = self.get_gm_for_channel(version.expect("must be connected"), channel);
             inspect_rings(
                 &mut resp,
                 mem,
@@ -1917,6 +1973,25 @@ impl ServerTaskInner {
             }
         }
     }
+
+    fn get_gm_for_channel(&self, version: VersionInfo, channel: &Channel) -> &GuestMemory {
+        select_gm_for_channel(&self.gm, self.private_gm.as_ref(), version, channel)
+    }
+}
+
+fn select_gm_for_channel<'a>(
+    gm: &'a GuestMemory,
+    private_gm: Option<&'a GuestMemory>,
+    version: VersionInfo,
+    channel: &Channel,
+) -> &'a GuestMemory {
+    if channel.flags.confidential_ring_buffer() && version.feature_flags.confidential_channels() {
+        if let Some(private_gm) = private_gm {
+            return private_gm;
+        }
+    }
+
+    gm
 }
 
 /// Control point for [`VmbusServer`], allowing callers to offer channels.
