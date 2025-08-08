@@ -1067,7 +1067,7 @@ fn build_vtl0_memory_layout(
         vtl0_ram = vtl0_memory_layout
             .ram()
             .iter()
-            .map(|r| r.range.to_string())
+            .map(|r| r.to_string())
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 ram"
@@ -1082,6 +1082,16 @@ fn build_vtl0_memory_layout(
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 mmio"
+    );
+
+    tracing::info!(
+        CVM_ALLOWED,
+        shared_pool = shared_pool
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
+        "shared pool",
     );
 
     Ok(BuiltVtl0MemoryLayout {
@@ -1546,16 +1556,17 @@ async fn new_underhill_vm(
     // Perform a quick validation to make sure each range is appropriately accessible.
     tracing::info!("starting guest memory self test");
     for range in mem_layout.ram() {
-        let gpa = range.range.start();
-        // Standard RAM is accessible.
-        highest_vtl_gm
-            .read_plain::<u8>(gpa)
-            .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
+        for gpa in [range.range.start(), range.range.end() - 1] {
+            // Standard RAM is accessible.
+            highest_vtl_gm
+                .read_plain::<u8>(gpa)
+                .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
 
-        // It is not initially accessible above VTOM.
-        if let Some(vtom) = vtom {
-            if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
-                anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+            // It is not initially accessible above VTOM.
+            if let Some(vtom) = vtom {
+                if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
+                    anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+                }
             }
         }
     }
