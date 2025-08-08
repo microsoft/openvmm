@@ -2076,7 +2076,7 @@ mod tests {
         // that ServerTaskInner correctly handles some aspects of the save/restore.
         //
         // If this test fails, it is more likely to hang than panic.
-        let mut env = TestEnv::new(spawner);
+        let mut env = TestEnv::new(spawner.clone());
         let mut channel = env.offer(1, false).await;
         env.vmbus.start();
         env.connect(1, protocol::FeatureFlags::new(), false).await;
@@ -2106,6 +2106,9 @@ mod tests {
             channel_id: ChannelId(1),
         });
 
+        // Give the server some time to process the message so it doesn't arrive during reset.
+        let mut timer = PolledTimer::new(&spawner);
+        timer.sleep(Duration::from_millis(100)).await;
         env.vmbus.reset().await;
         env.vmbus.stop().await;
 
