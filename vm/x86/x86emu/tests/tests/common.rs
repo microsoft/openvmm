@@ -409,9 +409,8 @@ impl<T: TestRegister> Cpu for SingleCellCpu<T> {
         self.xmm[reg]
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, reg: usize, value: u128) {
         self.xmm[reg] = value;
-        Ok(())
     }
 }
 
@@ -539,7 +538,7 @@ impl Cpu for MultipleCellCpu {
         self.state.rflags = v
     }
 
-    fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, _reg: usize, _value: u128) {
         todo!()
     }
 

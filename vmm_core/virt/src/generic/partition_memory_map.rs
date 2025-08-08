@@ -14,7 +14,7 @@ pub trait PartitionMemoryMap: Send + Sync {
     ///
     /// The hypervisor must ensure that this operation does not fail as long as
     /// the preconditions are satisfied.
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), anyhow::Error>;
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()>;
 
     /// Maps a range from process memory into the VM.
     ///
@@ -30,16 +30,16 @@ pub trait PartitionMemoryMap: Send + Sync {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), anyhow::Error>;
+    ) -> anyhow::Result<()>;
 
     /// Prefetches any memory in the given range so that it can be accessed
     /// quickly by the partition without exits.
-    fn prefetch_range(&self, _addr: u64, _size: u64) -> Result<(), anyhow::Error> {
+    fn prefetch_range(&self, _addr: u64, _size: u64) -> anyhow::Result<()> {
         Ok(())
     }
 
     /// Pins a range in memory so that it can be accessed by assigned devices.
-    fn pin_range(&self, _addr: u64, _size: u64) -> Result<(), anyhow::Error> {
+    fn pin_range(&self, _addr: u64, _size: u64) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -59,5 +59,5 @@ pub trait PartitionMemoryMap: Send + Sync {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), anyhow::Error>;
+    ) -> anyhow::Result<()>;
 }
