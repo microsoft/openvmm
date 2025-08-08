@@ -209,6 +209,36 @@ impl SparseMapping {
         unsafe { self.mmap_anonymous(offset, len, libc::PROT_READ, libc::MAP_PRIVATE) }
     }
 
+    /// Updates the protection flags of the mapping at the given offset and length
+    /// to allow or disallow writes.
+    pub fn set_writable(&self, offset: usize, len: usize, allow_writes: bool) -> Result<(), Error> {
+        let prot = if allow_writes {
+            libc::PROT_READ | libc::PROT_WRITE
+        } else {
+            libc::PROT_READ
+        };
+        self.mprotect(offset, len, prot)
+    }
+
+    /// Calls `mprotect` on the mapping at the given offset and length, changing
+    /// the protection flags to `prot`.
+    fn mprotect(&self, offset: usize, len: usize, prot: i32) -> Result<(), Error> {
+        self.validate_offset_len(offset, len)?;
+        if prot & !(libc::PROT_READ | libc::PROT_WRITE) != 0 {
+            return Err(Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported protection flags",
+            ));
+        }
+        // SAFETY: The flags and address passed in are guaranteed to be valid.
+        unsafe {
+            if libc::mprotect(self.address.add(offset), len, prot) < 0 {
+                return Err(Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
     /// Maps a portion of a file mapping at `offset`.
     pub fn map_file(
         &self,
