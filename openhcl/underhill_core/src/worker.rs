@@ -267,6 +267,8 @@ pub struct UnderhillEnvCfg {
     pub vmbus_enable_mnf: Option<bool>,
     /// Force the use of confidential external memory for all non-relay vmbus channels.
     pub vmbus_force_confidential_external_memory: bool,
+    /// Delay before unsticking a vmbus channel after it has been opened.
+    pub vmbus_channel_unstick_delay: Option<Duration>,
     /// Command line to append to VTL0 command line. Only used for linux direct.
     pub cmdline_append: Option<String>,
     /// (dev feature) Reformat VMGS file on boot
@@ -2640,20 +2642,21 @@ async fn new_underhill_vm(
         //
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
-        //
-        // N.B. The channel ID offset can break older Linux versions (that only support vmbus
-        //      protocol V1 and Win7) because they don't support channel IDs above 255.
-        let vmbus = VmbusServer::builder(&tp, synic.clone(), gm.untrusted_dma_memory().clone())
-            .private_gm(gm.private_vtl0_memory().cloned())
-            .hvsock_notify(hvsock_notify)
-            .server_relay(server_relay)
-            .enable_channel_id_offset(!with_vmbus_relay)
-            .max_version(max_version)
-            .delay_max_version(delay_max_version)
-            .enable_mnf(enable_mnf)
-            .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
-            .build()
-            .context("failed to create vmbus server")?;
+        let vmbus = VmbusServer::builder(
+            driver_source.simple(),
+            synic.clone(),
+            gm.untrusted_dma_memory().clone(),
+        )
+        .private_gm(gm.private_vtl0_memory().cloned())
+        .hvsock_notify(hvsock_notify)
+        .server_relay(server_relay)
+        .max_version(max_version)
+        .delay_max_version(delay_max_version)
+        .enable_mnf(enable_mnf)
+        .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
+        .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
+        .build()
+        .context("failed to create vmbus server")?;
 
         let vmbus = VmbusServerHandle::new(&tp, state_units.add("vmbus"), vmbus)?;
         if let Some((relay_channel, hvsock_relay)) = relay_channels {
