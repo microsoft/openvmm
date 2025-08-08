@@ -1229,7 +1229,7 @@ impl ServerTask {
         }
     }
 
-    /// Wakes the guest and optionally the guest for every open channel. If `force`, always wakes
+    /// Wakes the guest and optionally the host for every open channel. If `force`, always wakes
     /// them. If `!force`, only wake for rings that are in the state where a notification is
     /// expected.
     fn unstick_channels(&self, force: bool) {
