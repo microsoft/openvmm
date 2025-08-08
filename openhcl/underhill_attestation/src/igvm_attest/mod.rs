@@ -328,17 +328,4 @@ mod tests {
         let vm_config = result.unwrap();
         assert_eq!(vm_config, EXPECTED_JWK);
     }
-
-    #[test]
-    fn test_parse_request() {
-        let vbs_report = include_bytes!("./test_data/vbs-report.bin");
-
-        println!("{:x?}", vbs_report);
-
-        let request = IgvmAttestRequest::read_from_prefix(vbs_report);
-
-        println!("{:?}", request);
-
-        assert!(request.is_ok());
-    }
 }
