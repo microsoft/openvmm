@@ -531,21 +531,21 @@ fn vm_config_from_command_line(
         )?;
     }
 
-    for &cli_args::DiskCli {
+    for &cli_args::NvmeCli {
         vtl,
         ref kind,
         read_only,
-        is_dvd,
         underhill,
+        max_ioqpairs,
     } in &opt.nvme
     {
-        storage.add(
+        storage.add_nvme(
             vtl,
             underhill,
             storage_builder::DiskLocation::Nvme(None),
             kind,
-            is_dvd,
             read_only,
+            max_ioqpairs,
         )?;
     }
 

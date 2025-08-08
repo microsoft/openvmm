@@ -165,9 +165,10 @@ valid disk kinds:
 flags:
     `ro`                           open disk as read-only
     `vtl2`                         assign this disk to VTL2
+    `max_ioqpairs=UINT32`          maximum number of I/O queue pairs (default: 64)
 "#)]
     #[clap(long)]
-    pub nvme: Vec<DiskCli>,
+    pub nvme: Vec<NvmeCli>,
 
     /// number of sub-channels for the SCSI controller
     #[clap(long, value_name = "COUNT", default_value = "0")]
@@ -919,6 +920,59 @@ impl FromStr for DiskCli {
             read_only,
             is_dvd,
             underhill,
+        })
+    }
+}
+
+// NVMe-specific disk configuration with controller options
+#[derive(Clone)]
+pub struct NvmeCli {
+    pub vtl: DeviceVtl,
+    pub kind: DiskCliKind,
+    pub read_only: bool,
+    pub underhill: Option<UnderhillDiskSource>,
+    pub max_ioqpairs: Option<u32>,
+}
+
+impl FromStr for NvmeCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut opts = s.split(',');
+        let kind = opts.next().unwrap().parse()?;
+
+        let mut read_only = false;
+        let mut underhill = None;
+        let mut vtl = DeviceVtl::Vtl0;
+        let mut max_ioqpairs = None;
+        
+        for opt in opts {
+            let mut s = opt.split('=');
+            let opt = s.next().unwrap();
+            match opt {
+                "ro" => read_only = true,
+                "vtl2" => {
+                    vtl = DeviceVtl::Vtl2;
+                }
+                "uh-nvme" => underhill = Some(UnderhillDiskSource::Nvme),
+                "max_ioqpairs" => {
+                    let val = s.next().ok_or_else(|| anyhow::anyhow!("max_ioqpairs requires a value"))?;
+                    max_ioqpairs = Some(val.parse().map_err(|_| anyhow::anyhow!("invalid max_ioqpairs value: {}", val))?);
+                }
+                opt => anyhow::bail!("unknown option: '{opt}'"),
+            }
+        }
+
+        if underhill.is_some() && vtl != DeviceVtl::Vtl0 {
+            anyhow::bail!("`uh-nvme` is incompatible with `vtl2`");
+        }
+
+        Ok(NvmeCli {
+            vtl,
+            kind,
+            read_only,
+            underhill,
+            max_ioqpairs,
         })
     }
 }
@@ -1836,5 +1890,34 @@ mod tests {
         // Test error cases
         assert!(FloppyDiskCli::from_str("").is_err());
         assert!(FloppyDiskCli::from_str("file:/path/to/floppy.img,invalid").is_err());
+    }
+
+    #[test]
+    fn test_nvme_cli_from_str() {
+        use hvlite_defs::config::DeviceVtl;
+
+        // Test basic nvme disk without options
+        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd").unwrap();
+        assert_eq!(nvme.max_ioqpairs, None);
+        assert!(!nvme.read_only);
+        assert_eq!(nvme.vtl, DeviceVtl::Vtl0);
+
+        // Test with max_ioqpairs
+        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,max_ioqpairs=128").unwrap();
+        assert_eq!(nvme.max_ioqpairs, Some(128));
+
+        // Test with multiple options including max_ioqpairs
+        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,ro,max_ioqpairs=256").unwrap();
+        assert_eq!(nvme.max_ioqpairs, Some(256));
+        assert!(nvme.read_only);
+
+        // Test with vtl2 and max_ioqpairs
+        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,vtl2,max_ioqpairs=64").unwrap();
+        assert_eq!(nvme.max_ioqpairs, Some(64));
+        assert_eq!(nvme.vtl, DeviceVtl::Vtl2);
+
+        // Test error cases
+        assert!(NvmeCli::from_str("file:/path/to/disk.vhd,max_ioqpairs").is_err()); // missing value
+        assert!(NvmeCli::from_str("file:/path/to/disk.vhd,max_ioqpairs=abc").is_err()); // invalid value
     }
 }
