@@ -134,6 +134,7 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     enable_mnf: bool,
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
+    channel_unstick_delay: Option<Duration>,
 }
 
 #[derive(mesh::MeshPayload)]
@@ -289,6 +290,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             enable_mnf: false,
             force_confidential_external_memory: false,
             send_messages_while_stopped: false,
+            channel_unstick_delay: Some(Duration::from_millis(100)),
         }
     }
 
@@ -402,6 +404,17 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
     /// release is no longer supported.
     pub fn send_messages_while_stopped(mut self, send: bool) -> Self {
         self.send_messages_while_stopped = send;
+        self
+    }
+
+    /// Sets the delay before unsticking a vmbus channel after it has been opened.
+    ///
+    /// This option provides a work around for guests that ignore interrupts before they receive the
+    /// OpenResult message, by triggering an interrupt after the channel has been opened.
+    ///
+    /// If not set, the default is 100ms. If set to `None`, no interrupt will be triggered.
+    pub fn channel_unstick_delay(mut self, delay: Option<Duration>) -> Self {
+        self.channel_unstick_delay = delay;
         self
     }
 
@@ -544,6 +557,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             next_seq: 0,
             unstick_on_start: false,
             channel_unstickers: FuturesUnordered::new(),
+            channel_unstick_delay: self.channel_unstick_delay,
         };
 
         let task = self.spawner.spawn("vmbus server", async move {
@@ -651,6 +665,7 @@ struct ServerTask {
     next_seq: u64,
     unstick_on_start: bool,
     channel_unstickers: FuturesUnordered<Pin<Box<dyn Send + Future<Output = OfferId>>>>,
+    channel_unstick_delay: Option<Duration>,
 }
 
 struct ServerTaskInner {
@@ -852,11 +867,13 @@ impl ServerTask {
 
             // Some guests ignore interrupts before they receive the OpenResult message. To avoid
             // a potential hang, signal the channel after a delay if needed.
-            let mut timer = PolledTimer::new(&self.driver);
-            self.channel_unstickers.push(Box::pin(async move {
-                timer.sleep(Duration::from_millis(100)).await;
-                offer_id
-            }));
+            if let Some(delay) = self.channel_unstick_delay {
+                let mut timer = PolledTimer::new(&self.driver);
+                self.channel_unstickers.push(Box::pin(async move {
+                    timer.sleep(delay).await;
+                    offer_id
+                }));
+            }
         }
     }
 
@@ -962,6 +979,7 @@ impl ServerTask {
                     resp.field("message_port", &self.inner.message_port)
                         .field("running", self.inner.running)
                         .field("hvsock_requests", self.inner.hvsock_requests)
+                        .field("channel_unstick_delay", self.channel_unstick_delay)
                         .field_mut_with("unstick_channels", |v| {
                             let v: inspect::ValueKind = if let Some(v) = v {
                                 if v == "force" {
@@ -1231,7 +1249,7 @@ impl ServerTask {
     fn unstick_channel_by_id(&self, offer_id: OfferId) {
         if let Some(channel) = self.inner.channels.get(&offer_id) {
             if let Err(err) = self.unstick_channel(channel, false, false) {
-                tracing::warn!(
+                tracelimit::warn_ratelimited!(
                     channel = %channel.key,
                     error = err.as_ref() as &dyn std::error::Error,
                     "could not unstick channel"
@@ -1283,7 +1301,7 @@ impl ServerTask {
                 unstick_host.then_some(guest_to_host_event),
                 host_to_guest_interrupt,
             ) {
-                tracing::warn!(
+                tracelimit::warn_ratelimited!(
                     channel = %channel.key,
                     error = err.as_ref() as &dyn std::error::Error,
                     "could not unstick incoming ring"
@@ -1295,7 +1313,7 @@ impl ServerTask {
                 unstick_host.then_some(guest_to_host_event),
                 host_to_guest_interrupt,
             ) {
-                tracing::warn!(
+                tracelimit::warn_ratelimited!(
                     channel = %channel.key,
                     error = err.as_ref() as &dyn std::error::Error,
                     "could not unstick outgoing ring"
@@ -1315,13 +1333,13 @@ impl ServerTask {
         let incoming_mem = GpadlRingMem::new(in_gpadl, &self.inner.gm)?;
         if let Some(guest_to_host_event) = guest_to_host_event {
             if ring::reader_needs_signal(&incoming_mem) {
-                tracing::info!(channel = %channel.key, "waking host for incoming ring");
+                tracing::debug!(channel = %channel.key, "waking host for incoming ring");
                 guest_to_host_event.0.deliver();
             }
         }
 
         if ring::writer_needs_signal(&incoming_mem) {
-            tracing::info!(channel = %channel.key, "waking guest for incoming ring");
+            tracing::debug!(channel = %channel.key, "waking guest for incoming ring");
             host_to_guest_interrupt.deliver();
         }
         Ok(())
@@ -1336,12 +1354,12 @@ impl ServerTask {
     ) -> Result<(), anyhow::Error> {
         let outgoing_mem = GpadlRingMem::new(out_gpadl, &self.inner.gm)?;
         if ring::reader_needs_signal(&outgoing_mem) {
-            tracing::info!(channel = %channel.key, "waking guest for outgoing ring");
+            tracing::debug!(channel = %channel.key, "waking guest for outgoing ring");
             host_to_guest_interrupt.deliver();
         }
         if let Some(guest_to_host_event) = guest_to_host_event {
             if ring::writer_needs_signal(&outgoing_mem) {
-                tracing::info!(channel = %channel.key, "waking host for outgoing ring");
+                tracing::debug!(channel = %channel.key, "waking host for outgoing ring");
                 guest_to_host_event.0.deliver();
             }
         }
