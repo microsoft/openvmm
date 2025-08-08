@@ -564,8 +564,8 @@ mod device_manager {
                     NvmeDriverRequest::LoadDriver(rpc) => {
                         let load_driver_span = tracing::debug_span!(parent: rpc.input(),
                             "nvme_device_manager_load_driver",
-                            %self.pci_id,
-                            ?self.worker_vp
+                            pci_id = %self.pci_id,
+                            vp = ?self.worker_vp
                         );
 
                         rpc.handle(async |_span| {
@@ -589,9 +589,6 @@ mod device_manager {
                                     self.save_restore_supported,
                                     None,
                                 )
-                                .instrument(
-                                    tracing::trace_span!("nvme_device_manager_create_driver", %self.pci_id),
-                                )
                                 .await?;
                             self.driver = Some(driver);
 
@@ -603,9 +600,9 @@ mod device_manager {
                     NvmeDriverRequest::GetNamespace(rpc) => {
                         let namespace_span = tracing::debug_span!(parent: &rpc.input().0,
                             "nvme_device_manager_get_namespace",
-                            %self.pci_id,
+                            pci_id = %self.pci_id,
                             nsid = rpc.input().1,
-                            ?self.worker_vp
+                            vp = ?self.worker_vp
                         );
 
                         rpc.handle(async |(_, nsid)| {
@@ -623,29 +620,14 @@ mod device_manager {
                         .await
                     }
                     NvmeDriverRequest::Save(rpc) => {
-                        let save_span = tracing::debug_span!(parent: rpc.input(),
-                            "nvme_device_manager_save",
-                            %self.pci_id,
-                            ?self.worker_vp
-                        );
-                        rpc.handle(async |_span| {
-                            self.driver
-                                .as_mut()
-                                .unwrap()
-                                .save()
-                                .instrument(
-                                    tracing::debug_span!("nvme_device_manager_save", %self.pci_id),
-                                )
-                                .await
-                        })
-                        .instrument(save_span)
-                        .await
+                        rpc.handle(async |_span| self.driver.as_mut().unwrap().save().await)
+                            .await
                     }
                     NvmeDriverRequest::Shutdown(rpc) => {
                         let shutdown_span = tracing::debug_span!(parent: &rpc.input().0,
                             "nvme_device_manager_shutdown",
-                            %self.pci_id,
-                            ?self.worker_vp
+                            pci_id = %self.pci_id,
+                            vp = ?self.worker_vp
                         );
                         rpc.handle(async |(_span, options)| {
                             // Driver may be `None` here if there was a failure during driver creation.
@@ -663,7 +645,7 @@ mod device_manager {
                                     if !options.skip_device_shutdown {
                                         driver.shutdown()
                                             .instrument(
-                                                tracing::info_span!("shutdown_nvme_device", %self.pci_id),
+                                                tracing::info_span!("shutdown_nvme_device", pci_id = %self.pci_id),
                                             )
                                             .await;
                                     }
@@ -823,7 +805,7 @@ impl NvmeManagerClient {
             .call(Request::GetNamespace, (pci_id.clone(), nsid))
             .instrument(tracing::info_span!(
                 "nvme_manager_get_namespace",
-                pci_id,
+                %pci_id,
                 nsid
             ))
             .await
@@ -913,11 +895,7 @@ impl NvmeManagerWorker {
                     ));
                 }
                 // Request to save worker data for servicing.
-                Request::Save(rpc) => {
-                    rpc.handle(async |_| self.save().await)
-                        .instrument(tracing::info_span!("nvme_manager_worker_save_state"))
-                        .await
-                }
+                Request::Save(rpc) => rpc.handle(async |_| self.save().await).await,
                 Request::Shutdown {
                     span,
                     nvme_keepalive,
@@ -965,7 +943,7 @@ impl NvmeManagerWorker {
         }
 
         async {
-            join_all(devices_to_shutdown.into_iter().map(|(_pci_id, driver)| {
+            join_all(devices_to_shutdown.into_iter().map(|(pci_id, driver)| {
                 driver
                     .shutdown(device_manager::NvmeDriverShutdownOptions {
                         // nvme_keepalive is received from host but it is only valid
@@ -973,7 +951,7 @@ impl NvmeManagerWorker {
                         do_not_reset: nvme_keepalive && self.context.save_restore_supported,
                         skip_device_shutdown: nvme_keepalive && self.context.save_restore_supported,
                     })
-                    .instrument(tracing::info_span!("shutdown_nvme_driver"))
+                    .instrument(tracing::info_span!("shutdown_nvme_driver", %pci_id))
             }))
             .await
         }
@@ -1103,10 +1081,7 @@ impl NvmeManagerWorker {
         for (pci_id, client) in devices_to_save.iter_mut() {
             nvme_disks.push(NvmeSavedDiskConfig {
                 pci_id: pci_id.clone(),
-                driver_state: client
-                    .save()
-                    .instrument(tracing::info_span!("nvme_driver_save", %pci_id))
-                    .await?,
+                driver_state: client.save().await?,
             });
         }
 
