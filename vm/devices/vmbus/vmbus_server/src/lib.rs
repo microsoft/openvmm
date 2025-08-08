@@ -986,7 +986,10 @@ impl ServerTask {
                     resp.field("message_port", &self.inner.message_port)
                         .field("running", self.inner.running)
                         .field("hvsock_requests", self.inner.hvsock_requests)
-                        .field("channel_unstick_delay", self.channel_unstick_delay)
+                        .field(
+                            "channel_unstick_delay",
+                            self.channel_unstick_delay.map(|d| d.as_millis() as u64),
+                        )
                         .field_mut_with("unstick_channels", |v| {
                             let v: inspect::ValueKind = if let Some(v) = v {
                                 if v == "force" {
