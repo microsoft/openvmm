@@ -93,6 +93,9 @@ impl AcpiTopology for X86Topology {
     }
 
     fn extend_madt(topology: &ProcessorTopology<Self>, madt: &mut Vec<u8>) {
+        // Add LINT1 as the local NMI source
+        madt.extend_from_slice(acpi_spec::madt::MadtLocalNmiSource::new().as_bytes());
+
         for vp in topology.vps_arch() {
             let uid = vp.base.vp_index.index() + 1;
             if vp.apic_id <= MAX_LEGACY_APIC_ID && uid <= u8::MAX.into() {
