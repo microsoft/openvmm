@@ -580,7 +580,7 @@ impl VmbusServer {
     #[cfg(windows)]
     pub async fn start_kernel_proxy(
         &self,
-        driver: &(impl pal_async::driver::SpawnDriver + Clone),
+        driver: &(impl SpawnDriver + Clone),
         handle: ProxyHandle,
     ) -> Result<std::os::windows::io::OwnedHandle, std::io::Error> {
         proxyintegration::start_proxy(driver, handle, self.control(), &self.control.mem).await
