@@ -517,8 +517,8 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
     fn handle_save(&mut self) -> SavedStateBlob {
         let saved_state = self.saved_state.take();
-        if saved_state.is_some() {
-            let blob = SavedStateBlob::new(saved_state.unwrap());
+        if let Some(saved_state) = saved_state {
+            let blob = SavedStateBlob::new(saved_state);
             self.handle_restore(&blob);
             blob
         } else {
