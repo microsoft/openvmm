@@ -28,14 +28,22 @@ use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::storage_controller;
 
+use std::collections::HashMap;
+
+#[derive(Clone, Debug)]
+pub struct NvmeControllerConfig {
+    pub namespaces: Vec<NamespaceDefinition>,
+    pub max_ioqpairs: u16,
+    pub instance_id: Guid,
+}
+
 pub(super) struct StorageBuilder {
     vtl0_ide_disks: Vec<IdeDeviceConfig>,
     vtl0_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
-    vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
-    vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
-    vtl0_nvme_max_ioqpairs: Option<u16>,
-    vtl2_nvme_max_ioqpairs: Option<u16>,
+    // Map from controller_id to controller config
+    vtl0_nvme_controllers: HashMap<u32, NvmeControllerConfig>,
+    vtl2_nvme_controllers: HashMap<u32, NvmeControllerConfig>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
     openhcl_vtl: Option<DeviceVtl>,
@@ -72,10 +80,8 @@ impl StorageBuilder {
             vtl0_ide_disks: Vec::new(),
             vtl0_scsi_devices: Vec::new(),
             vtl2_scsi_devices: Vec::new(),
-            vtl0_nvme_namespaces: Vec::new(),
-            vtl2_nvme_namespaces: Vec::new(),
-            vtl0_nvme_max_ioqpairs: None,
-            vtl2_nvme_max_ioqpairs: None,
+            vtl0_nvme_controllers: HashMap::new(),
+            vtl2_nvme_controllers: HashMap::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
             openhcl_vtl,
@@ -84,6 +90,10 @@ impl StorageBuilder {
 
     pub fn has_vtl0_nvme(&self) -> bool {
         !self.vtl0_nvme_namespaces.is_empty() || !self.underhill_nvme_luns.is_empty()
+    }
+
+    pub fn has_vtl0_nvme(&self) -> bool {
+        !self.vtl0_nvme_controllers.is_empty() || !self.underhill_nvme_luns.is_empty()
     }
 
     pub fn add(

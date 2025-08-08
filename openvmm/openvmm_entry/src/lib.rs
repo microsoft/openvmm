@@ -537,6 +537,7 @@ fn vm_config_from_command_line(
         read_only,
         underhill,
         max_ioqpairs,
+        controller_id,
     } in &opt.nvme
     {
         storage.add_nvme(
@@ -546,6 +547,7 @@ fn vm_config_from_command_line(
             kind,
             read_only,
             max_ioqpairs,
+            controller_id,
         )?;
     }
 

@@ -166,6 +166,7 @@ flags:
     `ro`                           open disk as read-only
     `vtl2`                         assign this disk to VTL2
     `max_ioqpairs=UINT32`          maximum number of I/O queue pairs (default: 64)
+    `controller=UINT32`            controller ID (default: 0, allows multiple controllers)
 "#)]
     #[clap(long)]
     pub nvme: Vec<NvmeCli>,
@@ -932,6 +933,7 @@ pub struct NvmeCli {
     pub read_only: bool,
     pub underhill: Option<UnderhillDiskSource>,
     pub max_ioqpairs: Option<u32>,
+    pub controller_id: u32,
 }
 
 impl FromStr for NvmeCli {
@@ -945,6 +947,7 @@ impl FromStr for NvmeCli {
         let mut underhill = None;
         let mut vtl = DeviceVtl::Vtl0;
         let mut max_ioqpairs = None;
+        let mut controller_id = 0; // Default controller ID
         
         for opt in opts {
             let mut s = opt.split('=');
@@ -958,6 +961,10 @@ impl FromStr for NvmeCli {
                 "max_ioqpairs" => {
                     let val = s.next().ok_or_else(|| anyhow::anyhow!("max_ioqpairs requires a value"))?;
                     max_ioqpairs = Some(val.parse().map_err(|_| anyhow::anyhow!("invalid max_ioqpairs value: {}", val))?);
+                }
+                "controller" => {
+                    let val = s.next().ok_or_else(|| anyhow::anyhow!("controller requires a value"))?;
+                    controller_id = val.parse().map_err(|_| anyhow::anyhow!("invalid controller value: {}", val))?;
                 }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
@@ -973,6 +980,7 @@ impl FromStr for NvmeCli {
             read_only,
             underhill,
             max_ioqpairs,
+            controller_id,
         })
     }
 }
@@ -1901,23 +1909,34 @@ mod tests {
         assert_eq!(nvme.max_ioqpairs, None);
         assert!(!nvme.read_only);
         assert_eq!(nvme.vtl, DeviceVtl::Vtl0);
+        assert_eq!(nvme.controller_id, 0);
 
         // Test with max_ioqpairs
         let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,max_ioqpairs=128").unwrap();
         assert_eq!(nvme.max_ioqpairs, Some(128));
+        assert_eq!(nvme.controller_id, 0);
 
-        // Test with multiple options including max_ioqpairs
-        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,ro,max_ioqpairs=256").unwrap();
+        // Test with controller ID
+        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,controller=1").unwrap();
+        assert_eq!(nvme.controller_id, 1);
+        assert_eq!(nvme.max_ioqpairs, None);
+
+        // Test with multiple options including max_ioqpairs and controller
+        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,ro,max_ioqpairs=256,controller=2").unwrap();
         assert_eq!(nvme.max_ioqpairs, Some(256));
         assert!(nvme.read_only);
+        assert_eq!(nvme.controller_id, 2);
 
-        // Test with vtl2 and max_ioqpairs
-        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,vtl2,max_ioqpairs=64").unwrap();
+        // Test with vtl2, max_ioqpairs, and controller
+        let nvme = NvmeCli::from_str("file:/path/to/disk.vhd,vtl2,max_ioqpairs=64,controller=0").unwrap();
         assert_eq!(nvme.max_ioqpairs, Some(64));
         assert_eq!(nvme.vtl, DeviceVtl::Vtl2);
+        assert_eq!(nvme.controller_id, 0);
 
         // Test error cases
         assert!(NvmeCli::from_str("file:/path/to/disk.vhd,max_ioqpairs").is_err()); // missing value
         assert!(NvmeCli::from_str("file:/path/to/disk.vhd,max_ioqpairs=abc").is_err()); // invalid value
+        assert!(NvmeCli::from_str("file:/path/to/disk.vhd,controller").is_err()); // missing value
+        assert!(NvmeCli::from_str("file:/path/to/disk.vhd,controller=abc").is_err()); // invalid value
     }
 }
