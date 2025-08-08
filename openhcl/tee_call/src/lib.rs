@@ -7,6 +7,8 @@
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
+use hcl::ioctl::MshvHvcall;
+use hvdef::HypercallCode;
 use thiserror::Error;
 use zerocopy::IntoBytes;
 
@@ -25,6 +27,10 @@ pub enum Error {
     OpenDevTdxGuest(#[source] tdx_guest_device::Error),
     #[error("failed to get a TDX report via /dev/tdx_guest")]
     GetTdxReport(#[source] tdx_guest_device::Error),
+    #[error("failed to open VBS guest device")]
+    OpenDevVbsGuest(#[source] hcl::ioctl::Error),
+    #[error("failed to get a VBS report via VBS guest device")]
+    GetVbsReport(#[source] hvdef::HvError),
 }
 
 /// Use the SNP-defined derived key size for now.
@@ -46,6 +52,8 @@ pub enum TeeType {
     Snp,
     /// Intel TDX
     Tdx,
+    /// Virtualization-based Security (VBS)
+    Vbs,
 }
 
 /// The result of the `get_attestation_report`.
@@ -168,5 +176,37 @@ impl TeeCall for TdxCall {
     /// Return TeeType::Tdx.
     fn tee_type(&self) -> TeeType {
         TeeType::Tdx
+    }
+}
+
+/// Implementation of [`TeeCall`] for VBS
+pub struct VbsCall;
+
+impl TeeCall for VbsCall {
+    fn get_attestation_report(
+        &self,
+        report_data: &[u8; REPORT_DATA_SIZE],
+    ) -> Result<GetAttestationReportResult, Error> {
+        let mshv_hvcall = MshvHvcall::new().map_err(Error::OpenDevVbsGuest)?;
+        mshv_hvcall.set_allowed_hypercalls(&[HypercallCode::HvCallVbsVmCallReport]);
+        let report = mshv_hvcall
+            .vbs_vm_call_report(report_data)
+            .map_err(Error::GetVbsReport)?;
+
+        Ok(GetAttestationReportResult {
+            report: report.as_bytes().to_vec(),
+            // Only needed by key derivation, return None for now
+            tcb_version: None,
+        })
+    }
+
+    /// Key derivation is currently not supported by VBS
+    fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey> {
+        None
+    }
+
+    /// Return TeeType::Vbs.
+    fn tee_type(&self) -> TeeType {
+        TeeType::Vbs
     }
 }

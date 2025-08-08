@@ -219,6 +219,8 @@ pub enum AttestationType {
     Snp,
     /// Use the TDX TEE for attestation.
     Tdx,
+    /// Use the VBS TEE for attestation.
+    Vbs,
     /// Use trusted host-based attestation.
     Host,
 }
@@ -268,6 +270,7 @@ pub async fn initialize_platform_security(
     let tee_call: Option<Box<dyn TeeCall>> = match attestation_type {
         AttestationType::Snp => Some(Box::new(tee_call::SnpCall)),
         AttestationType::Tdx => Some(Box::new(tee_call::TdxCall)),
+        AttestationType::Vbs => Some(Box::new(tee_call::VbsCall)),
         AttestationType::Host => None,
     };
 

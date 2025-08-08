@@ -13,6 +13,7 @@ pub mod cpuid;
 pub mod msi;
 pub mod snp;
 pub mod tdx;
+pub mod vbs;
 pub mod vmx;
 pub mod xsave;
 

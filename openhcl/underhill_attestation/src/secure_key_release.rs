@@ -135,6 +135,8 @@ pub async fn request_vmgs_encryption_keys(
             .get_attestation_report(igvm_attest_request_helper.get_runtime_claims_hash())
             .map_err(RequestVmgsEncryptionKeysError::GetAttestationReport)?;
 
+        tracing::info!(CVM_ALLOWED, "attestation report: {:?}", result.report);
+
         tcb_version = result.tcb_version;
 
         // Get tenant keys based on attestation results, this might fail.

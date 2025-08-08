@@ -6828,6 +6828,8 @@ dependencies = [
 name = "tee_call"
 version = "0.0.0"
 dependencies = [
+ "hcl",
+ "hvdef",
  "sev_guest_device",
  "static_assertions",
  "tdx_guest_device",

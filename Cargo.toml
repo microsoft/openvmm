@@ -141,7 +141,6 @@ sev_guest_device = { path = "support/sev_guest_device" }
 sparse_mmap = { path = "support/sparse_mmap" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
-tee_call = { path = "support/tee_call" }
 term = { path = "support/term" }
 test_with_tracing = { path = "support/test_with_tracing" }
 test_with_tracing_macro = { path = "support/test_with_tracing/test_with_tracing_macro" }
@@ -168,6 +167,7 @@ minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
+tee_call = { path = "openhcl/tee_call" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
 underhill_confidentiality = { path = "openhcl/underhill_confidentiality" }
 underhill_core = { path = "openhcl/underhill_core" }

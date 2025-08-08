@@ -311,6 +311,9 @@ open_enum! {
 
         // Extended hypercalls.
         HvExtCallQueryCapabilities = 0x8001,
+
+        // VBS guest calls.
+        HvCallVbsVmCallReport = 0xC001,
     }
 }
 
@@ -1730,6 +1733,21 @@ pub mod hypercall {
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct QuerySparsePageVisibility {
         pub partition_id: u64,
+    }
+
+    pub const VBS_VM_REPORT_DATA_SIZE: usize = 64;
+    pub const VBS_VM_MAX_REPORT_SIZE: usize = 2048;
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VbsVmCallReport {
+        pub report_data: [u8; VBS_VM_REPORT_DATA_SIZE],
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VbsVmCallReportOutput {
+        pub report: [u8; VBS_VM_MAX_REPORT_SIZE],
     }
 
     #[bitfield(u8)]

@@ -86,6 +86,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             TeeType::Snp => ReportType::Snp,
             TeeType::Tdx => ReportType::Tdx,
+            TeeType::Vbs => ReportType::Vbs,
         };
 
         let attestation_vm_config =
@@ -121,6 +122,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             Some(TeeType::Snp) => ReportType::Snp,
             Some(TeeType::Tdx) => ReportType::Tdx,
+            Some(TeeType::Vbs) => ReportType::Vbs,
             None => ReportType::Tvm,
         };
 
@@ -243,6 +245,8 @@ fn runtime_claims_to_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
+    use zerocopy::FromBytes;
 
     #[test]
     fn test_create_request() {
@@ -323,5 +327,18 @@ mod tests {
 
         let vm_config = result.unwrap();
         assert_eq!(vm_config, EXPECTED_JWK);
+    }
+
+    #[test]
+    fn test_parse_request() {
+        let vbs_report = include_bytes!("./test_data/vbs-report.bin");
+
+        println!("{:x?}", vbs_report);
+
+        let request = IgvmAttestRequest::read_from_prefix(vbs_report);
+
+        println!("{:?}", request);
+
+        assert!(request.is_ok());
     }
 }
