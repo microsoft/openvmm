@@ -44,8 +44,10 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use pal_async::task::Spawn;
+use pal_async::driver::Driver;
+use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use pal_event::Event;
 #[cfg(windows)]
 pub use proxyintegration::ProxyIntegration;
@@ -114,8 +116,8 @@ pub struct VmbusServer {
     task: Task<ServerTask>,
 }
 
-pub struct VmbusServerBuilder<'a, T: Spawn> {
-    spawner: &'a T,
+pub struct VmbusServerBuilder<T: SpawnDriver> {
+    spawner: T,
     synic: Arc<dyn SynicPortAccess>,
     gm: GuestMemory,
     private_gm: Option<GuestMemory>,
@@ -266,9 +268,9 @@ pub struct SavedState {
 const MESSAGE_CONNECTION_ID: u32 = 1;
 const MULTICLIENT_MESSAGE_CONNECTION_ID: u32 = 4;
 
-impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
+impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
     /// Creates a new builder for `VmbusServer` with the default options.
-    pub fn new(spawner: &'a T, synic: Arc<dyn SynicPortAccess>, gm: GuestMemory) -> Self {
+    pub fn new(spawner: T, synic: Arc<dyn SynicPortAccess>, gm: GuestMemory) -> Self {
         Self {
             spawner,
             synic,
@@ -531,6 +533,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
 
         let (task_send, task_recv) = mesh::channel();
         let mut server_task = ServerTask {
+            driver: Box::new(self.spawner.clone()),
             server,
             task_recv,
             offer_recv,
@@ -540,6 +543,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             external_requests: self.external_requests,
             next_seq: 0,
             unstick_on_start: false,
+            channel_unstickers: FuturesUnordered::new(),
         };
 
         let task = self.spawner.spawn("vmbus server", async move {
@@ -559,11 +563,11 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
 
 impl VmbusServer {
     /// Creates a new builder for `VmbusServer` with the default options.
-    pub fn builder<T: Spawn>(
-        spawner: &T,
+    pub fn builder<T: SpawnDriver + Clone>(
+        spawner: T,
         synic: Arc<dyn SynicPortAccess>,
         gm: GuestMemory,
-    ) -> VmbusServerBuilder<'_, T> {
+    ) -> VmbusServerBuilder<T> {
         VmbusServerBuilder::new(spawner, synic, gm)
     }
 
@@ -634,6 +638,7 @@ pub struct SynicMessage {
 }
 
 struct ServerTask {
+    driver: Box<dyn Driver>,
     server: channels::Server,
     task_recv: mesh::Receiver<VmbusRequest>,
     offer_recv: mesh::Receiver<OfferRequest>,
@@ -645,6 +650,7 @@ struct ServerTask {
     /// Next value for [`Channel::seq`].
     next_seq: u64,
     unstick_on_start: bool,
+    channel_unstickers: FuturesUnordered<Pin<Box<dyn Send + Future<Output = OfferId>>>>,
 }
 
 struct ServerTaskInner {
@@ -843,6 +849,14 @@ impl ServerTask {
             self.server
                 .with_notifier(&mut self.inner)
                 .open_complete(offer_id, status);
+
+            // Some guests ignore interrupts before they receive the OpenResult message. To avoid
+            // a potential hang, signal the channel after a delay if needed.
+            let mut timer = PolledTimer::new(&self.driver);
+            self.channel_unstickers.push(Box::pin(async move {
+                timer.sleep(Duration::from_millis(100)).await;
+                offer_id
+            }));
         }
     }
 
@@ -1135,6 +1149,10 @@ impl ServerTask {
             let mut hvsock_response =
                 OptionFuture::from(running_not_resetting.then(|| hvsock_recv.select_next_some()));
 
+            let mut channel_unstickers = OptionFuture::from(
+                running_not_resetting.then(|| self.channel_unstickers.select_next_some()),
+            );
+
             futures::select! { // merge semantics
                 r = self.task_recv.recv().fuse() => {
                     if let Ok(request) = r {
@@ -1184,18 +1202,21 @@ impl ServerTask {
                     let r = r.unwrap();
                     self.handle_external_request(r);
                 }
+                r = channel_unstickers => {
+                    self.unstick_channel_by_id(r.unwrap());
+                }
                 _r = flush_pending_messages => {}
                 complete => break,
             }
         }
     }
 
-    /// Wakes the host and guest for every open channel. If `force`, always
-    /// wakes both the host and guest. If `!force`, only wake for rings that are
-    /// in the state where a notification is expected.
+    /// Wakes the guest and optionally the guest for every open channel. If `force`, always wakes
+    /// them. If `!force`, only wake for rings that are in the state where a notification is
+    /// expected.
     fn unstick_channels(&self, force: bool) {
         for channel in self.inner.channels.values() {
-            if let Err(err) = self.unstick_channel(channel, force) {
+            if let Err(err) = self.unstick_channel(channel, force, true) {
                 tracing::warn!(
                     channel = %channel.key,
                     error = err.as_ref() as &dyn std::error::Error,
@@ -1205,7 +1226,26 @@ impl ServerTask {
         }
     }
 
-    fn unstick_channel(&self, channel: &Channel, force: bool) -> anyhow::Result<()> {
+    /// Wakes the guest for the specified channel if it's open and the rings are in a state where
+    /// notification is expected.
+    fn unstick_channel_by_id(&self, offer_id: OfferId) {
+        if let Some(channel) = self.inner.channels.get(&offer_id) {
+            if let Err(err) = self.unstick_channel(channel, false, false) {
+                tracing::warn!(
+                    channel = %channel.key,
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "could not unstick channel"
+                );
+            }
+        }
+    }
+
+    fn unstick_channel(
+        &self,
+        channel: &Channel,
+        force: bool,
+        unstick_host: bool,
+    ) -> anyhow::Result<()> {
         if let ChannelState::Open {
             open_params,
             host_to_guest_interrupt,
@@ -1215,7 +1255,9 @@ impl ServerTask {
         {
             if force {
                 tracing::info!(channel = %channel.key, "waking host and guest");
-                guest_to_host_event.0.deliver();
+                if unstick_host {
+                    guest_to_host_event.0.deliver();
+                }
                 host_to_guest_interrupt.deliver();
                 return Ok(());
             }
@@ -1238,7 +1280,7 @@ impl ServerTask {
             if let Err(err) = self.unstick_incoming_ring(
                 channel,
                 in_gpadl,
-                guest_to_host_event,
+                unstick_host.then_some(guest_to_host_event),
                 host_to_guest_interrupt,
             ) {
                 tracing::warn!(
@@ -1250,7 +1292,7 @@ impl ServerTask {
             if let Err(err) = self.unstick_outgoing_ring(
                 channel,
                 out_gpadl,
-                guest_to_host_event,
+                unstick_host.then_some(guest_to_host_event),
                 host_to_guest_interrupt,
             ) {
                 tracing::warn!(
@@ -1267,14 +1309,17 @@ impl ServerTask {
         &self,
         channel: &Channel,
         in_gpadl: AlignedGpadlView,
-        guest_to_host_event: &ChannelEvent,
+        guest_to_host_event: Option<&ChannelEvent>,
         host_to_guest_interrupt: &Interrupt,
     ) -> Result<(), anyhow::Error> {
         let incoming_mem = GpadlRingMem::new(in_gpadl, &self.inner.gm)?;
-        if ring::reader_needs_signal(&incoming_mem) {
-            tracing::info!(channel = %channel.key, "waking host for incoming ring");
-            guest_to_host_event.0.deliver();
+        if let Some(guest_to_host_event) = guest_to_host_event {
+            if ring::reader_needs_signal(&incoming_mem) {
+                tracing::info!(channel = %channel.key, "waking host for incoming ring");
+                guest_to_host_event.0.deliver();
+            }
         }
+
         if ring::writer_needs_signal(&incoming_mem) {
             tracing::info!(channel = %channel.key, "waking guest for incoming ring");
             host_to_guest_interrupt.deliver();
@@ -1286,7 +1331,7 @@ impl ServerTask {
         &self,
         channel: &Channel,
         out_gpadl: AlignedGpadlView,
-        guest_to_host_event: &ChannelEvent,
+        guest_to_host_event: Option<&ChannelEvent>,
         host_to_guest_interrupt: &Interrupt,
     ) -> Result<(), anyhow::Error> {
         let outgoing_mem = GpadlRingMem::new(out_gpadl, &self.inner.gm)?;
@@ -1294,9 +1339,11 @@ impl ServerTask {
             tracing::info!(channel = %channel.key, "waking guest for outgoing ring");
             host_to_guest_interrupt.deliver();
         }
-        if ring::writer_needs_signal(&outgoing_mem) {
-            tracing::info!(channel = %channel.key, "waking host for outgoing ring");
-            guest_to_host_event.0.deliver();
+        if let Some(guest_to_host_event) = guest_to_host_event {
+            if ring::writer_needs_signal(&outgoing_mem) {
+                tracing::info!(channel = %channel.key, "waking host for outgoing ring");
+                guest_to_host_event.0.deliver();
+            }
         }
         Ok(())
     }
@@ -2022,7 +2069,6 @@ mod tests {
     use mesh::CancelReason;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
-    use pal_async::driver::SpawnDriver;
     use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
     use parking_lot::Mutex;
@@ -2051,11 +2097,11 @@ mod tests {
     struct MockSynic {
         inner: Mutex<MockSynicInner>,
         message_send: mesh::Sender<Vec<u8>>,
-        spawner: Arc<dyn SpawnDriver>,
+        spawner: DefaultDriver,
     }
 
     impl MockSynic {
-        fn new(message_send: mesh::Sender<Vec<u8>>, spawner: Arc<dyn SpawnDriver>) -> Self {
+        fn new(message_send: mesh::Sender<Vec<u8>>, spawner: DefaultDriver) -> Self {
             Self {
                 inner: Mutex::new(MockSynicInner { message_port: None }),
                 message_send,
@@ -2106,7 +2152,7 @@ mod tests {
 
     struct MockGuestMessagePort {
         send: mesh::Sender<Vec<u8>>,
-        spawner: Arc<dyn SpawnDriver>,
+        spawner: DefaultDriver,
         timer: Option<(PolledTimer, Instant)>,
     }
 
@@ -2126,7 +2172,7 @@ mod tests {
             let mut pending_chance = [0; 1];
             getrandom::fill(&mut pending_chance).unwrap();
             if pending_chance[0] % 4 == 0 {
-                let mut timer = PolledTimer::new(self.spawner.as_ref());
+                let mut timer = PolledTimer::new(&self.spawner);
                 let deadline = Instant::now() + Duration::from_millis(10);
                 match timer.sleep_until(deadline).poll_unpin(cx) {
                     Poll::Ready(_) => {}
@@ -2179,7 +2225,7 @@ mod tests {
         ) -> Result<Box<(dyn GuestMessagePort)>, vmcore::synic::HypervisorError> {
             Ok(Box::new(MockGuestMessagePort {
                 send: self.message_send.clone(),
-                spawner: Arc::clone(&self.spawner),
+                spawner: self.spawner.clone(),
                 timer: None,
             }))
         }
@@ -2262,11 +2308,10 @@ mod tests {
 
     impl TestEnv {
         fn new(spawner: DefaultDriver) -> Self {
-            let spawner: Arc<dyn SpawnDriver> = Arc::new(spawner);
             let (message_send, message_recv) = mesh::channel();
-            let synic = Arc::new(MockSynic::new(message_send, Arc::clone(&spawner)));
+            let synic = Arc::new(MockSynic::new(message_send, spawner.clone()));
             let gm = GuestMemory::empty();
-            let vmbus = VmbusServerBuilder::new(&spawner, synic.clone(), gm)
+            let vmbus = VmbusServerBuilder::new(spawner, synic.clone(), gm)
                 .build()
                 .unwrap();
 
