@@ -92,12 +92,16 @@ impl OpenHclDiagHandler {
         client.crash(pid).await
     }
 
-    pub async fn test_inspect(&self) -> anyhow::Result<()> {
+    pub async fn inspect(
+        &self,
+        path: impl Into<String>,
+        depth: Option<usize>,
+        timeout: Option<std::time::Duration>,
+    ) -> anyhow::Result<inspect::Node> {
         self.diag_client()
             .await?
-            .inspect("", None, None)
+            .inspect(path, depth, timeout)
             .await
-            .map(|_| ())
     }
 
     pub async fn kmsg(&self) -> anyhow::Result<KmsgStream> {

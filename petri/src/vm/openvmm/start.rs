@@ -8,30 +8,21 @@ use super::PetriVmOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use crate::Firmware;
 use crate::PetriLogFile;
-use crate::PetriLogSource;
 use crate::worker::Worker;
 use anyhow::Context;
-use diag_client::DiagClient;
 use disk_backend_resources::FileDiskHandle;
-use framebuffer::FramebufferAccess;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
-use image::ColorType;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
-use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
-use pal_async::task::Task;
-use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -49,7 +40,7 @@ impl PetriVmConfigOpenVmm {
             openvmm_log_file,
 
             ged,
-            framebuffer_access,
+            framebuffer_view,
         } = self;
 
         if firmware.is_openhcl() {
@@ -101,11 +92,6 @@ impl PetriVmConfigOpenVmm {
                 .push((DeviceVtl::Vtl2, ged.into_resource()));
         }
 
-        let vtl2_vsock_path = config
-            .vtl2_vmbus
-            .as_ref()
-            .and_then(|s| s.vsock_path.as_ref().map(|v| v.into()));
-
         tracing::debug!(?config, ?firmware, ?arch, "VM config");
 
         let mesh = Mesh::new("petri_mesh".to_string())?;
@@ -118,20 +104,13 @@ impl PetriVmConfigOpenVmm {
             .context("failed to launch vm worker")?;
 
         let worker = Arc::new(worker);
-        let watchdog_tasks = Self::start_watchdog_tasks(
-            framebuffer_access,
-            worker.clone(),
-            vtl2_vsock_path,
-            &resources.log_source,
-            &resources.driver,
-        )?;
 
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
                 resources,
                 mesh,
                 worker,
-                watchdog_tasks,
+                framebuffer_view,
             },
             halt_notif,
         );
@@ -223,135 +202,6 @@ impl PetriVmConfigOpenVmm {
         }
 
         Ok(vm)
-    }
-
-    fn start_watchdog_tasks(
-        framebuffer_access: Option<FramebufferAccess>,
-        worker: Arc<Worker>,
-        vtl2_vsock_path: Option<PathBuf>,
-        log_source: &PetriLogSource,
-        driver: &DefaultDriver,
-    ) -> anyhow::Result<Vec<Task<()>>> {
-        // Our CI environment will kill tests after some time. We want to save
-        // some information about the VM if it's still running at that point.
-        const TIMEOUT_DURATION_MINUTES: u64 = 6;
-        const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60 - 10);
-
-        let mut tasks = Vec::new();
-
-        let mut timer = PolledTimer::new(driver);
-        tasks.push(driver.spawn("petri-watchdog-inspect", {
-            let log_source = log_source.clone();
-            async move {
-                timer.sleep(TIMER_DURATION).await;
-                tracing::warn!(
-                    "Test has been running for almost {TIMEOUT_DURATION_MINUTES} minutes,
-                     saving inspect details."
-                );
-
-                if let Err(e) =
-                    log_source.write_attachment("timeout_inspect.log", worker.inspect_all().await)
-                {
-                    tracing::error!(?e, "Failed to save inspect log");
-                    return;
-                }
-                tracing::info!("Watchdog inspect task finished.");
-            }
-        }));
-
-        if let Some(fba) = framebuffer_access {
-            let mut view = fba.view()?;
-            let mut timer = PolledTimer::new(driver);
-            let log_source = log_source.clone();
-            tasks.push(driver.spawn("petri-watchdog-screenshot", async move {
-                let mut image = Vec::new();
-                let mut last_image = Vec::new();
-                loop {
-                    timer.sleep(Duration::from_secs(2)).await;
-                    tracing::trace!("Taking screenshot.");
-
-                    // Our framebuffer uses 4 bytes per pixel, approximating an
-                    // BGRA image, however it only actually contains BGR data.
-                    // The fourth byte is effectively noise. We can set the 'alpha'
-                    // value to 0xFF to make the image opaque, while we also
-                    // convert it to RGB to output it as a PNG.
-                    const BYTES_PER_PIXEL: usize = 4;
-                    let (width, height) = view.resolution();
-                    let (widthsize, heightsize) = (width as usize, height as usize);
-                    let len = widthsize * heightsize * BYTES_PER_PIXEL;
-
-                    image.resize(len, 0);
-                    for (i, line) in
-                        (0..height).zip(image.chunks_exact_mut(widthsize * BYTES_PER_PIXEL))
-                    {
-                        view.read_line(i, line);
-                        for pixel in line.chunks_exact_mut(BYTES_PER_PIXEL) {
-                            pixel.swap(0, 2);
-                            pixel[3] = 0xFF;
-                        }
-                    }
-
-                    if image == last_image {
-                        tracing::trace!("No change in framebuffer, skipping screenshot.");
-                        continue;
-                    }
-
-                    let r = log_source
-                        .create_attachment("screenshot.png")
-                        .and_then(|mut f| {
-                            image::write_buffer_with_format(
-                                &mut f,
-                                &image,
-                                width.into(),
-                                height.into(),
-                                ColorType::Rgba8,
-                                image::ImageFormat::Png,
-                            )
-                            .map_err(Into::into)
-                        });
-
-                    if let Err(e) = r {
-                        tracing::error!(?e, "Failed to save screenshot");
-                    } else {
-                        tracing::info!("Screenshot saved.");
-                    }
-                    std::mem::swap(&mut image, &mut last_image);
-                }
-            }));
-        }
-
-        if let Some(vtl2_vsock_path) = vtl2_vsock_path {
-            let mut timer = PolledTimer::new(driver);
-            let driver2 = driver.clone();
-            let log_source = log_source.clone();
-            tasks.push(driver.spawn("petri-watchdog-inspect-vtl2", async move {
-                timer.sleep(TIMER_DURATION).await;
-                tracing::warn!(
-                    "Test has been running for almost {TIMEOUT_DURATION_MINUTES} minutes, saving openhcl inspect details."
-                );
-
-                let diag_client =
-                     DiagClient::from_hybrid_vsock(driver2, &vtl2_vsock_path);
-
-                let output = match diag_client.inspect("", None, None).await {
-                    Err(e) => {
-                        tracing::error!(?e, "Failed to inspect vtl2");
-                        return;
-                    }
-                    Ok(output) => output,
-                };
-
-                let formatted_output = format!("{output:#}");
-                if let Err(e) = log_source.write_attachment("timeout_openhcl_inspect.log", formatted_output) {
-                    tracing::error!(?e, "Failed to save ohcldiag-dev inspect log");
-                    return;
-                }
-
-                tracing::info!("Watchdog OpenHCL inspect task finished.");
-            }));
-        }
-
-        Ok(tasks)
     }
 
     async fn openvmm_host(
