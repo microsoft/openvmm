@@ -12,6 +12,7 @@ use core::fmt::Debug;
 use core::mem::size_of;
 use open_enum::open_enum;
 use static_assertions::const_assert;
+use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -423,7 +424,7 @@ impl Debug for HvStatus {
 //
 // DEVNOTE: use `NonZeroU16` to get a niche optimization, since 0 is reserved
 // for success.
-#[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout)]
+#[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, Error)]
 #[repr(transparent)]
 pub struct HvError(core::num::NonZeroU16);
 
@@ -450,8 +451,6 @@ impl core::fmt::Display for HvError {
         }
     }
 }
-
-impl core::error::Error for HvError {}
 
 macro_rules! hv_error {
     ($ty:ty, $(#[doc = $doc:expr] $ident:ident = $val:expr),* $(,)?) => {

@@ -13,7 +13,6 @@
 
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
-use core::fmt::Display;
 use core::fmt::Write;
 use core::mem::size_of;
 use hvdef::HV_PAGE_SIZE;
@@ -21,6 +20,7 @@ use igvm_defs::MemoryMapEntryType;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
 use memory_range::MemoryRange;
+use thiserror::Error;
 
 /// Information about VMBUS.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,134 +56,103 @@ pub struct GicInfo {
 }
 
 /// Errors returned by parsing.
-#[derive(Debug)]
-pub struct Error<'a>(ErrorKind<'a>);
-
-impl Display for Error<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("Parsing failed due to: {}", self.0))
-    }
-}
-
-impl core::error::Error for Error<'_> {}
-
-#[derive(Debug)]
-enum ErrorKind<'a> {
+#[derive(Debug, Error)]
+pub enum Error<'a> {
+    /// Invalid device tree
+    #[error("invalid device tree: {0}")]
     Dt(fdt::parser::Error<'a>),
+    /// Invalid device tree node  
+    #[error("invalid device tree node with parent {parent_name}: {error}")]
     Node {
         parent_name: &'a str,
         error: fdt::parser::Error<'a>,
     },
+    /// Required property missing
+    #[error("{node_name} did not have the following required property {prop_name}")]
     PropMissing {
         node_name: &'a str,
         prop_name: &'static str,
     },
+    /// Reading node property failed
+    #[error("reading node property failed: {0}")]
     Prop(fdt::parser::Error<'a>),
+    /// Too many CPUs
+    #[error("device tree contained more enabled CPUs than can be parsed")]
     TooManyCpus,
+    /// Memory region not aligned
+    #[error("memory node {node_name} contains 4K unaligned base {base} or len {len}")]
     MemoryRegUnaligned {
         node_name: &'a str,
         base: u64,
         len: u64,
     },
+    /// Memory regions overlap
+    #[error("ram at {}..{} of type {:?} overlaps ram at {}..{} of type {:?}", lower.range.start(), lower.range.end(), lower.mem_type, upper.range.start(), upper.range.end(), upper.mem_type)]
     MemoryRegOverlap {
         lower: MemoryEntry,
         upper: MemoryEntry,
     },
+    /// Too many memory entries
+    #[error("device tree contained more memory ranges than can be parsed")]
     TooManyMemoryEntries,
+    /// Invalid u32 property value
+    #[error(
+        "{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}"
+    )]
     PropInvalidU32 {
         node_name: &'a str,
         prop_name: &'a str,
         expected: u32,
         actual: u32,
     },
+    /// Invalid string property value
+    #[error(
+        "{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}"
+    )]
     PropInvalidStr {
         node_name: &'a str,
         prop_name: &'a str,
         expected: &'a str,
         actual: &'a str,
     },
-    UnexpectedVmbusVtl {
-        node_name: &'a str,
-        vtl: u32,
-    },
-    MultipleVmbusNode {
-        node_name: &'a str,
-    },
+    /// Unexpected VMBUS VTL
+    #[error("{node_name} has an unexpected vtl {vtl}")]
+    UnexpectedVmbusVtl { node_name: &'a str, vtl: u32 },
+    /// Multiple VMBUS nodes
+    #[error("{node_name} specifies a duplicate vmbus node")]
+    MultipleVmbusNode { node_name: &'a str },
+    /// VMBUS ranges child/parent mismatch
+    #[error("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")]
     VmbusRangesChildParent {
         node_name: &'a str,
         child_base: u64,
         parent_base: u64,
     },
+    /// VMBUS ranges not aligned
+    #[error("vmbus {node_name} base {base} or len {len} not aligned to 4K")]
     VmbusRangesNotAligned {
         node_name: &'a str,
         base: u64,
         len: u64,
     },
-    TooManyVmbusMmioRanges {
-        node_name: &'a str,
-        ranges: usize,
-    },
-    VmbusMmioOverlapsRam {
-        mmio: MemoryRange,
-        ram: MemoryEntry,
-    },
+    /// Too many VMBUS MMIO ranges
+    #[error("vmbus {node_name} has more than 2 mmio ranges {ranges}")]
+    TooManyVmbusMmioRanges { node_name: &'a str, ranges: usize },
+    /// VMBUS MMIO overlaps RAM
+    #[error("vmbus mmio at {}..{} overlaps ram at {}..{}", mmio.start(), mmio.end(), ram.range.start(), ram.range.end())]
+    VmbusMmioOverlapsRam { mmio: MemoryRange, ram: MemoryEntry },
+    /// VMBUS MMIO overlaps VMBUS MMIO
+    #[error("vmbus mmio at {}..{} overlaps vmbus mmio at {}..{}", mmio_a.start(), mmio_a.end(), mmio_b.start(), mmio_b.end())]
     VmbusMmioOverlapsVmbusMmio {
         mmio_a: MemoryRange,
         mmio_b: MemoryRange,
     },
+    /// Command line size error
+    #[error("commandline too small to parse /chosen bootargs")]
     CmdlineSize,
-    UnexpectedMemoryAllocationMode {
-        mode: &'a str,
-    },
-}
-
-impl Display for ErrorKind<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            ErrorKind::Dt(e) => f.write_fmt(format_args!("invalid device tree: {}", e)),
-            ErrorKind::Node { parent_name, error } => {
-                f.write_fmt(format_args!("invalid device tree node with parent {parent_name}: {error}"))
-            }
-            ErrorKind::PropMissing {
-                node_name,
-                prop_name,
-            } => f.write_fmt(format_args!(
-                "{node_name} did not have the following required property {prop_name}",
-            )),
-            ErrorKind::Prop(e) => f.write_fmt(format_args!("reading node property failed: {e}")),
-            ErrorKind::TooManyCpus => {
-                f.write_str("device tree contained more enabled CPUs than can be parsed")
-            }
-            ErrorKind::MemoryRegUnaligned {
-                node_name,
-                base,
-                len,
-            } => f.write_fmt(format_args!(
-                "memory node {node_name} contains 4K unaligned base {base} or len {len}"
-            )),
-            ErrorKind::MemoryRegOverlap { lower, upper,  } => {
-                f.write_fmt(format_args!("ram at {}..{} of type {:?} overlaps ram at {}..{} of type {:?}", lower.range.start(), lower.range.end(), lower.mem_type, upper.range.start(), upper.range.end(), upper.mem_type))
-            }
-            ErrorKind::TooManyMemoryEntries => {
-                f.write_str("device tree contained more memory ranges than can be parsed")
-            }
-            ErrorKind::PropInvalidU32 { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}")),
-            ErrorKind::PropInvalidStr { node_name, prop_name, expected, actual } => f.write_fmt(format_args!("{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}")),
-            ErrorKind::UnexpectedVmbusVtl { node_name, vtl } => f.write_fmt(format_args!("{node_name} has an unexpected vtl {vtl}")),
-            ErrorKind::MultipleVmbusNode { node_name } => f.write_fmt(format_args!("{node_name} specifies a duplicate vmbus node")),
-            ErrorKind::VmbusRangesChildParent { node_name, child_base, parent_base } => f.write_fmt(format_args!("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")),
-            ErrorKind::VmbusRangesNotAligned { node_name, base, len } => f.write_fmt(format_args!("vmbus {node_name} base {base} or len {len} not aligned to 4K")),
-            ErrorKind::TooManyVmbusMmioRanges { node_name, ranges } => f.write_fmt(format_args!("vmbus {node_name} has more than 2 mmio ranges {ranges}")),
-            ErrorKind::VmbusMmioOverlapsRam { mmio, ram } => {
-                f.write_fmt(format_args!("vmbus mmio at {}..{} overlaps ram at {}..{}", mmio.start(), mmio.end(), ram.range.start(), ram.range.end()))
-            }
-            ErrorKind::VmbusMmioOverlapsVmbusMmio { mmio_a, mmio_b } => {
-                f.write_fmt(format_args!("vmbus mmio at {}..{} overlaps vmbus mmio at {}..{}", mmio_a.start(), mmio_a.end(), mmio_b.start(), mmio_b.end()))
-            }
-            ErrorKind::CmdlineSize => f.write_str("commandline too small to parse /chosen bootargs"),
-            ErrorKind::UnexpectedMemoryAllocationMode { mode } => f.write_fmt(format_args!("unexpected memory allocation mode: {}", mode)),
-        }
-    }
+    /// Unexpected memory allocation mode
+    #[error("unexpected memory allocation mode: {mode}")]
+    UnexpectedMemoryAllocationMode { mode: &'a str },
 }
 
 const COM3_REG_BASE: u64 = 0x3E8;
@@ -331,15 +300,15 @@ impl<
 
     /// Parse the given device tree.
     pub fn parse(dt: &'a [u8], storage: &'b mut Self) -> Result<&'b Self, Error<'a>> {
-        Self::parse_inner(dt, storage).map_err(Error)
+        Self::parse_inner(dt, storage)
     }
 
-    fn parse_inner(dt: &'a [u8], storage: &'b mut Self) -> Result<&'b Self, ErrorKind<'a>> {
-        let parser = fdt::parser::Parser::new(dt).map_err(ErrorKind::Dt)?;
+    fn parse_inner(dt: &'a [u8], storage: &'b mut Self) -> Result<&'b Self, Error<'a>> {
+        let parser = fdt::parser::Parser::new(dt).map_err(Error::Dt)?;
         let root = match parser.root() {
             Ok(v) => v,
             Err(e) => {
-                return Err(ErrorKind::Node {
+                return Err(Error::Node {
                     parent_name: "",
                     error: e,
                 });
@@ -352,10 +321,10 @@ impl<
         // after all entries are parsed once sort is stabilized in core.
         let insert_memory_entry = |memory: &mut ArrayVec<MemoryEntry, MAX_MEMORY_ENTRIES>,
                                    entry: MemoryEntry|
-         -> Result<(), ErrorKind<'a>> {
+         -> Result<(), Error<'a>> {
             let insert_index = match memory.binary_search_by_key(&entry.range, |k| k.range) {
                 Ok(index) => {
-                    return Err(ErrorKind::MemoryRegOverlap {
+                    return Err(Error::MemoryRegOverlap {
                         lower: memory[index],
                         upper: entry,
                     });
@@ -365,11 +334,11 @@ impl<
 
             memory
                 .try_insert(insert_index, entry)
-                .map_err(|_| ErrorKind::TooManyMemoryEntries)
+                .map_err(|_| Error::TooManyMemoryEntries)
         };
 
         for child in root.children() {
-            let child = child.map_err(|error| ErrorKind::Node {
+            let child = child.map_err(|error| Error::Node {
                 parent_name: root.name,
                 error,
             })?;
@@ -378,18 +347,18 @@ impl<
                 "cpus" => {
                     let address_cells = child
                         .find_property("#address-cells")
-                        .map_err(ErrorKind::Prop)?
-                        .ok_or(ErrorKind::PropMissing {
+                        .map_err(Error::Prop)?
+                        .ok_or(Error::PropMissing {
                             node_name: child.name,
                             prop_name: "#address-cells",
                         })?
                         .read_u32(0)
-                        .map_err(ErrorKind::Prop)?;
+                        .map_err(Error::Prop)?;
 
                     // On ARM v8 64-bit systems, up to 2 address-cells values
                     // can be provided.
                     if address_cells > 2 {
-                        return Err(ErrorKind::PropInvalidU32 {
+                        return Err(Error::PropInvalidU32 {
                             node_name: child.name,
                             prop_name: "#address-cells",
                             expected: 2,
@@ -398,20 +367,20 @@ impl<
                     }
 
                     for cpu in child.children() {
-                        let cpu = cpu.map_err(|error| ErrorKind::Node {
+                        let cpu = cpu.map_err(|error| Error::Node {
                             parent_name: child.name,
                             error,
                         })?;
 
                         if cpu
                             .find_property("status")
-                            .map_err(ErrorKind::Prop)?
-                            .ok_or(ErrorKind::PropMissing {
+                            .map_err(Error::Prop)?
+                            .ok_or(Error::PropMissing {
                                 node_name: cpu.name,
                                 prop_name: "status",
                             })?
                             .read_str()
-                            .map_err(ErrorKind::Prop)?
+                            .map_err(Error::Prop)?
                             != "okay"
                         {
                             continue;
@@ -420,63 +389,62 @@ impl<
                         // NOTE: For x86, Underhill will need to query the hypervisor for
                         // the vp_index to apic_id mapping. There's no
                         // correlation in the device tree about this at all.
-                        let reg_property = cpu
-                            .find_property("reg")
-                            .map_err(ErrorKind::Prop)?
-                            .ok_or(ErrorKind::PropMissing {
+                        let reg_property = cpu.find_property("reg").map_err(Error::Prop)?.ok_or(
+                            Error::PropMissing {
                                 node_name: cpu.name,
                                 prop_name: "reg",
-                            })?;
+                            },
+                        )?;
 
                         let reg = if address_cells == 1 {
-                            reg_property.read_u32(0).map_err(ErrorKind::Prop)? as u64
+                            reg_property.read_u32(0).map_err(Error::Prop)? as u64
                         } else {
-                            reg_property.read_u64(0).map_err(ErrorKind::Prop)?
+                            reg_property.read_u64(0).map_err(Error::Prop)?
                         };
 
                         let vnode = cpu
                             .find_property("numa-node-id")
-                            .map_err(ErrorKind::Prop)?
-                            .ok_or(ErrorKind::PropMissing {
+                            .map_err(Error::Prop)?
+                            .ok_or(Error::PropMissing {
                                 node_name: cpu.name,
                                 prop_name: "numa-node-id",
                             })?
                             .read_u32(0)
-                            .map_err(ErrorKind::Prop)?;
+                            .map_err(Error::Prop)?;
 
                         storage
                             .cpus
                             .try_push(CpuEntry { reg, vnode })
-                            .map_err(|_| ErrorKind::TooManyCpus)?;
+                            .map_err(|_| Error::TooManyCpus)?;
                     }
                 }
                 "openhcl" => {
                     let memory_allocation_mode = child
                         .find_property("memory-allocation-mode")
-                        .map_err(ErrorKind::Prop)?
-                        .ok_or(ErrorKind::PropMissing {
+                        .map_err(Error::Prop)?
+                        .ok_or(Error::PropMissing {
                             node_name: child.name,
                             prop_name: "memory-allocation-mode",
                         })?;
 
-                    match memory_allocation_mode.read_str().map_err(ErrorKind::Prop)? {
+                    match memory_allocation_mode.read_str().map_err(Error::Prop)? {
                         "host" => {
                             storage.memory_allocation_mode = MemoryAllocationMode::Host;
                         }
                         "vtl2" => {
                             let memory_size = child
                                 .find_property("memory-size")
-                                .map_err(ErrorKind::Prop)?
+                                .map_err(Error::Prop)?
                                 .map(|p| p.read_u64(0))
                                 .transpose()
-                                .map_err(ErrorKind::Prop)?;
+                                .map_err(Error::Prop)?;
 
                             let mmio_size = child
                                 .find_property("mmio-size")
-                                .map_err(ErrorKind::Prop)?
+                                .map_err(Error::Prop)?
                                 .map(|p| p.read_u64(0))
                                 .transpose()
-                                .map_err(ErrorKind::Prop)?;
+                                .map_err(Error::Prop)?;
 
                             storage.memory_allocation_mode = MemoryAllocationMode::Vtl2 {
                                 memory_size,
@@ -484,19 +452,19 @@ impl<
                             };
                         }
                         mode => {
-                            return Err(ErrorKind::UnexpectedMemoryAllocationMode { mode });
+                            return Err(Error::UnexpectedMemoryAllocationMode { mode });
                         }
                     }
 
                     storage.vtl0_alias_map = child
                         .find_property("vtl0-alias-map")
-                        .map_err(ErrorKind::Prop)?
+                        .map_err(Error::Prop)?
                         .map(|p| p.read_u64(0))
                         .transpose()
-                        .map_err(ErrorKind::Prop)?;
+                        .map_err(Error::Prop)?;
 
                     for openhcl_child in child.children() {
-                        let openhcl_child = openhcl_child.map_err(|error| ErrorKind::Node {
+                        let openhcl_child = openhcl_child.map_err(|error| Error::Node {
                             parent_name: root.name,
                             error,
                         })?;
@@ -505,8 +473,8 @@ impl<
                             "entropy" => {
                                 let host_entropy = openhcl_child
                                     .find_property("reg")
-                                    .map_err(ErrorKind::Prop)?
-                                    .ok_or(ErrorKind::PropMissing {
+                                    .map_err(Error::Prop)?
+                                    .ok_or(Error::PropMissing {
                                         node_name: openhcl_child.name,
                                         prop_name: "reg",
                                     })?
@@ -554,16 +522,16 @@ impl<
                 _ if child.name.starts_with("memory@") => {
                     let igvm_type = if let Some(igvm_type) = child
                         .find_property(igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY)
-                        .map_err(ErrorKind::Prop)?
+                        .map_err(Error::Prop)?
                     {
-                        let typ = igvm_type.read_u32(0).map_err(ErrorKind::Prop)?;
+                        let typ = igvm_type.read_u32(0).map_err(Error::Prop)?;
                         MemoryMapEntryType(typ as u16)
                     } else {
                         MemoryMapEntryType::MEMORY
                     };
 
-                    let reg = child.find_property("reg").map_err(ErrorKind::Prop)?.ok_or(
-                        ErrorKind::PropMissing {
+                    let reg = child.find_property("reg").map_err(Error::Prop)?.ok_or(
+                        Error::PropMissing {
                             node_name: child.name,
                             prop_name: "reg",
                         },
@@ -571,24 +539,24 @@ impl<
 
                     let vnode = child
                         .find_property("numa-node-id")
-                        .map_err(ErrorKind::Prop)?
-                        .ok_or(ErrorKind::PropMissing {
+                        .map_err(Error::Prop)?
+                        .ok_or(Error::PropMissing {
                             node_name: child.name,
                             prop_name: "numa-node-id",
                         })?
                         .read_u32(0)
-                        .map_err(ErrorKind::Prop)?;
+                        .map_err(Error::Prop)?;
 
                     let len = reg.data.len();
                     let reg_tuple_size = size_of::<u64>() * 2;
                     let number_of_ranges = len / reg_tuple_size;
 
                     for i in 0..number_of_ranges {
-                        let base = reg.read_u64(i * 2).map_err(ErrorKind::Prop)?;
-                        let len = reg.read_u64(i * 2 + 1).map_err(ErrorKind::Prop)?;
+                        let base = reg.read_u64(i * 2).map_err(Error::Prop)?;
+                        let len = reg.read_u64(i * 2 + 1).map_err(Error::Prop)?;
 
                         if base % HV_PAGE_SIZE != 0 || len % HV_PAGE_SIZE != 0 {
-                            return Err(ErrorKind::MemoryRegUnaligned {
+                            return Err(Error::MemoryRegUnaligned {
                                 node_name: child.name,
                                 base,
                                 len,
@@ -609,13 +577,12 @@ impl<
                 "chosen" => {
                     let cmdline = child
                         .find_property("bootargs")
-                        .map_err(ErrorKind::Prop)?
-                        .map(|prop| prop.read_str().map_err(ErrorKind::Prop))
+                        .map_err(Error::Prop)?
+                        .map(|prop| prop.read_str().map_err(Error::Prop))
                         .transpose()?
                         .unwrap_or("");
 
-                    write!(storage.command_line, "{}", cmdline)
-                        .map_err(|_| ErrorKind::CmdlineSize)?;
+                    write!(storage.command_line, "{}", cmdline).map_err(|_| Error::CmdlineSize)?;
                 }
                 _ if child.name.starts_with("intc@") => {
                     validate_property_str(&child, "compatible", "arm,gic-v3")?;
@@ -626,29 +593,26 @@ impl<
 
                     let gic_redistributor_stride = child
                         .find_property("redistributor-stride")
-                        .map_err(ErrorKind::Prop)?
-                        .ok_or(ErrorKind::PropMissing {
+                        .map_err(Error::Prop)?
+                        .ok_or(Error::PropMissing {
                             node_name: child.name,
                             prop_name: "redistributor-stride",
                         })?
                         .read_u64(0)
-                        .map_err(ErrorKind::Prop)?;
+                        .map_err(Error::Prop)?;
 
-                    let gic_reg_property = child
-                        .find_property("reg")
-                        .map_err(ErrorKind::Prop)?
-                        .ok_or(ErrorKind::PropMissing {
+                    let gic_reg_property = child.find_property("reg").map_err(Error::Prop)?.ok_or(
+                        Error::PropMissing {
                             node_name: child.name,
                             prop_name: "reg",
-                        })?;
-                    let gic_distributor_base =
-                        gic_reg_property.read_u64(0).map_err(ErrorKind::Prop)?;
-                    let gic_distributor_size =
-                        gic_reg_property.read_u64(1).map_err(ErrorKind::Prop)?;
+                        },
+                    )?;
+                    let gic_distributor_base = gic_reg_property.read_u64(0).map_err(Error::Prop)?;
+                    let gic_distributor_size = gic_reg_property.read_u64(1).map_err(Error::Prop)?;
                     let gic_redistributors_base =
-                        gic_reg_property.read_u64(2).map_err(ErrorKind::Prop)?;
+                        gic_reg_property.read_u64(2).map_err(Error::Prop)?;
                     let gic_redistributors_size =
-                        gic_reg_property.read_u64(3).map_err(ErrorKind::Prop)?;
+                        gic_reg_property.read_u64(3).map_err(Error::Prop)?;
 
                     storage.gic = Some(GicInfo {
                         gic_distributor_base,
@@ -673,7 +637,7 @@ impl<
         // Validate memory entries do not overlap.
         for (prev, next) in storage.memory.iter().zip(storage.memory.iter().skip(1)) {
             if prev.range.overlaps(&next.range) {
-                return Err(ErrorKind::MemoryRegOverlap {
+                return Err(Error::MemoryRegOverlap {
                     lower: *prev,
                     upper: *next,
                 });
@@ -696,7 +660,7 @@ impl<
         for ram in storage.memory.iter() {
             for mmio in vmbus_vtl0_mmio {
                 if mmio.overlaps(&ram.range) {
-                    return Err(ErrorKind::VmbusMmioOverlapsRam {
+                    return Err(Error::VmbusMmioOverlapsRam {
                         mmio: *mmio,
                         ram: *ram,
                     });
@@ -705,7 +669,7 @@ impl<
 
             for mmio in vmbus_vtl2_mmio {
                 if mmio.overlaps(&ram.range) {
-                    return Err(ErrorKind::VmbusMmioOverlapsRam {
+                    return Err(Error::VmbusMmioOverlapsRam {
                         mmio: *mmio,
                         ram: *ram,
                     });
@@ -716,7 +680,7 @@ impl<
         for vtl0_mmio in vmbus_vtl0_mmio {
             for vtl2_mmio in vmbus_vtl2_mmio {
                 if vtl0_mmio.overlaps(vtl2_mmio) {
-                    return Err(ErrorKind::VmbusMmioOverlapsVmbusMmio {
+                    return Err(Error::VmbusMmioOverlapsVmbusMmio {
                         mmio_a: *vtl0_mmio,
                         mmio_b: *vtl2_mmio,
                     });
@@ -756,11 +720,11 @@ fn parse_compatible<'a>(
     vmbus_vtl2: &mut Option<VmbusInfo>,
     pmu_gsiv: &mut Option<u32>,
     com3_serial: &mut bool,
-) -> Result<(), ErrorKind<'a>> {
+) -> Result<(), Error<'a>> {
     let compatible = node
         .find_property("compatible")
-        .map_err(ErrorKind::Prop)?
-        .map(|prop| prop.read_str().map_err(ErrorKind::Prop))
+        .map_err(Error::Prop)?
+        .map(|prop| prop.read_str().map_err(Error::Prop))
         .transpose()?
         .unwrap_or("");
 
@@ -780,20 +744,20 @@ fn parse_compatible<'a>(
     Ok(())
 }
 
-fn parse_vmbus<'a>(node: &fdt::parser::Node<'a>) -> Result<VmbusInfo, ErrorKind<'a>> {
+fn parse_vmbus<'a>(node: &fdt::parser::Node<'a>) -> Result<VmbusInfo, Error<'a>> {
     // Validate address cells and size cells are 2
     let address_cells = node
         .find_property("#address-cells")
-        .map_err(ErrorKind::Prop)?
-        .ok_or(ErrorKind::PropMissing {
+        .map_err(Error::Prop)?
+        .ok_or(Error::PropMissing {
             node_name: node.name,
             prop_name: "#address-cells",
         })?
         .read_u32(0)
-        .map_err(ErrorKind::Prop)?;
+        .map_err(Error::Prop)?;
 
     if address_cells != 2 {
-        return Err(ErrorKind::PropInvalidU32 {
+        return Err(Error::PropInvalidU32 {
             node_name: node.name,
             prop_name: "#address-cells",
             expected: 2,
@@ -803,16 +767,16 @@ fn parse_vmbus<'a>(node: &fdt::parser::Node<'a>) -> Result<VmbusInfo, ErrorKind<
 
     let size_cells = node
         .find_property("#size-cells")
-        .map_err(ErrorKind::Prop)?
-        .ok_or(ErrorKind::PropMissing {
+        .map_err(Error::Prop)?
+        .ok_or(Error::PropMissing {
             node_name: node.name,
             prop_name: "#size-cells",
         })?
         .read_u32(0)
-        .map_err(ErrorKind::Prop)?;
+        .map_err(Error::Prop)?;
 
     if size_cells != 2 {
-        return Err(ErrorKind::PropInvalidU32 {
+        return Err(Error::PropInvalidU32 {
             node_name: node.name,
             prop_name: "#size-cells",
             expected: 2,
@@ -820,78 +784,77 @@ fn parse_vmbus<'a>(node: &fdt::parser::Node<'a>) -> Result<VmbusInfo, ErrorKind<
         });
     }
 
-    let mmio: ArrayVec<MemoryRange, 2> =
-        match node.find_property("ranges").map_err(ErrorKind::Prop)? {
-            Some(ranges) => {
-                // Determine how many mmio ranges this describes. Valid numbers are
-                // 0, 1 or 2.
-                let ranges_tuple_size = size_of::<u64>() * 3;
-                let number_of_ranges = ranges.data.len() / ranges_tuple_size;
-                let mut mmio = ArrayVec::new();
+    let mmio: ArrayVec<MemoryRange, 2> = match node.find_property("ranges").map_err(Error::Prop)? {
+        Some(ranges) => {
+            // Determine how many mmio ranges this describes. Valid numbers are
+            // 0, 1 or 2.
+            let ranges_tuple_size = size_of::<u64>() * 3;
+            let number_of_ranges = ranges.data.len() / ranges_tuple_size;
+            let mut mmio = ArrayVec::new();
 
-                if number_of_ranges > 2 {
-                    return Err(ErrorKind::TooManyVmbusMmioRanges {
+            if number_of_ranges > 2 {
+                return Err(Error::TooManyVmbusMmioRanges {
+                    node_name: node.name,
+                    ranges: number_of_ranges,
+                });
+            }
+
+            for i in 0..number_of_ranges {
+                let child_base = ranges.read_u64(i * 3).map_err(Error::Prop)?;
+                let parent_base = ranges.read_u64(i * 3 + 1).map_err(Error::Prop)?;
+                let len = ranges.read_u64(i * 3 + 2).map_err(Error::Prop)?;
+
+                if child_base != parent_base {
+                    return Err(Error::VmbusRangesChildParent {
                         node_name: node.name,
-                        ranges: number_of_ranges,
+                        child_base,
+                        parent_base,
                     });
                 }
 
-                for i in 0..number_of_ranges {
-                    let child_base = ranges.read_u64(i * 3).map_err(ErrorKind::Prop)?;
-                    let parent_base = ranges.read_u64(i * 3 + 1).map_err(ErrorKind::Prop)?;
-                    let len = ranges.read_u64(i * 3 + 2).map_err(ErrorKind::Prop)?;
-
-                    if child_base != parent_base {
-                        return Err(ErrorKind::VmbusRangesChildParent {
-                            node_name: node.name,
-                            child_base,
-                            parent_base,
-                        });
-                    }
-
-                    if child_base % HV_PAGE_SIZE != 0 || len % HV_PAGE_SIZE != 0 {
-                        return Err(ErrorKind::VmbusRangesNotAligned {
-                            node_name: node.name,
-                            base: child_base,
-                            len,
-                        });
-                    }
-
-                    mmio.push(
-                        MemoryRange::try_new(child_base..(child_base + len)).expect("valid range"),
-                    );
-                }
-
-                // The DT ranges field might not have been sorted. Swap them if the
-                // low gap was described 2nd.
-                if number_of_ranges > 1 && mmio[0].start() > mmio[1].start() {
-                    mmio.swap(0, 1);
-                }
-
-                if number_of_ranges > 1 && mmio[0].overlaps(&mmio[1]) {
-                    return Err(ErrorKind::VmbusMmioOverlapsVmbusMmio {
-                        mmio_a: mmio[0],
-                        mmio_b: mmio[1],
+                if child_base % HV_PAGE_SIZE != 0 || len % HV_PAGE_SIZE != 0 {
+                    return Err(Error::VmbusRangesNotAligned {
+                        node_name: node.name,
+                        base: child_base,
+                        len,
                     });
                 }
 
-                mmio
+                mmio.push(
+                    MemoryRange::try_new(child_base..(child_base + len)).expect("valid range"),
+                );
             }
-            None => {
-                // No mmio is acceptable.
-                ArrayVec::new()
+
+            // The DT ranges field might not have been sorted. Swap them if the
+            // low gap was described 2nd.
+            if number_of_ranges > 1 && mmio[0].start() > mmio[1].start() {
+                mmio.swap(0, 1);
             }
-        };
+
+            if number_of_ranges > 1 && mmio[0].overlaps(&mmio[1]) {
+                return Err(Error::VmbusMmioOverlapsVmbusMmio {
+                    mmio_a: mmio[0],
+                    mmio_b: mmio[1],
+                });
+            }
+
+            mmio
+        }
+        None => {
+            // No mmio is acceptable.
+            ArrayVec::new()
+        }
+    };
 
     let connection_id = node
         .find_property("microsoft,message-connection-id")
-        .map_err(ErrorKind::Prop)?
-        .ok_or(ErrorKind::PropMissing {
+        .map_err(Error::Prop)?
+        .ok_or(Error::PropMissing {
             node_name: node.name,
             prop_name: "microsoft,message-connection-id",
         })?
         .read_u32(0)
-        .map_err(ErrorKind::Prop)?;
+        .map_err(Error::Prop)?;
 
     Ok(VmbusInfo {
         mmio,
@@ -903,12 +866,12 @@ fn parse_simple_bus<'a>(
     node: &fdt::parser::Node<'a>,
     vmbus_vtl0: &mut Option<VmbusInfo>,
     vmbus_vtl2: &mut Option<VmbusInfo>,
-) -> Result<(), ErrorKind<'a>> {
+) -> Result<(), Error<'a>> {
     // Vmbus must be under simple-bus node with empty ranges.
     if !node
         .find_property("ranges")
-        .map_err(ErrorKind::Prop)?
-        .ok_or(ErrorKind::PropMissing {
+        .map_err(Error::Prop)?
+        .ok_or(Error::PropMissing {
             node_name: node.name,
             prop_name: "ranges",
         })?
@@ -919,15 +882,15 @@ fn parse_simple_bus<'a>(
     }
 
     for child in node.children() {
-        let child = child.map_err(|error| ErrorKind::Node {
+        let child = child.map_err(|error| Error::Node {
             parent_name: node.name,
             error,
         })?;
 
         let compatible = child
             .find_property("compatible")
-            .map_err(ErrorKind::Prop)?
-            .map(|prop| prop.read_str().map_err(ErrorKind::Prop))
+            .map_err(Error::Prop)?
+            .map(|prop| prop.read_str().map_err(Error::Prop))
             .transpose()?
             .unwrap_or("");
 
@@ -935,31 +898,31 @@ fn parse_simple_bus<'a>(
             let vtl_name = igvm_defs::dt::IGVM_DT_VTL_PROPERTY;
             let vtl = child
                 .find_property(vtl_name)
-                .map_err(ErrorKind::Prop)?
-                .ok_or(ErrorKind::PropMissing {
+                .map_err(Error::Prop)?
+                .ok_or(Error::PropMissing {
                     node_name: child.name,
                     prop_name: vtl_name,
                 })?
                 .read_u32(0)
-                .map_err(ErrorKind::Prop)?;
+                .map_err(Error::Prop)?;
 
             match vtl {
                 0 => {
                     if vmbus_vtl0.replace(parse_vmbus(&child)?).is_some() {
-                        return Err(ErrorKind::MultipleVmbusNode {
+                        return Err(Error::MultipleVmbusNode {
                             node_name: child.name,
                         });
                     }
                 }
                 2 => {
                     if vmbus_vtl2.replace(parse_vmbus(&child)?).is_some() {
-                        return Err(ErrorKind::MultipleVmbusNode {
+                        return Err(Error::MultipleVmbusNode {
                             node_name: child.name,
                         });
                     }
                 }
                 _ => {
-                    return Err(ErrorKind::UnexpectedVmbusVtl {
+                    return Err(Error::UnexpectedVmbusVtl {
                         node_name: child.name,
                         vtl,
                     });
@@ -971,43 +934,40 @@ fn parse_simple_bus<'a>(
     Ok(())
 }
 
-fn parse_io_bus<'a>(
-    node: &fdt::parser::Node<'a>,
-    com3_serial: &mut bool,
-) -> Result<(), ErrorKind<'a>> {
+fn parse_io_bus<'a>(node: &fdt::parser::Node<'a>, com3_serial: &mut bool) -> Result<(), Error<'a>> {
     for io_bus_child in node.children() {
-        let io_bus_child = io_bus_child.map_err(|error| ErrorKind::Node {
+        let io_bus_child = io_bus_child.map_err(|error| Error::Node {
             parent_name: node.name,
             error,
         })?;
 
         let compatible: &str = io_bus_child
             .find_property("compatible")
-            .map_err(ErrorKind::Prop)?
-            .map(|prop| prop.read_str().map_err(ErrorKind::Prop))
+            .map_err(Error::Prop)?
+            .map(|prop| prop.read_str().map_err(Error::Prop))
             .transpose()?
             .unwrap_or("");
 
         let _current_speed = io_bus_child
             .find_property("current-speed")
-            .map_err(ErrorKind::Prop)?
-            .ok_or(ErrorKind::PropMissing {
+            .map_err(Error::Prop)?
+            .ok_or(Error::PropMissing {
                 node_name: io_bus_child.name,
                 prop_name: "current-speed",
             })?
             .read_u32(0)
-            .map_err(ErrorKind::Prop)?;
+            .map_err(Error::Prop)?;
 
         let reg = io_bus_child
             .find_property("reg")
-            .map_err(ErrorKind::Prop)?
-            .ok_or(ErrorKind::PropMissing {
+            .map_err(Error::Prop)?
+            .ok_or(Error::PropMissing {
                 node_name: io_bus_child.name,
                 prop_name: "reg",
             })?;
 
-        let reg_base = reg.read_u64(0).map_err(ErrorKind::Prop)?;
-        let _reg_len = reg.read_u64(1).map_err(ErrorKind::Prop)?;
+        let reg_base = reg.read_u64(0).map_err(Error::Prop)?;
+        let _reg_len = reg.read_u64(1).map_err(Error::Prop)?;
 
         // Linux kernel hard-codes COM3 to COM3_REG_BASE.
         // If work is ever done in the Linux kernel to instead
@@ -1028,15 +988,15 @@ fn parse_io_bus<'a>(
 fn parse_pmu_gsiv<'a>(
     node: &fdt::parser::Node<'a>,
     pmu_gsiv: &mut Option<u32>,
-) -> Result<(), ErrorKind<'a>> {
-    let interrupts = node.find_property("interrupts").map_err(ErrorKind::Prop)?;
-    let interrupts = interrupts.ok_or(ErrorKind::PropMissing {
+) -> Result<(), Error<'a>> {
+    let interrupts = node.find_property("interrupts").map_err(Error::Prop)?;
+    let interrupts = interrupts.ok_or(Error::PropMissing {
         node_name: node.name,
         prop_name: "interrupts",
     })?;
 
     if interrupts.data.len() < 3 * size_of::<u32>() {
-        return Err(ErrorKind::PropInvalidU32 {
+        return Err(Error::PropInvalidU32 {
             node_name: node.name,
             prop_name: "interrupts size",
             expected: 3 * size_of::<u32>() as u32,
@@ -1047,21 +1007,21 @@ fn parse_pmu_gsiv<'a>(
     // This parser expects the PMU GSIV to be a PPI, as all platforms that
     // support OpenHCL should be using PPIs.
     const GIC_PPI: u32 = 1;
-    let interrupt_type = interrupts.read_u32(0).map_err(ErrorKind::Prop)?;
+    let interrupt_type = interrupts.read_u32(0).map_err(Error::Prop)?;
     if interrupt_type != GIC_PPI {
-        return Err(ErrorKind::PropInvalidU32 {
+        return Err(Error::PropInvalidU32 {
             node_name: node.name,
             prop_name: "interrupts",
             expected: GIC_PPI,
             actual: interrupt_type,
         });
     }
-    let interrupt_id = interrupts.read_u32(1).map_err(ErrorKind::Prop)?;
+    let interrupt_id = interrupts.read_u32(1).map_err(Error::Prop)?;
 
     // Interrupt id describes the index from the PPI start of 16. It must be
     // smaller than 16, as PPIs only exist from 16 to 31.
     if interrupt_id >= 16 {
-        return Err(ErrorKind::PropInvalidU32 {
+        return Err(Error::PropInvalidU32 {
             node_name: node.name,
             prop_name: "interrupts",
             expected: 16,
@@ -1079,18 +1039,18 @@ fn validate_property_str<'a>(
     child: &fdt::parser::Node<'a>,
     name: &'static str,
     expected: &'static str,
-) -> Result<(), ErrorKind<'a>> {
+) -> Result<(), Error<'a>> {
     let actual = child
         .find_property(name)
-        .map_err(ErrorKind::Prop)?
-        .ok_or(ErrorKind::PropMissing {
+        .map_err(Error::Prop)?
+        .ok_or(Error::PropMissing {
             node_name: child.name,
             prop_name: name,
         })?
         .read_str()
-        .map_err(ErrorKind::Prop)?;
+        .map_err(Error::Prop)?;
     if actual != expected {
-        return Err(ErrorKind::PropInvalidStr {
+        return Err(Error::PropInvalidStr {
             node_name: child.name,
             prop_name: name,
             expected,
@@ -1106,18 +1066,18 @@ fn validate_property_u32<'a>(
     name: &'static str,
     expected: u32,
     index: usize,
-) -> Result<(), ErrorKind<'a>> {
+) -> Result<(), Error<'a>> {
     let actual = child
         .find_property(name)
-        .map_err(ErrorKind::Prop)?
-        .ok_or(ErrorKind::PropMissing {
+        .map_err(Error::Prop)?
+        .ok_or(Error::PropMissing {
             node_name: child.name,
             prop_name: name,
         })?
         .read_u32(index)
-        .map_err(ErrorKind::Prop)?;
+        .map_err(Error::Prop)?;
     if actual != expected {
-        return Err(ErrorKind::PropInvalidU32 {
+        return Err(Error::PropInvalidU32 {
             node_name: child.name,
             prop_name: name,
             expected,
@@ -1712,7 +1672,7 @@ mod tests {
         let mut parsed = TestParsedDeviceTree::new();
         assert!(matches!(
             TestParsedDeviceTree::parse(&dt, &mut parsed),
-            Err(Error(ErrorKind::MemoryRegOverlap { .. }))
+            Err(Error::MemoryRegOverlap { .. })
         ));
 
         // mem contained within another
@@ -1751,7 +1711,7 @@ mod tests {
         let mut parsed = TestParsedDeviceTree::new();
         assert!(matches!(
             TestParsedDeviceTree::parse(&dt, &mut parsed),
-            Err(Error(ErrorKind::MemoryRegOverlap { .. }))
+            Err(Error::MemoryRegOverlap { .. })
         ));
 
         // mem overlaps vmbus
@@ -1795,7 +1755,7 @@ mod tests {
         let mut parsed = TestParsedDeviceTree::new();
         assert!(matches!(
             TestParsedDeviceTree::parse(&dt, &mut parsed),
-            Err(Error(ErrorKind::VmbusMmioOverlapsRam { .. }))
+            Err(Error::VmbusMmioOverlapsRam { .. })
         ));
 
         // vmbus overlap each other
@@ -1839,7 +1799,7 @@ mod tests {
         let mut parsed = TestParsedDeviceTree::new();
         assert!(matches!(
             TestParsedDeviceTree::parse(&dt, &mut parsed),
-            Err(Error(ErrorKind::VmbusMmioOverlapsVmbusMmio { .. }))
+            Err(Error::VmbusMmioOverlapsVmbusMmio { .. })
         ));
     }
 
