@@ -48,12 +48,6 @@
 //! - **Error propagation**: Mesh channel errors indicate shutdown
 //! - **Save/restore**: Supported when `save_restore_supported=true`, enables nvme_keepalive
 //!
-//! # Experiments / Usage
-//!
-//! The `NvmeManager` takes an optional `worker_vp` parameter to allow the caller to force spreading
-//! NVMe device work across multiple VPs, which can be useful if that VP can get stuck in the
-//! kernel or in a synchronous VM exit. This does not interact well with sidecar / VP bringup, so
-//! is disabled here.
 
 use crate::nvme_manager::device_manager::NvmeDriverManager;
 use crate::nvme_manager::device_manager::NvmeDriverManagerClient;
@@ -81,7 +75,6 @@ use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU32;
 use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::PciDeviceResetMethod;
@@ -402,18 +395,9 @@ mod device_manager {
             save_restore_supported: bool,
             device: Option<Box<dyn NvmeDevice>>,
             nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
-            worker_vp: Option<u32>,
         ) -> anyhow::Result<Self> {
             let (send, recv) = mesh::channel();
-            let driver = if let Some(vp) = worker_vp {
-                driver_source
-                    .builder()
-                    .run_on_target(true)
-                    .target_vp(vp)
-                    .build(format!("nvme-driver-manager-worker-{pci_id}"))
-            } else {
-                driver_source.simple()
-            };
+            let driver = driver_source.simple();
 
             let mut worker = NvmeDriverManagerWorker {
                 driver_source: driver_source.clone(),
@@ -422,7 +406,6 @@ mod device_manager {
                 save_restore_supported,
                 driver: device,
                 nvme_driver_spawner,
-                worker_vp,
             };
             let task = driver.spawn("nvme-driver-manager", async move { worker.run(recv).await });
             Ok(Self {
@@ -546,9 +529,6 @@ mod device_manager {
         #[inspect(skip)]
         nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
         driver: Option<Box<dyn NvmeDevice>>,
-        /// If `Some(vp)`, the worker is pinned to that VP (to work around cases where the host can block
-        /// VM exits).
-        worker_vp: Option<u32>,
     }
 
     impl NvmeDriverManagerWorker {
@@ -564,8 +544,7 @@ mod device_manager {
                     NvmeDriverRequest::LoadDriver(rpc) => {
                         let load_driver_span = tracing::debug_span!(parent: rpc.input(),
                             "nvme_device_manager_load_driver",
-                            pci_id = %self.pci_id,
-                            vp = ?self.worker_vp
+                            pci_id = %self.pci_id
                         );
 
                         rpc.handle(async |_span| {
@@ -573,9 +552,8 @@ mod device_manager {
                             // Just let the winning thread create the driver.
                             if self.driver.is_some() {
                                 tracing::debug!(
-                                    "nvme device manager worker load driver called for {} with existing driver (worker_vp = {:?})",
-                                    self.pci_id,
-                                    self.worker_vp
+                                    "nvme device manager worker load driver called for {} with existing driver",
+                                    self.pci_id
                                 );
                                 return Ok(());
                             }
@@ -601,8 +579,7 @@ mod device_manager {
                         let namespace_span = tracing::debug_span!(parent: &rpc.input().0,
                             "nvme_device_manager_get_namespace",
                             pci_id = %self.pci_id,
-                            nsid = rpc.input().1,
-                            vp = ?self.worker_vp
+                            nsid = rpc.input().1
                         );
 
                         rpc.handle(async |(_, nsid)| {
@@ -627,7 +604,6 @@ mod device_manager {
                         let shutdown_span = tracing::debug_span!(parent: &rpc.input().0,
                             "nvme_device_manager_shutdown",
                             pci_id = %self.pci_id,
-                            vp = ?self.worker_vp
                         );
                         rpc.handle(async |(_span, options)| {
                             // Driver may be `None` here if there was a failure during driver creation.
@@ -710,7 +686,6 @@ impl NvmeManager {
                 driver_source: driver_source.clone(),
                 devices: Arc::new(RwLock::new(HashMap::new())),
                 nvme_driver_spawner: nvme_driver_spawner.clone(),
-                next_worker_vp: Arc::new(AtomicU32::new(1)), // try to get off vp 0, which other things use...
             },
         };
         let task = driver.spawn("nvme-manager", async move {
@@ -834,7 +809,6 @@ struct NvmeWorkerContext {
     devices: Arc<RwLock<HashMap<String, NvmeDriverManager>>>,
     #[inspect(skip)]
     nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
-    next_worker_vp: Arc<AtomicU32>,
 }
 
 #[derive(Inspect)]
@@ -1001,11 +975,6 @@ impl NvmeManagerWorker {
                 match guard.entry(pci_id.to_owned()) {
                     hash_map::Entry::Occupied(_) => unreachable!(), // We checked above that this entry does not exist.
                     hash_map::Entry::Vacant(entry) => {
-                        // let worker_vp = context
-                        //     .next_worker_vp
-                        //     .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                        //     % context.vp_count;
-
                         let driver = NvmeDriverManager::new(
                             &context.driver_source,
                             &pci_id,
@@ -1013,7 +982,6 @@ impl NvmeManagerWorker {
                             context.save_restore_supported,
                             None, // No device yet,
                             context.nvme_driver_spawner.clone(),
-                            None, // Some(worker_vp),
                         )?;
 
                         Ok(entry.insert(driver).client().clone())
@@ -1109,12 +1077,6 @@ impl NvmeManagerWorker {
                 )
                 .await?;
 
-            // let worker_vp = &self
-            //     .context
-            //     .next_worker_vp
-            //     .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            //     % self.context.vp_count;
-
             restored_devices.insert(
                 disk.pci_id.clone(),
                 NvmeDriverManager::new(
@@ -1124,7 +1086,6 @@ impl NvmeManagerWorker {
                     true, // save_restore_supported is always `true` when restoring.
                     Some(nvme_driver),
                     self.context.nvme_driver_spawner.clone(),
-                    None, // Some(worker_vp),
                 )?,
             );
         }
@@ -1719,16 +1680,9 @@ mod tests {
         ));
 
         // Create a driver manager
-        let driver_manager = NvmeDriverManager::new(
-            &driver_source,
-            "0000:00:04.0",
-            4,
-            false,
-            None,
-            spawner,
-            Some(1),
-        )
-        .unwrap();
+        let driver_manager =
+            NvmeDriverManager::new(&driver_source, "0000:00:04.0", 4, false, None, spawner)
+                .unwrap();
 
         let client = driver_manager.client().clone();
 
@@ -1856,7 +1810,6 @@ mod tests {
             true, // save_restore_supported
             None,
             spawner,
-            Some(2),
         )
         .unwrap();
 
