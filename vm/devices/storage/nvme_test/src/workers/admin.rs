@@ -575,7 +575,7 @@ impl AdminHandler {
         };
 
         if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
-            let fault = admin_fault.fault_completion_queue(completion).await;
+            let fault = admin_fault.fault_completion_queue(completion.clone()).await;
 
             match fault {
                 QueueFaultBehavior::Update(completion_new) => {
