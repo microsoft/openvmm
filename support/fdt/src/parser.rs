@@ -632,7 +632,7 @@ impl<'a> Property<'a> {
 
 /// String parsing errors
 #[derive(Debug, Error)]
-enum StringError {
+pub enum StringError {
     /// Invalid string block offset
     #[error("Invalid string block offset")]
     Offset,
