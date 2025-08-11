@@ -96,16 +96,17 @@ enum RlimitSetError {
 impl Inspect for RlimitResource {
     fn inspect(&self, req: inspect::Request<'_>) {
         let pid = self.pid.unwrap_or(0);
-        let mut rlimit;
+        let mut rlimit = std::mem::MaybeUninit::<rlimit>::uninit();
         // SAFETY: calling according to syscall documentation.
         let r = unsafe {
-            rlimit = std::mem::zeroed();
-            libc::prlimit(pid, self.resource, std::ptr::null(), &mut rlimit)
+            libc::prlimit(pid, self.resource, std::ptr::null(), rlimit.as_mut_ptr())
         };
         if r != 0 {
             req.value(std::io::Error::last_os_error().to_string());
             return;
         }
+        // SAFETY: prlimit returned successfully, so rlimit is initialized
+        let mut rlimit = unsafe { rlimit.assume_init() };
 
         let update = |rlimit: &mut rlimit, sel: fn(&mut rlimit) -> &mut u64, new: Option<&str>| {
             if let Some(new) = new {

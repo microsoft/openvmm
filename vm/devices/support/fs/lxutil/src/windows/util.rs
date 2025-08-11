@@ -105,8 +105,11 @@ pub fn open_relative_file(
     }
 
     unsafe {
-        let mut iosb = mem::zeroed();
+        let mut iosb = std::mem::MaybeUninit::uninit();
         let mut handle = ptr::null_mut();
+        // SAFETY: iosb will be initialized by NtCreateFile, so we zero it first
+        std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+        let mut iosb = iosb.assume_init();
         let (ea_ptr, ea_len) = if let Some(ea) = ea_buffer {
             (ea.as_ptr() as *mut ffi::c_void, ea.len() as u32)
         } else {
@@ -630,7 +633,10 @@ pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr) -> lx::Result<windows:
 // Applies a reparse point to a file.
 pub fn set_reparse_point(handle: &OwnedHandle, reparse_buffer: &[u8]) -> lx::Result<()> {
     unsafe {
-        let mut iosb = mem::zeroed();
+        let mut iosb = std::mem::MaybeUninit::uninit();
+        // SAFETY: iosb will be initialized by NtFsControlFile, so we zero it first
+        std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+        let mut iosb = iosb.assume_init();
         let _ = check_status(Foundation::NTSTATUS(ntioapi::NtFsControlFile(
             handle.as_raw_handle(),
             ptr::null_mut(),

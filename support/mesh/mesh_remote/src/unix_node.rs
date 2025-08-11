@@ -1168,16 +1168,18 @@ impl UnixSocket {
 #[allow(clippy::needless_update, clippy::useless_conversion)]
 fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Result<usize> {
     let mut cmsg = CmsgScmRights {
-        hdr: libc::cmsghdr {
-            cmsg_level: libc::SOL_SOCKET,
-            cmsg_type: libc::SCM_RIGHTS,
-            cmsg_len: (size_of::<libc::cmsghdr>() + size_of_val(fds))
-                .try_into()
-                .unwrap(),
-
-            ..{
-                // SAFETY: type has no invariants
-                unsafe { std::mem::zeroed() }
+        hdr: {
+            let mut hdr = std::mem::MaybeUninit::<libc::cmsghdr>::uninit();
+            // SAFETY: Initialize the structure by zeroing then setting known fields
+            unsafe {
+                std::ptr::write_bytes(hdr.as_mut_ptr(), 0, 1);
+                let hdr_ptr = hdr.as_mut_ptr();
+                (*hdr_ptr).cmsg_level = libc::SOL_SOCKET;
+                (*hdr_ptr).cmsg_type = libc::SCM_RIGHTS;
+                (*hdr_ptr).cmsg_len = (size_of::<libc::cmsghdr>() + size_of_val(fds))
+                    .try_into()
+                    .unwrap();
+                hdr.assume_init()
             }
         },
         fds: [0; 64],
@@ -1188,8 +1190,13 @@ fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Res
         }
     }
 
-    // SAFETY: type has no invariants
-    let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+    // Initialize msghdr structure properly  
+    let mut hdr = std::mem::MaybeUninit::<libc::msghdr>::uninit();
+    // SAFETY: Initialize the structure by zeroing then setting specific fields
+    let mut hdr = unsafe {
+        std::ptr::write_bytes(hdr.as_mut_ptr(), 0, 1);
+        hdr.assume_init()
+    };
     hdr.msg_iov = msg.as_ptr() as *mut libc::iovec;
     hdr.msg_iovlen = msg.len().try_into().unwrap();
     hdr.msg_control = if fds.is_empty() {
@@ -1212,10 +1219,18 @@ fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Res
 fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::Result<usize> {
     assert!(!buf.is_empty());
     let mut iov = IoSliceMut::new(buf);
-    // SAFETY: type has no invariants
-    let mut cmsg: CmsgScmRights = unsafe { std::mem::zeroed() };
-    // SAFETY: type has no invariants
-    let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+    // Initialize CmsgScmRights structure properly
+    let mut cmsg = std::mem::MaybeUninit::<CmsgScmRights>::uninit();
+    let mut cmsg = unsafe {
+        std::ptr::write_bytes(cmsg.as_mut_ptr(), 0, 1);
+        cmsg.assume_init()
+    };
+    // Initialize msghdr structure properly  
+    let mut hdr = std::mem::MaybeUninit::<libc::msghdr>::uninit();
+    let mut hdr = unsafe {
+        std::ptr::write_bytes(hdr.as_mut_ptr(), 0, 1);
+        hdr.assume_init()
+    };
     hdr.msg_iov = std::ptr::from_mut(&mut iov).cast::<libc::iovec>();
     hdr.msg_iovlen = 1;
     hdr.msg_control = std::ptr::from_mut(&mut cmsg).cast::<libc::c_void>();
