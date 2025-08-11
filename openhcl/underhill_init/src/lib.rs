@@ -419,13 +419,14 @@ fn load_modules(modules_path: &str) -> anyhow::Result<()> {
 }
 
 fn timestamp() -> u64 {
-    let mut tp;
-    // SAFETY: calling `clock_gettime` as documented.
+    let mut tp = std::mem::MaybeUninit::<libc::timespec>::uninit();
+    // SAFETY: tp will be initialized by clock_gettime, so we zero it first
     unsafe {
-        tp = std::mem::zeroed();
+        std::ptr::write_bytes(tp.as_mut_ptr(), 0, 1);
+        let mut tp = tp.assume_init();
         libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut tp);
+        Duration::new(tp.tv_sec as u64, tp.tv_nsec as u32).as_nanos() as u64
     }
-    Duration::new(tp.tv_sec as u64, tp.tv_nsec as u32).as_nanos() as u64
 }
 
 fn do_main() -> anyhow::Result<()> {

@@ -70,8 +70,10 @@ impl OsVersionInfo {
         }
 
         let major_minor = {
-            // SAFETY: zero is a valid bit pattern for the members of the structure
-            let mut utsname: libc::utsname = unsafe { std::mem::zeroed() };
+            let mut utsname = std::mem::MaybeUninit::<libc::utsname>::uninit();
+            // SAFETY: utsname will be initialized by uname, so we zero it first
+            unsafe { std::ptr::write_bytes(utsname.as_mut_ptr(), 0, 1) };
+            let mut utsname = unsafe { utsname.assume_init() };
             // SAFETY: calling the function according to the documentation
             if unsafe { libc::uname(&mut utsname) } == 0 {
                 // SAFETY: the OS uses ASCII characters which form a valid UTF-8 string

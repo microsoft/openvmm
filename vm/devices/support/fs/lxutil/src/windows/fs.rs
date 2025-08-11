@@ -555,7 +555,10 @@ pub fn get_lx_attr(
 
     // lx::Stat has different padding members on ARM and x86. As such, don't construct it manually,
     // but just fill out the individual fields.
-    let mut stat: lx::Stat = unsafe { std::mem::zeroed() };
+    let mut stat = std::mem::MaybeUninit::<lx::Stat>::uninit();
+    // SAFETY: Initialize by zeroing first, then setting individual fields
+    unsafe { std::ptr::write_bytes(stat.as_mut_ptr(), 0, 1) };
+    let mut stat = unsafe { stat.assume_init() };
     stat.uid = inode_attr.uid.unwrap_or(default_uid);
     stat.gid = inode_attr.gid.unwrap_or(default_gid);
     stat.mode = mode;

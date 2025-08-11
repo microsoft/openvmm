@@ -238,24 +238,37 @@ fn chk_win32(err: u32) -> std::io::Result<()> {
 impl Vhd {
     fn open(path: &Path, read_only: bool) -> std::io::Result<Self> {
         let file = unsafe {
-            let mut storage_type = std::mem::zeroed();
+            let mut storage_type = std::mem::MaybeUninit::<virtdisk::VIRTUAL_STORAGE_TYPE>::uninit();
+            // SAFETY: Initialize by zeroing the structure
+            std::ptr::write_bytes(storage_type.as_mut_ptr(), 0, 1);
+            let mut storage_type = storage_type.assume_init();
+            
             // Use a unique ID for each open to avoid virtual disk sharing
             // within VHDMP. In the future, consider taking this as a parameter
             // to support failover.
             let resiliency_guid = Guid::new_random();
-            let mut parameters = virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS {
-                Version: 2,
-                u: virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_u {
-                    Version2: virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_2 {
-                        ReadOnly: read_only.into(),
-                        ResiliencyGuid: resiliency_guid.into(),
-                        ..std::mem::zeroed()
-                    },
-                },
+            let mut parameters = {
+                let mut params = std::mem::MaybeUninit::<virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS>::uninit();
+                // SAFETY: Initialize structure by zeroing first, then setting specific fields
+                std::ptr::write_bytes(params.as_mut_ptr(), 0, 1);
+                let mut params_val = params.assume_init();
+                params_val.Version = 2;
+                params_val.u.Version2 = virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_2 {
+                    ReadOnly: read_only.into(),
+                    ResiliencyGuid: resiliency_guid.into(),
+                    ..{
+                        let mut v2 = std::mem::MaybeUninit::<virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_2>::uninit();
+                        std::ptr::write_bytes(v2.as_mut_ptr(), 0, 1);
+                        v2.assume_init()
+                    }
+                };
+                params_val
             };
             let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
             path16.push(0);
-            let mut handle = std::mem::zeroed();
+            let mut handle = std::mem::MaybeUninit::<HANDLE>::uninit();
+            std::ptr::write_bytes(handle.as_mut_ptr(), 0, 1);
+            let mut handle = handle.assume_init();
             chk_win32(virtdisk::OpenVirtualDisk(
                 &mut storage_type,
                 path16.as_ptr(),
@@ -289,9 +302,13 @@ impl Vhd {
 
     fn info_static(&self, info_type: u32) -> std::io::Result<virtdisk::GET_VIRTUAL_DISK_INFO> {
         unsafe {
-            let mut info = virtdisk::GET_VIRTUAL_DISK_INFO {
-                Version: info_type,
-                ..std::mem::zeroed()
+            let mut info = {
+                let mut info = std::mem::MaybeUninit::<virtdisk::GET_VIRTUAL_DISK_INFO>::uninit();
+                // SAFETY: Initialize structure by zeroing first, then setting specific fields
+                std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
+                let mut info_val = info.assume_init();
+                info_val.Version = info_type;
+                info_val
             };
             let mut size = size_of_val(&info) as u32;
             chk_win32(virtdisk::GetVirtualDiskInformation(

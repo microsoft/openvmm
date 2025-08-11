@@ -13,7 +13,6 @@ use minwinbase::OVERLAPPED;
 use ntapi::ntioapi::NtOpenFile;
 use ntdef::OBJECT_ATTRIBUTES;
 use std::fs::File;
-use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
 use winapi::shared::ntdef;
@@ -67,7 +66,10 @@ pub fn open_afd() -> std::io::Result<File> {
             SecurityQualityOfService: null_mut(),
         };
         let mut handle = null_mut();
-        let mut iosb = zeroed();
+        let mut iosb = std::mem::MaybeUninit::uninit();
+        // SAFETY: iosb will be initialized by NtOpenFile, so we zero it first
+        unsafe { std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1) };
+        let mut iosb = unsafe { iosb.assume_init() };
         chk_status(NtOpenFile(
             &mut handle,
             winnt::SYNCHRONIZE,
