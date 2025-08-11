@@ -35,7 +35,7 @@
 //! - **Device registry**: Protected by `Arc<RwLock<HashMap<String, NvmeDriverManager>>>`
 //! - **Shutdown coordination**: `Arc<AtomicBool>` prevents new operations during shutdown
 //!
-//! # Lock Order (to prevent deadlocks)
+//! # Lock Order
 //!
 //! 1. `context.devices.read()` - Fast path for existing devices
 //! 2. `context.devices.write()` - Only for device creation/removal
@@ -363,7 +363,7 @@ mod device_manager {
     pub struct NvmeDriverManager {
         task: Task<()>,
         pci_id: String,
-        pub client: NvmeDriverManagerClient,
+        client: NvmeDriverManagerClient,
     }
 
     impl Inspect for NvmeDriverManager {
@@ -944,16 +944,13 @@ impl NvmeManagerWorker {
         // If the driver is already loaded, we can just return.
         {
             let guard = context.devices.read();
-            if guard.get(&pci_id).is_some() {
-                // If the driver is already loaded, we can just return.
+            if guard.contains_key(&pci_id) {
                 return Ok(());
             }
         }
 
         // Now we don't think there is a driver yet, so we need to create one. Get exclusive access
-        // to update the hash map. If a shutdown call comes in while the lock is not held, then
-        // this code will add an entry for the device in the hashmap, but the `load_driver` call
-        // will return an appropriate error.
+        // to update the hash map.
         //
         // Note: `client` exists outside of the devices write lock. This is safe:
         // the mesh client will fail appropriately if shutdown comes in between inserting
