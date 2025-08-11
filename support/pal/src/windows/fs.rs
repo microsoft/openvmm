@@ -7,7 +7,6 @@ use ntapi::ntioapi;
 use std::ffi::c_void;
 use std::fs;
 use std::io;
-use std::mem::zeroed;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr::null_mut;
@@ -30,8 +29,14 @@ pub fn query_stat_lx_by_name(path: &Path) -> io::Result<ntioapi::FILE_STAT_LX_IN
     };
 
     unsafe {
-        let mut iosb = zeroed();
-        let mut info: ntioapi::FILE_STAT_LX_INFORMATION = zeroed();
+        let mut iosb = std::mem::MaybeUninit::uninit();
+        std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+        let mut iosb = iosb.assume_init();
+        
+        let mut info = std::mem::MaybeUninit::<ntioapi::FILE_STAT_LX_INFORMATION>::uninit();
+        std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
+        let mut info = info.assume_init();
+        
         let info_ptr = std::ptr::from_mut(&mut info).cast::<c_void>();
         chk_status(ntioapi::NtQueryInformationByName(
             &mut oa,
@@ -47,8 +52,14 @@ pub fn query_stat_lx_by_name(path: &Path) -> io::Result<ntioapi::FILE_STAT_LX_IN
 pub fn query_stat_lx(file: &fs::File) -> io::Result<ntioapi::FILE_STAT_LX_INFORMATION> {
     let handle = file.as_raw_handle();
     unsafe {
-        let mut iosb = zeroed();
-        let mut info: ntioapi::FILE_STAT_LX_INFORMATION = zeroed();
+        let mut iosb = std::mem::MaybeUninit::uninit();
+        std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+        let mut iosb = iosb.assume_init();
+        
+        let mut info = std::mem::MaybeUninit::<ntioapi::FILE_STAT_LX_INFORMATION>::uninit();
+        std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
+        let mut info = info.assume_init();
+        
         let info_ptr = std::ptr::from_mut(&mut info).cast::<c_void>();
         chk_status(ntioapi::NtQueryInformationFile(
             handle,
@@ -67,7 +78,9 @@ fn find_first_file_data(path: &Path) -> io::Result<WIN32_FIND_DATAW> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "nul character in string"))?;
 
     unsafe {
-        let mut data = zeroed();
+        let mut data = std::mem::MaybeUninit::<WIN32_FIND_DATAW>::uninit();
+        std::ptr::write_bytes(data.as_mut_ptr(), 0, 1);
+        let mut data = data.assume_init();
         let handle = winapi::um::fileapi::FindFirstFileW(path.as_ptr(), &mut data);
 
         if handle == winapi::um::handleapi::INVALID_HANDLE_VALUE {

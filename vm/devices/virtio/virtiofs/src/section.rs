@@ -30,7 +30,6 @@ use pal::windows::open_object_directory;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::io;
-use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::null_mut;
@@ -192,7 +191,9 @@ impl Section {
     fn query_size(&self) -> io::Result<u64> {
         // SAFETY: calling the API according to the NT API
         unsafe {
-            let mut info: SECTION_BASIC_INFORMATION = zeroed();
+            let mut info = std::mem::MaybeUninit::<SECTION_BASIC_INFORMATION>::uninit();
+            std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
+            let mut info = info.assume_init();
             chk_status(NtQuerySection(
                 self.0.as_raw_handle(),
                 SectionBasicInformation,

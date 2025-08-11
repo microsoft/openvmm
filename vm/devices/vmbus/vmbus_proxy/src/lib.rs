@@ -19,7 +19,6 @@ use pal_async::windows::overlapped::IoBuf;
 use pal_async::windows::overlapped::IoBufMut;
 use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
-use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
@@ -55,7 +54,9 @@ impl ProxyHandle {
         oa.name(&pathu);
         // SAFETY: calling API according to docs.
         unsafe {
-            let mut iosb = zeroed();
+            let mut iosb = std::mem::MaybeUninit::uninit();
+            std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+            let mut iosb = iosb.assume_init();
             let mut handle = HANDLE::default();
             NtOpenFile(
                 &mut handle,
