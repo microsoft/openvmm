@@ -10,7 +10,6 @@ mod util;
 
 use crate::SetAttributes;
 use std::ffi;
-use std::mem;
 use std::os::unix::prelude::*;
 use std::path::Path;
 
@@ -48,7 +47,10 @@ impl LxVolume {
 
         // SAFETY: Calling C API as documented, with no special requirements.
         let stat = unsafe {
-            let mut stat = mem::zeroed();
+            let mut stat = std::mem::MaybeUninit::uninit();
+            // SAFETY: stat will be initialized by fstatat on success, so we zero it first
+            std::ptr::write_bytes(stat.as_mut_ptr(), 0, 1);
+            let mut stat = stat.assume_init();
             util::check_lx_errno(libc::fstatat(
                 self.root.as_raw_fd(),
                 path.as_ptr(),
@@ -263,7 +265,10 @@ impl LxVolume {
 
         // SAFETY: Calling C API as documented, with no special requirements.
         let stat_fs = unsafe {
-            let mut stat_fs = mem::zeroed();
+            let mut stat_fs = std::mem::MaybeUninit::uninit();
+            // SAFETY: stat_fs will be initialized by statfs on success, so we zero it first
+            std::ptr::write_bytes(stat_fs.as_mut_ptr(), 0, 1);
+            let mut stat_fs = stat_fs.assume_init();
             util::check_lx_errno(libc::statfs(path.as_ptr(), &mut stat_fs))?;
             stat_fs
         };
@@ -386,7 +391,10 @@ impl LxFile {
     pub fn fstat(&self) -> lx::Result<lx::Stat> {
         // SAFETY: Calling C API as documented, with no special requirements.
         let stat = unsafe {
-            let mut stat = mem::zeroed();
+            let mut stat = std::mem::MaybeUninit::uninit();
+            // SAFETY: stat will be initialized by fstat on success, so we zero it first
+            std::ptr::write_bytes(stat.as_mut_ptr(), 0, 1);
+            let mut stat = stat.assume_init();
             util::check_lx_errno(libc::fstat(self.fd.as_raw_fd(), &mut stat))?;
             stat
         };

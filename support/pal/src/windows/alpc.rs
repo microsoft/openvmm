@@ -77,8 +77,12 @@ mod ntlpcapi {
 
     impl Default for ALPC_HANDLE_ATTR {
         fn default() -> Self {
-            // SAFETY: ALPC_HANDLE_ATTR has no safety invariants
-            unsafe { std::mem::zeroed() }
+            // SAFETY: Initialize the structure by zeroing it
+            unsafe {
+                let mut attr = std::mem::MaybeUninit::<ALPC_HANDLE_ATTR>::uninit();
+                std::ptr::write_bytes(attr.as_mut_ptr(), 0, 1);
+                attr.assume_init()
+            }
         }
     }
 
@@ -920,10 +924,16 @@ impl<'a> PortSection<'a> {
     pub fn alloc_view(&self, len: usize) -> io::Result<WritablePortSectionView<'a>> {
         // SAFETY: calling as documented internally, no safety requirements.
         unsafe {
-            let mut attr = ALPC_DATA_VIEW_ATTR {
-                SectionHandle: self.handle as *mut _,
-                ViewSize: len,
-                ..std::mem::zeroed()
+            let mut attr = {
+                let mut attr = std::mem::MaybeUninit::<ALPC_DATA_VIEW_ATTR>::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                unsafe {
+                    std::ptr::write_bytes(attr.as_mut_ptr(), 0, 1);
+                    let mut attr_val = attr.assume_init();
+                    attr_val.SectionHandle = self.handle as *mut _;
+                    attr_val.ViewSize = len;
+                    attr_val
+                }
             };
             chk_status(NtAlpcCreateSectionView(
                 self.port.0.as_raw_handle(),

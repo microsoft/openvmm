@@ -124,7 +124,14 @@ impl AfdSocketReady {
             op: Arc::new(AfdSocketReadyOp {
                 overlapped: Overlapped::new(),
                 socket,
-                poll_info: KernelBuffer(UnsafeCell::new(unsafe { std::mem::zeroed() })),
+                poll_info: KernelBuffer(UnsafeCell::new({
+                    let mut poll_info = std::mem::MaybeUninit::<PollInfoInput>::uninit();
+                    // SAFETY: Initialize the structure by zeroing it first
+                    unsafe {
+                        std::ptr::write_bytes(poll_info.as_mut_ptr(), 0, 1);
+                        poll_info.assume_init()
+                    }
+                })),
                 inner: Mutex::new(AfdSocketReadyInner {
                     interests: PollInterestSet::default(),
                     in_flight_events: PollEvents::EMPTY,

@@ -479,7 +479,10 @@ impl LxVolume {
         assert!(path.is_relative());
         let handle = self.open_file(path, winnt::FILE_READ_ATTRIBUTES, 0)?;
         unsafe {
-            let mut stat_fs = mem::zeroed();
+            let mut stat_fs = std::mem::MaybeUninit::uninit();
+            // SAFETY: stat_fs will be initialized by LxUtilFsGetLxFileSystemAttributes, so we zero it first
+            std::ptr::write_bytes(stat_fs.as_mut_ptr(), 0, 1);
+            let mut stat_fs = stat_fs.assume_init();
             util::check_lx_error(api::LxUtilFsGetLxFileSystemAttributes(
                 handle.as_raw_handle(),
                 0,
@@ -1232,7 +1235,10 @@ impl LxFile {
             return Err(lx::Error::EINVAL);
         }
         unsafe {
-            let mut iosb = mem::zeroed();
+            let mut iosb = std::mem::MaybeUninit::uninit();
+            // SAFETY: iosb will be initialized by NtReadFile, so we zero it first
+            std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+            let mut iosb = iosb.assume_init();
             let buffer_ptr = buffer.as_mut_ptr().cast::<ffi::c_void>();
             let buffer_len: u32 = buffer.len().try_into().map_err(|_| lx::Error::EINVAL)?;
 
@@ -1243,8 +1249,14 @@ impl LxFile {
                     buffer_len as usize,
                 ))
             } else {
-                let mut nt_offset: ntdef::LARGE_INTEGER = mem::zeroed();
-                *nt_offset.QuadPart_mut() = offset;
+                let mut nt_offset = std::mem::MaybeUninit::<ntdef::LARGE_INTEGER>::uninit();
+                // SAFETY: Initialize LARGE_INTEGER by setting the union field we need
+                let mut nt_offset = {
+                    std::ptr::write_bytes(nt_offset.as_mut_ptr(), 0, 1);
+                    let mut offset_val = nt_offset.assume_init();
+                    *offset_val.QuadPart_mut() = offset;
+                    offset_val
+                };
                 // TODO: Async I/O.
                 util::check_status_rw(ntioapi::NtReadFile(
                     self.handle.as_raw_handle(),
@@ -1287,12 +1299,21 @@ impl LxFile {
                 }
             }
 
-            let mut iosb = mem::zeroed();
+            let mut iosb = std::mem::MaybeUninit::uninit();
+            // SAFETY: iosb will be initialized by NtWriteFile, so we zero it first
+            std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+            let mut iosb = iosb.assume_init();
             let buffer_ptr = buffer.as_ptr() as *mut ffi::c_void;
             let buffer_len = buffer.len().try_into().map_err(|_| lx::Error::EINVAL)?;
 
-            let mut nt_offset: ntdef::LARGE_INTEGER = mem::zeroed();
-            *nt_offset.QuadPart_mut() = offset;
+            let mut nt_offset = std::mem::MaybeUninit::<ntdef::LARGE_INTEGER>::uninit();
+            // SAFETY: Initialize LARGE_INTEGER by setting the union field we need
+            let mut nt_offset = {
+                std::ptr::write_bytes(nt_offset.as_mut_ptr(), 0, 1);
+                let mut offset_val = nt_offset.assume_init();
+                *offset_val.QuadPart_mut() = offset;
+                offset_val
+            };
 
             // TODO: Async I/O.
             util::check_status_rw(ntioapi::NtWriteFile(
@@ -1376,7 +1397,10 @@ impl LxFile {
         };
 
         unsafe {
-            let mut iosb = mem::zeroed();
+            let mut iosb = std::mem::MaybeUninit::uninit();
+            // SAFETY: iosb will be initialized by NtFlushBuffersFileEx, so we zero it first
+            std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+            let mut iosb = iosb.assume_init();
             let _ = util::check_status(Foundation::NTSTATUS(ntioapi::NtFlushBuffersFileEx(
                 handle.as_raw_handle(),
                 flags,

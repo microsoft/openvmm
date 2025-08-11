@@ -804,8 +804,11 @@ impl Partition {
         parameters: TriggerParameters,
     ) -> Result<(TriggerHandle, OwnedHandle)> {
         unsafe {
-            let mut trigger_handle = std::mem::zeroed();
+            let mut trigger_handle = std::mem::MaybeUninit::<abi::WHV_TRIGGER_HANDLE>::uninit();
             let mut event_handle = null_mut();
+            // SAFETY: trigger_handle will be initialized by WHvCreateTrigger, so we zero it first
+            std::ptr::write_bytes(trigger_handle.as_mut_ptr(), 0, 1);
+            let mut trigger_handle = trigger_handle.assume_init();
             check_hresult(api::WHvCreateTrigger(
                 self.handle,
                 &parameters.into(),
