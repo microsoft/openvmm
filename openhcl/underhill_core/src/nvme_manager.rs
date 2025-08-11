@@ -1753,48 +1753,6 @@ mod tests {
     }
 
     #[async_test]
-    #[ignore = "can't create namespace, so the error string is not reliable"]
-    async fn test_concurrent_shutdown_and_namespace_access(driver: DefaultDriver) {
-        // Test race condition scenario between shutdown and namespace access
-        let driver_source = create_test_driver_source(driver);
-        let spawner = Arc::new(MockNvmeDriverSpawner::new(
-            Duration::from_millis(50), // Longer delay to create race window
-            Duration::from_millis(10),
-        ));
-
-        let manager = NvmeManager::new(&driver_source, 4, false, None, spawner);
-
-        let client = manager.client().clone();
-
-        // Start a get_namespace call
-        let namespace_task = {
-            let client = client.clone();
-            async move { client.get_namespace("0000:00:04.0".to_string(), 1).await }
-        };
-
-        // Immediately start shutdown
-        let shutdown_task = async move {
-            // Small delay to let namespace call start
-            let mut timer = pal_async::timer::PolledTimer::new(&driver_source.simple());
-            timer.sleep(Duration::from_millis(10)).await;
-            manager.shutdown(false).await;
-        };
-
-        // Race them
-        let (namespace_result, _) = futures::future::join(namespace_task, shutdown_task).await;
-
-        // Should get shutdown error
-        assert!(namespace_result.is_err());
-        let error = namespace_result.unwrap_err().to_string();
-        assert!(
-            error.contains("nvme device manager worker is shut down")
-                || error.contains("nvme manager is shut down"),
-            "error = {}",
-            error
-        );
-    }
-
-    #[async_test]
     async fn test_driver_manager_shutdown_during_operations(driver: DefaultDriver) {
         // Test multiple concurrent operations when driver manager is shut down
         let driver_source = create_test_driver_source(driver);
@@ -1873,56 +1831,6 @@ mod tests {
 
         // We expect at least one operation to see the shutdown
         assert!(has_shutdown_error, "Expected at least one shutdown error");
-    }
-
-    #[async_test]
-    #[ignore = "The test can't successfully create a namespace, so the error string is not reliable"]
-    async fn test_load_driver_race_with_shutdown(driver: DefaultDriver) {
-        // Test the specific race condition in load_driver when shutdown occurs
-        let driver_source = create_test_driver_source(driver);
-        let spawner = Arc::new(MockNvmeDriverSpawner::new(
-            Duration::from_millis(100), // Long delay to ensure race
-            Duration::from_millis(10),
-        ));
-
-        let manager = NvmeManager::new(&driver_source, 4, false, None, spawner);
-
-        let client = manager.client().clone();
-
-        // todo: just call load_driver instead of get_namespace?
-        // Create multiple tasks trying to load the same driver
-        let load_tasks: Vec<_> = (0..3)
-            .map(|_| {
-                let client = client.clone();
-                async move { client.get_namespace("0000:00:06.0".to_string(), 1).await }
-            })
-            .collect();
-
-        // Start shutdown after a brief delay
-        let shutdown_task = {
-            let manager = manager;
-            async move {
-                let mut timer = pal_async::timer::PolledTimer::new(&driver_source.simple());
-                timer.sleep(Duration::from_millis(20)).await;
-                manager.shutdown(false).await;
-            }
-        };
-
-        // Run everything concurrently
-        let (load_results, _) =
-            futures::future::join(futures::future::join_all(load_tasks), shutdown_task).await;
-
-        // All should fail due to shutdown
-        for result in load_results {
-            assert!(result.is_err());
-            let error = result.unwrap_err().to_string();
-            assert!(
-                error.contains("nvme device manager worker is shut down")
-                    || error.contains("nvme manager is shut down"),
-                "error = {}",
-                error
-            );
-        }
     }
 
     #[async_test]
