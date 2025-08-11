@@ -197,6 +197,9 @@ pub fn tdx_prepare_ap_trampoline() {
 }
 
 pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
+    // Update the TDX Trampoline Context for AP Startup
+    tdx_prepare_ap_trampoline();
+
     for cpu in 1..partition_info.cpus.len() {
         hvcall()
             .tdx_enable_vp_vtl2(cpu as u32)
@@ -209,9 +212,6 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
             .tdx_start_vp(cpu as u32)
             .expect("start vp should not fail");
     }
-
-    // Update the TDX Trampoline Context for AP Startup
-    tdx_prepare_ap_trampoline();
 }
 
 /// Gets the TdReport.

@@ -252,6 +252,8 @@ pub struct UnderhillEnvCfg {
     pub vmbus_enable_mnf: Option<bool>,
     /// Force the use of confidential external memory for all non-relay vmbus channels.
     pub vmbus_force_confidential_external_memory: bool,
+    /// Delay before unsticking a vmbus channel after it has been opened.
+    pub vmbus_channel_unstick_delay: Option<Duration>,
     /// Command line to append to VTL0 command line. Only used for linux direct.
     pub cmdline_append: Option<String>,
     /// (dev feature) Reformat VMGS file on boot
@@ -1067,7 +1069,7 @@ fn build_vtl0_memory_layout(
         vtl0_ram = vtl0_memory_layout
             .ram()
             .iter()
-            .map(|r| r.range.to_string())
+            .map(|r| r.to_string())
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 ram"
@@ -1082,6 +1084,16 @@ fn build_vtl0_memory_layout(
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 mmio"
+    );
+
+    tracing::info!(
+        CVM_ALLOWED,
+        shared_pool = shared_pool
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
+        "shared pool",
     );
 
     Ok(BuiltVtl0MemoryLayout {
@@ -1546,16 +1558,17 @@ async fn new_underhill_vm(
     // Perform a quick validation to make sure each range is appropriately accessible.
     tracing::info!("starting guest memory self test");
     for range in mem_layout.ram() {
-        let gpa = range.range.start();
-        // Standard RAM is accessible.
-        highest_vtl_gm
-            .read_plain::<u8>(gpa)
-            .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
+        for gpa in [range.range.start(), range.range.end() - 1] {
+            // Standard RAM is accessible.
+            highest_vtl_gm
+                .read_plain::<u8>(gpa)
+                .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
 
-        // It is not initially accessible above VTOM.
-        if let Some(vtom) = vtom {
-            if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
-                anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+            // It is not initially accessible above VTOM.
+            if let Some(vtom) = vtom {
+                if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
+                    anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+                }
             }
         }
     }
@@ -2730,18 +2743,22 @@ async fn new_underhill_vm(
 
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
-        let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
-            .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
-            .hvsock_notify(hvsock_notify)
-            .server_relay(server_relay)
-            .max_version(max_version)
-            .delay_max_version(delay_max_version)
-            .enable_mnf(enable_mnf)
-            .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
-            // For saved-state compat with release/2411.
-            .send_messages_while_stopped(true)
-            .build()
-            .context("failed to create vmbus server")?;
+        let vmbus =
+            VmbusServer::builder(driver_source.simple(), synic.clone(), device_memory.clone())
+                .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
+                .hvsock_notify(hvsock_notify)
+                .server_relay(server_relay)
+                .max_version(max_version)
+                .delay_max_version(delay_max_version)
+                .enable_mnf(enable_mnf)
+                .force_confidential_external_memory(
+                    env_cfg.vmbus_force_confidential_external_memory,
+                )
+                .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
+                // For saved-state compat with release/2411.
+                .send_messages_while_stopped(true)
+                .build()
+                .context("failed to create vmbus server")?;
 
         let vmbus = VmbusServerHandle::new(&tp, state_units.add("vmbus"), vmbus)?;
         if let Some((relay_channel, hvsock_relay)) = relay_channels {
