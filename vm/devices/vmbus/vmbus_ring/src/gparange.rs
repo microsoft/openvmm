@@ -61,21 +61,13 @@ impl<T: AsRef<[u64]>> MultiPagedRangeBuf<T> {
         let mut remaining_length = len;
         let mut range_count = 0;
         for range in self.iter() {
-            let cur_offset = if remaining_offset == 0 {
-                0
-            } else if remaining_offset > range.len() {
-                remaining_offset -= range.len();
-                continue;
-            } else {
-                let remaining = remaining_offset;
-                remaining_offset = 0;
-                remaining
-            };
-            // Determine how many bytes we can take from this range after applying cur_offset.
-            let available_here = range.len().saturating_sub(cur_offset);
-            if available_here == 0 {
+            if let Some(n) = remaining_offset.checked_sub(range.len()) {
+                remaining_offset = n;
                 continue;
             }
+            let cur_offset = std::mem::take(&mut remaining_offset);
+            // Determine how many bytes we can take from this range after applying cur_offset.
+            let available_here = range.len() - cur_offset;
             let take_len = available_here.min(remaining_length);
             let sub_range = range.subrange(cur_offset, take_len);
 
