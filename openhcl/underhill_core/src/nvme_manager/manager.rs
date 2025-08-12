@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::nvme_manager::CreateNvmeDriver;
 use crate::nvme_manager::device::NvmeDriverManager;
 use crate::nvme_manager::device::NvmeDriverManagerClient;
 use crate::nvme_manager::device::NvmeDriverShutdownOptions;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
-use crate::nvme_manager::*; // todo: cleanup
 use crate::servicing::NvmeSavedState;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -558,6 +558,8 @@ pub mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nvme_manager::NvmeDevice;
+    use crate::nvme_manager::NvmeSpawnerError;
     use futures::future::join_all;
     use inspect::Inspect;
     use inspect::InspectionBuilder;
@@ -1081,7 +1083,7 @@ mod tests {
 
         // Shutdown the driver manager (closes the worker and mesh channel)
         driver_manager
-            .shutdown(device::NvmeDriverShutdownOptions {
+            .shutdown(NvmeDriverShutdownOptions {
                 do_not_reset: false,
                 skip_device_shutdown: false,
             })
@@ -1180,7 +1182,7 @@ mod tests {
         // Start shutdown
         let shutdown_future = async move {
             driver_manager
-                .shutdown(device::NvmeDriverShutdownOptions {
+                .shutdown(NvmeDriverShutdownOptions {
                     do_not_reset: true,
                     skip_device_shutdown: false,
                 })

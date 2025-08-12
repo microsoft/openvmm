@@ -1,7 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::nvme_manager::*; // todo: cleanup
+use crate::nvme_manager::CreateNvmeDriver;
+use crate::nvme_manager::NamespaceError;
+use crate::nvme_manager::NvmeDevice;
+use crate::nvme_manager::NvmeSpawnerError;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::StreamExt;
