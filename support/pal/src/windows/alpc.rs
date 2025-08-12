@@ -926,14 +926,12 @@ impl<'a> PortSection<'a> {
         unsafe {
             let mut attr = {
                 let mut attr = std::mem::MaybeUninit::<ALPC_DATA_VIEW_ATTR>::uninit();
-                // SAFETY: Initialize the structure by zeroing it first
-                unsafe {
-                    std::ptr::write_bytes(attr.as_mut_ptr(), 0, 1);
-                    let mut attr_val = attr.assume_init();
-                    attr_val.SectionHandle = self.handle as *mut _;
-                    attr_val.ViewSize = len;
-                    attr_val
-                }
+                // Initialize the structure by zeroing it first
+                std::ptr::write_bytes(attr.as_mut_ptr(), 0, 1);
+                let mut attr_val = attr.assume_init();
+                attr_val.SectionHandle = self.handle as *mut _;
+                attr_val.ViewSize = len;
+                attr_val
             };
             chk_status(NtAlpcCreateSectionView(
                 self.port.0.as_raw_handle(),

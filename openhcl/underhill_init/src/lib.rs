@@ -423,10 +423,13 @@ fn timestamp() -> u64 {
     // SAFETY: tp will be initialized by clock_gettime, so we zero it first
     unsafe {
         std::ptr::write_bytes(tp.as_mut_ptr(), 0, 1);
-        let mut tp = tp.assume_init();
-        libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut tp);
-        Duration::new(tp.tv_sec as u64, tp.tv_nsec as u32).as_nanos() as u64
     }
+    let mut tp = unsafe { tp.assume_init() };
+    // SAFETY: calling `clock_gettime` as documented.
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut tp);
+    }
+    Duration::new(tp.tv_sec as u64, tp.tv_nsec as u32).as_nanos() as u64
 }
 
 fn do_main() -> anyhow::Result<()> {

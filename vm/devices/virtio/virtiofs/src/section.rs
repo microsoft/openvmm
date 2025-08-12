@@ -191,9 +191,11 @@ impl Section {
     fn query_size(&self) -> io::Result<u64> {
         // SAFETY: calling the API according to the NT API
         unsafe {
-            let mut info = std::mem::MaybeUninit::<SECTION_BASIC_INFORMATION>::uninit();
-            std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
-            let mut info = info.assume_init();
+            let mut info = {
+                let mut info = std::mem::MaybeUninit::<SECTION_BASIC_INFORMATION>::uninit();
+                std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
+                info.assume_init()
+            };
             chk_status(NtQuerySection(
                 self.0.as_raw_handle(),
                 SectionBasicInformation,
