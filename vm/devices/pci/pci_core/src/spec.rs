@@ -429,7 +429,7 @@ pub mod caps {
             pub captured_slot_power_limit: u32,
             #[bits(2)]
             pub captured_slot_power_scale: u32,
-            pub function_level_reset: bool, // This is the key bit for FLR
+            pub function_level_reset: bool, // TODO: this bit is actually at the incorrect location.
             #[bits(2)]
             _reserved3: u32,
         }
