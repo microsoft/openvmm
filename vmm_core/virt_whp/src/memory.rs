@@ -444,6 +444,10 @@ impl VtlPartition {
         self.mapper.accept_range(&self.whp, range, visibility)
     }
 
+    pub fn gpa_visibility(&self, gpa: u64) -> Option<PageVisibility> {
+        self.mapper.gpa_visibility(gpa)
+    }
+
     pub fn modify_visibility(
         &self,
         range: &MemoryRange,
