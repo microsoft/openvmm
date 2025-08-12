@@ -7,6 +7,7 @@ use ntapi::ntioapi;
 use std::ffi::c_void;
 use std::fs;
 use std::io;
+use std::mem::MaybeUninit;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr::null_mut;
@@ -30,13 +31,13 @@ pub fn query_stat_lx_by_name(path: &Path) -> io::Result<ntioapi::FILE_STAT_LX_IN
 
     unsafe {
         let mut iosb = {
-            let mut iosb = std::mem::MaybeUninit::uninit();
+            let mut iosb = MaybeUninit::uninit();
             std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
             iosb.assume_init()
         };
         
         let mut info = {
-            let mut info = std::mem::MaybeUninit::<ntioapi::FILE_STAT_LX_INFORMATION>::uninit();
+            let mut info = MaybeUninit::<ntioapi::FILE_STAT_LX_INFORMATION>::uninit();
             std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
             info.assume_init()
         };
@@ -57,13 +58,13 @@ pub fn query_stat_lx(file: &fs::File) -> io::Result<ntioapi::FILE_STAT_LX_INFORM
     let handle = file.as_raw_handle();
     unsafe {
         let mut iosb = {
-            let mut iosb = std::mem::MaybeUninit::uninit();
+            let mut iosb = MaybeUninit::uninit();
             std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
             iosb.assume_init()
         };
         
         let mut info = {
-            let mut info = std::mem::MaybeUninit::<ntioapi::FILE_STAT_LX_INFORMATION>::uninit();
+            let mut info = MaybeUninit::<ntioapi::FILE_STAT_LX_INFORMATION>::uninit();
             std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
             info.assume_init()
         };
@@ -87,7 +88,7 @@ fn find_first_file_data(path: &Path) -> io::Result<WIN32_FIND_DATAW> {
 
     unsafe {
         let mut data = {
-            let mut data = std::mem::MaybeUninit::<WIN32_FIND_DATAW>::uninit();
+            let mut data = MaybeUninit::<WIN32_FIND_DATAW>::uninit();
             std::ptr::write_bytes(data.as_mut_ptr(), 0, 1);
             data.assume_init()
         };

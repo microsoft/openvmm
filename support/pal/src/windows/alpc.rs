@@ -79,7 +79,7 @@ mod ntlpcapi {
         fn default() -> Self {
             // SAFETY: Initialize the structure by zeroing it
             unsafe {
-                let mut attr = std::mem::MaybeUninit::<ALPC_HANDLE_ATTR>::uninit();
+                let mut attr = MaybeUninit::<ALPC_HANDLE_ATTR>::uninit();
                 std::ptr::write_bytes(attr.as_mut_ptr(), 0, 1);
                 attr.assume_init()
             }
@@ -925,7 +925,7 @@ impl<'a> PortSection<'a> {
         // SAFETY: calling as documented internally, no safety requirements.
         unsafe {
             let mut attr = {
-                let mut attr = std::mem::MaybeUninit::<ALPC_DATA_VIEW_ATTR>::uninit();
+                let mut attr = MaybeUninit::<ALPC_DATA_VIEW_ATTR>::uninit();
                 // Initialize the structure by zeroing it first
                 std::ptr::write_bytes(attr.as_mut_ptr(), 0, 1);
                 let mut attr_val = attr.assume_init();

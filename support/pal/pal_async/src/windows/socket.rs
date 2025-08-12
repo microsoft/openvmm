@@ -13,6 +13,7 @@ use pal::windows::afd;
 use pal::windows::status_to_error;
 use parking_lot::Mutex;
 use std::cell::UnsafeCell;
+use std::mem::MaybeUninit;
 use std::os::windows::prelude::*;
 use std::sync::Arc;
 use std::task::Context;
@@ -125,7 +126,7 @@ impl AfdSocketReady {
                 overlapped: Overlapped::new(),
                 socket,
                 poll_info: KernelBuffer(UnsafeCell::new({
-                    let mut poll_info = std::mem::MaybeUninit::<PollInfoInput>::uninit();
+                    let mut poll_info = MaybeUninit::<PollInfoInput>::uninit();
                     // SAFETY: Initialize the structure by zeroing it first
                     unsafe {
                         std::ptr::write_bytes(poll_info.as_mut_ptr(), 0, 1);
