@@ -74,6 +74,7 @@ fn build_kernel_command_line(
     can_trust_host: bool,
     is_confidential_debug: bool,
     sidecar: Option<&SidecarConfig<'_>>,
+    vtl2_pool_supported: bool,
 ) -> Result<(), CommandLineTooLong> {
     // For reference:
     // https://www.kernel.org/doc/html/v5.15/admin-guide/kernel-parameters.html
@@ -264,7 +265,7 @@ fn build_kernel_command_line(
 
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive && !partition_info.vtl2_pool_memory.is_empty() {
+    if partition_info.nvme_keepalive && vtl2_pool_supported {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 
@@ -648,6 +649,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         can_trust_host,
         is_confidential_debug,
         sidecar.as_ref(),
+        address_space.vtl2_pool().is_some(),
     )
     .unwrap();
 
@@ -883,7 +885,6 @@ mod test {
 
         PartitionInfo {
             vtl2_ram: ArrayVec::new(),
-            vtl2_pool_memory: MemoryRange::EMPTY,
             partition_ram: ArrayVec::new(),
             isolation: IsolationType::None,
             bsp_reg: cpus[0].reg as u32,
