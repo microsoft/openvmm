@@ -209,7 +209,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Completion {
     pub dw0: u32,
     pub dw1: u32,

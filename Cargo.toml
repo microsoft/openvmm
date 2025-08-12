@@ -45,7 +45,7 @@ members = [
   "petri/petri-tool",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
-  "vm/vmgs/vmgstool",
+  "vm/vmgs/vmgstool", 
 ]
 exclude = [
   "xsync",
@@ -248,6 +248,7 @@ nvme_common = { path = "vm/devices/storage/nvme_common" }
 nvme_driver = { path = "vm/devices/storage/disk_nvme/nvme_driver" }
 nvme_resources = { path = "vm/devices/storage/nvme_resources" }
 nvme_spec = { path = "vm/devices/storage/nvme_spec" }
+nvme_test = { path = "vm/devices/storage/nvme_test" }
 storage_string = { path = "vm/devices/storage/storage_string" }
 vmswitch = { path = "vm/devices/net/vmswitch" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
