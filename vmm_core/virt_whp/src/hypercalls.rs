@@ -658,7 +658,7 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
         for (index, page) in gpa_pages.iter().enumerate() {
             let range = MemoryRange::from_4k_gpn_range(*page..(*page + 1));
 
-            // On VBS, the page must be accepted in order to change visibiltiy.
+            // On VBS, the page must be accepted in order to change visibility.
             // If the page is not accepted, the hypervisor returns operation
             // denied.
             let gpa = *page * HV_PAGE_SIZE;
