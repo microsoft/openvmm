@@ -24,6 +24,7 @@ mod ntlpcapi {
     #![expect(non_snake_case, dead_code)]
 
     pub use ntapi::ntlpcapi::*;
+    use std::mem::MaybeUninit;
     use winapi::shared::ntdef::HANDLE;
     use winapi::shared::ntdef::NTSTATUS;
 
