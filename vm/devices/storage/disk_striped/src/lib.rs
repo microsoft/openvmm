@@ -21,7 +21,6 @@ use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
 use std::fmt::Debug;
 use thiserror::Error;
-use tracing::Instrument;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
@@ -41,13 +40,11 @@ impl AsyncResolveResource<DiskHandleKind, StripedDiskHandle> for StripedDiskReso
         rsrc: StripedDiskHandle,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let disk_count = rsrc.devices.len();
         let disks = try_join_all(
             rsrc.devices
                 .into_iter()
                 .map(async |device| resolver.resolve(device, input).await.map(|r| r.0)),
         )
-        .instrument(tracing::info_span!("striped_disk_resolver", ?disk_count))
         .await?;
         Ok(ResolvedDisk::new(StripedDisk::new(
             disks,
