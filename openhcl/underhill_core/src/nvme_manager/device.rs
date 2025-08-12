@@ -424,11 +424,6 @@ impl NvmeDriverManagerWorker {
             match req {
                 NvmeDriverRequest::Inspect(deferred) => deferred.inspect(&self),
                 NvmeDriverRequest::LoadDriver(rpc) => {
-                    let load_driver_span = tracing::debug_span!(parent: rpc.input(),
-                        "nvme_device_manager_load_driver",
-                        pci_id = %self.pci_id
-                    );
-
                     rpc.handle(async |_span| {
                             // Multiple threads could have raced to call this driver.
                             // Just let the winning thread create the driver.
@@ -454,16 +449,9 @@ impl NvmeDriverManagerWorker {
 
                             Ok(())
                         })
-                        .instrument(load_driver_span)
                         .await
                 }
                 NvmeDriverRequest::GetNamespace(rpc) => {
-                    let namespace_span = tracing::debug_span!(parent: &rpc.input().0,
-                        "nvme_device_manager_get_namespace",
-                        pci_id = %self.pci_id,
-                        nsid = rpc.input().1
-                    );
-
                     rpc.handle(async |(_, nsid)| {
                         self.driver
                             .as_ref()
@@ -475,7 +463,6 @@ impl NvmeDriverManagerWorker {
                                 source: NvmeSpawnerError::Namespace { nsid, source },
                             })
                     })
-                    .instrument(namespace_span)
                     .await
                 }
                 NvmeDriverRequest::Save(rpc) => {
@@ -483,10 +470,6 @@ impl NvmeDriverManagerWorker {
                         .await
                 }
                 NvmeDriverRequest::Shutdown(rpc) => {
-                    let shutdown_span = tracing::debug_span!(parent: &rpc.input().0,
-                        "nvme_device_manager_shutdown",
-                        pci_id = %self.pci_id,
-                    );
                     rpc.handle(async |(_span, options)| {
                             // Driver may be `None` here if there was a failure during driver creation.
                             // In that case, we just skip the shutdown rather than panic.
@@ -510,7 +493,6 @@ impl NvmeDriverManagerWorker {
                                 }
                             }
                         })
-                        .instrument(shutdown_span)
                         .await;
 
                     break;
