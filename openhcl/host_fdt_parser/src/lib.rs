@@ -64,13 +64,17 @@ pub enum Error<'a> {
     /// Invalid device tree node  
     #[error("invalid device tree node with parent {parent_name}: {error}")]
     Node {
+        /// The name of the parent node
         parent_name: &'a str,
+        /// The underlying FDT parser error
         error: fdt::parser::Error<'a>,
     },
     /// Required property missing
     #[error("{node_name} did not have the following required property {prop_name}")]
     PropMissing {
+        /// The name of the node missing the property
         node_name: &'a str,
+        /// The name of the missing property
         prop_name: &'static str,
     },
     /// Reading node property failed
@@ -82,14 +86,19 @@ pub enum Error<'a> {
     /// Memory region not aligned
     #[error("memory node {node_name} contains 4K unaligned base {base} or len {len}")]
     MemoryRegUnaligned {
+        /// The name of the memory node
         node_name: &'a str,
+        /// The base address of the memory region
         base: u64,
+        /// The length of the memory region
         len: u64,
     },
     /// Memory regions overlap
     #[error("ram at {}..{} of type {:?} overlaps ram at {}..{} of type {:?}", lower.range.start(), lower.range.end(), lower.mem_type, upper.range.start(), upper.range.end(), upper.mem_type)]
     MemoryRegOverlap {
+        /// The lower memory entry
         lower: MemoryEntry,
+        /// The upper memory entry that overlaps
         upper: MemoryEntry,
     },
     /// Too many memory entries
@@ -100,9 +109,13 @@ pub enum Error<'a> {
         "{node_name} had an invalid u32 value for {prop_name}: expected {expected}, actual {actual}"
     )]
     PropInvalidU32 {
+        /// The name of the node with the invalid property
         node_name: &'a str,
+        /// The name of the property with invalid value
         prop_name: &'a str,
+        /// The expected u32 value
         expected: u32,
+        /// The actual u32 value found
         actual: u32,
     },
     /// Invalid string property value
@@ -110,41 +123,71 @@ pub enum Error<'a> {
         "{node_name} had an invalid str value for {prop_name}: expected {expected}, actual {actual}"
     )]
     PropInvalidStr {
+        /// The name of the node with the invalid property
         node_name: &'a str,
+        /// The name of the property with invalid value
         prop_name: &'a str,
+        /// The expected string value
         expected: &'a str,
+        /// The actual string value found
         actual: &'a str,
     },
     /// Unexpected VMBUS VTL
     #[error("{node_name} has an unexpected vtl {vtl}")]
-    UnexpectedVmbusVtl { node_name: &'a str, vtl: u32 },
+    UnexpectedVmbusVtl {
+        /// The name of the VMBUS node
+        node_name: &'a str,
+        /// The unexpected VTL value
+        vtl: u32,
+    },
     /// Multiple VMBUS nodes
     #[error("{node_name} specifies a duplicate vmbus node")]
-    MultipleVmbusNode { node_name: &'a str },
+    MultipleVmbusNode {
+        /// The name of the duplicate VMBUS node
+        node_name: &'a str,
+    },
     /// VMBUS ranges child/parent mismatch
     #[error("vmbus {node_name} ranges child base {child_base} does not match parent {parent_base}")]
     VmbusRangesChildParent {
+        /// The name of the VMBUS node
         node_name: &'a str,
+        /// The child base address
         child_base: u64,
+        /// The parent base address that doesn't match
         parent_base: u64,
     },
     /// VMBUS ranges not aligned
     #[error("vmbus {node_name} base {base} or len {len} not aligned to 4K")]
     VmbusRangesNotAligned {
+        /// The name of the VMBUS node
         node_name: &'a str,
+        /// The base address that's not aligned
         base: u64,
+        /// The length that's not aligned  
         len: u64,
     },
     /// Too many VMBUS MMIO ranges
     #[error("vmbus {node_name} has more than 2 mmio ranges {ranges}")]
-    TooManyVmbusMmioRanges { node_name: &'a str, ranges: usize },
+    TooManyVmbusMmioRanges {
+        /// The name of the VMBUS node
+        node_name: &'a str,
+        /// The number of MMIO ranges found
+        ranges: usize,
+    },
     /// VMBUS MMIO overlaps RAM
     #[error("vmbus mmio at {}..{} overlaps ram at {}..{}", mmio.start(), mmio.end(), ram.range.start(), ram.range.end())]
-    VmbusMmioOverlapsRam { mmio: MemoryRange, ram: MemoryEntry },
+    VmbusMmioOverlapsRam {
+        /// The VMBUS MMIO memory range
+        mmio: MemoryRange,
+        /// The RAM memory entry that overlaps
+        ram: MemoryEntry,
+    },
     /// VMBUS MMIO overlaps VMBUS MMIO
     #[error("vmbus mmio at {}..{} overlaps vmbus mmio at {}..{}", mmio_a.start(), mmio_a.end(), mmio_b.start(), mmio_b.end())]
     VmbusMmioOverlapsVmbusMmio {
+        /// The first VMBUS MMIO memory range
         mmio_a: MemoryRange,
+        /// The second VMBUS MMIO memory range that overlaps
         mmio_b: MemoryRange,
     },
     /// Command line size error
@@ -152,7 +195,10 @@ pub enum Error<'a> {
     CmdlineSize,
     /// Unexpected memory allocation mode
     #[error("unexpected memory allocation mode: {mode}")]
-    UnexpectedMemoryAllocationMode { mode: &'a str },
+    UnexpectedMemoryAllocationMode {
+        /// The unexpected memory allocation mode
+        mode: &'a str,
+    },
 }
 
 const COM3_REG_BASE: u64 = 0x3E8;
