@@ -451,7 +451,7 @@ impl PartitionInfo {
             storage.partition_ram.push(*entry);
         }
 
-        // initialize address space manager
+        // Initialize the address space manager with fixed at build time ranges.
         let vtl2_config_region = MemoryRange::new(
             params.parameter_region_start
                 ..(params.parameter_region_start + params.parameter_region_size),
@@ -505,19 +505,19 @@ impl PartitionInfo {
             // ranges to figure out which VTL2 memory is free to allocate from.
             let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
 
-            let pool = match address_space.allocate(
+            match address_space.allocate(
                 None,
                 pool_size_bytes,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
             ) {
-                Some(pool) => pool.range,
+                Some(pool) => {
+                    log!("allocated VTL2 pool at {:#x?}", pool.range);
+                }
                 None => {
                     panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
                 }
             };
-
-            storage.vtl2_pool_memory = pool;
         }
 
         // If we can trust the host, use the provided alias map
@@ -528,7 +528,6 @@ impl PartitionInfo {
         // Set remaining struct fields before returning.
         let Self {
             vtl2_ram: _,
-            vtl2_pool_memory: _,
             partition_ram: _,
             isolation,
             bsp_reg,

@@ -13,7 +13,6 @@ use host_fdt_parser::GicInfo;
 use host_fdt_parser::MemoryAllocationMode;
 use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::VmbusInfo;
-use memory_range::MemoryRange;
 
 mod dt;
 mod mmio;
@@ -48,9 +47,6 @@ pub struct PartitionInfo {
     ///
     /// This vec is guaranteed to be sorted, and non-overlapping.
     pub vtl2_ram: ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>,
-    /// Memory used for the VTL2 private pool.
-    /// FIXME: move into address_manager
-    pub vtl2_pool_memory: MemoryRange,
     /// The full memory map provided by the host.
     pub partition_ram: ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
     /// The partiton's isolation type.
@@ -90,7 +86,6 @@ impl PartitionInfo {
     pub const fn new() -> Self {
         PartitionInfo {
             vtl2_ram: ArrayVec::new_const(),
-            vtl2_pool_memory: MemoryRange::EMPTY,
             // vtl2_used_ranges: ArrayVec::new_const(),
             partition_ram: ArrayVec::new_const(),
             isolation: IsolationType::None,

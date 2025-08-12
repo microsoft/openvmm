@@ -5,7 +5,6 @@
 
 use crate::host_params::MAX_VTL2_RAM_RANGES;
 use arrayvec::ArrayVec;
-use core::panic;
 use host_fdt_parser::MemoryEntry;
 #[cfg(test)]
 use igvm_defs::MemoryMapEntryType;
@@ -23,7 +22,6 @@ pub const MAX_RESERVED_MEM_RANGES: usize = 6 + sidecar_defs::MAX_NODES;
 const MAX_MEMORY_RANGES: usize = MAX_VTL2_RAM_RANGES + MAX_RESERVED_MEM_RANGES;
 
 /// Maximum number of ranges in the address space manager.
-/// TODO: sizing of arrayvec
 const MAX_ADDRESS_RANGES: usize = MAX_MEMORY_RANGES * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,11 +58,11 @@ impl From<ReservedMemoryType> for MemoryVtlType {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AddressUsage {
-    /// free for allocation
+    /// Free for allocation
     Free,
-    /// used by the bootshim (usually build time), but free for kernel use
+    /// Used by the bootshim (usually build time), but free for kernel use
     Used,
-    /// reserved for some reason
+    /// Reserved and should not be reported to the kernel as usable RAM.
     Reserved(ReservedMemoryType),
 }
 
@@ -85,7 +83,7 @@ impl From<AddressUsage> for MemoryVtlType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct AllocatedRange {
     pub range: MemoryRange,
     pub vnode: u32,
@@ -109,14 +107,21 @@ pub enum Error {
 
 #[derive(Debug)]
 pub struct AddressSpaceManager {
-    /// tracks address space, must be sorted
+    /// Track the whole address space - this must be sorted.
     address_space: ArrayVec<AddressRange, MAX_ADDRESS_RANGES>,
+
+    /// Track the VTL2 pool privately separately, as well.
+    ///
+    /// Today, we only support a single range, but we could easily support more
+    /// ranges in the future by making this an ArrayVec instead of an Option.
+    vtl2_pool: Option<AllocatedRange>,
 }
 
 impl AddressSpaceManager {
     pub const fn new_const() -> Self {
         Self {
             address_space: ArrayVec::new_const(),
+            vtl2_pool: None,
         }
     }
 
@@ -291,15 +296,25 @@ impl AddressSpaceManager {
         allocated
     }
 
+    /// Allocate a new range of memory with the given type and policy. None is
+    /// returned if the allocation was unable to be satisfied.
+    ///
+    /// `required_vnode` if `Some(u32)` is the vnode to allocate from. If there
+    /// are no free ranges left in that vnode, None is returned to the caller.
     pub fn allocate(
         &mut self,
-        preferred_vnode: Option<u32>,
+        required_vnode: Option<u32>,
         len: u64,
         allocation_type: AllocationType,
         allocation_policy: AllocationPolicy,
     ) -> Option<AllocatedRange> {
         // len must be page aligned
         assert_eq!(len % PAGE_SIZE_4K, 0);
+
+        // We only support a single VTL2 pool range, today.
+        if allocation_type == AllocationType::GpaPool && self.vtl2_pool.is_some() {
+            return None;
+        }
 
         fn find_index<'a>(
             mut iter: impl Iterator<Item = (usize, &'a AddressRange)>,
@@ -322,8 +337,8 @@ impl AddressSpaceManager {
         let index = {
             let iter = self.address_space.iter().enumerate();
             match allocation_policy {
-                AllocationPolicy::LowMemory => find_index(iter, preferred_vnode, len),
-                AllocationPolicy::HighMemory => find_index(iter.rev(), preferred_vnode, len),
+                AllocationPolicy::LowMemory => find_index(iter, required_vnode, len),
+                AllocationPolicy::HighMemory => find_index(iter.rev(), required_vnode, len),
             }
         };
 
@@ -344,14 +359,15 @@ impl AddressSpaceManager {
         })
     }
 
-    /// Get all of vtl2 address space
+    /// Returns an iterator for all VTL2 ranges.
     pub fn vtl2_ranges(&self) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
         memory_range::merge_adjacent_ranges(
             self.address_space.iter().map(|r| (r.range, r.usage.into())),
         )
     }
 
-    /// Get only reserved vtl2 ranges that are not described as e820 ranges
+    /// Returns an iterator for reserved VTL2 ranges that should not be
+    /// described as ram to the kernel.
     pub fn reserved_vtl2_ranges(
         &self,
     ) -> impl Iterator<Item = (MemoryRange, ReservedMemoryType)> + use<'_> {
@@ -360,8 +376,14 @@ impl AddressSpaceManager {
             _ => None,
         })
     }
+
+    /// The memory range for the VTL2 pool.
+    pub fn vtl2_pool(&self) -> Option<AllocatedRange> {
+        self.vtl2_pool
+    }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocationType {
     GpaPool,
     SidecarNode,
