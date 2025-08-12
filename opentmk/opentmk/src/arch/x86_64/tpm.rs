@@ -61,6 +61,12 @@ impl<'a> Tpm<'a> {
         super::io::inl(data_port)
     }
 
+    pub fn get_mapped_shared_memory() -> u32 {
+        let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN+TPM_DEVICE_IO_PORT_DATA_OFFSET;
+        Tpm::get_control_port(0x2);
+        super::io::inl(data_port)
+    }
+
     pub fn copy_to_command_buffer(&mut self, buffer: &[u8]) {
         self.command_buffer
         .as_mut()
@@ -91,21 +97,10 @@ impl<'a> Tpm<'a> {
         assert!(buffer.len() <= 4096);
         self.copy_to_command_buffer(buffer);
 
-        let command_exec_mmio_addr = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + 0x4c;
-        let command_exec_mmio_ptr = command_exec_mmio_addr as *mut u32;
-
-        unsafe {
-            *command_exec_mmio_ptr = 0x1;
-        }
-
-        while unsafe { *command_exec_mmio_ptr } == 0x1 {
-            unsafe {
-                core::arch::x86_64::_mm_pause();
-            }
-        }
+        Tpm::execute_command();
 
         let mut response = [0; 4096];
-        response.copy_from_slice(self.response_buffer.as_ref().unwrap());
+        self.copy_from_response_buffer(&mut response);
         response
     }
 

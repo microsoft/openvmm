@@ -6,7 +6,7 @@ use hvdef::{HvX64RegisterName, Vtl};
 use iced_x86::{DecoderOptions, Formatter, NasmFormatter};
 
 use crate::{
-    arch::tpm::Tpm,
+    arch::tpm::{Tpm, TpmUtil},
     context::{
         InterruptPlatformTrait, SecureInterceptPlatformTrait, VirtualProcessorPlatformTrait,
         VpExecutor, VtlPlatformTrait,
@@ -51,27 +51,31 @@ where
     let protocol_version = Tpm::get_tcg_protocol_version();
     log::warn!("TPM protocol version: 0x{:x}", protocol_version);
     // SAFETY: asuming that memory range is limited to 4GB (addressable by 32-bit)
-    let tpm_layout = Layout::from_size_align(4096 * 2, 4096);
-    tmk_assert!(tpm_layout.is_ok(), "TPM layout is allocated as expected");
-    let tpm_layout = tpm_layout.unwrap();
-    let tpm_ptr = unsafe { alloc(tpm_layout) };
+    // let tpm_layout = Layout::from_size_align(4096 * 2, 4096);
+    // tmk_assert!(tpm_layout.is_ok(), "TPM layout is allocated as expected");
+    // let tpm_layout = tpm_layout.unwrap();
+    // let tpm_ptr = unsafe { alloc(tpm_layout) };
 
-    let tpm_gpa = tpm_ptr as u64;
-    tmk_assert!(
-        tpm_gpa >> 32 == 0,
-        "TPM layout is allocated in the first 4GB"
-    );
+    // let tpm_gpa = tpm_ptr as u64;
+    // tmk_assert!(
+    //     tpm_gpa >> 32 == 0,
+    //     "TPM layout is allocated in the first 4GB"
+    // );
 
-    let tpm_gpa = tpm_gpa as u32;
+    // let tpm_gpa = tpm_gpa as u32;
 
-    let set_tpm_gpa = Tpm::map_shared_memory(tpm_gpa);
-    tmk_assert!(
-        set_tpm_gpa == tpm_gpa,
-        format!(
-            "TPM layout is mapped as expected, tpm_gpa: 0x{:x}, set_tpm_gpa: 0x{:x}",
-            tpm_gpa, set_tpm_gpa
-        )
-    );
+    // let set_tpm_gpa = Tpm::map_shared_memory(tpm_gpa);
+    // tmk_assert!(
+    //     set_tpm_gpa == tpm_gpa,
+    //     format!(
+    //         "TPM layout is mapped as expected, tpm_gpa: 0x{:x}, set_tpm_gpa: 0x{:x}",
+    //         tpm_gpa, set_tpm_gpa
+    //     )
+    // );
+
+    let tpm_gpa = Tpm::get_mapped_shared_memory();
+    log::warn!("TPM CMD buffer from vTPM Device: 0x{:x}", tpm_gpa);
+    let tpm_ptr = (tpm_gpa as u64) as *mut u8;
 
     // build slice from pointer
     let tpm_command = unsafe { core::slice::from_raw_parts_mut(tpm_ptr, 4096) };
@@ -157,11 +161,19 @@ where
 
         let r = ctx.apply_vtl_protection_for_memory(response_rage, Vtl::Vtl1);
         tmk_assert!(r.is_ok(), "apply_vtl_protection_for_memory should succeed");
-        
+
         log::info!("moving to vtl0 to attempt to read the heap memory");
 
         ctx.switch_to_low_vtl();
     }));
+
+    let cmd = TpmUtil::get_self_test_cmd();
+    _tpm.copy_to_command_buffer(&cmd);
+    log::warn!("TPM self test command copied to buffer");
+    log::warn!("about to execute TPM self test command..");
+    Tpm::execute_command();
+    log::warn!("TPM self test command executed");
+
 
     loop {}
 }
