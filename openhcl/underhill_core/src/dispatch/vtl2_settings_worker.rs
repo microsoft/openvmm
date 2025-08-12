@@ -4,7 +4,7 @@
 //! Implements VTL2 settings worker
 
 use super::LoadedVm;
-use crate::nvme_manager::NvmeDiskConfig;
+use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;

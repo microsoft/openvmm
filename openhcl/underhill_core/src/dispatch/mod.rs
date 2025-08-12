@@ -10,7 +10,7 @@ use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::netvsp::RuntimeSavedState;
-use crate::nvme_manager::NvmeManager;
+use crate::nvme_manager::manager::NvmeManager;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
