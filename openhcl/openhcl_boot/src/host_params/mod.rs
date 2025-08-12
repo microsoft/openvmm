@@ -78,10 +78,6 @@ pub struct PartitionInfo {
     pub nvme_keepalive: bool,
     /// Parsed boot command line options.
     pub boot_options: BootCommandLineOptions,
-    /// The address space manager for VTL2.
-    ///
-    /// TODO: replace all fields above with this as needed.
-    pub address_space_manager: AddressSpaceManager,
 
     /// GIC information on AArch64.
     pub gic: Option<GicInfo>,
@@ -115,7 +111,6 @@ impl PartitionInfo {
             vtl0_alias_map: None,
             nvme_keepalive: false,
             boot_options: BootCommandLineOptions::new(),
-            address_space_manager: AddressSpaceManager::new_const(),
             gic: None,
             pmu_gsiv: None,
         }
