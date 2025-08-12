@@ -68,7 +68,9 @@ pub enum Error<'a> {
         "Property {prop_name} data buffer len is not multiple of type size for node {node_name}"
     )]
     PropertyDataTypeBuffer {
+        /// Node name
         node_name: &'a str,
+        /// Property name
         prop_name: &'a str,
     },
     /// Property requested at offset is larger than data buffer
@@ -76,30 +78,43 @@ pub enum Error<'a> {
         "Property {prop_name} requested at offset is larger than data buffer for node {node_name}"
     )]
     PropertyOffset {
+        /// Node name
         node_name: &'a str,
+        /// Property name
         prop_name: &'a str,
     },
     /// Property data is not a a valid string
     #[error("Property data is not a a valid string for node {node_name}: {error}")]
     PropertyStr {
+        /// Node name
         node_name: &'a str,
+        /// String parsing error
         #[source]
         error: StringError,
     },
     /// Unable to parse FDT token when parsing properties
     #[error("Unable to parse FDT token when parsing properties for node {node_name}: {error}")]
     PropertyTokenParse {
+        /// Node name
         node_name: &'a str,
+        /// Token parsing error
         #[source]
         error: ParseTokenError,
     },
     /// Unexpected FDT token when parsing properties
     #[error("Unexpected FDT token when parsing properties for node {node_name}: {token}")]
-    PropertyToken { node_name: &'a str, token: u32 },
+    PropertyToken {
+        /// Node name
+        node_name: &'a str,
+        /// Token value
+        token: u32,
+    },
     /// Property name string is not a valid string
     #[error("Property name string is not a valid string for node {node_name}: {error}")]
     PropertyNameStr {
+        /// Node name
         node_name: &'a str,
+        /// String parsing error
         #[source]
         error: StringError,
     },
