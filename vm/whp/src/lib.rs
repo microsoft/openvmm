@@ -1097,7 +1097,7 @@ impl Device<'_> {
         unsafe {
             let mut data = {
                 let mut data = std::mem::MaybeUninit::<T>::uninit();
-                // SAFETY: data will be initialized by WHvGetVpciDeviceProperty, so we zero it first  
+                // SAFETY: data will be initialized by WHvGetVpciDeviceProperty, so we zero it first
                 std::ptr::write_bytes(data.as_mut_ptr(), 0, 1);
                 data.assume_init()
             };
@@ -1125,7 +1125,8 @@ impl Device<'_> {
     pub fn get_notification(&self) -> Result<Option<DeviceNotification>> {
         unsafe {
             let mut notification = {
-                let mut notification = std::mem::MaybeUninit::<abi::WHV_VPCI_DEVICE_NOTIFICATION>::uninit();
+                let mut notification =
+                    std::mem::MaybeUninit::<abi::WHV_VPCI_DEVICE_NOTIFICATION>::uninit();
                 // SAFETY: notification will be initialized by WHvGetVpciDeviceNotification, so we zero it first
                 std::ptr::write_bytes(notification.as_mut_ptr(), 0, 1);
                 notification.assume_init()

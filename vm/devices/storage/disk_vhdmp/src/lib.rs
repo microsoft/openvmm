@@ -238,17 +238,19 @@ fn chk_win32(err: u32) -> std::io::Result<()> {
 impl Vhd {
     fn open(path: &Path, read_only: bool) -> std::io::Result<Self> {
         let file = unsafe {
-            let mut storage_type = std::mem::MaybeUninit::<virtdisk::VIRTUAL_STORAGE_TYPE>::uninit();
+            let mut storage_type =
+                std::mem::MaybeUninit::<virtdisk::VIRTUAL_STORAGE_TYPE>::uninit();
             // SAFETY: Initialize by zeroing the structure
             std::ptr::write_bytes(storage_type.as_mut_ptr(), 0, 1);
             let mut storage_type = storage_type.assume_init();
-            
+
             // Use a unique ID for each open to avoid virtual disk sharing
             // within VHDMP. In the future, consider taking this as a parameter
             // to support failover.
             let resiliency_guid = Guid::new_random();
             let mut parameters = {
-                let mut params = std::mem::MaybeUninit::<virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS>::uninit();
+                let mut params =
+                    std::mem::MaybeUninit::<virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS>::uninit();
                 // SAFETY: Initialize structure by zeroing first, then setting specific fields
                 std::ptr::write_bytes(params.as_mut_ptr(), 0, 1);
                 let mut params_val = params.assume_init();
@@ -257,7 +259,9 @@ impl Vhd {
                     ReadOnly: read_only.into(),
                     ResiliencyGuid: resiliency_guid.into(),
                     ..{
-                        let mut v2 = std::mem::MaybeUninit::<virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_2>::uninit();
+                        let mut v2 = std::mem::MaybeUninit::<
+                            virtdisk::OPEN_VIRTUAL_DISK_PARAMETERS_2,
+                        >::uninit();
                         std::ptr::write_bytes(v2.as_mut_ptr(), 0, 1);
                         v2.assume_init()
                     }

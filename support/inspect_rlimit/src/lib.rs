@@ -98,9 +98,7 @@ impl Inspect for RlimitResource {
         let pid = self.pid.unwrap_or(0);
         let mut rlimit = std::mem::MaybeUninit::<rlimit>::uninit();
         // SAFETY: calling according to syscall documentation.
-        let r = unsafe {
-            libc::prlimit(pid, self.resource, std::ptr::null(), rlimit.as_mut_ptr())
-        };
+        let r = unsafe { libc::prlimit(pid, self.resource, std::ptr::null(), rlimit.as_mut_ptr()) };
         if r != 0 {
             req.value(std::io::Error::last_os_error().to_string());
             return;

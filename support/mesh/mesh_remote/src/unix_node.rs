@@ -1190,7 +1190,7 @@ fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Res
         }
     }
 
-    // Initialize msghdr structure properly  
+    // Initialize msghdr structure properly
     let mut hdr = std::mem::MaybeUninit::<libc::msghdr>::uninit();
     // SAFETY: Initialize the structure by zeroing then setting specific fields
     let mut hdr = unsafe {
@@ -1221,12 +1221,14 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
     let mut iov = IoSliceMut::new(buf);
     // Initialize CmsgScmRights structure properly
     let mut cmsg = std::mem::MaybeUninit::<CmsgScmRights>::uninit();
+    // SAFETY: cmsg has been zero-initialized, which is valid for CmsgScmRights
     let mut cmsg = unsafe {
         std::ptr::write_bytes(cmsg.as_mut_ptr(), 0, 1);
         cmsg.assume_init()
     };
-    // Initialize msghdr structure properly  
+    // Initialize msghdr structure properly
     let mut hdr = std::mem::MaybeUninit::<libc::msghdr>::uninit();
+    // SAFETY: hdr has been zero-initialized, which is valid for msghdr
     let mut hdr = unsafe {
         std::ptr::write_bytes(hdr.as_mut_ptr(), 0, 1);
         hdr.assume_init()

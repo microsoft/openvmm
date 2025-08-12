@@ -35,13 +35,13 @@ pub fn query_stat_lx_by_name(path: &Path) -> io::Result<ntioapi::FILE_STAT_LX_IN
             std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
             iosb.assume_init()
         };
-        
+
         let mut info = {
             let mut info = MaybeUninit::<ntioapi::FILE_STAT_LX_INFORMATION>::uninit();
             std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
             info.assume_init()
         };
-        
+
         let info_ptr = std::ptr::from_mut(&mut info).cast::<c_void>();
         chk_status(ntioapi::NtQueryInformationByName(
             &mut oa,
@@ -62,13 +62,13 @@ pub fn query_stat_lx(file: &fs::File) -> io::Result<ntioapi::FILE_STAT_LX_INFORM
             std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
             iosb.assume_init()
         };
-        
+
         let mut info = {
             let mut info = MaybeUninit::<ntioapi::FILE_STAT_LX_INFORMATION>::uninit();
             std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
             info.assume_init()
         };
-        
+
         let info_ptr = std::ptr::from_mut(&mut info).cast::<c_void>();
         chk_status(ntioapi::NtQueryInformationFile(
             handle,

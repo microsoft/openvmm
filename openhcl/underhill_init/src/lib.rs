@@ -424,6 +424,7 @@ fn timestamp() -> u64 {
     unsafe {
         std::ptr::write_bytes(tp.as_mut_ptr(), 0, 1);
     }
+    // SAFETY: tp has been zero-initialized, which is valid for timespec
     let mut tp = unsafe { tp.assume_init() };
     // SAFETY: calling `clock_gettime` as documented.
     unsafe {

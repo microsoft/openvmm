@@ -69,8 +69,10 @@ pub fn open_afd() -> std::io::Result<File> {
         let mut handle = null_mut();
         let mut iosb = MaybeUninit::uninit();
         // SAFETY: iosb will be initialized by NtOpenFile, so we zero it first then assume_init
-        std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
-        let mut iosb = iosb.assume_init();
+        let mut iosb = unsafe {
+            std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+            iosb.assume_init()
+        };
         chk_status(NtOpenFile(
             &mut handle,
             winnt::SYNCHRONIZE,
