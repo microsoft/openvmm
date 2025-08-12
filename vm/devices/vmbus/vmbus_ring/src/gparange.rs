@@ -71,11 +71,13 @@ impl<T: AsRef<[u64]>> MultiPagedRangeBuf<T> {
                 remaining_offset = 0;
                 remaining
             };
-
-            let sub_range = match range.try_subrange(cur_offset, remaining_length) {
-                Some(sub_range) => sub_range,
-                None => range,
-            };
+            // Determine how many bytes we can take from this range after applying cur_offset.
+            let available_here = range.len().saturating_sub(cur_offset);
+            if available_here == 0 {
+                continue;
+            }
+            let take_len = available_here.min(remaining_length);
+            let sub_range = range.subrange(cur_offset, take_len);
 
             sub_buf.push(u64::from_le_bytes(
                 GpaRange {
@@ -223,6 +225,8 @@ pub enum Error {
     EmptyByteCount,
     #[error("range too small")]
     RangeTooSmall,
+    #[error("byte offset too large")]
+    OffsetTooLarge,
     #[error("integer overflow")]
     Overflow,
 }
@@ -233,7 +237,10 @@ fn parse(buf: &[u64]) -> Result<(PagedRange<'_>, &[u64]), Error> {
     if byte_count == 0 {
         return Err(Error::EmptyByteCount);
     }
-    let byte_offset = (*hdr >> 32) as u32 & 0xfff;
+    let byte_offset = (*hdr >> 32) as u32;
+    if byte_offset > 0xfff {
+        return Err(Error::OffsetTooLarge);
+    }
     let pages = (byte_count
         .checked_add(4095)
         .ok_or(Error::Overflow)?
@@ -250,4 +257,70 @@ fn parse(buf: &[u64]) -> Result<(PagedRange<'_>, &[u64]), Error> {
             .expect("already validated"),
         rest,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guestmem::ranges::PagedRange;
+
+    #[test]
+    fn large_offset() {
+        // Encode a header with offset having bits above the 12-bit page offset (0x1000),
+        let hdr = GpaRange {
+            len: 1,
+            offset: 0x1000,
+        };
+        let mut buf: GpnList = GpnList::new();
+        buf.push(u64::from_le_bytes(hdr.as_bytes().try_into().unwrap()));
+        buf.push(0xdead_beef);
+
+        // validate() should not accept the buffer
+        let err = MultiPagedRangeBuf::new(1, buf).unwrap_err();
+        assert!(matches!(err, Error::OffsetTooLarge));
+    }
+
+    // subrange should error when the requested span exceeds available bytes after offset.
+    #[test]
+    fn subrange_errors_when_span_beyond_total() {
+        // Build a single-range buffer with 200 bytes starting at offset 100 within its first page.
+        let gpns = [0x1000_u64];
+        let range = PagedRange::new(100, 200, &gpns).expect("valid paged range");
+        let ranges: MultiPagedRangeBuf<GpnList> = std::iter::once(range).collect();
+
+        // Request a subrange starting 50 bytes into the buffer, of length 200 bytes.
+        // Only 150 bytes remain (200 - 50), so this should be an error.
+        let err = ranges.subrange(50, 200).unwrap_err();
+        assert!(matches!(err, Error::RangeTooSmall));
+    }
+
+    // subrange across multiple ranges should split into partial
+    // pieces with correct offsets, lengths, and page lists.
+    #[test]
+    fn subrange_spans_multiple_ranges() {
+        let gpns1 = [1_u64, 2_u64];
+        let gpns2 = [3_u64, 4_u64];
+        // Two ranges: [100..400) over gpns1 and [0..500) over gpns2
+        let r1 = PagedRange::new(100, 300, &gpns1).expect("r1");
+        let r2 = PagedRange::new(0, 500, &gpns2).expect("r2");
+        let ranges: MultiPagedRangeBuf<GpnList> = vec![r1, r2].into_iter().collect();
+
+        // Take subrange starting 250 bytes into the concatenated ranges, length 200.
+        // This yields 50 bytes from r1 (offset 350) and 150 bytes from r2 (offset 0).
+        let sub = ranges.subrange(250, 200).expect("subrange ok");
+        assert_eq!(sub.range_count(), 2);
+
+        let mut it = sub.iter();
+        let a = it.next().expect("first slice");
+        assert_eq!(a.offset(), 350);
+        assert_eq!(a.len(), 50);
+        assert_eq!(a.gpns(), &gpns1[..1]);
+
+        let b = it.next().expect("second slice");
+        assert_eq!(b.offset(), 0);
+        assert_eq!(b.len(), 150);
+        assert_eq!(b.gpns(), &gpns2[..1]);
+
+        assert!(it.next().is_none());
+    }
 }
