@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn large_offset() {
-        // Encode a header with offset having bits above the 12-bit page offset (0x1000),
+        // Encode a header with offset having bits above the 12-bit page offset (0x1000)
         let hdr = GpaRange {
             len: 1,
             offset: 0x1000,
