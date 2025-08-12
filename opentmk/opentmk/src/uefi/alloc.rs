@@ -1,11 +1,12 @@
-use core::{alloc::GlobalAlloc, cell::RefCell};
+use core::alloc::GlobalAlloc;
+use core::cell::RefCell;
 
 use linked_list_allocator::LockedHeap;
 use sync_nostd::Mutex;
-use uefi::{
-    allocator::Allocator,
-    boot::{self, AllocateType, MemoryType},
-};
+use uefi::allocator::Allocator;
+use uefi::boot::AllocateType;
+use uefi::boot::MemoryType;
+use uefi::boot::{self};
 
 pub const SIZE_1MB: usize = 1024 * 1024;
 const PAGE_SIZE: usize = 4096;

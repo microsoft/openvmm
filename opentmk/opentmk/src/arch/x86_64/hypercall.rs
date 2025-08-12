@@ -6,10 +6,9 @@
 use core::ptr::addr_of;
 
 use hvdef::HV_PAGE_SIZE;
-use minimal_rt::arch::{
-    hypercall::HYPERCALL_PAGE,
-    msr::{read_msr, write_msr},
-};
+use minimal_rt::arch::hypercall::HYPERCALL_PAGE;
+use minimal_rt::arch::msr::read_msr;
+use minimal_rt::arch::msr::write_msr;
 
 /// Writes an MSR to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {

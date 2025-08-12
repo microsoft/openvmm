@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 use sync_nostd::Mutex;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::structures::idt::InterruptDescriptorTable;
+use x86_64::structures::idt::InterruptStackFrame;
+use x86_64::structures::idt::PageFaultErrorCode;
 static mut COMMON_HANDLER: fn(InterruptStackFrame, u8) = common_handler;
 static COMMON_HANDLER_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -45,8 +47,6 @@ macro_rules! create_fn_divergent_create {
 }
 
 static mut BACKUP_RSP: u64 = 0;
-
-
 
 macro_rules! create_page_fault_fn {
     ($name:ident, $i: expr) => {

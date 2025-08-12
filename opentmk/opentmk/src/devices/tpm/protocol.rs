@@ -6,7 +6,8 @@
 //! NOTE: once the `tpm-rs` project matures, this hand-rolled code should be *deleted* and
 //! replaced with types from that `tpm-rs` project.
 
-use self::packed_nums::*;
+use alloc::vec::Vec;
+
 use bitfield_struct::bitfield;
 use thiserror::Error;
 use zerocopy::FromBytes;
@@ -14,7 +15,8 @@ use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-use alloc::vec::Vec;
+
+use self::packed_nums::*;
 
 #[allow(non_camel_case_types)]
 mod packed_nums {
@@ -134,7 +136,6 @@ impl SessionTag {
         SessionTag(new_u16_be(val))
     }
 }
-
 
 #[derive(Error, Debug)]
 pub enum TpmCommandError {
@@ -1966,7 +1967,6 @@ pub mod protocol {
 
     // === Startup === //
 
-    #[expect(dead_code)]
     pub enum StartupType {
         Clear,
         State,

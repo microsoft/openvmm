@@ -1,7 +1,8 @@
-use uefi::{
-    boot::{exit_boot_services, MemoryType},
-    guid, CStr16, Status,
-};
+use uefi::boot::exit_boot_services;
+use uefi::boot::MemoryType;
+use uefi::guid;
+use uefi::CStr16;
+use uefi::Status;
 
 use super::alloc::ALLOCATOR;
 

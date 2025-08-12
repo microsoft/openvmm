@@ -93,7 +93,8 @@ pub trait VtlPlatformTrait {
     /// Switches the current hardware thread back to the lower privileged VTL.
     fn switch_to_low_vtl(&mut self);
 
-    fn set_vp_state_with_vtl(&mut self, register_index: u32, value: u64, vtl: Vtl) -> TmkResult<()>;
+    fn set_vp_state_with_vtl(&mut self, register_index: u32, value: u64, vtl: Vtl)
+        -> TmkResult<()>;
 
     fn get_vp_state_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64>;
 }
@@ -121,8 +122,7 @@ impl<T> VpExecutor<T> {
     ///
     /// The closure receives a mutable reference to the platform-specific
     /// type `T` that implements `VtlPlatformTrait`.
-    pub fn command(mut self, cmd: impl FnOnce(&mut T) + 'static + Send) -> Self 
-    {
+    pub fn command(mut self, cmd: impl FnOnce(&mut T) + 'static + Send) -> Self {
         self.cmd = Some(Box::new(cmd));
         self
     }

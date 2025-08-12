@@ -4,9 +4,10 @@
 //! Serial output for debugging.
 
 use core::fmt;
-use super::io;
 
 use sync_nostd::Mutex;
+
+use super::io;
 
 /// Serial port addresses.
 /// These are the standard COM ports used in x86 systems.
@@ -70,8 +71,12 @@ pub struct Serial<T: IoAccess> {
 
 impl<T: IoAccess> Serial<T> {
     /// Initialize the serial port.
-    pub const fn new(serial_port: SerialPort, io: T) -> Self {        
-        Self { io, serial_port, mutex: Mutex::new(()) }
+    pub const fn new(serial_port: SerialPort, io: T) -> Self {
+        Self {
+            io,
+            serial_port,
+            mutex: Mutex::new(()),
+        }
     }
 
     pub fn init(&self) {

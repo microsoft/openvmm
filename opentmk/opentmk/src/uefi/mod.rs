@@ -6,7 +6,8 @@ pub mod init;
 mod rt;
 
 use init::init;
-use uefi::{entry, Status};
+use uefi::entry;
+use uefi::Status;
 
 use crate::tmk_assert;
 
@@ -18,5 +19,5 @@ fn uefi_main() -> Status {
     log::warn!("TEST_START");
     crate::tests::run_test();
     log::warn!("TEST_END");
-    loop{}
+    loop {}
 }

@@ -1,28 +1,41 @@
 #![allow(warnings)]
-use alloc::{alloc::alloc, sync::Arc};
-use core::{
-    alloc::{GlobalAlloc, Layout}, arch::asm, cell::{RefCell, UnsafeCell}, fmt::Write, ops::Range, sync::atomic::{AtomicBool, AtomicI32, Ordering}
-};
+use alloc::alloc::alloc;
+use alloc::sync::Arc;
+use core::alloc::GlobalAlloc;
+use core::alloc::Layout;
+use core::arch::asm;
+use core::cell::RefCell;
+use core::cell::UnsafeCell;
+use core::fmt::Write;
+use core::ops::Range;
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicI32;
+use core::sync::atomic::Ordering;
 
-use ::alloc::{boxed::Box, vec::Vec};
+use ::alloc::boxed::Box;
+use ::alloc::vec::Vec;
 use context::VpExecutor;
-use hvdef::{
-    hypercall::HvInputVtl, HvAllArchRegisterName, HvRegisterVsmVpStatus, HvX64RegisterName, Vtl,
-};
+use hvdef::hypercall::HvInputVtl;
+use hvdef::HvAllArchRegisterName;
+use hvdef::HvRegisterVsmVpStatus;
+use hvdef::HvX64RegisterName;
+use hvdef::Vtl;
 use hypvctx::HvTestCtx;
-use sync_nostd::{Channel, Receiver, Sender};
-use uefi::{entry, Status};
+use sync_nostd::Channel;
+use sync_nostd::Receiver;
+use sync_nostd::Sender;
+use uefi::entry;
+use uefi::Status;
 
-use crate::{tmk_assert, tmk_logger};
-use crate::{
-    context,
-    context::{
-        InterruptPlatformTrait, SecureInterceptPlatformTrait, VirtualProcessorPlatformTrait,
-        VtlPlatformTrait,
-    },
-    platform::hypvctx,
-    tmkdefs::TmkResult,
-};
+use crate::context;
+use crate::context::InterruptPlatformTrait;
+use crate::context::SecureInterceptPlatformTrait;
+use crate::context::VirtualProcessorPlatformTrait;
+use crate::context::VtlPlatformTrait;
+use crate::platform::hypvctx;
+use crate::tmk_assert;
+use crate::tmk_logger;
+use crate::tmkdefs::TmkResult;
 
 static mut HEAPX: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
 static mut RETURN_VALUE: u8 = 0;
@@ -74,12 +87,9 @@ fn backup_and_restore() {
     }
 }
 
-
 pub fn exec<T>(ctx: &mut T)
 where
-    T: InterruptPlatformTrait
-        + VtlPlatformTrait
-        + VirtualProcessorPlatformTrait<T>,
+    T: InterruptPlatformTrait + VtlPlatformTrait + VirtualProcessorPlatformTrait<T>,
 {
     log::info!("ctx ptr: {:p}", &ctx as *const _);
 
@@ -93,7 +103,7 @@ where
 
     ctx.setup_partition_vtl(Vtl::Vtl1);
     log::info!("successfully setup partition vtl1");
-    
+
     ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
 
@@ -102,7 +112,7 @@ where
         let ptr = unsafe { alloc(layout) };
 
         log::info!("allocated some memory in the heap from vtl1");
-        
+
         unsafe {
             let mut z = HEAPX.borrow_mut();
             *z = ptr;
@@ -121,7 +131,10 @@ where
         };
 
         let result = ctx.apply_vtl_protection_for_memory(range, Vtl::Vtl1);
-        tmk_assert!(result.is_ok(), "apply_vtl_protection_for_memory should succeed");
+        tmk_assert!(
+            result.is_ok(),
+            "apply_vtl_protection_for_memory should succeed"
+        );
 
         log::info!("moving to vtl0 to attempt to read the heap memory");
 
@@ -135,36 +148,39 @@ where
     });
 
     let (tx, rx) = Channel::new().split();
-    
-    ctx.start_on_vp(VpExecutor::new(0x2, Vtl::Vtl1).command(move|ctx: &mut T| {
+
+    ctx.start_on_vp(VpExecutor::new(0x2, Vtl::Vtl1).command(move |ctx: &mut T| {
         ctx.setup_interrupt_handler();
         log::info!("successfully started running VTL1 on vp2.");
     }));
 
-    ctx.start_on_vp(VpExecutor::new(0x2, Vtl::Vtl0).command( move |ctx: &mut T| unsafe {        
-        log::info!("successfully started running VTL0 on vp2.");
-        unsafe {
-            let heapx = *HEAPX.borrow();
+    ctx.start_on_vp(
+        VpExecutor::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| unsafe {
+            log::info!("successfully started running VTL0 on vp2.");
+            unsafe {
+                let heapx = *HEAPX.borrow();
 
-            let read_protected_memory = || { *(heapx.add(10)) };
+                let read_protected_memory = || *(heapx.add(10));
 
-            let read_result = read_protected_memory();
-            log::info!(
-                "reading mutated heap memory from vtl0(it should not be 0xA2): 0x{:x}",
-                read_result
-            );
-            tmk_assert!(   
+                let read_result = read_protected_memory();
+                log::info!(
+                    "reading mutated heap memory from vtl0(it should not be 0xA2): 0x{:x}",
+                    read_result
+                );
+                tmk_assert!(
+                    read_result != 0xA2,
+                    "heap memory should not be accessible from vtl0"
+                );
+            }
 
-                 
-                read_result != 0xA2,
-                "heap memory should not be accessible from vtl0"
-            );
-        }
-
-        tx.send(());
-    }));
+            tx.send(());
+        }),
+    );
 
     rx.recv();
 
-    tmk_assert!(false, "we should not reach here injecting MC should terminate the test");
+    tmk_assert!(
+        false,
+        "we should not reach here injecting MC should terminate the test"
+    );
 }

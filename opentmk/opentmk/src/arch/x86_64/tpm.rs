@@ -1,6 +1,9 @@
 use zerocopy::IntoBytes;
-use thiserror::Error;
-use crate::devices::tpm::protocol::{protocol::{SelfTestCmd, TpmCommand}, SessionTagEnum, TpmCommandError};
+
+use crate::devices::tpm::protocol::protocol::SelfTestCmd;
+use crate::devices::tpm::protocol::protocol::TpmCommand;
+use crate::devices::tpm::protocol::SessionTagEnum;
+use crate::devices::tpm::protocol::TpmCommandError;
 
 pub const TPM_DEVICE_MMIO_REGION_BASE_ADDRESS: u64 = 0xfed40000;
 pub const TPM_DEVICE_MMIO_REGION_SIZE: u64 = 0x70;
@@ -42,8 +45,8 @@ impl<'a> Tpm<'a> {
 
     #[cfg(target_arch = "x86_64")]
     pub fn get_control_port(command: u32) -> u32 {
-        let control_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN+TPM_DEVICE_IO_PORT_CONTROL_OFFSET;
-        let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN+TPM_DEVICE_IO_PORT_DATA_OFFSET;
+        let control_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_CONTROL_OFFSET;
+        let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_DATA_OFFSET;
         super::io::outl(control_port, command);
         super::io::inl(data_port)
     }
@@ -53,8 +56,8 @@ impl<'a> Tpm<'a> {
     }
 
     pub fn map_shared_memory(gpa: u32) -> u32 {
-        let control_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN+TPM_DEVICE_IO_PORT_CONTROL_OFFSET;
-        let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN+TPM_DEVICE_IO_PORT_DATA_OFFSET;
+        let control_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_CONTROL_OFFSET;
+        let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_DATA_OFFSET;
         super::io::outl(control_port, 0x1);
         super::io::outl(data_port, gpa);
         super::io::outl(control_port, 0x2);
@@ -62,16 +65,13 @@ impl<'a> Tpm<'a> {
     }
 
     pub fn get_mapped_shared_memory() -> u32 {
-        let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN+TPM_DEVICE_IO_PORT_DATA_OFFSET;
+        let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_DATA_OFFSET;
         Tpm::get_control_port(0x2);
         super::io::inl(data_port)
     }
 
     pub fn copy_to_command_buffer(&mut self, buffer: &[u8]) {
-        self.command_buffer
-        .as_mut()
-        .unwrap()[..buffer.len()]
-        .copy_from_slice(buffer);
+        self.command_buffer.as_mut().unwrap()[..buffer.len()].copy_from_slice(buffer);
     }
 
     pub fn copy_from_response_buffer(&mut self, buffer: &mut [u8]) {
@@ -108,7 +108,7 @@ impl<'a> Tpm<'a> {
         let session_tag = SessionTagEnum::NoSessions;
         let cmd = SelfTestCmd::new(session_tag.into(), true);
         let response = self.run_command(cmd.as_bytes());
-        
+
         match SelfTestCmd::base_validate_reply(&response, session_tag) {
             Err(error) => Err(TpmCommandError::InvalidResponse(error)),
             Ok((res, false)) => Err(TpmCommandError::TpmCommandFailed {
@@ -116,17 +116,5 @@ impl<'a> Tpm<'a> {
             })?,
             Ok((_res, true)) => Ok(()),
         }
-    }
-    
-}
-
-pub struct TpmUtil;
-impl TpmUtil {
-    pub fn get_self_test_cmd() -> [u8; 4096] {
-        let session_tag = SessionTagEnum::NoSessions;
-        let cmd = SelfTestCmd::new(session_tag.into(), true);
-        let mut buffer = [0; 4096];
-        buffer[..cmd.as_bytes().len()].copy_from_slice(cmd.as_bytes());
-        buffer
     }
 }

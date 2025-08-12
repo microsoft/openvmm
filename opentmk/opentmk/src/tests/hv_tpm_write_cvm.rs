@@ -1,19 +1,15 @@
-use alloc::string::String;
-use core::{alloc::Layout, ops::Range};
+use core::ops::Range;
 
-use ::alloc::alloc::alloc;
-use hvdef::{HvX64RegisterName, Vtl};
-use iced_x86::{DecoderOptions, Formatter, NasmFormatter};
+use hvdef::Vtl;
 
-use crate::{
-    arch::tpm::{Tpm, TpmUtil},
-    context::{
-        InterruptPlatformTrait, SecureInterceptPlatformTrait, VirtualProcessorPlatformTrait,
-        VpExecutor, VtlPlatformTrait,
-    },
-    platform::hypvctx::HvTestCtx,
-    tmk_assert,
-};
+use crate::arch::tpm::Tpm;
+use crate::context::InterruptPlatformTrait;
+use crate::context::SecureInterceptPlatformTrait;
+use crate::context::VirtualProcessorPlatformTrait;
+use crate::context::VpExecutor;
+use crate::context::VtlPlatformTrait;
+use crate::devices::tpm::TpmUtil;
+use crate::tmk_assert;
 
 pub fn exec<T>(ctx: &mut T)
 where
@@ -51,18 +47,18 @@ where
     log::info!("set intercept handler successfully!");
     let r = ctx.setup_partition_vtl(Vtl::Vtl1);
     tmk_assert!(r.is_ok(), "setup_partition_vtl should succeed");
-    
+
     let response_rage = Range {
         start: tpm_gpa as u64 + 4096,
         end: tpm_gpa as u64 + 4096 * 2,
     };
 
-    let r= ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
+    let _r = ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
         let r = ctx.setup_secure_intercept(0x30);
         tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
 
-        let r= ctx.setup_vtl_protection();
+        let r = ctx.setup_vtl_protection();
         tmk_assert!(r.is_ok(), "setup_vtl_protection should succeed");
 
         log::info!("enabled vtl protections for the partition.");

@@ -1,10 +1,11 @@
 use hvdef::Vtl;
 use sync_nostd::Channel;
 
-use crate::{
-    context::{InterruptPlatformTrait, VirtualProcessorPlatformTrait, VpExecutor, VtlPlatformTrait},
-    tmk_assert,
-};
+use crate::context::InterruptPlatformTrait;
+use crate::context::VirtualProcessorPlatformTrait;
+use crate::context::VpExecutor;
+use crate::context::VtlPlatformTrait;
+use crate::tmk_assert;
 
 #[inline(never)]
 pub fn exec<T>(ctx: &mut T)
@@ -22,9 +23,7 @@ where
 
     _ = ctx.setup_interrupt_handler();
 
-    _ = ctx.set_interrupt_idx(0x6, || {
-        loop{}
-    });
+    _ = ctx.set_interrupt_idx(0x6, || loop {});
 
     // Testing BSP VTL Bringup
     {

@@ -1,19 +1,21 @@
 use alloc::string::String;
-use core::{alloc::Layout, ops::Range};
+use core::ops::Range;
 
-use ::alloc::alloc::alloc;
-use hvdef::{HvX64RegisterName, Vtl};
-use iced_x86::{DecoderOptions, Formatter, NasmFormatter};
+use hvdef::HvX64RegisterName;
+use hvdef::Vtl;
+use iced_x86::DecoderOptions;
+use iced_x86::Formatter;
+use iced_x86::NasmFormatter;
 
-use crate::{
-    arch::tpm::{Tpm, TpmUtil},
-    context::{
-        InterruptPlatformTrait, SecureInterceptPlatformTrait, VirtualProcessorPlatformTrait,
-        VpExecutor, VtlPlatformTrait,
-    },
-    platform::hypvctx::HvTestCtx,
-    tmk_assert,
-};
+use crate::arch::tpm::Tpm;
+use crate::context::InterruptPlatformTrait;
+use crate::context::SecureInterceptPlatformTrait;
+use crate::context::VirtualProcessorPlatformTrait;
+use crate::context::VpExecutor;
+use crate::context::VtlPlatformTrait;
+use crate::devices::tpm::TpmUtil;
+use crate::platform::hypvctx::HvTestCtx;
+use crate::tmk_assert;
 
 pub fn read_assembly_output(target: u64) -> usize {
     unsafe {
@@ -98,13 +100,13 @@ where
     log::info!("set intercept handler successfully!");
     let r = ctx.setup_partition_vtl(Vtl::Vtl1);
     tmk_assert!(r.is_ok(), "setup_partition_vtl should succeed");
-    
+
     let response_rage = Range {
         start: tpm_gpa as u64 + 4096,
         end: tpm_gpa as u64 + 4096 * 2,
     };
 
-    let r= ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
+    let _r = ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
         let r = ctx.setup_secure_intercept(0x30);
         tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
@@ -114,13 +116,13 @@ where
             let mut hv = HvTestCtx::new();
             // expected to get interrupt in VTL1.
             // CVMs dont support hypercalls to get the current VTL from VTL1/0.
-            hv.init(Vtl::Vtl1);
+            _ = hv.init(Vtl::Vtl1);
             log::info!(
                 "current vp from interrupt: {}",
                 hv.get_current_vp().unwrap()
             );
 
-            let rip = hvdef::HvX64RegisterName::Rip.0;
+            let rip = HvX64RegisterName::Rip.0;
 
             let reg = hv.get_vp_state_with_vtl(rip, Vtl::Vtl0);
             tmk_assert!(reg.is_ok(), "get_vp_state_with_vtl should succeed");
@@ -154,7 +156,7 @@ where
         });
         tmk_assert!(r.is_ok(), "set_interrupt_idx should succeed");
 
-        let r= ctx.setup_vtl_protection();
+        let r = ctx.setup_vtl_protection();
         tmk_assert!(r.is_ok(), "setup_vtl_protection should succeed");
 
         log::info!("enabled vtl protections for the partition.");
@@ -173,7 +175,6 @@ where
     log::warn!("about to execute TPM self test command..");
     Tpm::execute_command();
     log::warn!("TPM self test command executed");
-
 
     loop {}
 }

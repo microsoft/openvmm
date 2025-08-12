@@ -1,4 +1,5 @@
-use super::io::{inb, outb};
+use super::io::inb;
+use super::io::outb;
 // CMOS/RTC I/O ports
 const CMOS_ADDRESS: u16 = 0x70;
 const CMOS_DATA: u16 = 0x71;
@@ -26,11 +27,17 @@ pub struct DateTime {
 
 // implement display as ISO 8601 format
 impl core::fmt::Display for DateTime {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) ->
-    core::fmt::Result {
-        write!(f, "{:02}:{:02}:{:02} {:02}-{:02}-{:04} UTC",
-               self.hours, self.minutes, self.seconds,
-               self.day, self.month, 2000 + self.year as u64)
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{:02}:{:02}:{:02} {:02}-{:02}-{:04} UTC",
+            self.hours,
+            self.minutes,
+            self.seconds,
+            self.day,
+            self.month,
+            2000 + self.year as u64
+        )
     }
 }
 
@@ -43,7 +50,7 @@ impl DateTime {
         let hours = self.hours as u64;
         let minutes = self.minutes as u64;
         let seconds = self.seconds as u64;
-        
+
         (days * 24 + hours) * 3600 + (minutes * 60) + seconds
     }
 }
@@ -68,7 +75,7 @@ fn bcd_to_binary(bcd: u8) -> u8 {
 pub fn read_rtc() -> DateTime {
     // Wait for any update to complete
     while rtc_update_in_progress() {}
-    
+
     let mut datetime = DateTime {
         seconds: read_cmos(RTC_SECONDS),
         minutes: read_cmos(RTC_MINUTES),
@@ -77,10 +84,10 @@ pub fn read_rtc() -> DateTime {
         month: read_cmos(RTC_MONTH),
         year: read_cmos(RTC_YEAR),
     };
-    
+
     // Check if we need to wait for another update cycle
     while rtc_update_in_progress() {}
-    
+
     // Read again to ensure consistency
     let seconds_check = read_cmos(RTC_SECONDS);
     if seconds_check != datetime.seconds {
@@ -91,11 +98,11 @@ pub fn read_rtc() -> DateTime {
         datetime.month = read_cmos(RTC_MONTH);
         datetime.year = read_cmos(RTC_YEAR);
     }
-    
+
     // Check RTC format (BCD vs binary)
     let status_b = read_cmos(RTC_STATUS_B);
     let is_bcd = (status_b & 0x04) == 0;
-    
+
     if is_bcd {
         datetime.seconds = bcd_to_binary(datetime.seconds);
         datetime.minutes = bcd_to_binary(datetime.minutes);
@@ -104,12 +111,12 @@ pub fn read_rtc() -> DateTime {
         datetime.month = bcd_to_binary(datetime.month);
         datetime.year = bcd_to_binary(datetime.year);
     }
-    
+
     // Handle 12-hour format if needed
     if (status_b & 0x02) == 0 && (datetime.hours & 0x80) != 0 {
         datetime.hours = ((datetime.hours & 0x7F) + 12) % 24;
     }
-    
+
     datetime
 }
 

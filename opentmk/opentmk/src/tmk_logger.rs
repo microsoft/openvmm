@@ -1,14 +1,17 @@
-use alloc::{
-    fmt::format,
-    string::{String, ToString},
-};
+use alloc::fmt::format;
+use alloc::string::String;
+use alloc::string::ToString;
 use core::fmt::Write;
 
+use anyhow::Result;
 use log::SetLoggerError;
 use serde::Serialize;
-use sync_nostd::{Mutex, MutexGuard};
-use anyhow::Result;
-use crate::arch::serial::{InstrIoAccess, Serial, SerialPort};
+use sync_nostd::Mutex;
+use sync_nostd::MutexGuard;
+
+use crate::arch::serial::InstrIoAccess;
+use crate::arch::serial::Serial;
+use crate::arch::serial::SerialPort;
 
 #[derive(Serialize)]
 struct LogEntry {
@@ -90,9 +93,9 @@ where
 }
 
 type SerialPortWriter = Serial<InstrIoAccess>;
-pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> = TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
+pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
+    TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
 
 pub fn init() -> Result<(), SetLoggerError> {
-    log::set_logger(&LOGGER)
-        .map(|()| log::set_max_level(log::LevelFilter::Debug))
+    log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Debug))
 }

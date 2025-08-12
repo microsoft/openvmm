@@ -1,28 +1,32 @@
-use alloc::{
-    alloc::alloc,
-    boxed::Box,
-    collections::{btree_map::BTreeMap, btree_set::BTreeSet, linked_list::LinkedList},
-};
-use core::{alloc::Layout, arch::asm, fmt::Display, ops::Range};
+use alloc::alloc::alloc;
+use alloc::boxed::Box;
+use alloc::collections::btree_map::BTreeMap;
+use alloc::collections::btree_set::BTreeSet;
+use alloc::collections::linked_list::LinkedList;
+use core::alloc::Layout;
+use core::arch::asm;
+use core::fmt::Display;
+use core::ops::Range;
 
-use hvdef::{
-    hypercall::{HvInputVtl, InitialVpContextX64},
-    AlignedU128, Vtl,
-};
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::InitialVpContextX64;
+use hvdef::AlignedU128;
+use hvdef::Vtl;
 use memory_range::MemoryRange;
-use minimal_rt::arch::{
-    msr::{read_msr, write_msr},
-};
+use minimal_rt::arch::msr::read_msr;
+use minimal_rt::arch::msr::write_msr;
 use sync_nostd::Mutex;
 
-use crate::{
-    context::{
-        InterruptPlatformTrait, MsrPlatformTrait, SecureInterceptPlatformTrait,
-        VirtualProcessorPlatformTrait, VpExecutor, VtlPlatformTrait,
-    },
-    hypercall::HvCall,
-    tmkdefs::{TmkError, TmkErrorType, TmkResult},
-};
+use crate::context::InterruptPlatformTrait;
+use crate::context::MsrPlatformTrait;
+use crate::context::SecureInterceptPlatformTrait;
+use crate::context::VirtualProcessorPlatformTrait;
+use crate::context::VpExecutor;
+use crate::context::VtlPlatformTrait;
+use crate::hypercall::HvCall;
+use crate::tmkdefs::TmkError;
+use crate::tmkdefs::TmkErrorType;
+use crate::tmkdefs::TmkResult;
 
 const ALIGNMENT: usize = 4096;
 
@@ -597,7 +601,6 @@ impl HvTestCtx {
             Vtl::Vtl0 => HvTestCtx::general_exec_handler,
             Vtl::Vtl1 => HvTestCtx::secure_exec_handler,
             _ => return Err(TmkErrorType::InvalidParameter.into()),
-            
         };
         self.run_fn_with_current_context(handler)
     }

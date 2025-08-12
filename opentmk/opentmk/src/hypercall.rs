@@ -4,21 +4,26 @@
 //! Hypercall infrastructure.
 
 #![allow(dead_code)]
-use core::{
-    arch::asm,
-    mem::size_of,
-    sync::atomic::{AtomicU16, Ordering},
-};
+use core::arch::asm;
+use core::mem::size_of;
+use core::sync::atomic::AtomicU16;
+use core::sync::atomic::Ordering;
 
 use arrayvec::ArrayVec;
-use hvdef::{
-    hypercall::{EnablePartitionVtlFlags, HvInputVtl, InitialVpContextX64},
-    HvRegisterValue, HvRegisterVsmPartitionConfig, HvX64RegisterName, HvX64SegmentRegister, Vtl,
-    HV_PAGE_SIZE,
-};
+use hvdef::hypercall::EnablePartitionVtlFlags;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::InitialVpContextX64;
+use hvdef::HvRegisterValue;
+use hvdef::HvRegisterVsmPartitionConfig;
+use hvdef::HvX64RegisterName;
+use hvdef::HvX64SegmentRegister;
+use hvdef::Vtl;
+use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
-use minimal_rt::arch::hypercall::{invoke_hypercall, HYPERCALL_PAGE};
-use zerocopy::{FromBytes, IntoBytes};
+use minimal_rt::arch::hypercall::invoke_hypercall;
+use minimal_rt::arch::hypercall::HYPERCALL_PAGE;
+use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]

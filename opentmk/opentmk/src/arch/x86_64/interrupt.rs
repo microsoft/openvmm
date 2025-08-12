@@ -1,8 +1,10 @@
 use lazy_static::lazy_static;
 use sync_nostd::Mutex;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::structures::idt::InterruptDescriptorTable;
+use x86_64::structures::idt::InterruptStackFrame;
 
-use super::interrupt_handler_register::{register_interrupt_handler, set_common_handler};
+use super::interrupt_handler_register::register_interrupt_handler;
+use super::interrupt_handler_register::set_common_handler;
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
