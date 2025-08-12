@@ -202,7 +202,16 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     // we assuming they were not in the boot loader's pre-accepted pages.
     if let Some(acceptor) = &acceptor {
         tracing::debug!("Making shared pool pages shared");
+
         for range in params.shared_pool {
+            // On VBS, we need to accept the pages first before we move them to
+            // shared.
+            if params.isolation == IsolationType::Vbs {
+                acceptor
+                    .accept_lower_vtl_pages(range.range)
+                    .context("unable to accept shared pool pages")?;
+            }
+
             acceptor
                 .modify_gpa_visibility(
                     hvdef::hypercall::HostVisibilityType::SHARED,
