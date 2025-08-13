@@ -34,6 +34,8 @@ use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::PciFaultBehavior;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
+use pci_core::capabilities::pci_express::FlrHandler;
+use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
@@ -48,6 +50,32 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
+
+/// FLR handler that signals reset requests.
+#[derive(Inspect)]
+struct NvmeFlrHandler {
+    #[inspect(skip)]
+    reset_requested: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl NvmeFlrHandler {
+    fn new() -> (Self, Arc<std::sync::atomic::AtomicBool>) {
+        let reset_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        (
+            Self {
+                reset_requested: reset_requested.clone(),
+            },
+            reset_requested,
+        )
+    }
+}
+
+impl FlrHandler for NvmeFlrHandler {
+    fn initiate_flr(&self) {
+        self.reset_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// An NVMe controller.
 #[derive(InspectMut)]
@@ -107,6 +135,8 @@ pub struct NvmeFaultControllerCaps {
     /// The subsystem ID, used as part of the subnqn field of the identify
     /// controller response.
     pub subsystem_id: Guid,
+    /// Whether to advertise Function Level Reset (FLR) support.
+    pub flr_support: bool,
 }
 
 impl NvmeFaultController {
@@ -130,6 +160,20 @@ impl NvmeFaultController {
                 BarMemoryKind::Intercept(register_mmio.new_io_region("msix", msix.bar_len())),
             );
 
+        // Prepare capabilities list
+        let mut capabilities: Vec<Box<dyn pci_core::capabilities::PciCapability>> =
+            vec![Box::new(msix_cap)];
+
+        // Optionally add PCI Express capability with FLR support
+        let flr_reset_requested = if caps.flr_support {
+            let (flr_handler, reset_requested) = NvmeFlrHandler::new();
+            let pcie_cap = PciExpressCapability::new(true, Some(Arc::new(flr_handler)));
+            capabilities.push(Box::new(pcie_cap));
+            Some(reset_requested)
+        } else {
+            None
+        };
+
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
@@ -141,7 +185,7 @@ impl NvmeFaultController {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            vec![Box::new(msix_cap)],
+            capabilities,
             bars,
         );
 
@@ -408,6 +452,18 @@ impl NvmeFaultController {
     }
 
     fn get_csts(&mut self) -> u32 {
+        // Check for FLR requests
+        if let Some(flr_requested) = &self.flr_reset_requested {
+            if flr_requested.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                // FLR was requested, initiate controller reset
+                self.workers.controller_reset();
+                // Reset configuration space and registers to default state
+                self.registers = RegState::new();
+                self.cfg_space.reset();
+                *self.qe_sizes.lock() = Default::default();
+            }
+        }
+
         if !self.registers.cc.en() && self.registers.csts.rdy() {
             // Keep trying to disable.
             if self.workers.poll_controller_reset() {
@@ -452,6 +508,11 @@ impl ChangeDeviceState for NvmeFaultController {
         cfg_space.reset();
         *registers = RegState::new();
         *qe_sizes.lock() = Default::default();
+
+        // Clear any pending FLR requests
+        if let Some(flr_requested) = flr_reset_requested {
+            flr_requested.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 }
 

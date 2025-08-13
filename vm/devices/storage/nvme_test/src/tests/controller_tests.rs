@@ -51,6 +51,7 @@ fn instantiate_controller(
             msix_count: 64,
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
+            flr_support: false, // TODO: Add tests with flr support.
         },
         fault_configuration,
     );
