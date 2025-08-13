@@ -438,10 +438,10 @@ pub mod caps {
         #[bitfield(u16)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct DeviceControl {
-            pub correctable_error_enable: bool,
-            pub non_fatal_error_enable: bool,
-            pub fatal_error_enable: bool,
-            pub unsupported_request_enable: bool,
+            pub correctable_error_reporting_enable: bool,
+            pub non_fatal_error_reporting_enable: bool,
+            pub fatal_error_reporting_enable: bool,
+            pub unsupported_request_reporting_enable: bool,
             pub enable_relaxed_ordering: bool,
             #[bits(3)]
             pub max_payload_size: u16,
@@ -451,7 +451,7 @@ pub mod caps {
             pub enable_no_snoop: bool,
             #[bits(3)]
             pub max_read_request_size: u16,
-            pub initiate_function_level_reset: bool, // This bit triggers FLR
+            pub initiate_function_level_reset: bool,
         }
 
         /// Device Status Register  
