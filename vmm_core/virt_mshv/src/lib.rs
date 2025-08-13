@@ -1321,8 +1321,21 @@ fn hvu128_to_u128(r: &hv_u128) -> u128 {
 
 fn u128_to_hvu128(value: u128) -> hv_u128 {
     hv_u128 {
-        high_part: (value & (u64::MAX as u128)) as u64,
-        low_part: (value >> 64) as u64,
+        high_part: (value >> 64) as u64,
+        low_part: (value & (u64::MAX as u128)) as u64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn u128_roundtrip() {
+        let original = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
+        let hv = u128_to_hvu128(original);
+        let roundtrip = hvu128_to_u128(&hv);
+        assert_eq!(roundtrip, original);
     }
 }
 
