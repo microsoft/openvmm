@@ -657,15 +657,15 @@ impl ProxyTask {
         match request {
             ChannelRequest::Open(rpc) => {
                 rpc.handle(async |open_request| {
-                    if let Err(err) = self.handle_open(proxy_id, &open_request).await {
-                        tracing::error!(
-                            error = err.as_ref() as &dyn std::error::Error,
-                            "failed to open channel"
-                        );
-                        false
-                    } else {
-                        true
-                    }
+                    self.handle_open(proxy_id, &open_request)
+                        .await
+                        .inspect_err(|err| {
+                            tracing::error!(
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "failed to open channel"
+                            );
+                        })
+                        .is_ok()
                 })
                 .await
             }

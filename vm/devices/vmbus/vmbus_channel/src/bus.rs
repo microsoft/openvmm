@@ -122,7 +122,7 @@ pub enum ModifyRequest {
 pub enum ChannelServerRequest {
     /// A request to restore the channel.
     ///
-    /// The input parameter provides the open result if the channel was saved open.
+    /// The input parameter indicates if the channel was saved open.
     Restore(FailableRpc<bool, RestoreResult>),
     /// A request to revoke the channel.
     ///

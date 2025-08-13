@@ -596,15 +596,16 @@ impl Device {
         assert!(!self.open[channel_idx]);
         // N.B. Any asynchronous GPADL requests will block while in
         //      open(). This should be fine for all known devices.
-        let opened = if let Err(error) = channel.open(channel_idx as u16, &open_request).await {
-            tracelimit::error_ratelimited!(
-                error = error.as_ref() as &dyn std::error::Error,
-                "failed to open channel"
-            );
-            true
-        } else {
-            false
-        };
+        let opened = channel
+            .open(channel_idx as u16, &open_request)
+            .await
+            .inspect_err(|error| {
+                tracelimit::error_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to open channel"
+                );
+            })
+            .is_ok();
         self.open[channel_idx] = opened;
         opened
     }

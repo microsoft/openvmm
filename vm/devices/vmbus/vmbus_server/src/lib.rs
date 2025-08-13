@@ -1698,6 +1698,9 @@ impl ServerTaskInner {
             );
         }
         // Always set up an event port; if V1, this will be unused.
+        // N.B. The event port must be created before the device is notified of the open by the
+        //      caller. The device may begin communicating with the guest immediately when it is
+        //      notified, so the event port must exist so that the guest can send interrupts.
         let event_port = self
             .synic
             .add_event_port(
@@ -1758,70 +1761,6 @@ impl ServerTaskInner {
         }));
         Ok((channel, interrupt))
     }
-
-    // fn complete_open(
-    //     &mut self,
-    //     offer_id: OfferId,
-    //     result: Option<OpenResult>,
-    // ) -> anyhow::Result<&mut Channel> {
-    //     let channel = self
-    //         .channels
-    //         .get_mut(&offer_id)
-    //         .expect("channel does not exist");
-
-    //     channel.state = if let Some(result) = result {
-    //         // The channel will be left in the FailedOpen state only if an error occurs in the match
-    //         // arm.
-    //         match std::mem::replace(&mut channel.state, ChannelState::FailedOpen) {
-    //             ChannelState::Opening {
-    //                 open_params,
-    //                 guest_event_port,
-    //                 host_to_guest_interrupt,
-    //             } => {
-    //                 let guest_to_host_event =
-    //                     Arc::new(ChannelEvent(result.guest_to_host_interrupt));
-    //                 // Always register with the channel bitmap; if Win7, this may be unnecessary.
-    //                 if let Some(channel_bitmap) = self.channel_bitmap.as_ref() {
-    //                     channel_bitmap.register_channel(
-    //                         open_params.event_flag,
-    //                         guest_to_host_event.0.clone(),
-    //                     );
-    //                 }
-    //                 // Always set up an event port; if V1, this will be unused.
-    //                 let event_port = self
-    //                     .synic
-    //                     .add_event_port(
-    //                         open_params.connection_id,
-    //                         self.vtl,
-    //                         guest_to_host_event.clone(),
-    //                         open_params.monitor_info,
-    //                     )
-    //                     .with_context(|| {
-    //                         format!(
-    //                             "failed to create event port for VTL {:?}, connection ID {:#x}",
-    //                             self.vtl, open_params.connection_id
-    //                         )
-    //                     })?;
-
-    //                 ChannelState::Open {
-    //                     open_params,
-    //                     _event_port: event_port,
-    //                     guest_event_port,
-    //                     host_to_guest_interrupt,
-    //                     guest_to_host_event,
-    //                 }
-    //             }
-    //             s => {
-    //                 tracing::error!("attempting to complete open of open or closed channel");
-    //                 // Restore the original state
-    //                 s
-    //             }
-    //         }
-    //     } else {
-    //         ChannelState::Closed
-    //     };
-    //     Ok(channel)
-    // }
 
     /// If the client specified an interrupt page, map it into host memory and
     /// set up the shared event port.
