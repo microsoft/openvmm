@@ -1701,12 +1701,15 @@ impl ServerTaskInner {
         // N.B. The event port must be created before the device is notified of the open by the
         //      caller. The device may begin communicating with the guest immediately when it is
         //      notified, so the event port must exist so that the guest can send interrupts.
-        let event_port = self.synic.add_event_port(
-            open_params.connection_id,
-            self.vtl,
-            channel.guest_to_host_event.clone(),
-            open_params.monitor_info,
-        )?;
+        let event_port = self
+            .synic
+            .add_event_port(
+                open_params.connection_id,
+                self.vtl,
+                channel.guest_to_host_event.clone(),
+                open_params.monitor_info,
+            )
+            .context("failed to create guest-to-host event port")?;
 
         // For pre-Win8 guests, the host-to-guest event always targets vp 0 and the channel
         // bitmap is used instead of the event flag.
