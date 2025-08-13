@@ -226,16 +226,29 @@ impl ProxyTask {
         recv
     }
 
-    fn check_ioctl_result(result: windows::core::Result<()>, op: &str, proxy_id: u64) {
-        if let Err(err) = result {
+    /// Determines if the ioctl was successful or an expected error.
+    ///
+    /// The only error this function will actually return is ERROR_NOT_FOUND, which callers can
+    /// ignore if they do not need to behave differently.
+    ///
+    /// It panics on all other errors.
+    fn check_ioctl_result(
+        result: windows::core::Result<()>,
+        op: &str,
+        proxy_id: u64,
+    ) -> windows::core::Result<()> {
+        result.inspect_err(|err| {
+            // Due to various operations racing with revoke, calls into the proxy driver may
+            // fail with ERROR_NOT_FOUND if the channel no longer exists. Other error codes indicate
+            // the driver and server are out of sync and can likely not be recovered from.
             assert!(err.code() == ERROR_NOT_FOUND.into());
             tracing::info!(
-                error = &err as &dyn std::error::Error,
+                error = err as &dyn std::error::Error,
                 op,
                 proxy_id,
                 "channel not found during ioctl (possibly revoked)"
             );
-        }
+        })
     }
 
     async fn handle_open(&self, proxy_id: u64, open_request: &OpenRequest) -> anyhow::Result<()> {
@@ -257,35 +270,30 @@ impl ProxyTask {
             .context("failed to open channel")?;
 
         let mut channels = self.channels.lock();
-        if let Some(channel) = channels.get_mut(&proxy_id) {
-            let recv = self.create_worker_thread(proxy_id);
-            channel.worker_result = Some(recv);
-            channel.wrapped_event = maybe_wrapped.into_wrapped();
-            tracing::trace!(proxy_id, "opening channel done");
-            Ok(())
-        } else {
-            tracing::trace!(proxy_id, "opening channel done");
-            Err(anyhow::anyhow!("channel revoked during open"))
-        }
+        let channel = channels
+            .get_mut(&proxy_id)
+            .ok_or_else(|| anyhow::anyhow!("channel revoked during open"))?;
+
+        let recv = self.create_worker_thread(proxy_id);
+        channel.worker_result = Some(recv);
+        channel.wrapped_event = maybe_wrapped.into_wrapped();
+        Ok(())
     }
 
     async fn handle_close(&self, proxy_id: u64) {
-        tracing::trace!(proxy_id, "closing channel");
-        Self::check_ioctl_result(self.proxy.close(proxy_id).await, "close", proxy_id);
+        let _ = Self::check_ioctl_result(self.proxy.close(proxy_id).await, "close", proxy_id);
 
         // Wait for the worker task.
-        let recv = self.channels.lock().get_mut(&proxy_id).map(|channel| {
-            channel
-                .worker_result
-                .take()
-                .expect("channel should be open")
-        });
+        // N.B. The channel may have been revoked.
+        let recv = self
+            .channels
+            .lock()
+            .get_mut(&proxy_id)
+            .and_then(|channel| channel.worker_result.take());
 
         if let Some(recv) = recv {
             let _ = recv.await;
         }
-
-        tracing::trace!(proxy_id, "closing channel done");
     }
 
     async fn handle_gpadl_create(
@@ -295,47 +303,35 @@ impl ProxyTask {
         count: u16,
         buf: &[u64],
     ) -> anyhow::Result<()> {
-        tracing::trace!(proxy_id, "gpadl create");
         Self::check_ioctl_result(
             self.proxy
                 .create_gpadl(proxy_id, gpadl_id.0, count.into(), buf.as_bytes())
                 .await,
             "create_gpadl",
             proxy_id,
-        );
+        )
+        .context("failed to create gpadl")?;
 
         self.gpadls
             .lock()
             .entry(proxy_id)
             .or_default()
             .insert(gpadl_id);
-
-        tracing::trace!(proxy_id, "gpadl create done");
         Ok(())
     }
 
     async fn handle_gpadl_teardown(&self, proxy_id: u64, gpadl_id: GpadlId) {
-        tracing::trace!(proxy_id, "gpadl teardown");
-        {
-            let mut gpadls = self.gpadls.lock();
-            let Some(channel) = gpadls.get_mut(&proxy_id) else {
-                tracing::info!(
-                    proxy_id,
-                    ?gpadl_id,
-                    "channel gpadls not found (possibly revoked)"
-                );
-                return;
-            };
-            assert!(channel.remove(&gpadl_id), "gpadl is registered");
+        if let Some(gpadls) = self.gpadls.lock().get_mut(&proxy_id) {
+            assert!(gpadls.remove(&gpadl_id), "gpadl is registered");
+        } else {
+            return;
         }
 
-        Self::check_ioctl_result(
+        let _ = Self::check_ioctl_result(
             self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await,
             "delete_gpadl",
             proxy_id,
         );
-
-        tracing::trace!(proxy_id, "gpadl teardown done");
     }
 
     async fn restore_channel_on_offer(
@@ -539,7 +535,6 @@ impl ProxyTask {
     }
 
     async fn handle_revoke(&self, proxy_id: u64) {
-        tracing::trace!(proxy_id, "revoke channel");
         let server_request_send = self
             .channels
             .lock()
