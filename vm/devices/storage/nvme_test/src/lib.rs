@@ -22,6 +22,7 @@ pub use workers::NvmeFaultControllerClient;
 
 use guestmem::ranges::PagedRange;
 use nvme_spec as spec;
+use std::sync::Arc;
 use workers::NsidConflict;
 
 // Device configuration shared by PCI and NVMe.
@@ -68,7 +69,8 @@ pub trait QueueFault {
 }
 
 /// Configuration for NVMe controller faults.
+#[derive(Clone)]
 pub struct FaultConfiguration {
     /// Fault to apply to the admin queues
-    pub admin_fault: Option<Box<dyn QueueFault + Send + Sync>>,
+    pub admin_fault: Option<Arc<Box<dyn QueueFault + Send + Sync>>>,
 }

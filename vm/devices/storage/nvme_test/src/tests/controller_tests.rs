@@ -24,6 +24,7 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::test_helpers::TestPciInterruptController;
+use std::sync::Arc;
 use user_driver::backoff::Backoff;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -378,7 +379,7 @@ impl QueueFault for TestAdminSQFault {
 #[async_test]
 async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
-        admin_fault: Some(Box::new(TestAdminSQFault)),
+        admin_fault: Some(Arc::new(Box::new(TestAdminSQFault))),
     };
     let cqe = send_identify(driver, fault_configuration).await;
 
@@ -413,7 +414,7 @@ impl QueueFault for TestAdminCQFault {
 #[async_test]
 async fn test_cq_fault(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
-        admin_fault: Some(Box::new(TestAdminCQFault)),
+        admin_fault: Some(Arc::new(Box::new(TestAdminCQFault))),
     };
     let cqe = send_identify(driver, fault_configuration).await;
     assert_eq!(cqe.status.status(), spec::Status::INVALID_FORMAT.0); // Status should be overwritten by the fault.
