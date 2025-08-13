@@ -687,8 +687,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 Err(HvError::InvalidParameter)
             }
         }
-
-        // TODO GUEST VSM: interrupt rewinding
     }
 
     fn set_vtl0_pending_event(&mut self, event: HvX64PendingExceptionEvent) -> HvResult<()> {
@@ -1977,15 +1975,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // Currently, the only pending event that needs to be delivered on exit
         // are those that VTL 1 injects into VTL 0.
         if next_vtl == GuestVtl::Vtl0 {
-            // TODO GUEST VSM: rewind interrupts injected by the apic. This
-            // might mean keeping track of whether an event was injected by the
-            // apic, injected directly (as a result of emulation or in response
-            // to the pending event register being set), or e.g. in the case of
-            // SNP, if it came in through EXTINTINFO. The latter two should not
-            // be rewound.
-            //
-            // TODO GUEST VSM: Memory intercept handling.
-
             let pending_event = self
                 .backing
                 .cvm_state()

@@ -72,6 +72,7 @@ mod pipe_protocol {
 mod protocol {
     use crate::CONTROL_WORD_COUNT;
     use inspect::Inspect;
+    use safeatomic::AtomicSliceOps;
     use std::fmt::Debug;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
@@ -97,7 +98,14 @@ mod protocol {
     /// A control page accessor.
     pub struct Control<'a>(pub &'a [AtomicU32; CONTROL_WORD_COUNT]);
 
-    impl Control<'_> {
+    impl<'a> Control<'a> {
+        pub fn from_page(page: &'a guestmem::Page) -> Option<Self> {
+            let slice = page.as_atomic_slice()?[..CONTROL_WORD_COUNT]
+                .try_into()
+                .unwrap();
+            Some(Self(slice))
+        }
+
         pub fn inp(&self) -> &AtomicU32 {
             &self.0[0]
         }
@@ -1208,18 +1216,14 @@ impl<M: RingMem> Inspect for InnerRing<M> {
 ///
 /// Panics if control_page is not aligned.
 pub fn inspect_ring(control_page: &guestmem::Page, response: &mut inspect::Response<'_>) {
-    let control = control_page.as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
-        .try_into()
-        .unwrap();
-
-    response.field("control", Control(control));
+    let control = Control::from_page(control_page).expect("control page is not aligned");
+    response.field("control", control);
 }
 
 /// Returns whether a ring buffer is in a state where the receiving end might
 /// need a signal.
-pub fn reader_needs_signal<M: RingMem>(mem: M) -> bool {
-    InnerRing::new(mem).is_ok_and(|ring| {
-        let control = ring.control();
+pub fn reader_needs_signal(control_page: &guestmem::Page) -> bool {
+    Control::from_page(control_page).is_some_and(|control| {
         control.interrupt_mask().load(Ordering::Relaxed) == 0
             && (control.inp().load(Ordering::Relaxed) != control.outp().load(Ordering::Relaxed))
     })
@@ -1227,12 +1231,12 @@ pub fn reader_needs_signal<M: RingMem>(mem: M) -> bool {
 
 /// Returns whether a ring buffer is in a state where the sending end might need
 /// a signal.
-pub fn writer_needs_signal<M: RingMem>(mem: M) -> bool {
-    InnerRing::new(mem).is_ok_and(|ring| {
-        let control = ring.control();
+pub fn writer_needs_signal(control_page: &guestmem::Page, ring_size: u32) -> bool {
+    Control::from_page(control_page).is_some_and(|control| {
         let pending_size = control.pending_send_size().load(Ordering::Relaxed);
         pending_size != 0
-            && ring.free(
+            && ring_free(
+                ring_size,
                 control.inp().load(Ordering::Relaxed),
                 control.outp().load(Ordering::Relaxed),
             ) >= pending_size
@@ -1298,16 +1302,20 @@ impl<M: RingMem> InnerRing<M> {
     }
 
     fn free(&self, inp: u32, outp: u32) -> u32 {
-        // It's not possible to fully fill the ring since that state would be
-        // indistinguishable from the empty ring. So subtract 8 bytes from the
-        // result.
-        if outp > inp {
-            // |....inp____outp.....|
-            outp - inp - 8
-        } else {
-            // |____outp....inp_____|
-            self.size - (inp - outp) - 8
-        }
+        ring_free(self.size, inp, outp)
+    }
+}
+
+fn ring_free(size: u32, inp: u32, outp: u32) -> u32 {
+    // It's not possible to fully fill the ring since that state would be
+    // indistinguishable from the empty ring. So subtract 8 bytes from the
+    // result.
+    if outp > inp {
+        // |....inp____outp.....|
+        outp - inp - 8
+    } else {
+        // |____outp....inp_____|
+        size - (inp - outp) - 8
     }
 }
 

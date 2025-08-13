@@ -1442,9 +1442,6 @@ impl UhProcessor<'_, SnpBacked> {
                     HvMessageType::HvMessageTypeUnmappedGpa
                     | HvMessageType::HvMessageTypeGpaIntercept
                     | HvMessageType::HvMessageTypeUnacceptedGpa => {
-                        // TODO GUEST VSM:
-                        // - determine whether the intercept message should be delivered to VTL 1
-                        // - determine whether emulation is appropriate for this gpa
                         let gpa_message =
                             exit_message.as_message::<hvdef::HvX64MemoryInterceptMessage>();
 
