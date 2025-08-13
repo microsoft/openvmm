@@ -395,14 +395,10 @@ pub mod caps {
             /// | Cap + 0x0 | PCI Express Capabilities Register | Next Pointer     | Capability ID (0x10) |
             /// | Cap + 0x4 | Device Capabilities Register                                                  |
             /// | Cap + 0x8 | Device Status    | Device Control                                            |
-            /// | Cap + 0xC | Link Capabilities Register                                                    |
-            /// | Cap + 0x10| Link Status      | Link Control                                              |
             pub enum PciExpressCapabilityHeader: u16 {
                 PCIE_CAPS       = 0x00,
                 DEVICE_CAPS     = 0x04,
                 DEVICE_CTL_STS  = 0x08,
-                LINK_CAPS       = 0x0C,
-                LINK_CTL_STS    = 0x10,
             }
         }
 
