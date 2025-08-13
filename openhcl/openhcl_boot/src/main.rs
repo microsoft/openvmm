@@ -1032,6 +1032,7 @@ mod test {
             },
             com3_serial_available: false,
             gic: None,
+            pmu_gsiv: None,
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,

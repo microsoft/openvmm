@@ -356,7 +356,6 @@ impl PetriVmInner {
     async fn wait_for_enlightened_shutdown_ready(
         &mut self,
     ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
-        tracing::info!("Waiting for shutdown ic ready");
         let recv = self
             .resources
             .shutdown_ic_send
@@ -367,7 +366,6 @@ impl PetriVmInner {
     }
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
-        tracing::info!("Sending shutdown command");
         let shutdown_result = self
             .resources
             .shutdown_ic_send

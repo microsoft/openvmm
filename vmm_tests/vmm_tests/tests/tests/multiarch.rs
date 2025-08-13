@@ -77,6 +77,43 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     Ok(())
 }
 
+// Basic vp "heavy" boot test with 16 VPs.
+#[vmm_test(
+    openvmm_linux_direct_x64,
+    openvmm_openhcl_linux_direct_x64,
+    openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let is_openhcl = config.is_openhcl();
+    let (vm, agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 16,
+            ..Default::default()
+        })
+        // multiarch::openvmm_uefi_x64_windows_datacenter_core_2022_x64_boot_heavy
+        // fails with 4GB of RAM (the default), and openhcl tests fail with 1GB.
+        .with_memory(MemoryConfig {
+            startup_bytes: if is_openhcl { 4 * SIZE_1_GB } else { SIZE_1_GB },
+            ..Default::default()
+        })
+        .run()
+        .await?;
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Basic boot test with secure boot enabled and a valid template.
 #[vmm_test(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
@@ -387,39 +424,16 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
 
 // Basic vp "heavy" boot test without agent with 16 VPs.
 #[vmm_test_no_agent(
-    openvmm_linux_direct_x64,
-    openvmm_openhcl_linux_direct_x64,
-    openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
-    openvmm_pcat_x64(iso(freebsd_13_2_x64)),
-    openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
 async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let is_openhcl = config.is_openhcl();
     let mut vm = config
         .with_processor_topology(ProcessorTopology {
             vp_count: 16,
-            ..Default::default()
-        })
-        // multiarch::openvmm_uefi_x64_windows_datacenter_core_2022_x64_boot_no_agent_heavy
-        // fails with 4GB of RAM (the default), and openhcl tests fail with 1GB.
-        .with_memory(MemoryConfig {
-            startup_bytes: if is_openhcl { 4 * SIZE_1_GB } else { SIZE_1_GB },
             ..Default::default()
         })
         .run_without_agent()

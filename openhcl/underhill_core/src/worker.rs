@@ -41,9 +41,10 @@ use crate::emuplat::watchdog::UnderhillWatchdogPlatform;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
-use crate::nvme_manager::NvmeDiskConfig;
-use crate::nvme_manager::NvmeDiskResolver;
-use crate::nvme_manager::NvmeManager;
+use crate::nvme_manager::device::VfioNvmeDriverSpawner;
+use crate::nvme_manager::manager::NvmeDiskConfig;
+use crate::nvme_manager::manager::NvmeDiskResolver;
+use crate::nvme_manager::manager::NvmeManager;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -251,6 +252,8 @@ pub struct UnderhillEnvCfg {
     pub vmbus_enable_mnf: Option<bool>,
     /// Force the use of confidential external memory for all non-relay vmbus channels.
     pub vmbus_force_confidential_external_memory: bool,
+    /// Delay before unsticking a vmbus channel after it has been opened.
+    pub vmbus_channel_unstick_delay: Option<Duration>,
     /// Command line to append to VTL0 command line. Only used for linux direct.
     pub cmdline_append: Option<String>,
     /// (dev feature) Reformat VMGS file on boot
@@ -1066,7 +1069,7 @@ fn build_vtl0_memory_layout(
         vtl0_ram = vtl0_memory_layout
             .ram()
             .iter()
-            .map(|r| r.range.to_string())
+            .map(|r| r.to_string())
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 ram"
@@ -1081,6 +1084,16 @@ fn build_vtl0_memory_layout(
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 mmio"
+    );
+
+    tracing::info!(
+        CVM_ALLOWED,
+        shared_pool = shared_pool
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
+        "shared pool",
     );
 
     Ok(BuiltVtl0MemoryLayout {
@@ -1346,19 +1359,14 @@ async fn new_underhill_vm(
 
     #[cfg(guest_arch = "aarch64")]
     let processor_topology = {
-        // TODO: Hyper-V does not yet support reporting the PMU GSIV via device
-        // tree. For now, since OpenHCL is only supported on Hyper-V on aarch64,
-        // assume the value is the Hyper-V default.
-        //
-        // This value should instead come from openhcl_boot via device tree, as
-        // we may want to even use the PMU within OpenHCL itself.
-        const HYPERV_PMU_GSIV: u32 = 0x17;
         new_aarch64_topology(
             boot_info
                 .gic
                 .context("did not get gic state from bootloader")?,
             &boot_info.cpus,
-            HYPERV_PMU_GSIV,
+            boot_info
+                .pmu_gsiv
+                .context("did not get pmu gsiv from bootloader")?,
         )
         .context("failed to construct the processor topology")?
     };
@@ -1551,16 +1559,17 @@ async fn new_underhill_vm(
     // Perform a quick validation to make sure each range is appropriately accessible.
     tracing::info!("starting guest memory self test");
     for range in mem_layout.ram() {
-        let gpa = range.range.start();
-        // Standard RAM is accessible.
-        highest_vtl_gm
-            .read_plain::<u8>(gpa)
-            .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
+        for gpa in [range.range.start(), range.range.end() - 1] {
+            // Standard RAM is accessible.
+            highest_vtl_gm
+                .read_plain::<u8>(gpa)
+                .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
 
-        // It is not initially accessible above VTOM.
-        if let Some(vtom) = vtom {
-            if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
-                anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+            // It is not initially accessible above VTOM.
+            if let Some(vtom) = vtom {
+                if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
+                    anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+                }
             }
         }
     }
@@ -1891,10 +1900,12 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             save_restore_supported,
-            env_cfg.nvme_always_flr,
-            isolation.is_isolated(),
             servicing_state.nvme_state.unwrap_or(None),
-            dma_manager.client_spawner(),
+            Arc::new(VfioNvmeDriverSpawner {
+                nvme_always_flr: env_cfg.nvme_always_flr,
+                is_isolated: isolation.is_isolated(),
+                dma_client_spawner: dma_manager.client_spawner(),
+            }),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
@@ -2723,18 +2734,22 @@ async fn new_underhill_vm(
 
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
-        let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
-            .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
-            .hvsock_notify(hvsock_notify)
-            .server_relay(server_relay)
-            .max_version(max_version)
-            .delay_max_version(delay_max_version)
-            .enable_mnf(enable_mnf)
-            .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
-            // For saved-state compat with release/2411.
-            .send_messages_while_stopped(true)
-            .build()
-            .context("failed to create vmbus server")?;
+        let vmbus =
+            VmbusServer::builder(driver_source.simple(), synic.clone(), device_memory.clone())
+                .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
+                .hvsock_notify(hvsock_notify)
+                .server_relay(server_relay)
+                .max_version(max_version)
+                .delay_max_version(delay_max_version)
+                .enable_mnf(enable_mnf)
+                .force_confidential_external_memory(
+                    env_cfg.vmbus_force_confidential_external_memory,
+                )
+                .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
+                // For saved-state compat with release/2411.
+                .send_messages_while_stopped(true)
+                .build()
+                .context("failed to create vmbus server")?;
 
         let vmbus = VmbusServerHandle::new(&tp, state_units.add("vmbus"), vmbus)?;
         if let Some((relay_channel, hvsock_relay)) = relay_channels {
