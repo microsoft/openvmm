@@ -4,7 +4,7 @@
 //! Support for Windows job objects.
 
 use std::io;
-use std::mem::zeroed;
+use std::mem::MaybeUninit;
 use std::os::windows::io::AsHandle;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::BorrowedHandle;
@@ -32,15 +32,22 @@ impl Job {
     /// Sets the job to terminate all attached processes when the last handle to
     /// the job is closed.
     pub fn set_terminate_on_close(&self) -> io::Result<()> {
-        // SAFETY: It is safe to initialize this C structure using `zeroed`.
+        // SAFETY: It is safe to initialize this C structure using MaybeUninit with zero initialization.
         let mut info = unsafe {
-            winapi::um::winnt::JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-                BasicLimitInformation: winapi::um::winnt::JOBOBJECT_BASIC_LIMIT_INFORMATION {
-                    LimitFlags: winapi::um::winnt::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                    ..zeroed()
-                },
-                ..zeroed()
-            }
+            let mut basic_limit_info = {
+                let mut basic_limit_info =
+                    MaybeUninit::<winapi::um::winnt::JOBOBJECT_BASIC_LIMIT_INFORMATION>::uninit();
+                std::ptr::write_bytes(basic_limit_info.as_mut_ptr(), 0, 1);
+                let mut basic_limit_info = basic_limit_info.assume_init();
+                basic_limit_info.LimitFlags = winapi::um::winnt::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                basic_limit_info
+            };
+            let mut extended_limit_info =
+                MaybeUninit::<winapi::um::winnt::JOBOBJECT_EXTENDED_LIMIT_INFORMATION>::uninit();
+            std::ptr::write_bytes(extended_limit_info.as_mut_ptr(), 0, 1);
+            let mut extended_limit_info = extended_limit_info.assume_init();
+            extended_limit_info.BasicLimitInformation = basic_limit_info;
+            extended_limit_info
         };
         // SAFETY: `SetInformationJobObject` is safe to call with a valid handle.
         let r = unsafe {

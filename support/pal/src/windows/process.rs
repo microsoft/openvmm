@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io;
-use std::mem::zeroed;
+use std::mem::MaybeUninit;
 use std::os::windows::prelude::*;
 use std::ptr::null;
 use std::ptr::null_mut;
@@ -828,15 +828,20 @@ impl<'a> Builder<'a> {
             let stdout = self.stdout.eval(STD_OUTPUT_HANDLE)?;
             let stderr = self.stderr.eval(STD_ERROR_HANDLE)?;
 
+            let startup_info_base = {
+                let mut startup_info_base = MaybeUninit::<STARTUPINFOW>::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                unsafe { std::ptr::write_bytes(startup_info_base.as_mut_ptr(), 0, 1) };
+                let mut startup_info_base = unsafe { startup_info_base.assume_init() };
+                startup_info_base.cb = size_of::<STARTUPINFOEXW>() as u32;
+                startup_info_base.dwFlags = STARTF_USESTDHANDLES;
+                startup_info_base.hStdInput = stdin.as_raw_handle();
+                startup_info_base.hStdOutput = stdout.as_raw_handle();
+                startup_info_base.hStdError = stderr.as_raw_handle();
+                startup_info_base
+            };
             let mut startup_info = STARTUPINFOEXW {
-                StartupInfo: STARTUPINFOW {
-                    cb: size_of::<STARTUPINFOEXW>() as u32,
-                    dwFlags: STARTF_USESTDHANDLES,
-                    hStdInput: stdin.as_raw_handle(),
-                    hStdOutput: stdout.as_raw_handle(),
-                    hStdError: stderr.as_raw_handle(),
-                    ..zeroed()
-                },
+                StartupInfo: startup_info_base,
                 lpAttributeList: list.as_ptr(),
             };
 
@@ -930,7 +935,12 @@ impl<'a> Builder<'a> {
             // The command line buffer must be mutable, so convert it back into a Vec.
             let mut command_line = null_terminate(self.command_line)?.into_vec_with_nul();
 
-            let mut process_info = zeroed();
+            let mut process_info = {
+                let mut process_info = MaybeUninit::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                unsafe { std::ptr::write_bytes(process_info.as_mut_ptr(), 0, 1) };
+                unsafe { process_info.assume_init() }
+            };
             if CreateProcessAsUserW(
                 self.token.map(|h| h.as_raw_handle()).unwrap_or(null_mut()),
                 ptr_or_null(&application_name),

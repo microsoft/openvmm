@@ -33,7 +33,7 @@ use ntioapi::NtOpenFile;
 use pal_event::Event;
 use std::fs::File;
 use std::io;
-use std::mem::zeroed;
+use std::mem::MaybeUninit;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::null_mut;
@@ -81,7 +81,12 @@ fn open_pipe_driver() -> io::Result<OwnedHandle> {
         SecurityQualityOfService: null_mut(),
     };
     unsafe {
-        let mut iosb = zeroed();
+        let mut iosb = {
+            let mut iosb = MaybeUninit::uninit();
+            // SAFETY: Initialize the structure by zeroing it first
+            std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+            iosb.assume_init()
+        };
         let mut handle = null_mut();
         chk_status(NtOpenFile(
             &mut handle,
@@ -176,7 +181,12 @@ fn create_named_pipe(
 
         let mut timeout: i64 = -120 * 10 * 1000 * 1000;
         let mut handle = null_mut();
-        let mut iosb = zeroed();
+        let mut iosb = {
+            let mut iosb = MaybeUninit::uninit();
+            // SAFETY: Initialize the structure by zeroing it first
+            std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+            iosb.assume_init()
+        };
         chk_status(NtCreateNamedPipeFile(
             &mut handle,
             access | SYNCHRONIZE,
@@ -220,7 +230,12 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
             message_mode,
         )?;
 
-        let mut empty_name = zeroed();
+        let mut empty_name = {
+            let mut empty_name = MaybeUninit::<UnicodeString>::uninit();
+            // SAFETY: Initialize the structure by zeroing it first
+            std::ptr::write_bytes(empty_name.as_mut_ptr(), 0, 1);
+            empty_name.assume_init()
+        };
         let mut oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
             RootDirectory: read_pipe.as_raw_handle(),
@@ -229,7 +244,12 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
             SecurityDescriptor: null_mut(),
             SecurityQualityOfService: null_mut(),
         };
-        let mut iosb = zeroed();
+        let mut iosb = {
+            let mut iosb = MaybeUninit::uninit();
+            // SAFETY: Initialize the structure by zeroing it first
+            std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+            iosb.assume_init()
+        };
         let mut write_pipe_handle = null_mut();
         chk_status(NtOpenFile(
             &mut write_pipe_handle,
@@ -313,7 +333,12 @@ impl PipeExt for File {
             event_handle: event.as_handle().as_raw_handle() as usize as u64,
         };
         unsafe {
-            let mut iosb = zeroed();
+            let mut iosb = {
+                let mut iosb = MaybeUninit::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+                iosb.assume_init()
+            };
             let mut status = !0;
             // Newer versions of Windows support FSCTL_PIPE_EVENT_SELECT, which
             // works on unidirectional pipes. Older versions require
@@ -346,7 +371,12 @@ impl PipeExt for File {
         unsafe {
             let mut handle_to_reset: u64 = 0;
             let mut events: u32 = 0;
-            let mut iosb = zeroed();
+            let mut iosb = {
+                let mut iosb = MaybeUninit::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+                iosb.assume_init()
+            };
             chk_status(NtFsControlFile(
                 self.as_raw_handle(),
                 null_mut(),
@@ -366,8 +396,18 @@ impl PipeExt for File {
     fn is_pipe_connected(&self) -> io::Result<bool> {
         // SAFETY: calling with appropriately sized buffer.
         let info = unsafe {
-            let mut iosb = zeroed();
-            let mut info: FILE_PIPE_LOCAL_INFORMATION = zeroed();
+            let mut iosb = {
+                let mut iosb = MaybeUninit::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                std::ptr::write_bytes(iosb.as_mut_ptr(), 0, 1);
+                iosb.assume_init()
+            };
+            let mut info: FILE_PIPE_LOCAL_INFORMATION = {
+                let mut info = MaybeUninit::<FILE_PIPE_LOCAL_INFORMATION>::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                std::ptr::write_bytes(info.as_mut_ptr(), 0, 1);
+                info.assume_init()
+            };
             chk_status(NtQueryInformationFile(
                 self.as_raw_handle(),
                 &mut iosb,

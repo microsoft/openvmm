@@ -43,7 +43,7 @@ use std::io;
 use std::io::Error;
 use std::io::Result;
 use std::marker::PhantomData;
-use std::mem::zeroed;
+use std::mem::MaybeUninit;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::NonNull;
@@ -501,7 +501,12 @@ impl UnicodeString {
     }
 
     pub fn empty() -> Self {
-        Self(unsafe { zeroed() })
+        Self(unsafe {
+            let mut unicode_string = MaybeUninit::<UNICODE_STRING>::uninit();
+            // SAFETY: Initialize the structure by zeroing it first
+            std::ptr::write_bytes(unicode_string.as_mut_ptr(), 0, 1);
+            unicode_string.assume_init()
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -591,7 +596,15 @@ impl<'a> UnicodeStringRef<'a> {
     }
 
     pub fn empty() -> Self {
-        Self(unsafe { zeroed() }, PhantomData)
+        Self(
+            unsafe {
+                let mut unicode_string = MaybeUninit::<UNICODE_STRING>::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                std::ptr::write_bytes(unicode_string.as_mut_ptr(), 0, 1);
+                unicode_string.assume_init()
+            },
+            PhantomData,
+        )
     }
 
     pub fn is_empty(&self) -> bool {
@@ -675,7 +688,15 @@ impl<'a> AnsiStringRef<'a> {
 
     /// Creates an empty `AnsiStringRef` with no buffer.
     pub fn empty() -> Self {
-        Self(unsafe { zeroed() }, PhantomData)
+        Self(
+            unsafe {
+                let mut ansi_string = MaybeUninit::<ANSI_STRING>::uninit();
+                // SAFETY: Initialize the structure by zeroing it first
+                std::ptr::write_bytes(ansi_string.as_mut_ptr(), 0, 1);
+                ansi_string.assume_init()
+            },
+            PhantomData,
+        )
     }
 
     /// Gets a value which indicates whether this instance does not contain a buffer.
