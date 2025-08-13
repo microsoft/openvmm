@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 use core::str;
+use zerocopy::{FromBytes, IntoBytes, Immutable, KnownLayout, LittleEndian, U16, U32};
 
 /// Default size for a single page (4KB) buffer.
 pub const DEFAULT_BUFFER_SIZE: usize = 4096;
@@ -128,25 +129,18 @@ impl<'a> StringBuffer<'a> {
             return Err(StringBufferError::InvalidFormat);
         }
 
-        // Validate strings within declared total_len
+        // Validate entries using Entry parser
         let mut cursor = HEADER_SIZE;
         let data_end = HEADER_SIZE + total_len;
-        if data_end > buffer.len() {
-            return Err(StringBufferError::InvalidFormat);
-        }
-
+        if data_end > buffer.len() { return Err(StringBufferError::InvalidFormat); }
         while cursor < data_end {
-            if cursor + 2 > data_end {
-                return Err(StringBufferError::InvalidFormat);
+            match Entry::parse(&buffer[cursor..data_end]) {
+                Ok((entry, adv)) => {
+                    if str::from_utf8(entry.payload).is_err() { return Err(StringBufferError::InvalidUtf8); }
+                    cursor += adv;
+                }
+                Err(_) => return Err(StringBufferError::InvalidFormat),
             }
-            let len = u16::from_le_bytes([buffer[cursor], buffer[cursor + 1]]) as usize;
-            cursor += 2;
-            if len == 0 || cursor + len > data_end {
-                return Err(StringBufferError::InvalidFormat);
-            }
-            str::from_utf8(&buffer[cursor..cursor + len])
-                .map_err(|_| StringBufferError::InvalidUtf8)?;
-            cursor += len;
         }
 
         let next_offset = HEADER_SIZE + total_len;
@@ -176,8 +170,7 @@ impl<'a> StringBuffer<'a> {
             return Err(StringBufferError::StringTooLong);
         }
 
-        // Check if we have enough space (2 bytes for length + string bytes)
-        let required_space = 2 + string_len;
+    let required_space = Entry::encoded_len(string_len);
         if required_space > self.remaining_capacity {
             // Increment dropped counter in header
             let dropped = Self::read_dropped(self.buffer).saturating_add(1);
@@ -185,14 +178,7 @@ impl<'a> StringBuffer<'a> {
             return Err(StringBufferError::BufferFull);
         }
 
-        // Write length prefix (u16 little-endian)
-        let length_bytes = (string_len as u16).to_le_bytes();
-        self.buffer[self.next_offset] = length_bytes[0];
-        self.buffer[self.next_offset + 1] = length_bytes[1];
-
-        // Write string data
-        self.buffer[self.next_offset + 2..self.next_offset + 2 + string_len]
-            .copy_from_slice(string_bytes);
+    Entry::write(self.buffer, self.next_offset, string_bytes);
 
         // Update state
         self.next_offset += required_space;
@@ -257,30 +243,28 @@ impl<'a> StringBuffer<'a> {
     }
 
     /// Header helpers
-    fn read_total_len(buf: &[u8]) -> u16 {
-        u16::from_le_bytes([buf[0], buf[1]])
-    }
-    fn write_total_len(buf: &mut [u8], v: u16) {
-        let b = v.to_le_bytes();
-        buf[0] = b[0];
-        buf[1] = b[1];
-    }
-    fn read_dropped(buf: &[u8]) -> u32 {
-        u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]])
-    }
-    fn write_dropped(buf: &mut [u8], v: u32) {
-        let b = v.to_le_bytes();
-        buf[2] = b[0];
-        buf[3] = b[1];
-        buf[4] = b[2];
-        buf[5] = b[3];
-    }
+    fn read_total_len(buf: &[u8]) -> u16 { Header::ref_from_prefix(buf).map(|h| h.total_len.get()).unwrap_or(0) }
+    fn write_total_len(buf: &mut [u8], v: u16) { if let Some(h) = Header::mut_from_prefix(buf) { h.total_len = U16::new(v); } }
+    fn read_dropped(buf: &[u8]) -> u32 { Header::ref_from_prefix(buf).map(|h| h.dropped.get()).unwrap_or(0) }
+    fn write_dropped(buf: &mut [u8], v: u32) { if let Some(h) = Header::mut_from_prefix(buf) { h.dropped = U32::new(v); } }
 }
 
 /// Size of the header in bytes
 const HEADER_SIZE: usize = 2 + 4; // total_len (u16) + dropped (u32)
 /// Page size (4K) enforced for buffers
 const PAGE_SIZE: usize = 4096;
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+struct Header {
+    total_len: U16<LittleEndian>,
+    dropped: U32<LittleEndian>,
+}
+
+impl Header {
+    fn mut_from_prefix(buf: &mut [u8]) -> Option<&mut Self> { Self::mut_from_bytes(&mut buf[..HEADER_SIZE]).ok() }
+    fn ref_from_prefix(buf: &[u8]) -> Option<&Self> { Self::ref_from_bytes(&buf[..HEADER_SIZE]).ok() }
+}
 
 /// Iterator over strings in a `StringBuffer`.
 #[derive(Debug)]
@@ -298,27 +282,31 @@ impl<'a> Iterator for StringBufferIterator<'a> {
             return None;
         }
 
-        // Check if we have at least 2 bytes for the length prefix
-        if self.offset + 2 > self.end_offset {
-            return Some(Err(StringBufferError::InvalidFormat));
+        match Entry::parse(&self.buffer[self.offset..self.end_offset]) {
+            Ok((entry, adv)) => {
+                self.offset += adv;
+                Some(str::from_utf8(entry.payload).map_err(|_| StringBufferError::InvalidUtf8))
+            }
+            Err(_) => Some(Err(StringBufferError::InvalidFormat)),
         }
+    }
+}
 
-        // Read length prefix
-        let length =
-            u16::from_le_bytes([self.buffer[self.offset], self.buffer[self.offset + 1]]) as usize;
-        self.offset += 2;
+#[derive(Debug, Clone, Copy)]
+struct Entry<'a> { payload: &'a [u8] }
 
-        // Check if we have enough bytes for the string
-        if self.offset + length > self.end_offset {
-            return Some(Err(StringBufferError::InvalidFormat));
-        }
-
-        // Extract string data and validate UTF-8
-        let string_bytes = &self.buffer[self.offset..self.offset + length];
-        let result = str::from_utf8(string_bytes).map_err(|_| StringBufferError::InvalidUtf8);
-
-        self.offset += length;
-        Some(result)
+impl<'a> Entry<'a> {
+    fn encoded_len(plen: usize) -> usize { 2 + plen }
+    fn parse(buf: &'a [u8]) -> Result<(Entry<'a>, usize), ()> {
+        if buf.len() < 2 { return Err(()); }
+        let len = u16::from_le_bytes([buf[0], buf[1]]) as usize;
+        if len == 0 || buf.len() < 2 + len { return Err(()); }
+        Ok((Entry { payload: &buf[2..2+len] }, 2 + len))
+    }
+    fn write(dest: &mut [u8], offset: usize, payload: &[u8]) {
+        let len = payload.len() as u16; let b = len.to_le_bytes();
+        dest[offset]=b[0]; dest[offset+1]=b[1];
+        dest[offset+2..offset+2+payload.len()].copy_from_slice(payload);
     }
 }
 

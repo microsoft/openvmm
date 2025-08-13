@@ -7025,8 +7025,7 @@ dependencies = [
 name = "stringbuf"
 version = "0.0.0"
 dependencies = [
- "thiserror 1.0.69",
- "zerocopy 0.7.35",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
