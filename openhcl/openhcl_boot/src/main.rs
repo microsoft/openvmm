@@ -50,7 +50,6 @@ use minimal_rt::enlightened_panic::enable_enlightened_panic;
 use sidecar::SidecarConfig;
 use sidecar_defs::SidecarOutput;
 use sidecar_defs::SidecarParams;
-use single_threaded::OffStackRef;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -664,6 +663,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     #[cfg(target_arch = "x86_64")]
     if p.isolation_type == IsolationType::Snp {
+        use single_threaded::OffStackRef;
         let cc_blob = OffStackRef::leak(off_stack!(loader_defs::linux::cc_blob_sev_info, zeroed()));
         build_cc_blob_sev_info(cc_blob, &p);
 
