@@ -452,18 +452,6 @@ impl NvmeFaultController {
     }
 
     fn get_csts(&mut self) -> u32 {
-        // Check for FLR requests
-        if let Some(flr_requested) = &self.flr_reset_requested {
-            if flr_requested.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                // FLR was requested, initiate controller reset
-                self.workers.controller_reset();
-                // Reset configuration space and registers to default state
-                self.registers = RegState::new();
-                self.cfg_space.reset();
-                *self.qe_sizes.lock() = Default::default();
-            }
-        }
-
         if !self.registers.cc.en() && self.registers.csts.rdy() {
             // Keep trying to disable.
             if self.workers.poll_controller_reset() {
@@ -562,7 +550,21 @@ impl PciConfigSpace for NvmeFaultController {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.cfg_space.write_u32(offset, value)
+        let result = self.cfg_space.write_u32(offset, value);
+
+        // Check for FLR requests
+        if let Some(flr_requested) = &self.flr_reset_requested {
+            if flr_requested.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                // FLR was requested, initiate controller reset
+                self.workers.controller_reset();
+                // Reset configuration space and registers to default state
+                self.registers = RegState::new();
+                self.cfg_space.reset();
+                *self.qe_sizes.lock() = Default::default();
+            }
+        }
+
+        result
     }
 }
 
