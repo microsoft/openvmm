@@ -4,8 +4,9 @@
 //! Tests for Function Level Reset (FLR) functionality.
 
 use super::test_helpers::TestNvmeMmioRegistration;
-use crate::NvmeController;
-use crate::NvmeControllerCaps;
+use crate::FaultConfiguration;
+use crate::NvmeFaultController;
+use crate::NvmeFaultControllerCaps;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
@@ -21,22 +22,23 @@ fn instantiate_controller_with_flr(
     driver: DefaultDriver,
     gm: &GuestMemory,
     flr_support: bool,
-) -> NvmeController {
+) -> NvmeFaultController {
     let vm_task_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_interrupt_set = MsiInterruptSet::new();
     let mut mmio_reg = TestNvmeMmioRegistration {};
 
-    NvmeController::new(
+    NvmeFaultController::new(
         &vm_task_driver,
         gm.clone(),
         &mut msi_interrupt_set,
         &mut mmio_reg,
-        NvmeControllerCaps {
+        NvmeFaultControllerCaps {
             msix_count: 64,
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
             flr_support,
         },
+        FaultConfiguration { admin_fault: None },
     )
 }
 
