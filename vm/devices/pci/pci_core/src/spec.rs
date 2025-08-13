@@ -406,7 +406,7 @@ pub mod caps {
             }
         }
 
-        /// Device Capabilities Register
+        /// Device Capabilities Register (From the 6.4 spec)
         #[bitfield(u32)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct DeviceCapabilities {
@@ -421,17 +421,17 @@ pub mod caps {
             pub endpoint_l1_latency: u32,
             #[bits(3)]
             _reserved1: u32,
-            #[bits(2)]
-            pub role_based_error: u32,
-            #[bits(2)]
-            _reserved2: u32,
+            pub role_based_error: bool,
+            pub err_cor_subclass_capabable: bool,
+            pub rx_mps_fixed: bool,
             #[bits(8)]
             pub captured_slot_power_limit: u32,
             #[bits(2)]
             pub captured_slot_power_scale: u32,
-            pub function_level_reset: bool, // TODO: this bit is actually at the incorrect location.
-            #[bits(2)]
-            _reserved3: u32,
+            pub function_level_reset: bool,
+            pub mixed_mps_supported: bool,
+            pub tee_io_supported: bool,
+            _reserved3: bool,
         }
 
         /// Device Control Register
