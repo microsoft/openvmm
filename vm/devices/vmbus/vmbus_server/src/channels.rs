@@ -2587,68 +2587,75 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     /// Handles MessageType::GPADL_HEADER, which creates a new GPADL.
+    fn handle_gpadl_header_core(
+        &mut self,
+        input: &protocol::GpadlHeader,
+        range: &[u8],
+    ) -> Result<(), ChannelError> {
+        // Validate the channel ID.
+        let (offer_id, channel) = self
+            .inner
+            .channels
+            .get_by_channel_id_mut(&self.inner.assigned_channels, input.channel_id)?;
+
+        // GPADL body messages don't contain the channel ID, so prevent creating new
+        // GPADLs for reserved channels to avoid GPADL ID conflicts.
+        if channel.state.is_reserved() {
+            return Err(ChannelError::ChannelReserved);
+        }
+
+        // Create a new GPADL.
+        let mut gpadl = Gpadl::new(input.count, input.len as usize / 8);
+        let done = gpadl.append(range)?;
+
+        // Store the GPADL in the table.
+        let gpadl = match self.inner.gpadls.entry((input.gpadl_id, offer_id)) {
+            Entry::Vacant(entry) => entry.insert(gpadl),
+            Entry::Occupied(_) => return Err(ChannelError::DuplicateGpadlId),
+        };
+
+        // If we're not done, track the offer ID for GPADL body requests
+        if !done
+            && self
+                .inner
+                .incomplete_gpadls
+                .insert(input.gpadl_id, offer_id)
+                .is_some()
+        {
+            unreachable!("gpadl ID validated above");
+        }
+
+        if done
+            && !Self::gpadl_updated(
+                self.inner
+                    .pending_messages
+                    .sender(self.notifier, self.inner.state.is_paused()),
+                offer_id,
+                channel,
+                input.gpadl_id,
+                gpadl,
+            )
+        {
+            self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
+        }
+        Ok(())
+    }
+
+    /// Handles MessageType::GPADL_HEADER, which creates a new GPADL.
     fn handle_gpadl_header(
         &mut self,
         input: &protocol::GpadlHeader,
         range: &[u8],
     ) -> Result<(), ChannelError> {
-        (|| {
-            // Validate the channel ID.
-            let (offer_id, channel) = self
-                .inner
-                .channels
-                .get_by_channel_id_mut(&self.inner.assigned_channels, input.channel_id)?;
-
-            // GPADL body messages don't contain the channel ID, so prevent creating new
-            // GPADLs for reserved channels to avoid GPADL ID conflicts.
-            if channel.state.is_reserved() {
-                return Err(ChannelError::ChannelReserved);
-            }
-
-            // Create a new GPADL.
-            let mut gpadl = Gpadl::new(input.count, input.len as usize / 8);
-            let done = gpadl.append(range)?;
-
-            // Store the GPADL in the table.
-            let gpadl = match self.inner.gpadls.entry((input.gpadl_id, offer_id)) {
-                Entry::Vacant(entry) => entry.insert(gpadl),
-                Entry::Occupied(_) => return Err(ChannelError::DuplicateGpadlId),
-            };
-
-            // If we're not done, track the offer ID for GPADL body requests
-            if !done
-                && self
-                    .inner
-                    .incomplete_gpadls
-                    .insert(input.gpadl_id, offer_id)
-                    .is_some()
-            {
-                unreachable!("gpadl ID validated above");
-            }
-
-            if done
-                && !Self::gpadl_updated(
-                    self.inner
-                        .pending_messages
-                        .sender(self.notifier, self.inner.state.is_paused()),
-                    offer_id,
-                    channel,
+        self.handle_gpadl_header_core(input, range)
+            .inspect_err(|_| {
+                // Inform the guest of any error during the header message.
+                self.sender().send_gpadl_created(
+                    input.channel_id,
                     input.gpadl_id,
-                    gpadl,
-                )
-            {
-                self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
-            }
-            Ok(())
-        })()
-        .inspect_err(|_| {
-            // Inform the guest of any error during the header message.
-            self.sender().send_gpadl_created(
-                input.channel_id,
-                input.gpadl_id,
-                protocol::STATUS_UNSUCCESSFUL,
-            );
-        })
+                    protocol::STATUS_UNSUCCESSFUL,
+                );
+            })
     }
 
     /// Handles MessageType::GPADL_BODY, which adds more to an in-progress
