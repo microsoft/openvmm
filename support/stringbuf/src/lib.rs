@@ -1,19 +1,32 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A 4K length-prefixed string buffer for storing logs.
+//! A header + length-prefixed string buffer for storing logs over a buffer sized in 4K pages.
 //!
-//! This crate provides a no_std compatible string buffer that stores
-//! length-prefixed strings in a fixed 4K buffer. It supports both reading
-//! existing buffers and appending new strings until the buffer is full.
+//! Format (little-endian):
+//! - Header
+//!   - u16: total length in bytes of the data region currently used (sum of all encoded strings)
+//!   - u32: number of messages that were dropped because the buffer was full
+//! - Repeated entries:
+//!   - u16: length of UTF-8 string
+//!   - [u8; len]: UTF-8 bytes
+//!
+//! Invariants:
+//! - total_len <= DATA_CAPACITY (BUFFER_SIZE - HEADER_SIZE)
+//! - Strings never partially written
+//! - When append fails due to insufficient space, the dropped counter increments
+//!
+//! NOTE: This is step 1 of the refactor: introduce header format while still
+//! performing manual parsing. Step 2 will migrate parsing to `zerocopy` and
+//! step 3 will replace the custom error with `thiserror`.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 use core::str;
 
-/// Size of the string buffer in bytes (4KB).
-pub const BUFFER_SIZE: usize = 4096;
+/// Default size for a single page (4KB) buffer.
+pub const DEFAULT_BUFFER_SIZE: usize = 4096;
 
 /// A length-prefixed string buffer that stores strings in a 4K buffer.
 ///
@@ -27,11 +40,11 @@ pub const BUFFER_SIZE: usize = 4096;
 /// - The next byte offset for insertion
 #[derive(Debug)]
 pub struct StringBuffer<'a> {
-    /// Reference to the 4K storage buffer
-    buffer: &'a mut [u8; BUFFER_SIZE],
-    /// The next byte offset where the next string should be inserted
+    /// Reference to the storage buffer (must be multiple of 4K)
+    buffer: &'a mut [u8],
+    /// The next byte offset (absolute within buffer) where the next string should be inserted
     next_offset: usize,
-    /// Remaining capacity in bytes
+    /// Remaining capacity in bytes (data region only + header unused space)
     remaining_capacity: usize,
 }
 
@@ -67,15 +80,28 @@ impl<'a> StringBuffer<'a> {
     ///
     /// # Returns
     /// A new `StringBuffer` instance ready for use.
-    pub fn new(buffer: &'a mut [u8; BUFFER_SIZE]) -> Self {
-        // Initialize buffer with zeros to ensure clean state
-        buffer.fill(0);
-        
-        Self {
-            buffer,
-            next_offset: 0,
-            remaining_capacity: BUFFER_SIZE,
+    pub fn new(buffer: &'a mut [u8]) -> Result<Self, StringBufferError> {
+        if buffer.len() < HEADER_SIZE || buffer.len() % PAGE_SIZE != 0 {
+            return Err(StringBufferError::InvalidFormat);
         }
+        if buffer.len() - HEADER_SIZE > u16::MAX as usize {
+            return Err(StringBufferError::InvalidFormat);
+        }
+        buffer.fill(0);
+        Self::write_total_len(buffer, 0);
+        Self::write_dropped(buffer, 0);
+        let next_offset = HEADER_SIZE;
+        let remaining_capacity = buffer.len() - HEADER_SIZE;
+        Ok(Self {
+            buffer,
+            next_offset,
+            remaining_capacity,
+        })
+    }
+
+    /// Convenience helper for 4K fixed-size arrays.
+    pub fn new_fixed(buffer: &'a mut [u8; DEFAULT_BUFFER_SIZE]) -> Self {
+        Self::new(&mut buffer[..]).expect("valid 4K buffer")
     }
 
     /// Creates a string buffer from an existing 4K storage array that may contain data.
@@ -88,37 +114,46 @@ impl<'a> StringBuffer<'a> {
     ///
     /// # Returns
     /// A `StringBuffer` instance if the buffer format is valid, or an error.
-    pub fn from_existing(buffer: &'a mut [u8; BUFFER_SIZE]) -> Result<Self, StringBufferError> {
-        let mut offset = 0;
-        
-        // Parse existing strings to find the end of data
-        while offset < BUFFER_SIZE {
-            // Check if we've reached the end (null terminator or uninitialized data)
-            if offset + 2 > BUFFER_SIZE || buffer[offset] == 0 && buffer[offset + 1] == 0 {
-                break;
-            }
-            
-            // Read length prefix (u16 little-endian)
-            let length = u16::from_le_bytes([buffer[offset], buffer[offset + 1]]) as usize;
-            offset += 2;
-            
-            // Validate length
-            if length == 0 || offset + length > BUFFER_SIZE {
+    pub fn from_existing(buffer: &'a mut [u8]) -> Result<Self, StringBufferError> {
+        if buffer.len() < HEADER_SIZE || buffer.len() % PAGE_SIZE != 0 {
+            return Err(StringBufferError::InvalidFormat);
+        }
+        if buffer.len() - HEADER_SIZE > u16::MAX as usize {
+            return Err(StringBufferError::InvalidFormat);
+        }
+        // Read header
+        let total_len = Self::read_total_len(buffer) as usize;
+        let data_capacity = buffer.len() - HEADER_SIZE;
+        if total_len > data_capacity {
+            return Err(StringBufferError::InvalidFormat);
+        }
+
+        // Validate strings within declared total_len
+        let mut cursor = HEADER_SIZE;
+        let data_end = HEADER_SIZE + total_len;
+        if data_end > buffer.len() {
+            return Err(StringBufferError::InvalidFormat);
+        }
+
+        while cursor < data_end {
+            if cursor + 2 > data_end {
                 return Err(StringBufferError::InvalidFormat);
             }
-            
-            // Validate UTF-8
-            str::from_utf8(&buffer[offset..offset + length])
+            let len = u16::from_le_bytes([buffer[cursor], buffer[cursor + 1]]) as usize;
+            cursor += 2;
+            if len == 0 || cursor + len > data_end {
+                return Err(StringBufferError::InvalidFormat);
+            }
+            str::from_utf8(&buffer[cursor..cursor + len])
                 .map_err(|_| StringBufferError::InvalidUtf8)?;
-            
-            offset += length;
+            cursor += len;
         }
-        
-        let remaining_capacity = BUFFER_SIZE - offset;
-        
+
+        let next_offset = HEADER_SIZE + total_len;
+        let remaining_capacity = buffer.len() - next_offset;
         Ok(Self {
             buffer,
-            next_offset: offset,
+            next_offset,
             remaining_capacity,
         })
     }
@@ -135,31 +170,37 @@ impl<'a> StringBuffer<'a> {
     pub fn append(&mut self, s: &str) -> Result<(), StringBufferError> {
         let string_bytes = s.as_bytes();
         let string_len = string_bytes.len();
-        
+
         // Check if string is too long for u16 length prefix
         if string_len > u16::MAX as usize {
             return Err(StringBufferError::StringTooLong);
         }
-        
+
         // Check if we have enough space (2 bytes for length + string bytes)
         let required_space = 2 + string_len;
         if required_space > self.remaining_capacity {
+            // Increment dropped counter in header
+            let dropped = Self::read_dropped(self.buffer).saturating_add(1);
+            Self::write_dropped(self.buffer, dropped);
             return Err(StringBufferError::BufferFull);
         }
-        
+
         // Write length prefix (u16 little-endian)
         let length_bytes = (string_len as u16).to_le_bytes();
         self.buffer[self.next_offset] = length_bytes[0];
         self.buffer[self.next_offset + 1] = length_bytes[1];
-        
+
         // Write string data
         self.buffer[self.next_offset + 2..self.next_offset + 2 + string_len]
             .copy_from_slice(string_bytes);
-        
+
         // Update state
         self.next_offset += required_space;
         self.remaining_capacity -= required_space;
-        
+        // Update total_len in header (data region usage)
+        let total_len = (self.next_offset - HEADER_SIZE) as u16;
+        Self::write_total_len(self.buffer, total_len);
+
         Ok(())
     }
 
@@ -170,7 +211,7 @@ impl<'a> StringBuffer<'a> {
     pub fn iter(&self) -> StringBufferIterator<'_> {
         StringBufferIterator {
             buffer: self.buffer,
-            offset: 0,
+            offset: HEADER_SIZE,
             end_offset: self.next_offset,
         }
     }
@@ -182,7 +223,7 @@ impl<'a> StringBuffer<'a> {
 
     /// Returns the number of bytes currently used in the buffer.
     pub fn used_capacity(&self) -> usize {
-        BUFFER_SIZE - self.remaining_capacity
+        self.next_offset
     }
 
     /// Returns true if the buffer is full.
@@ -192,26 +233,59 @@ impl<'a> StringBuffer<'a> {
 
     /// Returns true if the buffer is empty.
     pub fn is_empty(&self) -> bool {
-        self.next_offset == 0
+        Self::read_total_len(self.buffer) == 0
     }
 
     /// Clears the buffer, removing all strings.
     pub fn clear(&mut self) {
+        let total = self.buffer.len();
         self.buffer.fill(0);
-        self.next_offset = 0;
-        self.remaining_capacity = BUFFER_SIZE;
+        Self::write_total_len(self.buffer, 0);
+        Self::write_dropped(self.buffer, 0);
+        self.next_offset = HEADER_SIZE;
+        self.remaining_capacity = total - HEADER_SIZE;
     }
 
     /// Returns a reference to the underlying buffer.
-    pub fn as_bytes(&self) -> &[u8; BUFFER_SIZE] {
+    pub fn as_bytes(&self) -> &[u8] {
         self.buffer
     }
+
+    /// Returns number of dropped messages recorded in the header.
+    pub fn dropped_messages(&self) -> u32 {
+        Self::read_dropped(self.buffer)
+    }
+
+    /// Header helpers
+    fn read_total_len(buf: &[u8]) -> u16 {
+        u16::from_le_bytes([buf[0], buf[1]])
+    }
+    fn write_total_len(buf: &mut [u8], v: u16) {
+        let b = v.to_le_bytes();
+        buf[0] = b[0];
+        buf[1] = b[1];
+    }
+    fn read_dropped(buf: &[u8]) -> u32 {
+        u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]])
+    }
+    fn write_dropped(buf: &mut [u8], v: u32) {
+        let b = v.to_le_bytes();
+        buf[2] = b[0];
+        buf[3] = b[1];
+        buf[4] = b[2];
+        buf[5] = b[3];
+    }
 }
+
+/// Size of the header in bytes
+const HEADER_SIZE: usize = 2 + 4; // total_len (u16) + dropped (u32)
+/// Page size (4K) enforced for buffers
+const PAGE_SIZE: usize = 4096;
 
 /// Iterator over strings in a `StringBuffer`.
 #[derive(Debug)]
 pub struct StringBufferIterator<'a> {
-    buffer: &'a [u8; BUFFER_SIZE],
+    buffer: &'a [u8],
     offset: usize,
     end_offset: usize,
 }
@@ -230,10 +304,8 @@ impl<'a> Iterator for StringBufferIterator<'a> {
         }
 
         // Read length prefix
-        let length = u16::from_le_bytes([
-            self.buffer[self.offset],
-            self.buffer[self.offset + 1],
-        ]) as usize;
+        let length =
+            u16::from_le_bytes([self.buffer[self.offset], self.buffer[self.offset + 1]]) as usize;
         self.offset += 2;
 
         // Check if we have enough bytes for the string
@@ -243,8 +315,7 @@ impl<'a> Iterator for StringBufferIterator<'a> {
 
         // Extract string data and validate UTF-8
         let string_bytes = &self.buffer[self.offset..self.offset + length];
-        let result = str::from_utf8(string_bytes)
-            .map_err(|_| StringBufferError::InvalidUtf8);
+        let result = str::from_utf8(string_bytes).map_err(|_| StringBufferError::InvalidUtf8);
 
         self.offset += length;
         Some(result)
@@ -259,40 +330,42 @@ mod tests {
 
     #[test]
     fn test_new_buffer() {
-        let mut storage = [0u8; BUFFER_SIZE];
-        let buffer = StringBuffer::new(&mut storage);
-        
-        assert_eq!(buffer.remaining_capacity(), BUFFER_SIZE);
-        assert_eq!(buffer.used_capacity(), 0);
+        let mut storage = [0u8; DEFAULT_BUFFER_SIZE];
+        let buffer = StringBuffer::new(&mut storage).unwrap();
+        assert_eq!(
+            buffer.remaining_capacity(),
+            DEFAULT_BUFFER_SIZE - HEADER_SIZE
+        );
+        assert_eq!(buffer.used_capacity(), HEADER_SIZE);
         assert!(buffer.is_empty());
+        assert_eq!(buffer.dropped_messages(), 0);
         assert!(!buffer.is_full());
     }
 
     #[test]
     fn test_append_string() {
-        let mut storage = [0u8; BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage);
-        
+        let mut storage = [0u8; DEFAULT_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
         let test_string = "Hello, World!";
         assert!(buffer.append(test_string).is_ok());
-        
-        assert_eq!(buffer.remaining_capacity(), BUFFER_SIZE - 2 - test_string.len());
-        assert_eq!(buffer.used_capacity(), 2 + test_string.len());
+        let expected_used = HEADER_SIZE + 2 + test_string.len();
+        assert_eq!(buffer.used_capacity(), expected_used);
+        assert_eq!(
+            buffer.remaining_capacity(),
+            DEFAULT_BUFFER_SIZE - expected_used
+        );
         assert!(!buffer.is_empty());
         assert!(!buffer.is_full());
     }
 
     #[test]
     fn test_append_multiple_strings() {
-        let mut storage = [0u8; BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage);
-        
+        let mut storage = [0u8; DEFAULT_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
         let strings = ["Hello", "World", "Test", "String"];
-        
         for s in &strings {
             assert!(buffer.append(s).is_ok());
         }
-        
         let collected: Result<Vec<&str>, _> = buffer.iter().collect();
         assert!(collected.is_ok());
         assert_eq!(collected.unwrap(), strings);
@@ -300,73 +373,76 @@ mod tests {
 
     #[test]
     fn test_buffer_full() {
-        let mut storage = [0u8; BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage);
-        
+        let mut storage = [0u8; DEFAULT_BUFFER_SIZE];
+        let data_capacity = storage.len() - HEADER_SIZE; // compute before mutable borrow in buffer
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
         // Try to create a string that's larger than u16::MAX
         let large_string = "x".repeat(70000);
         let result = buffer.append(&large_string);
         assert_eq!(result, Err(StringBufferError::StringTooLong));
-        
-        // Fill buffer with maximum possible string (accounting for 2-byte length prefix)
-        let max_string = "x".repeat(BUFFER_SIZE - 2);
+        // Fill buffer with maximum possible string (accounting for header & length prefix)
+        let max_string = "x".repeat(data_capacity - 2);
         assert!(buffer.append(&max_string).is_ok());
         assert!(buffer.is_full());
-        
-        // Try to append another string
+        // Try to append another string (should drop)
         let result = buffer.append("test");
         assert_eq!(result, Err(StringBufferError::BufferFull));
+        assert_eq!(buffer.dropped_messages(), 1);
     }
 
     #[test]
     fn test_from_existing_empty() {
-        let mut storage = [0u8; BUFFER_SIZE];
-        let buffer = StringBuffer::from_existing(&mut storage);
-        
-        assert!(buffer.is_ok());
-        let buffer = buffer.unwrap();
-        assert_eq!(buffer.remaining_capacity(), BUFFER_SIZE);
+        let mut storage = [0u8; DEFAULT_BUFFER_SIZE];
+        // Header already zeroed -> empty
+        let buffer = StringBuffer::from_existing(&mut storage).unwrap();
+        assert_eq!(
+            buffer.remaining_capacity(),
+            DEFAULT_BUFFER_SIZE - HEADER_SIZE
+        );
         assert!(buffer.is_empty());
     }
 
     #[test]
     fn test_from_existing_with_data() {
-        let mut storage = [0u8; BUFFER_SIZE];
-        
-        // Manually create some test data
-        let test_string = "Hello";
-        let length_bytes = (test_string.len() as u16).to_le_bytes();
-        storage[0] = length_bytes[0];
-        storage[1] = length_bytes[1];
-        storage[2..2 + test_string.len()].copy_from_slice(test_string.as_bytes());
-        
-        let buffer = StringBuffer::from_existing(&mut storage);
-        assert!(buffer.is_ok());
-        
-        let buffer = buffer.unwrap();
+        let mut storage = [0u8; DEFAULT_BUFFER_SIZE];
+        // Compose header + one string
+        let s = "Hello";
+        let len = s.len() as u16;
+        // Write string entry after header
+        let entry_offset = HEADER_SIZE;
+        let len_bytes = len.to_le_bytes();
+        storage[entry_offset] = len_bytes[0];
+        storage[entry_offset + 1] = len_bytes[1];
+        storage[entry_offset + 2..entry_offset + 2 + s.len()].copy_from_slice(s.as_bytes());
+        // Header total_len
+        let total_len_bytes = ((2 + s.len()) as u16).to_le_bytes();
+        storage[0] = total_len_bytes[0];
+        storage[1] = total_len_bytes[1];
+        // dropped stays zero
+        let buffer = StringBuffer::from_existing(&mut storage).unwrap();
         let strings: Result<Vec<&str>, _> = buffer.iter().collect();
-        assert!(strings.is_ok());
         assert_eq!(strings.unwrap(), vec!["Hello"]);
     }
 
     #[test]
     fn test_clear() {
-        let mut storage = [0u8; BUFFER_SIZE];
-        let mut buffer = StringBuffer::new(&mut storage);
-        
+        let mut storage = [0u8; DEFAULT_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
         assert!(buffer.append("test").is_ok());
         assert!(!buffer.is_empty());
-        
         buffer.clear();
         assert!(buffer.is_empty());
-        assert_eq!(buffer.remaining_capacity(), BUFFER_SIZE);
+        assert_eq!(
+            buffer.remaining_capacity(),
+            DEFAULT_BUFFER_SIZE - HEADER_SIZE
+        );
+        assert_eq!(buffer.dropped_messages(), 0);
     }
 
     #[test]
     fn test_iterator_empty() {
-        let mut storage = [0u8; BUFFER_SIZE];
-        let buffer = StringBuffer::new(&mut storage);
-        
+        let mut storage = [0u8; DEFAULT_BUFFER_SIZE];
+        let buffer = StringBuffer::new(&mut storage).unwrap();
         let strings: Vec<_> = buffer.iter().collect();
         assert!(strings.is_empty());
     }

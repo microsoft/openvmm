@@ -7,6 +7,12 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+zerocopy = { version = "0.7", features = ["derive"] }
+thiserror = { version = "1", optional = true }
+
+[features]
+default = []
+with-thiserror = ["thiserror"]
 
 [lints]
 workspace = true
