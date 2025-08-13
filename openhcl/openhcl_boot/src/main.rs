@@ -1212,9 +1212,7 @@ mod test {
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
                 (4 * ONE_MB..5 * ONE_MB, E820_RESERVED),
-                (5 * ONE_MB..6 * ONE_MB, E820_RAM),
-                (6 * ONE_MB..7 * ONE_MB, E820_RAM),
-                (7 * ONE_MB..8 * ONE_MB, E820_RAM),
+                (5 * ONE_MB..8 * ONE_MB, E820_RAM),
             ],
         );
     }
