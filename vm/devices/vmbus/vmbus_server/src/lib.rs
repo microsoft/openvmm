@@ -77,7 +77,6 @@ use vmbus_channel::bus::ParentBus;
 use vmbus_channel::bus::RestoreResult;
 use vmbus_channel::gpadl::GpadlMap;
 use vmbus_channel::gpadl_ring::AlignedGpadlView;
-use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
@@ -1396,16 +1395,17 @@ impl ServerTask {
         in_gpadl: AlignedGpadlView,
         guest_to_host_event: Option<&ChannelEvent>,
         host_to_guest_interrupt: &Interrupt,
-    ) -> Result<(), anyhow::Error> {
-        let incoming_mem = GpadlRingMem::new(in_gpadl, gm)?;
+    ) -> anyhow::Result<()> {
+        let control_page = lock_gpn_with_subrange(gm, in_gpadl.gpns()[0])?;
         if let Some(guest_to_host_event) = guest_to_host_event {
-            if ring::reader_needs_signal(&incoming_mem) {
+            if ring::reader_needs_signal(control_page.pages()[0]) {
                 tracelimit::info_ratelimited!(channel = %channel.key, "waking host for incoming ring");
                 guest_to_host_event.0.deliver();
             }
         }
 
-        if ring::writer_needs_signal(&incoming_mem) {
+        let ring_size = gpadl_ring_size(&in_gpadl).try_into()?;
+        if ring::writer_needs_signal(control_page.pages()[0], ring_size) {
             tracelimit::info_ratelimited!(channel = %channel.key, "waking guest for incoming ring");
             host_to_guest_interrupt.deliver();
         }
@@ -1418,14 +1418,16 @@ impl ServerTask {
         out_gpadl: AlignedGpadlView,
         guest_to_host_event: Option<&ChannelEvent>,
         host_to_guest_interrupt: &Interrupt,
-    ) -> Result<(), anyhow::Error> {
-        let outgoing_mem = GpadlRingMem::new(out_gpadl, gm)?;
-        if ring::reader_needs_signal(&outgoing_mem) {
+    ) -> anyhow::Result<()> {
+        let control_page = lock_gpn_with_subrange(gm, out_gpadl.gpns()[0])?;
+        if ring::reader_needs_signal(control_page.pages()[0]) {
             tracelimit::info_ratelimited!(channel = %channel.key, "waking guest for outgoing ring");
             host_to_guest_interrupt.deliver();
         }
+
         if let Some(guest_to_host_event) = guest_to_host_event {
-            if ring::writer_needs_signal(&outgoing_mem) {
+            let ring_size = gpadl_ring_size(&out_gpadl).try_into()?;
+            if ring::writer_needs_signal(control_page.pages()[0], ring_size) {
                 tracelimit::info_ratelimited!(channel = %channel.key, "waking host for outgoing ring");
                 guest_to_host_event.0.deliver();
             }
@@ -2077,15 +2079,18 @@ fn inspect_rings(
 fn inspect_ring(req: inspect::Request<'_>, gpadl: &AlignedGpadlView, gm: &GuestMemory) {
     let mut resp = req.respond();
 
-    // Data size excluding the control page.
-    let ring_size = (gpadl.gpns().len() - 1) * PAGE_SIZE;
-    resp.hex("ring_size", ring_size);
+    resp.hex("ring_size", gpadl_ring_size(gpadl));
 
     // Lock just the control page. Use a subrange to allow a GuestMemory without a full mapping to
     // create one.
-    if let Ok(pages) = lock_page_with_subrange(gm, gpadl.gpns()[0] * PAGE_SIZE as u64) {
+    if let Ok(pages) = lock_gpn_with_subrange(gm, gpadl.gpns()[0]) {
         ring::inspect_ring(pages.pages()[0], &mut resp);
     }
+}
+
+fn gpadl_ring_size(gpadl: &AlignedGpadlView) -> usize {
+    // Data size excluding the control page.
+    (gpadl.gpns().len() - 1) * PAGE_SIZE
 }
 
 /// Helper to create a subrange before locking a single page.
@@ -2096,6 +2101,14 @@ fn lock_page_with_subrange(gm: &GuestMemory, offset: u64) -> anyhow::Result<gues
     Ok(gm
         .lockable_subrange(offset, PAGE_SIZE as u64)?
         .lock_gpns(false, &[0])?)
+}
+
+/// Helper to create a subrange before locking a single page from a gpn.
+///
+/// This allows us to lock a page in a `GuestMemory` that doesn't have a full mapping, but can
+/// create one for a subrange.
+fn lock_gpn_with_subrange(gm: &GuestMemory, gpn: u64) -> anyhow::Result<guestmem::LockedPages> {
+    lock_page_with_subrange(gm, gpn * PAGE_SIZE as u64)
 }
 
 pub(crate) struct MessageSender {
