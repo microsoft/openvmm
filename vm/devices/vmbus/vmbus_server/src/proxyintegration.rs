@@ -62,6 +62,7 @@ use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmcore::interrupt::Interrupt;
+use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Foundation::ERROR_OPERATION_ABORTED;
 use zerocopy::IntoBytes;
 
@@ -225,6 +226,18 @@ impl ProxyTask {
         recv
     }
 
+    fn check_ioctl_result(result: windows::core::Result<()>, op: &str, proxy_id: u64) {
+        if let Err(err) = result {
+            assert!(err.code() == ERROR_NOT_FOUND.into());
+            tracing::info!(
+                error = &err as &dyn std::error::Error,
+                op,
+                proxy_id,
+                "channel not found during ioctl (possibly revoked)"
+            );
+        }
+    }
+
     async fn handle_open(&self, proxy_id: u64, open_request: &OpenRequest) -> anyhow::Result<()> {
         let maybe_wrapped =
             MaybeWrappedEvent::new(&TpPool::system(), open_request.interrupt.clone())?;
@@ -243,32 +256,36 @@ impl ProxyTask {
             .await
             .context("failed to open channel")?;
 
-        let recv = self.create_worker_thread(proxy_id);
-
         let mut channels = self.channels.lock();
-        let channel = channels.get_mut(&proxy_id).unwrap();
-        channel.worker_result = Some(recv);
-        channel.wrapped_event = maybe_wrapped.into_wrapped();
-        Ok(())
+        if let Some(channel) = channels.get_mut(&proxy_id) {
+            let recv = self.create_worker_thread(proxy_id);
+            channel.worker_result = Some(recv);
+            channel.wrapped_event = maybe_wrapped.into_wrapped();
+            tracing::trace!(proxy_id, "opening channel done");
+            Ok(())
+        } else {
+            tracing::trace!(proxy_id, "opening channel done");
+            Err(anyhow::anyhow!("channel revoked during open"))
+        }
     }
 
     async fn handle_close(&self, proxy_id: u64) {
-        self.proxy
-            .close(proxy_id)
-            .await
-            .expect("channel close failed");
+        tracing::trace!(proxy_id, "closing channel");
+        Self::check_ioctl_result(self.proxy.close(proxy_id).await, "close", proxy_id);
 
         // Wait for the worker task.
-        let recv = self
-            .channels
-            .lock()
-            .get_mut(&proxy_id)
-            .unwrap()
-            .worker_result
-            .take()
-            .expect("channel should be open");
+        let recv = self.channels.lock().get_mut(&proxy_id).map(|channel| {
+            channel
+                .worker_result
+                .take()
+                .expect("channel should be open")
+        });
 
-        let _ = recv.await;
+        if let Some(recv) = recv {
+            let _ = recv.await;
+        }
+
+        tracing::trace!(proxy_id, "closing channel done");
     }
 
     async fn handle_gpadl_create(
@@ -278,33 +295,47 @@ impl ProxyTask {
         count: u16,
         buf: &[u64],
     ) -> anyhow::Result<()> {
-        self.proxy
-            .create_gpadl(proxy_id, gpadl_id.0, count.into(), buf.as_bytes())
-            .await
-            .context("failed to create gpadl")?;
+        tracing::trace!(proxy_id, "gpadl create");
+        Self::check_ioctl_result(
+            self.proxy
+                .create_gpadl(proxy_id, gpadl_id.0, count.into(), buf.as_bytes())
+                .await,
+            "create_gpadl",
+            proxy_id,
+        );
 
         self.gpadls
             .lock()
             .entry(proxy_id)
             .or_default()
             .insert(gpadl_id);
+
+        tracing::trace!(proxy_id, "gpadl create done");
         Ok(())
     }
 
     async fn handle_gpadl_teardown(&self, proxy_id: u64, gpadl_id: GpadlId) {
-        assert!(
-            self.gpadls
-                .lock()
-                .get_mut(&proxy_id)
-                .unwrap()
-                .remove(&gpadl_id),
-            "gpadl is registered"
+        tracing::trace!(proxy_id, "gpadl teardown");
+        {
+            let mut gpadls = self.gpadls.lock();
+            let Some(channel) = gpadls.get_mut(&proxy_id) else {
+                tracing::info!(
+                    proxy_id,
+                    ?gpadl_id,
+                    "channel gpadls not found (possibly revoked)"
+                );
+                return;
+            };
+            assert!(channel.remove(&gpadl_id), "gpadl is registered");
+        }
+
+        Self::check_ioctl_result(
+            self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await,
+            "delete_gpadl",
+            proxy_id,
         );
 
-        self.proxy
-            .delete_gpadl(proxy_id, gpadl_id.0)
-            .await
-            .expect("delete gpadl failed");
+        tracing::trace!(proxy_id, "gpadl teardown done");
     }
 
     async fn restore_channel_on_offer(
@@ -376,7 +407,7 @@ impl ProxyTask {
         offer: vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
     ) -> Option<mesh::Receiver<ChannelRequest>> {
-        tracing::trace!(?offer, "received vmbusproxy offer");
+        tracing::trace!(proxy_id, ?offer, "received vmbusproxy offer");
         let server = match offer.TargetVtl {
             0 => self.server.as_ref(),
             2 => {
@@ -508,6 +539,7 @@ impl ProxyTask {
     }
 
     async fn handle_revoke(&self, proxy_id: u64) {
+        tracing::trace!(proxy_id, "revoke channel");
         let server_request_send = self
             .channels
             .lock()
