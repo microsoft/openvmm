@@ -6,121 +6,152 @@
 use super::spec;
 use super::spec::U32b;
 use super::spec::U64b;
+use core::fmt::Display;
 use core::mem::size_of;
-use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::KnownLayout;
 
 /// Errors returned when parsing a FDT.
-#[derive(Debug, Error)]
-pub enum Error<'a> {
+#[derive(Debug)]
+pub struct Error<'a>(ErrorKind<'a>);
+
+impl Display for Error<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+// TODO: Once core::error::Error is stablized, we can remove this feature gate.
+impl core::error::Error for Error<'_> {}
+
+/// Types of errors when parsing a FDT.
+#[derive(Debug)]
+enum ErrorKind<'a> {
     /// Buffer is not aligned to u32
-    #[error("Buffer is not aligned to u32")]
     BufferAlignment,
     /// Buffer too small for fixed header
-    #[error("Buffer too small for fixed FDT header")]
     NoHeader,
     /// Fixed header magic invalid
-    #[error("FDT header magic field invalid")]
     HeaderMagic,
     /// Total size described in the fixed header is greater than buffer provided
-    #[error("FDT header total size greater than provided buffer")]
     HeaderTotalSize,
     /// Header version is invalid
-    #[error("FDT header version invalid")]
     HeaderVersion,
     /// Structure block not contained within buffer
-    #[error("Structure block not contained within buffer")]
     StructureBlock,
     /// Structure block not aligned to u32
-    #[error("Structure block offset is not aligned to u32")]
     StructureBlockAlignment,
     /// Memory reservation block not contained within buffer
-    #[error("Memory reservation block not contained within buffer")]
     MemoryReservationBlock,
     /// Memory reservation block did not end with an empty entry
-    #[error("Memory reservation block did not end with an empty entry")]
     MemoryReservationBlockEnd,
     /// Strings block not contained within buffer
-    #[error("Strings block not contained within buffer")]
     StringsBlock,
     /// No root node present
-    #[error("No root node present")]
     RootNode,
     /// More than one node at the root
-    #[error("More than one node at the root")]
     MultipleRootNodes,
     /// Unable to parse FDT token when parsing nodes
-    #[error("Unable to parse FDT token when parsing nodes {0}")]
-    NodeToken(#[from] ParseTokenError),
+    NodeToken(ParseTokenError),
     /// Unexpected token when parsing begin node
-    #[error("Unexpected token when parsing begin node {0}")]
     NodeBegin(u32),
     /// Unexpected token when parsing node properties
-    #[error("Unexpected token when parsing node properties {0}")]
     NodeProp(u32),
     /// Unexpected token when parsing children nodes
-    #[error("Unexpected token when parsing children nodes {0}")]
     NodeChildren(u32),
     /// Property data buffer len is not a multiple of requested type size
-    #[error(
-        "Property {prop_name} data buffer len is not multiple of type size for node {node_name}"
-    )]
     PropertyDataTypeBuffer {
-        /// Node name
         node_name: &'a str,
-        /// Property name
         prop_name: &'a str,
     },
     /// Property requested at offset is larger than data buffer
-    #[error(
-        "Property {prop_name} requested at offset is larger than data buffer for node {node_name}"
-    )]
     PropertyOffset {
-        /// Node name
         node_name: &'a str,
-        /// Property name
         prop_name: &'a str,
     },
     /// Property data is not a a valid string
-    #[error("Property data is not a a valid string for node {node_name}: {error}")]
     PropertyStr {
-        /// Node name
         node_name: &'a str,
-        /// String parsing error
-        #[source]
         error: StringError,
     },
     /// Unable to parse FDT token when parsing properties
-    #[error("Unable to parse FDT token when parsing properties for node {node_name}: {error}")]
     PropertyTokenParse {
-        /// Node name
         node_name: &'a str,
-        /// Token parsing error
-        #[source]
         error: ParseTokenError,
     },
     /// Unexpected FDT token when parsing properties
-    #[error("Unexpected FDT token when parsing properties for node {node_name}: {token}")]
-    PropertyToken {
-        /// Node name
-        node_name: &'a str,
-        /// Token value
-        token: u32,
-    },
+    PropertyToken { node_name: &'a str, token: u32 },
     /// Property name string is not a valid string
-    #[error("Property name string is not a valid string for node {node_name}: {error}")]
     PropertyNameStr {
-        /// Node name
         node_name: &'a str,
-        /// String parsing error
-        #[source]
         error: StringError,
     },
     /// FDT end token not present at end of structure block
-    #[error("FDT end token not present at end of structure block")]
     FdtEnd,
+}
+
+impl Display for ErrorKind<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ErrorKind::BufferAlignment => f.write_str("Buffer is not aligned to u32"),
+            ErrorKind::NoHeader => f.write_str("Buffer too small for fixed FDT header"),
+            ErrorKind::HeaderMagic => f.write_str("FDT header magic field invalid"),
+            ErrorKind::HeaderTotalSize => {
+                f.write_str("FDT header total size greater than provided buffer")
+            }
+            ErrorKind::HeaderVersion => f.write_str("FDT header version invalid"),
+            ErrorKind::StructureBlock => f.write_str("Structure block not contained within buffer"),
+            ErrorKind::StructureBlockAlignment => {
+                f.write_str("Structure block offset is not aligned to u32")
+            }
+            ErrorKind::MemoryReservationBlock => {
+                f.write_str("Memory reservation block not contained within buffer")
+            }
+            ErrorKind::MemoryReservationBlockEnd => {
+                f.write_str("Memory reservation block did not end with an empty entry")
+            }
+            ErrorKind::StringsBlock => f.write_str("Strings block not contained within buffer"),
+            ErrorKind::RootNode => f.write_str("No root node present"),
+            ErrorKind::MultipleRootNodes => f.write_str("More than one node at the root"),
+            ErrorKind::NodeToken(e) => f.write_fmt(format_args!(
+                "Unable to parse FDT token when parsing nodes {}",
+                e
+            )),
+            ErrorKind::NodeBegin(token) => f.write_fmt(format_args!(
+                "Unexpected token when parsing begin node {}",
+                token
+            )),
+            ErrorKind::NodeProp(token) => f.write_fmt(format_args!(
+                "Unexpected token when parsing node properties {}",
+                token
+            )),
+            ErrorKind::NodeChildren(token) => f.write_fmt(format_args!(
+                "Unexpected token when parsing children nodes {}",
+                token
+            )),
+            ErrorKind::PropertyDataTypeBuffer { node_name, prop_name } => f.write_fmt(format_args!(
+                "Property {prop_name} data buffer len is not multiple of type size for node {node_name}"
+            )),
+            ErrorKind::PropertyOffset { node_name, prop_name } => f.write_fmt(format_args!(
+                "Property {prop_name} requested at offset is larger than data buffer for node {node_name}"
+            )),
+            ErrorKind::PropertyStr { node_name, error } => f.write_fmt(format_args!(
+                "Property data is not a a valid string for node {node_name}: {error}"
+            )),
+            ErrorKind::PropertyTokenParse { node_name, error } => f.write_fmt(format_args!(
+                "Unable to parse FDT token when parsing properties for node {node_name}: {error}",
+            )),
+            ErrorKind::PropertyToken { node_name, token } => f.write_fmt(format_args!(
+                "Unexpected FDT token when parsing properties for node {node_name}: {}",
+                token
+            )),
+            ErrorKind::PropertyNameStr { node_name, error } => f.write_fmt(format_args!(
+                "Property name string is not a valid string for node {node_name}: {error}",
+            )),
+            ErrorKind::FdtEnd => f.write_str("FDT end token not present at end of structure block"),
+        }
+    }
 }
 
 /// A parser used to parse a FDT.
@@ -142,11 +173,11 @@ impl<'a> Parser<'a> {
     /// attempting to determine the overall size of a device tree.
     pub fn read_total_size(buf: &[u8]) -> Result<usize, Error<'a>> {
         let header = spec::Header::read_from_prefix(buf)
-            .map_err(|_| Error::NoHeader)?
+            .map_err(|_| Error(ErrorKind::NoHeader))?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         if u32::from(header.magic) != spec::MAGIC {
-            Err(Error::HeaderMagic)
+            Err(Error(ErrorKind::HeaderMagic))
         } else {
             Ok(u32::from(header.totalsize) as usize)
         }
@@ -155,27 +186,27 @@ impl<'a> Parser<'a> {
     /// Create a new instance of a FDT parser.
     pub fn new(buf: &'a [u8]) -> Result<Self, Error<'a>> {
         if buf.as_ptr() as usize % size_of::<u32>() != 0 {
-            return Err(Error::BufferAlignment);
+            return Err(Error(ErrorKind::BufferAlignment));
         }
 
         let header = spec::Header::read_from_prefix(buf)
-            .map_err(|_| Error::NoHeader)?
+            .map_err(|_| Error(ErrorKind::NoHeader))?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         if u32::from(header.magic) != spec::MAGIC {
-            return Err(Error::HeaderMagic);
+            return Err(Error(ErrorKind::HeaderMagic));
         }
 
         // Validate total size within buf.
         let total_size = u32::from(header.totalsize) as usize;
         if total_size > buf.len() {
-            return Err(Error::HeaderTotalSize);
+            return Err(Error(ErrorKind::HeaderTotalSize));
         }
 
         if u32::from(header.version) < spec::CURRENT_VERSION
             || u32::from(header.last_comp_version) > spec::COMPAT_VERSION
         {
-            return Err(Error::HeaderVersion);
+            return Err(Error(ErrorKind::HeaderVersion));
         }
 
         // Validate the mem_rsvmap region ends with an empty entry. Currently
@@ -184,10 +215,10 @@ impl<'a> Parser<'a> {
         let mut memory_reservations_len = 0;
         let mut mem_rsvmap = buf
             .get(mem_rsvmap_offset..)
-            .ok_or(Error::MemoryReservationBlock)?;
+            .ok_or(Error(ErrorKind::MemoryReservationBlock))?;
         loop {
             let (entry, rest) = spec::ReserveEntry::read_from_prefix(mem_rsvmap)
-                .map_err(|_| Error::MemoryReservationBlockEnd)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                .map_err(|_| Error(ErrorKind::MemoryReservationBlockEnd))?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             if u64::from(entry.address) == 0 && u64::from(entry.size) == 0 {
                 break;
@@ -199,30 +230,30 @@ impl<'a> Parser<'a> {
 
         let memory_reservations = buf
             .get(mem_rsvmap_offset..(mem_rsvmap_offset + memory_reservations_len))
-            .ok_or(Error::MemoryReservationBlock)?;
+            .ok_or(Error(ErrorKind::MemoryReservationBlock))?;
 
         let struct_offset = u32::from(header.off_dt_struct) as usize;
         let struct_len = u32::from(header.size_dt_struct) as usize;
 
         if struct_offset % size_of::<u32>() != 0 {
-            return Err(Error::StructureBlockAlignment);
+            return Err(Error(ErrorKind::StructureBlockAlignment));
         }
 
         let structure_block = buf
             .get(struct_offset..(struct_offset + struct_len))
-            .ok_or(Error::StructureBlock)?;
+            .ok_or(Error(ErrorKind::StructureBlock))?;
 
         // FDT_END must be the last token in the structure block. Ignore it once
         // checked.
         let structure_block = structure_block
             .strip_suffix(&spec::END.to_be_bytes())
-            .ok_or(Error::FdtEnd)?;
+            .ok_or(Error(ErrorKind::FdtEnd))?;
 
         let strings_offset = u32::from(header.off_dt_strings) as usize;
         let strings_len = u32::from(header.size_dt_strings) as usize;
         let strings_block = buf
             .get(strings_offset..(strings_offset + strings_len))
-            .ok_or(Error::StringsBlock)?;
+            .ok_or(Error(ErrorKind::StringsBlock))?;
 
         Ok(Self {
             total_size,
@@ -240,10 +271,10 @@ impl<'a> Parser<'a> {
             nodes: self.structure_block,
         };
 
-        let root = iter.next().ok_or(Error::RootNode)??;
+        let root = iter.next().ok_or(Error(ErrorKind::RootNode))??;
 
         if iter.next().is_some() {
-            Err(Error::MultipleRootNodes)
+            Err(Error(ErrorKind::MultipleRootNodes))
         } else {
             Ok(root)
         }
@@ -291,27 +322,41 @@ impl ParsedToken<'_> {
 }
 
 /// Errors returned when parsing FDT tokens.
-/// Errors returned when parsing FDT tokens.
-#[derive(Debug, Error)]
-pub enum ParseTokenError {
+#[derive(Debug)]
+enum ParseTokenError {
     /// Unknown token
-    #[error("Unknown FDT token {0}")]
     Unknown(u32),
     /// Buf too small
-    #[error("Buffer too small to read token")]
     BufLen,
     /// Buf too small for prop header
-    #[error("Buffer too small to read property header")]
     PropHeader,
     /// Buf too small for prop data described in prop header
-    #[error("Buffer too small to read property data encoded in property header")]
     PropData,
     /// Begin node name is not valid
-    #[error("Node name is not valid {0}")]
-    BeginName(#[from] StringError),
+    BeginName(StringError),
     /// Buf too small for begin node name alignment
-    #[error("Buffer too small for begin node name alignment")]
     BeginNameAlignment,
+}
+
+impl Display for ParseTokenError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ParseTokenError::Unknown(token) => {
+                f.write_fmt(format_args!("Unknown FDT token {}", token))
+            }
+            ParseTokenError::BufLen => f.write_str("Buffer too small to read token"),
+            ParseTokenError::PropHeader => f.write_str("Buffer too small to read property header"),
+            ParseTokenError::PropData => {
+                f.write_str("Buffer too small to read property data encoded in property header")
+            }
+            ParseTokenError::BeginName(e) => {
+                f.write_fmt(format_args!("Node name is not valid {}", e))
+            }
+            ParseTokenError::BeginNameAlignment => {
+                f.write_str("Buffer is too small for begin node name alignment")
+            }
+        }
+    }
 }
 
 /// Read to the next token from `buf`, returning `(token, remaining_buffer)`.
@@ -366,10 +411,10 @@ fn read_token(buf: &[u8]) -> Result<(ParsedToken<'_>, &[u8]), ParseTokenError> {
 }
 
 impl<'a> NodeIter<'a> {
-    fn parse(&mut self) -> Result<Option<Node<'a>>, Error<'a>> {
+    fn parse(&mut self) -> Result<Option<Node<'a>>, ErrorKind<'a>> {
         while !self.nodes.is_empty() {
             // Parse the next token.
-            let (token, rest) = read_token(self.nodes)?;
+            let (token, rest) = read_token(self.nodes).map_err(ErrorKind::NodeToken)?;
             debug_assert!(rest.len() % size_of::<U32b>() == 0);
 
             let name = match token {
@@ -378,7 +423,7 @@ impl<'a> NodeIter<'a> {
                     continue;
                 }
                 ParsedToken::BeginNode { name } => name,
-                _ => return Err(Error::NodeBegin(token.raw())),
+                _ => return Err(ErrorKind::NodeBegin(token.raw())),
             };
 
             self.nodes = rest;
@@ -386,7 +431,7 @@ impl<'a> NodeIter<'a> {
             // Find if there is a properties section, which comes before children.
             let mut prop = self.nodes;
             'prop: loop {
-                let (token, rest) = read_token(prop)?;
+                let (token, rest) = read_token(prop).map_err(ErrorKind::NodeToken)?;
                 match token {
                     ParsedToken::BeginNode { .. } => {
                         // Begin node means move to parsing children nodes.
@@ -397,7 +442,7 @@ impl<'a> NodeIter<'a> {
                         break 'prop;
                     }
                     ParsedToken::Property { .. } | ParsedToken::Nop => {}
-                    token => return Err(Error::NodeProp(token.raw())),
+                    token => return Err(ErrorKind::NodeProp(token.raw())),
                 };
 
                 prop = rest;
@@ -411,7 +456,7 @@ impl<'a> NodeIter<'a> {
             let mut children = self.nodes;
             let mut begin_node_count = 0;
             'children: loop {
-                let (token, rest) = read_token(children)?;
+                let (token, rest) = read_token(children).map_err(ErrorKind::NodeToken)?;
                 match token {
                     ParsedToken::EndNode => {
                         if begin_node_count == 0 {
@@ -426,7 +471,7 @@ impl<'a> NodeIter<'a> {
                         begin_node_count += 1;
                     }
                     ParsedToken::Property { .. } | ParsedToken::Nop => {}
-                    token => return Err(Error::NodeChildren(token.raw())),
+                    token => return Err(ErrorKind::NodeChildren(token.raw())),
                 };
 
                 children = rest;
@@ -456,7 +501,7 @@ impl<'a> Iterator for NodeIter<'a> {
     type Item = Result<Node<'a>, Error<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parse().transpose()
+        self.parse().map_err(Error).transpose()
     }
 }
 
@@ -516,11 +561,11 @@ pub struct PropertyIter<'a> {
 }
 
 impl<'a> PropertyIter<'a> {
-    fn parse(&mut self) -> Result<Option<Property<'a>>, Error<'a>> {
+    fn parse(&mut self) -> Result<Option<Property<'a>>, ErrorKind<'a>> {
         while !self.properties.is_empty() {
             // Parse the next token.
             let (token, rest) =
-                read_token(self.properties).map_err(|error| Error::PropertyTokenParse {
+                read_token(self.properties).map_err(|error| ErrorKind::PropertyTokenParse {
                     node_name: self.node_name,
                     error,
                 })?;
@@ -532,7 +577,7 @@ impl<'a> PropertyIter<'a> {
                 }
                 ParsedToken::Property { name_offset, data } => (name_offset, data, rest),
                 _ => {
-                    return Err(Error::PropertyToken {
+                    return Err(ErrorKind::PropertyToken {
                         node_name: self.node_name,
                         token: token.raw(),
                     });
@@ -541,7 +586,7 @@ impl<'a> PropertyIter<'a> {
 
             // Read the property name
             let name = string_from_offset(self.strings_block, name_off).map_err(|error| {
-                Error::PropertyNameStr {
+                ErrorKind::PropertyNameStr {
                     node_name: self.node_name,
                     error,
                 }
@@ -563,7 +608,7 @@ impl<'a> Iterator for PropertyIter<'a> {
     type Item = Result<Property<'a>, Error<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parse().transpose()
+        self.parse().map_err(Error).transpose()
     }
 }
 
@@ -595,16 +640,16 @@ impl<'a> Property<'a> {
         <[T]>::ref_from_bytes(self.data)
             .map_err(|_| {
                 // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-                Error::PropertyDataTypeBuffer {
+                Error(ErrorKind::PropertyDataTypeBuffer {
                     node_name: self.node_name,
                     prop_name: self.name,
-                }
+                })
             })?
             .get(index)
-            .ok_or(Error::PropertyOffset {
+            .ok_or(Error(ErrorKind::PropertyOffset {
                 node_name: self.node_name,
                 prop_name: self.name,
-            })
+            }))
             .copied()
     }
 
@@ -624,9 +669,11 @@ impl<'a> Property<'a> {
 
     /// Read the data as a `&str`.
     pub fn read_str(&self) -> Result<&'a str, Error<'a>> {
-        extract_str_from_bytes(self.data).map_err(|error| Error::PropertyStr {
-            node_name: self.node_name,
-            error,
+        extract_str_from_bytes(self.data).map_err(|error| {
+            Error(ErrorKind::PropertyStr {
+                node_name: self.node_name,
+                error,
+            })
         })
     }
 
@@ -635,28 +682,35 @@ impl<'a> Property<'a> {
         Ok(<[U64b]>::ref_from_bytes(self.data)
             .map_err(|_| {
                 // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-                Error::PropertyDataTypeBuffer {
+                Error(ErrorKind::PropertyDataTypeBuffer {
                     node_name: self.node_name,
                     prop_name: self.name,
-                }
+                })
             })?
             .iter()
             .map(|v| v.get()))
     }
 }
 
-/// String parsing errors
-#[derive(Debug, Error)]
-pub enum StringError {
+/// Errors when reading a string from the FDT.
+#[derive(Debug)]
+enum StringError {
     /// Invalid string block offset
-    #[error("Invalid string block offset")]
     Offset,
     /// No null terminator found
-    #[error("No null terminator found")]
     Null,
     /// String is not utf8
-    #[error("String is not utf8 {0}")]
-    Utf8(#[from] core::str::Utf8Error),
+    Utf8(core::str::Utf8Error),
+}
+
+impl Display for StringError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            StringError::Offset => f.write_str("Invalid string block offset"),
+            StringError::Null => f.write_str("No null terminator found"),
+            StringError::Utf8(e) => f.write_fmt(format_args!("String is not utf8 {}", e)),
+        }
+    }
 }
 
 /// An iterator to parse through memory reservations.
@@ -665,13 +719,13 @@ pub struct MemoryReserveIter<'a> {
 }
 
 impl<'a> MemoryReserveIter<'a> {
-    fn parse(&mut self) -> Result<Option<spec::ReserveEntry>, Error<'a>> {
+    fn parse(&mut self) -> Result<Option<spec::ReserveEntry>, ErrorKind<'a>> {
         if self.memory_reservations.is_empty() {
             return Ok(None);
         }
 
         let (entry, rest) = spec::ReserveEntry::read_from_prefix(self.memory_reservations)
-            .map_err(|_| Error::MemoryReservationBlock)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+            .map_err(|_| ErrorKind::MemoryReservationBlock)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         if u64::from(entry.address) == 0 && u64::from(entry.size) == 0 {
             return Ok(None);
@@ -687,9 +741,11 @@ impl<'a> Iterator for MemoryReserveIter<'a> {
     type Item = Result<spec::ReserveEntry, Error<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parse().transpose()
+        self.parse().map_err(Error).transpose()
     }
 }
+
+impl core::error::Error for StringError {}
 
 /// Extract a string from bytes treated as a C String, stopping at the first null terminator.
 fn extract_str_from_bytes(bytes: &[u8]) -> Result<&str, StringError> {

@@ -19,7 +19,6 @@ inspect = { workspace = true, optional = true }
 
 arrayvec.workspace = true
 igvm_defs.workspace = true
-thiserror.workspace = true
 tracing = { workspace = true, optional = true }
 
 [lints]
