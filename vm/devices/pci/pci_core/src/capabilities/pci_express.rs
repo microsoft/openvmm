@@ -11,6 +11,9 @@ use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+/// FLR bit is the 28th bit in the Device Capabilities register (0 indexed).
+pub const PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK: u32 = 1 << 28;
+
 /// Callback interface for handling Function Level Reset (FLR) events.
 pub trait FlrHandler: Send + Sync + Inspect {
     /// Called when Function Level Reset is initiated.
@@ -296,7 +299,10 @@ mod tests {
 
         // Test Device Capabilities Register (offset 0x04)
         let device_caps_val = cap.read_u32(0x04);
-        assert_eq!(device_caps_val & (1 << 29), 1 << 29); // FLR bit should be set
+        assert_eq!(
+            device_caps_val & PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK,
+            PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK
+        ); // FLR bit should be set
 
         // Test Device Control/Status Register (offset 0x08) - should be zero initially
         let device_ctl_sts_val = cap.read_u32(0x08);
@@ -313,7 +319,7 @@ mod tests {
 
         // Test Device Capabilities Register (offset 0x04) - FLR should not be set
         let device_caps_val = cap.read_u32(0x04);
-        assert_eq!(device_caps_val & (1 << 29), 0); // FLR bit should not be set
+        assert_eq!(device_caps_val & PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK, 0); // FLR bit should not be set
     }
 
     #[test]
