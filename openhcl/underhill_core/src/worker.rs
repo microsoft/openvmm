@@ -295,6 +295,8 @@ pub struct UnderhillEnvCfg {
     pub disable_uefi_frontpage: bool,
     /// Guest state encryption policy
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+    /// Management VTL feature flags
+    pub management_vtl_features: Option<u64>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1197,6 +1199,15 @@ async fn new_underhill_vm(
         }
     }
 
+    let management_vtl_features = env_cfg
+        .management_vtl_features
+        .map(|f| {
+            tracing::info!("using management vtl features from command line");
+            f.into()
+        })
+        .unwrap_or(dps.general.management_vtl_features);
+    tracing::info!(?management_vtl_features);
+
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
         crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
@@ -1655,11 +1666,14 @@ async fn new_underhill_vm(
     // use the encryption policy from the command line if it is provided
     let guest_state_encryption_policy = env_cfg
         .guest_state_encryption_policy
-        .map(|p| match p {
-            GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
-            GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
-            GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
-            GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+        .map(|p| {
+            tracing::info!("using guest state encryption policy from command line");
+            match p {
+                GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
+                GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
+                GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
+                GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+            }
         })
         .unwrap_or(dps.general.guest_state_encryption_policy);
 
@@ -1703,9 +1717,7 @@ async fn new_underhill_vm(
                 suppress_attestation,
                 early_init_driver,
                 guest_state_encryption_policy,
-                dps.general
-                    .management_vtl_features
-                    .strict_encryption_policy(),
+                management_vtl_features.strict_encryption_policy(),
             )
             .instrument(tracing::info_span!(
                 "initialize_platform_security",
@@ -2548,10 +2560,17 @@ async fn new_underhill_vm(
             )
             .into_resource();
 
-            if !matches!(attestation_type, AttestationType::Host) {
-                TpmAkCertTypeResource::HwAttested(request_ak_cert)
-            } else {
-                TpmAkCertTypeResource::Trusted(request_ak_cert)
+            match attestation_type {
+                AttestationType::Snp | AttestationType::Tdx => {
+                    TpmAkCertTypeResource::HwAttested(request_ak_cert)
+                }
+                AttestationType::Host
+                    if management_vtl_features.control_ak_cert_provisioning()
+                        && management_vtl_features.attempt_ak_cert_callback() =>
+                {
+                    TpmAkCertTypeResource::Trusted(request_ak_cert)
+                }
+                AttestationType::Host => TpmAkCertTypeResource::TrustedPreProvisionedOnly,
             }
         } else {
             TpmAkCertTypeResource::None

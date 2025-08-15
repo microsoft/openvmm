@@ -543,10 +543,7 @@ impl Tpm {
             }
         }
 
-        if matches!(
-            self.ak_cert_type,
-            TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_)
-        ) {
+        if !matches!(self.ak_cert_type, TpmAkCertType::None) {
             // Create auth value for NV index password authorization.
             // The value needs to be preserved across live servicing.
             let mut auth_value = 0;
@@ -567,7 +564,7 @@ impl Tpm {
             self.keys = Some(TpmKeys { ak_pub, ek_pub });
             tracing::info!(
                 CVM_ALLOWED,
-                can_renew_ak = can_renew_ak,
+                can_renew_ak,
                 "loaded existing AK from VMGS vTPM state"
             );
             self.allow_ak_cert_renewal = can_renew_ak;
@@ -587,9 +584,7 @@ impl Tpm {
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
 
             // Initialize `TPM_NV_INDEX_AIK_CERT` and `TPM_NV_INDEX_ATTESTATION_REPORT`
-            //
-            // Only renew AK cert if hardware isolated.
-            if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)) {
+            if !matches!(self.ak_cert_type, TpmAkCertType::TrustedPreProvisionedOnly) {
                 self.renew_ak_cert()?;
             }
         }
@@ -1301,7 +1296,10 @@ impl MmioIntercept for Tpm {
                         "executing guest tpm cmd",
                     );
 
-                    if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)) {
+                    if matches!(
+                        self.ak_cert_type,
+                        TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_)
+                    ) {
                         if let Some(CommandCodeEnum::NV_Read) = cmd_header {
                             self.refresh_device_attestation_data_on_nv_read()
                         }

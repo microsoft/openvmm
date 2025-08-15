@@ -183,6 +183,11 @@ pub struct Options {
     /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
     /// Specify which guest state encryption policy to use.
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_FEATURES=\<number\>)
+    /// Management VTL feature flags. For bit definitions, see
+    /// `get_protocol::dps_json::ManagementVtlFeatures`
+    pub management_vtl_features: Option<u64>,
 }
 
 impl Options {
@@ -224,17 +229,24 @@ impl Options {
         }
 
         let parse_legacy_env_bool = |name| parse_bool(legacy_openhcl_env(name));
-        let parse_env_bool = |name: &str| parse_bool(env.get::<OsStr>(name.as_ref()));
+        let parse_env_bool = |name: &str| parse_bool(parse_env_string(name));
 
-        let parse_legacy_env_number = |name| {
-            legacy_openhcl_env(name)
+        fn parse_number(value: Option<&OsString>) -> anyhow::Result<Option<u64>> {
+            value
                 .map(|v| {
-                    v.to_string_lossy().parse().context(format!(
-                        "Error parsing numeric environment variable {} {:?}",
-                        name, v
-                    ))
+                    let v = v.to_string_lossy();
+                    v.parse()
+                        .context(format!("invalid numeric environment variable: {v}"))
                 })
                 .transpose()
+        }
+
+        let parse_legacy_env_number = |name| {
+            parse_number(legacy_openhcl_env(name))
+                .context(format!("parsing legacy env number: {name}"))
+        };
+        let parse_env_number = |name| {
+            parse_number(parse_env_string(name)).context(format!("parsing env number: {name}"))
         };
 
         let mut wait_for_start = parse_legacy_env_bool("OPENHCL_WAIT_FOR_START");
@@ -290,10 +302,14 @@ impl Options {
                 x.to_string_lossy()
                     .parse::<GuestStateEncryptionPolicyCli>()
                     .map_err(|e| {
-                        tracing::warn!("failed to parse HCL_GUEST_STATE_ENCRYPTION_POLICY: {}", e)
+                        tracing::warn!("failed to parse HCL_GUEST_STATE_ENCRYPTION_POLICY: {:#}", e)
                     })
                     .ok()
             });
+        let management_vtl_features = parse_env_number("HCL_FEATURES")
+            .map_err(|e| tracing::warn!("failed to parse HCL_FEATURES: {:#}", e))
+            .ok()
+            .flatten();
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -352,6 +368,7 @@ impl Options {
             test_configuration,
             disable_uefi_frontpage,
             guest_state_encryption_policy,
+            management_vtl_features,
         })
     }
 

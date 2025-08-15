@@ -48,6 +48,9 @@ impl ResourceKind for RequestAkCertKind {
 pub enum TpmAkCertTypeResource {
     /// No Ak cert.
     None,
+    /// Expects an AK cert that is not hardware-attested
+    /// to be pre-provisioned. Used by TVM
+    TrustedPreProvisionedOnly,
     /// Authorized AK cert that is not hardware-attested.
     /// Used by TVM
     Trusted(Resource<RequestAkCertKind>),
