@@ -70,7 +70,13 @@ impl SimpleFlowNode for Node {
             let (read_built_sidecar, built_sidecar) = ctx.new_var();
             ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
                 custom_target,
-                profile,
+                build_profile: profile,
+                release_cfg: match profile {
+                    OpenvmmHclBuildProfile::Debug => false,
+                    OpenvmmHclBuildProfile::Release | OpenvmmHclBuildProfile::OpenvmmHclShip => {
+                        true
+                    }
+                },
                 recipe: recipe.clone(),
                 built_openvmm_hcl,
                 built_openhcl_boot,

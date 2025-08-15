@@ -36,7 +36,7 @@ impl SimpleFlowNode for Node {
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 profile: OpenvmmHclBuildProfile::OpenvmmHclShip,
                 features: (OpenhclIgvmRecipe::X64)
-                    .recipe_details(OpenvmmHclBuildProfile::OpenvmmHclShip)
+                    .recipe_details(true)
                     .openvmm_hcl_features,
                 no_split_dbg_info: false,
             },

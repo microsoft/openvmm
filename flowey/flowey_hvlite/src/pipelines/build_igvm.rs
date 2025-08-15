@@ -50,13 +50,17 @@ where
     /// into a VTL2 initrd, what `igvmfilegen` manifest is being used, etc...
     pub recipe: Recipe,
 
-    /// Build using release variants of all constituent components.
+    /// Build using release variants of all constituent binary components.
     ///
     /// Uses --profile=boot-release for openhcl_boot, --profile=openhcl-ship
-    /// when building openvmm_hcl, `--min-interactive` vtl2 initrd
-    /// configuration, `-release.json` manifest variant, etc...
+    /// when building openvmm_hcl, etc...
     #[clap(long)]
     pub release: bool,
+
+    /// Configure the IGVM file with the appropriate `-release.json`
+    /// manifest variant, and disable debug-only features.
+    #[clap(long)]
+    pub release_cfg: bool,
 
     /// pass `--verbose` to cargo
     #[clap(long)]
@@ -230,6 +234,7 @@ impl IntoPipeline for BuildIgvmCli {
         let Self {
             recipe,
             release,
+            release_cfg,
             verbose,
             locked,
             install_missing_deps,
@@ -257,11 +262,7 @@ impl IntoPipeline for BuildIgvmCli {
         } = self;
 
         if with_perf_tools {
-            custom_extra_rootfs.push(
-                crate::repo_root()
-                    .join("openhcl/perftoolsfs.config")
-                    .clone(),
-            );
+            custom_extra_rootfs.push(crate::repo_root().join("openhcl/perftoolsfs.config"));
         }
 
         let mut pipeline = Pipeline::new();
@@ -309,6 +310,7 @@ impl IntoPipeline for BuildIgvmCli {
                     OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
                 },
                 release,
+                release_cfg,
 
                 customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
                     build_label,
