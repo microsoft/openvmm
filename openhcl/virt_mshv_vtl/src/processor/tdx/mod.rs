@@ -856,20 +856,18 @@ impl BackingPrivate for TdxBacked {
                 .into(),
         );
 
+        let controls = TdxL2Ctls::new()
+            // Configure L2 controls to permit shared memory.
+            .with_enable_shared_ept(!shared.cvm.hide_isolation)
+            // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
+            .with_enable_tdvmcall(shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation);
+
+        params
+            .runner
+            .set_l2_ctls(GuestVtl::Vtl0, controls)
+            .map_err(crate::Error::FailedToSetL2Ctls)?;
+
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
-            let controls = TdxL2Ctls::new()
-                // Configure L2 controls to permit shared memory.
-                .with_enable_shared_ept(!shared.cvm.hide_isolation)
-                // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
-                .with_enable_tdvmcall(
-                    shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation,
-                );
-
-            params
-                .runner
-                .set_l2_ctls(vtl, controls)
-                .map_err(crate::Error::FailedToSetL2Ctls)?;
-
             // Set guest/host masks for CR0 and CR4. These enable shadowing these
             // registers since TDX requires certain bits to be set at all times.
             let initial_cr0 = params
