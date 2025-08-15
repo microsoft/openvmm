@@ -751,6 +751,7 @@ open_enum! {
         DEFAULT = 0x80,
         RSS_CAPABILITIES = 0x88,
         RSS_PARAMETERS = 0x89,
+        OID_REQUEST = 0x96,
         OFFLOAD = 0xA7,
         OFFLOAD_ENCAPSULATION = 0xA8,
     }
@@ -1082,3 +1083,5 @@ open_enum! {
         BINARY = 4,
     }
 }
+
+pub type RndisPacketFilterOidValue = u32;
