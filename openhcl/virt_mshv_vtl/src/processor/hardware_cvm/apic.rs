@@ -44,6 +44,9 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
             // We can't put the interrupts directly into offload (where supported) because we might need
             // to clear the tmr state. This can happen if a vector was previously used for a level
             // triggered interrupt, and is now being used for an edge-triggered interrupt.
+
+            // tracing::warn!("VTL0 interrupts: {:x?}", irr);
+
             apic_backing.vp().backing.cvm_state_mut().lapics[vtl]
                 .lapic
                 .request_fixed_interrupts(irr);
