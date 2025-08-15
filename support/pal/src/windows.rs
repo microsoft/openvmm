@@ -44,6 +44,8 @@ use std::io::Error;
 use std::io::Result;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
+use std::mem::size_of;
+use std::mem::size_of_val;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::NonNull;

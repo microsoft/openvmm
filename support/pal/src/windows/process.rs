@@ -10,6 +10,8 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io;
 use std::mem::MaybeUninit;
+use std::mem::size_of;
+use std::mem::size_of_val;
 use std::os::windows::prelude::*;
 use std::ptr::null;
 use std::ptr::null_mut;

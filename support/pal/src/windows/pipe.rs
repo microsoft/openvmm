@@ -34,6 +34,8 @@ use pal_event::Event;
 use std::fs::File;
 use std::io;
 use std::mem::MaybeUninit;
+use std::mem::size_of;
+use std::mem::size_of_val;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::null_mut;

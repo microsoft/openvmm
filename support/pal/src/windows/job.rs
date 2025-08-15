@@ -5,6 +5,7 @@
 
 use std::io;
 use std::mem::MaybeUninit;
+use std::mem::size_of_val;
 use std::os::windows::io::AsHandle;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::BorrowedHandle;
