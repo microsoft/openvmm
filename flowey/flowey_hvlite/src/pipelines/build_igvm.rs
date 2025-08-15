@@ -58,7 +58,7 @@ where
     pub release: bool,
 
     /// Configure the IGVM file with the appropriate `-release.json`
-    /// manifest variant.
+    /// manifest variant, and disable debug-only features.
     #[clap(long)]
     pub release_cfg: bool,
 
