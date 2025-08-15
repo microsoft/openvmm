@@ -59,6 +59,7 @@ use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::hypercall::ModifyHostVisibility;
+use hvdef::hypercall::VbsVmCallReportOutput;
 use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
@@ -1560,6 +1561,35 @@ impl MshvHvcall {
         };
 
         status.result()
+    }
+
+    /// Request a VBS VM report from the host VSM.
+    pub fn vbs_vm_call_report(
+        &self,
+        report_data: &[u8],
+    ) -> Result<[u8; hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE], HvError> {
+        assert!(report_data.len() <= hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE);
+
+        let mut header = hvdef::hypercall::VbsVmCallReport {
+            report_data: [0; hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE],
+        };
+
+        header.report_data[..report_data.len()].copy_from_slice(report_data);
+
+        let mut output: hvdef::hypercall::VbsVmCallReportOutput = FromZeros::new_zeroed();
+
+        // SAFETY: The input header and slice are the correct types for this hypercall.
+        //         The hypercall output is validated right after the hypercall is issued.
+        let status = unsafe {
+            self.hvcall(HypercallCode::HvCallVbsVmCallReport, &header, &mut output)
+                .expect("submitting hypercall should not fail")
+        };
+
+        if status.result().is_ok() {
+            Ok(output.report)
+        } else {
+            Err(status.result().unwrap_err())
+        }
     }
 }
 
