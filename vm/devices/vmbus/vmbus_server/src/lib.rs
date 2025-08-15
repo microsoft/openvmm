@@ -72,7 +72,6 @@ use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OfferResources;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::bus::OpenRequest;
-use vmbus_channel::bus::OpenResult;
 use vmbus_channel::bus::ParentBus;
 use vmbus_channel::bus::RestoreResult;
 use vmbus_channel::gpadl::GpadlMap;
@@ -224,6 +223,7 @@ enum VmbusRequest {
 #[derive(mesh::MeshPayload, Debug)]
 pub struct OfferInfo {
     pub params: OfferParamsInternal,
+    pub event: Interrupt,
     pub request_send: mesh::Sender<ChannelRequest>,
     pub server_request_recv: mesh::Receiver<ChannelServerRequest>,
 }
@@ -701,7 +701,7 @@ struct ServerTaskInner {
 
 #[derive(Debug)]
 enum ChannelResponse {
-    Open(Option<OpenResult>),
+    Open(bool),
     Close,
     Gpadl(GpadlId, bool),
     TeardownGpadl(GpadlId),
@@ -721,6 +721,7 @@ struct Channel {
     seq: u64,
     state: ChannelState,
     gpadls: Arc<GpadlMap>,
+    guest_to_host_event: Arc<ChannelEvent>,
     flags: protocol::OfferFlags,
     // A channel can be reserved no matter what state it is in. This allows the message port for a
     // reserved channel to remain available even if the channel is closed, so the guest can read the
@@ -735,22 +736,17 @@ struct ReservedState {
     target: ConnectionTarget,
 }
 
+struct ChannelOpenState {
+    open_params: OpenParams,
+    _event_port: Box<dyn Send>,
+    guest_event_port: Box<dyn GuestEventPort>,
+    host_to_guest_interrupt: Interrupt,
+}
+
 enum ChannelState {
     Closed,
-    Opening {
-        open_params: OpenParams,
-        guest_event_port: Box<dyn GuestEventPort>,
-        host_to_guest_interrupt: Interrupt,
-    },
-    Open {
-        open_params: OpenParams,
-        _event_port: Box<dyn Send>,
-        guest_event_port: Box<dyn GuestEventPort>,
-        host_to_guest_interrupt: Interrupt,
-        guest_to_host_event: Arc<ChannelEvent>,
-    },
+    Open(Box<ChannelOpenState>),
     Closing,
-    FailedOpen,
 }
 
 impl ServerTask {
@@ -791,6 +787,7 @@ impl ServerTask {
                 send: info.request_send,
                 state: ChannelState::Closed,
                 gpadls: GpadlMap::new(),
+                guest_to_host_event: Arc::new(ChannelEvent(info.event)),
                 seq,
                 flags,
                 reserved_state: ReservedState {
@@ -862,46 +859,38 @@ impl ServerTask {
         }
     }
 
-    fn handle_open(&mut self, offer_id: OfferId, result: Option<OpenResult>) {
-        let status = if result.is_some() {
+    fn handle_open(&mut self, offer_id: OfferId, success: bool) {
+        let status = if success {
+            let channel = self
+                .inner
+                .channels
+                .get_mut(&offer_id)
+                .expect("channel exists");
+
+            // Some guests ignore interrupts before they receive the OpenResult message. To avoid
+            // a potential hang, signal the channel after a delay if needed.
+            if let Some(delay) = self.channel_unstick_delay {
+                if channel.unstick_state == ChannelUnstickState::None {
+                    channel.unstick_state = ChannelUnstickState::Queued;
+                    let seq = channel.seq;
+                    let mut timer = PolledTimer::new(&self.driver);
+                    self.channel_unstickers.push(Box::pin(async move {
+                        timer.sleep(delay).await;
+                        OfferInstanceId { offer_id, seq }
+                    }));
+                } else {
+                    channel.unstick_state = ChannelUnstickState::NeedsRequeue;
+                }
+            }
+
             0
         } else {
             protocol::STATUS_UNSUCCESSFUL
         };
 
-        match self.inner.complete_open(offer_id, result) {
-            Ok(channel) => {
-                // Some guests ignore interrupts before they receive the OpenResult message. To avoid
-                // a potential hang, signal the channel after a delay if needed.
-                if let Some(delay) = self.channel_unstick_delay {
-                    if channel.unstick_state == ChannelUnstickState::None {
-                        channel.unstick_state = ChannelUnstickState::Queued;
-                        let seq = channel.seq;
-                        let mut timer = PolledTimer::new(&self.driver);
-                        self.channel_unstickers.push(Box::pin(async move {
-                            timer.sleep(delay).await;
-                            OfferInstanceId { offer_id, seq }
-                        }));
-                    } else {
-                        channel.unstick_state = ChannelUnstickState::NeedsRequeue;
-                    }
-                }
-
-                self.server
-                    .with_notifier(&mut self.inner)
-                    .open_complete(offer_id, status);
-            }
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to complete open"
-                );
-                // If complete_open failed, the channel is now in FailedOpen state and the device needs
-                // to notified to close it. Calling open_complete is postponed until the device responds
-                // to the close request.
-                self.inner.notify(offer_id, channels::Action::Close);
-            }
-        }
+        self.server
+            .with_notifier(&mut self.inner)
+            .open_complete(offer_id, status);
     }
 
     fn handle_close(&mut self, offer_id: OfferId) {
@@ -917,14 +906,6 @@ impl ServerTask {
                 self.server
                     .with_notifier(&mut self.inner)
                     .close_complete(offer_id);
-            }
-            ChannelState::FailedOpen => {
-                // Now that the device has processed the close request after open failed, we can
-                // finish handling the failed open and send an open result to the guest.
-                channel.state = ChannelState::Closed;
-                self.server
-                    .with_notifier(&mut self.inner)
-                    .open_complete(offer_id, protocol::STATUS_UNSUCCESSFUL);
             }
             _ => {
                 tracing::error!(?offer_id, "invalid close channel response");
@@ -954,17 +935,16 @@ impl ServerTask {
     fn handle_restore_channel(
         &mut self,
         offer_id: OfferId,
-        open: Option<OpenResult>,
+        open: bool,
     ) -> anyhow::Result<RestoreResult> {
         let gpadls = self.server.channel_gpadls(offer_id);
 
         // If the channel is opened, handle that before calling into channels so that failure can
         // be handled before the channel is marked restored.
         let open_request = open
-            .map(|result| -> anyhow::Result<_> {
+            .then(|| -> anyhow::Result<_> {
                 let params = self.server.get_restore_open_params(offer_id)?;
-                let (_, interrupt) = self.inner.open_channel(offer_id, &params)?;
-                let channel = self.inner.complete_open(offer_id, Some(result))?;
+                let (channel, interrupt) = self.inner.open_channel(offer_id, &params)?;
                 Ok(OpenRequest::new(
                     params.open_data,
                     interrupt,
@@ -1328,19 +1308,13 @@ impl ServerTask {
         force: bool,
         unstick_host: bool,
     ) -> anyhow::Result<()> {
-        if let ChannelState::Open {
-            open_params,
-            host_to_guest_interrupt,
-            guest_to_host_event,
-            ..
-        } = &channel.state
-        {
+        if let ChannelState::Open(state) = &channel.state {
             if force {
                 tracing::info!(channel = %channel.key, "waking host and guest");
                 if unstick_host {
-                    guest_to_host_event.0.deliver();
+                    channel.guest_to_host_event.0.deliver();
                 }
-                host_to_guest_interrupt.deliver();
+                state.host_to_guest_interrupt.deliver();
                 return Ok(());
             }
 
@@ -1348,14 +1322,14 @@ impl ServerTask {
                 .gpadls
                 .clone()
                 .view()
-                .map(open_params.open_data.ring_gpadl_id)
+                .map(state.open_params.open_data.ring_gpadl_id)
                 .context("couldn't find ring gpadl")?;
 
             let aligned = AlignedGpadlView::new(gpadl)
                 .ok()
                 .context("ring not aligned")?;
             let (in_gpadl, out_gpadl) = aligned
-                .split(open_params.open_data.ring_offset)
+                .split(state.open_params.open_data.ring_offset)
                 .ok()
                 .context("couldn't split ring")?;
 
@@ -1363,8 +1337,8 @@ impl ServerTask {
                 gm,
                 channel,
                 in_gpadl,
-                unstick_host.then_some(guest_to_host_event),
-                host_to_guest_interrupt,
+                unstick_host.then_some(channel.guest_to_host_event.as_ref()),
+                &state.host_to_guest_interrupt,
             ) {
                 tracelimit::warn_ratelimited!(
                     channel = %channel.key,
@@ -1376,8 +1350,8 @@ impl ServerTask {
                 gm,
                 channel,
                 out_gpadl,
-                unstick_host.then_some(guest_to_host_event),
-                host_to_guest_interrupt,
+                unstick_host.then_some(channel.guest_to_host_event.as_ref()),
+                &state.host_to_guest_interrupt,
             ) {
                 tracelimit::warn_ratelimited!(
                     channel = %channel.key,
@@ -1487,15 +1461,15 @@ impl Notifier for ServerTaskInner {
                         Box::pin(future::ready((
                             offer_id,
                             seq,
-                            Ok(ChannelResponse::Open(None)),
+                            Ok(ChannelResponse::Open(false)),
                         )))
                     }
                 }
             }
             channels::Action::Close => {
                 if let Some(channel_bitmap) = self.channel_bitmap.as_ref() {
-                    if let ChannelState::Open { open_params, .. } = channel.state {
-                        channel_bitmap.unregister_channel(open_params.event_flag);
+                    if let ChannelState::Open(ref state) = channel.state {
+                        channel_bitmap.unregister_channel(state.open_params.event_flag);
                     }
                 }
 
@@ -1538,11 +1512,8 @@ impl Notifier for ServerTaskInner {
                 )
             }
             channels::Action::Modify { target_vp } => {
-                if let ChannelState::Open {
-                    guest_event_port, ..
-                } = &mut channel.state
-                {
-                    if let Err(err) = guest_event_port.set_target_vp(target_vp) {
+                if let ChannelState::Open(state) = &mut channel.state {
+                    if let Err(err) = state.guest_event_port.set_target_vp(target_vp) {
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             channel = %channel.key,
@@ -1610,13 +1581,13 @@ impl Notifier for ServerTaskInner {
     fn inspect(&self, version: Option<VersionInfo>, offer_id: OfferId, req: inspect::Request<'_>) {
         let channel = self.channels.get(&offer_id).expect("should exist");
         let mut resp = req.respond();
-        if let ChannelState::Open { open_params, .. } = &channel.state {
+        if let ChannelState::Open(state) = &channel.state {
             let mem = self.get_gm_for_channel(version.expect("must be connected"), channel);
             inspect_rings(
                 &mut resp,
                 mem,
                 channel.gpadls.clone(),
-                &open_params.open_data,
+                &state.open_params.open_data,
             );
         }
     }
@@ -1721,6 +1692,27 @@ impl ServerTaskInner {
             .get_mut(&offer_id)
             .expect("channel does not exist");
 
+        // Always register with the channel bitmap; if Win7, this may be unnecessary.
+        if let Some(channel_bitmap) = self.channel_bitmap.as_ref() {
+            channel_bitmap.register_channel(
+                open_params.event_flag,
+                channel.guest_to_host_event.0.clone(),
+            );
+        }
+        // Always set up an event port; if V1, this will be unused.
+        // N.B. The event port must be created before the device is notified of the open by the
+        //      caller. The device may begin communicating with the guest immediately when it is
+        //      notified, so the event port must exist so that the guest can send interrupts.
+        let event_port = self
+            .synic
+            .add_event_port(
+                open_params.connection_id,
+                self.vtl,
+                channel.guest_to_host_event.clone(),
+                open_params.monitor_info,
+            )
+            .context("failed to create guest-to-host event port")?;
+
         // For pre-Win8 guests, the host-to-guest event always targets vp 0 and the channel
         // bitmap is used instead of the event flag.
         let (target_vp, event_flag) = if self.channel_bitmap.is_some() {
@@ -1763,76 +1755,13 @@ impl ServerTaskInner {
             channel.reserved_state.target = target;
         }
 
-        channel.state = ChannelState::Opening {
+        channel.state = ChannelState::Open(Box::new(ChannelOpenState {
             open_params: *open_params,
+            _event_port: event_port,
             guest_event_port,
             host_to_guest_interrupt: interrupt.clone(),
-        };
+        }));
         Ok((channel, interrupt))
-    }
-
-    fn complete_open(
-        &mut self,
-        offer_id: OfferId,
-        result: Option<OpenResult>,
-    ) -> anyhow::Result<&mut Channel> {
-        let channel = self
-            .channels
-            .get_mut(&offer_id)
-            .expect("channel does not exist");
-
-        channel.state = if let Some(result) = result {
-            // The channel will be left in the FailedOpen state only if an error occurs in the match
-            // arm.
-            match std::mem::replace(&mut channel.state, ChannelState::FailedOpen) {
-                ChannelState::Opening {
-                    open_params,
-                    guest_event_port,
-                    host_to_guest_interrupt,
-                } => {
-                    let guest_to_host_event =
-                        Arc::new(ChannelEvent(result.guest_to_host_interrupt));
-                    // Always register with the channel bitmap; if Win7, this may be unnecessary.
-                    if let Some(channel_bitmap) = self.channel_bitmap.as_ref() {
-                        channel_bitmap.register_channel(
-                            open_params.event_flag,
-                            guest_to_host_event.0.clone(),
-                        );
-                    }
-                    // Always set up an event port; if V1, this will be unused.
-                    let event_port = self
-                        .synic
-                        .add_event_port(
-                            open_params.connection_id,
-                            self.vtl,
-                            guest_to_host_event.clone(),
-                            open_params.monitor_info,
-                        )
-                        .with_context(|| {
-                            format!(
-                                "failed to create event port for VTL {:?}, connection ID {:#x}",
-                                self.vtl, open_params.connection_id
-                            )
-                        })?;
-
-                    ChannelState::Open {
-                        open_params,
-                        _event_port: event_port,
-                        guest_event_port,
-                        host_to_guest_interrupt,
-                        guest_to_host_event,
-                    }
-                }
-                s => {
-                    tracing::error!("attempting to complete open of open or closed channel");
-                    // Restore the original state
-                    s
-                }
-            }
-        } else {
-            ChannelState::Closed
-        };
-        Ok(channel)
     }
 
     /// If the client specified an interrupt page, map it into host memory and
@@ -1886,13 +1815,7 @@ impl ServerTaskInner {
         if self.channels.iter().any(|(_, c)| {
             matches!(
                 &c.state,
-                ChannelState::Open {
-                    open_params,
-                    ..
-                } | ChannelState::Opening {
-                    open_params,
-                    ..
-                } if open_params.monitor_info.is_some()
+                ChannelState::Open(state) if state.open_params.monitor_info.is_some()
             )
         }) {
             anyhow::bail!("attempt to change monitor page while open channels using mnf");
@@ -2036,6 +1959,7 @@ impl VmbusServerControl {
     async fn offer(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
         let mut offer_info = OfferInfo {
             params: request.params.into(),
+            event: request.event,
             request_send: request.request_send,
             server_request_recv: request.server_request_recv,
         };
@@ -2378,9 +2302,7 @@ mod tests {
             };
 
             f(rpc.input());
-            rpc.complete(Some(OpenResult {
-                guest_to_host_interrupt: Interrupt::null(),
-            }));
+            rpc.complete(true);
         }
 
         async fn handle_gpadl_teardown(&mut self) {
@@ -2398,7 +2320,7 @@ mod tests {
 
         async fn restore(&self) {
             self.server_request_send
-                .call(ChannelServerRequest::Restore, None)
+                .call(ChannelServerRequest::Restore, false)
                 .await
                 .unwrap()
                 .unwrap();
@@ -2437,6 +2359,7 @@ mod tests {
             let (request_send, request_recv) = mesh::channel();
             let (server_request_send, server_request_recv) = mesh::channel();
             let offer = OfferInput {
+                event: Interrupt::from_fn(|| {}),
                 request_send,
                 server_request_recv,
                 params: OfferParams {
@@ -2894,6 +2817,7 @@ mod tests {
                     flags: protocol::OfferFlags::new().with_enumerate_device_interface(true),
                     ..Default::default()
                 },
+                event: Interrupt::from_fn(|| {}),
                 request_send,
                 server_request_recv,
             })

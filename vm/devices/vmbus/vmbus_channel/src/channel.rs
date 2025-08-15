@@ -10,7 +10,6 @@ use crate::bus::OfferInput;
 use crate::bus::OfferParams;
 use crate::bus::OfferResources;
 use crate::bus::OpenRequest;
-use crate::bus::OpenResult;
 use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
 use crate::gpadl::GpadlMapView;
@@ -334,6 +333,7 @@ async fn offer_generic(
 
     let request = OfferInput {
         params: offer,
+        event: events[0].clone().interrupt(),
         request_send,
         server_request_recv,
     };
@@ -592,22 +592,21 @@ impl Device {
         channel: &mut dyn VmbusDevice,
         channel_idx: usize,
         open_request: OpenRequest,
-    ) -> Option<OpenResult> {
+    ) -> bool {
         assert!(!self.open[channel_idx]);
         // N.B. Any asynchronous GPADL requests will block while in
         //      open(). This should be fine for all known devices.
-        let opened = if let Err(error) = channel.open(channel_idx as u16, &open_request).await {
-            tracelimit::error_ratelimited!(
-                error = error.as_ref() as &dyn std::error::Error,
-                "failed to open channel"
-            );
-            None
-        } else {
-            Some(OpenResult {
-                guest_to_host_interrupt: self.events[channel_idx].clone().interrupt(),
+        let opened = channel
+            .open(channel_idx as u16, &open_request)
+            .await
+            .inspect_err(|error| {
+                tracelimit::error_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to open channel"
+                );
             })
-        };
-        self.open[channel_idx] = opened.is_some();
+            .is_ok();
+        self.open[channel_idx] = opened;
         opened
     }
 
@@ -764,6 +763,7 @@ impl Device {
                     subchannel_index: subchannel_idx as u16,
                     ..offer.clone()
                 },
+                event: self.events[subchannel_idx].clone().interrupt(),
                 request_send,
                 server_request_recv,
             };
@@ -800,12 +800,9 @@ impl Device {
             .map_err(ChannelRestoreError::EnablingSubchannels)?;
 
         let mut results = Vec::with_capacity(states.len());
-        for (channel_idx, (open, event)) in states.iter().copied().zip(&self.events).enumerate() {
-            let open_result = open.then(|| OpenResult {
-                guest_to_host_interrupt: event.clone().interrupt(),
-            });
+        for (channel_idx, open) in states.iter().copied().enumerate() {
             let result = self.server_requests[channel_idx]
-                .call_failable(ChannelServerRequest::Restore, open_result)
+                .call_failable(ChannelServerRequest::Restore, open)
                 .await
                 .map_err(|err| ChannelRestoreError::RestoreError(err.into()))?;
 

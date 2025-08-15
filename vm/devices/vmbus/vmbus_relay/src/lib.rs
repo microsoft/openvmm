@@ -48,7 +48,6 @@ use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
 use vmbus_channel::bus::OpenRequest;
-use vmbus_channel::bus::OpenResult;
 use vmbus_client as client;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
@@ -282,7 +281,7 @@ struct RelayChannelTask {
 
 impl RelayChannelTask {
     /// Relay open channel request from VTL0 to Host, responding with Open Result
-    async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<OpenResult> {
+    async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<()> {
         // If the guest uses the channel bitmap, the host can't send interrupts
         // directly and they must be relayed.
         let redirect_interrupt = self.channel.use_interrupt_relay.load(Ordering::SeqCst);
@@ -320,9 +319,7 @@ impl RelayChannelTask {
 
         self.channel.is_open = true;
 
-        Ok(OpenResult {
-            guest_to_host_interrupt: opened.guest_to_host_signal,
-        })
+        Ok(())
     }
 
     async fn handle_close_channel(&mut self) {
@@ -395,7 +392,7 @@ impl RelayChannelTask {
                                 "failed to open channel"
                             );
                         })
-                        .ok()
+                        .is_ok()
                 })
                 .await;
             }
@@ -702,6 +699,7 @@ impl RelayTask {
         let key = params.key();
         let new_offer = OfferInfo {
             params,
+            event: offer.guest_to_host_interrupt,
             request_send,
             server_request_recv,
         };

@@ -88,6 +88,7 @@ impl<D: SpawnDriver> ChannelWorker<D> {
         &mut self,
         input: OpenParams,
         close_send: mesh::OneshotSender<()>,
+        guest_to_host: Interrupt,
         host_to_guest: pal_event::Event,
         revoked: Arc<AtomicBool>,
     ) -> anyhow::Result<RawAsyncChannel<MemoryBlockRingMem>> {
@@ -109,8 +110,7 @@ impl<D: SpawnDriver> ChannelWorker<D> {
 
         self.is_gpadl_created = true;
 
-        let open = self
-            .request_send
+        self.request_send
             .call_failable(
                 ChannelRequest::Open,
                 OpenRequest {
@@ -143,7 +143,7 @@ impl<D: SpawnDriver> ChannelWorker<D> {
         };
 
         let signal = ClientSignaller {
-            guest_to_host: open.guest_to_host_signal,
+            guest_to_host,
             host_to_guest: Notify::from_event(host_to_guest).pollable(&self.driver)?,
             revoked: revoked.clone(),
             _close: close_send,
@@ -196,7 +196,13 @@ impl<D: SpawnDriver> ChannelWorker<D> {
         let (close_send, close_recv) = mesh::oneshot();
         let host_to_guest = pal_event::Event::new();
         match worker
-            .open(input, close_send, host_to_guest.clone(), revoked.clone())
+            .open(
+                input,
+                close_send,
+                offer_info.guest_to_host_interrupt,
+                host_to_guest.clone(),
+                revoked.clone(),
+            )
             .await
         {
             Ok(channel) => {

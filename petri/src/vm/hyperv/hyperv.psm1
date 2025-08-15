@@ -401,3 +401,35 @@ function Restart-OpenHCL
 
     $result | Trace-CimMethodExecution -CimInstance $guestManagementService -MethodName "ReloadManagementVtl" -TimeoutSeconds $TimeoutHintSeconds
 }
+
+function Get-VmScreenshot
+{
+    [CmdletBinding()]
+    Param(
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $vmms = Get-Vmms
+    $vmcs = Get-MsvmComputerSystem $Vm
+
+    # Get the resolution of the screen at the moment
+    $videoHead = $vmcs | Get-CimAssociatedInstance -ResultClassName "Msvm_VideoHead"
+    $x = $videoHead.CurrentHorizontalResolution
+    $y = $videoHead.CurrentVerticalResolution
+
+    # Get screenshot
+    $image = $vmms | Invoke-CimMethod -MethodName "GetVirtualSystemThumbnailImage" -Arguments @{
+        TargetSystem = $vmcs
+        WidthPixels = $x
+        HeightPixels = $y
+    }
+
+    [IO.File]::WriteAllBytes($Path, $image.ImageData)
+
+    return "$x,$y"
+}

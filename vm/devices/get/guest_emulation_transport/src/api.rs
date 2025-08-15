@@ -26,7 +26,9 @@ use guid::Guid;
 pub mod platform_settings {
     pub use get_protocol::dps_json::PcatBootDevice;
 
+    use get_protocol::dps_json::GuestStateEncryptionPolicy;
     use get_protocol::dps_json::GuestStateLifetime;
+    use get_protocol::dps_json::ManagementVtlFeatures;
     use guid::Guid;
     use inspect::Inspect;
 
@@ -123,6 +125,10 @@ pub mod platform_settings {
 
         #[inspect(debug)]
         pub guest_state_lifetime: GuestStateLifetime,
+        #[inspect(debug)]
+        pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
+        #[inspect(debug)]
+        pub management_vtl_features: ManagementVtlFeatures,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]

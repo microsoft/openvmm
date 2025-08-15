@@ -13,24 +13,23 @@ mod modify;
 mod runtime;
 mod start;
 
+pub use runtime::OpenVmmFramebufferAccess;
+pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;
 
 use crate::Firmware;
 use crate::PetriLogFile;
-use crate::PetriLogSource;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::disk_image::AgentImage;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
-use crate::openhcl_diag::OpenHclDiagHandler;
 use anyhow::Context;
 use async_trait::async_trait;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
-use framebuffer::FramebufferAccess;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
@@ -128,7 +127,7 @@ pub struct PetriVmConfigOpenVmm {
 
     // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
-    framebuffer_access: Option<FramebufferAccess>,
+    framebuffer_view: Option<framebuffer::View>,
 }
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
@@ -140,7 +139,6 @@ struct PetriVmResourcesOpenVmm {
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
     vtl2_pipette_listener: Option<PolledSocket<UnixListener>>,
-    openhcl_diag_handler: Option<OpenHclDiagHandler>,
     linux_direct_serial_agent: Option<LinuxDirectSerialAgent>,
 
     // Externally injected management stuff also needed at runtime.
@@ -149,7 +147,6 @@ struct PetriVmResourcesOpenVmm {
     openhcl_agent_image: Option<AgentImage>,
     openvmm_path: ResolvedArtifact,
     output_dir: PathBuf,
-    log_source: PetriLogSource,
 
     // TempPaths that cannot be dropped until the end.
     vtl2_vsock_path: Option<TempPath>,

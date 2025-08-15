@@ -8,6 +8,7 @@ use super::hvc::VmState;
 use super::powershell;
 use crate::OpenHclServicingFlags;
 use crate::PetriLogFile;
+use crate::VmScreenshotMeta;
 use anyhow::Context;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
@@ -30,7 +31,7 @@ pub struct HyperVVM {
     name: String,
     vmid: Guid,
     destroyed: bool,
-    _temp_dir: TempDir,
+    temp_dir: TempDir,
     ps_mod: PathBuf,
     create_time: Timestamp,
     log_file: PetriLogFile,
@@ -98,7 +99,7 @@ impl HyperVVM {
             name,
             vmid,
             destroyed: false,
-            _temp_dir: temp_dir,
+            temp_dir,
             ps_mod,
             create_time,
             log_file,
@@ -167,7 +168,7 @@ impl HyperVVM {
 
     /// Waits for an event emitted by the firmware about its boot status, and
     /// verifies that it is the expected success value.
-    pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
+    pub async fn wait_for_successful_boot_event(&self) -> anyhow::Result<()> {
         if let Some(expected_boot_event) = self.expected_boot_event {
             self.wait_for(Self::boot_event, Some(expected_boot_event), 240.seconds())
                 .await
@@ -181,7 +182,7 @@ impl HyperVVM {
 
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
-    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+    pub async fn wait_for_boot_event(&self) -> anyhow::Result<FirmwareEvent> {
         self.wait_for_some(Self::boot_event, 240.seconds()).await
     }
 
@@ -436,12 +437,51 @@ impl HyperVVM {
 
     /// Enable VMBusRelay
     pub fn set_vmbus_redirect(&self, enable: bool) -> anyhow::Result<()> {
-        powershell::set_vmbus_redirect(&self.vmid, &self.ps_mod, enable)
+        powershell::run_set_vmbus_redirect(&self.vmid, &self.ps_mod, enable)
     }
 
     /// Perform an OpenHCL servicing operation.
     pub async fn restart_openhcl(&self, flags: OpenHclServicingFlags) -> anyhow::Result<()> {
         powershell::run_restart_openhcl(&self.vmid, &self.ps_mod, flags)
+    }
+
+    /// Take a screenshot of the VM
+    pub fn screenshot(&self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
+        const IN_BYTES_PER_PIXEL: usize = 2;
+        const OUT_BYTES_PER_PIXEL: usize = 3;
+        let temp_bin_path = self.temp_dir.path().join("screenshot.bin");
+        let (width, height) =
+            powershell::run_get_vm_screenshot(&self.vmid, &self.ps_mod, &temp_bin_path)?;
+        let (widthsize, heightsize) = (width as usize, height as usize);
+        let in_len = widthsize * heightsize * IN_BYTES_PER_PIXEL;
+        let out_len = widthsize * heightsize * OUT_BYTES_PER_PIXEL;
+        let mut image_rgb565 = fs_err::read(temp_bin_path)?;
+        image_rgb565.truncate(in_len);
+        if image_rgb565.len() != in_len {
+            anyhow::bail!("did not get enough bytes for screenshot");
+        }
+
+        image.resize(out_len, 0);
+        for (out_pixel, in_pixel) in image
+            .chunks_exact_mut(OUT_BYTES_PER_PIXEL)
+            .zip(image_rgb565.chunks_exact(IN_BYTES_PER_PIXEL))
+        {
+            // convert from rgb565 ( gggbbbbb rrrrrggg )
+            // to rgb888 ( rrrrrrrr gggggggg bbbbbbbb )
+
+            // red
+            out_pixel[0] = in_pixel[1] & 0b11111000;
+            // green
+            out_pixel[1] = ((in_pixel[1] & 0b00000111) << 5) + ((in_pixel[0] & 0b11100000) >> 3);
+            // blue
+            out_pixel[2] = in_pixel[0] << 3;
+        }
+
+        Ok(VmScreenshotMeta {
+            color: image::ExtendedColorType::Rgb8,
+            width,
+            height,
+        })
     }
 }
 

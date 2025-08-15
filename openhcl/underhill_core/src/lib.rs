@@ -328,6 +328,7 @@ async fn launch_workers(
         nvme_always_flr: opt.nvme_always_flr,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
+        guest_state_encryption_policy: opt.guest_state_encryption_policy,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =

@@ -45,6 +45,7 @@ use crate::nvme_manager::device::VfioNvmeDriverSpawner;
 use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
+use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -70,6 +71,7 @@ use futures_concurrency::future::Race;
 use get_protocol::EventLogId;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
+use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use get_protocol::dps_json::GuestStateLifetime;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
@@ -291,6 +293,8 @@ pub struct UnderhillEnvCfg {
     pub test_configuration: Option<TestScenarioConfig>,
     /// Disable the UEFI front page.
     pub disable_uefi_frontpage: bool,
+    /// Guest state encryption policy
+    pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1648,6 +1652,17 @@ async fn new_underhill_vm(
         }
     };
 
+    // use the encryption policy from the command line if it is provided
+    let guest_state_encryption_policy = env_cfg
+        .guest_state_encryption_policy
+        .map(|p| match p {
+            GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
+            GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
+            GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
+            GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+        })
+        .unwrap_or(dps.general.guest_state_encryption_policy);
+
     // Decrypt VMGS state before the VMGS file is used for anything.
     //
     // `refresh_tpm_seeds` is a host side GSP service configuration
@@ -1659,8 +1674,8 @@ async fn new_underhill_vm(
             // TODO CVM: Save and restore last returned data when live servicing is supported.
             // We also need to revisit what states should be saved and restored.
             //
-            // This is an Underhill restart, so the VMGS has already been
-            // restored in its unlocked state
+            // If this is an Underhill restart, the VMGS has already been
+            // restored in its unlocked state.
             underhill_attestation::PlatformAttestationData {
                 host_attestation_settings: underhill_attestation::HostAttestationSettings {
                     refresh_tpm_seeds: false,
@@ -1687,6 +1702,10 @@ async fn new_underhill_vm(
                 attestation_type,
                 suppress_attestation,
                 early_init_driver,
+                guest_state_encryption_policy,
+                dps.general
+                    .management_vtl_features
+                    .strict_encryption_policy(),
             )
             .instrument(tracing::info_span!(
                 "initialize_platform_security",
@@ -3136,7 +3155,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         com1_vmbus_redirector: _,
         com2_enabled: _,
         com2_vmbus_redirector: _,
-        suppress_attestation: _,
+        suppress_attestation,
         bios_guid: _,
         vpci_boot_enabled: _,
 
@@ -3152,6 +3171,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         firmware_mode_is_pcat,
         psp_enabled,
         default_boot_always_attempt,
+        guest_state_encryption_policy,
 
         // Minimum level enforced by UEFI loader
         memory_protection_mode: _,
@@ -3181,6 +3201,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         vtl2_settings: _,
         cxl_memory_enabled: _,
         guest_state_lifetime: _,
+        management_vtl_features: _,
     } = &dps.general;
 
     if *hibernation_enabled {
@@ -3215,6 +3236,20 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *default_boot_always_attempt {
         anyhow::bail!("default_boot_always_attempt is not supported");
+    }
+    // TODO: don't allow auto once all CVMs are configured to require GspKey
+    if !(matches!(
+        guest_state_encryption_policy,
+        GuestStateEncryptionPolicy::GspKey | GuestStateEncryptionPolicy::Auto
+    ) || (matches!(
+        guest_state_encryption_policy,
+        GuestStateEncryptionPolicy::None,
+    ) && suppress_attestation.unwrap_or(false)))
+    {
+        anyhow::bail!(
+            "encryption policy not supported: {:?}",
+            guest_state_encryption_policy
+        );
     }
 
     Ok(())

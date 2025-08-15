@@ -215,7 +215,7 @@ async fn efi_diagnostics_no_boot(
     const NO_BOOT_MSG: &str = "[Bds] Unable to boot!";
 
     // Get kmsg stream
-    let mut kmsg = vm.backend().kmsg().await?;
+    let mut kmsg = vm.kmsg().await?;
 
     // Search for the message
     while let Some(data) = kmsg.next().await {
