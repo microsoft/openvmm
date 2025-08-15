@@ -28,9 +28,9 @@ pub struct PartitionMapper {
 #[derive(Debug, Error)]
 pub enum PartitionMapperError {
     #[error("failed to map range to partition")]
-    Map(#[source] virt::Error),
+    Map(#[source] anyhow::Error),
     #[error("failed to pin range to partition")]
-    Pin(#[source] virt::Error),
+    Pin(#[source] anyhow::Error),
 }
 
 impl PartitionMapper {

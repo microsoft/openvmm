@@ -141,8 +141,6 @@ pub enum Error<E> {
     MemoryAccess(u64, OperationKind, #[source] E),
     #[error("io port access error - {1:?} @ {0:#x}")]
     IoPort(u16, OperationKind, #[source] E),
-    #[error("XMM register access error - {1:?} @ {0:#x}")]
-    XmmRegister(usize, OperationKind, #[source] E),
     #[error("executing instruction caused exception due to {2:?} - {0:?}({1:?})")]
     InstructionException(Exception, Option<u32>, ExceptionCause),
     #[error("decode failure")]

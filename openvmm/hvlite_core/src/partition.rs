@@ -294,8 +294,6 @@ impl<T: InspectMut> InspectMut for WrappedVp<'_, T> {
 }
 
 impl<T: Processor> Processor for WrappedVp<'_, T> {
-    type Error = T::Error;
-    type RunVpError = T::RunVpError;
     type StateAccess<'a>
         = T::StateAccess<'a>
     where
@@ -305,7 +303,7 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         &mut self,
         vtl: Vtl,
         state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <T::StateAccess<'_> as AccessVpState>::Error> {
         self.0.set_debug_state(vtl, state)
     }
 
@@ -313,11 +311,11 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<Self::RunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         self.0.run_vp(stop, dev).await
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
+    fn flush_async_requests(&mut self) {
         self.0.flush_async_requests()
     }
 
@@ -335,9 +333,7 @@ impl<T: Processor> SaveRestore for WrappedVp<'_, T> {
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
         // Ensure all async requests are reflected in the saved state.
-        self.0
-            .flush_async_requests()
-            .map_err(|err| SaveError::Other(err.into()))?;
+        self.0.flush_async_requests();
 
         self.0
             .access_state(Vtl::Vtl0)
