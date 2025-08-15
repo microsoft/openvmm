@@ -812,7 +812,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         let wqe_header = match wqe_header {
             Ok((wqe_header, _)) => wqe_header,
             Err(_) => {
-                tracelimit::error_ratelimited!(size, wqe_offset, "failed to read rx WQE");
+                tracelimit::error_ratelimited!(size, wqe_offset, "failed to parse rx WQE header");
                 return;
             }
         };
