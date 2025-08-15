@@ -75,9 +75,9 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
     test_nvme_fault_injection(
         driver,
         FaultConfiguration {
-            admin_fault: Some(Box::new(AdminQueueFault {
+            admin_fault: Some(Arc::new(Box::new(AdminQueueFault {
                 driver: task_driver,
-            })),
+            }))),
         },
     )
     .await;
@@ -387,6 +387,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            flr_support: false,
         },
         fault_configuration,
     );
