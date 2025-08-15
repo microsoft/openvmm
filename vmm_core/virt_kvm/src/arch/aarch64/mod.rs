@@ -419,8 +419,7 @@ impl virt::Processor for KvmProcessor<'_> {
                     self.runner.run()
                 };
 
-                let exit =
-                    exit.map_err(|err| VpHaltReason::Hypervisor(KvmRunVpError::Run(err).into()))?;
+                let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
@@ -439,17 +438,13 @@ impl virt::Processor for KvmProcessor<'_> {
                         dev.handle_eoi(irq.into());
                     }
                     kvm::Exit::InternalError { error, .. } => {
-                        return Err(VpHaltReason::InvalidVmState(
-                            KvmRunVpError::InternalError(error).into(),
-                        ));
+                        return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
                     }
                     kvm::Exit::FailEntry {
                         hardware_entry_failure_reason,
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
-                        return Err(VpHaltReason::InvalidVmState(
-                            KvmRunVpError::InvalidVpState.into(),
-                        ));
+                        return Err(dev.fatal_error(KvmRunVpError::InvalidVpState.into()));
                     }
                     _ => panic!("unhandled exit: {:?}", exit),
                 }

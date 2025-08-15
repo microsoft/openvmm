@@ -1061,7 +1061,7 @@ impl Processor for KvmProcessor<'_> {
                     .store(false, Ordering::Relaxed);
                 if self.runner.check_or_request_interrupt_window() {
                     self.deliver_pic_interrupt(dev)
-                        .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+                        .map_err(|e| dev.fatal_error(e.into()))?;
                 }
             }
 
@@ -1091,8 +1091,7 @@ impl Processor for KvmProcessor<'_> {
                     self.runner.run()
                 };
 
-                let exit =
-                    exit.map_err(|err| VpHaltReason::Hypervisor(KvmRunVpError::Run(err).into()))?;
+                let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
@@ -1101,7 +1100,7 @@ impl Processor for KvmProcessor<'_> {
                     }
                     kvm::Exit::InterruptWindow => {
                         self.deliver_pic_interrupt(dev)
-                            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+                            .map_err(|e| dev.fatal_error(e.into()))?;
                     }
                     kvm::Exit::IoIn { port, data, size } => {
                         for data in data.chunks_mut(size as usize) {
@@ -1191,12 +1190,10 @@ impl Processor for KvmProcessor<'_> {
                         dev.handle_eoi(irq.into());
                     }
                     kvm::Exit::InternalError { error, .. } => {
-                        return Err(VpHaltReason::InvalidVmState(
-                            KvmRunVpError::InternalError(error).into(),
-                        ));
+                        return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
                     }
                     kvm::Exit::EmulationFailure { instruction_bytes } => {
-                        return Err(VpHaltReason::EmulationFailure(
+                        return Err(dev.fatal_error(
                             EmulationError {
                                 instruction_bytes: instruction_bytes.to_vec(),
                             }
@@ -1207,9 +1204,7 @@ impl Processor for KvmProcessor<'_> {
                         hardware_entry_failure_reason,
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
-                        return Err(VpHaltReason::InvalidVmState(
-                            KvmRunVpError::InvalidVpState.into(),
-                        ));
+                        return Err(dev.fatal_error(KvmRunVpError::InvalidVpState.into()));
                     }
                 }
             }

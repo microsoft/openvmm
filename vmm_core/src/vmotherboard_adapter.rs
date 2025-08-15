@@ -18,14 +18,28 @@ use vmotherboard::Chipset;
 pub struct ChipsetPlusSynic {
     pub synic_ports: Arc<SynicPorts>,
     pub chipset: Arc<Chipset>,
+    fatal_policy: FatalErrorPolicy,
+}
+
+#[derive(Copy, Clone)]
+pub enum FatalErrorPolicy {
+    /// Panic the process
+    Panic,
+    /// Convert the failure to a debugger break
+    DebugBreak,
 }
 
 impl ChipsetPlusSynic {
     #[expect(missing_docs)]
-    pub fn new(synic_ports: Arc<SynicPorts>, chipset: Arc<Chipset>) -> Self {
+    pub fn new(
+        synic_ports: Arc<SynicPorts>,
+        chipset: Arc<Chipset>,
+        fatal_policy: FatalErrorPolicy,
+    ) -> Self {
         Self {
             synic_ports,
             chipset,
+            fatal_policy,
         }
     }
 }
@@ -72,6 +86,19 @@ impl CpuIo for ChipsetPlusSynic {
 
     fn write_io(&self, vp: VpIndex, port: u16, data: &[u8]) -> impl Future<Output = ()> {
         self.chipset.io_write(vp.index(), port, data)
+    }
+
+    #[track_caller]
+    fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
+        tracing::error!(
+            err = error.as_ref() as &dyn std::error::Error,
+            "fatal error"
+        );
+        // TODO: Flush tracing?
+        match self.fatal_policy {
+            FatalErrorPolicy::Panic => panic!("fatal error: {}", error),
+            FatalErrorPolicy::DebugBreak => virt::VpHaltReason::SingleStep,
+        }
     }
 }
 

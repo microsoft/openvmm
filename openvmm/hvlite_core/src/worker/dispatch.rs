@@ -2253,7 +2253,12 @@ impl InitializedVm {
         assert!(virtio_mmio_start >= mem_layout.mmio()[1].start());
 
         let (chipset, devices) = chipset_builder.build()?;
-        let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(synic.clone(), chipset);
+        let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(
+            synic.clone(),
+            chipset,
+            // TODO: Support this being a cmd line option
+            vmm_core::vmotherboard_adapter::FatalErrorPolicy::DebugBreak,
+        );
 
         // create a new channel to intercept guest resets
         let (halt_send, halt_recv) = mesh::channel();

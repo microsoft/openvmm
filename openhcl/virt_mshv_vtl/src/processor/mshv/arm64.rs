@@ -168,7 +168,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
         let intercepted = this
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(MshvRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(MshvRunVpError(e).into()))?;
 
         if intercepted {
             let stat = match this.runner.exit_message().header.typ {
@@ -300,8 +300,8 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header)
-            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+        let intercepted_vtl =
+            Self::intercepted_vtl(&message.header).map_err(|e| bus.fatal_error(e.into()))?;
         let guest_memory = &self.partition.gm[intercepted_vtl];
         let smccc_convention = message.immediate == 0;
 
@@ -333,8 +333,8 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             interruption_pending: message.header.execution_state.interruption_pending(),
         };
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header)
-            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+        let intercepted_vtl =
+            Self::intercepted_vtl(&message.header).map_err(|e| dev.fatal_error(e.into()))?;
 
         // Fast path for monitor page writes.
         if Some(message.guest_physical_address & !(hvdef::HV_PAGE_SIZE - 1))
@@ -393,9 +393,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             // Note: SGX memory should be included in this check, so if SGX is
             // no longer included in the lower_vtl_memory_layout, make sure the
             // appropriate changes are reflected here.
-            Err(VpHaltReason::InvalidVmState(
-                UnacceptedMemoryAccess(gpa).into(),
-            ))
+            Err(dev.fatal_error(UnacceptedMemoryAccess(gpa).into()))
         } else {
             // TODO: for hardware isolation, if the intercept is due to a guest
             // error, inject a machine check
