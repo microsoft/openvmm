@@ -131,7 +131,8 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
             // user-mode-only accesses to locked memory (e.g., for vmbus ring
             // buffers). We can't fail this for now because TDX cannot register
             // encrypted memory.
-            Ok(())
+            panic!("explicit panic on expose_va without a registrar {address:#x} {len:#x}");
+            // Ok(())
         }
     }
 
