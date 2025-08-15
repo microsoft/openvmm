@@ -3025,12 +3025,16 @@ enum OidError {
     BadVersion,
     #[error("feature {0} not supported")]
     NotSupported(&'static str),
+    #[error("packet filter {0} not supported")]
+    UnsupportedFilter(u32),
 }
 
 impl OidError {
     fn as_status(&self) -> u32 {
         match self {
-            OidError::UnknownOid | OidError::NotSupported(_) => rndisprot::STATUS_NOT_SUPPORTED,
+            OidError::UnknownOid | OidError::NotSupported(_) | OidError::UnsupportedFilter(_) => {
+                rndisprot::STATUS_NOT_SUPPORTED
+            }
             OidError::BadVersion => rndisprot::STATUS_BAD_VERSION,
             OidError::InvalidInput(_) => rndisprot::STATUS_INVALID_DATA,
             OidError::Access(_) => rndisprot::STATUS_FAILURE,
@@ -3410,8 +3414,7 @@ impl Adapter {
         if filter != 0 {
             // TODO:
             // Maybe dont return error since previously we were not?
-            // Log the filter value with the error
-            return Err(OidError::NotSupported("unsupported filter"));
+            return Err(OidError::UnsupportedFilter(filter));
         }
         primary.stop_rx = true;
         Ok(primary.stop_rx)
