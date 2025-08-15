@@ -194,7 +194,7 @@ impl TeeCall for VbsCall {
             .map_err(Error::GetVbsReport)?;
 
         Ok(GetAttestationReportResult {
-            report: report.as_bytes().to_vec(),
+            report: report[..x86defs::vbs::VBS_REPORT_SIZE].to_vec(),
             // Only needed by key derivation, return None for now
             tcb_version: None,
         })

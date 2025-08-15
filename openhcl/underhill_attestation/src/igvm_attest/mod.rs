@@ -36,8 +36,6 @@ pub enum Error {
 /// Rust-style enum for `IgvmAttestReportType`
 pub enum ReportType {
     /// VBS report
-    // TODO VBS
-    #[expect(dead_code)]
     Vbs,
     /// SNP report
     Snp,
@@ -245,8 +243,6 @@ fn runtime_claims_to_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
-    use zerocopy::FromBytes;
 
     #[test]
     fn test_create_request() {

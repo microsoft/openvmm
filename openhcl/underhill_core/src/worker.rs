@@ -1595,10 +1595,6 @@ async fn new_underhill_vm(
     tracing::info!("guest memory self test complete");
 
     // Set the gpa allocator to GET that is required by the attestation message.
-    //
-    // TODO: VBS does not support attestation, so only do this on non-VBS
-    // platforms for now.
-    // if !matches!(isolation, virt::IsolationType::Vbs) {
     get_client.set_gpa_allocator(
         dma_manager
             .new_client(DmaClientParameters {
@@ -1613,7 +1609,6 @@ async fn new_underhill_vm(
             })
             .context("get dma client")?,
     );
-    // }
 
     if confidential_debug_enabled() {
         tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
@@ -1642,8 +1637,8 @@ async fn new_underhill_vm(
     let attestation_type = match isolation {
         virt::IsolationType::Snp => AttestationType::Snp,
         virt::IsolationType::Tdx => AttestationType::Tdx,
-        virt::IsolationType::None => AttestationType::Host,
         virt::IsolationType::Vbs => AttestationType::Vbs,
+        virt::IsolationType::None => AttestationType::Host,
     };
 
     // use the encryption policy from the command line if it is provided
