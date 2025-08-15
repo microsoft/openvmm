@@ -74,7 +74,7 @@ unsafe extern "C" fn __stack_chk_fail() {
 }
 
 /// Causes a processor fault.
-#[inline]
+#[inline(always)]
 pub fn fault() -> ! {
     // SAFETY: faults the processor, so the program ends.
     unsafe {
@@ -84,7 +84,7 @@ pub fn fault() -> ! {
 }
 
 /// Spins forever, preserving some context in the registers.
-#[inline]
+#[inline(always)]
 pub fn dead_loop(code0: u64, code1: u64, code2: u64) -> ! {
     // SAFETY: no safety requirements.
     unsafe {
