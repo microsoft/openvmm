@@ -119,10 +119,10 @@ enum OsAccessError {
     #[error("access violation")]
     AccessViolation,
     #[cfg(unix)]
-    #[error("SIGSEGV (si_code = {0:x}")]
+    #[error("SIGSEGV (si_code = {0:x})")]
     Sigsegv(u32),
     #[cfg(unix)]
-    #[error("SIGSEGV (si_code = {0:x}")]
+    #[error("SIGBUS (si_code = {0:x})")]
     Sigbus(u32),
 }
 
@@ -193,12 +193,13 @@ impl MemoryError {
 /// PAGE_NOACCESS/PROT_NONE, and some are mapped with PAGE_READWRITE/PROT_WRITE.
 pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(), MemoryError> {
     let mut failure = MaybeUninit::uninit();
+    let len = count * size_of::<T>();
     // SAFETY: guaranteed by caller.
     let ret = unsafe {
         try_memmove(
             dest.cast::<u8>(),
             src.cast::<u8>(),
-            count * size_of::<T>(),
+            len,
             failure.as_mut_ptr(),
         )
     };
@@ -207,7 +208,7 @@ pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(
         _ => Err(MemoryError::new(
             Some(src.cast()),
             dest.cast(),
-            count,
+            len,
             // SAFETY: failure is initialized in the failure path.
             unsafe { failure.assume_init_ref() },
         )),
@@ -232,21 +233,15 @@ pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(
 /// some are mapped with PAGE_READWRITE/PROT_WRITE.
 pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<(), MemoryError> {
     let mut failure = MaybeUninit::uninit();
+    let len = count * size_of::<T>();
     // SAFETY: guaranteed by caller.
-    let ret = unsafe {
-        try_memset(
-            dest.cast::<u8>(),
-            val.into(),
-            count * size_of::<T>(),
-            failure.as_mut_ptr(),
-        )
-    };
+    let ret = unsafe { try_memset(dest.cast::<u8>(), val.into(), len, failure.as_mut_ptr()) };
     match ret {
         0 => Ok(()),
         _ => Err(MemoryError::new(
             None,
             dest.cast(),
-            count,
+            len,
             // SAFETY: failure is initialized in the failure path.
             unsafe { failure.assume_init_ref() },
         )),

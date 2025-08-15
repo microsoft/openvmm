@@ -15,6 +15,8 @@ use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use pal_async::DefaultDriver;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::IsOpenhclIgvm;
@@ -25,6 +27,7 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
@@ -146,6 +149,8 @@ pub struct PetriVm<T: PetriVmmBackend> {
     resources: PetriVmResources,
     runtime: T::VmRuntime,
     quirks: GuestQuirks,
+    openhcl_diag_handler: Option<OpenHclDiagHandler>,
+    watchdog_tasks: Vec<Task<()>>,
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -203,16 +208,152 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
         let arch = self.config.arch;
         let quirks = self.config.firmware.quirks();
-        let runtime = self
+        let mut runtime = self
             .backend
             .run(self.config, self.modify_vmm_config, &self.resources)
             .await?;
-        Ok(PetriVm {
+        let openhcl_diag_handler = runtime.openhcl_diag();
+        let watchdog_tasks = Self::start_watchdog_tasks(&self.resources, &mut runtime)?;
+
+        let vm = PetriVm {
             arch,
             resources: self.resources,
             runtime,
             quirks,
-        })
+            openhcl_diag_handler,
+            watchdog_tasks,
+        };
+
+        Ok(vm)
+    }
+
+    fn start_watchdog_tasks(
+        resources: &PetriVmResources,
+        runtime: &mut T::VmRuntime,
+    ) -> anyhow::Result<Vec<Task<()>>> {
+        // Our CI environment will kill tests after some time. We want to save
+        // some information about the VM if it's still running at that point.
+        const TIMEOUT_DURATION_MINUTES: u64 = 6;
+        const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60 - 10);
+
+        let mut tasks = Vec::new();
+
+        if let Some(inspector) = runtime.inspector() {
+            let mut timer = PolledTimer::new(&resources.driver);
+            let log_source = resources.log_source.clone();
+
+            tasks.push(resources.driver.spawn("petri-watchdog-inspect", {
+                async move {
+                    timer.sleep(TIMER_DURATION).await;
+                    tracing::warn!(
+                        "Test has been running for almost {TIMEOUT_DURATION_MINUTES} minutes,
+                     saving inspect details."
+                    );
+
+                    let info = match inspector.inspect().await {
+                        Ok(info) => info,
+                        Err(e) => {
+                            tracing::error!(?e, "Failed to get inspect contents");
+                            return;
+                        }
+                    };
+
+                    if let Err(e) = log_source.write_attachment("timeout_inspect.log", info) {
+                        tracing::error!(?e, "Failed to save inspect log");
+                        return;
+                    }
+                    tracing::info!("Watchdog inspect task finished.");
+                }
+            }));
+        }
+
+        if let Some(mut framebuffer_access) = runtime.take_framebuffer_access() {
+            let mut timer = PolledTimer::new(&resources.driver);
+            let log_source = resources.log_source.clone();
+
+            tasks.push(
+                resources
+                    .driver
+                    .spawn("petri-watchdog-screenshot", async move {
+                        let mut image = Vec::new();
+                        let mut last_image = Vec::new();
+                        loop {
+                            timer.sleep(Duration::from_secs(2)).await;
+                            tracing::trace!("Taking screenshot.");
+
+                            let VmScreenshotMeta {
+                                color,
+                                width,
+                                height,
+                            } = match framebuffer_access.screenshot(&mut image) {
+                                Ok(meta) => meta,
+                                Err(e) => {
+                                    tracing::error!(?e, "Failed to take screenshot");
+                                    continue;
+                                }
+                            };
+
+                            if image == last_image {
+                                tracing::trace!("No change in framebuffer, skipping screenshot.");
+                                continue;
+                            }
+
+                            let r =
+                                log_source
+                                    .create_attachment("screenshot.png")
+                                    .and_then(|mut f| {
+                                        image::write_buffer_with_format(
+                                            &mut f,
+                                            &image,
+                                            width.into(),
+                                            height.into(),
+                                            color,
+                                            image::ImageFormat::Png,
+                                        )
+                                        .map_err(Into::into)
+                                    });
+
+                            if let Err(e) = r {
+                                tracing::error!(?e, "Failed to save screenshot");
+                            } else {
+                                tracing::info!("Screenshot saved.");
+                            }
+
+                            std::mem::swap(&mut image, &mut last_image);
+                        }
+                    }),
+            );
+        }
+
+        if let Some(openhcl_diag_handler) = runtime.openhcl_diag() {
+            let mut timer = PolledTimer::new(&resources.driver);
+            let driver = resources.driver.clone();
+            let log_source = resources.log_source.clone();
+            tasks.push(driver.spawn("petri-watchdog-inspect-vtl2", async move {
+                timer.sleep(TIMER_DURATION).await;
+                tracing::warn!(
+                    "Test has been running for almost {TIMEOUT_DURATION_MINUTES} minutes, saving openhcl inspect details."
+                );
+
+                let output = match openhcl_diag_handler.inspect("", None, None).await {
+                    Err(e) => {
+                        tracing::error!(?e, "Failed to inspect vtl2");
+                        return;
+                    }
+                    Ok(output) => output,
+                };
+
+                let formatted_output = format!("{output:#}");
+                if let Err(e) = log_source.write_attachment("timeout_openhcl_inspect.log", formatted_output) {
+                    tracing::error!(?e, "Failed to save ohcldiag-dev inspect log");
+                    return;
+                }
+
+                tracing::info!("Watchdog OpenHCL inspect task finished.");
+            }));
+        }
+
+        Ok(tasks)
     }
 
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
@@ -417,20 +558,30 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to halt, returning the reason for the halt.
     pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        self.runtime.wait_for_halt().await
+        tracing::info!("Waiting for VM to halt...");
+        let r = self.runtime.wait_for_halt().await;
+        tracing::info!("VM Halted");
+        r
     }
 
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and cleanly tear down the VM.
     pub async fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
         let halt_reason = self.runtime.wait_for_halt().await?;
+        tracing::info!("Cancelling watchdogs");
+        futures::future::join_all(self.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
         self.runtime.teardown().await?;
         Ok(halt_reason)
     }
+
     /// Test that we are able to inspect OpenHCL.
     pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
-        self.openhcl_diag()?.test_inspect().await
+        self.openhcl_diag()?
+            .inspect("", None, None)
+            .await
+            .map(|_| ())
     }
+
     /// Wait for VTL 2 to report that it is ready to respond to commands.
     /// Will fail if the VM is not running OpenHCL.
     ///
@@ -438,6 +589,22 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Petri-provided methods will wait for VTL 2 to be ready automatically.
     pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
         self.openhcl_diag()?.wait_for_vtl2().await
+    }
+
+    /// Get the kmsg stream from OpenHCL.
+    pub async fn kmsg(&self) -> anyhow::Result<diag_client::kmsg_stream::KmsgStream> {
+        self.openhcl_diag()?.kmsg().await
+    }
+
+    /// Gets a live core dump of the OpenHCL process specified by 'name' and
+    /// writes it to 'path'
+    pub async fn openhcl_core_dump(&self, name: &str, path: &Path) -> anyhow::Result<()> {
+        self.openhcl_diag()?.core_dump(name, path).await
+    }
+
+    /// Crashes the specified openhcl process
+    pub async fn openhcl_crash(&self, name: &str) -> anyhow::Result<()> {
+        self.openhcl_diag()?.crash(name).await
     }
 
     /// Wait for a connection from a pipette agent running in the guest.
@@ -544,7 +711,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     fn openhcl_diag(&self) -> anyhow::Result<&OpenHclDiagHandler> {
-        if let Some(ohd) = self.runtime.openhcl_diag() {
+        if let Some(ohd) = self.openhcl_diag_handler.as_ref() {
             Ok(ohd)
         } else {
             anyhow::bail!("VM is not configured with OpenHCL")
@@ -555,6 +722,11 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 /// A running VM that tests can interact with.
 #[async_trait]
 pub trait PetriVmRuntime {
+    /// Interface for inspecting the VM
+    type VmInspector: PetriVmInspector;
+    /// Interface for accessing the framebuffer
+    type VmFramebufferAccess: PetriVmFramebufferAccess;
+
     /// Cleanly tear down the VM immediately.
     async fn teardown(self) -> anyhow::Result<()>;
     /// Wait for the VM to halt, returning the reason for the halt.
@@ -562,7 +734,7 @@ pub trait PetriVmRuntime {
     /// Wait for a connection from a pipette agent
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>;
     /// Get an OpenHCL diagnostics handler for the VM
-    fn openhcl_diag(&self) -> Option<&OpenHclDiagHandler>;
+    fn openhcl_diag(&self) -> Option<OpenHclDiagHandler>;
     /// Waits for an event emitted by the firmware about its boot status, and
     /// verifies that it is the expected success value.
     ///
@@ -585,6 +757,56 @@ pub trait PetriVmRuntime {
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()>;
+    /// If the backend supports it, get an inspect interface
+    fn inspector(&self) -> Option<Self::VmInspector> {
+        None
+    }
+    /// If the backend supports it, take the screenshot interface
+    /// (subsequent calls will return None).
+    fn take_framebuffer_access(&mut self) -> Option<Self::VmFramebufferAccess> {
+        None
+    }
+}
+
+/// Interface for getting information about the state of the VM
+#[async_trait]
+pub trait PetriVmInspector: Send + 'static {
+    /// Get information about the state of the VM
+    async fn inspect(&self) -> anyhow::Result<String>;
+}
+
+/// Use this for the associated type if not supported
+pub struct NoPetriVmInspector;
+#[async_trait]
+impl PetriVmInspector for NoPetriVmInspector {
+    async fn inspect(&self) -> anyhow::Result<String> {
+        unreachable!()
+    }
+}
+
+/// Raw VM screenshot
+pub struct VmScreenshotMeta {
+    /// color encoding used by the image
+    pub color: image::ExtendedColorType,
+    /// x dimension
+    pub width: u16,
+    /// y dimension
+    pub height: u16,
+}
+
+/// Interface for getting screenshots of the VM
+pub trait PetriVmFramebufferAccess: Send + 'static {
+    /// Populates the provided buffer with a screenshot of the VM,
+    /// returning the dimensions and color type.
+    fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta>;
+}
+
+/// Use this for the associated type if not supported
+pub struct NoPetriVmFramebufferAccess;
+impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
+    fn screenshot(&mut self, _image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
+        unreachable!()
+    }
 }
 
 /// Common processor topology information for the VM.

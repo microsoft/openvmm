@@ -10,6 +10,7 @@ use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
 use crate::TPM_NV_INDEX_MITIGATED;
 use crate::TPM_RSA_SRK_HANDLE;
 use crate::TpmRsa2kPublic;
+use crate::expected_ak_attributes;
 use crate::tpm20proto;
 use crate::tpm20proto::AlgIdEnum;
 use crate::tpm20proto::CommandCodeEnum;
@@ -302,26 +303,44 @@ impl TpmEngineHelper {
     /// # Arguments
     /// * `force_create`: Whether to remove the existing AK and re-create one.
     ///
-    /// Returns the AK public in `TpmRsa2kPublic`.
-    pub fn create_ak_pub(&mut self, force_create: bool) -> Result<TpmRsa2kPublic, TpmHelperError> {
+    /// Returns the AK public in `TpmRsa2kPublic`, and a bool indicating whether AKCert
+    /// renewal is allowed.
+    pub fn create_ak_pub(
+        &mut self,
+        force_create: bool,
+    ) -> Result<(TpmRsa2kPublic, bool), TpmHelperError> {
         if let Some(res) = self.find_object(TPM_AZURE_AIK_HANDLE)? {
             if force_create {
                 // Remove existing key before creating a new one
                 self.evict_or_persist_handle(EvictOrPersist::Evict(TPM_AZURE_AIK_HANDLE))?;
             } else {
-                // Use existing key
-                return export_rsa_public(&res.out_public).map_err(|error| {
-                    TpmHelperError::ExportRsaPublicFromAkHandle {
+                let expected_attributes = expected_ak_attributes();
+
+                // If an existing key has the wrong attributes, deny renewing the AKCert later.
+                // This prevents an attack where the VTL0 admin can replace the AK with their own
+                // and get a signed AKCert.
+                let actual_attributes = res.out_public.public_area.object_attributes;
+                if actual_attributes != expected_attributes {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        attrs = actual_attributes.0.get(),
+                        "incorrect AK attributes; denying AKCert renewal"
+                    );
+                }
+
+                return export_rsa_public(&res.out_public)
+                    .map_err(|error| TpmHelperError::ExportRsaPublicFromAkHandle {
                         ak_handle: TPM_AZURE_AIK_HANDLE.0.get(),
                         error,
-                    }
-                });
+                    })
+                    .map(|ak_pub| (ak_pub, actual_attributes == expected_attributes));
             }
         }
 
         let in_public = ak_pub_template().map_err(TpmHelperError::CreateAkPubTemplateFailed)?;
 
         self.create_key_object(in_public, Some(TPM_AZURE_AIK_HANDLE))
+            .map(|res| (res, true))
     }
 
     /// Create Windows-style Endorsement key (EK) based on the template from the TPM specification. Note that
@@ -968,7 +987,7 @@ impl TpmEngineHelper {
     ///
     /// Returns Ok(Some(ReadPublicReply)) if the object is present.
     /// Returns Ok(None) if nv index is not present.
-    fn find_object(
+    pub fn find_object(
         &mut self,
         object_handle: ReservedHandle,
     ) -> Result<Option<ReadPublicReply>, TpmHelperError> {
@@ -2096,7 +2115,7 @@ mod tests {
     ) -> (TpmRsa2kPublic, TpmRsa2kPublic) {
         let result = tpm_engine_helper.create_ak_pub(false);
         assert!(result.is_ok());
-        let ak_pub = result.unwrap();
+        let (ak_pub, _) = result.unwrap();
 
         // Ensure `create_ak_pub` persists AK
         assert!(

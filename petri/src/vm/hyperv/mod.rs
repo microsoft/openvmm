@@ -10,15 +10,18 @@ use vmsocket::VmSocket;
 use super::ProcessorTopology;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::NoPetriVmInspector;
 use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
 use crate::PetriVmConfig;
+use crate::PetriVmFramebufferAccess;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
 use crate::UefiConfig;
+use crate::VmScreenshotMeta;
 use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::openhcl_diag::OpenHclDiagHandler;
@@ -42,6 +45,8 @@ use pipette_client::PipetteClient;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::Weak;
 use std::time::Duration;
 use vm::HyperVVM;
 use vmm_core_defs::HaltReason;
@@ -51,10 +56,10 @@ pub struct HyperVPetriBackend {}
 
 /// Resources needed at runtime for a Hyper-V Petri VM
 pub struct HyperVPetriRuntime {
-    vm: HyperVVM,
+    vm: Arc<HyperVVM>,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
     temp_dir: tempfile::TempDir,
-    openhcl_diag_handler: Option<OpenHclDiagHandler>,
+    is_openhcl: bool,
     driver: DefaultDriver,
 }
 
@@ -299,7 +304,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
-        let openhcl_diag_handler = if let Some((
+        if let Some((
             src_igvm_file,
             OpenHclConfig {
                 vtl2_nvme_boot: _, // TODO, see #1649.
@@ -365,13 +370,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     }
                 }
             }));
-
-            Some(OpenHclDiagHandler::new(
-                diag_client::DiagClient::from_hyperv_id(driver.clone(), *vm.vmid()),
-            ))
-        } else {
-            None
-        };
+        }
 
         let serial_pipe_path = vm.set_vm_com_port(1)?;
         let serial_log_file = log_source.log_file("guest")?;
@@ -390,10 +389,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
         vm.start()?;
 
         Ok(HyperVPetriRuntime {
-            vm,
+            vm: Arc::new(vm),
             log_tasks,
             temp_dir,
-            openhcl_diag_handler,
+            is_openhcl: openhcl_config.is_some(),
             driver: driver.clone(),
         })
     }
@@ -401,11 +400,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
 #[async_trait]
 impl PetriVmRuntime for HyperVPetriRuntime {
-    async fn teardown(self) -> anyhow::Result<()> {
-        for t in self.log_tasks {
-            _ = t.cancel();
-        }
-        self.vm.remove()
+    type VmInspector = NoPetriVmInspector;
+    type VmFramebufferAccess = HyperVFramebufferAccess;
+
+    async fn teardown(mut self) -> anyhow::Result<()> {
+        futures::future::join_all(self.log_tasks.into_iter().map(|t| t.cancel())).await;
+        Arc::into_inner(self.vm)
+            .context("all references to the Hyper-V VM object have not been closed")?
+            .remove()
     }
 
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
@@ -450,8 +452,13 @@ impl PetriVmRuntime for HyperVPetriRuntime {
             .context("failed to connect to pipette")
     }
 
-    fn openhcl_diag(&self) -> Option<&OpenHclDiagHandler> {
-        self.openhcl_diag_handler.as_ref()
+    fn openhcl_diag(&self) -> Option<OpenHclDiagHandler> {
+        self.is_openhcl.then(|| {
+            OpenHclDiagHandler::new(diag_client::DiagClient::from_hyperv_id(
+                self.driver.clone(),
+                *self.vm.vmid(),
+            ))
+        })
     }
 
     async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
@@ -482,6 +489,26 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     ) -> anyhow::Result<()> {
         // TODO: Updating the file causes failure ... self.vm.set_openhcl_firmware(new_openhcl.get(), false)?;
         self.vm.restart_openhcl(flags).await
+    }
+
+    fn take_framebuffer_access(&mut self) -> Option<HyperVFramebufferAccess> {
+        Some(HyperVFramebufferAccess {
+            vm: Arc::downgrade(&self.vm),
+        })
+    }
+}
+
+/// Interface to the Hyper-V framebuffer
+pub struct HyperVFramebufferAccess {
+    vm: Weak<HyperVVM>,
+}
+
+impl PetriVmFramebufferAccess for HyperVFramebufferAccess {
+    fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
+        self.vm
+            .upgrade()
+            .context("VM no longer exists")?
+            .screenshot(image)
     }
 }
 

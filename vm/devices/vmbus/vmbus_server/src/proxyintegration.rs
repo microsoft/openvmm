@@ -53,7 +53,6 @@ use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenRequest;
-use vmbus_channel::bus::OpenResult;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
@@ -149,7 +148,6 @@ impl ProxyIntegration {
 
 struct Channel {
     server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
-    incoming_event: Event,
     worker_result: Option<mesh::OneshotReceiver<()>>,
     wrapped_event: Option<WrappedEvent>,
 }
@@ -227,11 +225,7 @@ impl ProxyTask {
         recv
     }
 
-    async fn handle_open(
-        &self,
-        proxy_id: u64,
-        open_request: &OpenRequest,
-    ) -> anyhow::Result<Event> {
+    async fn handle_open(&self, proxy_id: u64, open_request: &OpenRequest) -> anyhow::Result<()> {
         let maybe_wrapped =
             MaybeWrappedEvent::new(&TpPool::system(), open_request.interrupt.clone())?;
 
@@ -255,7 +249,7 @@ impl ProxyTask {
         let channel = channels.get_mut(&proxy_id).unwrap();
         channel.worker_result = Some(recv);
         channel.wrapped_event = maybe_wrapped.into_wrapped();
-        Ok(channel.incoming_event.clone())
+        Ok(())
     }
 
     async fn handle_close(&self, proxy_id: u64) {
@@ -319,7 +313,6 @@ impl ProxyTask {
         offer_key: OfferKey,
         vtl: u8,
         server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
-        incoming_event: Event,
     ) -> Option<(Option<WrappedEvent>, mesh::OneshotReceiver<()>)> {
         // A channel is considered saved in the "open" state if it is in any state that has an open
         // request. This is because the server will not notify the channel for the open in any of
@@ -342,12 +335,7 @@ impl ProxyTask {
             "restoring channel after offer");
 
         let restore_result = send
-            .call_failable(
-                ChannelServerRequest::Restore,
-                channel_saved_open.then(|| OpenResult {
-                    guest_to_host_interrupt: Interrupt::from_event(incoming_event.clone()),
-                }),
-            )
+            .call_failable(ChannelServerRequest::Restore, channel_saved_open)
             .await
             .inspect_err(|err| {
                 tracing::warn!(
@@ -458,6 +446,7 @@ impl ProxyTask {
             OfferRequest::Offer,
             OfferInfo {
                 params: new_offer.into(),
+                event: Interrupt::from_event(incoming_event),
                 request_send,
                 server_request_recv,
             },
@@ -489,7 +478,6 @@ impl ProxyTask {
                 },
                 offer.TargetVtl,
                 server_request_send.clone(),
-                incoming_event.clone(),
             )
             .await
         } else {
@@ -508,7 +496,6 @@ impl ProxyTask {
                     proxy_id,
                     Channel {
                         server_request_send,
-                        incoming_event,
                         worker_result,
                         wrapped_event,
                     },
@@ -670,19 +657,15 @@ impl ProxyTask {
         match request {
             ChannelRequest::Open(rpc) => {
                 rpc.handle(async |open_request| {
-                    let result = self.handle_open(proxy_id, &open_request).await;
-                    match result {
-                        Ok(event) => Some(OpenResult {
-                            guest_to_host_interrupt: Interrupt::from_event(event),
-                        }),
-                        Err(err) => {
+                    self.handle_open(proxy_id, &open_request)
+                        .await
+                        .inspect_err(|err| {
                             tracing::error!(
                                 error = err.as_ref() as &dyn std::error::Error,
-                                "failed to open proxy channel"
+                                "failed to open channel"
                             );
-                            None
-                        }
-                    }
+                        })
+                        .is_ok()
                 })
                 .await
             }

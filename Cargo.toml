@@ -303,7 +303,7 @@ serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
 tpm = { path = "vm/devices/tpm" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
-mcr_resources = { path = "vm/devices/mcr_resources" } # TODO MCR: move to closed-source
+mcr_resources = { path = "vm/devices/mcr_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
 user_driver = { path = "vm/devices/user_driver" }
@@ -540,7 +540,6 @@ windows-sys = "0.59"
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
-#zerocopy = { version = "0.7.32", features = ["derive"]}
 zerocopy = { version = "0.8.14", features = ["derive"]}
 
 [workspace.metadata.xtask.unused-deps]

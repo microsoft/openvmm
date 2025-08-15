@@ -33,6 +33,28 @@ impl std::str::FromStr for TestScenarioConfig {
     }
 }
 
+#[derive(Clone, Debug, MeshPayload)]
+pub enum GuestStateEncryptionPolicyCli {
+    Auto,
+    None,
+    GspById,
+    GspKey,
+}
+
+impl std::str::FromStr for GuestStateEncryptionPolicyCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<GuestStateEncryptionPolicyCli, anyhow::Error> {
+        match s {
+            "AUTO" | "0" => Ok(GuestStateEncryptionPolicyCli::Auto),
+            "NONE" | "1" => Ok(GuestStateEncryptionPolicyCli::None),
+            "GSP_BY_ID" | "2" => Ok(GuestStateEncryptionPolicyCli::GspById),
+            "GSP_KEY" | "3" => Ok(GuestStateEncryptionPolicyCli::GspKey),
+            _ => Err(anyhow::anyhow!("Invalid encryption policy: {}", s)),
+        }
+    }
+}
+
 // We've made our own parser here instead of using something like clap in order
 // to save on compiled file size. We don't need all the features a crate can provide.
 /// underhill core command-line and environment variable options.
@@ -157,6 +179,10 @@ pub struct Options {
     /// will result in UEFI terminating, shutting down the guest instead of
     /// showing the frontpage.
     pub disable_uefi_frontpage: bool,
+
+    /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
+    /// Specify which guest state encryption policy to use.
+    pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
 }
 
 impl Options {
@@ -259,6 +285,15 @@ impl Options {
         });
         let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
         let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
+        let guest_state_encryption_policy = parse_env_string("HCL_GUEST_STATE_ENCRYPTION_POLICY")
+            .and_then(|x| {
+                x.to_string_lossy()
+                    .parse::<GuestStateEncryptionPolicyCli>()
+                    .map_err(|e| {
+                        tracing::warn!("failed to parse HCL_GUEST_STATE_ENCRYPTION_POLICY: {}", e)
+                    })
+                    .ok()
+            });
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -316,6 +351,7 @@ impl Options {
             nvme_always_flr,
             test_configuration,
             disable_uefi_frontpage,
+            guest_state_encryption_policy,
         })
     }
 

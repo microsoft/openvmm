@@ -19,6 +19,7 @@ chipset_device.workspace = true
 chipset_device_resources.workspace = true
 cvm_tracing.workspace = true
 guestmem.workspace = true
+underhill_confidentiality = { workspace = true, features = ["std"] }
 vmcore.workspace = true
 vm_resource.workspace = true
 
