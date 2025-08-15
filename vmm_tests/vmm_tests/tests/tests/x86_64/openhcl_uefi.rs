@@ -144,7 +144,7 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
 /// should also validate that the kernel gets two different numa nodes.
 #[openvmm_test_no_agent(openhcl_uefi_x64(none))]
 async fn no_numa_errors(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
-    let mut vm = config
+    let vm = config
         .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
         .run_without_agent()
         .await?;
@@ -153,7 +153,7 @@ async fn no_numa_errors(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(
     const NO_NUMA: &str = "NUMA: No NUMA configuration found";
     const FAKING_NODE: &str = "Faking a node at";
 
-    let mut kmsg = vm.backend().kmsg().await?;
+    let mut kmsg = vm.kmsg().await?;
 
     // Search kmsg and make sure we didn't see any errors from the kernel
     while let Some(data) = kmsg.next().await {
