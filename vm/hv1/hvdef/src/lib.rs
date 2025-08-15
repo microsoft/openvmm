@@ -910,6 +910,15 @@ pub mod hypercall {
         }
     }
 
+    impl From<HvResult<()>> for HypercallOutput {
+        fn from(result: HvResult<()>) -> Self {
+            match result {
+                Ok(()) => Self::new(),
+                Err(e) => Self::from(e),
+            }
+        }
+    }
+
     impl HypercallOutput {
         /// A success output with zero elements processed.
         pub const SUCCESS: Self = Self::new();

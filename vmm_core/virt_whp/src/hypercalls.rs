@@ -7,6 +7,7 @@ use crate::memory::VtlAccess;
 use crate::vtl2;
 #[cfg(guest_arch = "aarch64")]
 use aarch64 as arch;
+use arrayvec::ArrayVec;
 use hv1_hypercall::HvRepResult;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PARTITION_ID_SELF;
@@ -29,6 +30,18 @@ pub(crate) struct WhpHypercallExit<'a, 'b, T> {
     vp: &'a mut WhpProcessor<'b>,
     bus: &'a T,
     registers: arch::WhpHypercallRegisters<'a>,
+    pending_hypercall: Option<PendingHypercall>,
+}
+
+enum PendingHypercall {
+    MmioRead {
+        gpa: u64,
+        len: usize,
+    },
+    MmioWrite {
+        gpa: u64,
+        data: ArrayVec<u8, { hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH }>,
+    },
 }
 
 impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
@@ -63,6 +76,8 @@ impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
             hv1_hypercall::HvGetVpIndexFromApicId,
             hv1_hypercall::HvAcceptGpaPages,
             hv1_hypercall::HvModifySparseGpaPageHostVisibility,
+            hv1_hypercall::HvMemoryMappedIoRead,
+            hv1_hypercall::HvMemoryMappedIoWrite,
         ]
     );
 }
@@ -689,6 +704,71 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
     }
 }
 
+impl<T: CpuIo> hv1_hypercall::MemoryMappedIoRead for WhpHypercallExit<'_, '_, T> {
+    fn mmio_read(&mut self, gpa: u64, data: &mut [u8]) -> hvdef::HvResult<()> {
+        // Only for VTL2 testing at the moment.
+        if self.vp.state.active_vtl != Vtl::Vtl2 {
+            return Err(HvError::InvalidHypercallCode);
+        }
+        // Set a pending hypercall since the MMIO access may be async.
+        self.pending_hypercall = Some(PendingHypercall::MmioRead {
+            gpa,
+            len: data.len(),
+        });
+        Err(HvError::Timeout)
+    }
+}
+
+impl<T: CpuIo> hv1_hypercall::MemoryMappedIoWrite for WhpHypercallExit<'_, '_, T> {
+    fn mmio_write(&mut self, gpa: u64, data: &[u8]) -> hvdef::HvResult<()> {
+        // Only for VTL2 testing at the moment.
+        if self.vp.state.active_vtl != Vtl::Vtl2 {
+            return Err(HvError::InvalidHypercallCode);
+        }
+        // Set a pending hypercall since the MMIO access may be async.
+        self.pending_hypercall = Some(PendingHypercall::MmioWrite {
+            gpa,
+            data: data.try_into().expect("cap is set to hypercall maximum"),
+        });
+        Err(HvError::Timeout)
+    }
+}
+
+impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
+    async fn handle_pending_hypercall(
+        mut io: impl hv1_hypercall::AsHandler<Self> + hv1_hypercall::HypercallIo,
+    ) {
+        let this = io.as_handler();
+        if let Some(hc) = this.pending_hypercall.take() {
+            match hc {
+                PendingHypercall::MmioRead { gpa, len } => {
+                    let mut data =
+                        ArrayVec::from([0; hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH]);
+                    data.truncate(len);
+                    this.bus
+                        .read_mmio(this.vp.inner.vp_info.base.vp_index, gpa, &mut data)
+                        .await;
+
+                    let guest_memory = &this.vp.vp.partition.gm;
+                    hv1_hypercall::complete_hypercall_with_data(
+                        &mut io,
+                        Ok(()),
+                        guest_memory,
+                        &data,
+                    );
+                }
+                PendingHypercall::MmioWrite { gpa, data } => {
+                    this.bus
+                        .write_mmio(this.vp.inner.vp_info.base.vp_index, gpa, &data)
+                        .await;
+
+                    hv1_hypercall::complete_hypercall(&mut io, Ok(()).into());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(guest_arch = "x86_64")]
 mod x86 {
     use super::WhpHypercallExit;
@@ -814,7 +894,7 @@ mod x86 {
             );
         }
 
-        pub fn handle(
+        pub async fn handle(
             vp: &'a mut WhpProcessor<'b>,
             bus: &'a T,
             info: &whp::abi::WHV_HYPERCALL_CONTEXT,
@@ -833,12 +913,16 @@ mod x86 {
                 invalid_opcode: false,
                 exit_context,
             };
-            let mut this = Self { vp, bus, registers };
+            let mut this = Self {
+                vp,
+                bus,
+                registers,
+                pending_hypercall: None,
+            };
 
-            WhpHypercallExit::DISPATCHER.dispatch(
-                &vpref.partition.gm,
-                hv1_hypercall::X64RegisterIo::new(&mut this, is_64bit),
-            );
+            let mut handler = hv1_hypercall::X64RegisterIo::new(&mut this, is_64bit);
+            WhpHypercallExit::DISPATCHER.dispatch(&vpref.partition.gm, &mut handler);
+            Self::handle_pending_hypercall(handler).await;
             this.flush()
         }
 
@@ -1735,7 +1819,7 @@ mod aarch64 {
             todo!("TODO-aarch64")
         }
 
-        pub fn handle(
+        pub async fn handle(
             vp: &'a mut WhpProcessor<'b>,
             bus: &'a T,
             message: &hvdef::HvArm64HypercallInterceptMessage,
@@ -1748,12 +1832,17 @@ mod aarch64 {
                 gp_dirty: false,
                 _dummy: &(),
             };
-            let mut this = Self { vp, bus, registers };
+            let mut this = Self {
+                vp,
+                bus,
+                registers,
+                pending_hypercall: None,
+            };
 
-            WhpHypercallExit::DISPATCHER.dispatch(
-                &vpref.partition.gm,
-                hv1_hypercall::Arm64RegisterIo::new(&mut this, false, message.immediate == 0),
-            );
+            let mut handler =
+                hv1_hypercall::Arm64RegisterIo::new(&mut this, false, message.immediate == 0);
+            WhpHypercallExit::DISPATCHER.dispatch(&vpref.partition.gm, &mut handler);
+            Self::handle_pending_hypercall(handler).await;
             this.flush();
         }
 
