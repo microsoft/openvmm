@@ -1368,7 +1368,7 @@ pub mod protocol {
     pub struct TpmtPublic {
         r#type: AlgId,
         name_alg: AlgId,
-        object_attributes: TpmaObject,
+        pub object_attributes: TpmaObject,
         auth_policy: Tpm2bBuffer,
         // `TPMS_RSA_PARAMS`
         pub parameters: TpmsRsaParams,

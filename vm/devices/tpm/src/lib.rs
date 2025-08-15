@@ -20,12 +20,15 @@ mod tpm_helper;
 use self::io_port_interface::PpiOperation;
 use self::io_port_interface::TpmIoCommand;
 use crate::ak_cert::TpmAkCertType;
+use crate::tpm20proto::TpmaObject;
+use crate::tpm20proto::TpmaObjectBits;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_device::ChipsetDevice;
+use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -51,6 +54,7 @@ use tpm_helper::TpmCommandError;
 use tpm_helper::TpmEngineHelper;
 use tpm_helper::TpmHelperError;
 use tpm_resources::TpmRegisterLayout;
+use underhill_confidentiality::is_confidential_vm;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
@@ -220,6 +224,7 @@ pub struct Tpm {
     io_region: Option<(&'static str, RangeInclusive<u16>)>, // Valid only on HypervX64
     #[inspect(skip)]
     mmio_region: Vec<(&'static str, RangeInclusive<u64>)>,
+    allow_ak_cert_renewal: bool,
 
     // Runtime glue
     rt: TpmRuntime,
@@ -392,6 +397,7 @@ impl Tpm {
             refresh_tpm_seeds,
             io_region,
             mmio_region,
+            allow_ak_cert_renewal: false,
 
             rt: TpmRuntime {
                 mem,
@@ -442,6 +448,7 @@ impl Tpm {
 
     async fn on_first_boot(&mut self, guest_secret_key: Option<Vec<u8>>) -> Result<(), TpmError> {
         use ms_tpm_20_ref::NvError;
+        let mut force_ak_regen = false;
         let fixup_16k_ak_cert;
 
         // Check whether or not we need to pave-over the blank TPM with our
@@ -468,6 +475,13 @@ impl Tpm {
 
                     return Err(TpmErrorKind::ResetTpmWithState(e).into());
                 }
+
+                // If this is a confidential VM or has a vTPM blob size that indicates that it was
+                // HCL-provisioned, regenerate the AK from TPM seeds. This prevents an attack where
+                // the VTL0 admin can replace the AK and get an AKCert for it.
+                force_ak_regen = self.refresh_tpm_seeds
+                    || blob.len() != LEGACY_VTPM_SIZE
+                    || is_confidential_vm();
 
                 // If this is a small vTPM blob, potentially fixup the AK cert.
                 fixup_16k_ak_cert = blob.len() == LEGACY_VTPM_SIZE;
@@ -539,15 +553,21 @@ impl Tpm {
             // Initialize `TpmKeys`.
             // The procedure also generates randomized AK based on the TPM seed
             // and writes the AK into `TPM_AZURE_AIK_HANDLE` NV store.
-            let ak_pub = self
+            let (ak_pub, can_renew_ak) = self
                 .tpm_engine_helper
-                .create_ak_pub(self.refresh_tpm_seeds)
+                .create_ak_pub(force_ak_regen)
                 .map_err(TpmErrorKind::CreateAkPublic)?;
             let ek_pub = self
                 .tpm_engine_helper
                 .create_ek_pub()
                 .map_err(TpmErrorKind::CreateEkPublic)?;
             self.keys = Some(TpmKeys { ak_pub, ek_pub });
+            tracing::info!(
+                CVM_ALLOWED,
+                can_renew_ak = can_renew_ak,
+                "loaded existing AK from VMGS vTPM state"
+            );
+            self.allow_ak_cert_renewal = can_renew_ak;
 
             // Conditionally define nv indexes for ak cert and attestation report.
             // The Nvram size can only be defined with platform hierarchy. Otherwise
@@ -845,6 +865,12 @@ impl Tpm {
     /// This routine calls (via GET) external server to issue AK cert.
     /// This function can only be called when `ak_cert_type` is `Trusted` or `HwAttested`.
     fn renew_ak_cert(&mut self) -> Result<(), TpmError> {
+        // Silently do nothing if renewal is not allowed.
+        if !self.allow_ak_cert_renewal {
+            tracing::info!(CVM_ALLOWED, "AK cert renewal is not allowed");
+            return Ok(());
+        }
+
         // Return if the request is pending
         if self.async_ak_cert_request.is_some() {
             return Ok(());
@@ -948,6 +974,12 @@ impl Tpm {
 
     /// Renew device attestation data (i.e., attestation report and AK cert) on NV_Read if needed
     fn refresh_device_attestation_data_on_nv_read(&mut self) {
+        // Silently do nothing if renewal is not allowed.
+        if !self.allow_ak_cert_renewal {
+            tracing::info!(CVM_ALLOWED, "AK cert renewal is not allowed");
+            return;
+        }
+
         let Some(nv_read) = tpm20proto::protocol::NvReadCmd::deserialize(&self.command_buffer)
         else {
             return;
@@ -1287,6 +1319,19 @@ impl MmioIntercept for Tpm {
     }
 }
 
+/// Expected attributes for a correctly-provisioned AK.
+pub fn expected_ak_attributes() -> TpmaObject {
+    TpmaObjectBits::new()
+        .with_fixed_tpm(true)
+        .with_fixed_parent(true)
+        .with_sensitive_data_origin(true)
+        .with_user_with_auth(true)
+        .with_no_da(true)
+        .with_restricted(true)
+        .with_sign_encrypt(true)
+        .into()
+}
+
 /// The IO port interface bespoke to the Hyper-V implementation of the vTPM.
 mod io_port_interface {
     use inspect::Inspect;
@@ -1515,6 +1560,8 @@ mod save_restore {
             pub auth_value: Option<u64>,
             #[mesh(61)]
             pub keys: Option<SavedTpmKeys>,
+            #[mesh(62)]
+            pub allow_ak_cert_renewal: Option<bool>,
         }
     }
 
@@ -1612,6 +1659,7 @@ mod save_restore {
                 tpm_state_blob: self.tpm_engine_helper.tpm_engine.save_state(),
                 auth_value: self.auth_value,
                 keys,
+                allow_ak_cert_renewal: Some(self.allow_ak_cert_renewal),
             };
 
             Ok(saved_state)
@@ -1626,6 +1674,7 @@ mod save_restore {
                 tpm_state_blob,
                 auth_value,
                 keys,
+                allow_ak_cert_renewal,
             } = state;
 
             self.control_area = {
@@ -1691,6 +1740,18 @@ mod save_restore {
                     exponent: keys.ek_pub_exponent,
                 },
             });
+
+            if allow_ak_cert_renewal.is_none() {
+                // Whether AKCert renewal is allowed depends on the attributes of the AK
+                // saved in the vTPM. It may not be safe to read it here (which requires
+                // executing a readpublic command) because the vTPM may be in the middle
+                // of executing another command.
+                tracing::info!(
+                    CVM_ALLOWED,
+                    "vTPM servicing state does not include allow_ak_cert_renewal; denying renewal until reboot"
+                );
+            }
+            self.allow_ak_cert_renewal = allow_ak_cert_renewal.unwrap_or(false);
 
             Ok(())
         }
