@@ -804,7 +804,12 @@ impl Partition {
         parameters: TriggerParameters,
     ) -> Result<(TriggerHandle, OwnedHandle)> {
         unsafe {
-            let mut trigger_handle = std::mem::zeroed();
+            let mut trigger_handle = {
+                let mut trigger_handle = std::mem::MaybeUninit::<abi::WHV_TRIGGER_HANDLE>::uninit();
+                // SAFETY: trigger_handle will be initialized by WHvCreateTrigger, so we zero it first
+                std::ptr::write_bytes(trigger_handle.as_mut_ptr(), 0, 1);
+                trigger_handle.assume_init()
+            };
             let mut event_handle = null_mut();
             check_hresult(api::WHvCreateTrigger(
                 self.handle,
@@ -1090,7 +1095,12 @@ pub enum DeviceNotification {
 impl Device<'_> {
     fn get_property<T>(&self, property: abi::WHV_VPCI_DEVICE_PROPERTY_CODE) -> Result<T> {
         unsafe {
-            let mut data: T = std::mem::zeroed();
+            let mut data = {
+                let mut data = std::mem::MaybeUninit::<T>::uninit();
+                // SAFETY: data will be initialized by WHvGetVpciDeviceProperty, so we zero it first
+                std::ptr::write_bytes(data.as_mut_ptr(), 0, 1);
+                data.assume_init()
+            };
             let mut size = 0;
             check_hresult(api::WHvGetVpciDeviceProperty(
                 self.partition.handle,
@@ -1114,7 +1124,13 @@ impl Device<'_> {
 
     pub fn get_notification(&self) -> Result<Option<DeviceNotification>> {
         unsafe {
-            let mut notification = std::mem::zeroed();
+            let mut notification = {
+                let mut notification =
+                    std::mem::MaybeUninit::<abi::WHV_VPCI_DEVICE_NOTIFICATION>::uninit();
+                // SAFETY: notification will be initialized by WHvGetVpciDeviceNotification, so we zero it first
+                std::ptr::write_bytes(notification.as_mut_ptr(), 0, 1);
+                notification.assume_init()
+            };
             check_hresult(api::WHvGetVpciDeviceNotification(
                 self.partition.handle,
                 self.id,
@@ -1560,7 +1576,14 @@ impl<'a> Processor<'a> {
     pub fn runner(&self) -> ProcessorRunner<'a> {
         ProcessorRunner {
             vp: *self,
-            ctx: unsafe { std::mem::zeroed() },
+            ctx: {
+                // SAFETY: Initialize the run context structure by zeroing it
+                unsafe {
+                    let mut ctx = std::mem::MaybeUninit::<abi::WHV_RUN_VP_EXIT_CONTEXT>::uninit();
+                    std::ptr::write_bytes(ctx.as_mut_ptr(), 0, 1);
+                    ctx.assume_init()
+                }
+            },
         }
     }
 
@@ -1570,7 +1593,12 @@ impl<'a> Processor<'a> {
         access_flags: abi::WHV_TRANSLATE_GVA_FLAGS,
     ) -> Result<std::result::Result<u64, abi::WHV_TRANSLATE_GVA_RESULT_CODE>> {
         Ok(unsafe {
-            let mut result = std::mem::zeroed();
+            let mut result = {
+                let mut result = std::mem::MaybeUninit::<abi::WHV_TRANSLATE_GVA_RESULT>::uninit();
+                // SAFETY: result will be initialized by WHvTranslateGva, so we zero it first
+                std::ptr::write_bytes(result.as_mut_ptr(), 0, 1);
+                result.assume_init()
+            };
             let mut gpa = 0;
 
             check_hresult(api::WHvTranslateGva(
@@ -1619,7 +1647,12 @@ impl<'a> Processor<'a> {
 
     pub fn get_cpuid_output(&self, eax: u32, ecx: u32) -> Result<abi::WHV_CPUID_OUTPUT> {
         unsafe {
-            let mut output = std::mem::zeroed();
+            let mut output = {
+                let mut output = std::mem::MaybeUninit::<abi::WHV_CPUID_OUTPUT>::uninit();
+                // SAFETY: output will be initialized by WHvGetVirtualProcessorCpuidOutput, so we zero it first
+                std::ptr::write_bytes(output.as_mut_ptr(), 0, 1);
+                output.assume_init()
+            };
             check_hresult(api::WHvGetVirtualProcessorCpuidOutput(
                 self.partition.handle,
                 self.index,
