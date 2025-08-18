@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(
             parse_boot_command_line(&cmdline),
             BootCommandLineOptions {
-                logger: Some(LoggerType::Serial),
+                logger: None,
                 confidential_debug: true,
                 ..BootCommandLineOptions::new()
             }
