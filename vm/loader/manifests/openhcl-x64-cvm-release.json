@@ -26,7 +26,7 @@
             "max_vtl": 2,
             "isolation_type": {
                 "tdx": {
-                    "enable_debug": true,
+                    "enable_debug": false,
                     "sept_ve_disable": true
                 }
             },
