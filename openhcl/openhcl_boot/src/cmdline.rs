@@ -67,10 +67,6 @@ impl BootCommandLineOptions {
                 let arg = arg.split_once('=').map(|(_, arg)| arg);
                 if arg.is_some_and(|a| a != "0") {
                     self.confidential_debug = true;
-                    // Explicit logger specification overrides this default.
-                    if self.logger.is_none() {
-                        self.logger = Some(LoggerType::Serial);
-                    }
                 }
             } else if arg.starts_with(ENABLE_VTL2_GPA_POOL) {
                 self.enable_vtl2_gpa_pool = arg.split_once('=').and_then(|(_, arg)| {

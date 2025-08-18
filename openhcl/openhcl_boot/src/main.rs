@@ -673,15 +673,22 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     if let Some(cmdline) = p.command_line().command_line() {
         static_options.parse(cmdline);
     }
-    if let Some(typ) = static_options.logger {
-        boot_logger_init(p.isolation_type, typ);
-        log!("openhcl_boot: early debugging enabled");
-    }
 
     let hw_debug_bit = get_hw_debug_bit(p.isolation_type);
     let can_trust_host = p.isolation_type == IsolationType::None
         || static_options.confidential_debug
         || hw_debug_bit;
+
+    // If no logging has been configured, but we're in a debuggable setup,
+    // enable early logging anyways.
+    if can_trust_host && static_options.logger.is_none() {
+        static_options.logger = Some(LoggerType::Serial);
+    }
+
+    if let Some(typ) = static_options.logger {
+        boot_logger_init(p.isolation_type, typ);
+        log!("openhcl_boot: early debugging enabled");
+    }
 
     let boot_reftime = get_ref_time(p.isolation_type);
 
