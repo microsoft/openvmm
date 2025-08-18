@@ -30,7 +30,6 @@ use crate::hypercall::hvcall;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
-use boot_logger::LoggerType;
 use cmdline::BootCommandLineOptions;
 use core::fmt::Write;
 use dt::BootTimes;
@@ -667,8 +666,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         hvcall().initialize();
     }
 
-    // Enable early log output if requested in the static command line.
-    // Also check for confidential debug mode if we're isolated.
+    // Enable logging ASAP. This is fine even when isolated, as we don't have
+    // any access to secrets in the boot shim.
+    boot_logger_init(p.isolation_type);
+    log!("openhcl_boot: logging enabled");
+
     let mut static_options = BootCommandLineOptions::new();
     if let Some(cmdline) = p.command_line().command_line() {
         static_options.parse(cmdline);
@@ -678,17 +680,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let can_trust_host = p.isolation_type == IsolationType::None
         || static_options.confidential_debug
         || hw_debug_bit;
-
-    // If no logging has been configured, but we're in a debuggable setup,
-    // enable early logging anyways.
-    if can_trust_host && static_options.logger.is_none() {
-        static_options.logger = Some(LoggerType::Serial);
-    }
-
-    if let Some(typ) = static_options.logger {
-        boot_logger_init(p.isolation_type, typ);
-        log!("openhcl_boot: early debugging enabled");
-    }
 
     let boot_reftime = get_ref_time(p.isolation_type);
 
@@ -735,20 +726,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         // aren't met.
         partition_info.vtl0_alias_map = None;
     }
-
-    if can_trust_host {
-        // Enable late log output if requested in the dynamic command line.
-        // Confidential debug is only allowed in the static command line.
-        if let Some(typ) = partition_info.boot_options.logger {
-            boot_logger_init(p.isolation_type, typ);
-        } else if partition_info.com3_serial_available && cfg!(target_arch = "x86_64") {
-            // If COM3 is available and we can trust the host, enable log output even
-            // if it wasn't otherwise requested.
-            boot_logger_init(p.isolation_type, LoggerType::Serial);
-        }
-    }
-
-    log!("openhcl_boot: entered shim_main");
 
     if partition_info.cpus.is_empty() {
         panic!("no cpus");
