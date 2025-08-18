@@ -456,21 +456,15 @@ impl PartitionInfo {
             params.parameter_region_start
                 ..(params.parameter_region_start + params.parameter_region_size),
         );
-        let vtl2_reserved_range = if params.vtl2_reserved_region_size != 0 {
-            Some(MemoryRange::new(
+        let vtl2_reserved_range = (params.vtl2_reserved_region_size != 0).then(|| {
+            MemoryRange::new(
                 params.vtl2_reserved_region_start
                     ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
-            ))
-        } else {
-            None
-        };
-        let sidecar_image = if params.sidecar_size != 0 {
-            Some(MemoryRange::new(
-                params.sidecar_base..(params.sidecar_base + params.sidecar_size),
-            ))
-        } else {
-            None
-        };
+            )
+        });
+        let sidecar_image = (params.sidecar_size != 0).then(|| {
+            MemoryRange::new(params.sidecar_base..(params.sidecar_base + params.sidecar_size))
+        });
 
         // Only specify pagetables as a reserved region on TDX, as they are used
         // for AP startup via the mailbox protocol. On other platforms, the

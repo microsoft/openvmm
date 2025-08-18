@@ -333,7 +333,7 @@ impl AddressSpaceManager {
             })
         }
 
-        // Walk ranges in reverse order until one is free that has enough space
+        // Walk ranges in forward/reverse order, depending on allocation policy.
         let index = {
             let iter = self.address_space.iter().enumerate();
             match allocation_policy {
