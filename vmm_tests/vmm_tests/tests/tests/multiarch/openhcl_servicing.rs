@@ -10,18 +10,22 @@ use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use hvlite_defs::config::DeviceVtl;
 use petri::OpenHclServicingFlags;
+use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LAST_RELEASE_LINUX_DIRECT_X64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_24_11_LINUX_DIRECT_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -154,22 +158,70 @@ async fn keepalive<T: PetriVmmBackend>(
     .await
 }
 
-// Disabled while we investigate intermittent failures
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LAST_RELEASE_LINUX_DIRECT_X64])]
-async fn _openhcl_servicing_x64_linux_direct_2411_to_latest<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-    (latest_igvm, release_igvm): (
-        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-    ),
-) -> Result<(), anyhow::Error> {
-    openhcl_servicing_core(
-        config.with_custom_openhcl(release_igvm),
-        "",
-        latest_igvm,
-        OpenHclServicingFlags::default(),
-    )
-    .await
+// Generate ordered-pair OpenHCL Linux Direct x64 servicing tests for all listed versions.
+macro_rules! openhcl_pair_test_linux_direct_x64 {
+    ($to:ident, $from:ident) => {
+        paste::paste! {
+            #[openvmm_test(openhcl_linux_direct_x64 [$to, $from])]
+            async fn [<servicing_openhcl_linux_direct_x64_ $from:lower _to_ $to:lower>]<T: PetriVmmBackend>(
+                config: PetriVmBuilder<T>,
+                (to_igvm, from_igvm): (
+                    ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+                    ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+                ),
+            ) -> Result<(), anyhow::Error> {
+                if !host_supports_servicing() {
+                    tracing::info!("skipping OpenHCL servicing test on unsupported host");
+                    return Ok(());
+                }
+                openhcl_servicing_core(
+                    config
+                        .with_custom_openhcl(from_igvm)
+                        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
+                    "",
+                    to_igvm,
+                    OpenHclServicingFlags::default(),
+                )
+                .await
+            }
+        }
+    };
+}
+
+macro_rules! __for_each_pair_inner {
+    // Generate ordered pairs without self-pairs by walking combinations.
+    // Second parameter kept for call-site compatibility but unused.
+    ([$head:ident, $($tail:ident),+], [$($_all:ident),+], $m:ident) => {
+        __for_each_pair_inner!(@pairs $head; [$($tail),+]; $m);
+        __for_each_pair_inner!([$($tail),+], [$($_all),+], $m);
+    };
+
+    // Base cases: one or zero items -> no pairs
+    ([$_single:ident], [$($_all:ident),+], $m:ident) => {};
+    ([], [$($_all:ident),+], $m:ident) => {};
+
+    // Emit both orders for each pair between head and each tail element
+    (@pairs $from:ident; [$to_head:ident $(, $to_tail:ident)*]; $m:ident) => {
+        $m!($to_head, $from);
+        $m!($from, $to_head);
+        __for_each_pair_inner!(@pairs $from; [$($to_tail),*]; $m);
+    };
+    (@pairs $from:ident; []; $m:ident) => {};
+}
+
+macro_rules! openhcl_upgrade_matrix_linux_direct_x64 {
+    (versions: [$($all:ident),+ $(,)?]) => {
+        __for_each_pair_inner!([$($all),+], [$($all),+], openhcl_pair_test_linux_direct_x64);
+    };
+}
+
+// Instantiate the matrix: add a new version here and all pairs are generated.
+openhcl_upgrade_matrix_linux_direct_x64! {
+    versions: [
+        LATEST_LINUX_DIRECT_TEST_X64,
+        RELEASE_25_05_LINUX_DIRECT_X64,
+        RELEASE_24_11_LINUX_DIRECT_X64,
+    ]
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
