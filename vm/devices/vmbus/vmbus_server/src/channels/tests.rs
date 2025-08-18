@@ -1903,17 +1903,15 @@ fn test_gpadl_create_failure() {
     let bad_range = [1u64 | (0x1000 << 32), 0u64];
 
     // Send a gpadl message for a channel that doesn't exist.
-    env.c()
-        .handle_gpadl_header(
-            &protocol::GpadlHeader {
-                channel_id: ChannelId(100),
-                gpadl_id: GpadlId(1),
-                count: 1,
-                len: good_range.as_bytes().len() as u16,
-            },
-            good_range.as_bytes(),
-        )
-        .unwrap_err();
+    env.c().handle_gpadl_header(
+        &protocol::GpadlHeader {
+            channel_id: ChannelId(100),
+            gpadl_id: GpadlId(1),
+            count: 1,
+            len: good_range.as_bytes().len() as u16,
+        },
+        good_range.as_bytes(),
+    );
 
     // Ensure an error response was sent.
     env.notifier
@@ -1924,17 +1922,15 @@ fn test_gpadl_create_failure() {
         }));
 
     // Send a gpadl message with an invalid range.
-    env.c()
-        .handle_gpadl_header(
-            &protocol::GpadlHeader {
-                channel_id: ChannelId(1),
-                gpadl_id: GpadlId(1),
-                count: 1,
-                len: bad_range.as_bytes().len() as u16,
-            },
-            bad_range.as_bytes(),
-        )
-        .unwrap_err();
+    env.c().handle_gpadl_header(
+        &protocol::GpadlHeader {
+            channel_id: ChannelId(1),
+            gpadl_id: GpadlId(1),
+            count: 1,
+            len: bad_range.as_bytes().len() as u16,
+        },
+        bad_range.as_bytes(),
+    );
 
     // Ensure an error response was sent.
     env.notifier
@@ -1945,17 +1941,15 @@ fn test_gpadl_create_failure() {
         }));
 
     // Send a gpadl message with an invalid range but in multiple pieces.
-    env.c()
-        .handle_gpadl_header(
-            &protocol::GpadlHeader {
-                channel_id: ChannelId(1),
-                gpadl_id: GpadlId(1),
-                count: 2,
-                len: (bad_range.as_bytes().len() + good_range.as_bytes().len()) as u16,
-            },
-            bad_range.as_bytes(),
-        )
-        .unwrap();
+    env.c().handle_gpadl_header(
+        &protocol::GpadlHeader {
+            channel_id: ChannelId(1),
+            gpadl_id: GpadlId(1),
+            count: 2,
+            len: (bad_range.as_bytes().len() + good_range.as_bytes().len()) as u16,
+        },
+        bad_range.as_bytes(),
+    );
 
     // No response because the gpadl is incomplete.
     assert!(env.notifier.messages.is_empty());
@@ -1968,7 +1962,7 @@ fn test_gpadl_create_failure() {
             },
             good_range.as_bytes(),
         )
-        .unwrap_err();
+        .unwrap();
 
     // Ensure an error response was sent after the full gpadl is received.
     env.notifier
@@ -2278,17 +2272,15 @@ impl TestEnv {
     }
 
     fn gpadl(&mut self, channel_id: u32, gpadl_id: u32) {
-        self.c()
-            .handle_gpadl_header(
-                &protocol::GpadlHeader {
-                    channel_id: ChannelId(channel_id),
-                    gpadl_id: GpadlId(gpadl_id),
-                    count: 1,
-                    len: 16,
-                },
-                [1u64, 0u64].as_bytes(),
-            )
-            .unwrap();
+        self.c().handle_gpadl_header(
+            &protocol::GpadlHeader {
+                channel_id: ChannelId(channel_id),
+                gpadl_id: GpadlId(gpadl_id),
+                count: 1,
+                len: 16,
+            },
+            [1u64, 0u64].as_bytes(),
+        );
     }
 
     fn teardown_gpadl(&mut self, channel_id: u32, gpadl_id: u32) {

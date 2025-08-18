@@ -2642,31 +2642,37 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     /// Handles MessageType::GPADL_HEADER, which creates a new GPADL.
-    fn handle_gpadl_header(
-        &mut self,
-        input: &protocol::GpadlHeader,
-        range: &[u8],
-    ) -> Result<(), ChannelError> {
-        self.handle_gpadl_header_core(input, range)
-            .inspect_err(|_| {
-                // Inform the guest of any error during the header message.
-                self.sender().send_gpadl_created(
-                    input.channel_id,
-                    input.gpadl_id,
-                    protocol::STATUS_UNSUCCESSFUL,
-                );
-            })
+    fn handle_gpadl_header(&mut self, input: &protocol::GpadlHeader, range: &[u8]) {
+        if let Err(err) = self.handle_gpadl_header_core(input, range) {
+            tracelimit::warn_ratelimited!(
+                err = &err as &dyn std::error::Error,
+                channel_id = ?input.channel_id,
+                gpadl_id = ?input.gpadl_id,
+                "error handling gpadl header"
+            );
+
+            // Inform the guest of any error during the header message.
+            self.sender().send_gpadl_created(
+                input.channel_id,
+                input.gpadl_id,
+                protocol::STATUS_UNSUCCESSFUL,
+            );
+        }
     }
 
     /// Handles MessageType::GPADL_BODY, which adds more to an in-progress
     /// GPADL.
+    ///
+    /// N.B. This function only returns an error if the error was not handled locally by sending an
+    ///      error response to the guest.
     fn handle_gpadl_body(
         &mut self,
         input: &protocol::GpadlBody,
         range: &[u8],
     ) -> Result<(), ChannelError> {
         // Find and update the GPADL.
-        // N.B. No error response is sent to the guest if the ID is invalid.
+        // N.B. No error response can be sent to the guest if the gpadl ID is invalid, because the
+        //      channel ID is not known in that case.
         let &offer_id = self
             .inner
             .incomplete_gpadls
@@ -2700,13 +2706,17 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 self.inner.incomplete_gpadls.remove(&input.gpadl_id);
                 self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
                 let channel_id = channel.info.as_ref().expect("assigned").channel_id;
+                tracelimit::warn_ratelimited!(
+                    err = &err as &dyn std::error::Error,
+                    channel_id = channel_id.0,
+                    gpadl_id = input.gpadl_id.0,
+                    "error handling gpadl body"
+                );
                 self.sender().send_gpadl_created(
                     channel_id,
                     input.gpadl_id,
                     protocol::STATUS_UNSUCCESSFUL,
                 );
-
-                return Err(err);
             }
         }
 
@@ -3422,7 +3432,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
             Message::Unload(..) => self.handle_unload(),
             Message::RequestOffers(..) => self.handle_request_offers()?,
-            Message::GpadlHeader(input, range) => self.handle_gpadl_header(&input, range)?,
+            Message::GpadlHeader(input, range) => self.handle_gpadl_header(&input, range),
             Message::GpadlBody(input, range) => self.handle_gpadl_body(&input, range)?,
             Message::GpadlTeardown(input, ..) => self.handle_gpadl_teardown(&input)?,
             Message::OpenChannel(input, ..) => self.handle_open_channel(&input.into())?,
