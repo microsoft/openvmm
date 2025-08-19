@@ -3862,6 +3862,136 @@ async fn send_rndis_indicate_status_message(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+    let rndis_parser = channel.rndis_message_parser();
+    let idx = 0u32;
+    let sent_data = 123u8;
+
+    // Test sending packets with the filter not set.
+    {
+        let locked_state = endpoint_state.lock();
+        let queue = locked_state
+            .queues
+            .get(idx as usize)
+            .expect("Queue should exist");
+        queue.send(vec![sent_data as u8]);
+    }
+
+    // Expect no packet, since filter is not set
+    channel
+        .read_subchannel_with(idx, |packet| match packet {
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect_err("Packet should have been filtered");
+
+    // Set packet filter
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, 0);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Send a packet
+    {
+        let locked_state = endpoint_state.lock();
+        let queue = locked_state
+            .queues
+            .get(idx as usize)
+            .expect("Queue should exist");
+        queue.send(vec![sent_data as u8]);
+    }
+
+    // Check the received packet content
+    channel
+        .read_subchannel_with(idx, |packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let (_, external_ranges) = rndis_parser.parse_data_message(packet);
+                let data: u8 = rndis_parser.get_data_packet_content(&external_ranges);
+                assert_eq!(sent_data, data);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("Data packet");
+
+    // Set packet filter to None
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NDIS_PACKET_TYPE_NONE.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, 0);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Test sending packets with the filter set to None.
+    {
+        let locked_state = endpoint_state.lock();
+        let queue = locked_state
+            .queues
+            .get(idx as usize)
+            .expect("Queue should exist");
+        queue.send(vec![sent_data as u8]);
+    }
+
+    // Expect no packet, since filter is set to None.
+    channel
+        .read_subchannel_with(idx, |packet| match packet {
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect_err("Packet should have been filtered");
+}
+
+#[async_test]
 async fn send_rndis_set_ex_message(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
