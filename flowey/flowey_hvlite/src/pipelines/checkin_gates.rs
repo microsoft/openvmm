@@ -911,7 +911,10 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
                 nextest_filter_expr: "test(tdx) + (test(vbs) & test(hyperv))".to_string(),
-                test_artifacts: vec![KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd],
+                test_artifacts: vec![
+                    KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
+                    KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
+                ],
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -931,7 +934,10 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
                 nextest_filter_expr: "test(snp)".to_string(),
-                test_artifacts: vec![KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd],
+                test_artifacts: vec![
+                    KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
+                    KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
+                ],
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
