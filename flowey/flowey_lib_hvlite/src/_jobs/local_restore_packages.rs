@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::download_lxutil::LxutilArch;
+use crate::download_release_igvm_files::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
 use crate::init_openvmm_magicpath_linux_test_kernel::OpenvmmLinuxTestKernelArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
@@ -37,8 +38,23 @@ impl SimpleFlowNode for Node {
             release_artifact,
         } = request;
 
-        let release_igvm_files =
-            ctx.reqv(crate::download_release_igvm_files::resolve::Request::LastRelease);
+        let release_igvm_files = {
+            let items = OpenhclReleaseVersion::ALL
+                .iter()
+                .cloned()
+                .map(|version| {
+                    let rv = ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
+                        release_igvm_files: v,
+                        release_version: version.clone(),
+                    });
+                    rv.map(ctx, {
+                        let version = version.clone();
+                        move |x| (version, x)
+                    })
+                })
+                .collect::<Vec<_>>();
+            ReadVar::transpose_vec(ctx, items)
+        };
 
         let mut deps = vec![ctx.reqv(crate::init_openvmm_magicpath_protoc::Request)];
 
@@ -106,26 +122,30 @@ impl SimpleFlowNode for Node {
                 let release_artifact = release_artifact.claim(ctx);
 
                 |rt| {
-                    let release_igvm_files = rt.read(release_igvm_files);
+                    let all_releases = rt.read(release_igvm_files);
+                    let release_igvm_files = match all_releases.last() {
+                        Some((_ver, rel)) => rel,
+                        None => anyhow::bail!("no release IGVM files downloaded"),
+                    };
                     let release_artifact = rt.read(release_artifact);
 
                     fs_err::create_dir_all(release_artifact.join("aarch64"))?;
                     fs_err::create_dir_all(release_artifact.join("x64"))?;
 
                     fs_err::copy(
-                        release_igvm_files.aarch64_bin,
+                        release_igvm_files.aarch64_bin.clone(),
                         release_artifact
                             .join("aarch64")
                             .join("release-aarch64-openhcl.bin"),
                     )?;
 
                     fs_err::copy(
-                        release_igvm_files.x64_bin,
+                        release_igvm_files.x64_bin.clone(),
                         release_artifact.join("x64").join("release-x64-openhcl.bin"),
                     )?;
 
                     fs_err::copy(
-                        release_igvm_files.x64_direct_bin,
+                        release_igvm_files.x64_direct_bin.clone(),
                         release_artifact
                             .join("x64")
                             .join("release-x64-openhcl-direct.bin"),

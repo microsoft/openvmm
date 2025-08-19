@@ -7,6 +7,7 @@ use crate::_jobs::local_build_igvm::non_production_build_igvm_tool_out_name;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use crate::download_release_igvm_files::OpenhclReleaseVersion;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -661,8 +662,23 @@ impl SimpleFlowNode for Node {
         copy_to_dir.push((nextest_bin.to_owned(), nextest_bin_src));
         let nextest_bin = test_content_dir.join(nextest_bin);
 
-        let last_release_igvm_files =
-            ctx.reqv(crate::download_release_igvm_files::resolve::Request::LastRelease);
+        let release_igvm_files = {
+            let items = OpenhclReleaseVersion::ALL
+                .iter()
+                .cloned()
+                .map(|version| {
+                    let rv = ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
+                        release_igvm_files: v,
+                        release_version: version.clone(),
+                    });
+                    rv.map(ctx, {
+                        let version = version.clone();
+                        move |x| (version, x)
+                    })
+                })
+                .collect::<Vec<_>>();
+            ReadVar::transpose_vec(ctx, items)
+        };
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
@@ -678,7 +694,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,
-            last_release_igvm_files,
+            release_igvm_files,
             use_relative_paths: build_only,
         });
 

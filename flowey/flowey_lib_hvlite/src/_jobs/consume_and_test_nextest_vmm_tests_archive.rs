@@ -9,6 +9,7 @@ use crate::build_openvmm::OpenvmmOutput;
 use crate::build_pipette::PipetteOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
+use crate::download_release_igvm_files::OpenhclReleaseVersion;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
@@ -108,8 +109,23 @@ impl SimpleFlowNode for Node {
             )
         });
 
-        let last_release_igvm_files =
-            ctx.reqv(crate::download_release_igvm_files::resolve::Request::LastRelease);
+        let release_igvm_files = {
+            let items = OpenhclReleaseVersion::ALL
+                .iter()
+                .cloned()
+                .map(|version| {
+                    let rv = ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
+                        release_igvm_files: v,
+                        release_version: version.clone(),
+                    });
+                    rv.map(ctx, {
+                        let version = version.clone();
+                        move |x| (version, x)
+                    })
+                })
+                .collect::<Vec<_>>();
+            ReadVar::transpose_vec(ctx, items)
+        };
 
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
 
@@ -146,7 +162,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
-            last_release_igvm_files,
+            release_igvm_files,
             use_relative_paths: false,
         });
 
