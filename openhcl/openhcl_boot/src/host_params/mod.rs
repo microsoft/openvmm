@@ -86,7 +86,6 @@ impl PartitionInfo {
     pub const fn new() -> Self {
         PartitionInfo {
             vtl2_ram: ArrayVec::new_const(),
-            // vtl2_used_ranges: ArrayVec::new_const(),
             partition_ram: ArrayVec::new_const(),
             isolation: IsolationType::None,
             bsp_reg: 0,
