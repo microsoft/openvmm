@@ -2575,6 +2575,7 @@ async fn new_underhill_vm(
                 register_layout,
                 guest_secret_key: platform_attestation_data.guest_secret_key,
                 logger: Some(GetTpmLoggerHandle.into_resource()),
+                is_confidential_vm: isolation.is_isolated(),
             }
             .into_resource(),
         });

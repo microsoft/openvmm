@@ -57,7 +57,6 @@ use tpm20proto::NV_INDEX_RANGE_BASE_TCG_ASSIGNED;
 use tpm20proto::ReservedHandle;
 use tpm20proto::TPM20_HT_PERSISTENT;
 use tpm20proto::TPM20_RH_PLATFORM;
-use underhill_confidentiality::is_confidential_vm;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
@@ -347,6 +346,7 @@ impl Tpm {
         ak_cert_type: TpmAkCertType,
         guest_secret_key: Option<Vec<u8>>,
         logger: Option<Arc<dyn TpmLogger>>,
+        is_confidential_vm: bool,
     ) -> Result<Self, TpmError> {
         tracing::info!("initializing TPM");
 
@@ -428,7 +428,8 @@ impl Tpm {
         };
 
         if !is_restoring {
-            tpm.on_first_boot(guest_secret_key).await?;
+            tpm.on_first_boot(guest_secret_key, is_confidential_vm)
+                .await?;
         }
 
         tracing::info!("TPM initialized");
@@ -449,7 +450,11 @@ impl Tpm {
         Ok(())
     }
 
-    async fn on_first_boot(&mut self, guest_secret_key: Option<Vec<u8>>) -> Result<(), TpmError> {
+    async fn on_first_boot(
+        &mut self,
+        guest_secret_key: Option<Vec<u8>>,
+        is_confidential_vm: bool,
+    ) -> Result<(), TpmError> {
         use ms_tpm_20_ref::NvError;
         let mut force_ak_regen = false;
         let fixup_16k_ak_cert;
@@ -482,9 +487,8 @@ impl Tpm {
                 // If this is a confidential VM or has a vTPM blob size that indicates that it was
                 // HCL-provisioned, regenerate the AK from TPM seeds. This prevents an attack where
                 // the VTL0 admin can replace the AK and get an AKCert for it.
-                force_ak_regen = self.refresh_tpm_seeds
-                    || blob.len() != LEGACY_VTPM_SIZE
-                    || is_confidential_vm();
+                force_ak_regen =
+                    self.refresh_tpm_seeds || blob.len() != LEGACY_VTPM_SIZE || is_confidential_vm;
 
                 // If this is a small vTPM blob, potentially fixup the AK cert.
                 fixup_16k_ak_cert = blob.len() == LEGACY_VTPM_SIZE;
