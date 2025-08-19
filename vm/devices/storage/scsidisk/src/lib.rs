@@ -131,11 +131,7 @@ struct ScsiParameters {
     serial_number: Vec<u8>,
     medium_rotation_rate: u16,
     optimal_unmap_sectors: u32,
-    maximum_atomic_transfer_length: Option<u32>,
-    atomic_alignment: Option<u32>,
-    atomic_transfer_length_granularity: Option<u32>,
-    maximum_atomic_transfer_length_with_atomic_boundary: Option<u32>,
-    maximum_atomic_boundary_size: Option<u32>,
+    atomic_parameters: disk_backend::AtomicParameters,
 }
 
 impl SimpleScsiDisk {
@@ -172,14 +168,6 @@ impl SimpleScsiDisk {
                 if id == [0; 16] { None } else { Some(id) }
             }
 
-            // Get atomic parameters from backing disk, if supported.
-            let maximum_atomic_transfer_length = disk.maximum_atomic_transfer_length();
-            let atomic_alignment = disk.atomic_alignment();
-            let atomic_transfer_length_granularity = disk.atomic_transfer_length_granularity();
-            let maximum_atomic_transfer_length_with_atomic_boundary =
-                disk.maximum_atomic_transfer_length_with_atomic_boundary();
-            let maximum_atomic_boundary_size = disk.maximum_atomic_boundary_size();
-
             // Choose the first non-zero disk ID from the passed in parameters,
             // the disk, or a new random ID.
             let disk_id = disk_id
@@ -201,11 +189,7 @@ impl SimpleScsiDisk {
                 serial_number,
                 medium_rotation_rate: medium_rotation_rate.unwrap_or(1), // non-rotating media (SSD)
                 optimal_unmap_sectors: optimal_unmap_sectors.unwrap_or(1),
-                maximum_atomic_transfer_length,
-                atomic_alignment,
-                atomic_transfer_length_granularity,
-                maximum_atomic_transfer_length_with_atomic_boundary,
-                maximum_atomic_boundary_size,
+                atomic_parameters: disk.atomic_parameters(),
             }
         };
 
@@ -893,23 +877,36 @@ impl SimpleScsiDisk {
     ) -> Result<RequestParameters, ScsiError> {
         let cdb = scsi::Cdb16Atomic::read_from_prefix(&request.cdb[..])
             .unwrap()
-            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-        let len = cdb.transfer_blocks.get() as u64;
+            .0;
+        let block_count = cdb.transfer_blocks.get() as u64;
         let offset = cdb.logical_block.get();
         let sector_shift = self.sector_shift;
         let max = external_data.len() >> sector_shift;
         let atomic_boundary = cdb.atomic_boundary.get();
-        if len == 0 || len as usize > max {
-            tracelimit::error_ratelimited!(len, max, "illegal block");
+        if block_count == 0 || block_count as usize > max {
+            tracelimit::error_ratelimited!(block_count, max, "illegal block");
             return Err(ScsiError::IllegalRequest(
                 AdditionalSenseCode::ILLEGAL_BLOCK,
             ));
         }
 
-        if sector_count <= offset || sector_count - offset < len {
-            tracelimit::error_ratelimited!(sector_count, offset, len, "illegal block");
+        if sector_count <= offset || sector_count - offset < block_count {
+            tracelimit::error_ratelimited!(sector_count, offset, block_count, "illegal block");
             return Err(ScsiError::IllegalRequest(
                 AdditionalSenseCode::ILLEGAL_BLOCK,
+            ));
+        }
+
+        // Ensure atomicity is supported
+        if self
+            .scsi_parameters
+            .atomic_parameters
+            .maximum_atomic_transfer_length
+            == 0
+        {
+            tracelimit::error_ratelimited!("atomic operations not supported");
+            return Err(ScsiError::IllegalRequest(
+                AdditionalSenseCode::ILLEGAL_COMMAND,
             ));
         }
 
@@ -917,18 +914,18 @@ impl SimpleScsiDisk {
         // If atomic boundary is 0, make sure transfer length not larger than max atomic
         // transfer length
         if atomic_boundary == 0
-            && len as u32
+            && block_count as u32
                 > self
                     .scsi_parameters
+                    .atomic_parameters
                     .maximum_atomic_transfer_length
-                    .unwrap_or(0)
         {
             tracelimit::error_ratelimited!(
-                len,
+                block_count,
                 maximum_atomic_transfer_length = self
                     .scsi_parameters
-                    .maximum_atomic_transfer_length
-                    .unwrap_or(0),
+                    .atomic_parameters
+                    .maximum_atomic_transfer_length,
                 "atomic boundary 0, transfer length > maximum atomic transfer length"
             );
             return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
@@ -940,15 +937,15 @@ impl SimpleScsiDisk {
             && len as u32
                 > self
                     .scsi_parameters
+                    .atomic_parameters
                     .maximum_atomic_transfer_length_with_atomic_boundary
-                    .unwrap_or(0)
         {
             tracelimit::error_ratelimited!(
                 atomic_boundary,
                 maximum_atomic_transfer_length_with_atomic_boundary = self
                     .scsi_parameters
-                    .maximum_atomic_transfer_length_with_atomic_boundary
-                    .unwrap_or(0),
+                    .atomic_parameters
+                    .maximum_atomic_transfer_length_with_atomic_boundary,
                 "atomic boundary > 0, transfer length > maximum atomic transfer length with atomic boundary"
             );
             return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
@@ -959,15 +956,15 @@ impl SimpleScsiDisk {
             && atomic_boundary as u32
                 > self
                     .scsi_parameters
+                    .atomic_parameters
                     .maximum_atomic_boundary_size
-                    .unwrap_or(0)
         {
             tracelimit::error_ratelimited!(
                 atomic_boundary,
                 maximum_atomic_boundary_size = self
                     .scsi_parameters
-                    .maximum_atomic_boundary_size
-                    .unwrap_or(0),
+                    .atomic_parameters
+                    .maximum_atomic_boundary_size,
                 "atomic boundary > maximum atomic boundary size"
             );
             return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
@@ -977,22 +974,22 @@ impl SimpleScsiDisk {
         // the non-zero atomic boundary field is a multiple of this granularity
         if self
             .scsi_parameters
+            .atomic_parameters
             .atomic_transfer_length_granularity
-            .unwrap_or(0)
             > 0
         {
             if len as u32
                 % self
                     .scsi_parameters
+                    .atomic_parameters
                     .atomic_transfer_length_granularity
-                    .unwrap()
                 != 0
                 && (atomic_boundary > 0
                     && atomic_boundary as u32
                         % self
                             .scsi_parameters
+                            .atomic_parameters
                             .atomic_transfer_length_granularity
-                            .unwrap()
                         != 0)
             {
                 tracelimit::error_ratelimited!(
@@ -1000,8 +997,8 @@ impl SimpleScsiDisk {
                     atomic_boundary,
                     atomic_transfer_length_granularity = self
                         .scsi_parameters
-                        .atomic_transfer_length_granularity
-                        .unwrap_or(0),
+                        .atomic_parameters
+                        .atomic_transfer_length_granularity,
                     "transfer length OR non-zero atomic boundary not multiple of atomic transfer length granularity"
                 );
                 return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));

@@ -189,48 +189,26 @@ impl DiskIo for NvmeDisk {
         self.namespace.preferred_deallocate_granularity().into()
     }
 
-    fn maximum_atomic_transfer_length(&self) -> Option<u32> {
-        if self.namespace.nsabp() {
-            if self.namespace.nawun() == 0 {
-                None
-            } else {
-                Some(self.namespace.nawun().into())
-            }
+    fn atomic_parameters(&self) -> disk_backend::AtomicParameters {
+        let maximum_atomic_transfer_length = if self.namespace.nsabp() {
+            self.namespace.nawun().into()
         } else {
-            if self.namespace.awun() == 0 {
-                None
-            } else {
-                Some(self.namespace.awun().into())
-            }
-        }
-    }
+            self.namespace.awun().into()
+        };
 
-    fn atomic_alignment(&self) -> Option<u32> {
-        if self.namespace.nabo() == 0 {
-            None
-        } else {
-            Some(self.namespace.nabo().into())
-        }
-    }
+        let atomic_alignment: u32 = self.namespace.nabo().into();
 
-    fn atomic_transfer_length_granularity(&self) -> Option<u32> {
-        // There appears to be no granularity requirement in the NVMe spec.
-        None
-    }
+        let maximum_atomic_transfer_length_with_atomic_boundary: u32 =
+            self.namespace.nabsn().into();
 
-    fn maximum_atomic_transfer_length_with_atomic_boundary(&self) -> Option<u32> {
-        if self.namespace.nabsn() == 0 {
-            None
-        } else {
-            Some(self.namespace.nabsn().into())
-        }
-    }
+        let maximum_atomic_boundary_size: u32 = self.namespace.nabsn().into();
 
-    fn maximum_atomic_boundary_size(&self) -> Option<u32> {
-        if self.namespace.nabsn() == 0 {
-            None
-        } else {
-            Some(self.namespace.nabsn().into())
+        disk_backend::AtomicParameters {
+            maximum_atomic_transfer_length,
+            atomic_alignment,
+            atomic_transfer_length_granularity: 0, // There appears to be no granularity requirement in the NVMe spec.
+            maximum_atomic_transfer_length_with_atomic_boundary,
+            maximum_atomic_boundary_size,
         }
     }
 }
