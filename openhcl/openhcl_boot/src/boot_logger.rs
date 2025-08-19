@@ -49,16 +49,16 @@ pub static BOOT_LOGGER: BootLogger = BootLogger {
 };
 
 /// Initialize the boot logger. This replaces any previous init calls.
-pub fn boot_logger_init(isolation_type: IsolationType) {
+pub fn boot_logger_init(isolation_type: IsolationType, com3_serial_available: bool) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
 
-    *logger = match isolation_type {
+    *logger = match (isolation_type, com3_serial_available) {
         #[cfg(target_arch = "x86_64")]
-        IsolationType::None => Logger::Serial(Serial::init(InstrIoAccess)),
+        (IsolationType::None, true) => Logger::Serial(Serial::init(InstrIoAccess)),
         #[cfg(target_arch = "aarch64")]
-        IsolationType::None => Logger::Serial(Serial::init()),
+        (IsolationType::None, true) => Logger::Serial(Serial::init()),
         #[cfg(target_arch = "x86_64")]
-        IsolationType::Tdx => Logger::TdxSerial(Serial::init(TdxIoAccess)),
+        (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
         _ => Logger::None,
     };
 }

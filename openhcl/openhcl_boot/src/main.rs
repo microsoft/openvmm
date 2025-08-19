@@ -656,6 +656,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         enable_enlightened_panic();
     }
 
+    let boot_reftime = get_ref_time(p.isolation_type);
+
     // The support code for the fast hypercalls does not set
     // the Guest ID if it is not set yet as opposed to the slow
     // hypercall code path where that is done automatically.
@@ -665,11 +667,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     if !p.isolation_type.is_hardware_isolated() {
         hvcall().initialize();
     }
-
-    // Enable logging ASAP. This is fine even when isolated, as we don't have
-    // any access to secrets in the boot shim.
-    boot_logger_init(p.isolation_type);
-    log!("openhcl_boot: logging enabled");
 
     let mut static_options = BootCommandLineOptions::new();
     if let Some(cmdline) = p.command_line().command_line() {
@@ -681,8 +678,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         || static_options.confidential_debug
         || hw_debug_bit;
 
-    let boot_reftime = get_ref_time(p.isolation_type);
-
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info =
         match PartitionInfo::read_from_dt(&p, &mut dt_storage, static_options, can_trust_host) {
@@ -690,6 +685,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
             Ok(None) => panic!("host did not provide a device tree"),
             Err(e) => panic!("unable to read device tree params {}", e),
         };
+
+    // Enable logging ASAP. This is fine even when isolated, as we don't have
+    // any access to secrets in the boot shim.
+    boot_logger_init(p.isolation_type, partition_info.com3_serial_available);
+    log!("openhcl_boot: logging enabled");
 
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
