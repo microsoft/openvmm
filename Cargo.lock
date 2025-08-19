@@ -9016,7 +9016,6 @@ dependencies = [
  "nvme_resources",
  "pal",
  "pal_async",
- "paste",
  "petri",
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
