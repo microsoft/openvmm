@@ -3892,14 +3892,12 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
             .queues
             .get(idx as usize)
             .expect("Queue should exist");
-        queue.send(vec![sent_data as u8]);
+        queue.send(vec![sent_data]);
     }
 
     // Expect no packet, since filter is not set
     channel
-        .read_subchannel_with(idx, |packet| match packet {
-            _ => panic!("Unexpected packet"),
-        })
+        .read_subchannel_with(idx, |_| panic!("Unexpected packet"))
         .await
         .expect_err("Packet should have been filtered");
 
@@ -3933,18 +3931,18 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
             .queues
             .get(idx as usize)
             .expect("Queue should exist");
-        queue.send(vec![sent_data as u8]);
+        queue.send(vec![sent_data]);
     }
 
     // Check the received packet content
     channel
-        .read_subchannel_with(idx, |packet| match packet {
-            IncomingPacket::Data(packet) => {
-                let (_, external_ranges) = rndis_parser.parse_data_message(packet);
-                let data: u8 = rndis_parser.get_data_packet_content(&external_ranges);
-                assert_eq!(sent_data, data);
-            }
-            _ => panic!("Unexpected packet"),
+        .read_subchannel_with(idx, |packet| {
+            let IncomingPacket::Data(packet) = packet else {
+                panic!("Unexpected packet");
+            };
+            let (_, external_ranges) = rndis_parser.parse_data_message(packet);
+            let data: u8 = rndis_parser.get_data_packet_content(&external_ranges);
+            assert_eq!(sent_data, data);
         })
         .await
         .expect("Data packet");
@@ -3979,14 +3977,12 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
             .queues
             .get(idx as usize)
             .expect("Queue should exist");
-        queue.send(vec![sent_data as u8]);
+        queue.send(vec![sent_data]);
     }
 
     // Expect no packet, since filter is set to None.
     channel
-        .read_subchannel_with(idx, |packet| match packet {
-            _ => panic!("Unexpected packet"),
-        })
+        .read_subchannel_with(idx, |_| panic!("Unexpected packet"))
         .await
         .expect_err("Packet should have been filtered");
 }
