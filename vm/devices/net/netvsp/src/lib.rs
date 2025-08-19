@@ -800,7 +800,7 @@ impl PrimaryChannelState {
         tx_spread_sent: bool,
         guest_link_down: bool,
         pending_link_action: Option<bool>,
-        packet_filter: u32,
+        packet_filter: Option<u32>,
     ) -> Result<Self, NetRestoreError> {
         // Restore control messages.
         let control_messages_len = control_messages.iter().map(|msg| msg.data.len()).sum();
@@ -879,6 +879,8 @@ impl PrimaryChannelState {
         } else {
             PendingLinkAction::Default
         };
+
+        let packet_filter = packet_filter.unwrap_or(rndisprot::NPROTO_PACKET_FILTER);
 
         Ok(Self {
             guest_vf_state,
@@ -1198,7 +1200,24 @@ impl VmbusDevice for Nic {
             .adapter
             .num_sub_channels_opened
             .fetch_add(1, Ordering::SeqCst);
-        let packet_filter = rndisprot::NDIS_PACKET_TYPE_NONE; // No traffic until guest sets filter.
+
+        let packet_filter = if channel_idx == 0 {
+            // No rx traffic on primary channel until guest sets filter.
+            rndisprot::NDIS_PACKET_TYPE_NONE
+        } else {
+            // Subchannel inherits the packet filter of the primary channel.
+            // Stop the primary worker task temporarily to safely access the state.
+            let coordinator = self.coordinator.state_mut().unwrap();
+            coordinator.workers[0].stop().await;
+            let packet_filter = coordinator.workers[0]
+                .state()
+                .unwrap()
+                .channel
+                .packet_filter;
+            coordinator.workers[0].start();
+            packet_filter
+        };
+
         let r = self.insert_worker(channel_idx, open_request, state, true, packet_filter);
         if channel_idx != 0
             && num_opened + 1 == self.coordinator.state_mut().unwrap().num_queues as usize
@@ -1828,7 +1847,7 @@ impl Nic {
                         tx_spread_sent: primary.tx_spread_sent,
                         guest_link_down: !primary.guest_link_up,
                         pending_link_action,
-                        packet_filter: primary.packet_filter,
+                        packet_filter: Some(primary.packet_filter),
                     })
                 }
             };

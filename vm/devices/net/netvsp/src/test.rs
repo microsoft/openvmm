@@ -4354,6 +4354,29 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
         .await
         .expect("association packet");
 
+    // Set packet filter
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, 0);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
     let message = NvspMessage {
         header: protocol::MessageHeader {
             message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,

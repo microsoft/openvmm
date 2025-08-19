@@ -121,7 +121,7 @@ pub struct ReadyPrimary {
     #[mesh(15)]
     pub pending_link_action: Option<bool>,
     #[mesh(16)]
-    pub packet_filter: u32,
+    pub packet_filter: Option<u32>,
 }
 
 #[derive(Debug, Protobuf)]
