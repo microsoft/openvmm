@@ -71,11 +71,9 @@ impl PciExpressCapability {
     /// * `flr_supported` - Whether Function Level Reset is supported
     /// * `flr_handler` - Optional handler to be called when FLR is initiated
     pub fn new(flr_supported: bool, flr_handler: Option<Arc<dyn FlrHandler>>) -> Self {
-        let mut device_capabilities = pci_express::DeviceCapabilities::new();
-        device_capabilities.set_function_level_reset(flr_supported);
-
         Self {
-            device_capabilities,
+            device_capabilities: pci_express::DeviceCapabilities::new()
+                .with_function_level_reset(flr_supported),
             state: Arc::new(Mutex::new(PciExpressState::new())),
             flr_handler,
         }
@@ -95,9 +93,7 @@ impl PciExpressCapability {
         }
 
         // Update the control register but clear the FLR bit as it's self-clearing
-        let mut updated_control = new_control;
-        updated_control.set_initiate_function_level_reset(false);
-        state.device_control = updated_control;
+        state.device_control = new_control.with_initiate_function_level_reset(false);
     }
 }
 
