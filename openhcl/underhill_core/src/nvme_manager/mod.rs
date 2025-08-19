@@ -104,6 +104,7 @@ pub trait CreateNvmeDriver: Inspect + Send + Sync {
     async fn create_driver(
         &self,
         driver_source: &VmTaskDriverSource,
+        controller_instance_id: Option<String>,
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
