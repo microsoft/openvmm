@@ -188,41 +188,21 @@ macro_rules! openhcl_pair_test_linux_direct_x64 {
     };
 }
 
-macro_rules! __for_each_pair_inner {
-    // Generate ordered pairs without self-pairs by walking combinations.
-    // Second parameter kept for call-site compatibility but unused.
-    ([$head:ident, $($tail:ident),+], [$($_all:ident),+], $m:ident) => {
-        __for_each_pair_inner!(@pairs $head; [$($tail),+]; $m);
-        __for_each_pair_inner!([$($tail),+], [$($_all),+], $m);
-    };
-
-    // Base cases: one or zero items -> no pairs
-    ([$_single:ident], [$($_all:ident),+], $m:ident) => {};
-    ([], [$($_all:ident),+], $m:ident) => {};
-
-    // Emit both orders for each pair between head and each tail element
-    (@pairs $from:ident; [$to_head:ident $(, $to_tail:ident)*]; $m:ident) => {
-        $m!($to_head, $from);
-        $m!($from, $to_head);
-        __for_each_pair_inner!(@pairs $from; [$($to_tail),*]; $m);
-    };
-    (@pairs $from:ident; []; $m:ident) => {};
-}
-
-macro_rules! openhcl_upgrade_matrix_linux_direct_x64 {
-    (versions: [$($all:ident),+ $(,)?]) => {
-        __for_each_pair_inner!([$($all),+], [$($all),+], openhcl_pair_test_linux_direct_x64);
-    };
-}
-
-// Instantiate the matrix: add a new version here and all pairs are generated.
-openhcl_upgrade_matrix_linux_direct_x64! {
-    versions: [
-        LATEST_LINUX_DIRECT_TEST_X64,
-        RELEASE_25_05_LINUX_DIRECT_X64,
-        RELEASE_24_11_LINUX_DIRECT_X64,
-    ]
-}
+// upgrade/downgrade with n-1
+openhcl_pair_test_linux_direct_x64!(RELEASE_25_05_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64);
+openhcl_pair_test_linux_direct_x64!(LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64);
+// upgrade/downgrade with n-2
+openhcl_pair_test_linux_direct_x64!(RELEASE_24_11_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64);
+openhcl_pair_test_linux_direct_x64!(LATEST_LINUX_DIRECT_TEST_X64, RELEASE_24_11_LINUX_DIRECT_X64);
+// upgrade/downgrade between n-1 and n-2
+openhcl_pair_test_linux_direct_x64!(
+    RELEASE_24_11_LINUX_DIRECT_X64,
+    RELEASE_25_05_LINUX_DIRECT_X64
+);
+openhcl_pair_test_linux_direct_x64!(
+    RELEASE_25_05_LINUX_DIRECT_X64,
+    RELEASE_24_11_LINUX_DIRECT_X64
+);
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn shutdown_ic(
