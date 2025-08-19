@@ -382,7 +382,7 @@ struct NetChannel<T: RingMem> {
     pending_send_size: usize,
     restart: Option<CoordinatorMessage>,
     can_use_ring_size_opt: bool,
-    stop_rx: bool,
+    packet_filter: u32,
 }
 
 /// Buffers used during packet processing.
@@ -591,7 +591,7 @@ struct PrimaryChannelState {
     tx_spread_sent: bool,
     guest_link_up: bool,
     pending_link_action: PendingLinkAction,
-    stop_rx: bool,
+    packet_filter: u32,
 }
 
 impl Inspect for PrimaryChannelState {
@@ -783,7 +783,7 @@ impl PrimaryChannelState {
             tx_spread_sent: false,
             guest_link_up: true,
             pending_link_action: PendingLinkAction::Default,
-            stop_rx: false,
+            packet_filter: rndisprot::NPROTO_PACKET_FILTER,
         }
     }
 
@@ -800,7 +800,7 @@ impl PrimaryChannelState {
         tx_spread_sent: bool,
         guest_link_down: bool,
         pending_link_action: Option<bool>,
-        stop_rx: bool,
+        packet_filter: u32,
     ) -> Result<Self, NetRestoreError> {
         // Restore control messages.
         let control_messages_len = control_messages.iter().map(|msg| msg.data.len()).sum();
@@ -894,7 +894,7 @@ impl PrimaryChannelState {
             tx_spread_sent,
             guest_link_up: !guest_link_down,
             pending_link_action,
-            stop_rx,
+            packet_filter,
         })
     }
 }
@@ -1198,7 +1198,8 @@ impl VmbusDevice for Nic {
             .adapter
             .num_sub_channels_opened
             .fetch_add(1, Ordering::SeqCst);
-        let r = self.insert_worker(channel_idx, open_request, state, true, false);
+        let packet_filter = rndisprot::NDIS_PACKET_TYPE_NONE; // No traffic until guest sets filter.
+        let r = self.insert_worker(channel_idx, open_request, state, true, packet_filter);
         if channel_idx != 0
             && num_opened + 1 == self.coordinator.state_mut().unwrap().num_queues as usize
         {
@@ -1338,7 +1339,7 @@ impl Nic {
         open_request: &OpenRequest,
         state: WorkerState,
         start: bool,
-        stop_rx: bool,
+        packet_filter: u32,
     ) -> Result<(), OpenError> {
         let coordinator = self.coordinator.state_mut().unwrap();
 
@@ -1370,7 +1371,7 @@ impl Nic {
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
-                stop_rx,
+                packet_filter,
             },
             state,
             coordinator_send: self.coordinator_send.clone().unwrap(),
@@ -1460,7 +1461,7 @@ impl Nic {
         mut control: RestoreControl<'_>,
         state: saved_state::SavedState,
     ) -> Result<(), NetRestoreError> {
-        let mut channel_stop_rx = false;
+        let mut channel_packet_filter = 0u32; // set to primary packet filter
         if let Some(state) = state.open {
             let open = match &state.primary {
                 saved_state::Primary::Version => vec![true],
@@ -1545,7 +1546,7 @@ impl Nic {
                         tx_spread_sent,
                         guest_link_down,
                         pending_link_action,
-                        stop_rx,
+                        packet_filter,
                     } = ready;
 
                     let version = check_version(version)
@@ -1608,9 +1609,9 @@ impl Nic {
                                 tx_spread_sent,
                                 guest_link_down,
                                 pending_link_action,
-                                stop_rx,
+                                packet_filter,
                             )?;
-                            channel_stop_rx = primary.stop_rx;
+                            channel_packet_filter = primary.packet_filter;
                             active.primary = Some(primary);
                         }
 
@@ -1634,7 +1635,7 @@ impl Nic {
                         &request.unwrap(),
                         state,
                         false,
-                        channel_stop_rx,
+                        channel_packet_filter,
                     )?;
                 }
             }
@@ -1827,7 +1828,7 @@ impl Nic {
                         tx_spread_sent: primary.tx_spread_sent,
                         guest_link_down: !primary.guest_link_up,
                         pending_link_action,
-                        stop_rx: primary.stop_rx,
+                        packet_filter: primary.packet_filter,
                     })
                 }
             };
@@ -2802,13 +2803,13 @@ impl<T: RingMem> NetChannel<T> {
                 tracing::trace!(?request, "handling control message MESSAGE_TYPE_SET_MSG");
 
                 let status = match self.adapter.handle_oid_set(primary, request.oid, reader) {
-                    Ok((restart_endpoint, stop_rx)) => {
+                    Ok((restart_endpoint, packet_filter)) => {
                         // Restart the endpoint if the OID changed some critical
                         // endpoint property.
                         if restart_endpoint {
                             self.restart = Some(CoordinatorMessage::Restart);
                         }
-                        self.stop_rx = stop_rx;
+                        self.packet_filter = packet_filter;
                         rndisprot::STATUS_SUCCESS
                     }
                     Err(err) => {
@@ -3025,16 +3026,12 @@ enum OidError {
     BadVersion,
     #[error("feature {0} not supported")]
     NotSupported(&'static str),
-    #[error("packet filter {0} not supported")]
-    UnsupportedFilter(u32),
 }
 
 impl OidError {
     fn as_status(&self) -> u32 {
         match self {
-            OidError::UnknownOid | OidError::NotSupported(_) | OidError::UnsupportedFilter(_) => {
-                rndisprot::STATUS_NOT_SUPPORTED
-            }
+            OidError::UnknownOid | OidError::NotSupported(_) => rndisprot::STATUS_NOT_SUPPORTED,
             OidError::BadVersion => rndisprot::STATUS_BAD_VERSION,
             OidError::InvalidInput(_) => rndisprot::STATUS_INVALID_DATA,
             OidError::Access(_) => rndisprot::STATUS_FAILURE,
@@ -3313,14 +3310,14 @@ impl Adapter {
         primary: &mut PrimaryChannelState,
         oid: rndisprot::Oid,
         reader: impl MemoryRead + Clone,
-    ) -> Result<(bool, bool), OidError> {
+    ) -> Result<(bool, u32), OidError> {
         tracing::debug!(?oid, "oid set");
 
         let mut restart_endpoint = false;
-        let mut stop_rx = false;
+        let mut packet_filter = 0u32;
         match oid {
             rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER => {
-                stop_rx = self.oid_set_packet_filter(reader, primary)?;
+                packet_filter = self.oid_set_packet_filter(reader, primary)?;
             }
             rndisprot::Oid::OID_TCP_OFFLOAD_PARAMETERS => {
                 self.oid_set_offload_parameters(reader, primary)?;
@@ -3347,7 +3344,7 @@ impl Adapter {
                 return Err(OidError::UnknownOid);
             }
         }
-        Ok((restart_endpoint, stop_rx))
+        Ok((restart_endpoint, packet_filter))
     }
 
     fn oid_set_rss_parameters(
@@ -3409,15 +3406,11 @@ impl Adapter {
         &self,
         reader: impl MemoryRead + Clone,
         primary: &mut PrimaryChannelState,
-    ) -> Result<bool, OidError> {
+    ) -> Result<u32, OidError> {
         let filter: rndisprot::RndisPacketFilterOidValue = reader.clone().read_plain()?;
-        if filter != 0 {
-            // TODO:
-            // Maybe dont return error since previously we were not?
-            return Err(OidError::UnsupportedFilter(filter));
-        }
-        primary.stop_rx = true;
-        Ok(primary.stop_rx)
+        primary.packet_filter = filter;
+        tracing::debug!(filter, "set packet filter");
+        Ok(primary.packet_filter)
     }
 
     fn oid_set_offload_parameters(
@@ -4968,7 +4961,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
     ) -> Result<bool, WorkerError> {
-        if self.stop_rx {
+        if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
+            tracing::debug!(
+                packet_filter = self.packet_filter,
+                "rx packet not processed"
+            );
             return Ok(false);
         }
         let n = epqueue
