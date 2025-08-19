@@ -163,47 +163,6 @@ impl VpContextBuilder for TdxHardwareContext {
         // L0:
         let l0_offset = byte_offset;
 
-        // test esi, esi
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xF6]);
-
-        // jz mailbox_end
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
-        byte_offset += 1;
-        let mailbox_end = byte_offset;
-        let mailbox_begin = byte_offset;
-
-        // xor eax, eax
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
-
-        // mov ax, [mailbox_command]
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0x8b, 0x05]);
-        relative_offset = 0xFFFFF000 + offset_of!(TdxTrampolineContext, mailbox_command) as u32;
-        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
-
-        // mov dx, 01h
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0xba, 0x01, 0x00]);
-
-        // cmp ax, dx
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0x39, 0xd0]);
-
-        // jne mailbox_begin
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
-        byte_offset += 1;
-        reset_page[byte_offset.wrapping_sub(1)] = (mailbox_begin.wrapping_sub(byte_offset)) as u8;
-
-        // cmp esi, [mailbox_apic_id]
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x3b, 0x35]);
-        relative_offset = 0xFFFFF000 + offset_of!(TdxTrampolineContext, mailbox_apic_id) as u32;
-        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
-
-        // jne mailbox_begin
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
-        byte_offset += 1;
-        reset_page[byte_offset.wrapping_sub(1)] = (mailbox_begin.wrapping_sub(byte_offset)) as u8;
-
-        // mailbox_end:
-        reset_page[mailbox_end.wrapping_sub(1)] = (byte_offset.wrapping_sub(mailbox_end)) as u8;
-
         // lgdt, [staticGdt]
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x0F, 0x01, 0x15]);
         relative_offset = 0xFFFFF000 + offset_of!(TdxTrampolineContext, static_gdt_limit) as u32;
@@ -351,6 +310,89 @@ impl VpContextBuilder for TdxHardwareContext {
         // L4:
         reset_page[(l4_offset as usize).wrapping_sub(1)] =
             (byte_offset.wrapping_sub(l4_offset as usize)) as u8;
+
+        // test esi, esi
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xF6]);
+
+        // Skip the mailbox spinloop if we are on the BSP
+
+        // jz skip_mailbox_for_bsp
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        let skip_mailbox_for_bsp = byte_offset;
+
+        // Read the APIC_ID of this AP with a TDG.VP.VMCALL hypercall
+
+        // xor eax, eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
+
+        // mov ecx, 1c00
+        byte_offset = copy_instr(
+            &mut reset_page,
+            byte_offset,
+            &[0xB9, 0x00, 0x1C, 0x00, 0x00],
+        );
+
+        // xor r10, r10
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x4D, 0x31, 0xD2]);
+
+        // mov r11d, 01f
+        byte_offset = copy_instr(
+            &mut reset_page,
+            byte_offset,
+            &[0x41, 0xBB, 0x1F, 0x00, 0x00, 0x00],
+        );
+
+        // mov r12d, 802h
+        byte_offset = copy_instr(
+            &mut reset_page,
+            byte_offset,
+            &[0x41, 0xBC, 0x02, 0x08, 0x00, 0x00],
+        );
+
+        // tdcall
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0x0F, 0x01, 0xCC]);
+
+        // Spin until the kernel requests this AP to continue in the mailbox
+
+        let mailbox_spinloop = byte_offset;
+        // mov eax, [mailbox_apic_id]
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, mailbox_apic_id) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        //cmp r11d, eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x41, 0x39, 0xC3]);
+
+        // jne mailbox_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] =
+            (mailbox_spinloop.wrapping_sub(byte_offset)) as u8;
+
+        // xor ebx, ebx
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xDB]);
+
+        // mov ebx, [mailbox_command]
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x8B, 0x1D]);
+        relative_offset = (offset_of!(TdxTrampolineContext, mailbox_command) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // mov dx, 01h
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0xBA, 0x01, 0x00]);
+
+        // cmp ebx, edx
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x39, 0xD3]);
+
+        // jne mailbox_spinloop
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
+        byte_offset += 1;
+
+        // skip_mailbox_for_bsp:
+        reset_page[skip_mailbox_for_bsp.wrapping_sub(1)] =
+            (byte_offset.wrapping_sub(skip_mailbox_for_bsp)) as u8;
 
         // Execute TDG.MEM.PAGE.ACCEPT to accept the low 1 MB of the address
         // space.  This is only required if the start context is in VTL 0, and

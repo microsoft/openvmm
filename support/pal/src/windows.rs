@@ -1079,7 +1079,7 @@ macro_rules! delayload {
             $visibility unsafe fn $name($($params: $types,)*) -> $result {
                 match funcs::$name() {
                     Ok(fnval) => {
-                        type FnType = unsafe extern "stdcall" fn($($params: $types,)*) -> $result;
+                        type FnType = unsafe extern "system" fn($($params: $types,)*) -> $result;
                         let fnptr: FnType = ::std::mem::transmute(fnval);
                         fnptr($($params,)*)
                     },

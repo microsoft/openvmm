@@ -33,6 +33,28 @@ impl std::str::FromStr for TestScenarioConfig {
     }
 }
 
+#[derive(Clone, Debug, MeshPayload)]
+pub enum GuestStateEncryptionPolicyCli {
+    Auto,
+    None,
+    GspById,
+    GspKey,
+}
+
+impl std::str::FromStr for GuestStateEncryptionPolicyCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<GuestStateEncryptionPolicyCli, anyhow::Error> {
+        match s {
+            "AUTO" | "0" => Ok(GuestStateEncryptionPolicyCli::Auto),
+            "NONE" | "1" => Ok(GuestStateEncryptionPolicyCli::None),
+            "GSP_BY_ID" | "2" => Ok(GuestStateEncryptionPolicyCli::GspById),
+            "GSP_KEY" | "3" => Ok(GuestStateEncryptionPolicyCli::GspKey),
+            _ => Err(anyhow::anyhow!("Invalid encryption policy: {}", s)),
+        }
+    }
+}
+
 // We've made our own parser here instead of using something like clap in order
 // to save on compiled file size. We don't need all the features a crate can provide.
 /// underhill core command-line and environment variable options.
@@ -69,6 +91,11 @@ pub struct Options {
     ///
     /// N.B.: Not all vmbus devices support this feature, so enabling it may cause failures.
     pub vmbus_force_confidential_external_memory: bool,
+
+    /// (OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS=\<number\>) (default: 100)
+    /// Delay before unsticking a vmbus channel after it has been opened, in milliseconds. Set to
+    /// zero to disable unsticking.
+    pub vmbus_channel_unstick_delay_ms: u64,
 
     /// (OPENHCL_CMDLINE_APPEND=\<string\>)
     /// Command line to append to VTL0, only used with direct boot.
@@ -152,6 +179,10 @@ pub struct Options {
     /// will result in UEFI terminating, shutting down the guest instead of
     /// showing the frontpage.
     pub disable_uefi_frontpage: bool,
+
+    /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
+    /// Specify which guest state encryption policy to use.
+    pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
 }
 
 impl Options {
@@ -220,6 +251,8 @@ impl Options {
             legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
         let vmbus_force_confidential_external_memory =
             parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
+        let vmbus_channel_unstick_delay_ms =
+            parse_legacy_env_number("OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS")?;
         let cmdline_append =
             legacy_openhcl_env("OPENHCL_CMDLINE_APPEND").map(|x| x.to_string_lossy().into_owned());
         let force_load_vtl0_image = legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")
@@ -252,6 +285,15 @@ impl Options {
         });
         let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
         let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
+        let guest_state_encryption_policy = parse_env_string("HCL_GUEST_STATE_ENCRYPTION_POLICY")
+            .and_then(|x| {
+                x.to_string_lossy()
+                    .parse::<GuestStateEncryptionPolicyCli>()
+                    .map_err(|e| {
+                        tracing::warn!("failed to parse HCL_GUEST_STATE_ENCRYPTION_POLICY: {}", e)
+                    })
+                    .ok()
+            });
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -290,6 +332,7 @@ impl Options {
             vmbus_max_version,
             vmbus_enable_mnf,
             vmbus_force_confidential_external_memory,
+            vmbus_channel_unstick_delay_ms: vmbus_channel_unstick_delay_ms.unwrap_or(100),
             cmdline_append,
             vnc_port: vnc_port.unwrap_or(3),
             framebuffer_gpa_base,
@@ -308,6 +351,7 @@ impl Options {
             nvme_always_flr,
             test_configuration,
             disable_uefi_frontpage,
+            guest_state_encryption_policy,
         })
     }
 

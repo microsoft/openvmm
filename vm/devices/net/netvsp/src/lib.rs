@@ -1706,7 +1706,7 @@ impl Nic {
                         .iter()
                         .map(|worker| {
                             worker.state().map(|worker| {
-                                let channel = if let Some(ready) = worker.state.ready() {
+                                if let Some(ready) = worker.state.ready() {
                                     // In flight tx will be considered as dropped packets through save/restore, but need
                                     // to complete the requests back to the guest.
                                     let pending_tx_completions = ready
@@ -1740,8 +1740,7 @@ impl Nic {
                                         pending_tx_completions: Vec::new(),
                                         in_use_rx: Vec::new(),
                                     }
-                                };
-                                channel
+                                }
                             })
                         })
                         .collect();

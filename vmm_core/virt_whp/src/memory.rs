@@ -160,7 +160,6 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
 
     /// The page visibility for a given page. None means this page is not
     /// accepted. Only supported on mappers that support page acceptance.
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn gpa_visibility(&self, gpa: u64) -> Option<PageVisibility>;
 
     /// Accept the given gpa range on behalf of the guest, with the given
@@ -442,6 +441,10 @@ impl VtlPartition {
         visibility: PageVisibility,
     ) -> Result<(), virt::Error> {
         self.mapper.accept_range(&self.whp, range, visibility)
+    }
+
+    pub fn gpa_visibility(&self, gpa: u64) -> Option<PageVisibility> {
+        self.mapper.gpa_visibility(gpa)
     }
 
     pub fn modify_visibility(

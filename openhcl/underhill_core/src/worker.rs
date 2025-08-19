@@ -41,9 +41,11 @@ use crate::emuplat::watchdog::UnderhillWatchdogPlatform;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
-use crate::nvme_manager::NvmeDiskConfig;
-use crate::nvme_manager::NvmeDiskResolver;
-use crate::nvme_manager::NvmeManager;
+use crate::nvme_manager::device::VfioNvmeDriverSpawner;
+use crate::nvme_manager::manager::NvmeDiskConfig;
+use crate::nvme_manager::manager::NvmeDiskResolver;
+use crate::nvme_manager::manager::NvmeManager;
+use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -69,6 +71,7 @@ use futures_concurrency::future::Race;
 use get_protocol::EventLogId;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
+use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use get_protocol::dps_json::GuestStateLifetime;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
@@ -251,6 +254,8 @@ pub struct UnderhillEnvCfg {
     pub vmbus_enable_mnf: Option<bool>,
     /// Force the use of confidential external memory for all non-relay vmbus channels.
     pub vmbus_force_confidential_external_memory: bool,
+    /// Delay before unsticking a vmbus channel after it has been opened.
+    pub vmbus_channel_unstick_delay: Option<Duration>,
     /// Command line to append to VTL0 command line. Only used for linux direct.
     pub cmdline_append: Option<String>,
     /// (dev feature) Reformat VMGS file on boot
@@ -288,6 +293,8 @@ pub struct UnderhillEnvCfg {
     pub test_configuration: Option<TestScenarioConfig>,
     /// Disable the UEFI front page.
     pub disable_uefi_frontpage: bool,
+    /// Guest state encryption policy
+    pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1066,7 +1073,7 @@ fn build_vtl0_memory_layout(
         vtl0_ram = vtl0_memory_layout
             .ram()
             .iter()
-            .map(|r| r.range.to_string())
+            .map(|r| r.to_string())
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 ram"
@@ -1081,6 +1088,16 @@ fn build_vtl0_memory_layout(
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 mmio"
+    );
+
+    tracing::info!(
+        CVM_ALLOWED,
+        shared_pool = shared_pool
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
+        "shared pool",
     );
 
     Ok(BuiltVtl0MemoryLayout {
@@ -1345,19 +1362,14 @@ async fn new_underhill_vm(
 
     #[cfg(guest_arch = "aarch64")]
     let processor_topology = {
-        // TODO: Hyper-V does not yet support reporting the PMU GSIV via device
-        // tree. For now, since OpenHCL is only supported on Hyper-V on aarch64,
-        // assume the value is the Hyper-V default.
-        //
-        // This value should instead come from openhcl_boot via device tree, as
-        // we may want to even use the PMU within OpenHCL itself.
-        const HYPERV_PMU_GSIV: u32 = 0x17;
         new_aarch64_topology(
             boot_info
                 .gic
                 .context("did not get gic state from bootloader")?,
             &boot_info.cpus,
-            HYPERV_PMU_GSIV,
+            boot_info
+                .pmu_gsiv
+                .context("did not get pmu gsiv from bootloader")?,
         )
         .context("failed to construct the processor topology")?
     };
@@ -1550,16 +1562,17 @@ async fn new_underhill_vm(
     // Perform a quick validation to make sure each range is appropriately accessible.
     tracing::info!("starting guest memory self test");
     for range in mem_layout.ram() {
-        let gpa = range.range.start();
-        // Standard RAM is accessible.
-        highest_vtl_gm
-            .read_plain::<u8>(gpa)
-            .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
+        for gpa in [range.range.start(), range.range.end() - 1] {
+            // Standard RAM is accessible.
+            highest_vtl_gm
+                .read_plain::<u8>(gpa)
+                .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
 
-        // It is not initially accessible above VTOM.
-        if let Some(vtom) = vtom {
-            if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
-                anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+            // It is not initially accessible above VTOM.
+            if let Some(vtom) = vtom {
+                if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
+                    anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+                }
             }
         }
     }
@@ -1639,6 +1652,17 @@ async fn new_underhill_vm(
         }
     };
 
+    // use the encryption policy from the command line if it is provided
+    let guest_state_encryption_policy = env_cfg
+        .guest_state_encryption_policy
+        .map(|p| match p {
+            GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
+            GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
+            GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
+            GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+        })
+        .unwrap_or(dps.general.guest_state_encryption_policy);
+
     // Decrypt VMGS state before the VMGS file is used for anything.
     //
     // `refresh_tpm_seeds` is a host side GSP service configuration
@@ -1650,8 +1674,8 @@ async fn new_underhill_vm(
             // TODO CVM: Save and restore last returned data when live servicing is supported.
             // We also need to revisit what states should be saved and restored.
             //
-            // This is an Underhill restart, so the VMGS has already been
-            // restored in its unlocked state
+            // If this is an Underhill restart, the VMGS has already been
+            // restored in its unlocked state.
             underhill_attestation::PlatformAttestationData {
                 host_attestation_settings: underhill_attestation::HostAttestationSettings {
                     refresh_tpm_seeds: false,
@@ -1678,6 +1702,10 @@ async fn new_underhill_vm(
                 attestation_type,
                 suppress_attestation,
                 early_init_driver,
+                guest_state_encryption_policy,
+                dps.general
+                    .management_vtl_features
+                    .strict_encryption_policy(),
             )
             .instrument(tracing::info_span!(
                 "initialize_platform_security",
@@ -1897,10 +1925,12 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             save_restore_supported,
-            env_cfg.nvme_always_flr,
-            isolation.is_isolated(),
             servicing_state.nvme_state.unwrap_or(None),
-            dma_manager.client_spawner(),
+            Arc::new(VfioNvmeDriverSpawner {
+                nvme_always_flr: env_cfg.nvme_always_flr,
+                is_isolated: isolation.is_isolated(),
+                dma_client_spawner: dma_manager.client_spawner(),
+            }),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
@@ -2545,6 +2575,7 @@ async fn new_underhill_vm(
                 register_layout,
                 guest_secret_key: platform_attestation_data.guest_secret_key,
                 logger: Some(GetTpmLoggerHandle.into_resource()),
+                is_confidential_vm: isolation.is_isolated(),
             }
             .into_resource(),
         });
@@ -2732,18 +2763,22 @@ async fn new_underhill_vm(
 
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
-        let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
-            .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
-            .hvsock_notify(hvsock_notify)
-            .server_relay(server_relay)
-            .max_version(max_version)
-            .delay_max_version(delay_max_version)
-            .enable_mnf(enable_mnf)
-            .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
-            // For saved-state compat with release/2411.
-            .send_messages_while_stopped(true)
-            .build()
-            .context("failed to create vmbus server")?;
+        let vmbus =
+            VmbusServer::builder(driver_source.simple(), synic.clone(), device_memory.clone())
+                .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
+                .hvsock_notify(hvsock_notify)
+                .server_relay(server_relay)
+                .max_version(max_version)
+                .delay_max_version(delay_max_version)
+                .enable_mnf(enable_mnf)
+                .force_confidential_external_memory(
+                    env_cfg.vmbus_force_confidential_external_memory,
+                )
+                .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
+                // For saved-state compat with release/2411.
+                .send_messages_while_stopped(true)
+                .build()
+                .context("failed to create vmbus server")?;
 
         let vmbus = VmbusServerHandle::new(&tp, state_units.add("vmbus"), vmbus)?;
         if let Some((relay_channel, hvsock_relay)) = relay_channels {
@@ -3121,7 +3156,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         com1_vmbus_redirector: _,
         com2_enabled: _,
         com2_vmbus_redirector: _,
-        suppress_attestation: _,
+        suppress_attestation,
         bios_guid: _,
         vpci_boot_enabled: _,
 
@@ -3137,6 +3172,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         firmware_mode_is_pcat,
         psp_enabled,
         default_boot_always_attempt,
+        guest_state_encryption_policy,
 
         // Minimum level enforced by UEFI loader
         memory_protection_mode: _,
@@ -3166,6 +3202,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         vtl2_settings: _,
         cxl_memory_enabled: _,
         guest_state_lifetime: _,
+        management_vtl_features: _,
     } = &dps.general;
 
     if *hibernation_enabled {
@@ -3200,6 +3237,20 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *default_boot_always_attempt {
         anyhow::bail!("default_boot_always_attempt is not supported");
+    }
+    // TODO: don't allow auto once all CVMs are configured to require GspKey
+    if !(matches!(
+        guest_state_encryption_policy,
+        GuestStateEncryptionPolicy::GspKey | GuestStateEncryptionPolicy::Auto
+    ) || (matches!(
+        guest_state_encryption_policy,
+        GuestStateEncryptionPolicy::None,
+    ) && suppress_attestation.unwrap_or(false)))
+    {
+        anyhow::bail!(
+            "encryption policy not supported: {:?}",
+            guest_state_encryption_policy
+        );
     }
 
     Ok(())

@@ -8,13 +8,13 @@
                 "snp": {
                     "shared_gpa_boundary_bits": 46,
                     "policy": 196639,
-                    "enable_debug": true,
+                    "enable_debug": false,
                     "injection_type": "normal"
                 }
             },
             "image": {
                 "openhcl": {
-                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
+                    "command_line": "",
                     "memory_page_count": 163840,
                     "memory_page_base": 32768,
                     "uefi": true
@@ -26,7 +26,7 @@
             "max_vtl": 2,
             "isolation_type": {
                 "tdx": {
-                    "enable_debug": true,
+                    "enable_debug": false,
                     "sept_ve_disable": true
                 }
             },
@@ -44,12 +44,12 @@
             "max_vtl": 2,
             "isolation_type": {
                 "vbs": {
-                    "enable_debug": true
+                    "enable_debug": false
                 }
             },
             "image": {
                 "openhcl": {
-                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
+                    "command_line": "",
                     "memory_page_count": 32768,
                     "memory_page_base": 32768,
                     "uefi": true

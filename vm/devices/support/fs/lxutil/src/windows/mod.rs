@@ -322,8 +322,8 @@ impl LxVolume {
             // Try to read the link target from the reparse data.
             let target_string = self.state.read_reparse_link(&handle)?;
             // TODO: Remove this once LxUtilSymlinkRead is implemented and re-work to just use the Option
-            if target_string.is_some() {
-                target = target_string.unwrap();
+            if let Some(target_string) = target_string {
+                target = target_string;
             }
 
             // If the function succeeded but returned a NULL buffer, this is a V1 LX symlink which must be

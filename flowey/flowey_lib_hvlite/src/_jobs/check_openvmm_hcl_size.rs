@@ -60,7 +60,7 @@ impl SimpleFlowNode for Node {
                 target: target.clone(),
                 profile: OpenvmmHclShip,
                 features: (OpenhclIgvmRecipe::X64)
-                    .recipe_details(OpenvmmHclShip)
+                    .recipe_details(true)
                     .openvmm_hcl_features,
                 no_split_dbg_info: false,
             },

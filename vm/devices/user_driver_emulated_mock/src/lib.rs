@@ -25,13 +25,11 @@ use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::interrupt::DeviceInterruptSource;
-use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 
 /// A wrapper around any user_driver device T. It provides device emulation by providing access to the memory shared with the device and thus
@@ -126,15 +124,6 @@ pub struct Mapping<T> {
     device: Arc<Mutex<T>>,
     addr: u64,
     len: usize,
-}
-
-#[repr(C, align(4096))]
-struct Page([AtomicU8; PAGE_SIZE]);
-
-impl Default for Page {
-    fn default() -> Self {
-        Self([0; PAGE_SIZE].map(AtomicU8::new))
-    }
 }
 
 impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + Send + DmaClient> DeviceBacking

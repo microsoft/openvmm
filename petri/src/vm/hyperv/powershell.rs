@@ -538,7 +538,7 @@ pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result
 }
 
 /// Run Set-VMBusRelay commandlet
-pub fn set_vmbus_redirect(vmid: &Guid, ps_mod: &Path, enable: bool) -> anyhow::Result<()> {
+pub fn run_set_vmbus_redirect(vmid: &Guid, ps_mod: &Path, enable: bool) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
@@ -830,4 +830,31 @@ pub fn run_remove_vm_scsi_controller(vmid: &Guid, controller_number: u32) -> any
     )
     .map(|_| ())
     .context("remove_vm_scsi_controller")
+}
+
+/// Run Get-VmScreenshot commandlet
+pub fn run_get_vm_screenshot(
+    vmid: &Guid,
+    ps_mod: &Path,
+    path: &Path,
+) -> anyhow::Result<(u16, u16)> {
+    let output = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Get-VmScreenshot")
+            .arg("Path", path)
+            .finish()
+            .build(),
+    )
+    .context("get_vm_screenshot")?;
+    let (x, y) = output.split_once(',').context("invalid dimensions")?;
+    Ok((
+        x.parse().context("invalid x dimension")?,
+        y.parse().context("invalid y dimension")?,
+    ))
 }

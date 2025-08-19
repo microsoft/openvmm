@@ -79,7 +79,7 @@ pub trait TargetedDriver: 'static + Send + Sync + Inspect {
         true
     }
     /// Waits for this driver's target VP to be ready for tasks and IO.
-    fn wait_target_vp_ready(&self) -> impl std::future::Future<Output = ()> + Send {
+    fn wait_target_vp_ready(&self) -> impl Future<Output = ()> + Send {
         std::future::ready(())
     }
 }
@@ -89,7 +89,7 @@ trait DynTargetedDriver: 'static + Send + Sync + Inspect {
     fn driver(&self) -> &dyn Driver;
     fn retarget_vp(&self, target_vp: u32);
     fn is_ready(&self) -> bool;
-    fn wait_ready(&self) -> Pin<Box<dyn '_ + std::future::Future<Output = ()> + Send>>;
+    fn wait_ready(&self) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>>;
 }
 
 impl<T: TargetedDriver> DynTargetedDriver for T {
@@ -109,7 +109,7 @@ impl<T: TargetedDriver> DynTargetedDriver for T {
         self.is_target_vp_ready()
     }
 
-    fn wait_ready(&self) -> Pin<Box<dyn '_ + std::future::Future<Output = ()> + Send>> {
+    fn wait_ready(&self) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>> {
         Box::pin(self.wait_target_vp_ready())
     }
 }

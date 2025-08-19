@@ -20,6 +20,12 @@ pub struct MemoryRangeWithNode {
     pub vnode: u32,
 }
 
+impl core::fmt::Display for MemoryRangeWithNode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}({})", self.range, self.vnode)
+    }
+}
+
 /// Describes the memory layout of a guest.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]

@@ -45,7 +45,7 @@ members = [
   "petri/petri-tool",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
-  "vm/vmgs/vmgstool",
+  "vm/vmgs/vmgstool", 
 ]
 exclude = [
   "xsync",
@@ -54,7 +54,7 @@ exclude = [
 
 [workspace.package]
 rust-version = "1.88"
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -248,6 +248,7 @@ nvme_common = { path = "vm/devices/storage/nvme_common" }
 nvme_driver = { path = "vm/devices/storage/disk_nvme/nvme_driver" }
 nvme_resources = { path = "vm/devices/storage/nvme_resources" }
 nvme_spec = { path = "vm/devices/storage/nvme_spec" }
+nvme_test = { path = "vm/devices/storage/nvme_test" }
 storage_string = { path = "vm/devices/storage/storage_string" }
 vmswitch = { path = "vm/devices/net/vmswitch" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
@@ -302,7 +303,7 @@ serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
 tpm = { path = "vm/devices/tpm" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
-mcr_resources = { path = "vm/devices/mcr_resources" } # TODO MCR: move to closed-source
+mcr_resources = { path = "vm/devices/mcr_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
 user_driver = { path = "vm/devices/user_driver" }
@@ -539,7 +540,6 @@ windows-sys = "0.59"
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
-#zerocopy = { version = "0.7.32", features = ["derive"]}
 zerocopy = { version = "0.8.14", features = ["derive"]}
 
 [workspace.metadata.xtask.unused-deps]
@@ -610,12 +610,6 @@ pbjson-build = { git = "https://github.com/jstarks/pbjson", branch = "aliases" }
 # Lint groups need a priority lower than individual lints so they get applied first.
 future_incompatible = { level = "deny", priority = -2 }
 rust_2018_idioms = { level = "warn", priority = -2 }
-
-rust-2024-compatibility = { level = "warn", priority = -1 }
-edition_2024_expr_fragment_specifier = "allow"
-# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
-tail-expr-drop-order = "allow"
-if-let-rescope = "allow"
 
 unused_qualifications = "warn"
 missing_docs = "warn"

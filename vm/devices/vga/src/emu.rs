@@ -1454,7 +1454,6 @@ impl Emulator {
         }
 
         if self.state.persistent_state.crt_regs_locked {
-            #[expect(clippy::comparison_chain)]
             if reg == CrtControlReg::OVERFLOW_REGISTER {
                 // Only update bit 4.
                 value &= 0x10;

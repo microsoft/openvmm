@@ -273,25 +273,20 @@ fn build_kernel_command_line(
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
     }
 
+    // HACK: Set the vmbus connection id via kernel commandline.
+    //
+    // This code will be removed when the kernel supports setting connection id
+    // via device tree.
+    write!(
+        cmdline,
+        "hv_vmbus.message_connection_id=0x{:x} ",
+        partition_info.vmbus_vtl2.connection_id
+    )?;
+
     // If we're isolated we can't trust the host-provided cmdline
     if can_trust_host {
-        let old_cmdline = &partition_info.cmdline;
-
-        // HACK: See if we should set the vmbus connection id via kernel
-        // commandline. It may already be set, and we don't want to set it again.
-        //
-        // This code will be removed when the kernel supports setting connection id
-        // via device tree.
-        if !old_cmdline.contains("hv_vmbus.message_connection_id=") {
-            write!(
-                cmdline,
-                "hv_vmbus.message_connection_id=0x{:x} ",
-                partition_info.vmbus_vtl2.connection_id
-            )?;
-        }
-
         // Prepend the computed parameters to the original command line.
-        cmdline.write_str(old_cmdline)?;
+        cmdline.write_str(&partition_info.cmdline)?;
     }
 
     Ok(())
@@ -1032,6 +1027,7 @@ mod test {
             },
             com3_serial_available: false,
             gic: None,
+            pmu_gsiv: None,
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
