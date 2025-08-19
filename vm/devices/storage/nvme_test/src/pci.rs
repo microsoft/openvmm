@@ -569,8 +569,7 @@ impl PciConfigSpace for NvmeFaultController {
                 self.registers = RegState::new();
                 *self.qe_sizes.lock() = Default::default();
 
-                // Create new workers from saved input parameters
-                let new_workers = NvmeWorkers::new(
+                self.workers = NvmeWorkers::new(
                     &self.worker_input.driver_source,
                     self.worker_input.guest_memory.clone(),
                     self.worker_input.interrupts.clone(),
@@ -580,9 +579,6 @@ impl PciConfigSpace for NvmeFaultController {
                     self.worker_input.subsystem_id,
                     self.worker_input.fault_configuration.clone(),
                 );
-
-                // Replace the old workers with the new ones
-                self.workers = new_workers;
             }
         }
 
