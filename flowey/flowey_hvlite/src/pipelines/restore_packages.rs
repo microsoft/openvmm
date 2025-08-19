@@ -4,7 +4,6 @@
 use crate::pipelines_shared::cfg_common_params::CommonArchCli;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 
 /// Download and restore packages needed for building the specified architectures.
 #[derive(clap::Args)]
@@ -49,7 +48,7 @@ impl IntoPipeline for RestorePackagesCli {
                 deny_warnings: false,
             });
 
-        let arches: Vec<CommonArchCli> = {
+        let arches = {
             if self.arch.is_empty() {
                 vec![FlowArch::host(backend_hint).try_into()?]
             } else {
@@ -57,7 +56,7 @@ impl IntoPipeline for RestorePackagesCli {
             }
         };
 
-        let arches: Vec<CommonArch> = arches.into_iter().map(|arch| arch.into()).collect();
+        let arches = arches.into_iter().map(|arch| arch.into()).collect();
 
         job = job.dep_on(
             |ctx| flowey_lib_hvlite::_jobs::local_restore_packages::Request {
