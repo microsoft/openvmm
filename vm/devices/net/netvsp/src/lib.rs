@@ -2828,7 +2828,9 @@ impl<T: RingMem> NetChannel<T> {
                         if restart_endpoint {
                             self.restart = Some(CoordinatorMessage::Restart);
                         }
-                        self.packet_filter = packet_filter;
+                        if let Some(pf) = packet_filter {
+                            self.packet_filter = pf;
+                        }
                         rndisprot::STATUS_SUCCESS
                     }
                     Err(err) => {
@@ -3329,14 +3331,14 @@ impl Adapter {
         primary: &mut PrimaryChannelState,
         oid: rndisprot::Oid,
         reader: impl MemoryRead + Clone,
-    ) -> Result<(bool, u32), OidError> {
+    ) -> Result<(bool, Option<u32>), OidError> {
         tracing::debug!(?oid, "oid set");
 
         let mut restart_endpoint = false;
-        let mut packet_filter = 0u32;
+        let mut packet_filter = None;
         match oid {
             rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER => {
-                packet_filter = self.oid_set_packet_filter(reader, primary)?;
+                packet_filter = Some(self.oid_set_packet_filter(reader, primary)?);
             }
             rndisprot::Oid::OID_TCP_OFFLOAD_PARAMETERS => {
                 self.oid_set_offload_parameters(reader, primary)?;
