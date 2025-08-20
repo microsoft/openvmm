@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use clap::Parser;
 use clap::CommandFactory;
+use clap::Parser;
 use std::io::IsTerminal;
 
 #[derive(Clone, clap::ValueEnum)]
@@ -51,7 +51,8 @@ impl Completions {
                     Shell::Fish => FISH_HELP,
                     Shell::Powershell => POWERSHELL_HELP,
                     Shell::Zsh => ZSH_HELP,
-                }.replace(
+                }
+                .replace(
                     "<<CMD_PATH>>",
                     &std::env::current_exe()?.display().to_string()
                 )
@@ -65,12 +66,7 @@ impl Completions {
 impl GenerateCompletions {
     pub fn run(self) -> anyhow::Result<()> {
         let mut cmd = crate::Cli::command();
-        clap_complete::generate(
-            self.shell,
-            &mut cmd,
-            "xtask",
-            &mut std::io::stdout(),
-        );
+        clap_complete::generate(self.shell, &mut cmd, "xtask", &mut std::io::stdout());
         Ok(())
     }
 }
