@@ -27,6 +27,7 @@ use hcl::ioctl::MshvVtl;
 use hcl::ioctl::snp::SnpPageError;
 use hv1_structs::VtlArray;
 use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
+use hvdef::HV_MAP_GPA_PERMISSIONS_NONE;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -587,6 +588,19 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         };
 
         for &range in &ranges {
+            if shared && vtl == GuestVtl::Vtl0 {
+                // Accessing these pages through the encrypted mapping is now
+                // invalid. Make sure the VTL bitmaps reflect this.
+                //
+                // This is technically a misuse of the permissions bitmaps,
+                // since this isn't a VTL 1 protection related permissions
+                // change. However the existence of permissions bitmaps means
+                // that we stop checking shared/encrypted bitmaps during
+                // accesses for performance, so we have to do this.
+                self.vtl0
+                    .update_permission_bitmaps(range, HV_MAP_GPA_PERMISSIONS_NONE);
+            }
+
             clear_bitmap.update_valid(range, false);
         }
 
@@ -714,13 +728,18 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             // overlay pages won't be host visible, so just apply the default
             // protections directly without handling them.
             for &range in &ranges {
+                // Always lie here and say that VTL 1 is applying protections.
+                // This will cause apply_protections to update the permissions
+                // bitmaps, which we need it to do.
+                //
+                // This is technically a misuse of the permissions bitmaps,
+                // since this isn't a VTL 1 protection related permissions
+                // change. However the existence of permissions bitmaps means
+                // that we stop checking shared/encrypted bitmaps during
+                // accesses for performance, so we have to do this.
                 self.apply_protections(
                     range,
-                    if self.vtl1_protections_enabled() {
-                        Vtl::Vtl1
-                    } else {
-                        Vtl::Vtl2
-                    },
+                    Vtl::Vtl1,
                     GuestVtl::Vtl0,
                     inner.default_vtl_permissions.vtl0,
                 )
