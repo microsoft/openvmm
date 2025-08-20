@@ -152,7 +152,7 @@ async fn keepalive<T: PetriVmmBackend>(
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64])]
-async fn servicing_openhcl_linux_direct_x64_upgrade<T: PetriVmmBackend>(
+async fn servicing_upgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (to_igvm, from_igvm): (
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
@@ -172,13 +172,14 @@ async fn servicing_openhcl_linux_direct_x64_upgrade<T: PetriVmmBackend>(
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [RELEASE_25_05_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_openhcl_linux_direct_x64_downgrade<T: PetriVmmBackend>(
+async fn servicing_downgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (to_igvm, from_igvm): (
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
 ) -> Result<(), anyhow::Error> {
+    // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
