@@ -2,11 +2,16 @@
 // Licensed under the MIT License.
 
 use clap::Parser;
+use clap::CommandFactory;
 use std::io::IsTerminal;
-use std::io::Write;
 
 #[derive(Clone, clap::ValueEnum)]
 enum Shell {
+    /// [Fish](https://fishshell.com/)
+    Fish,
+    /// [Powershell](https://docs.microsoft.com/en-us/powershell/)  
+    Powershell,
+    /// [Zsh](https://www.zsh.org/)
     Zsh,
 }
 
@@ -17,23 +22,55 @@ pub struct Completions {
     shell: Shell,
 }
 
+/// Generate static completions using clap_complete
+#[derive(Parser)]
+pub struct GenerateCompletions {
+    /// Shell to generate completions for
+    shell: clap_complete::Shell,
+}
+
 impl Completions {
     pub fn run(self) -> anyhow::Result<()> {
-        match self.shell {
-            Shell::Zsh => {
-                std::io::stdout().write_all(include_bytes!("./complete.zsh"))?;
-                if std::io::stdout().is_terminal() {
-                    eprintln!(
-                        "{}",
-                        ZSH_HELP.replace(
-                            "<<CMD_PATH>>",
-                            &std::env::current_exe()?.display().to_string()
-                        )
-                    );
-                }
-            }
+        let shell = match self.shell {
+            Shell::Fish => clap_dyn_complete::Shell::Fish,
+            Shell::Powershell => clap_dyn_complete::Shell::Powershell,
+            Shell::Zsh => clap_dyn_complete::Shell::Zsh,
+        };
+
+        clap_dyn_complete::emit_completion_stub(
+            shell,
+            "xtask",
+            "complete",
+            &mut std::io::stdout(),
+        )?;
+
+        if IsTerminal::is_terminal(&std::io::stdout()) {
+            eprintln!(
+                "{}",
+                match self.shell {
+                    Shell::Fish => FISH_HELP,
+                    Shell::Powershell => POWERSHELL_HELP,
+                    Shell::Zsh => ZSH_HELP,
+                }.replace(
+                    "<<CMD_PATH>>",
+                    &std::env::current_exe()?.display().to_string()
+                )
+            );
         }
 
+        Ok(())
+    }
+}
+
+impl GenerateCompletions {
+    pub fn run(self) -> anyhow::Result<()> {
+        let mut cmd = crate::Cli::command();
+        clap_complete::generate(
+            self.shell,
+            &mut cmd,
+            "xtask",
+            &mut std::io::stdout(),
+        );
         Ok(())
     }
 }
@@ -49,6 +86,20 @@ const ZSH_HELP: &str = r#"
 # No need to `compdef` anything. Just make sure that the `_cargo-xtask` function
 # is in-scope, and that `rustup completions cargo` infrastructure redirect
 # `cargo xtask` completions to that function.
+"#;
+
+const FISH_HELP: &str = r#"
+# To enable `cargo xtask` completions for Fish:
+#
+# 1. Use `rustup completions fish cargo` to set up `cargo` completions.
+# 2. Save this script to ~/.config/fish/completions/cargo-xtask.fish
+"#;
+
+const POWERSHELL_HELP: &str = r#"
+# To enable `cargo xtask` completions for PowerShell:
+#
+# 1. Use `rustup completions powershell cargo` to set up `cargo` completions.
+# 2. Add this script to your PowerShell profile
 "#;
 
 pub(crate) struct XtaskCompleteFactory {

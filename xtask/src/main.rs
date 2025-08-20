@@ -81,6 +81,7 @@ enum Commands {
     #[clap(hide = true)]
     Complete(clap_dyn_complete::Complete),
     Completions(completions::Completions),
+    GenerateCompletions(completions::GenerateCompletions),
 
     Fmt(tasks::Fmt),
     Fuzz(tasks::Fuzz),
@@ -138,6 +139,7 @@ fn try_main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Hook(task) => task.run(ctx),
         Commands::Completions(task) => task.run(),
+        Commands::GenerateCompletions(task) => task.run(),
         Commands::Complete(task) => {
             futures::executor::block_on(task.println_to_stub_script::<Cli>(
                 Some("cargo"),

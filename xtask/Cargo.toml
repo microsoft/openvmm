@@ -12,6 +12,7 @@ vmm_test_images = { workspace = true, features = ["clap"] }
 anyhow.workspace = true
 cargo_toml.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
+clap_complete.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
 fs-err.workspace = true
 futures.workspace = true
