@@ -1190,13 +1190,12 @@ async fn new_underhill_vm(
         .and_then(|s| s.fixed.attested_settings.as_ref())
         .and_then(|s| s.init_data_hash)
     {
-        // verify_init_data(init_data_hash, isolation.into()).context("failed to verify init data")?;
         let attestation_type = match isolation {
             virt::IsolationType::Snp => AttestationType::Snp,
             virt::IsolationType::Tdx => AttestationType::Tdx,
             _ => AttestationType::Host,
         };
-        // verify_init_data(init_data_hash, attestation_type).context("failed to verify init data")?;
+        verify_init_data(init_data_hash, attestation_type).context("failed to verify init data")?;
         tracing::info!(
             ?init_data_hash,
             "using init data hash from attested settings for verification"
@@ -1206,22 +1205,6 @@ async fn new_underhill_vm(
             "attested_settings is missing. This fallback is acceptable because the init data hash is optional for non-isolated VMs or when attestation is not required."
         );
     }
-    // let init_data_hash = dps
-    //     .general
-    //     .vtl2_settings
-    //     .as_ref()
-    //     .ok_or_else(|| anyhow::anyhow!("missing VTL2 settings"))?
-    //     .fixed
-    //     .attested_settings
-    //     .as_ref()
-    //     .ok_or_else(|| anyhow::anyhow!("attested_settings is missing"))?
-    //     .init_data_hash
-    //     .unwrap_or_else(|| {
-    //         tracing::error!(
-    //             "attested_settings is missing, proceeding with default value for init data hash"
-    //         );
-    //         Default::default()
-    //     });
 
     let hardware_isolated = isolation.is_hardware_isolated();
 

@@ -1050,8 +1050,7 @@ fn verify_init_data_inner(
             if host_data == asserted_init_data {
                 return Ok(());
             } else {
-                return Ok(());
-                // return Err(InitDataError::InitDataAssertionFail);
+                return Err(InitDataError::InitDataAssertionFail);
             }
         }
         AttestationType::Tdx => {
@@ -1079,6 +1078,12 @@ fn verify_init_data_inner(
     }
 }
 
+// Public function to verify the InitData hash
+/// against the asserted InitData hash.
+/// Takes the asserted InitData hash and the attestation type as arguments.
+/// Passes the asserted InitData hash to the appropriate
+/// TEE call interface for verify_init_data_inner.
+/// Returns Ok(()) if the hashes match, or an error if they do not.
 pub fn verify_init_data(
     asserted_init_data: [u8; 32],
     tee_type: AttestationType,
