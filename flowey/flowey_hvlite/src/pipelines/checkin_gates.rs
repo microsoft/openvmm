@@ -85,8 +85,15 @@ impl IntoPipeline for CheckinGatesCli {
                         .gh_set_name("[flowey] OpenVMM PR");
                 }
                 PipelineConfig::PrRelease => {
-                    // This workflow is triggered manually.
-                    pipeline.gh_set_name("[flowey] OpenVMM Release PR");
+                    // This workflow is triggered when a specific label is added to a PR.
+                    pipeline
+                        .gh_set_pr_triggers(GhPrTriggers {
+                            branches,
+                            types: vec!["labeled".into()],
+                            auto_cancel: false,
+                            exclude_branches: vec![],
+                        })
+                        .gh_set_name("[flowey] OpenVMM Release PR");
                 }
             }
         }
@@ -116,7 +123,8 @@ impl IntoPipeline for CheckinGatesCli {
         )?;
 
         pipeline.inject_all_jobs_with(move |job| {
-            job.dep_on(&cfg_common_params)
+            let mut job = job
+                .dep_on(&cfg_common_params)
                 .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
@@ -130,7 +138,16 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_grant_permissions::<flowey_lib_common::gh_task_azure_login::Node>([(
                     GhPermission::IdToken,
                     GhPermissionValue::Write,
-                )])
+                )]);
+
+            // For the release pipeline, only run if the "run-release-gates" label is present
+            if matches!(config, PipelineConfig::PrRelease) {
+                job = job.gh_dangerous_override_if(
+                    "contains(github.event.pull_request.labels.*.name, 'run-release-gates')",
+                );
+            }
+
+            job
         });
 
         let openhcl_musl_target = |arch: CommonArch| -> Triple {
