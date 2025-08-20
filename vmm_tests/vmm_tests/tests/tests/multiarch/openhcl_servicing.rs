@@ -9,6 +9,9 @@
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::VpciDeviceConfig;
+use nvme_resources::NamespaceDefinition;
+use nvme_resources::NvmeFaultControllerHandle;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -151,6 +154,71 @@ async fn keepalive<T: PetriVmmBackend>(
         },
     )
     .await
+}
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn keepalive_with_nvme_fault(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                // Add a fault controller to test the nvme controller functionality
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: guid::guid!("00000000-0000-0000-0000-000000000000"),
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: guid::Guid::new_random(),
+                        msix_count: 1,
+                        max_io_queues: 1,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: 1,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(256 * 1024),
+                            })
+                            .into_resource(),
+                        }],
+                    }
+                    .into_resource(),
+                })
+            })
+        })
+        .run()
+        .await?;
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    // Test that inspect serialization works with the old version.
+    vm.test_inspect_openhcl().await?;
+
+    vm.restart_openhcl(
+        igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    // Test that inspect serialization works with the new version.
+    vm.test_inspect_openhcl().await?;
+
+    Ok(())
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
