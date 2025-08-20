@@ -54,7 +54,7 @@ flowey_request! {
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
         /// Get a map of env vars required to be set when running VMM tests
         pub get_env: WriteVar<BTreeMap<String, String>>,
-        pub release_igvm_files: ReadVar<Vec<(OpenhclReleaseVersion, ReleaseOutput)>>,
+        pub release_igvm_files: ReadVar<ReleaseOutput>,
 
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
@@ -310,22 +310,21 @@ impl SimpleFlowNode for Node {
                 }
 
                 let release_igvm_files = rt.read(release_igvm_files);
-                for (release_version, release_output) in release_igvm_files {
-                    let release = release_version.to_string();
+                let latest_release_version = OpenhclReleaseVersion::latest();
 
-                    fs_err::copy(
-                        release_output.x64_bin,
-                        test_content_dir.join(format!("{release}-x64-openhcl.bin")),
-                    )?;
-                    fs_err::copy(
-                        release_output.x64_direct_bin,
-                        test_content_dir.join(format!("{release}-x64-direct-openhcl.bin")),
-                    )?;
-                    fs_err::copy(
-                        release_output.aarch64_bin,
-                        test_content_dir.join(format!("{release}-aarch64-openhcl.bin")),
-                    )?;
-                }
+                fs_err::copy(
+                    release_igvm_files.x64_bin,
+                    test_content_dir.join(format!("{latest_release_version}-x64-openhcl.bin")),
+                )?;
+                fs_err::copy(
+                    release_igvm_files.x64_direct_bin,
+                    test_content_dir
+                        .join(format!("{latest_release_version}-x64-direct-openhcl.bin")),
+                )?;
+                fs_err::copy(
+                    release_igvm_files.aarch64_bin,
+                    test_content_dir.join(format!("{latest_release_version}-aarch64-openhcl.bin")),
+                )?;
 
                 let (arch_dir, kernel_file_name) = match openvmm_deps_arch {
                     OpenvmmDepsArch::X86_64 => ("x64", "vmlinux"),

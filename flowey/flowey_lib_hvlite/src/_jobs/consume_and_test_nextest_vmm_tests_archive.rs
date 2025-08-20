@@ -109,23 +109,11 @@ impl SimpleFlowNode for Node {
             )
         });
 
-        let release_igvm_files = {
-            let items = OpenhclReleaseVersion::ALL
-                .iter()
-                .cloned()
-                .map(|version| {
-                    let rv = ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
-                        release_igvm_files: v,
-                        release_version: version.clone(),
-                    });
-                    rv.map(ctx, {
-                        let version = version.clone();
-                        move |x| (version, x)
-                    })
-                })
-                .collect::<Vec<_>>();
-            ReadVar::transpose_vec(ctx, items)
-        };
+        let latest_release_igvm_files =
+            ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
+                release_igvm_files: v,
+                release_version: OpenhclReleaseVersion::latest(),
+            });
 
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
 
@@ -162,7 +150,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
-            release_igvm_files,
+            release_igvm_files: latest_release_igvm_files,
             use_relative_paths: false,
         });
 

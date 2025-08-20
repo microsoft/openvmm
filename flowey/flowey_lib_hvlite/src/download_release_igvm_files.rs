@@ -15,7 +15,7 @@ pub struct ReleaseOutput {
 
 impl Artifact for ReleaseOutput {}
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Copy)]
 pub enum OpenhclReleaseVersion {
     Release2411,
     Release2505,
@@ -33,6 +33,10 @@ impl OpenhclReleaseVersion {
         OpenhclReleaseVersion::Release2411,
         OpenhclReleaseVersion::Release2505,
     ];
+
+    pub fn latest() -> Self {
+        *Self::ALL.last().unwrap()
+    }
 }
 
 impl std::fmt::Display for OpenhclReleaseVersion {
@@ -81,7 +85,7 @@ pub mod resolve {
                         gh_workflow_id: v,
                     },
                 );
-            let output: WriteVar<ReleaseOutput> = request.release_igvm_files;
+            let output = request.release_igvm_files;
 
             let mut downloaded_aarch64 = None;
             let mut downloaded_x64 = None;
