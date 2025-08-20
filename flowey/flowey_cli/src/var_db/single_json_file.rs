@@ -79,9 +79,6 @@ impl flowey_core::node::RuntimeVarDb for SingleJsonFileVarDb {
         let existing = db
             .vars
             .insert(var_name.into(), (is_secret, Cow::Borrowed(value)));
-        if existing.is_some() {
-            log::debug!("[db] var: {} already exists", var_name);
-        }
         assert!(existing.is_none()); // all vars are one-time-write
         self.file.set_len(0).unwrap();
         self.file.rewind().unwrap();

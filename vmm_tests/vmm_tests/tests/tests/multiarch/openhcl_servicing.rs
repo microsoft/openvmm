@@ -78,6 +78,11 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
     new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .run()
@@ -115,11 +120,6 @@ async fn basic<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
     openhcl_servicing_core(
         config,
         "",
@@ -139,11 +139,6 @@ async fn keepalive<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
     openhcl_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
@@ -164,10 +159,7 @@ async fn servicing_openhcl_linux_direct_x64_upgrade<T: PetriVmmBackend>(
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
 ) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
+    // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
@@ -187,10 +179,6 @@ async fn servicing_openhcl_linux_direct_x64_downgrade<T: PetriVmmBackend>(
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
 ) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
