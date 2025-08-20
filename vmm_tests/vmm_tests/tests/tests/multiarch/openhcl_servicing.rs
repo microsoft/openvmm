@@ -10,6 +10,7 @@ use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
+use mesh::CellUpdater;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use petri::OpenHclServicingFlags;
@@ -168,6 +169,8 @@ async fn keepalive_with_nvme_fault(
         return Ok(());
     }
 
+    let mut signal = CellUpdater::new(false);
+
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
@@ -188,6 +191,7 @@ async fn keepalive_with_nvme_fault(
                             })
                             .into_resource(),
                         }],
+                        signal: signal.cell(),
                     }
                     .into_resource(),
                 })

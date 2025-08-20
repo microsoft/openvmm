@@ -7,10 +7,14 @@ use crate::FaultConfiguration;
 use crate::NsidConflict;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
+use crate::QueueFaultBehavior;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
+use mesh::Cell;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
+use nvme_spec::Command;
+use nvme_spec::Completion;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;
@@ -42,6 +46,36 @@ pub enum Error {
     NsidConflict(NsidConflict),
 }
 
+struct AdminSubQueueFault {
+    pub signal: Cell<bool>,
+}
+
+#[async_trait::async_trait]
+impl crate::QueueFault for AdminSubQueueFault {
+    async fn fault_submission_queue(&self, command: Command) -> QueueFaultBehavior<Command> {
+        tracing::info!("Faulting submission queue by now allowing io completion queue creation");
+        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+        match opcode {
+            nvme_spec::AdminOpcode::IDENTIFY => {
+                if !self.signal.get() {
+                    panic!("Found an identify command");
+                    QueueFaultBehavior::Drop
+                } else {
+                    QueueFaultBehavior::Default
+                }
+            }
+            _ => panic!("Found a command"),
+        }
+    }
+
+    async fn fault_completion_queue(
+        &self,
+        _completion: Completion,
+    ) -> QueueFaultBehavior<Completion> {
+        QueueFaultBehavior::Default
+    }
+}
+
 #[async_trait]
 impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
     for NvmeFaultControllerResolver
@@ -65,7 +99,11 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
             },
-            FaultConfiguration { admin_fault: None },
+            FaultConfiguration {
+                admin_fault: Some(Box::new(AdminSubQueueFault {
+                    signal: resource.signal.clone(),
+                })),
+            },
         );
         for NamespaceDefinition {
             nsid,

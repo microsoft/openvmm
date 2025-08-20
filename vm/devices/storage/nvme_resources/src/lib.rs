@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 use guid::Guid;
+use mesh::Cell;
 use mesh::MeshPayload;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
@@ -40,6 +41,8 @@ pub struct NvmeFaultControllerHandle {
     pub max_io_queues: u16,
     /// The initial set of namespaces.
     pub namespaces: Vec<NamespaceDefinition>,
+    /// Cell to signal when we can do something to the queue
+    pub signal: Cell<bool>,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {
