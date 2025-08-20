@@ -57,6 +57,7 @@ vmcore.workspace = true
 # PCI devices
 gdma.workspace = true
 nvme.workspace = true
+nvme_test.workspace = true
 
 # SCSI
 scsidisk.workspace = true

@@ -5133,6 +5133,7 @@ dependencies = [
  "net_tap",
  "netvsp",
  "nvme",
+ "nvme_test",
  "rusqlite",
  "scsidisk",
  "serial_16550",

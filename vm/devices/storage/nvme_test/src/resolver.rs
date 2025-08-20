@@ -10,7 +10,7 @@ use crate::NvmeFaultControllerCaps;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use nvme_resources::NamespaceDefinition;
-use nvme_resources::NvmeControllerHandle;
+use nvme_resources::NvmeFaultControllerHandle;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;
@@ -20,15 +20,15 @@ use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::PciDeviceHandleKind;
 
-/// Resource resolver for [`NvmeControllerHandle`].
-pub struct NvmeControllerResolver;
+/// Resource resolver for [`NvmeFaultControllerHandle`].
+pub struct NvmeFaultControllerResolver;
 
 declare_static_async_resolver! {
-    NvmeControllerResolver,
-    (PciDeviceHandleKind, NvmeControllerHandle),
+    NvmeFaultControllerResolver,
+    (PciDeviceHandleKind, NvmeFaultControllerHandle),
 }
 
-/// Error returned by [`NvmeControllerResolver`].
+/// Error returned by [`NvmeFaultControllerResolver`].
 #[derive(Debug, Error)]
 #[expect(missing_docs)]
 pub enum Error {
@@ -43,14 +43,16 @@ pub enum Error {
 }
 
 #[async_trait]
-impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeControllerResolver {
+impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
+    for NvmeFaultControllerResolver
+{
     type Output = ResolvedPciDevice;
     type Error = Error;
 
     async fn resolve(
         &self,
         resolver: &ResourceResolver,
-        resource: NvmeControllerHandle,
+        resource: NvmeFaultControllerHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let controller = NvmeFaultController::new(
