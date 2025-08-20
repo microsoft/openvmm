@@ -30,6 +30,8 @@ pub struct TpmDeviceHandle {
     pub guest_secret_key: Option<Vec<u8>>,
     /// Optional logger to send event to the host
     pub logger: Option<Resource<TpmLoggerKind>>,
+    /// Whether or not the TPM is in a confidential VM
+    pub is_confidential_vm: bool,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {

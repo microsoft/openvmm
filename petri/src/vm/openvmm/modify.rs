@@ -55,6 +55,7 @@ impl PetriVmConfigOpenVmm {
                     register_layout: TpmRegisterLayout::IoPort,
                     guest_secret_key: None,
                     logger: None,
+                    is_confidential_vm: self.firmware.isolation().is_some(),
                 }
                 .into_resource(),
             });
