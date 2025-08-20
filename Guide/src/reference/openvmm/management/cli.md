@@ -21,6 +21,13 @@ openvmm --generate-completions bash > ~/.local/share/bash-completion/completions
 
 # Generate PowerShell completions  
 openvmm --generate-completions powershell >> $PROFILE
+
+# Generate fish completions
+openvmm --generate-completions fish > ~/.config/fish/completions/openvmm.fish
+
+# Generate zsh completions
+mkdir -p ~/.local/share/zsh/site-functions
+openvmm --generate-completions zsh > ~/.local/share/zsh/site-functions/_openvmm
 ```
 
 ## VM Configuration Options

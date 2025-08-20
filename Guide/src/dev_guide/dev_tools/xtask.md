@@ -44,6 +44,24 @@ cargo xtask generate-completions powershell >> $PROFILE
 cargo xtask generate-completions powershell | Invoke-Expression
 ```
 
+**Fish:**
+```fish
+# Generate and save completions to your user completion directory
+mkdir -p ~/.config/fish/completions
+cargo xtask generate-completions fish > ~/.config/fish/completions/xtask.fish
+```
+
+**Zsh:**
+```zsh
+# Create completion directory and add to fpath
+mkdir -p ~/.local/share/zsh/site-functions
+cargo xtask generate-completions zsh > ~/.local/share/zsh/site-functions/_xtask
+
+# Add to your .zshrc if not already present
+echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
+echo 'autoload -U compinit && compinit' >> ~/.zshrc
+```
+
 ### Dynamic Completions (Advanced)
 
 Dynamic completions provide enhanced, context-aware completion with runtime intelligence. These are useful for advanced workflows that need custom completion logic:
@@ -59,6 +77,19 @@ Dynamic completions provide enhanced, context-aware completion with runtime inte
 # Set up dynamic completions (requires additional setup)
 cargo xtask completions powershell > xtask-dynamic.ps1
 # Follow the instructions in the generated file
+```
+
+**Fish:**
+```fish
+# Generate dynamic completions for fish
+cargo xtask completions fish > ~/.config/fish/completions/xtask-dynamic.fish
+```
+
+**Zsh:**
+```zsh
+# Generate dynamic completions for zsh
+cargo xtask completions zsh > ~/.local/share/zsh/site-functions/_xtask-dynamic
+# Ensure the directory is in your fpath as shown in static completions above
 ```
 
 ### Available Shells
