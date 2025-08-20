@@ -6,6 +6,7 @@
 use crate::NsidConflict;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
+use crate::QueueFaultBehavior;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use nvme_resources::NamespaceDefinition;
@@ -39,6 +40,36 @@ pub enum Error {
     },
     #[error(transparent)]
     NsidConflict(NsidConflict),
+}
+
+struct AdminSubQueueFault {
+    pub signal: Cell<bool>,
+}
+
+#[async_trait::async_trait]
+impl crate::QueueFault for AdminSubQueueFault {
+    async fn fault_submission_queue(&self, command: Command) -> QueueFaultBehavior<Command> {
+        tracing::info!("Faulting submission queue by now allowing io completion queue creation");
+        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+        match opcode {
+            nvme_spec::AdminOpcode::IDENTIFY => {
+                if !self.signal.get() {
+                    panic!("Found an identify command");
+                    QueueFaultBehavior::Drop
+                } else {
+                    QueueFaultBehavior::Default
+                }
+            }
+            _ => panic!("Found a command"),
+        }
+    }
+
+    async fn fault_completion_queue(
+        &self,
+        _completion: Completion,
+    ) -> QueueFaultBehavior<Completion> {
+        QueueFaultBehavior::Default
+    }
 }
 
 #[async_trait]
