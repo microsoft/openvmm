@@ -52,6 +52,8 @@ pub struct RamDiskLayer {
     #[inspect(skip)]
     sector_count: AtomicU64,
     #[inspect(skip)]
+    sector_size: u32,
+    #[inspect(skip)]
     resize_event: event_listener::Event,
 }
 
@@ -67,7 +69,7 @@ struct RamState {
 impl RamDiskLayer {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field_with("committed_size", || {
-            self.state.read().data.len() * size_of::<Sector>()
+            self.state.read().data.len() * self.sector_size as usize
         })
         .field_mut_with("sector_count", |new_count| {
             if let Some(new_count) = new_count {
@@ -82,6 +84,7 @@ impl Debug for RamDiskLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RamDiskLayer")
             .field("sector_count", &self.sector_count)
+            .field("sector_size", &self.sector_size)
             .finish()
     }
 }
@@ -102,24 +105,41 @@ pub enum Error {
     EmptyDisk,
 }
 
-struct Sector([u8; 512]);
+/// Dynamic sector data that can hold different sector sizes
+struct Sector(Vec<u8>);
 
-const SECTOR_SIZE: u32 = 512;
+/// Default sector size (512 bytes) for backward compatibility
+const DEFAULT_SECTOR_SIZE: u32 = 512;
 
 impl RamDiskLayer {
-    /// Makes a new RAM disk layer of `size` bytes.
+    /// Makes a new RAM disk layer of `size` bytes with default 512-byte sectors.
     pub fn new(size: u64) -> Result<Self, Error> {
+        Self::new_with_sector_size(size, DEFAULT_SECTOR_SIZE)
+    }
+
+    /// Makes a new RAM disk layer of `size` bytes with the specified sector size.
+    ///
+    /// # Arguments
+    /// * `size` - Total size of the disk in bytes
+    /// * `sector_size` - Size of each sector in bytes (typically 512 or 4096)
+    pub fn new_with_sector_size(size: u64, sector_size: u32) -> Result<Self, Error> {
         let sector_count = {
             if size == 0 {
                 return Err(Error::EmptyDisk);
             }
-            if size % SECTOR_SIZE as u64 != 0 {
+            if sector_size == 0 {
                 return Err(Error::NotSectorMultiple {
                     disk_size: size,
-                    sector_size: SECTOR_SIZE,
+                    sector_size,
                 });
             }
-            size / SECTOR_SIZE as u64
+            if size % sector_size as u64 != 0 {
+                return Err(Error::NotSectorMultiple {
+                    disk_size: size,
+                    sector_size,
+                });
+            }
+            size / sector_size as u64
         };
         Ok(Self {
             state: RwLock::new(RamState {
@@ -128,6 +148,7 @@ impl RamDiskLayer {
                 zero_after: sector_count,
             }),
             sector_count: sector_count.into(),
+            sector_size,
             resize_event: Default::default(),
         })
     }
@@ -159,7 +180,7 @@ impl RamDiskLayer {
         sector: u64,
         overwrite: bool,
     ) -> Result<(), DiskError> {
-        let count = buffers.len() / SECTOR_SIZE as usize;
+        let count = buffers.len() / self.sector_size as usize;
         tracing::trace!(sector, count, "write");
         let mut state = self.state.write();
         if sector + count as u64 > state.sector_count {
@@ -167,11 +188,13 @@ impl RamDiskLayer {
         }
         for i in 0..count {
             let cur = i + sector as usize;
-            let buf = buffers.subrange(i * SECTOR_SIZE as usize, SECTOR_SIZE as usize);
+            let buf = buffers.subrange(i * self.sector_size as usize, self.sector_size as usize);
             let mut reader = buf.reader();
             match state.data.entry(cur as u64) {
                 Entry::Vacant(entry) => {
-                    entry.insert(Sector(reader.read_plain()?));
+                    let mut sector_data = vec![0u8; self.sector_size as usize];
+                    reader.read(&mut sector_data)?;
+                    entry.insert(Sector(sector_data));
                 }
                 Entry::Occupied(mut entry) => {
                     if overwrite {
@@ -210,7 +233,7 @@ impl LayerIo for RamDiskLayer {
     }
 
     fn sector_size(&self) -> u32 {
-        SECTOR_SIZE
+        self.sector_size
     }
 
     fn is_logically_read_only(&self) -> bool {
@@ -222,7 +245,7 @@ impl LayerIo for RamDiskLayer {
     }
 
     fn physical_sector_size(&self) -> u32 {
-        SECTOR_SIZE
+        self.sector_size
     }
 
     fn is_fua_respected(&self) -> bool {
@@ -235,7 +258,7 @@ impl LayerIo for RamDiskLayer {
         sector: u64,
         mut marker: SectorMarker<'_>,
     ) -> Result<(), DiskError> {
-        let count = (buffers.len() / SECTOR_SIZE as usize) as u64;
+        let count = (buffers.len() / self.sector_size as usize) as u64;
         let end = sector + count;
         tracing::trace!(sector, count, "read");
         let state = self.state.read();
@@ -252,15 +275,15 @@ impl LayerIo for RamDiskLayer {
                 // after the zero-after point (due to a resize).
                 let zero_start = last.max(state.zero_after);
                 let zero_count = next - zero_start;
-                let offset = (zero_start - sector) as usize * SECTOR_SIZE as usize;
-                let len = zero_count as usize * SECTOR_SIZE as usize;
+                let offset = (zero_start - sector) as usize * self.sector_size as usize;
+                let len = zero_count as usize * self.sector_size as usize;
                 buffers.subrange(offset, len).writer().zero(len)?;
                 marker.set_range(zero_start..next);
             }
             if let Some((&s, buf)) = r {
-                let offset = (s - sector) as usize * SECTOR_SIZE as usize;
+                let offset = (s - sector) as usize * self.sector_size as usize;
                 buffers
-                    .subrange(offset, SECTOR_SIZE as usize)
+                    .subrange(offset, self.sector_size as usize)
                     .writer()
                     .write(&buf.0)?;
 
@@ -360,19 +383,36 @@ impl WriteNoOverwrite for RamDiskLayer {
     }
 }
 
-/// Create a RAM disk of `size` bytes.
+/// Create a RAM disk of `size` bytes with default 512-byte sectors.
 ///
 /// This is a convenience function for creating a layered disk with a single RAM
 /// layer. It is useful since non-layered RAM disks are used all over the place,
 /// especially in tests.
 pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
+    ram_disk_with_sector_size(size, read_only, DEFAULT_SECTOR_SIZE)
+}
+
+/// Create a RAM disk of `size` bytes with the specified sector size.
+///
+/// This is a convenience function for creating a layered disk with a single RAM
+/// layer with configurable sector size. Useful for testing different sector sizes.
+///
+/// # Arguments
+/// * `size` - Total size of the disk in bytes
+/// * `read_only` - Whether the disk should be read-only
+/// * `sector_size` - Size of each sector in bytes (typically 512 or 4096)
+pub fn ram_disk_with_sector_size(
+    size: u64,
+    read_only: bool,
+    sector_size: u32,
+) -> anyhow::Result<Disk> {
     use futures::future::FutureExt;
 
     let disk = Disk::new(
         LayeredDisk::new(
             read_only,
             vec![LayerConfiguration {
-                layer: DiskLayer::new(RamDiskLayer::new(size)?),
+                layer: DiskLayer::new(RamDiskLayer::new_with_sector_size(size, sector_size)?),
                 write_through: false,
                 read_cache: false,
             }],
@@ -386,8 +426,9 @@ pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
 
 #[cfg(test)]
 mod tests {
+    use super::DEFAULT_SECTOR_SIZE;
     use super::RamDiskLayer;
-    use super::SECTOR_SIZE;
+    use disk_backend::Disk;
     use disk_backend::DiskIo;
     use disk_layered::DiskLayer;
     use disk_layered::LayerConfiguration;
@@ -399,8 +440,8 @@ mod tests {
     use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
-    const SECTOR_U64: u64 = SECTOR_SIZE as u64;
-    const SECTOR_USIZE: usize = SECTOR_SIZE as usize;
+    const SECTOR_U64: u64 = DEFAULT_SECTOR_SIZE as u64;
+    const SECTOR_USIZE: usize = DEFAULT_SECTOR_SIZE as usize;
 
     fn check(mem: &GuestMemory, sector: u64, start: usize, count: usize, high: u8) {
         let mut buf = vec![0u32; count * SECTOR_USIZE / 4];
@@ -551,5 +592,220 @@ mod tests {
             guest_mem.read_at(s as u64 * SECTOR_U64, &mut buf).unwrap();
             assert_eq!(buf, [0u8; SECTOR_USIZE]);
         }
+    }
+
+    // Test 4K sector size support
+    const SECTOR_4K: u32 = 4096;
+
+    #[async_test]
+    async fn test_4k_sectors_basic() {
+        // Test basic operations with 4K sectors
+        const SIZE: u64 = 1024 * 1024; // 1MB
+
+        let layer = RamDiskLayer::new_with_sector_size(SIZE, SECTOR_4K).unwrap();
+        assert_eq!(layer.sector_size(), SECTOR_4K);
+        assert_eq!(layer.sector_count(), SIZE / SECTOR_4K as u64);
+
+        // Test writing and reading a 4K sector
+        let guest_mem = GuestMemory::allocate(SECTOR_4K as usize);
+        let test_data: Vec<u8> = (0..SECTOR_4K).map(|i| (i % 256) as u8).collect();
+        guest_mem.write_at(0, &test_data).unwrap();
+
+        layer
+            .write(
+                &OwnedRequestBuffers::linear(0, SECTOR_4K as usize, false).buffer(&guest_mem),
+                0,
+                false,
+            )
+            .await
+            .unwrap();
+
+        // Clear and read back using a layered disk wrapper
+        let disk = Disk::new(
+            LayeredDisk::new(
+                false,
+                vec![LayerConfiguration {
+                    layer: DiskLayer::new(layer),
+                    write_through: false,
+                    read_cache: false,
+                }],
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+
+        guest_mem.fill_at(0, 0, SECTOR_4K as usize).unwrap();
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, SECTOR_4K as usize, true).buffer(&guest_mem),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let mut read_data = vec![0u8; SECTOR_4K as usize];
+        guest_mem.read_at(0, &mut read_data).unwrap();
+        assert_eq!(read_data, test_data);
+    }
+
+    #[async_test]
+    async fn test_4k_sectors_multiple() {
+        // Test multiple 4K sectors using the convenience function
+        const SIZE: u64 = 16 * 4096; // 64KB = 16 sectors
+
+        let disk = super::ram_disk_with_sector_size(SIZE, false, SECTOR_4K).unwrap();
+        let guest_mem = GuestMemory::allocate(SECTOR_4K as usize);
+
+        // Write different patterns to different sectors
+        for sector in 0..4 {
+            let pattern = (sector + 1) as u8;
+            let sector_data = vec![pattern; SECTOR_4K as usize];
+            guest_mem.write_at(0, &sector_data).unwrap();
+
+            disk.write_vectored(
+                &OwnedRequestBuffers::linear(0, SECTOR_4K as usize, false).buffer(&guest_mem),
+                sector,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Read back and verify each sector
+        for sector in 0..4 {
+            guest_mem.fill_at(0, 0, SECTOR_4K as usize).unwrap();
+            disk.read_vectored(
+                &OwnedRequestBuffers::linear(0, SECTOR_4K as usize, true).buffer(&guest_mem),
+                sector,
+            )
+            .await
+            .unwrap();
+
+            let mut read_data = vec![0u8; SECTOR_4K as usize];
+            guest_mem.read_at(0, &mut read_data).unwrap();
+            let expected_pattern = (sector + 1) as u8;
+            assert!(read_data.iter().all(|&b| b == expected_pattern));
+        }
+    }
+
+    #[async_test]
+    async fn test_4k_ram_disk_helper() {
+        // Test the convenience function with 4K sectors
+        const SIZE: u64 = 8 * 4096; // 32KB
+
+        let disk = super::ram_disk_with_sector_size(SIZE, false, SECTOR_4K).unwrap();
+        let guest_mem = GuestMemory::allocate(SECTOR_4K as usize);
+
+        // Write a test pattern
+        let test_data: Vec<u8> = (0..SECTOR_4K).map(|i| (i / 16) as u8).collect();
+        guest_mem.write_at(0, &test_data).unwrap();
+
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, SECTOR_4K as usize, false).buffer(&guest_mem),
+            1, // Write to sector 1
+            false,
+        )
+        .await
+        .unwrap();
+
+        // Read back
+        guest_mem.fill_at(0, 0, SECTOR_4K as usize).unwrap();
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, SECTOR_4K as usize, true).buffer(&guest_mem),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let mut read_data = vec![0u8; SECTOR_4K as usize];
+        guest_mem.read_at(0, &mut read_data).unwrap();
+        assert_eq!(read_data, test_data);
+    }
+
+    #[async_test]
+    async fn test_mixed_sector_sizes() {
+        // Test that different layers can have different sector sizes
+        let layer_512 = RamDiskLayer::new_with_sector_size(8192, 512).unwrap();
+        let layer_4k = RamDiskLayer::new_with_sector_size(8192, 4096).unwrap();
+
+        assert_eq!(layer_512.sector_size(), 512);
+        assert_eq!(layer_512.sector_count(), 16); // 8192 / 512
+
+        assert_eq!(layer_4k.sector_size(), 4096);
+        assert_eq!(layer_4k.sector_count(), 2); // 8192 / 4096
+    }
+
+    #[async_test]
+    async fn test_invalid_sector_sizes() {
+        // Test error cases
+        assert!(RamDiskLayer::new_with_sector_size(1000, 512).is_err()); // Size not multiple of sector
+        assert!(RamDiskLayer::new_with_sector_size(1024, 0).is_err()); // Zero sector size
+        assert!(RamDiskLayer::new_with_sector_size(0, 512).is_err()); // Zero size
+    }
+
+    #[async_test]
+    async fn test_backward_compatibility() {
+        // Test that the original new() method still works with 512-byte sectors
+        let layer_old = RamDiskLayer::new(8192).unwrap();
+        let layer_new = RamDiskLayer::new_with_sector_size(8192, 512).unwrap();
+
+        assert_eq!(layer_old.sector_size(), layer_new.sector_size());
+        assert_eq!(layer_old.sector_count(), layer_new.sector_count());
+
+        // Test that the original ram_disk() function still works
+        let disk_old = super::ram_disk(8192, false).unwrap();
+        let disk_new = super::ram_disk_with_sector_size(8192, false, 512).unwrap();
+
+        // Both should behave the same way for basic operations
+        let guest_mem = GuestMemory::allocate(512);
+        let test_data = vec![0x42u8; 512];
+        guest_mem.write_at(0, &test_data).unwrap();
+
+        // Write to both disks
+        disk_old
+            .write_vectored(
+                &OwnedRequestBuffers::linear(0, 512, false).buffer(&guest_mem),
+                0,
+                false,
+            )
+            .await
+            .unwrap();
+
+        disk_new
+            .write_vectored(
+                &OwnedRequestBuffers::linear(0, 512, false).buffer(&guest_mem),
+                0,
+                false,
+            )
+            .await
+            .unwrap();
+
+        // Read from both and verify
+        guest_mem.fill_at(0, 0, 512).unwrap();
+        disk_old
+            .read_vectored(
+                &OwnedRequestBuffers::linear(0, 512, true).buffer(&guest_mem),
+                0,
+            )
+            .await
+            .unwrap();
+
+        let mut data_old = vec![0u8; 512];
+        guest_mem.read_at(0, &mut data_old).unwrap();
+
+        guest_mem.fill_at(0, 0, 512).unwrap();
+        disk_new
+            .read_vectored(
+                &OwnedRequestBuffers::linear(0, 512, true).buffer(&guest_mem),
+                0,
+            )
+            .await
+            .unwrap();
+
+        let mut data_new = vec![0u8; 512];
+        guest_mem.read_at(0, &mut data_new).unwrap();
+
+        assert_eq!(data_old, data_new);
+        assert_eq!(data_old, test_data);
     }
 }
