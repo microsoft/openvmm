@@ -7,6 +7,24 @@ The most up to date reference is always the [code itself](https://openvmm.dev/ru
 as well as the generated CLI help (via `cargo run -- --help`).
 ```
 
+## Shell Completions
+
+OpenVMM supports generating shell completions to help with command-line usage:
+
+* `--generate-completions <SHELL>`: Generate shell completion script and exit.
+  Supported shells: bash, elvish, fish, powershell, zsh
+
+**Examples:**
+```bash
+# Generate bash completions
+openvmm --generate-completions bash > ~/.local/share/bash-completion/completions/openvmm
+
+# Generate PowerShell completions  
+openvmm --generate-completions powershell >> $PROFILE
+```
+
+## VM Configuration Options
+
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.
 * `--hv`: Exposes Hyper-V enlightenments and VMBus support.
