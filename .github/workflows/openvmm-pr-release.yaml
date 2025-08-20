@@ -26,7 +26,7 @@ jobs:
       id-token: write
     needs:
     - job1
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -185,7 +185,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -354,7 +354,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -618,7 +618,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -921,7 +921,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -1228,7 +1228,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -1462,7 +1462,7 @@ jobs:
     - job5
     - job7
     - job9
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -1692,7 +1692,7 @@ jobs:
     - job5
     - job7
     - job9
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -1920,7 +1920,7 @@ jobs:
     - job5
     - job7
     - job9
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -2150,7 +2150,7 @@ jobs:
     - job5
     - job7
     - job9
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -2378,7 +2378,7 @@ jobs:
     - job5
     - job7
     - job9
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -2610,7 +2610,7 @@ jobs:
     - job3
     - job6
     - job8
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -2882,7 +2882,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -3112,7 +3112,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -3222,7 +3222,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -3477,7 +3477,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -3708,7 +3708,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -3970,7 +3970,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -4273,7 +4273,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -4632,7 +4632,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -4956,7 +4956,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates')
+    if: contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
