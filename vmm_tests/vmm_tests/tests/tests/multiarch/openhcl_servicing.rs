@@ -119,7 +119,7 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
 async fn basic<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
+) -> anyhow::Result<()> {
     openhcl_servicing_core(
         config,
         "",
@@ -138,7 +138,7 @@ async fn basic<T: PetriVmmBackend>(
 async fn keepalive<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
+) -> anyhow::Result<()> {
     openhcl_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
@@ -158,7 +158,7 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
-) -> Result<(), anyhow::Error> {
+) -> anyhow::Result<()> {
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     openhcl_servicing_core(
         config
@@ -178,7 +178,7 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     ),
-) -> Result<(), anyhow::Error> {
+) -> anyhow::Result<()> {
     // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
     openhcl_servicing_core(
         config
@@ -195,7 +195,7 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
 async fn shutdown_ic(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
+) -> anyhow::Result<()> {
     if !host_supports_servicing() {
         tracing::info!("skipping OpenHCL servicing test on unsupported host");
         return Ok(());

@@ -114,12 +114,9 @@ impl SimpleFlowNode for Node {
                     let latest_release_artifact = rt.read(latest_release_artifact);
                     let latest_release_version = OpenhclReleaseVersion::latest();
 
-                    fs_err::create_dir(latest_release_artifact.join("aarch64"))?;
-                    fs_err::create_dir(latest_release_artifact.join("x64"))?;
-
                     fs_err::copy(
                         latest_release_igvm_files.aarch64_bin,
-                        latest_release_artifact.join("aarch64").join(
+                        latest_release_artifact.join(
                             latest_release_version.clone().to_string() + "-aarch64-openhcl.bin",
                         ),
                     )?;
@@ -127,14 +124,13 @@ impl SimpleFlowNode for Node {
                     fs_err::copy(
                         latest_release_igvm_files.x64_bin,
                         latest_release_artifact
-                            .join("x64")
                             .join(latest_release_version.clone().to_string() + "-x64-openhcl.bin"),
                     )?;
 
                     fs_err::copy(
                         latest_release_igvm_files.x64_direct_bin,
-                        latest_release_artifact.join("x64").join(
-                            latest_release_version.clone().to_string() + "-x64-openhcl-direct.bin",
+                        latest_release_artifact.join(
+                            latest_release_version.clone().to_string() + "-x64-direct-openhcl.bin",
                         ),
                     )?;
 
