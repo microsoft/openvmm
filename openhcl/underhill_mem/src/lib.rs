@@ -27,7 +27,6 @@ use hcl::ioctl::MshvVtl;
 use hcl::ioctl::snp::SnpPageError;
 use hv1_structs::VtlArray;
 use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
-use hvdef::HV_MAP_GPA_PERMISSIONS_NONE;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -588,13 +587,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         };
 
         for &range in &ranges {
-            if shared && vtl == GuestVtl::Vtl0 {
-                // Accessing these pages through the encrypted mapping is now
-                // invalid. Make sure the VTL bitmaps reflect this.
-                self.vtl0
-                    .update_permission_bitmaps(range, HV_MAP_GPA_PERMISSIONS_NONE);
-            }
-
             clear_bitmap.update_valid(range, false);
         }
 
