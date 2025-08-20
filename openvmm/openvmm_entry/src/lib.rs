@@ -1018,6 +1018,7 @@ fn vm_config_from_command_line(
                 register_layout,
                 guest_secret_key: None,
                 logger: None,
+                is_confidential_vm: false,
             }
             .into_resource(),
         });
