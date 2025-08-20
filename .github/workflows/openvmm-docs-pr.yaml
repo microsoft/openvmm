@@ -159,7 +159,9 @@ jobs:
         EOF
         flowey e 0 flowey_lib_common::git_checkout 3
         flowey e 0 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey e 0 flowey_lib_hvlite::build_guide 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 0 flowey_lib_hvlite::build_guide 0
       shell: bash
     - name: add default cargo home to path
       run: flowey e 0 flowey_lib_common::install_rust 0

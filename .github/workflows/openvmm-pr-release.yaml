@@ -159,8 +159,10 @@ jobs:
         flowey.exe e 0 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build xtask
+      run: flowey.exe e 0 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 0 flowey_lib_common::run_cargo_build 0
         flowey.exe e 0 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 0 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -324,9 +326,10 @@ jobs:
         flowey e 1 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build xtask
-      run: |-
-        flowey e 1 flowey_lib_common::run_cargo_build 0
-        flowey e 1 flowey_lib_hvlite::run_cargo_build 0
+      run: flowey e 1 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 1 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
       run: |-
@@ -488,8 +491,10 @@ jobs:
         flowey.exe e 10 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build xtask
+      run: flowey.exe e 10 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 10 flowey_lib_common::run_cargo_build 0
         flowey.exe e 10 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 10 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -512,8 +517,10 @@ jobs:
         flowey.exe e 10 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build xtask
+      run: flowey.exe e 10 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 10 flowey_lib_common::run_cargo_build 1
         flowey.exe e 10 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 10 flowey_lib_hvlite::build_xtask 1
       shell: bash
@@ -524,11 +531,15 @@ jobs:
       run: flowey.exe e 10 flowey_lib_common::run_cargo_clippy 1
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey.exe e 10 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 10 flowey_lib_common::download_cargo_nextest 0
         flowey.exe e 10 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 10 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 10 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 10 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -559,8 +570,10 @@ jobs:
         flowey.exe e 10 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build xtask
+      run: flowey.exe e 10 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 10 flowey_lib_common::run_cargo_build 2
         flowey.exe e 10 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 10 flowey_lib_hvlite::build_xtask 2
       shell: bash
@@ -568,7 +581,9 @@ jobs:
       run: |-
         flowey.exe e 10 flowey_lib_hvlite::build_nextest_unit_tests 0
         flowey.exe e 10 flowey_lib_hvlite::init_cross_build 2
-        flowey.exe e 10 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 10 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: generate nextest command
       run: flowey.exe e 10 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -577,9 +592,18 @@ jobs:
       run: |-
         flowey.exe e 10 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 10 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 10 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
-        flowey.exe e 10 flowey_lib_common::publish_test_results 0
-        flowey.exe e 10 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 10 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 10 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 10 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 10 flowey_lib_common::publish_test_results 2
         flowey.exe v 10 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey.exe v 10 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -766,9 +790,10 @@ jobs:
         flowey e 11 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build xtask
-      run: |-
-        flowey e 11 flowey_lib_common::run_cargo_build 3
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 2
+      run: flowey e 11 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
     - name: split debug symbols
       run: |-
@@ -786,9 +811,10 @@ jobs:
         flowey e 11 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build xtask
-      run: |-
-        flowey e 11 flowey_lib_common::run_cargo_build 2
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 0
+      run: flowey e 11 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
       run: |-
@@ -805,9 +831,10 @@ jobs:
         flowey e 11 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build xtask
-      run: |-
-        flowey e 11 flowey_lib_common::run_cargo_build 0
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 4
+      run: flowey e 11 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
       run: |-
@@ -822,11 +849,15 @@ jobs:
       run: flowey e 11 flowey_lib_common::run_cargo_clippy 2
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey e 11 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 11 flowey_lib_common::download_cargo_nextest 0
         flowey e 11 flowey_lib_common::download_cargo_nextest 1
         flowey e 11 flowey_lib_common::download_cargo_nextest 2
-        flowey e 11 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -857,9 +888,10 @@ jobs:
         flowey e 11 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build xtask
-      run: |-
-        flowey e 11 flowey_lib_common::run_cargo_build 1
-        flowey e 11 flowey_lib_hvlite::run_cargo_build 6
+      run: flowey e 11 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_hvlite::run_cargo_build 6
       shell: bash
     - name: split debug symbols
       run: |-
@@ -871,7 +903,9 @@ jobs:
       run: |-
         flowey e 11 flowey_lib_hvlite::build_nextest_unit_tests 0
         flowey e 11 flowey_lib_hvlite::init_cross_build 2
-        flowey e 11 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: generate nextest command
       run: flowey e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -880,9 +914,18 @@ jobs:
       run: |-
         flowey e 11 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 11 flowey_lib_common::run_cargo_nextest_run 1
-        flowey e 11 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
-        flowey e 11 flowey_lib_common::publish_test_results 0
-        flowey e 11 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 11 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 11 flowey_lib_common::publish_test_results 2
         flowey v 11 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey v 11 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -1075,9 +1118,10 @@ jobs:
         flowey e 12 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build xtask
-      run: |-
-        flowey e 12 flowey_lib_common::run_cargo_build 1
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 0
+      run: flowey e 12 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
       run: |-
@@ -1108,9 +1152,10 @@ jobs:
         flowey e 12 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build xtask
-      run: |-
-        flowey e 12 flowey_lib_common::run_cargo_build 2
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 2
+      run: flowey e 12 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
     - name: split debug symbols
       run: |-
@@ -1128,11 +1173,15 @@ jobs:
       run: flowey e 12 flowey_lib_common::run_cargo_clippy 5
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey e 12 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 12 flowey_lib_common::download_cargo_nextest 0
         flowey e 12 flowey_lib_common::download_cargo_nextest 1
         flowey e 12 flowey_lib_common::download_cargo_nextest 2
-        flowey e 12 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -1163,9 +1212,10 @@ jobs:
         flowey e 12 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build xtask
-      run: |-
-        flowey e 12 flowey_lib_common::run_cargo_build 0
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 4
+      run: flowey e 12 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
       run: |-
@@ -1177,7 +1227,9 @@ jobs:
       run: |-
         flowey e 12 flowey_lib_hvlite::build_nextest_unit_tests 0
         flowey e 12 flowey_lib_hvlite::init_cross_build 5
-        flowey e 12 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: generate nextest command
       run: flowey e 12 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -1186,9 +1238,18 @@ jobs:
       run: |-
         flowey e 12 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 12 flowey_lib_common::run_cargo_nextest_run 1
-        flowey e 12 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
-        flowey e 12 flowey_lib_common::publish_test_results 0
-        flowey e 12 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 12 flowey_lib_common::publish_test_results 2
         flowey v 12 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey v 12 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -1295,9 +1356,14 @@ jobs:
       run: |-
         flowey.exe e 13 flowey_lib_common::cfg_cargo_common_flags 0
         flowey.exe e 13 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 13 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 13 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 13 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 13 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -1393,8 +1459,10 @@ jobs:
         flowey.exe e 13 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build xtask
+      run: flowey.exe e 13 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 13 flowey_lib_common::run_cargo_build 0
         flowey.exe e 13 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 13 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -1402,7 +1470,9 @@ jobs:
       run: |-
         flowey.exe e 13 flowey_lib_hvlite::build_nextest_unit_tests 0
         flowey.exe e 13 flowey_lib_hvlite::init_cross_build 0
-        flowey.exe e 13 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 13 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: generate nextest command
       run: flowey.exe e 13 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -1417,9 +1487,18 @@ jobs:
       run: |-
         flowey.exe e 13 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 13 flowey_lib_common::run_cargo_nextest_run 1
-        flowey.exe e 13 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
-        flowey.exe e 13 flowey_lib_common::publish_test_results 0
-        flowey.exe e 13 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 13 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 13 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 13 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 13 flowey_lib_common::publish_test_results 2
         flowey.exe v 13 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey.exe v 13 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -1609,11 +1688,15 @@ jobs:
       run: flowey.exe e 14 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey.exe e 14 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 14 flowey_lib_common::download_cargo_nextest 0
         flowey.exe e 14 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 14 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 14 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 14 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -1656,10 +1739,17 @@ jobs:
         EOF
         flowey.exe e 14 flowey_lib_common::git_checkout 3
         flowey.exe e 14 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 14 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 14 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 14 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 14 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe e 14 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 14 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: generate nextest command
       run: flowey.exe e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -1672,7 +1762,12 @@ jobs:
         flowey.exe e 14 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 14 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 14 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-        flowey.exe e 14 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 14 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 14 flowey_lib_common::publish_test_results 5
         flowey.exe v 14 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
         flowey.exe v 14 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
@@ -1684,11 +1779,17 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: x64-windows-intel-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
+    - name: 🌼 write_into Var
+      run: flowey.exe e 14 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 14 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 14 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 14 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 14 flowey_lib_common::publish_test_results 0
-        flowey.exe e 14 flowey_lib_common::publish_test_results 1
         flowey.exe e 14 flowey_lib_common::publish_test_results 2
         flowey.exe v 14 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey.exe v 14 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -1883,11 +1984,15 @@ jobs:
       run: flowey.exe e 15 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey.exe e 15 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 15 flowey_lib_common::download_cargo_nextest 0
         flowey.exe e 15 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 15 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 15 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 15 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -1930,10 +2035,17 @@ jobs:
         EOF
         flowey.exe e 15 flowey_lib_common::git_checkout 3
         flowey.exe e 15 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 15 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 15 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 15 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 15 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 15 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: generate nextest command
       run: flowey.exe e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -1946,7 +2058,12 @@ jobs:
         flowey.exe e 15 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 15 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 15 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-        flowey.exe e 15 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 15 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 15 flowey_lib_common::publish_test_results 5
         flowey.exe v 15 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
         flowey.exe v 15 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
@@ -1958,11 +2075,17 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: x64-windows-intel-tdx-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
+    - name: 🌼 write_into Var
+      run: flowey.exe e 15 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 15 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 15 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 15 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 15 flowey_lib_common::publish_test_results 0
-        flowey.exe e 15 flowey_lib_common::publish_test_results 1
         flowey.exe e 15 flowey_lib_common::publish_test_results 2
         flowey.exe v 15 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey.exe v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -2155,11 +2278,15 @@ jobs:
       run: flowey.exe e 16 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey.exe e 16 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 16 flowey_lib_common::download_cargo_nextest 0
         flowey.exe e 16 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 16 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 16 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 16 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -2202,10 +2329,17 @@ jobs:
         EOF
         flowey.exe e 16 flowey_lib_common::git_checkout 3
         flowey.exe e 16 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 16 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 16 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 16 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 16 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe e 16 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 16 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: generate nextest command
       run: flowey.exe e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -2218,7 +2352,12 @@ jobs:
         flowey.exe e 16 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 16 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-        flowey.exe e 16 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 16 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 16 flowey_lib_common::publish_test_results 5
         flowey.exe v 16 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
         flowey.exe v 16 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
@@ -2230,11 +2369,17 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: x64-windows-amd-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
+    - name: 🌼 write_into Var
+      run: flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 16 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 16 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 16 flowey_lib_common::publish_test_results 0
-        flowey.exe e 16 flowey_lib_common::publish_test_results 1
         flowey.exe e 16 flowey_lib_common::publish_test_results 2
         flowey.exe v 16 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey.exe v 16 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -2429,11 +2574,15 @@ jobs:
       run: flowey.exe e 17 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey.exe e 17 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 17 flowey_lib_common::download_cargo_nextest 0
         flowey.exe e 17 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 17 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 17 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 17 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -2476,10 +2625,17 @@ jobs:
         EOF
         flowey.exe e 17 flowey_lib_common::git_checkout 3
         flowey.exe e 17 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 17 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 17 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 17 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 17 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 17 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: generate nextest command
       run: flowey.exe e 17 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -2492,7 +2648,12 @@ jobs:
         flowey.exe e 17 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 17 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-        flowey.exe e 17 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 17 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 17 flowey_lib_common::publish_test_results 5
         flowey.exe v 17 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
         flowey.exe v 17 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
@@ -2504,11 +2665,17 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: x64-windows-amd-snp-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
+    - name: 🌼 write_into Var
+      run: flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 17 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 17 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 17 flowey_lib_common::publish_test_results 0
-        flowey.exe e 17 flowey_lib_common::publish_test_results 1
         flowey.exe e 17 flowey_lib_common::publish_test_results 2
         flowey.exe v 17 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey.exe v 17 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -2704,11 +2871,15 @@ jobs:
       run: flowey e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey e 18 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 18 flowey_lib_common::download_cargo_nextest 0
         flowey e 18 flowey_lib_common::download_cargo_nextest 1
         flowey e 18 flowey_lib_common::download_cargo_nextest 2
-        flowey e 18 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 18 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -2751,10 +2922,17 @@ jobs:
         EOF
         flowey e 18 flowey_lib_common::git_checkout 3
         flowey e 18 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey e 18 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 18 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 18 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey e 18 flowey_core::pipeline::artifact::resolve 4
-        flowey e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
       shell: bash
     - name: generate nextest command
       run: flowey e 18 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -2767,7 +2945,12 @@ jobs:
         flowey e 18 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 18 flowey_lib_common::run_cargo_nextest_run 1
         flowey e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-        flowey e 18 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 18 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 18 flowey_lib_common::publish_test_results 5
         flowey v 18 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
         flowey v 18 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
@@ -2779,11 +2962,17 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: x64-linux-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
+    - name: 🌼 write_into Var
+      run: flowey e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 18 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 18 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey e 18 flowey_lib_common::publish_test_results 0
-        flowey e 18 flowey_lib_common::publish_test_results 1
         flowey e 18 flowey_lib_common::publish_test_results 2
         flowey v 18 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey v 18 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -3026,11 +3215,15 @@ jobs:
       run: flowey.exe e 19 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey.exe e 19 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 19 flowey_lib_common::download_cargo_nextest 0
         flowey.exe e 19 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 19 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 19 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 19 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -3073,10 +3266,17 @@ jobs:
         EOF
         flowey.exe e 19 flowey_lib_common::git_checkout 3
         flowey.exe e 19 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-        flowey.exe e 19 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 19 flowey_lib_hvlite::run_cargo_nextest_run 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 19 flowey_lib_hvlite::run_cargo_nextest_run 1
         flowey.exe e 19 flowey_core::pipeline::artifact::resolve 7
-        flowey.exe e 19 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 19 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: generate nextest command
       run: flowey.exe e 19 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -3089,7 +3289,12 @@ jobs:
         flowey.exe e 19 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 19 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
-        flowey.exe e 19 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 19 flowey_lib_common::publish_test_results 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey.exe e 19 flowey_lib_common::publish_test_results 5
         flowey.exe v 19 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs:152:62' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57 write-to-env github floweyvar2
         flowey.exe v 19 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
@@ -3101,11 +3306,17 @@ jobs:
         path: ${{ env.floweyvar2 }}
       name: 'publish test results: aarch64-windows-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
+    - name: 🌼 write_into Var
+      run: flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 19 flowey_lib_common::publish_test_results 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 19 flowey_lib_common::publish_test_results 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
-        flowey.exe e 19 flowey_lib_common::publish_test_results 0
-        flowey.exe e 19 flowey_lib_common::publish_test_results 1
         flowey.exe e 19 flowey_lib_common::publish_test_results 2
         flowey.exe v 19 'flowey_lib_common::publish_test_results:4:flowey_lib_common/src/publish_test_results.rs:95:47' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43 write-to-env github floweyvar1
         flowey.exe v 19 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
@@ -3289,24 +3500,30 @@ jobs:
         flowey.exe e 2 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build vmgstool
+      run: flowey.exe e 2 flowey_lib_common::run_cargo_build 4
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 2 flowey_lib_common::run_cargo_build 4
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 4
         flowey.exe e 2 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 2 flowey_core::pipeline::artifact::publish 0
         flowey.exe e 2 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build hypestv
+      run: flowey.exe e 2 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 2 flowey_lib_common::run_cargo_build 0
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 2 flowey_lib_hvlite::build_hypestv 0
         flowey.exe e 2 flowey_core::pipeline::artifact::publish 1
         flowey.exe e 2 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build vmgs_lib
+      run: flowey.exe e 2 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 2 flowey_lib_common::run_cargo_build 3
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 3
         flowey.exe e 2 flowey_lib_hvlite::build_and_test_vmgs_lib 0
         flowey.exe e 2 flowey_lib_hvlite::build_and_test_vmgs_lib 1
@@ -3314,16 +3531,20 @@ jobs:
         flowey.exe e 2 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build igvmfilegen
+      run: flowey.exe e 2 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 2 flowey_lib_common::run_cargo_build 1
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 2 flowey_lib_hvlite::build_igvmfilegen 0
         flowey.exe e 2 flowey_core::pipeline::artifact::publish 3
         flowey.exe e 2 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build ohcldiag-dev
+      run: flowey.exe e 2 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 2 flowey_lib_common::run_cargo_build 2
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 2 flowey_lib_hvlite::build_ohcldiag_dev 0
         flowey.exe e 2 flowey_core::pipeline::artifact::publish 4
@@ -3627,18 +3848,24 @@ jobs:
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build tmk_vmm
+      run: flowey.exe e 3 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 3 flowey_lib_common::run_cargo_build 2
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 3 flowey_lib_hvlite::build_tmk_vmm 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey.exe e 3 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 3 flowey_lib_common::download_cargo_nextest 0
         flowey.exe e 3 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 3 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 3 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 3 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -3683,16 +3910,20 @@ jobs:
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build openvmm
+      run: flowey.exe e 3 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 3 flowey_lib_common::run_cargo_build 0
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 3 flowey_lib_hvlite::build_openvmm 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 0
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build pipette
+      run: flowey.exe e 3 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 3 flowey_lib_common::run_cargo_build 1
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 3 flowey_lib_hvlite::build_pipette 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 1
@@ -3884,24 +4115,30 @@ jobs:
         flowey.exe e 4 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build vmgstool
+      run: flowey.exe e 4 flowey_lib_common::run_cargo_build 4
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 4 flowey_lib_common::run_cargo_build 4
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 4
         flowey.exe e 4 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 4 flowey_core::pipeline::artifact::publish 4
         flowey.exe e 4 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build hypestv
+      run: flowey.exe e 4 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 4 flowey_lib_common::run_cargo_build 0
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 4 flowey_lib_hvlite::build_hypestv 0
         flowey.exe e 4 flowey_core::pipeline::artifact::publish 0
         flowey.exe e 4 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build vmgs_lib
+      run: flowey.exe e 4 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 4 flowey_lib_common::run_cargo_build 3
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 3
         flowey.exe e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 0
       shell: bash
@@ -3913,16 +4150,20 @@ jobs:
         flowey.exe e 4 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build igvmfilegen
+      run: flowey.exe e 4 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 4 flowey_lib_common::run_cargo_build 1
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 4 flowey_lib_hvlite::build_igvmfilegen 0
         flowey.exe e 4 flowey_core::pipeline::artifact::publish 2
         flowey.exe e 4 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build ohcldiag-dev
+      run: flowey.exe e 4 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 4 flowey_lib_common::run_cargo_build 2
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 4 flowey_lib_hvlite::build_ohcldiag_dev 0
         flowey.exe e 4 flowey_core::pipeline::artifact::publish 3
@@ -4118,34 +4359,44 @@ jobs:
         flowey.exe e 5 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build openvmm
+      run: flowey.exe e 5 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 5 flowey_lib_common::run_cargo_build 0
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 5 flowey_lib_hvlite::build_openvmm 0
         flowey.exe e 5 flowey_core::pipeline::artifact::publish 0
         flowey.exe e 5 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build pipette
+      run: flowey.exe e 5 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 5 flowey_lib_common::run_cargo_build 1
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 5 flowey_lib_hvlite::build_pipette 0
         flowey.exe e 5 flowey_core::pipeline::artifact::publish 1
         flowey.exe e 5 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build tmk_vmm
+      run: flowey.exe e 5 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 5 flowey_lib_common::run_cargo_build 2
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 5 flowey_lib_hvlite::build_tmk_vmm 0
         flowey.exe e 5 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey.exe e 5 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey.exe e 5 flowey_lib_common::download_cargo_nextest 0
         flowey.exe e 5 flowey_lib_common::download_cargo_nextest 1
         flowey.exe e 5 flowey_lib_common::download_cargo_nextest 2
-        flowey.exe e 5 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey.exe e 5 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -4392,9 +4643,10 @@ jobs:
         flowey e 6 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build openvmm
-      run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 3
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 5
+      run: flowey e 6 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 6 flowey_lib_hvlite::run_cargo_build 5
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4405,9 +4657,10 @@ jobs:
         flowey e 6 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
-      run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 6
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 12
+      run: flowey e 6 flowey_lib_common::run_cargo_build 6
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 6 flowey_lib_hvlite::run_cargo_build 12
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4418,8 +4671,10 @@ jobs:
         flowey e 6 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build vmgs_lib
+      run: flowey e 6 flowey_lib_common::run_cargo_build 5
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 5
         flowey e 6 flowey_lib_hvlite::run_cargo_build 11
         flowey e 6 flowey_lib_hvlite::build_and_test_vmgs_lib 0
         flowey e 6 flowey_lib_hvlite::build_and_test_vmgs_lib 1
@@ -4427,9 +4682,10 @@ jobs:
         flowey e 6 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build igvmfilegen
-      run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 1
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 1
+      run: flowey e 6 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 6 flowey_lib_hvlite::run_cargo_build 1
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4440,9 +4696,10 @@ jobs:
         flowey e 6 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build ohcldiag-dev
-      run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 2
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 3
+      run: flowey e 6 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 6 flowey_lib_hvlite::run_cargo_build 3
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4453,9 +4710,10 @@ jobs:
         flowey e 6 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build guest_test_uefi
-      run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 0
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 0
+      run: flowey e 6 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 6 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: build guest_test_uefi.img
       run: |-
@@ -4463,12 +4721,15 @@ jobs:
         flowey e 6 flowey_core::pipeline::artifact::publish 5
         flowey e 6 flowey_lib_hvlite::init_cross_build 0
         flowey e 6 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 8
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 6 flowey_lib_hvlite::run_cargo_build 8
       shell: bash
     - name: cargo build simple_tmk
-      run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 4
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 9
+      run: flowey e 6 flowey_lib_common::run_cargo_build 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 6 flowey_lib_hvlite::run_cargo_build 9
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4697,9 +4958,10 @@ jobs:
         flowey e 7 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build openvmm
-      run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 3
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 5
+      run: flowey e 7 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 7 flowey_lib_hvlite::run_cargo_build 5
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4710,9 +4972,10 @@ jobs:
         flowey e 7 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build vmgstool
-      run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 6
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 12
+      run: flowey e 7 flowey_lib_common::run_cargo_build 6
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 7 flowey_lib_hvlite::run_cargo_build 12
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4723,8 +4986,10 @@ jobs:
         flowey e 7 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgs_lib
+      run: flowey e 7 flowey_lib_common::run_cargo_build 5
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 5
         flowey e 7 flowey_lib_hvlite::run_cargo_build 11
         flowey e 7 flowey_lib_hvlite::build_and_test_vmgs_lib 0
       shell: bash
@@ -4736,9 +5001,10 @@ jobs:
         flowey e 7 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build igvmfilegen
-      run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 1
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 1
+      run: flowey e 7 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 7 flowey_lib_hvlite::run_cargo_build 1
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4749,9 +5015,10 @@ jobs:
         flowey e 7 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build ohcldiag-dev
-      run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 2
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 3
+      run: flowey e 7 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 7 flowey_lib_hvlite::run_cargo_build 3
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4762,9 +5029,10 @@ jobs:
         flowey e 7 flowey_lib_hvlite::init_cross_build 7
       shell: bash
     - name: cargo build guest_test_uefi
-      run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 0
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 0
+      run: flowey e 7 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 7 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: build guest_test_uefi.img
       run: |-
@@ -4772,12 +5040,15 @@ jobs:
         flowey e 7 flowey_core::pipeline::artifact::publish 5
         flowey e 7 flowey_lib_hvlite::init_cross_build 0
         flowey e 7 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 8
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 7 flowey_lib_hvlite::run_cargo_build 8
       shell: bash
     - name: cargo build simple_tmk
-      run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 4
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 9
+      run: flowey e 7 flowey_lib_common::run_cargo_build 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 7 flowey_lib_hvlite::run_cargo_build 9
       shell: bash
     - name: split debug symbols
       run: |-
@@ -4787,11 +5058,15 @@ jobs:
         flowey e 7 flowey_core::pipeline::artifact::publish 6
       shell: bash
     - name: create cargo-nextest cache dir
+      run: flowey e 7 flowey_lib_common::download_cargo_nextest 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 7 flowey_lib_common::download_cargo_nextest 0
         flowey e 7 flowey_lib_common::download_cargo_nextest 1
         flowey e 7 flowey_lib_common::download_cargo_nextest 2
-        flowey e 7 flowey_lib_common::download_cargo_nextest 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 7 flowey_lib_common::download_cargo_nextest 3
       shell: bash
     - name: Pre-processing cache vars
       run: |-
@@ -5045,7 +5320,9 @@ jobs:
         flowey e 8 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 8 flowey_lib_hvlite::init_cross_build 0
         flowey e 8 flowey_lib_hvlite::run_cargo_build 2
-        flowey e 8 flowey_lib_hvlite::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::run_cargo_build 3
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey e 8 flowey_lib_hvlite::download_openvmm_deps 0
@@ -5054,9 +5331,10 @@ jobs:
       run: flowey e 8 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
       shell: bash
     - name: cargo build openhcl_boot
-      run: |-
-        flowey e 8 flowey_lib_common::run_cargo_build 1
-        flowey e 8 flowey_lib_hvlite::run_cargo_build 4
+      run: flowey e 8 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
       run: |-
@@ -5065,85 +5343,132 @@ jobs:
         flowey e 8 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
     - name: unpack kernel package
+      run: flowey e 8 flowey_lib_hvlite::download_openhcl_kernel_package 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 8 flowey_lib_hvlite::download_openhcl_kernel_package 1
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
         flowey e 8 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build openvmm_hcl
+      run: flowey e 8 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 8 flowey_lib_common::run_cargo_build 2
         flowey e 8 flowey_lib_hvlite::run_cargo_build 6
         flowey e 8 flowey_lib_hvlite::build_openvmm_hcl 0
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 8 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 15
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
       shell: bash
     - name: building openhcl initrd
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_initrd 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 8 flowey_lib_hvlite::build_openhcl_initrd 1
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
         flowey e 8 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build igvmfilegen
-      run: |-
-        flowey e 8 flowey_lib_common::run_cargo_build 0
-        flowey e 8 flowey_lib_hvlite::run_cargo_build 0
+      run: flowey e 8 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 8 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 8 flowey_lib_hvlite::run_cargo_build 1
         flowey e 8 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
       shell: bash
     - name: building igvm file
-      run: |-
-        flowey e 8 flowey_lib_hvlite::run_igvmfilegen 1
-        flowey e 8 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 2
+      run: flowey e 8 flowey_lib_hvlite::run_igvmfilegen 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 2
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 8 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 3
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7
       shell: bash
     - name: unpack kernel package
       run: flowey e 8 flowey_lib_hvlite::download_openhcl_kernel_package 0
       shell: bash
     - name: building openhcl initrd
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_initrd 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 8 flowey_lib_hvlite::build_openhcl_initrd 0
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
       shell: bash
     - name: building igvm file
+      run: flowey e 8 flowey_lib_hvlite::run_igvmfilegen 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 8 flowey_lib_hvlite::run_igvmfilegen 0
         flowey e 8 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0
         flowey e 8 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::publish 0
       shell: bash
     - name: copying OpenHCL igvm files to artifact dir
+      run: flowey e 8 flowey_lib_common::copy_to_artifact_dir 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 8 flowey_lib_common::copy_to_artifact_dir 1
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
         flowey e 8 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 3
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
-        flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 8 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
         flowey e 8 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1
         flowey e 8 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe_extras::publish 0
@@ -5154,9 +5479,10 @@ jobs:
         flowey e 8 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build pipette
-      run: |-
-        flowey e 8 flowey_lib_common::run_cargo_build 3
-        flowey e 8 flowey_lib_hvlite::run_cargo_build 7
+      run: flowey e 8 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: split debug symbols
       run: |-
@@ -5167,9 +5493,10 @@ jobs:
         flowey e 8 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build tmk_vmm
-      run: |-
-        flowey e 8 flowey_lib_common::run_cargo_build 4
-        flowey e 8 flowey_lib_hvlite::run_cargo_build 9
+      run: flowey e 8 flowey_lib_common::run_cargo_build 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 8 flowey_lib_hvlite::run_cargo_build 9
       shell: bash
     - name: split debug symbols
       run: |-
@@ -5369,12 +5696,15 @@ jobs:
         flowey e 9 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
         flowey e 9 flowey_lib_hvlite::init_cross_build 4
         flowey e 9 flowey_lib_hvlite::run_cargo_build 9
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 10
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: cargo build sidecar
-      run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 4
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 11
+      run: flowey e 9 flowey_lib_common::run_cargo_build 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::run_cargo_build 11
       shell: bash
     - name: split debug symbols
       run: |-
@@ -5383,12 +5713,15 @@ jobs:
         flowey e 9 flowey_lib_hvlite::build_sidecar 0
         flowey e 9 flowey_lib_hvlite::init_cross_build 5
         flowey e 9 flowey_lib_hvlite::run_cargo_build 2
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::run_cargo_build 3
       shell: bash
     - name: cargo build openhcl_boot
-      run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 1
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 4
+      run: flowey e 9 flowey_lib_common::run_cargo_build 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
       run: |-
@@ -5397,9 +5730,10 @@ jobs:
         flowey e 9 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
     - name: unpack kernel package
-      run: |-
-        flowey e 9 flowey_lib_hvlite::download_openhcl_kernel_package 2
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
+      run: flowey e 9 flowey_lib_hvlite::download_openhcl_kernel_package 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 30
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey e 9 flowey_lib_hvlite::download_openvmm_deps 0
@@ -5410,161 +5744,271 @@ jobs:
         flowey e 9 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build openvmm_hcl
+      run: flowey e 9 flowey_lib_common::run_cargo_build 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 2
         flowey e 9 flowey_lib_hvlite::run_cargo_build 6
         flowey e 9 flowey_lib_hvlite::build_openvmm_hcl 0
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 26
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 9 flowey_lib_hvlite::run_split_debug_info 4
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 27
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31
       shell: bash
     - name: building openhcl initrd
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 4
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 4
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 32
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33
         flowey e 9 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build igvmfilegen
-      run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 0
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 0
+      run: flowey e 9 flowey_lib_common::run_cargo_build 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 9 flowey_lib_hvlite::run_split_debug_info 9
         flowey e 9 flowey_lib_hvlite::run_cargo_build 1
         flowey e 9 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 35
       shell: bash
     - name: building igvm file
-      run: |-
-        flowey e 9 flowey_lib_hvlite::run_igvmfilegen 4
-        flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 42
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 38
+      run: flowey e 9 flowey_lib_hvlite::run_igvmfilegen 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 2
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 42
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 38
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 9 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 39
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 40
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 43
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 40
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 43
       shell: bash
     - name: unpack kernel package
       run: flowey e 9 flowey_lib_hvlite::download_openhcl_kernel_package 0
       shell: bash
     - name: building openhcl initrd
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 0
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 0
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 44
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 45
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 46
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 47
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 46
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 47
       shell: bash
     - name: building igvm file
-      run: |-
-        flowey e 9 flowey_lib_hvlite::run_igvmfilegen 0
-        flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 4
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 54
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 50
+      run: flowey e 9 flowey_lib_hvlite::run_igvmfilegen 0
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 54
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 50
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 9 flowey_lib_hvlite::run_split_debug_info 2
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 51
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 52
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 55
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 52
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 55
       shell: bash
     - name: building openhcl initrd
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 1
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 1
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 56
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 57
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 58
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 59
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 58
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 59
       shell: bash
     - name: building igvm file
-      run: |-
-        flowey e 9 flowey_lib_hvlite::run_igvmfilegen 1
-        flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 6
+      run: flowey e 9 flowey_lib_hvlite::run_igvmfilegen 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 6
       shell: bash
     - name: unpack kernel package
-      run: |-
-        flowey e 9 flowey_lib_hvlite::download_openhcl_kernel_package 1
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
+      run: flowey e 9 flowey_lib_hvlite::download_openhcl_kernel_package 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 18
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 14
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 9 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 15
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
       shell: bash
     - name: building openhcl initrd
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 3
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 3
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
       shell: bash
     - name: building igvm file
-      run: |-
-        flowey e 9 flowey_lib_hvlite::run_igvmfilegen 3
-        flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 8
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 2
+      run: flowey e 9 flowey_lib_hvlite::run_igvmfilegen 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 8
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 6
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 2
       shell: bash
     - name: split debug symbols
       run: |-
         flowey e 9 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 3
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7
       shell: bash
     - name: building openhcl initrd
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 9 flowey_lib_hvlite::build_openhcl_initrd 2
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
       shell: bash
     - name: building igvm file
+      run: flowey e 9 flowey_lib_hvlite::run_igvmfilegen 2
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_igvmfilegen 2
         flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 0
         flowey e 9 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::publish 0
       shell: bash
     - name: copying OpenHCL igvm files to artifact dir
+      run: flowey e 9 flowey_lib_common::copy_to_artifact_dir 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
+      shell: bash
+    - name: 🌼 write_into Var
       run: |-
-        flowey e 9 flowey_lib_common::copy_to_artifact_dir 1
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 25
         flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 3
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 41
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 41
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36
         flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 5
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 53
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 49
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 53
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 49
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 48
         flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 7
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12
         flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 9
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
-        flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
+      shell: bash
+    - name: 🌼 write_into Var
+      run: |-
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
         flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1
         flowey e 9 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe_extras::publish 0
@@ -5575,9 +6019,10 @@ jobs:
         flowey e 9 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build pipette
-      run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 3
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 7
+      run: flowey e 9 flowey_lib_common::run_cargo_build 3
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: split debug symbols
       run: |-
@@ -5588,9 +6033,10 @@ jobs:
         flowey e 9 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build tmk_vmm
-      run: |-
-        flowey e 9 flowey_lib_common::run_cargo_build 5
-        flowey e 9 flowey_lib_hvlite::run_cargo_build 13
+      run: flowey e 9 flowey_lib_common::run_cargo_build 5
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 9 flowey_lib_hvlite::run_cargo_build 13
       shell: bash
     - name: split debug symbols
       run: |-

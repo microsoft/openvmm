@@ -584,12 +584,13 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         F: FnOnce(T) -> U + 'static,
     {
         let this = self.clone();
-        ctx.emit_minor_rust_step("🌼 write_into Var", move |ctx| {
+        ctx.emit_rust_step("🌼 write_into Var", move |ctx| {
             let this = this.claim(ctx);
             let write_into = write_into.claim(ctx);
             move |rt| {
                 let this = rt.read(this);
                 rt.write(write_into, &f(this));
+                Ok(())
             }
         });
     }
