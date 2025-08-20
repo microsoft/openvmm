@@ -15,7 +15,7 @@ use vm_resource::kind::PciDeviceHandleKind;
 
 pub mod fault;
 
-/// A handle to an NVMe controller.
+/// A handle to a NVMe Fault controller.
 #[derive(MeshPayload)]
 pub struct NvmeControllerHandle {
     /// The subsystem ID to use when responding to controller identify queries.
@@ -51,8 +51,6 @@ impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {
     const ID: &'static str = "nvme_fault";
 }
 
-/// A controller namespace definition.
-#[derive(MeshPayload)]
 pub struct NamespaceDefinition {
     /// The namespace ID.
     pub nsid: u32,
