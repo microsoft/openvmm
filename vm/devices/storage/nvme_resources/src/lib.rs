@@ -29,7 +29,7 @@ impl ResourceId<PciDeviceHandleKind> for NvmeControllerHandle {
     const ID: &'static str = "nvme";
 }
 
-/// A handle to an NVMe controller.
+/// A handle to a NVMe fault controller.
 #[derive(MeshPayload)]
 pub struct NvmeFaultControllerHandle {
     /// The subsystem ID to use when responding to controller identify queries.
