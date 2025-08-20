@@ -398,7 +398,6 @@ impl HardwareIsolatedMemoryProtector {
     fn apply_protections_with_overlay_handling(
         &self,
         range: MemoryRange,
-        modify_permissions_bitmaps: bool,
         target_vtl: GuestVtl,
         protections: HvMapGpaFlags,
         inner: &mut MutexGuard<'_, HardwareIsolatedMemoryProtectorInner>,
@@ -430,7 +429,7 @@ impl HardwareIsolatedMemoryProtector {
             }
             // We can only reach here if the range does not contain any overlay
             // pages, so now we can apply the protections to the range.
-            self.apply_protections(range, modify_permissions_bitmaps, target_vtl, protections)?
+            self.apply_protections(range, target_vtl, protections)?
         }
 
         Ok(())
@@ -439,11 +438,10 @@ impl HardwareIsolatedMemoryProtector {
     fn apply_protections(
         &self,
         range: MemoryRange,
-        modify_permissions_bitmaps: bool,
         target_vtl: GuestVtl,
         protections: HvMapGpaFlags,
     ) -> Result<(), ApplyVtlProtectionsError> {
-        if modify_permissions_bitmaps && target_vtl == GuestVtl::Vtl0 {
+        if target_vtl == GuestVtl::Vtl0 {
             // Only permissions imposed on VTL 0 are explicitly tracked
             self.vtl0.update_permission_bitmaps(range, protections);
         }
@@ -725,16 +723,11 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             // protections directly without handling them.
             for &range in &ranges {
                 // Make sure we reset the permissions bitmaps for VTL 0.
-                self.apply_protections(
-                    range,
-                    true,
-                    GuestVtl::Vtl0,
-                    inner.default_vtl_permissions.vtl0,
-                )
-                .expect("should be able to apply default protections");
+                self.apply_protections(range, GuestVtl::Vtl0, inner.default_vtl_permissions.vtl0)
+                    .expect("should be able to apply default protections");
 
                 if let Some(vtl1_protections) = inner.default_vtl_permissions.vtl1 {
-                    self.apply_protections(range, false, GuestVtl::Vtl1, vtl1_protections)
+                    self.apply_protections(range, GuestVtl::Vtl1, vtl1_protections)
                         .expect(
                             "everything should be in a state where we can apply VTL protections",
                         );
@@ -835,7 +828,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         for range in ranges {
             self.apply_protections_with_overlay_handling(
                 range,
-                true,
                 target_vtl,
                 vtl_protections,
                 &mut inner,
@@ -898,7 +890,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         for range in ranges {
             self.apply_protections_with_overlay_handling(
                 range,
-                true,
                 target_vtl,
                 protections,
                 &mut inner,
@@ -961,13 +952,8 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         // Everything's validated, change the permissions.
         if let Some(new_perms) = new_perms {
-            self.apply_protections(
-                MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
-                false,
-                vtl,
-                new_perms,
-            )
-            .map_err(|_| HvError::OperationDenied)?;
+            self.apply_protections(MemoryRange::from_4k_gpn_range(gpn..gpn + 1), vtl, new_perms)
+                .map_err(|_| HvError::OperationDenied)?;
         }
 
         // Nothing from this point on can fail, so we can safely register the overlay page.
@@ -1019,7 +1005,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // Restore its permissions.
         self.apply_protections(
             MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
-            false,
             vtl,
             overlay_pages[index].previous_permissions,
         )
