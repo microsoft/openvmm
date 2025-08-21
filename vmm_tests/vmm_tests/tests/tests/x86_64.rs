@@ -205,6 +205,38 @@ async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
+/// VBS boot test with attestation enabled
+#[openvmm_test_no_agent(
+    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
+)]
+async fn vbs_boot_with_attestation(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let config = config.modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
+
+    let mut vm = match os_flavor {
+        OsFlavor::Windows => config.run_without_agent().await?,
+        OsFlavor::Linux => {
+            let mut vm = config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                .run_without_agent()
+                .await?;
+            // Workaround to https://github.com/microsoft/openvmm/issues/379
+            assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+            vm.backend().reset().await?;
+            vm
+        }
+        _ => unreachable!(),
+    };
+
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Basic VTL 2 pipette functionality test.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn vtl2_pipette(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {

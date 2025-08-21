@@ -59,7 +59,6 @@ use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::hypercall::ModifyHostVisibility;
-use hvdef::hypercall::VbsVmCallReportOutput;
 use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
