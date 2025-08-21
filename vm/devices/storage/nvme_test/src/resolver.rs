@@ -51,16 +51,17 @@ impl crate::QueueFault for AdminSubQueueFault {
     async fn fault_submission_queue(&self, command: Command) -> QueueFaultBehavior<Command> {
         tracing::info!("Faulting submission queue by now allowing io completion queue creation");
         let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
+        panic!("Fault submission queue function {:?}", opcode);
+
         match opcode {
-            nvme_spec::AdminOpcode::IDENTIFY => {
+            nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
                 if !self.signal.get() {
-                    panic!("Found an identify command");
-                    QueueFaultBehavior::Drop
+                    panic!("Faulting the submission queue")
                 } else {
                     QueueFaultBehavior::Default
                 }
             }
-            _ => panic!("Found a command"),
+            _ => QueueFaultBehavior::Default,
         }
     }
 
