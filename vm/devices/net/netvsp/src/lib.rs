@@ -147,11 +147,19 @@ const LINK_DELAY_DURATION: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const LINK_DELAY_DURATION: Duration = Duration::from_millis(333);
 
-#[derive(PartialEq)]
-enum CoordinatorMessage {
+#[derive(Default, PartialEq)]
+struct CoordinatorMessageUpdateType {
     /// Update guest VF state based on current availability and the guest VF state tracked by the primary channel.
     /// This includes adding the guest VF device and switching the data path.
-    UpdateGuestVfState,
+    guest_vf_state: bool,
+    /// Update the receive filter for all channels.
+    filter_state: bool,
+}
+
+#[derive(PartialEq)]
+enum CoordinatorMessage {
+    /// Update network state.
+    Update(CoordinatorMessageUpdateType),
     /// Restart endpoints and resume processing. This will also attempt to set VF and data path state to match current
     /// expectations.
     Restart,
@@ -783,7 +791,7 @@ impl PrimaryChannelState {
             tx_spread_sent: false,
             guest_link_up: true,
             pending_link_action: PendingLinkAction::Default,
-            packet_filter: rndisprot::NPROTO_PACKET_FILTER,
+            packet_filter: rndisprot::NDIS_PACKET_TYPE_NONE,
         }
     }
 
@@ -880,6 +888,7 @@ impl PrimaryChannelState {
             PendingLinkAction::Default
         };
 
+        // If saved state does not have a packet filter set, default to directed, multicast, and broadcast.
         let packet_filter = packet_filter.unwrap_or(rndisprot::NPROTO_PACKET_FILTER);
 
         Ok(Self {
@@ -1182,41 +1191,38 @@ impl VmbusDevice for Nic {
         open_request: &OpenRequest,
     ) -> Result<(), ChannelOpenError> {
         // Start the coordinator task if this is the primary channel.
-        let state = if channel_idx == 0 {
+        let (state, packet_filter) = if channel_idx == 0 {
             self.insert_coordinator(1, false);
-            WorkerState::Init(None)
+            // No rx traffic on primary channel until guest sets the packet filter.
+            (WorkerState::Init(None), rndisprot::NDIS_PACKET_TYPE_NONE)
         } else {
             self.coordinator.stop().await;
             // Get the buffers created when the primary channel was opened.
             let buffers = self.coordinator.state().unwrap().buffers.clone().unwrap();
-            WorkerState::Ready(ReadyState {
-                state: ActiveState::new(None, buffers.recv_buffer.count),
-                buffers,
-                data: ProcessingData::new(),
-            })
+            // Get the packet filter of the primary channel.
+            self.coordinator.state_mut().unwrap().workers[0]
+                .stop()
+                .await;
+            let packet_filter = self.coordinator.state().unwrap().workers[0]
+                .state()
+                .unwrap()
+                .channel
+                .packet_filter;
+            self.coordinator.state_mut().unwrap().workers[0].start();
+            (
+                WorkerState::Ready(ReadyState {
+                    state: ActiveState::new(None, buffers.recv_buffer.count),
+                    buffers,
+                    data: ProcessingData::new(),
+                }),
+                packet_filter,
+            )
         };
 
         let num_opened = self
             .adapter
             .num_sub_channels_opened
             .fetch_add(1, Ordering::SeqCst);
-
-        let packet_filter = if channel_idx == 0 {
-            // No rx traffic on primary channel until guest sets filter.
-            rndisprot::NDIS_PACKET_TYPE_NONE
-        } else {
-            // Subchannel inherits the packet filter of the primary channel.
-            // Stop the primary worker task temporarily to safely access the state.
-            let coordinator = self.coordinator.state_mut().unwrap();
-            coordinator.workers[0].stop().await;
-            let packet_filter = coordinator.workers[0]
-                .state()
-                .unwrap()
-                .channel
-                .packet_filter;
-            coordinator.workers[0].start();
-            packet_filter
-        };
 
         let r = self.insert_worker(channel_idx, open_request, state, true, packet_filter);
         if channel_idx != 0
@@ -2631,7 +2637,12 @@ impl<T: RingMem> NetChannel<T> {
             if primary.rndis_state == RndisState::Operational {
                 if self.guest_vf_is_available(Some(vfid), buffers.version, buffers.ndis_config)? {
                     primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
-                    return Ok(Some(CoordinatorMessage::UpdateGuestVfState));
+                    return Ok(Some(CoordinatorMessage::Update(
+                        CoordinatorMessageUpdateType {
+                            guest_vf_state: true,
+                            ..Default::default()
+                        },
+                    )));
                 } else if let Some(true) = primary.is_data_path_switched {
                     tracing::error!(
                         "Data path switched, but current guest negotiation does not support VTL0 VF"
@@ -2771,10 +2782,7 @@ impl<T: RingMem> NetChannel<T> {
                         // flag on inband packets and won't send a completion
                         // packet.
                         primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
-                        // restart will also add the VF based on the guest_vf_state
-                        if self.restart.is_none() {
-                            self.restart = Some(CoordinatorMessage::UpdateGuestVfState);
-                        }
+                        self.send_coordinator_update_vf();
                     } else if let Some(true) = primary.is_data_path_switched {
                         tracing::error!(
                             "Data path switched, but current guest negotiation does not support VTL0 VF"
@@ -2828,8 +2836,8 @@ impl<T: RingMem> NetChannel<T> {
                         if restart_endpoint {
                             self.restart = Some(CoordinatorMessage::Restart);
                         }
-                        if let Some(pf) = packet_filter {
-                            self.packet_filter = pf;
+                        if packet_filter.is_some() {
+                            self.send_coordinator_update_filter();
                         }
                         rndisprot::STATUS_SUCCESS
                     }
@@ -3013,6 +3021,31 @@ impl<T: RingMem> NetChannel<T> {
             }
         }
         Ok(())
+    }
+
+    fn send_coordinator_update_message(&mut self, guest_vf: bool, packet_filter: bool) {
+        if self.restart.is_none() {
+            self.restart = Some(CoordinatorMessage::Update(CoordinatorMessageUpdateType {
+                guest_vf_state: guest_vf,
+                filter_state: packet_filter,
+            }));
+        } else if let Some(CoordinatorMessage::Restart) = self.restart {
+            // If a restart message is pending, do nothing.
+            // A restart will try to switch the data path based on primary.guest_vf_state.
+            // A restart will apply packet filter changes.
+        } else if let Some(CoordinatorMessage::Update(ref mut update)) = self.restart {
+            // Add the new update to the existing message.
+            update.guest_vf_state |= guest_vf;
+            update.filter_state |= packet_filter;
+        }
+    }
+
+    fn send_coordinator_update_vf(&mut self) {
+        self.send_coordinator_update_message(true, false);
+    }
+
+    fn send_coordinator_update_filter(&mut self) {
+        self.send_coordinator_update_message(false, true);
     }
 }
 
@@ -3338,7 +3371,7 @@ impl Adapter {
         let mut packet_filter = None;
         match oid {
             rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER => {
-                packet_filter = Some(self.oid_set_packet_filter(reader, primary)?);
+                packet_filter = self.oid_set_packet_filter(reader, primary)?;
             }
             rndisprot::Oid::OID_TCP_OFFLOAD_PARAMETERS => {
                 self.oid_set_offload_parameters(reader, primary)?;
@@ -3427,11 +3460,14 @@ impl Adapter {
         &self,
         reader: impl MemoryRead + Clone,
         primary: &mut PrimaryChannelState,
-    ) -> Result<u32, OidError> {
+    ) -> Result<Option<u32>, OidError> {
         let filter: rndisprot::RndisPacketFilterOidValue = reader.clone().read_plain()?;
-        primary.packet_filter = filter;
-        tracing::debug!(filter, "set packet filter");
-        Ok(primary.packet_filter)
+        if filter != primary.packet_filter {
+            primary.packet_filter = filter;
+            tracing::debug!(filter, "set packet filter");
+            return Ok(Some(primary.packet_filter));
+        }
+        Ok(None)
     }
 
     fn oid_set_offload_parameters(
@@ -3924,8 +3960,22 @@ impl Coordinator {
                     }
                     sleep_duration = None;
                 }
-                Message::Internal(CoordinatorMessage::UpdateGuestVfState) => {
-                    self.update_guest_vf_state(state).await;
+                Message::Internal(CoordinatorMessage::Update(update_type)) => {
+                    if update_type.filter_state {
+                        self.stop_workers().await;
+                        if let Some(packet_filter) = self.primary_mut().map(|p| p.packet_filter) {
+                            self.workers.iter_mut().for_each(|worker| {
+                                if let Some(state) = worker.state_mut() {
+                                    state.channel.packet_filter = packet_filter;
+                                }
+                            });
+                        }
+                        self.restart = true; // Restart the workers
+                    }
+
+                    if update_type.guest_vf_state {
+                        self.update_guest_vf_state(state).await;
+                    }
                 }
                 Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
                 Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
@@ -4368,6 +4418,14 @@ impl Coordinator {
             self.num_queues = num_queues;
         }
 
+        let primary_packet_filter = primary_worker
+            .get()
+            .1
+            .as_ref()
+            .unwrap()
+            .channel
+            .packet_filter;
+
         // Provide the queue and receive buffer ranges for each worker.
         for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
             worker.task_mut().queue_state = Some(QueueState {
@@ -4375,6 +4433,10 @@ impl Coordinator {
                 target_vp_set: false,
                 rx_buffer_range: rx_buffer,
             });
+            // Update the receive packet filter for the subchannel worker.
+            if let Some(worker) = worker.get_mut().1.as_mut() {
+                worker.channel.packet_filter = primary_packet_filter;
+            }
         }
 
         Ok(())
@@ -4983,7 +5045,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         epqueue: &mut dyn net_backend::Queue,
     ) -> Result<bool, WorkerError> {
         if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
-            tracing::debug!(
+            tracing::trace!(
                 packet_filter = self.packet_filter,
                 "rx packet not processed"
             );
@@ -5131,10 +5193,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             _ => (),
         };
         if queue_switch_operation {
-            // A restart will also try to switch the data path based on primary.guest_vf_state.
-            if self.restart.is_none() {
-                self.restart = Some(CoordinatorMessage::UpdateGuestVfState)
-            };
+            self.send_coordinator_update_vf();
         } else {
             self.send_completion(transaction_id, &[])?;
         }

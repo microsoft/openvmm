@@ -3882,6 +3882,33 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
         .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     let rndis_parser = channel.rndis_message_parser();
+
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(_) => (),
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("association packet");
+
     let idx = 0u32;
     let sent_data = 123u8;
 
@@ -3906,7 +3933,7 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
         .send_rndis_control_message(
             rndisprot::MESSAGE_TYPE_SET_MSG,
             rndisprot::SetRequest {
-                request_id: 0,
+                request_id: 456,
                 oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
                 information_buffer_length: size_of::<u32>() as u32,
                 information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
@@ -3921,7 +3948,7 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
         .await
         .unwrap();
 
-    assert_eq!(set_complete.request_id, 0);
+    assert_eq!(set_complete.request_id, 456);
     assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
 
     // Send a packet
@@ -3936,13 +3963,13 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
 
     // Check the received packet content
     channel
-        .read_subchannel_with(idx, |packet| {
-            let IncomingPacket::Data(packet) = packet else {
-                panic!("Unexpected packet");
-            };
-            let (_, external_ranges) = rndis_parser.parse_data_message(packet);
-            let data: u8 = rndis_parser.get_data_packet_content(&external_ranges);
-            assert_eq!(sent_data, data);
+        .read_subchannel_with(idx, |packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let (_, external_ranges) = rndis_parser.parse_data_message(packet);
+                let data: u8 = rndis_parser.get_data_packet_content(&external_ranges);
+                assert_eq!(sent_data, data);
+            }
+            _ => panic!("Unexpected packet"),
         })
         .await
         .expect("Data packet");
@@ -3952,7 +3979,7 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
         .send_rndis_control_message(
             rndisprot::MESSAGE_TYPE_SET_MSG,
             rndisprot::SetRequest {
-                request_id: 0,
+                request_id: 789,
                 oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
                 information_buffer_length: size_of::<u32>() as u32,
                 information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
@@ -3967,7 +3994,7 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
         .await
         .unwrap();
 
-    assert_eq!(set_complete.request_id, 0);
+    assert_eq!(set_complete.request_id, 789);
     assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
 
     // Test sending packets with the filter set to None.
@@ -4480,29 +4507,6 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
         .await
         .expect("association packet");
 
-    // Set packet filter
-    channel
-        .send_rndis_control_message(
-            rndisprot::MESSAGE_TYPE_SET_MSG,
-            rndisprot::SetRequest {
-                request_id: 0,
-                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
-                information_buffer_length: size_of::<u32>() as u32,
-                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
-                device_vc_handle: 0,
-            },
-            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
-        )
-        .await;
-
-    let set_complete: rndisprot::SetComplete = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
-        .await
-        .unwrap();
-
-    assert_eq!(set_complete.request_id, 0);
-    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
-
     let message = NvspMessage {
         header: protocol::MessageHeader {
             message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
@@ -4573,6 +4577,29 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
             })
             .await;
     }
+
+    // Set packet filter
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, 0);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
 
     // Receive a packet on every queue.
     {
