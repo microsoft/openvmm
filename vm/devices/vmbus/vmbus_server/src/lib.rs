@@ -417,6 +417,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
     /// If not set, the default is 100ms. If set to `None`, no interrupt will be triggered.
     pub fn channel_unstick_delay(mut self, delay: Option<Duration>) -> Self {
         self.channel_unstick_delay = delay;
+        self
     }
 
     pub fn dma_client(mut self, dma_client: Option<Arc<dyn DmaClient>>) -> Self {

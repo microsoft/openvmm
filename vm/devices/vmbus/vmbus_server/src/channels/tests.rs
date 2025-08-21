@@ -8,6 +8,7 @@ use guid::Guid;
 use protocol::VmbusMessage;
 use std::collections::VecDeque;
 use std::sync::mpsc;
+use std::u32;
 use test_with_tracing::test;
 use vmbus_core::protocol::TargetInfo;
 use zerocopy::FromBytes;
@@ -450,7 +451,7 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
         .unwrap();
 
     let channel_id = ChannelId(1);
-    notifier.check_messages(&[
+    notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
             interface_id,
             instance_id,
@@ -1051,7 +1052,7 @@ fn test_save_restore_offers_not_sent() {
 
     // When the guest requests offers, they should be all be sent.
     env.c().handle_request_offers().unwrap();
-    env.notifier.check_messages(&[
+    env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
             interface_id: Guid {
                 data1: 1,
@@ -1497,7 +1498,7 @@ fn test_mnf_channel() {
     env.c().handle_request_offers().unwrap();
     env.notifier
         .check_messages(make_messages(&expected_channels));
-    env.c().reset();
+    env.reset();
 
     // If the guest sends monitor pages, but the server does not allow it, the monitor ID is
     // still not sent.
@@ -1506,7 +1507,7 @@ fn test_mnf_channel() {
     env.c().handle_request_offers().unwrap();
     env.notifier
         .check_messages(make_messages(&expected_channels));
-    env.c().reset();
+    env.reset();
 
     // Now we connect with regular MNF support, and the monitor IDs are sent.
     env.server.set_require_server_allocated_mnf(false);
@@ -1540,7 +1541,7 @@ fn test_channel_id_order() {
     env.connect(Version::Win10, FeatureFlags::new());
     env.c().handle_request_offers().unwrap();
 
-    env.notifier.check_messages(&[
+    env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
             interface_id: Guid {
                 data1: 3,
@@ -2073,9 +2074,9 @@ impl TestNotifier {
         T::read_from_prefix(data).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
-    fn check_messages(&mut self, messages: &[OutgoingMessage]) {
+    fn check_messages(&mut self, messages: impl IntoIterator<Item = OutgoingMessage>) {
         let messages: Vec<_> = messages
-            .iter()
+            .into_iter()
             .map(|m| (m.clone(), MessageTarget::Default))
             .collect();
         assert_eq!(self.messages, messages.as_slice());
@@ -2431,6 +2432,18 @@ impl TestEnv {
 
     fn next_action(&mut self) -> ModifyConnectionRequest {
         self.notifier.next_action()
+    }
+
+    fn reset(&mut self) {
+        self.c().reset();
+        assert!(self.notifier.next_action().version.is_none());
+        self.c()
+            .complete_modify_connection(ModifyConnectionResponse::Supported(
+                protocol::ConnectionState::SUCCESSFUL,
+                FeatureFlags::from_bits(u32::MAX),
+            ));
+
+        assert!(self.notifier.is_reset());
     }
 }
 
