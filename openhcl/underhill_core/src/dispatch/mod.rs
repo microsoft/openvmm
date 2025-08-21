@@ -40,7 +40,6 @@ use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
-use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
@@ -53,7 +52,6 @@ use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -247,7 +245,7 @@ impl LoadedVm {
             is_hibernate: bool,
         }
 
-        let mut shutdown_response: Option<PendingShutdown> = None;
+        let mut pending_shutdown_response: Option<PendingShutdown> = None;
 
         let state = loop {
             enum Event<T> {
@@ -258,7 +256,7 @@ impl LoadedVm {
                 VtlCrash(VtlCrash),
                 ServicingRequest(GuestSaveRequest),
                 ShutdownRequest(Rpc<ShutdownParams, ShutdownResult>),
-                ShutdownResponse(Result<ShutdownResult, RpcError<Infallible>>),
+                ShutdownResponse(<PendingRpc<ShutdownResult> as Future>::Output),
             }
 
             let event: Event<T> = futures::select! { // merge semantics
@@ -275,10 +273,10 @@ impl LoadedVm {
                     recv.select_next_some().await
                 }.fuse() => Event::ShutdownRequest(message),
                 message = async {
-                    if let Some(PendingShutdown{guest_response, ..}) = &mut shutdown_response {
+                    if let Some(PendingShutdown{guest_response, ..}) = &mut pending_shutdown_response {
                         guest_response.await
                     } else {
-                        std::future::pending::<Result<ShutdownResult, RpcError>>().await
+                        std::future::pending().await
                     }
                 }.fuse() => Event::ShutdownResponse(message),
             };
@@ -405,7 +403,7 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    if shutdown_response.is_some() {
+                    if pending_shutdown_response.is_some() {
                         rpc.complete(ShutdownResult::AlreadyInProgress);
                         continue;
                     }
@@ -417,7 +415,7 @@ impl LoadedVm {
                     let (_, send_guest) =
                         self.shutdown_relay.as_mut().expect("active shutdown_relay");
                     tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
-                    shutdown_response = Some(PendingShutdown {
+                    pending_shutdown_response = Some(PendingShutdown {
                         guest_response: send_guest.call(ShutdownRpc::Shutdown, msg),
                         send_result,
                         is_hibernate,
@@ -432,14 +430,14 @@ impl LoadedVm {
                                 error = &err as &dyn std::error::Error,
                                 "Failed to relay shutdown notification to guest"
                             );
-                            ShutdownResult::Failed(0x80000001)
+                            ShutdownResult::Failed(0x80004005)
                         }
                     };
                     let PendingShutdown {
                         send_result,
                         is_hibernate,
                         ..
-                    } = shutdown_response
+                    } = pending_shutdown_response
                         .take()
                         .expect("no pending shutdown response");
                     if !matches!(response, ShutdownResult::Ok) {

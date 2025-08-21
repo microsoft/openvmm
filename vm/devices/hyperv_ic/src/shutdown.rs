@@ -216,10 +216,10 @@ impl ShutdownChannel {
                 }
                 ReadyState::WaitShutdown => {
                     let (status, _) = self.pipe.read_response().await?;
-                    let result = if status == Status::SUCCESS.0 {
+                    let result = if status == Status::SUCCESS {
                         ShutdownResult::Ok
                     } else {
-                        ShutdownResult::Failed(status)
+                        ShutdownResult::Failed(status.0)
                     };
                     if let Some(send) = self.pending_shutdown.take() {
                         send.complete(result);

@@ -372,10 +372,10 @@ impl KvpChannel {
                 }
                 ReadyState::WaitingResponse(_) => {
                     let (status, response) = self.pipe.read_response().await?;
-                    let r = if status == Status::SUCCESS.0 {
+                    let r = if status == Status::SUCCESS {
                         Ok(())
                     } else {
-                        Err(RequestError(Status(status)))
+                        Err(RequestError(status))
                     };
                     let ReadyState::WaitingResponse(rpc) =
                         std::mem::replace(state, ReadyState::Ready)
