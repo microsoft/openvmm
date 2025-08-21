@@ -8,7 +8,7 @@
                 "snp": {
                     "shared_gpa_boundary_bits": 46,
                     "policy": 196639,
-                    "enable_debug": true,
+                    "enable_debug": false,
                     "injection_type": "normal"
                 }
             },
@@ -26,7 +26,7 @@
             "max_vtl": 2,
             "isolation_type": {
                 "tdx": {
-                    "enable_debug": true,
+                    "enable_debug": false,
                     "sept_ve_disable": true
                 }
             },
@@ -44,7 +44,7 @@
             "max_vtl": 2,
             "isolation_type": {
                 "vbs": {
-                    "enable_debug": true
+                    "enable_debug": false
                 }
             },
             "image": {
