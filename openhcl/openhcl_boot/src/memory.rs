@@ -5,6 +5,7 @@
 
 use crate::host_params::MAX_VTL2_RAM_RANGES;
 use arrayvec::ArrayVec;
+use core::num::NonZeroU64;
 use host_fdt_parser::MemoryEntry;
 #[cfg(test)]
 use igvm_defs::MemoryMapEntryType;
@@ -22,6 +23,7 @@ pub const MAX_RESERVED_MEM_RANGES: usize = 6 + sidecar_defs::MAX_NODES;
 const MAX_MEMORY_RANGES: usize = MAX_VTL2_RAM_RANGES + MAX_RESERVED_MEM_RANGES;
 
 /// Maximum number of ranges in the address space manager.
+/// For simplicity, make it twice the memory and reserved ranges.
 const MAX_ADDRESS_RANGES: usize = MAX_MEMORY_RANGES * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,20 +298,20 @@ impl AddressSpaceManager {
         allocated
     }
 
-    /// Allocate a new range of memory with the given type and policy. None is
-    /// returned if the allocation was unable to be satisfied.
+    /// Allocate a new range of memory of size `page_count` with the given type
+    /// and policy. `None` is returned if the allocation was unable to be
+    /// satisfied.
     ///
     /// `required_vnode` if `Some(u32)` is the vnode to allocate from. If there
-    /// are no free ranges left in that vnode, None is returned to the caller.
+    /// are no free ranges left in that vnode, `None` is returned.
     pub fn allocate(
         &mut self,
         required_vnode: Option<u32>,
-        len: u64,
+        page_count: NonZeroU64,
         allocation_type: AllocationType,
         allocation_policy: AllocationPolicy,
     ) -> Option<AllocatedRange> {
-        // len must be page aligned
-        assert_eq!(len % PAGE_SIZE_4K, 0);
+        let len_bytes = page_count.get() * PAGE_SIZE_4K;
 
         // We only support a single VTL2 pool range, today.
         if allocation_type == AllocationType::GpaPool && self.vtl2_pool.is_some() {
@@ -337,15 +339,15 @@ impl AddressSpaceManager {
         let index = {
             let iter = self.address_space.iter().enumerate();
             match allocation_policy {
-                AllocationPolicy::LowMemory => find_index(iter, required_vnode, len),
-                AllocationPolicy::HighMemory => find_index(iter.rev(), required_vnode, len),
+                AllocationPolicy::LowMemory => find_index(iter, required_vnode, len_bytes),
+                AllocationPolicy::HighMemory => find_index(iter.rev(), required_vnode, len_bytes),
             }
         };
 
         index.map(|index| {
             self.allocate_range(
                 index,
-                len,
+                len_bytes,
                 match allocation_type {
                     AllocationType::GpaPool => {
                         AddressUsage::Reserved(ReservedMemoryType::Vtl2GpaPool)
@@ -428,7 +430,7 @@ mod tests {
         let range = address_space
             .allocate(
                 None,
-                0x1000,
+                1.try_into().unwrap(),
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
             )
@@ -438,7 +440,7 @@ mod tests {
         let range = address_space
             .allocate(
                 None,
-                0x2000,
+                2.try_into().unwrap(),
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
             )
@@ -448,7 +450,7 @@ mod tests {
         let range = address_space
             .allocate(
                 None,
-                0x3000,
+                3.try_into().unwrap(),
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
             )
@@ -458,7 +460,7 @@ mod tests {
         let range = address_space
             .allocate(
                 None,
-                0x1000,
+                1.try_into().unwrap(),
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
             )
@@ -510,7 +512,7 @@ mod tests {
         let range = address_space
             .allocate(
                 Some(0),
-                0x1000,
+                1.try_into().unwrap(),
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
             )
@@ -521,7 +523,7 @@ mod tests {
         let range = address_space
             .allocate(
                 Some(0),
-                0x2000,
+                2.try_into().unwrap(),
                 AllocationType::SidecarNode,
                 AllocationPolicy::HighMemory,
             )
@@ -532,7 +534,7 @@ mod tests {
         let range = address_space
             .allocate(
                 Some(2),
-                0x3000,
+                3.try_into().unwrap(),
                 AllocationType::GpaPool,
                 AllocationPolicy::HighMemory,
             )
@@ -544,7 +546,7 @@ mod tests {
         let range = address_space
             .allocate(
                 Some(3),
-                0x20000,
+                0x20.try_into().unwrap(),
                 AllocationType::SidecarNode,
                 AllocationPolicy::HighMemory,
             )
@@ -554,7 +556,7 @@ mod tests {
 
         let range = address_space.allocate(
             Some(3),
-            0x1000,
+            1.try_into().unwrap(),
             AllocationType::SidecarNode,
             AllocationPolicy::HighMemory,
         );

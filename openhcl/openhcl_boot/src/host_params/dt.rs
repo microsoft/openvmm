@@ -24,7 +24,6 @@ use core::fmt::Write;
 use host_fdt_parser::MemoryAllocationMode;
 use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::ParsedDeviceTree;
-use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
 use memory_range::MemoryRange;
@@ -486,11 +485,10 @@ impl PartitionInfo {
         if vtl2_gpa_pool_size != 0 {
             // Reserve the specified number of pages for the pool. Use the used
             // ranges to figure out which VTL2 memory is free to allocate from.
-            let pool_size_bytes = vtl2_gpa_pool_size * HV_PAGE_SIZE;
 
             match address_space.allocate(
                 None,
-                pool_size_bytes,
+                vtl2_gpa_pool_size.try_into().expect("gpa pool is nonzero"),
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
             ) {
@@ -498,7 +496,7 @@ impl PartitionInfo {
                     log!("allocated VTL2 pool at {:#x?}", pool.range);
                 }
                 None => {
-                    panic!("failed to allocate VTL2 pool of size {pool_size_bytes:#x} bytes");
+                    panic!("failed to allocate VTL2 pool of size {vtl2_gpa_pool_size:#x} pages");
                 }
             };
         }
