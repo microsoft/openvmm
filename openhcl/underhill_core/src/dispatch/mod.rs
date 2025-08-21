@@ -38,6 +38,7 @@ use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
+use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerRpc;
@@ -51,6 +52,7 @@ use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -236,6 +238,14 @@ impl LoadedVm {
             .await
             .expect("no failure");
 
+        struct PendingShutdown {
+            guest_response: PendingRpc<ShutdownResult>,
+            send_result: Rpc<(), ShutdownResult>,
+            is_hibernate: bool,
+        }
+
+        let mut pending_shutdown_response: Option<PendingShutdown> = None;
+
         let state = loop {
             enum Event<T> {
                 WorkerRpc(WorkerRpc<T>),
@@ -245,6 +255,7 @@ impl LoadedVm {
                 VtlCrash(VtlCrash),
                 ServicingRequest(GuestSaveRequest),
                 ShutdownRequest(Rpc<ShutdownParams, ShutdownResult>),
+                ShutdownResponse(<PendingRpc<ShutdownResult> as Future>::Output),
             }
 
             let event: Event<T> = futures::select! { // merge semantics
@@ -260,6 +271,13 @@ impl LoadedVm {
                     let (recv, _) = self.shutdown_relay.as_mut().unwrap();
                     recv.select_next_some().await
                 }.fuse() => Event::ShutdownRequest(message),
+                message = async {
+                    if let Some(PendingShutdown{guest_response, ..}) = &mut pending_shutdown_response {
+                        guest_response.await
+                    } else {
+                        std::future::pending().await
+                    }
+                }.fuse() => Event::ShutdownResponse(message),
             };
 
             match event {
@@ -384,31 +402,50 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    rpc.handle(async |msg| {
-                        if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
-                            self.handle_hibernate_request(false).await;
+                    if pending_shutdown_response.is_some() {
+                        rpc.complete(ShutdownResult::AlreadyInProgress);
+                        continue;
+                    }
+                    let (msg, send_result) = rpc.split();
+                    let is_hibernate = matches!(msg.shutdown_type, ShutdownType::Hibernate);
+                    if is_hibernate {
+                        self.handle_hibernate_request(false).await;
+                    }
+                    let (_, send_guest) =
+                        self.shutdown_relay.as_mut().expect("active shutdown_relay");
+                    tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
+                    pending_shutdown_response = Some(PendingShutdown {
+                        guest_response: send_guest.call(ShutdownRpc::Shutdown, msg),
+                        send_result,
+                        is_hibernate,
+                    });
+                }
+                Event::ShutdownResponse(result) => {
+                    let response = match result {
+                        Ok(result) => result,
+                        Err(err) => {
+                            tracing::error!(
+                                CVM_ALLOWED,
+                                error = &err as &dyn std::error::Error,
+                                "Failed to relay shutdown notification to guest"
+                            );
+                            ShutdownResult::Failed(0x80004005)
                         }
-                        let (_, send_guest) =
-                            self.shutdown_relay.as_mut().expect("active shutdown_relay");
-                        tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
-                        let result = match send_guest.call(ShutdownRpc::Shutdown, msg).await {
-                            Ok(result) => result,
-                            Err(err) => {
-                                tracing::error!(
-                                    CVM_ALLOWED,
-                                    error = &err as &dyn std::error::Error,
-                                    "Failed to relay shutdown notification to guest"
-                                );
-                                ShutdownResult::Failed(0x80000001)
-                            }
-                        };
-                        if !matches!(result, ShutdownResult::Ok) {
-                            tracing::warn!(CVM_ALLOWED, ?result, "Shutdown request failed");
+                    };
+                    let PendingShutdown {
+                        send_result,
+                        is_hibernate,
+                        ..
+                    } = pending_shutdown_response
+                        .take()
+                        .expect("no pending shutdown response");
+                    if !matches!(response, ShutdownResult::Ok) {
+                        tracing::warn!(CVM_ALLOWED, ?response, "Shutdown request failed");
+                        if is_hibernate {
                             self.handle_hibernate_request(true).await;
                         }
-                        result
-                    })
-                    .await
+                    }
+                    send_result.complete(response);
                 }
                 Event::VtlCrash(vtl_crash) => self.notify_of_vtl_crash(vtl_crash),
             }
