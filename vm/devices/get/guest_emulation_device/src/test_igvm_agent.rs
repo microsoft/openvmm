@@ -3,7 +3,12 @@
 
 //! Test IGVM Agent
 //!
-//! This module contains tests for the IGVM agent's functionality.
+//! This module contains a test version of the IGVM agent for handling
+//! attestation requests in VMM tests.
+
+//! NOTE: This is a test version and should not be used in production.
+//! The crates (`rsa`, `sha1`, and `aes_kw`) for crypto operations are *exclusive*
+//! for this module to run on Windows platform required by VMM tests.
 
 use aes_kw::KekAes256;
 use base64::Engine;
@@ -52,6 +57,10 @@ pub(crate) enum WrappedKeyError {
     RsaEncryptionError(#[source] rsa::Error),
     #[error("JSON serialization error")]
     JsonSerializeError(#[source] serde_json::Error),
+    #[error("DES key not initialized")]
+    DesKeyNotInitialized,
+    #[error("Secret key not initialized")]
+    SecretKeyNotInitialized,
 }
 
 #[derive(Debug, Error)]
@@ -62,6 +71,10 @@ pub(crate) enum KeyReleaseError {
     MissingTransferKeyInRuntimeClaims,
     #[error("failed to convert JWK RSA key")]
     ConvertJwkRsaFailed(#[source] rsa::Error),
+    #[error("Secret key not initialized")]
+    SecretKeyNotInitialized,
+    #[error("failed to convert RSA key to PKCS8 format")]
+    RsaToPkcs8Error(#[source] rsa::pkcs8::Error),
     #[error("AES key wrap error")]
     AesKeyWrapError(aes_kw::Error),
     #[error("RSA encryption error")]
@@ -98,9 +111,7 @@ impl TestIgvmAgent {
         request_bytes: &[u8],
         test_config: Option<&IgvmAttestTestConfig>,
     ) -> Result<(Vec<u8>, u32), Error> {
-        self.update_igvm_attest_state(test_config)?;
-
-        tracing::info!(state = ?self.state, test_config = ?test_config, "Handle IGVM Attest request");
+        tracing::info!(state = ?self.state, test_config = ?test_config, "Test IGVM agent");
 
         let request = IgvmAttestRequest::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
@@ -305,13 +316,13 @@ impl TestIgvmAgent {
         let des_key = if let Some(key) = self.des_key {
             key
         } else {
-            panic!("DES key must be initialized");
+            return Err(WrappedKeyError::DesKeyNotInitialized);
         };
 
         let secret_key = self
             .secret_key
             .as_ref()
-            .expect("secret key must be initialized");
+            .ok_or(WrappedKeyError::SecretKeyNotInitialized)?;
 
         // Encrypt the DES key using RSA-OAEP
         let mut rng = OsRng;
@@ -409,7 +420,7 @@ impl TestIgvmAgent {
         let secret_key = self
             .secret_key
             .as_ref()
-            .expect("secret key must be initialized");
+            .ok_or(KeyReleaseError::SecretKeyNotInitialized)?;
         let mut rng = OsRng;
 
         // Generate or reuse the Key Encryption Key (KEK) for AES-KW
@@ -419,7 +430,12 @@ impl TestIgvmAgent {
 
         // Wrap the target RSA key using AES-KW - pad to expected 256 bytes
         let wrapped_key = kek
-            .wrap_with_padding_vec(secret_key.to_pkcs8_der().unwrap().as_bytes())
+            .wrap_with_padding_vec(
+                secret_key
+                    .to_pkcs8_der()
+                    .map_err(KeyReleaseError::RsaToPkcs8Error)?
+                    .as_bytes(),
+            )
             .map_err(KeyReleaseError::AesKeyWrapError)?;
 
         // Encrypt the KEK using RSA-OAEP

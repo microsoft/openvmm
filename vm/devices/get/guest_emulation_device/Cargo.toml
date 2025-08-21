@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["test_igvm_agent"]
 test_utilities = ["dep:disklayer_ram"]
 test_igvm_agent = ["dep:aes-kw", "dep:base64", "dep:sha1", "dep:sha2", "dep:rsa"]
 

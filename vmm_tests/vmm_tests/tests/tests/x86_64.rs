@@ -74,7 +74,7 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 
 /// Test AK cert is persistent across boots on Linux.
 // TODO: Add in-guest TPM tests for Windows as we currently
-// do have an easy way to interact with TPM without a private
+// do not have an easy way to interact with TPM without a private
 // or custom tool.
 #[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
 async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
@@ -123,7 +123,7 @@ async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
 
 /// Test AK cert retry logic on Linux.
 // TODO: Add in-guest TPM tests for Windows as we currently
-// do have an easy way to interact with TPM without a private
+// do not have an easy way to interact with TPM without a private
 // or custom tool.
 #[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
 async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
