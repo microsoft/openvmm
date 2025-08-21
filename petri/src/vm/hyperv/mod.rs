@@ -60,6 +60,7 @@ pub struct HyperVPetriRuntime {
     log_tasks: Vec<Task<anyhow::Result<()>>>,
     temp_dir: tempfile::TempDir,
     is_openhcl: bool,
+    is_isolated: bool,
     driver: DefaultDriver,
 }
 
@@ -393,6 +394,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             log_tasks,
             temp_dir,
             is_openhcl: openhcl_config.is_some(),
+            is_isolated: firmware.isolation().is_some(),
             driver: driver.clone(),
         })
     }
@@ -492,7 +494,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 
     fn take_framebuffer_access(&mut self) -> Option<HyperVFramebufferAccess> {
-        Some(HyperVFramebufferAccess {
+        (!self.is_isolated).then(|| HyperVFramebufferAccess {
             vm: Arc::downgrade(&self.vm),
         })
     }

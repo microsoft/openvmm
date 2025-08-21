@@ -3754,6 +3754,7 @@ mod tests {
             TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper {})),
             None,
             None,
+            false,
         )
         .await
         .unwrap();

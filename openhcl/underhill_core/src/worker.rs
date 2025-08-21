@@ -295,6 +295,8 @@ pub struct UnderhillEnvCfg {
     pub disable_uefi_frontpage: bool,
     /// Guest state encryption policy
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+    /// Attempt to renew the AK cert
+    pub attempt_ak_cert_callback: Option<bool>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1197,6 +1199,17 @@ async fn new_underhill_vm(
         }
     }
 
+    let management_vtl_features = {
+        let mut features = dps.general.management_vtl_features;
+        if let Some(value) = env_cfg.attempt_ak_cert_callback {
+            tracing::info!("using attempt_ak_cert_callback={value} from cmdline");
+            features.set_control_ak_cert_provisioning(true);
+            features.set_attempt_ak_cert_callback(value);
+        }
+        features
+    };
+    tracing::info!(management_vtl_features = management_vtl_features.into_bits());
+
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
         crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
@@ -1644,11 +1657,14 @@ async fn new_underhill_vm(
     // use the encryption policy from the command line if it is provided
     let guest_state_encryption_policy = env_cfg
         .guest_state_encryption_policy
-        .map(|p| match p {
-            GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
-            GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
-            GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
-            GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+        .map(|p| {
+            tracing::info!("using guest state encryption policy from command line");
+            match p {
+                GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
+                GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
+                GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
+                GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+            }
         })
         .unwrap_or(dps.general.guest_state_encryption_policy);
 
@@ -1692,9 +1708,7 @@ async fn new_underhill_vm(
                 suppress_attestation,
                 early_init_driver,
                 guest_state_encryption_policy,
-                dps.general
-                    .management_vtl_features
-                    .strict_encryption_policy(),
+                management_vtl_features.strict_encryption_policy(),
             )
             .instrument(tracing::info_span!(
                 "initialize_platform_security",
@@ -2536,10 +2550,17 @@ async fn new_underhill_vm(
             )
             .into_resource();
 
-            if !matches!(attestation_type, AttestationType::Host) {
-                TpmAkCertTypeResource::HwAttested(request_ak_cert)
-            } else {
-                TpmAkCertTypeResource::Trusted(request_ak_cert)
+            match attestation_type {
+                AttestationType::Snp | AttestationType::Tdx => {
+                    TpmAkCertTypeResource::HwAttested(request_ak_cert)
+                }
+                AttestationType::Host
+                    if management_vtl_features.control_ak_cert_provisioning()
+                        && management_vtl_features.attempt_ak_cert_callback() =>
+                {
+                    TpmAkCertTypeResource::Trusted(request_ak_cert)
+                }
+                AttestationType::Host => TpmAkCertTypeResource::TrustedPreProvisionedOnly,
             }
         };
 
@@ -2561,6 +2582,7 @@ async fn new_underhill_vm(
                 register_layout,
                 guest_secret_key: platform_attestation_data.guest_secret_key,
                 logger: Some(GetTpmLoggerHandle.into_resource()),
+                is_confidential_vm: isolation.is_isolated(),
             }
             .into_resource(),
         });
