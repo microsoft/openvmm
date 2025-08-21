@@ -6,9 +6,10 @@
 //! This module contains a test version of the IGVM agent for handling
 //! attestation requests in VMM tests.
 
-//! NOTE: This is a test version and should not be used in production.
-//! The crates (`rsa`, `sha1`, and `aes_kw`) for crypto operations are *exclusive*
-//! for this module to run on Windows platform required by VMM tests.
+//! NOTE: This is a test implementation and should not be used in production.
+//! The cryptographic crates (`rsa`, `sha1`, and `aes_kw`) are not vetted
+//! for production use and are *exclusively* for this test module on the
+//! Windows platform.
 
 use aes_kw::KekAes256;
 use base64::Engine;

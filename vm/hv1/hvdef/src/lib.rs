@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+pub mod vbs;
+
 use bitfield_struct::bitfield;
 use core::fmt::Debug;
 use core::mem::size_of;

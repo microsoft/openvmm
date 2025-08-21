@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! VBS (Virtualization-Based Security) attestation report structures.
+
 use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;

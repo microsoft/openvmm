@@ -879,19 +879,22 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             Err(Error::InvalidIgvmAttestRequest)?
         }
 
-        #[cfg(feature = "test_igvm_agent")]
-        let (response_payload, length) = state
-            .igvm_agent
-            .handle_request(
-                &request.report[..request.report_length as usize],
-                state.igvm_attest_test_config.as_ref(),
-            )
-            .map_err(Error::TestIgvmAgent)?;
-        #[cfg(not(feature = "test_igvm_agent"))]
-        let (response_payload, length) = {
-            tracing::warn!("Test IGVM agent feature not enabled, returning empty response");
-            ([], 0)
-        };
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "test_igvm_agent")] {
+                let (response_payload, length) = state
+                    .igvm_agent
+                    .handle_request(
+                        &request.report[..request.report_length as usize],
+                    state.igvm_attest_test_config.as_ref(),
+                )
+                .map_err(Error::TestIgvmAgent)?;
+            } else {
+                let (response_payload, length) = {
+                    tracing::warn!("Test IGVM agent feature not enabled, returning empty response");
+                    ([], 0)
+                };
+            }
+        }
 
         // Write the response payload to the guest's shared memory
         self.gm

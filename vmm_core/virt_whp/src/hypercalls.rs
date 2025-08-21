@@ -693,10 +693,10 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
 
 impl<T: CpuIo> hv1_hypercall::VbsVmCallReport for WhpHypercallExit<'_, '_, T> {
     fn vbs_vm_call_report(&self, _report_data: &[u8]) -> hvdef::HvResult<VbsVmCallReportOutput> {
-        // For now, we return a dummy report filled with 0xFFs.
+        // For now, we return a dummy report.
         // TODO: Implement actual VBS VM call report generation based on report_data.
         Ok(VbsVmCallReportOutput {
-            report: [0xFFu8; hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE],
+            report: [0xcdu8; hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE],
         })
     }
 }

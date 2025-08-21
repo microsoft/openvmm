@@ -1563,11 +1563,18 @@ impl MshvHvcall {
     }
 
     /// Request a VBS VM report from the host VSM.
+    ///
+    /// # Arguments
+    /// - `report_data`: The data to include in the report.
+    ///
+    /// Returns a result containing the report or an error.
     pub fn vbs_vm_call_report(
         &self,
         report_data: &[u8],
     ) -> Result<[u8; hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE], HvError> {
-        assert!(report_data.len() <= hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE);
+        if report_data.len() > hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE {
+            return Err(HvError::InvalidParameter);
+        }
 
         let mut header = hvdef::hypercall::VbsVmCallReport {
             report_data: [0; hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE],
