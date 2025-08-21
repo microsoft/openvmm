@@ -140,10 +140,10 @@ impl IntoPipeline for CheckinGatesCli {
                     GhPermissionValue::Write,
                 )]);
 
-            // For the release pipeline, only run if the "run-release-gates" label is present and PR is not draft
+            // For the release pipeline, only run if the "release-ci-required" label is present and PR is not draft
             if matches!(config, PipelineConfig::PrRelease) {
                 job = job.gh_dangerous_override_if(
-                    "contains(github.event.pull_request.labels.*.name, 'run-release-gates') && github.event.pull_request.draft == false",
+                    "contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false",
                 );
             }
 

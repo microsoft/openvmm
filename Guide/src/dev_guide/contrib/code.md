@@ -468,7 +468,7 @@ The release gates workflow should be used when:
 To run the release gates on your PR:
 
 1. Ensure your PR is ready for review (not in draft mode)
-2. Add the `run-release-gates` label to your PR
+2. Add the `release-ci-required` label to your PR
 3. The workflow will automatically trigger and run all checks in release mode
 
 The workflow will only run when the specific label is present, so you have full
@@ -477,4 +477,4 @@ control over when to use this more resource-intensive testing.
 ### Label Management
 
 Only repository maintainers can add labels to PRs. If you need release gates
-run on your PR, ask a maintainer to add the `run-release-gates` label for you.
+run on your PR, ask a maintainer to add the `release-ci-required` label for you.
