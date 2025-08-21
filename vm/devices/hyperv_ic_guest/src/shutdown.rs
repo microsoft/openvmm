@@ -250,7 +250,7 @@ impl ShutdownGuestChannel {
             message_size: (size_of_val(&message)
                 + size_of_val(&framework_version)
                 + size_of_val(&message_version)) as u16,
-            status: Status::SUCCESS,
+            status: Status::SUCCESS.0,
             transaction_id: header.transaction_id,
             flags: hyperv_ic_protocol::HeaderFlags::new()
                 .with_transaction(header.flags.transaction())
@@ -305,7 +305,13 @@ impl ShutdownGuestChannel {
         };
 
         // Notify the internal listener and wait for a response.
-        let result = ic.send_shutdown_notification.call(|x| x, params).await;
+        let status = match ic.send_shutdown_notification.call(|x| x, params).await {
+            Ok(ShutdownResult::Ok) => Status::SUCCESS.0,
+            Ok(ShutdownResult::Failed(x)) => x,
+            Ok(ShutdownResult::NotReady) | Ok(ShutdownResult::AlreadyInProgress) | Err(_) => {
+                Status::FAIL.0
+            }
+        };
 
         // Respond to the request.
         let response = hyperv_ic_protocol::Header {
@@ -313,11 +319,7 @@ impl ShutdownGuestChannel {
             message_version: *message_version,
             message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
             message_size: 0,
-            status: if result.is_ok() {
-                Status::SUCCESS
-            } else {
-                Status::FAIL
-            },
+            status,
             transaction_id: header.transaction_id,
             flags: hyperv_ic_protocol::HeaderFlags::new()
                 .with_transaction(header.flags.transaction())

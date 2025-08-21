@@ -90,7 +90,7 @@ pub struct Header {
     /// Size in bytes of the message.
     pub message_size: u16,
     /// Status code used for message response.
-    pub status: Status,
+    pub status: u32,
     /// Transaction ID; should be matched by response message.
     pub transaction_id: u8,
     /// Message flags.

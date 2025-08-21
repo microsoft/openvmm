@@ -74,7 +74,7 @@ impl IcPipe {
                     message_size: (size_of_val(&message)
                         + size_of_val(FRAMEWORK_VERSIONS)
                         + size_of_val(message_versions)) as u16,
-                    status: Status::SUCCESS,
+                    status: Status::SUCCESS.0,
                     transaction_id: 0,
                     flags: HeaderFlags::new().with_transaction(true).with_request(true),
                     ..FromZeros::new_zeroed()
@@ -130,7 +130,7 @@ impl IcPipe {
             message_type,
             message_size: message.len() as u16,
             message_version: versions.message_version,
-            status: Status::SUCCESS,
+            status: Status::SUCCESS.0,
             transaction_id: 0,
             flags,
             ..FromZeros::new_zeroed()
@@ -142,7 +142,7 @@ impl IcPipe {
             .context("ring buffer error")
     }
 
-    pub async fn read_response(&mut self) -> anyhow::Result<(Status, &[u8])> {
+    pub async fn read_response(&mut self) -> anyhow::Result<(u32, &[u8])> {
         let n = self
             .pipe
             .recv(&mut self.buf)
