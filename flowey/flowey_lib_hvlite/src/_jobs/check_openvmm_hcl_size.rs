@@ -93,7 +93,7 @@ impl SimpleFlowNode for Node {
             file_name: file_name.into(),
             path: old_openhcl,
             run_id,
-            gh_token: gh_token.clone(),
+            gh_token: Some(gh_token.clone()),
         });
 
         // Publish the built binary as an artifact for offline analysis.

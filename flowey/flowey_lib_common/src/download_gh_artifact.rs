@@ -22,7 +22,7 @@ flowey_request! {
         /// The Github actions run id to download artifacts from
         pub run_id: ReadVar<String>,
         /// Github token to authenticate with
-        pub gh_token: ReadVar<String>,
+        pub gh_token: Option<ReadVar<String>>,
     }
 }
 
@@ -46,9 +46,16 @@ impl SimpleFlowNode for Node {
             gh_token,
         } = request;
 
-        ctx.req(crate::use_gh_cli::Request::WithAuth(
-            crate::use_gh_cli::GhCliAuth::AuthToken(gh_token),
-        ));
+        if ctx.backend() == FlowBackend::Local {
+            ctx.req(crate::use_gh_cli::Request::WithAuth(
+                crate::use_gh_cli::GhCliAuth::LocalOnlyInteractive,
+            ));
+        } else {
+            ctx.req(crate::use_gh_cli::Request::WithAuth(
+                crate::use_gh_cli::GhCliAuth::AuthToken(gh_token.unwrap()),
+            ));
+        }
+
         let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
 
         ctx.emit_rust_step("download artifacts from github actions run", |ctx| {
