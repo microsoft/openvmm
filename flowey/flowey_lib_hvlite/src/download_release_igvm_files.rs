@@ -129,7 +129,7 @@ pub mod resolve {
                     let downloaded_aarch64 =
                         rt.read(downloaded_aarch64).join("aarch64-openhcl-igvm");
 
-                    rt.write(
+                    rt.write_not_secret(
                         write_release_output,
                         &ReleaseOutput {
                             x64_direct_bin: downloaded_x64.join("openhcl-direct.bin"),

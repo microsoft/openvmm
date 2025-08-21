@@ -119,7 +119,7 @@ impl GhContextVarReader<'_, state::Global> {
 
     /// `github.token`
     pub fn token(self) -> ReadVar<String> {
-        self.read_var("github.token", true, false)
+        self.read_var("github.token", false, false)
     }
 }
 
