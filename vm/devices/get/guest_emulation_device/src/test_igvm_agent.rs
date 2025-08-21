@@ -84,7 +84,7 @@ pub(crate) enum IgvmAttestState {
 // Test IGVM agent includes states that need to be persisted.
 #[derive(Debug, Clone)]
 pub(crate) struct TestIgvmAgent {
-    /// State machine for `handle_igvm_attest`
+    /// State machine for `handle_request`
     pub state: IgvmAttestState,
     /// Optional RSA private key used for attestation.
     pub secret_key: Option<RsaPrivateKey>,
@@ -204,7 +204,7 @@ impl TestIgvmAgent {
 
                 // Generate a mock JWT response for testing - convert request to proper type
                 let jwt_response = self
-                    .generate_mock_key_release_response(&runtime_claims_bytes)
+                    .generate_mock_key_release_response(runtime_claims_bytes)
                     .map_err(Error::KeyReleaseError)?;
                 let data = jwt_response.as_bytes().to_vec();
 

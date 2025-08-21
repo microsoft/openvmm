@@ -2554,6 +2554,7 @@ async fn new_underhill_vm(
                 AttestationType::Snp | AttestationType::Tdx => {
                     TpmAkCertTypeResource::HwAttested(request_ak_cert)
                 }
+                AttestationType::Vbs => TpmAkCertTypeResource::SwAttested(request_ak_cert),
                 AttestationType::Host
                     if management_vtl_features.control_ak_cert_provisioning()
                         && management_vtl_features.attempt_ak_cert_callback() =>
