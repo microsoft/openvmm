@@ -2625,7 +2625,6 @@ dependencies = [
  "aes-kw",
  "async-trait",
  "base64 0.22.1",
- "cfg-if",
  "disk_backend",
  "disklayer_ram",
  "futures",
