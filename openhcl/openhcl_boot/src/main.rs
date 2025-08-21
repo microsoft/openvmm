@@ -650,8 +650,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         log!("openhcl_boot: early debugging enabled");
     }
 
-    let can_trust_host =
-        p.isolation_type == IsolationType::None || static_options.confidential_debug;
+    let static_confidential_debug = static_options.confidential_debug;
+    let can_trust_host = p.isolation_type == IsolationType::None || static_confidential_debug;
 
     let boot_reftime = get_ref_time(p.isolation_type);
 
@@ -666,8 +666,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
     // line has been parsed).
-    let is_confidential_debug = (can_trust_host && p.isolation_type != IsolationType::None)
-        || partition_info.boot_options.confidential_debug;
+    let is_confidential_debug =
+        static_confidential_debug || partition_info.boot_options.confidential_debug;
 
     // Fill out the non-devicetree derived parts of PartitionInfo.
     if !p.isolation_type.is_hardware_isolated()
