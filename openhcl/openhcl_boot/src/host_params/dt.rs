@@ -20,7 +20,6 @@ use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
 use core::cmp::max;
-use core::fmt::Display;
 use core::fmt::Write;
 use host_fdt_parser::MemoryAllocationMode;
 use host_fdt_parser::MemoryEntry;
@@ -31,39 +30,30 @@ use loader_defs::paravisor::CommandLinePolicy;
 use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
+use thiserror::Error;
 
 /// Errors when reading the host device tree.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum DtError {
+    /// Host did not provide a device tree.
+    #[error("no device tree provided by host")]
+    NoDeviceTree,
     /// Invalid device tree.
-    DeviceTree(host_fdt_parser::Error<'static>),
+    #[error("host provided device tree is invalid")]
+    DeviceTree(#[source] host_fdt_parser::Error<'static>),
     /// PartitionInfo's command line is too small to write the parsed legacy
     /// command line.
+    #[error("commandline storage is too small to write the parsed command line")]
     CommandLineSize,
     /// Device tree did not contain a vmbus node for VTL2.
+    #[error("device tree did not contain a vmbus node for VTL2")]
     Vtl2Vmbus,
     /// Device tree did not contain a vmbus node for VTL0.
+    #[error("device tree did not contain a vmbus node for VTL0")]
     Vtl0Vmbus,
     /// Host provided high MMIO range is insufficient to cover VTL0 and VTL2.
+    #[error("host provided high MMIO range is insufficient to cover VTL0 and VTL2")]
     NotEnoughMmio,
-}
-
-impl Display for DtError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            DtError::DeviceTree(err) => {
-                f.write_fmt(format_args!("host provided device tree is invalid: {err}"))
-            }
-            DtError::CommandLineSize => {
-                f.write_str("commandline storage is too small to write the parsed command line")
-            }
-            DtError::Vtl2Vmbus => f.write_str("device tree did not contain a vmbus node for VTL2"),
-            DtError::Vtl0Vmbus => f.write_str("device tree did not contain a vmbus node for VTL0"),
-            DtError::NotEnoughMmio => {
-                f.write_str("host provided high MMIO range is insufficient to cover VTL0 and VTL2")
-            }
-        }
-    }
 }
 
 /// Allocate VTL2 ram from the partition's memory map.
@@ -320,20 +310,19 @@ fn parse_host_vtl2_ram(
 }
 
 impl PartitionInfo {
-    // Read the IGVM provided DT for the vtl2 partition info. If no device tree
-    // was provided by the host, `None` is returned.
+    // Read the IGVM provided DT for the vtl2 partition info.
     pub fn read_from_dt<'a>(
         params: &'a ShimParams,
         storage: &'a mut Self,
-        address_space: &'a mut AddressSpaceManager,
+        address_space: &'_ mut AddressSpaceManager,
         mut options: BootCommandLineOptions,
         can_trust_host: bool,
-    ) -> Result<Option<(&'a mut Self, &'a mut AddressSpaceManager)>, DtError> {
+    ) -> Result<&'a mut Self, DtError> {
         let dt = params.device_tree();
 
         if dt[0] == 0 {
             log!("host did not provide a device tree");
-            return Ok(None);
+            return Err(DtError::NoDeviceTree);
         }
 
         let mut dt_storage = off_stack!(ParsedDeviceTree<MAX_PARTITION_RAM_RANGES, MAX_CPU_COUNT, COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>, ParsedDeviceTree::new());
@@ -550,6 +539,6 @@ impl PartitionInfo {
         *nvme_keepalive = parsed.nvme_keepalive;
         *boot_options = options;
 
-        Ok(Some((storage, address_space)))
+        Ok(storage)
     }
 }

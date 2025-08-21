@@ -29,6 +29,7 @@ use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
+use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
@@ -559,16 +560,18 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         || hw_debug_bit;
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
-    let mut address_space = off_stack!(AddressSpaceManager, AddressSpaceManager::new_const());
-    let (partition_info, address_space) = match PartitionInfo::read_from_dt(
+    let address_space = OffStackRef::leak(off_stack!(
+        AddressSpaceManager,
+        AddressSpaceManager::new_const()
+    ));
+    let partition_info = match PartitionInfo::read_from_dt(
         &p,
         &mut dt_storage,
-        &mut address_space,
+        address_space,
         static_options,
         can_trust_host,
     ) {
-        Ok(Some(val)) => val,
-        Ok(None) => panic!("host did not provide a device tree"),
+        Ok(val) => val,
         Err(e) => panic!("unable to read device tree params {}", e),
     };
 
@@ -663,7 +666,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     #[cfg(target_arch = "x86_64")]
     if p.isolation_type == IsolationType::Snp {
-        use single_threaded::OffStackRef;
         let cc_blob = OffStackRef::leak(off_stack!(loader_defs::linux::cc_blob_sev_info, zeroed()));
         build_cc_blob_sev_info(cc_blob, &p);
 
