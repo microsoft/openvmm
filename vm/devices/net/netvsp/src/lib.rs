@@ -1208,7 +1208,6 @@ impl VmbusDevice for Nic {
                 .unwrap()
                 .channel
                 .packet_filter;
-            self.coordinator.state_mut().unwrap().workers[0].start();
             (
                 WorkerState::Ready(ReadyState {
                     state: ActiveState::new(None, buffers.recv_buffer.count),
@@ -3970,7 +3969,6 @@ impl Coordinator {
                                 }
                             });
                         }
-                        self.restart = true; // Restart the workers
                     }
 
                     if update_type.guest_vf_state {
@@ -4418,13 +4416,7 @@ impl Coordinator {
             self.num_queues = num_queues;
         }
 
-        let primary_packet_filter = primary_worker
-            .get()
-            .1
-            .as_ref()
-            .unwrap()
-            .channel
-            .packet_filter;
+        let primary_packet_filter = state.state.primary.as_ref().unwrap().packet_filter;
 
         // Provide the queue and receive buffer ranges for each worker.
         for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
@@ -4434,7 +4426,7 @@ impl Coordinator {
                 rx_buffer_range: rx_buffer,
             });
             // Update the receive packet filter for the subchannel worker.
-            if let Some(worker) = worker.get_mut().1.as_mut() {
+            if let Some(worker) = worker.state_mut() {
                 worker.channel.packet_filter = primary_packet_filter;
             }
         }
