@@ -8,6 +8,7 @@
 
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
 use mesh::CellUpdater;
@@ -164,12 +165,18 @@ async fn keepalive_with_nvme_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    let vtl0_nvme_lun = 1;
+    let vtl2_nsid = 37;
+    let scsi_instance = Guid::new_random();
+
     if !host_supports_servicing() {
         tracing::info!("skipping OpenHCL servicing test on unsupported host");
         return Ok(());
     }
 
-    let mut signal = CellUpdater::new(false);
+    let mut signal_updater = CellUpdater::new(false);
+    let signal = signal_updater.cell();
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
@@ -178,7 +185,7 @@ async fn keepalive_with_nvme_fault(
                 // Add a fault controller to test the nvme controller functionality
                 c.vpci_devices.push(VpciDeviceConfig {
                     vtl: DeviceVtl::Vtl2,
-                    instance_id: guid::guid!("00000000-0000-0000-0000-000000000000"),
+                    instance_id: NVME_INSTANCE,
                     resource: NvmeFaultControllerHandle {
                         subsystem_id: guid::Guid::new_random(),
                         msix_count: 1,
@@ -191,10 +198,42 @@ async fn keepalive_with_nvme_fault(
                             })
                             .into_resource(),
                         }],
-                        signal: signal.cell(),
+                        signal,
                     }
                     .into_resource(),
                 })
+            })
+            .with_custom_vtl2_settings(|v| {
+                v.dynamic.as_mut().unwrap().storage_controllers.push(
+                    vtl2_settings_proto::StorageController {
+                        instance_id: scsi_instance.to_string(),
+                        protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
+                            .into(),
+                        luns: vec![vtl2_settings_proto::Lun {
+                            location: vtl0_nvme_lun,
+                            device_id: Guid::new_random().to_string(),
+                            vendor_id: "OpenVMM".to_string(),
+                            product_id: "Disk".to_string(),
+                            product_revision_level: "1.0".to_string(),
+                            serial_number: "0".to_string(),
+                            model_number: "1".to_string(),
+                            physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
+                                r#type: vtl2_settings_proto::physical_devices::BackingType::Single
+                                    .into(),
+                                device: Some(vtl2_settings_proto::PhysicalDevice {
+                                    device_type:
+                                        vtl2_settings_proto::physical_device::DeviceType::Nvme
+                                            .into(),
+                                    device_path: NVME_INSTANCE.to_string(),
+                                    sub_device_path: vtl2_nsid,
+                                }),
+                                devices: Vec::new(),
+                            }),
+                            ..Default::default()
+                        }],
+                        io_queue_depth: None,
+                    },
+                )
             })
         })
         .run()
@@ -208,10 +247,12 @@ async fn keepalive_with_nvme_fault(
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
 
+    signal_updater.set(true).await;
+
     vm.restart_openhcl(
         igvm_file.clone(),
         OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
+            enable_nvme_keepalive: false,
             ..Default::default()
         },
     )

@@ -157,8 +157,6 @@ impl NvmeFaultController {
             fault_configuration,
         );
 
-        panic!("Adding in a panic here");
-
         Self {
             cfg_space,
             msix,

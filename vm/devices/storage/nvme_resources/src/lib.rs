@@ -13,7 +13,7 @@ use vm_resource::ResourceId;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 
-/// A handle to a NVMe Fault controller.
+/// A handle to an NVMe controller.
 #[derive(MeshPayload)]
 pub struct NvmeControllerHandle {
     /// The subsystem ID to use when responding to controller identify queries.
@@ -41,7 +41,7 @@ pub struct NvmeFaultControllerHandle {
     pub max_io_queues: u16,
     /// The initial set of namespaces.
     pub namespaces: Vec<NamespaceDefinition>,
-    /// Cell to signal when we can do something to the queue
+    /// Signal to start the fault
     pub signal: Cell<bool>,
 }
 
@@ -49,6 +49,8 @@ impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {
     const ID: &'static str = "nvme_fault";
 }
 
+/// A controller namespace definition.
+#[derive(MeshPayload)]
 pub struct NamespaceDefinition {
     /// The namespace ID.
     pub nsid: u32,
