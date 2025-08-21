@@ -27,6 +27,9 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -163,7 +166,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         Ok(Self {
             backend: artifacts.backend,
             config: PetriVmConfig {
-                name: params.test_name.to_owned(),
+                name: make_vm_safe_name(params.test_name),
                 arch: artifacts.arch,
                 firmware: artifacts.firmware,
                 memory: Default::default(),
@@ -1379,11 +1382,108 @@ pub enum SecureBootTemplate {
     MicrosoftUefiCertificateAuthority,
 }
 
+/// Creates a VM-safe name that respects platform limitations.
+///
+/// Hyper-V limits VM names to 100 characters. For names that exceed this limit,
+/// this function truncates to 96 characters and appends a 4-character hash
+/// to ensure uniqueness while staying within the limit.
+fn make_vm_safe_name(name: &str) -> String {
+    const MAX_VM_NAME_LENGTH: usize = 100;
+    const HASH_LENGTH: usize = 4;
+    const MAX_PREFIX_LENGTH: usize = MAX_VM_NAME_LENGTH - HASH_LENGTH;
+
+    if name.len() <= MAX_VM_NAME_LENGTH {
+        name.to_owned()
+    } else {
+        // Create a hash of the full name for uniqueness
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Format hash as a 4-character hex string
+        let hash_suffix = format!("{:04x}", hash & 0xFFFF);
+
+        // Truncate the name and append the hash
+        let truncated = &name[..MAX_PREFIX_LENGTH];
+        tracing::debug!(
+            "VM name too long ({}), truncating '{}' to '{}{}'",
+            name.len(),
+            name,
+            truncated,
+            hash_suffix
+        );
+
+        format!("{}{}", truncated, hash_suffix)
+    }
+}
+
 fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {
     if let Some(cmd) = cmd.as_mut() {
         cmd.push(' ');
         cmd.push_str(add_cmd);
     } else {
         *cmd = Some(add_cmd.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::make_vm_safe_name;
+
+    #[test]
+    fn test_short_names_unchanged() {
+        let short_name = "short_test_name";
+        assert_eq!(make_vm_safe_name(short_name), short_name);
+    }
+
+    #[test]
+    fn test_exactly_100_chars_unchanged() {
+        let name_100 = "a".repeat(100);
+        assert_eq!(make_vm_safe_name(&name_100), name_100);
+    }
+
+    #[test]
+    fn test_long_name_truncated() {
+        let long_name = "multiarch::openhcl_servicing::hyperv_openhcl_uefi_aarch64_ubuntu_2404_server_aarch64_openhcl_servicing";
+        let result = make_vm_safe_name(long_name);
+
+        // Should be exactly 100 characters
+        assert_eq!(result.len(), 100);
+
+        // Should start with the truncated prefix
+        assert!(result.starts_with("multiarch::openhcl_servicing::hyperv_openhcl_uefi_aarch64_ubuntu_2404_server_aarch64_ope"));
+
+        // Should end with a 4-character hash
+        let suffix = &result[96..];
+        assert_eq!(suffix.len(), 4);
+        // Should be valid hex
+        assert!(u16::from_str_radix(suffix, 16).is_ok());
+    }
+
+    #[test]
+    fn test_deterministic_results() {
+        let long_name = "very_long_test_name_that_exceeds_the_100_character_limit_and_should_be_truncated_consistently_every_time";
+        let result1 = make_vm_safe_name(long_name);
+        let result2 = make_vm_safe_name(long_name);
+
+        assert_eq!(result1, result2);
+        assert_eq!(result1.len(), 100);
+    }
+
+    #[test]
+    fn test_different_names_different_hashes() {
+        let name1 = "very_long_test_name_that_definitely_exceeds_the_100_character_limit_and_should_be_truncated_by_the_function_version_1";
+        let name2 = "very_long_test_name_that_definitely_exceeds_the_100_character_limit_and_should_be_truncated_by_the_function_version_2";
+
+        let result1 = make_vm_safe_name(name1);
+        let result2 = make_vm_safe_name(name2);
+
+        // Both should be 100 chars
+        assert_eq!(result1.len(), 100);
+        assert_eq!(result2.len(), 100);
+
+        // Should have different suffixes since the full names are different
+        assert_ne!(result1, result2);
+        assert_ne!(&result1[96..], &result2[96..]);
     }
 }
