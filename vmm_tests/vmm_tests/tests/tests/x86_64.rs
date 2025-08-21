@@ -225,7 +225,12 @@ async fn vbs_boot_with_attestation(
     let config = config.modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
 
     let mut vm = match os_flavor {
-        OsFlavor::Windows => config.run_without_agent().await?,
+        OsFlavor::Windows => {
+            config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                .run_without_agent()
+                .await?
+        }
         OsFlavor::Linux => {
             let mut vm = config
                 .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
