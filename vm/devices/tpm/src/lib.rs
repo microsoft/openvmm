@@ -582,10 +582,7 @@ impl Tpm {
                 .allocate_guest_attestation_nv_indices(
                     auth_value,
                     !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
-                    matches!(
-                        self.ak_cert_type,
-                        TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_)
-                    ),
+                    self.ak_cert_type.attested(),
                     fixup_16k_ak_cert,
                 )
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
@@ -905,10 +902,7 @@ impl Tpm {
 
         let ak_cert_request = self.create_ak_cert_request()?;
         // Store the ak cert request that includes the attestation report if `ak_cert_type` is `HwAttested` or `SwAttested`.
-        if matches!(
-            self.ak_cert_type,
-            TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_)
-        ) {
+        if self.ak_cert_type.attested() {
             self.renew_attestation_report(&ak_cert_request)?;
         }
 
@@ -1054,10 +1048,7 @@ impl Tpm {
         // On start of read of attestation report index, refresh report when
         // attestation report is supported.
         if u32::from(nv_read.nv_index) == TPM_NV_INDEX_ATTESTATION_REPORT
-            && matches!(
-                self.ak_cert_type,
-                TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_)
-            )
+            && self.ak_cert_type.attested()
         {
             if attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
                 || self.attestation_report_renew_time.is_none()

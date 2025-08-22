@@ -38,6 +38,15 @@ impl TpmAkCertType {
             TpmAkCertType::None => None,
         }
     }
+
+    pub fn attested(&self) -> bool {
+        match self {
+            TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_) => true,
+            TpmAkCertType::Trusted(_)
+            | TpmAkCertType::TrustedPreProvisionedOnly
+            | TpmAkCertType::None => false,
+        }
+    }
 }
 
 impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
