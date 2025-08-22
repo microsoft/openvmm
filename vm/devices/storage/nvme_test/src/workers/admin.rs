@@ -481,13 +481,15 @@ impl AdminHandler {
                         .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {
-                        QueueFaultBehavior::Update(command_updated) => {
+                        QueueFaultBehavior::Update(mut command_updated) => {
                             tracing::warn!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
                                 &command_updated
                             );
-                            command = command_updated;
+                            command = spec::Command::mut_from_bytes(command_updated.as_mut_bytes())
+                                .expect("command updated should be valid")
+                                .clone();
                         }
                         QueueFaultBehavior::Drop => {
                             tracing::warn!(
@@ -500,6 +502,14 @@ impl AdminHandler {
                             self.timer.sleep(duration).await;
                         }
                         QueueFaultBehavior::Default => {}
+                        QueueFaultBehavior::ChangeCompletionId(new_cid) => {
+                            tracing::warn!(
+                                "configured fault: admin command changed cid from {} to {}",
+                                command.cdw0.cid(),
+                                new_cid
+                            );
+                            command.cdw0.set_cid(new_cid);
+                        }
                     }
                 }
 

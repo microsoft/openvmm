@@ -4830,6 +4830,7 @@ dependencies = [
 name = "nvme_resources"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "guid",
  "mesh",
  "nvme_spec",

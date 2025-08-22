@@ -6,7 +6,6 @@
 use crate::NsidConflict;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
-use crate::QueueFaultBehavior;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use nvme_resources::NamespaceDefinition;
@@ -47,16 +46,17 @@ struct AdminSubQueueFault {
 }
 
 #[async_trait::async_trait]
-impl crate::QueueFault for AdminSubQueueFault {
+impl QueueFault for AdminSubQueueFault {
     async fn fault_submission_queue(&self, command: Command) -> QueueFaultBehavior<Command> {
-        tracing::info!("Faulting submission queue by now allowing io completion queue creation");
-        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-        panic!("Fault submission queue function {:?}", opcode);
+        tracing::info!(
+            "Faulting submission queue by now allowing io completion queue creation queues"
+        );
+        let opcode: nvme_spec::AdminOpcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
 
         match opcode {
             nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
-                if !self.signal.get() {
-                    panic!("Faulting the submission queue")
+                if self.signal.get() {
+                    panic!("Faulting the submission queue now")
                 } else {
                     QueueFaultBehavior::Default
                 }
