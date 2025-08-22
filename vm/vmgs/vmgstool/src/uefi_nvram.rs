@@ -319,7 +319,7 @@ fn print_hex_compact(
 ) -> std::io::Result<()> {
     if let Some(truncate) = truncate {
         let ellipsis = "...";
-        let num_bytes = (truncate.saturating_sub(ellipsis.len())) / 2;
+        let num_bytes = (truncate - ellipsis.len()) / 2;
         for byte in data.iter().take(num_bytes) {
             write!(out, "{:02x}", byte)?;
         }
