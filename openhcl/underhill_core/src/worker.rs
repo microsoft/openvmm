@@ -868,16 +868,14 @@ impl UhVmNetworkSettings {
     }
 
     async fn accelerated_device_visible_to_guest(&self, visible: bool) -> anyhow::Result<()> {
-        let result = join_all(
+        join_all(
             self.vf_managers
                 .values()
                 .map(|vf_manager| vf_manager.hide_vtl0_instance(!visible)),
         )
         .await
         .into_iter()
-        .collect::<anyhow::Result<Vec<_>>>();
-        result?;
-        Ok(())
+        .collect::<anyhow::Result<()>>()
     }
 }
 
