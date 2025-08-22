@@ -64,7 +64,7 @@ impl SimpleFlowNode for Node {
                 )
                 .read()?;
 
-                println!("Got action id {id}");
+                log::info!("Got action id {id}");
                 rt.write(gh_workflow_id, &id);
 
                 Ok(())

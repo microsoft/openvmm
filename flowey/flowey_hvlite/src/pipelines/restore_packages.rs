@@ -21,7 +21,7 @@ impl IntoPipeline for RestorePackagesCli {
         );
 
         let mut pipeline = Pipeline::new();
-        let (pub_last_release_igvm_files, _use_last_release_igvm_files) =
+        let (_pub_last_release_igvm_files, use_last_release_igvm_files) =
             pipeline.new_artifact("last-release-igvm-files");
         let mut job = pipeline
             .new_job(
@@ -62,7 +62,7 @@ impl IntoPipeline for RestorePackagesCli {
             |ctx| flowey_lib_hvlite::_jobs::local_restore_packages::Request {
                 arches,
                 done: ctx.new_done_handle(),
-                release_artifact: ctx.publish_artifact(pub_last_release_igvm_files),
+                release_artifact: ctx.use_artifact(&use_last_release_igvm_files),
             },
         );
 
