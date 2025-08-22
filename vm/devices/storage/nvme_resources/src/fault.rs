@@ -50,7 +50,7 @@ pub struct FaultConfiguration {
 pub struct AdminQueueFaultConfig {
     /// A mapping from the admin opcode to its fault behavior. This should ideally be using a HashMap but Encode/Decode is not yet available for that.
     /// It should also be a mapping from OpCode -> QueueFaultBehavior<Command> but Encode/Decode is not yet available for those types.
-    pub admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<u64>)>,
+    pub admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<[u8; 64]>)>,
 }
 
 impl AdminQueueFaultConfig {
@@ -65,7 +65,7 @@ impl AdminQueueFaultConfig {
     pub fn with_submission_queue_fault(
         mut self,
         opcode: u8,
-        behaviour: QueueFaultBehavior<u64>,
+        behaviour: QueueFaultBehavior<[u8; 64]>,
     ) -> Self {
         self.admin_submission_queue_intercept
             .push((opcode, behaviour));
@@ -73,7 +73,7 @@ impl AdminQueueFaultConfig {
     }
 
     /// Given the opcode, return the fault behaviour for the Admin Command
-    pub fn fault_submission_queue(&self, command: spec::Command) -> QueueFaultBehavior<u64> {
+    pub fn fault_submission_queue(&self, command: spec::Command) -> QueueFaultBehavior<[u8; 64]> {
         let opcode: u8 = nvme_spec::AdminOpcode(command.cdw0.opcode()).0;
         if let Some(behavior) = self
             .admin_submission_queue_intercept

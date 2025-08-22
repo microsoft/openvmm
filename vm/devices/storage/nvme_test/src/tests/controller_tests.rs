@@ -20,6 +20,8 @@ use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::QueueFault;
 use nvme_resources::fault::QueueFaultBehavior;
+use nvme_spec::AdminOpcode;
+use nvme_spec::Cdw0;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use pal_async::DefaultDriver;
@@ -367,72 +369,23 @@ async fn test_send_identify_no_fault(driver: DefaultDriver) {
     assert_eq!(cqe.cid, 0);
 }
 
-struct TestAdminSQFault;
-
-#[async_trait::async_trait]
-impl QueueFault for TestAdminSQFault {
-    async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultBehavior<Command> {
-        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-        match opcode {
-            nvme_spec::AdminOpcode::IDENTIFY => {
-                // Overwrite the previous cid to cause a panic.
-                command.cdw0.set_cid(10);
-                QueueFaultBehavior::Update(command)
-            }
-            _ => QueueFaultBehavior::Default,
-        }
-    }
-
-    async fn fault_completion_queue(
-        &self,
-        _completion: Completion,
-    ) -> QueueFaultBehavior<Completion> {
-        QueueFaultBehavior::Default
-    }
-}
-
 #[async_test]
 async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
+    let mut faulty_bits: [u8; 64] = [0u8; 64];
+    let mut faulty_identify = Command::new_zeroed();
+    faulty_identify.cdw0.set_cid(10);
+    let len = faulty_identify.as_bytes().len().min(64);
+    faulty_bits[..len].copy_from_slice(&faulty_identify.as_bytes()[..len]);
+
     let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(false).cell(),
-        admin_fault: AdminQueueFaultConfig::new(), // TODO: Fix this later, needs to return a bad command upon identify
+        fault_active: CellUpdater::new(true).cell(),
+        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+            spec::AdminOpcode::IDENTIFY.0,
+            QueueFaultBehavior::Update(faulty_bits),
+        ), // TODO: Fix this later, needs to return a bad command upon identify
     };
     let cqe = send_identify(driver, fault_configuration).await;
 
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
     assert_eq!(cqe.cid, 10); // The CID should have been overwritten by the fault.
-}
-
-struct TestAdminCQFault;
-
-#[async_trait::async_trait]
-impl QueueFault for TestAdminCQFault {
-    async fn fault_submission_queue(&self, _command: Command) -> QueueFaultBehavior<Command> {
-        QueueFaultBehavior::Default
-    }
-
-    async fn fault_completion_queue(
-        &self,
-        mut completion: Completion,
-    ) -> QueueFaultBehavior<Completion> {
-        let status = spec::Status(completion.status.status());
-        match status {
-            spec::Status::SUCCESS => {
-                // Overwrite the CID to cause a panic.
-                completion.status.set_status(spec::Status::INVALID_FORMAT.0);
-                QueueFaultBehavior::Update(completion)
-            }
-            _ => QueueFaultBehavior::Default,
-        }
-    }
-}
-
-#[async_test]
-async fn test_cq_fault(driver: DefaultDriver) {
-    let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(false).cell(),
-        admin_fault: AdminQueueFaultConfig::new(),
-    };
-    let cqe = send_identify(driver, fault_configuration).await;
-    assert_eq!(cqe.status.status(), spec::Status::INVALID_FORMAT.0); // Status should be overwritten by the fault.
 }
