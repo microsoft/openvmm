@@ -6,6 +6,7 @@
 use mesh::Cell;
 use mesh::MeshPayload;
 use nvme_spec as spec;
+use nvme_spec::Command;
 
 /// Supported fault behaviour for NVMe queues
 #[derive(Debug, Clone, Copy, MeshPayload)]
@@ -24,12 +25,9 @@ pub enum QueueFaultBehavior<T> {
 #[async_trait::async_trait]
 pub trait QueueFault {
     /// Provided a command in the submission queue, return the appropriate fault behavior.
-    async fn fault_submission_queue(
-        &self,
-        command: spec::Command,
-    ) -> QueueFaultBehavior<spec::Command>;
+    async fn fault_submission_queue(&self, command: Command) -> QueueFaultBehavior<Command>;
 
-    /// Provided a command in the completion queue, return the appropriate fault behavior.
+    /// Provided and in the completion queue, return the appropriate fault behavior.
     async fn fault_completion_queue(
         &self,
         completion: spec::Completion,
@@ -50,7 +48,7 @@ pub struct FaultConfiguration {
 pub struct AdminQueueFaultConfig {
     /// A mapping from the admin opcode to its fault behavior. This should ideally be using a HashMap but Encode/Decode is not yet available for that.
     /// It should also be a mapping from OpCode -> QueueFaultBehavior<Command> but Encode/Decode is not yet available for those types.
-    pub admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<[u8; 64]>)>,
+    pub admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<Command>)>,
 }
 
 impl AdminQueueFaultConfig {
@@ -65,7 +63,7 @@ impl AdminQueueFaultConfig {
     pub fn with_submission_queue_fault(
         mut self,
         opcode: u8,
-        behaviour: QueueFaultBehavior<[u8; 64]>,
+        behaviour: QueueFaultBehavior<Command>,
     ) -> Self {
         self.admin_submission_queue_intercept
             .push((opcode, behaviour));
@@ -73,7 +71,7 @@ impl AdminQueueFaultConfig {
     }
 
     /// Given the opcode, return the fault behaviour for the Admin Command
-    pub fn fault_submission_queue(&self, command: spec::Command) -> QueueFaultBehavior<[u8; 64]> {
+    pub fn fault_submission_queue(&self, command: Command) -> QueueFaultBehavior<Command> {
         let opcode: u8 = nvme_spec::AdminOpcode(command.cdw0.opcode()).0;
         if let Some(behavior) = self
             .admin_submission_queue_intercept

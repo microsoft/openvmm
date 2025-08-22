@@ -474,17 +474,14 @@ impl AdminHandler {
                         .fault_submission_queue(command);
 
                     match fault {
-                        QueueFaultBehavior::Update(mut command_updated) => {
+                        QueueFaultBehavior::Update(command_updated) => {
                             tracing::warn!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
                                 &command_updated
                             );
                             // Clone to avoid Alignment errors
-                            command =
-                                spec::Command::mut_from_bytes(&mut command_updated.clone()[..])
-                                    .expect("command updated should be valid")
-                                    .clone();
+                            command = command_updated;
                         }
                         QueueFaultBehavior::Drop => {
                             tracing::warn!(

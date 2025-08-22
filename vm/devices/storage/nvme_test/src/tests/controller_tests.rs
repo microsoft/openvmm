@@ -381,7 +381,7 @@ async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
         fault_active: CellUpdater::new(true).cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
             spec::AdminOpcode::IDENTIFY.0,
-            QueueFaultBehavior::Update(faulty_bits),
+            QueueFaultBehavior::Update(faulty_identify),
         ), // TODO: Fix this later, needs to return a bad command upon identify
     };
     let cqe = send_identify(driver, fault_configuration).await;
