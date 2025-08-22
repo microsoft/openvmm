@@ -10,7 +10,6 @@ flowey_request! {
         pub pipeline_name: String,
         pub branch: ReadVar<String>,
         pub gh_workflow_id: WriteVar<String>,
-        pub gh_token: Option<ReadVar<String>>,
     }
 }
 new_simple_flow_node!(struct Node);
@@ -28,22 +27,9 @@ impl SimpleFlowNode for Node {
             gh_workflow_id,
             pipeline_name,
             branch,
-            gh_token,
         } = request;
 
         let pipeline_name = pipeline_name.clone();
-
-        let auth = if ctx.backend() == FlowBackend::Local {
-            crate::use_gh_cli::GhCliAuth::LocalOnlyInteractive
-        } else {
-            let Some(token) = gh_token else {
-                anyhow::bail!(
-                    "Missing gh_token for non-local backend; provide a GitHub token via context when running on CI or remote backends"
-                )
-            };
-            crate::use_gh_cli::GhCliAuth::AuthToken(token)
-        };
-        ctx.req(crate::use_gh_cli::Request::WithAuth(auth));
 
         let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
 

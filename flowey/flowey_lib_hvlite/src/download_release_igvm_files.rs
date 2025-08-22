@@ -76,11 +76,6 @@ pub mod resolve {
             let branch_name: ReadVar<String> =
                 ReadVar::from_static(request.release_version.branch_name());
 
-            let mut gh_token: Option<ReadVar<String>> = None;
-            if ctx.backend() != FlowBackend::Local {
-                gh_token = Some(ctx.get_gh_context_var().global().token());
-            }
-
             let run_id =
                 ctx.reqv(
                     |v| flowey_lib_common::gh_latest_completed_workflow_id::Request {
@@ -88,7 +83,6 @@ pub mod resolve {
                         branch: branch_name.clone(),
                         pipeline_name: "openvmm-ci.yaml".into(),
                         gh_workflow_id: v,
-                        gh_token: gh_token.clone(),
                     },
                 );
             let output = request.release_igvm_files;
@@ -108,7 +102,6 @@ pub mod resolve {
                     file_name: format!("{arch_str}-openhcl-igvm"),
                     path: v,
                     run_id: run_id.clone(),
-                    gh_token: gh_token.clone(),
                 });
 
                 if arch == CommonArch::X86_64 {

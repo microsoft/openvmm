@@ -523,10 +523,10 @@ jobs:
       shell: bash
     - name: collect openvmm_hcl files for analysis
       run: |-
-        flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
-        flowey v 10 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:9:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:105:27' --is-raw-string write-to-env github floweyvar1
+        flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
+        flowey v 10 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:101:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
-    - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__3
+    - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
       uses: actions/upload-artifact@v4
       with:
         name: x86_64_openvmm_hcl_for_size_analysis
@@ -566,7 +566,7 @@ jobs:
         EOF
         flowey e 10 flowey_lib_common::cache 2
         flowey e 10 flowey_lib_common::download_gh_cli 1
-        flowey v 10 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:2:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
+        flowey v 10 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
         ${{ github.token }}
         EOF
       shell: bash
@@ -579,13 +579,13 @@ jobs:
     - name: get action id
       run: |-
         flowey e 10 flowey_lib_common::gh_workflow_id 0
-        flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
+        flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey e 10 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: binary size comparison
-      run: flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 4
+      run: flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 3
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 10 flowey_lib_common::cache 3
@@ -1810,7 +1810,7 @@ jobs:
         EOF
         flowey.exe e 15 flowey_lib_common::cache 10
         flowey.exe e 15 flowey_lib_common::download_gh_cli 1
-        flowey.exe v 15 'flowey_lib_hvlite::download_release_igvm_files::resolve:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
+        flowey.exe v 15 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
         ${{ github.token }}
         EOF
       shell: bash
@@ -1827,7 +1827,7 @@ jobs:
       run: flowey.exe e 15 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 15 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey.exe e 15 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 15 flowey_lib_common::download_gh_release 0
@@ -2084,7 +2084,7 @@ jobs:
         EOF
         flowey.exe e 16 flowey_lib_common::cache 10
         flowey.exe e 16 flowey_lib_common::download_gh_cli 1
-        flowey.exe v 16 'flowey_lib_hvlite::download_release_igvm_files::resolve:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
+        flowey.exe v 16 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
         ${{ github.token }}
         EOF
       shell: bash
@@ -2101,7 +2101,7 @@ jobs:
       run: flowey.exe e 16 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 16 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey.exe e 16 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 16 flowey_lib_common::download_gh_release 0
@@ -2356,7 +2356,7 @@ jobs:
         EOF
         flowey.exe e 17 flowey_lib_common::cache 10
         flowey.exe e 17 flowey_lib_common::download_gh_cli 1
-        flowey.exe v 17 'flowey_lib_hvlite::download_release_igvm_files::resolve:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
+        flowey.exe v 17 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
         ${{ github.token }}
         EOF
       shell: bash
@@ -2373,7 +2373,7 @@ jobs:
       run: flowey.exe e 17 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 17 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey.exe e 17 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 17 flowey_lib_common::download_gh_release 0
@@ -2630,7 +2630,7 @@ jobs:
         EOF
         flowey.exe e 18 flowey_lib_common::cache 10
         flowey.exe e 18 flowey_lib_common::download_gh_cli 1
-        flowey.exe v 18 'flowey_lib_hvlite::download_release_igvm_files::resolve:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
+        flowey.exe v 18 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
         ${{ github.token }}
         EOF
       shell: bash
@@ -2647,7 +2647,7 @@ jobs:
       run: flowey.exe e 18 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 18 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey.exe e 18 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 18 flowey_lib_common::download_gh_release 0
@@ -2902,7 +2902,7 @@ jobs:
         EOF
         flowey e 19 flowey_lib_common::cache 10
         flowey e 19 flowey_lib_common::download_gh_cli 1
-        flowey v 19 'flowey_lib_hvlite::download_release_igvm_files::resolve:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
+        flowey v 19 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
         ${{ github.token }}
         EOF
       shell: bash
@@ -2919,7 +2919,7 @@ jobs:
       run: flowey e 19 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey e 19 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey e 19 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 19 flowey_lib_common::download_gh_release 0
@@ -3456,7 +3456,7 @@ jobs:
         EOF
         flowey.exe e 20 flowey_lib_common::cache 10
         flowey.exe e 20 flowey_lib_common::download_gh_cli 1
-        flowey.exe v 20 'flowey_lib_hvlite::download_release_igvm_files::resolve:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
+        flowey.exe v 20 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
         ${{ github.token }}
         EOF
       shell: bash
@@ -3473,7 +3473,7 @@ jobs:
       run: flowey.exe e 20 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 20 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey.exe e 20 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey.exe e 20 flowey_lib_common::download_gh_release 0
