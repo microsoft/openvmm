@@ -1193,13 +1193,11 @@ impl VmbusDevice for Nic {
         // Start the coordinator task if this is the primary channel.
         let state = if channel_idx == 0 {
             self.insert_coordinator(1, false);
-            // No rx traffic on primary channel until guest sets the packet filter.
             WorkerState::Init(None)
         } else {
             self.coordinator.stop().await;
             // Get the buffers created when the primary channel was opened.
             let buffers = self.coordinator.state().unwrap().buffers.clone().unwrap();
-            // Get the packet filter of the primary channel.
             WorkerState::Ready(ReadyState {
                 state: ActiveState::new(None, buffers.recv_buffer.count),
                 buffers,
@@ -1211,7 +1209,6 @@ impl VmbusDevice for Nic {
             .adapter
             .num_sub_channels_opened
             .fetch_add(1, Ordering::SeqCst);
-
         let r = self.insert_worker(channel_idx, open_request, state, true);
         if channel_idx != 0
             && num_opened + 1 == self.coordinator.state_mut().unwrap().num_queues as usize
