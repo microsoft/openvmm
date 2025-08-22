@@ -14,6 +14,7 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFault;
 use nvme_resources::fault::QueueFaultBehavior;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
