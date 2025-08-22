@@ -161,6 +161,11 @@ async fn many_nvme_devices_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     const NUM_NVME_DEVICES: usize = 8;
     const SIZE: u64 = 0x1000;
     // Zeros make it easy to see what's going on when inspecting logs. Each device must be
