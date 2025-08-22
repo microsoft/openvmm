@@ -284,7 +284,8 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_read_u32() {
-        let cap = PciExpressCapability::new(true, None);
+        let flr_handler = TestFlrHandler::new();
+        let cap = PciExpressCapability::new(Some(flr_handler));
 
         // Test PCIe Capabilities Register (offset 0x00)
         let caps_val = cap.read_u32(0x00);
@@ -310,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_read_u32_no_flr() {
-        let cap = PciExpressCapability::new(false, None);
+        let cap = PciExpressCapability::new(None);
 
         // Test Device Capabilities Register (offset 0x04) - FLR should not be set
         let device_caps_val = cap.read_u32(0x04);
@@ -319,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_write_u32_readonly_registers() {
-        let mut cap = PciExpressCapability::new(true, None);
+        let mut cap = PciExpressCapability::new(None);
 
         // Try to write to read-only PCIe Capabilities Register (offset 0x00)
         let original_caps = cap.read_u32(0x00);
@@ -335,7 +336,7 @@ mod tests {
     #[test]
     fn test_pci_express_capability_write_u32_device_control() {
         let flr_handler = TestFlrHandler::new();
-        let mut cap = PciExpressCapability::new(true, Some(flr_handler.clone()));
+        let mut cap = PciExpressCapability::new(Some(flr_handler.clone()));
 
         // Initial state should have FLR bit clear
         let initial_ctl_sts = cap.read_u32(0x08);
@@ -367,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_write_u32_device_status() {
-        let mut cap = PciExpressCapability::new(true, None);
+        let mut cap = PciExpressCapability::new(None);
 
         // Manually set some status bits to test write-1-to-clear behavior
         {
@@ -398,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_write_u32_unhandled_offset() {
-        let mut cap = PciExpressCapability::new(true, None);
+        let mut cap = PciExpressCapability::new(None);
 
         // Writing to unhandled offset should not panic
         cap.write_u32(0x10, 0xFFFFFFFF);
@@ -409,7 +410,7 @@ mod tests {
     #[test]
     fn test_pci_express_capability_reset() {
         let flr_handler = TestFlrHandler::new();
-        let mut cap = PciExpressCapability::new(true, Some(flr_handler.clone()));
+        let mut cap = PciExpressCapability::new(Some(flr_handler.clone()));
 
         // Set some state
         cap.write_u32(0x08, 0x0001); // Set some device control bits
@@ -433,24 +434,14 @@ mod tests {
     }
 
     #[test]
-    fn test_pci_express_capability_flr_without_handler() {
-        let mut cap = PciExpressCapability::new(true, None);
-
-        // FLR should not crash when no handler is provided
-        cap.write_u32(0x08, 0x8000); // Set FLR bit
-        let device_ctl_sts = cap.read_u32(0x08);
-        assert_eq!(device_ctl_sts & 0xFFFF, 0); // FLR bit should be cleared
-    }
-
-    #[test]
     fn test_pci_express_capability_length() {
-        let cap = PciExpressCapability::new(true, None);
+        let cap = PciExpressCapability::new(None);
         assert_eq!(cap.len(), 0x0C); // Should be 12 bytes
     }
 
     #[test]
     fn test_pci_express_capability_label() {
-        let cap = PciExpressCapability::new(true, None);
+        let cap = PciExpressCapability::new(None);
         assert_eq!(cap.label(), "pci-express");
     }
 }
