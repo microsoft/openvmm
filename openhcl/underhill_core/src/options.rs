@@ -183,6 +183,10 @@ pub struct Options {
     /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
     /// Specify which guest state encryption policy to use.
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_ATTEMPT_AK_CERT_CALLBACK=1) Attempt to renew the AK cert.
+    /// If not specified, use the configuration in DPSv2 ManagementVtlFeatures.
+    pub attempt_ak_cert_callback: Option<bool>,
 }
 
 impl Options {
@@ -217,24 +221,44 @@ impl Options {
         let parse_env_string =
             |name: &str| -> Option<&OsString> { env.get::<OsStr>(name.as_ref()) };
 
-        fn parse_bool(value: Option<&OsString>) -> bool {
+        fn parse_bool_opt(value: Option<&OsString>) -> anyhow::Result<Option<bool>> {
             value
-                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-                .unwrap_or_default()
+                .map(|v| {
+                    if v.eq_ignore_ascii_case("true") || v == "1" {
+                        Ok(true)
+                    } else if v.eq_ignore_ascii_case("false") || v == "0" {
+                        Ok(false)
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "invalid boolean environment variable: {}",
+                            v.to_string_lossy()
+                        ))
+                    }
+                })
+                .transpose()
+        }
+
+        fn parse_bool(value: Option<&OsString>) -> bool {
+            parse_bool_opt(value).ok().flatten().unwrap_or_default()
         }
 
         let parse_legacy_env_bool = |name| parse_bool(legacy_openhcl_env(name));
-        let parse_env_bool = |name: &str| parse_bool(env.get::<OsStr>(name.as_ref()));
+        let parse_env_bool = |name: &str| parse_bool(parse_env_string(name));
+        let parse_env_bool_opt = |name: &str| parse_bool_opt(parse_env_string(name));
 
-        let parse_legacy_env_number = |name| {
-            legacy_openhcl_env(name)
+        fn parse_number(value: Option<&OsString>) -> anyhow::Result<Option<u64>> {
+            value
                 .map(|v| {
-                    v.to_string_lossy().parse().context(format!(
-                        "Error parsing numeric environment variable {} {:?}",
-                        name, v
-                    ))
+                    let v = v.to_string_lossy();
+                    v.parse()
+                        .context(format!("invalid numeric environment variable: {v}"))
                 })
                 .transpose()
+        }
+
+        let parse_legacy_env_number = |name| {
+            parse_number(legacy_openhcl_env(name))
+                .context(format!("parsing legacy env number: {name}"))
         };
 
         let mut wait_for_start = parse_legacy_env_bool("OPENHCL_WAIT_FOR_START");
@@ -290,10 +314,14 @@ impl Options {
                 x.to_string_lossy()
                     .parse::<GuestStateEncryptionPolicyCli>()
                     .map_err(|e| {
-                        tracing::warn!("failed to parse HCL_GUEST_STATE_ENCRYPTION_POLICY: {}", e)
+                        tracing::warn!("failed to parse HCL_GUEST_STATE_ENCRYPTION_POLICY: {:#}", e)
                     })
                     .ok()
             });
+        let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK")
+            .map_err(|e| tracing::warn!("failed to parse HCL_ATTEMPT_AK_CERT_CALLBACK: {:#}", e))
+            .ok()
+            .flatten();
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -352,6 +380,7 @@ impl Options {
             test_configuration,
             disable_uefi_frontpage,
             guest_state_encryption_policy,
+            attempt_ak_cert_callback,
         })
     }
 

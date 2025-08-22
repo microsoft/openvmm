@@ -89,6 +89,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+// TODO: Chunk this up into smaller per-interface errors.
 /// Error returned by HCL operations.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
@@ -136,8 +137,6 @@ pub enum Error {
     NumSignalEvent(#[source] io::Error),
     #[error("failed to create vtl")]
     CreateVTL(#[source] nix::Error),
-    #[error("Gva to gpa translation failed")]
-    TranslateGvaToGpa(#[source] TranslateGvaToGpaError),
     #[error("gpa failed vtl access check")]
     CheckVtlAccess(#[source] HvError),
     #[error("failed to set registers using set_vp_registers hypercall")]
