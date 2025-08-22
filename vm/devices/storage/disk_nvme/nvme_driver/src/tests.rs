@@ -8,13 +8,16 @@ use chipset_device::pci::PciConfigSpace;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::CellUpdater;
 use nvme::NvmeControllerCaps;
+use nvme_resources::fault::AdminQueueFaultConfig;
+use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFault;
+use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::Cap;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use nvme_spec::nvm::DsmRange;
-use nvme_test::FaultConfiguration;
-use nvme_test::QueueFaultBehavior;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
@@ -41,7 +44,7 @@ struct AdminQueueFault {
 }
 
 #[async_trait::async_trait]
-impl nvme_test::QueueFault for AdminQueueFault {
+impl QueueFault for AdminQueueFault {
     async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultBehavior<Command> {
         tracing::info!("Faulting submission queue using cid sequence number mismatch");
         let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
@@ -75,9 +78,8 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
     test_nvme_fault_injection(
         driver,
         FaultConfiguration {
-            admin_fault: Some(Box::new(AdminQueueFault {
-                driver: task_driver,
-            })),
+            signal: CellUpdater::new(false).cell(),
+            admin_fault: AdminQueueFaultConfig::new(), // TODO: Fix this later, only moving this to test some changes
         },
     )
     .await;

@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use crate::fault::FaultConfiguration;
 use guid::Guid;
 use mesh::Cell;
 use mesh::MeshPayload;
@@ -12,6 +13,8 @@ use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
+
+pub mod fault;
 
 /// A handle to an NVMe controller.
 #[derive(MeshPayload)]
@@ -41,8 +44,8 @@ pub struct NvmeFaultControllerHandle {
     pub max_io_queues: u16,
     /// The initial set of namespaces.
     pub namespaces: Vec<NamespaceDefinition>,
-    /// Signal to start the fault
-    pub signal: Cell<bool>,
+    /// Configuration for the fault
+    pub fault_config: FaultConfiguration,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {

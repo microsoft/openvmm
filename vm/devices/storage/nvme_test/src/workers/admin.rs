@@ -8,12 +8,10 @@ use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
 use crate::DOORBELL_STRIDE_BITS;
-use crate::FaultConfiguration;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
 use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
-use crate::QueueFaultBehavior;
 use crate::VENDOR_ID;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
@@ -33,6 +31,8 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
@@ -464,17 +464,23 @@ impl AdminHandler {
                 let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
-                if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
-                    let fault = admin_fault.fault_submission_queue(command).await;
+                if self.config.fault_configuration.signal.get() {
+                    let fault = self
+                        .config
+                        .fault_configuration
+                        .admin_fault
+                        .fault_submission_queue(command);
 
                     match fault {
-                        QueueFaultBehavior::Update(command_updated) => {
+                        QueueFaultBehavior::Update(mut command_updated) => {
                             tracing::warn!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
                                 &command_updated
                             );
-                            command = command_updated;
+                            command = spec::Command::mut_from_bytes(command_updated.as_mut_bytes())
+                                .expect("command updated should be valid")
+                                .clone();
                         }
                         QueueFaultBehavior::Drop => {
                             tracing::warn!(
@@ -484,6 +490,14 @@ impl AdminHandler {
                             return Ok(());
                         }
                         QueueFaultBehavior::Default => {}
+                        QueueFaultBehavior::ChangeCompletionId(new_cid) => {
+                            tracing::warn!(
+                                "configured fault: admin command changed cid from {} to {}",
+                                command.cdw0.cid(),
+                                new_cid
+                            );
+                            command.cdw0.set_cid(new_cid);
+                        }
                     }
                 }
 
@@ -574,28 +588,28 @@ impl AdminHandler {
             cid,
         };
 
-        if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
-            let fault = admin_fault.fault_completion_queue(completion.clone()).await;
+        // if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
+        //     let fault = admin_fault.fault_completion_queue(completion.clone()).await;
 
-            match fault {
-                QueueFaultBehavior::Update(completion_new) => {
-                    tracelimit::warn_ratelimited!(
-                        "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
-                        &completion,
-                        &completion_new
-                    );
-                    completion = completion_new;
-                }
-                QueueFaultBehavior::Drop => {
-                    tracelimit::warn_ratelimited!(
-                        "configured fault: admin completion dropped from cq {:?}",
-                        &completion
-                    );
-                    return Ok(());
-                }
-                QueueFaultBehavior::Default => {}
-            }
-        }
+        //     match fault {
+        //         QueueFaultBehavior::Update(completion_new) => {
+        //             tracelimit::warn_ratelimited!(
+        //                 "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
+        //                 &completion,
+        //                 &completion_new
+        //             );
+        //             completion = completion_new;
+        //         }
+        //         QueueFaultBehavior::Drop => {
+        //             tracelimit::warn_ratelimited!(
+        //                 "configured fault: admin completion dropped from cq {:?}",
+        //                 &completion
+        //             );
+        //             return Ok(());
+        //         }
+        //         QueueFaultBehavior::Default => {}
+        //     }
+        // }
 
         state.admin_cq.write(&self.config.mem, completion)?;
         // Again, for simplicity, update EVT_IDX here.

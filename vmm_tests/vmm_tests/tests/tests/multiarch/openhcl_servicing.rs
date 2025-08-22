@@ -14,6 +14,9 @@ use hvlite_defs::config::VpciDeviceConfig;
 use mesh::CellUpdater;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
+use nvme_resources::fault::AdminQueueFaultConfig;
+use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFaultBehavior;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -176,10 +179,16 @@ async fn keepalive_with_nvme_fault(
     }
 
     let mut signal_updater = CellUpdater::new(false);
-    let signal = signal_updater.cell();
+
+    let fault_configuration = FaultConfiguration {
+        signal: signal_updater.cell(),
+        admin_fault: AdminQueueFaultConfig::new()
+            .with_submission_queue_fault(0x05, QueueFaultBehavior::ChangeCompletionId(42)),
+    };
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off")
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 // Add a fault controller to test the nvme controller functionality
@@ -191,14 +200,14 @@ async fn keepalive_with_nvme_fault(
                         msix_count: 1,
                         max_io_queues: 1,
                         namespaces: vec![NamespaceDefinition {
-                            nsid: 1,
+                            nsid: 37,
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(256 * 1024),
                             })
                             .into_resource(),
                         }],
-                        signal,
+                        fault_config: fault_configuration,
                     }
                     .into_resource(),
                 })
@@ -242,7 +251,7 @@ async fn keepalive_with_nvme_fault(
     let sh = agent.unix_shell();
 
     // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?;
+    cmd!(sh, "ls /dev/sda").run().await?; // TODO: This is actually not checking much right now
 
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
@@ -252,11 +261,13 @@ async fn keepalive_with_nvme_fault(
     vm.restart_openhcl(
         igvm_file.clone(),
         OpenHclServicingFlags {
-            enable_nvme_keepalive: false,
+            enable_nvme_keepalive: true,
             ..Default::default()
         },
     )
     .await?;
+
+    signal_updater.set(false).await;
 
     agent.ping().await?;
 
