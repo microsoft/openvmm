@@ -4,13 +4,13 @@
 //! Tests for Function Level Reset (FLR) functionality.
 
 use super::test_helpers::TestNvmeMmioRegistration;
-use crate::FaultConfiguration;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
 use crate::tests::test_helpers::find_pci_capability;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
+use nvme_resources::fault::FaultConfiguration;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::capabilities::pci_express::PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK;
