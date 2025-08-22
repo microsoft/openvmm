@@ -10,7 +10,6 @@ use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
-use super::UhRunVpError;
 use super::hardware_cvm;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
@@ -52,6 +51,7 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
+use thiserror::Error;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
@@ -157,6 +157,18 @@ const MSR_ALLOWED_READ_WRITE: &[u32] = &[
     x86defs::X86X_IA32_MSR_XFD,
     x86defs::X86X_IA32_MSR_XFD_ERR,
 ];
+
+#[derive(Debug, Error)]
+#[error("unknown exit {0:#x?}")]
+struct UnknownVmxExit(VmxExit);
+
+#[derive(Debug, Error)]
+#[error("bad guest state on VP.ENTER")]
+struct VmxBadGuestState;
+
+#[derive(Debug, Error)]
+#[error("failed to run")]
+struct TdxRunVpError(#[source] hcl::ioctl::Error);
 
 #[derive(Debug)]
 struct TdxExit<'a>(&'a tdx_tdg_vp_enter_exit_info);
@@ -856,20 +868,18 @@ impl BackingPrivate for TdxBacked {
                 .into(),
         );
 
+        let controls = TdxL2Ctls::new()
+            // Configure L2 controls to permit shared memory.
+            .with_enable_shared_ept(!shared.cvm.hide_isolation)
+            // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
+            .with_enable_tdvmcall(shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation);
+
+        params
+            .runner
+            .set_l2_ctls(GuestVtl::Vtl0, controls)
+            .map_err(crate::Error::FailedToSetL2Ctls)?;
+
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
-            let controls = TdxL2Ctls::new()
-                // Configure L2 controls to permit shared memory.
-                .with_enable_shared_ept(!shared.cvm.hide_isolation)
-                // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
-                .with_enable_tdvmcall(
-                    shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation,
-                );
-
-            params
-                .runner
-                .set_l2_ctls(vtl, controls)
-                .map_err(crate::Error::FailedToSetL2Ctls)?;
-
             // Set guest/host masks for CR0 and CR4. These enable shadowing these
             // registers since TDX requires certain bits to be set at all times.
             let initial_cr0 = params
@@ -1093,16 +1103,12 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         this.run_vp_tdx(dev).await
     }
 
-    fn poll_apic(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
-        if !this.try_poll_apic(vtl, scan_irr)? {
+    fn poll_apic(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool) {
+        if !this.try_poll_apic(vtl, scan_irr) {
             tracing::info!(CVM_ALLOWED, "disabling APIC offload due to auto EOI");
             let page = this.runner.tdx_apic_page_mut(vtl);
             let (irr, isr) = pull_apic_offload(page);
@@ -1111,10 +1117,8 @@ impl BackingPrivate for TdxBacked {
                 .lapic
                 .disable_offload(&irr, &isr);
             this.set_apic_offload(vtl, false);
-            this.try_poll_apic(vtl, false)?;
+            this.try_poll_apic(vtl, false);
         }
-
-        Ok(())
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -1137,10 +1141,7 @@ impl BackingPrivate for TdxBacked {
         Some(&mut self.cvm.hv[vtl])
     }
 
-    fn handle_vp_start_enable_vtl_wake(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
+    fn handle_vp_start_enable_vtl_wake(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
         this.hcvm_handle_vp_start_enable_vtl(vtl)
     }
 
@@ -1153,7 +1154,7 @@ impl BackingPrivate for TdxBacked {
         scan_irr: VtlArray<bool, 2>,
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+    ) -> bool {
         this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
     }
 }
@@ -1161,7 +1162,7 @@ impl BackingPrivate for TdxBacked {
 impl UhProcessor<'_, TdxBacked> {
     /// Returns `Ok(false)` if the APIC offload needs to be disabled and the
     /// poll retried.
-    fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> Result<bool, UhRunVpError> {
+    fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> bool {
         let mut scan = TdxApicScanner {
             processor_controls: self.backing.vtls[vtl]
                 .processor_controls
@@ -1172,7 +1173,7 @@ impl UhProcessor<'_, TdxBacked> {
         };
 
         // TODO TDX: filter proxy IRRs by setting the `proxy_irr_blocked` field of the run page
-        hardware_cvm::apic::poll_apic_core(&mut scan, vtl, scan_irr)?;
+        hardware_cvm::apic::poll_apic_core(&mut scan, vtl, scan_irr);
 
         let TdxApicScanner {
             vp: _,
@@ -1258,7 +1259,7 @@ impl UhProcessor<'_, TdxBacked> {
             if let Err(OffloadNotSupported) = r {
                 // APIC needs offloading to be disabled to support auto-EOI. The caller
                 // will disable offload and try again.
-                return Ok(false);
+                return false;
             }
 
             if update_rvi {
@@ -1288,7 +1289,7 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.cvm.lapics[vtl].activity = MpState::Running;
         }
 
-        Ok(true)
+        true
     }
 
     fn access_apic_without_offload<R>(
@@ -1362,7 +1363,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
         self.vp
     }
 
-    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) {
         // Exit idle when an interrupt is received, regardless of IF
         if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
             self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
@@ -1377,7 +1378,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
                 != INTERRUPT_TYPE_EXTERNAL
         {
             self.processor_controls.set_interrupt_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         // Ensure the interrupt is not blocked by RFLAGS.IF or interrupt shadow.
@@ -1393,14 +1394,14 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             || interruptibility.blocked_by_movss()
         {
             self.processor_controls.set_interrupt_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         let priority = vector >> 4;
         let apic = self.vp.runner.tdx_apic_page(vtl);
         if (apic.tpr.value as u8 >> 4) >= priority {
             self.tpr_threshold = priority;
-            return Ok(());
+            return;
         }
 
         self.vp.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
@@ -1409,10 +1410,9 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             .with_interruption_type(INTERRUPT_TYPE_EXTERNAL);
 
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-        Ok(())
     }
 
-    fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+    fn handle_nmi(&mut self, vtl: GuestVtl) {
         // Exit idle when an interrupt is received, regardless of IF
         // TODO: Investigate lifting more activity management into poll_apic_core
         if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
@@ -1428,7 +1428,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
                 != INTERRUPT_TYPE_EXTERNAL
         {
             self.processor_controls.set_nmi_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         let interruptibility: Interruptibility = self
@@ -1442,7 +1442,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             || interruptibility.blocked_by_movss()
         {
             self.processor_controls.set_nmi_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         self.vp.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
@@ -1451,20 +1451,17 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             .with_interruption_type(INTERRUPT_TYPE_NMI);
 
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-        Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError> {
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) {
         self.vp.write_segment(vtl, TdxSegmentReg::Cs, cs).unwrap();
         self.vp.backing.vtls[vtl].private_regs.rip = 0;
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-
-        Ok(())
     }
 }
 
 impl UhProcessor<'_, TdxBacked> {
-    async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
+    async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
         if self.backing.vtls[next_vtl].interruption_information.valid() {
@@ -1567,7 +1564,7 @@ impl UhProcessor<'_, TdxBacked> {
         let has_intercept = self
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
+            .map_err(|e| VpHaltReason::Hypervisor(TdxRunVpError(e).into()))?;
 
         // TLB flushes can only target lower VTLs, so it is fine to use a relaxed
         // ordering here. The worst that can happen is some spurious wakes, due
@@ -1659,7 +1656,7 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         dev: &impl CpuIo,
         intercepted_vtl: GuestVtl,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
 
         // First, check that the VM entry was even successful.
@@ -2021,9 +2018,7 @@ impl UhProcessor<'_, TdxBacked> {
                     ) {
                         self.runner
                             .set_vp_register(intercepted_vtl, HvX64RegisterName::Xfem, value.into())
-                            .map_err(|err| {
-                                VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
-                            })?;
+                            .unwrap();
                         self.advance_to_next_instruction(intercepted_vtl);
                     }
                 } else {
@@ -2185,9 +2180,9 @@ impl UhProcessor<'_, TdxBacked> {
                     .descriptor_table
             }
             _ => {
-                return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
-                    exit_info.code().vmx_exit(),
-                )));
+                return Err(VpHaltReason::InvalidVmState(
+                    UnknownVmxExit(exit_info.code().vmx_exit()).into(),
+                ));
             }
         };
         stat.increment();
@@ -2409,11 +2404,7 @@ impl UhProcessor<'_, TdxBacked> {
         tracing::error!(CVM_CONFIDENTIAL, vmcs_pat, "guest PAT");
     }
 
-    fn handle_vm_enter_failed(
-        &self,
-        vtl: GuestVtl,
-        vmx_exit: VmxExit,
-    ) -> VpHaltReason<UhRunVpError> {
+    fn handle_vm_enter_failed(&self, vtl: GuestVtl, vmx_exit: VmxExit) -> VpHaltReason {
         assert!(vmx_exit.vm_enter_failed());
         match vmx_exit.basic_reason() {
             VmxExitBasic::BAD_GUEST_STATE => {
@@ -2422,10 +2413,9 @@ impl UhProcessor<'_, TdxBacked> {
                 tracing::error!(CVM_ALLOWED, "VP.ENTER failed with bad guest state");
                 self.trace_processor_state(vtl);
 
-                // TODO: panic instead?
-                VpHaltReason::Hypervisor(UhRunVpError::VmxBadGuestState)
+                VpHaltReason::InvalidVmState(VmxBadGuestState.into())
             }
-            _ => VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(vmx_exit)),
+            _ => VpHaltReason::InvalidVmState(UnknownVmxExit(vmx_exit).into()),
         }
     }
 
@@ -2791,15 +2781,12 @@ impl UhProcessor<'_, TdxBacked> {
 }
 
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
-    type Error = UhRunVpError;
-
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
+    fn flush(&mut self) {
         // no cached registers are modifiable by the emulator for TDX
-        Ok(())
     }
 
     fn vendor(&self) -> x86defs::cpuid::Vendor {
@@ -2818,9 +2805,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         u128::from_ne_bytes(self.vp.runner.fx_state().xmm[index])
     }
 
-    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, index: usize, v: u128) {
         self.vp.runner.fx_state_mut().xmm[index] = v.to_ne_bytes();
-        Ok(())
     }
 
     fn rip(&mut self) -> u64 {
@@ -2921,7 +2907,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
-    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError> {
         // Nothing to do here, the guest memory object will handle the check.
         Ok(())
     }
@@ -2931,11 +2917,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         gva: u64,
         mode: TranslateMode,
     ) -> Result<
-        Result<
-            virt_support_x86emu::emulate::EmuTranslateResult,
-            virt_support_x86emu::emulate::EmuTranslateError,
-        >,
-        Self::Error,
+        virt_support_x86emu::emulate::EmuTranslateResult,
+        virt_support_x86emu::emulate::EmuTranslateError,
     > {
         emulate_translate_gva(self, gva, mode)
     }
@@ -3186,7 +3169,7 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         vtl: GuestVtl,
         dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         assert_eq!(
             exit_info.code().vmx_exit().basic_reason(),
@@ -3292,7 +3275,7 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         vtl: GuestVtl,
         dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         assert_eq!(
             exit_info.code().vmx_exit().basic_reason(),

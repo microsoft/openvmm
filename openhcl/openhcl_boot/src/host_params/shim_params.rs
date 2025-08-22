@@ -11,16 +11,13 @@ use loader_defs::shim::ShimParamsRaw;
 use memory_range::MemoryRange;
 
 /// Isolation type of the partition
-///
-/// TODO: Fix arch specific abstractions across the bootloader so we can remove
-/// target_arch here and elsewhere.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum IsolationType {
     None,
     Vbs,
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     Snp,
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     Tdx,
 }
 
@@ -29,9 +26,7 @@ impl IsolationType {
         match self {
             IsolationType::None => false,
             IsolationType::Vbs => false,
-            #[cfg(target_arch = "x86_64")]
             IsolationType::Snp => true,
-            #[cfg(target_arch = "x86_64")]
             IsolationType::Tdx => true,
         }
     }

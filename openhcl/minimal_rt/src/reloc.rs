@@ -12,7 +12,9 @@
 macro_rules! panic_no_relocs {
     ($code:expr) => {{
         let _code = $code;
-        crate::arch::dead_loop(_code as u64, line!() as u64, file!().as_ptr() as u64);
+        crate::arch::fault();
+        // Uncomment for local debugging. Can't spin forever in the official build.
+        // crate::arch::dead_loop(_code as u64, line!() as u64, file!().as_ptr() as u64);
     }};
 }
 

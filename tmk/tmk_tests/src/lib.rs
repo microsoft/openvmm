@@ -74,7 +74,7 @@ fn host_tmks_core(
     driver
         .spawn(
             "log",
-            petri::log_stream(params.logger.log_file("tmk_vmm")?, stdout),
+            petri::log_task(params.logger.log_file("tmk_vmm")?, stdout, "tmk_vmm stdout"),
         )
         .detach();
 
@@ -159,9 +159,10 @@ async fn openhcl_tmks_inner<T: PetriVmmBackend>(
     driver
         .spawn(
             "log",
-            petri::log_stream(
+            petri::log_task(
                 params.logger.log_file("tmk_vmm")?,
                 child.stdout.take().unwrap(),
+                "tmk_vmm stdout",
             ),
         )
         .detach();

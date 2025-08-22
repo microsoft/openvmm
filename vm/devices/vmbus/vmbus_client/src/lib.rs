@@ -37,6 +37,8 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
@@ -336,7 +338,6 @@ pub enum ChannelRequest {
 pub struct OpenOutput {
     // FUTURE: remove this once it's part of the saved state.
     pub redirected_event_flag: Option<u16>,
-    pub guest_to_host_signal: Interrupt,
 }
 
 impl std::fmt::Display for ChannelRequest {
@@ -382,6 +383,8 @@ pub enum RestoreError {
 #[derive(Debug, Inspect)]
 pub struct OfferInfo {
     pub offer: protocol::OfferChannel,
+    #[inspect(skip)]
+    pub guest_to_host_interrupt: Interrupt,
     #[inspect(skip)]
     pub request_send: mesh::Sender<ChannelRequest>,
     #[inspect(skip)]
@@ -510,7 +513,6 @@ enum ChannelState {
     Offered,
     /// The channel has requested the server to be opened.
     Opening {
-        connection_id: u32,
         redirected_event_flag: Option<u16>,
         #[inspect(skip)]
         redirected_event: Option<Event>,
@@ -521,7 +523,6 @@ enum ChannelState {
     Restored,
     /// The channel has been successfully opened.
     Opened {
-        connection_id: u32,
         redirected_event_flag: Option<u16>,
         #[inspect(skip)]
         redirected_event: Option<Event>,
@@ -555,6 +556,7 @@ struct Channel {
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0)")]
     gpadls: HashMap<GpadlId, GpadlState>,
     is_client_released: bool,
+    connection_id: Arc<AtomicU32>,
 }
 
 impl Channel {
@@ -755,6 +757,7 @@ impl ClientTask {
         let (request_send, request_recv) = mesh::channel();
         let (revoke_send, revoke_recv) = mesh::oneshot();
 
+        let connection_id = Arc::new(AtomicU32::new(0));
         self.channels.0.insert(
             offer.channel_id,
             Channel {
@@ -764,6 +767,7 @@ impl ClientTask {
                 modify_response_send: None,
                 gpadls: HashMap::new(),
                 is_client_released: false,
+                connection_id: connection_id.clone(),
             },
         );
 
@@ -773,6 +777,7 @@ impl ClientTask {
 
         Ok(OfferInfo {
             offer,
+            guest_to_host_interrupt: self.inner.synic.guest_to_host_interrupt(connection_id),
             revoke_recv,
             request_send,
         })
@@ -813,7 +818,6 @@ impl ClientTask {
         let event_flag = match std::mem::replace(&mut channel.state, ChannelState::Revoked) {
             ChannelState::Offered => None,
             ChannelState::Opening {
-                connection_id: _,
                 redirected_event_flag,
                 redirected_event: _,
                 rpc,
@@ -823,7 +827,6 @@ impl ClientTask {
             }
             ChannelState::Restored => None,
             ChannelState::Opened {
-                connection_id: _,
                 redirected_event_flag,
                 redirected_event: _,
             } => redirected_event_flag,
@@ -908,7 +911,6 @@ impl ClientTask {
         let channel_opened = result.status == protocol::STATUS_SUCCESS as u32;
         let old_state = std::mem::replace(&mut channel.state, ChannelState::Offered);
         let ChannelState::Opening {
-            connection_id,
             redirected_event_flag,
             redirected_event,
             rpc,
@@ -932,14 +934,12 @@ impl ClientTask {
         }
 
         channel.state = ChannelState::Opened {
-            connection_id,
             redirected_event_flag,
             redirected_event,
         };
 
         rpc.complete(Ok(OpenOutput {
             redirected_event_flag,
-            guest_to_host_signal: self.inner.synic.guest_to_host_interrupt(connection_id),
         }));
     }
 
@@ -1177,8 +1177,10 @@ impl ClientTask {
             self.inner.messages.send(&open_channel);
         }
 
+        channel
+            .connection_id
+            .store(connection_id, Ordering::Release);
         channel.state = ChannelState::Opening {
-            connection_id,
             redirected_event_flag: (request.incoming_event.is_some()).then_some(event_flag),
             redirected_event: request.incoming_event,
             rpc,
@@ -1206,17 +1208,15 @@ impl ClientTask {
             self.inner.synic.restore_event_flag(flag, event)?;
         }
 
+        channel
+            .connection_id
+            .store(request.connection_id, Ordering::Release);
         channel.state = ChannelState::Opened {
-            connection_id: request.connection_id,
             redirected_event_flag: request.redirected_event_flag,
             redirected_event: request.incoming_event,
         };
         Ok(OpenOutput {
             redirected_event_flag: request.redirected_event_flag,
-            guest_to_host_signal: self
-                .inner
-                .synic
-                .guest_to_host_interrupt(request.connection_id),
         })
     }
 
@@ -1574,6 +1574,7 @@ impl ClientTaskInner {
             tracing::info!(channel_id = channel_id.0, "closing channel on host");
             self.messages.send(&protocol::CloseChannel { channel_id });
             channel.state = ChannelState::Offered;
+            channel.connection_id.store(0, Ordering::Release);
         } else {
             tracing::warn!(
                 id = %channel_id.0,
@@ -1790,10 +1791,16 @@ impl ChannelList {
 }
 
 impl SynicState {
-    fn guest_to_host_interrupt(&self, connection_id: u32) -> Interrupt {
+    fn guest_to_host_interrupt(&self, connection_id: Arc<AtomicU32>) -> Interrupt {
         Interrupt::from_fn({
             let event_client = self.event_client.clone();
             move || {
+                let connection_id = connection_id.load(Ordering::Acquire);
+                if connection_id == 0 {
+                    tracing::debug!("interrupt signal after close");
+                    return;
+                }
+
                 if let Err(err) = event_client.signal_event(connection_id, 0) {
                     tracelimit::warn_ratelimited!(
                         error = &err as &dyn std::error::Error,

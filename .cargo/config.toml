@@ -89,6 +89,8 @@ rustflags = [
 rustflags = [
   # Use the musl from the sysroot, not from the Rust distribution.
   "-Clink-self-contained=n",
+  # Force musl to be statically linked in
+  "-Ctarget-feature=+crt-static",
   # Use RELR relocation format, which is considerably smaller.
   "-Clink-arg=-Wl,-z,pack-relative-relocs",
 ]

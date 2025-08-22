@@ -443,3 +443,38 @@ goes more in-depth as to why.
 
 Instead, name things based on what they logically provide, like functionality or
 data types.
+
+## Release Gates Workflow
+
+_Triggered Manually:_ **Yes** (via GitHub labels)
+
+In addition to the standard PR gates that run in debug mode, OpenVMM also provides
+a "Release Gates" workflow that runs the same checks but compiled in release mode.
+This workflow takes significantly longer to run but can catch issues that only
+manifest in optimized builds.
+
+### When to Use Release Gates
+
+The release gates workflow should be used when:
+
+- Making changes to performance-critical code paths
+- Modifying compiler flags or build configuration
+- Implementing low-level optimizations
+- Debugging issues that only appear in release builds
+- Before merging large refactoring changes
+
+### How to Trigger Release Gates
+
+To run the release gates on your PR:
+
+1. Ensure your PR is ready for review (not in draft mode)
+2. Add the `release-ci-required` label to your PR
+3. The workflow will automatically trigger and run all checks in release mode
+
+The workflow will only run when the specific label is present, so you have full
+control over when to use this more resource-intensive testing.
+
+### Label Management
+
+Only repository maintainers can add labels to PRs. If you need release gates
+run on your PR, ask a maintainer to add the `release-ci-required` label for you.

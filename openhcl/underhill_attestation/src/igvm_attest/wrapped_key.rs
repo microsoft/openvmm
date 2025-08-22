@@ -220,9 +220,7 @@ mod tests {
             version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
             error_info: IgvmErrorInfo::default(),
         };
-        let response = [header.as_bytes(), payload.as_bytes()].concat();
-
-        response
+        [header.as_bytes(), payload.as_bytes()].concat();
     }
 
     #[test]

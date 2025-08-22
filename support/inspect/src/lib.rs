@@ -1620,6 +1620,12 @@ impl Inspect for std::fs::File {
     }
 }
 
+impl Inspect for core::time::Duration {
+    fn inspect(&self, req: Request<'_>) {
+        req.value(format!("{}.{:09}s", self.as_secs(), self.subsec_nanos()));
+    }
+}
+
 /// Wrapper around `T` that implements [`Inspect`] by calling
 /// [`ToString::to_string()`].
 pub struct AsDisplay<T>(pub T);

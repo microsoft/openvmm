@@ -150,19 +150,28 @@ where
                 })
             }
             VpHaltReason::InvalidVmState(err) => {
-                tracing::error!(err = &err as &dyn std::error::Error, "invalid vm state");
+                tracing::error!(
+                    err = err.as_ref() as &dyn std::error::Error,
+                    "invalid VM state"
+                );
                 Err(HaltReason::InvalidVmState {
                     vp: self.vp_index.index(),
                 })
             }
-            VpHaltReason::EmulationFailure(error) => {
-                tracing::error!(error, "emulation failure");
+            VpHaltReason::EmulationFailure(err) => {
+                tracing::error!(
+                    err = err.as_ref() as &dyn std::error::Error,
+                    "emulation failure"
+                );
                 Err(HaltReason::VpError {
                     vp: self.vp_index.index(),
                 })
             }
             VpHaltReason::Hypervisor(err) => {
-                tracing::error!(err = &err as &dyn std::error::Error, "fatal vp error");
+                tracing::error!(
+                    err = err.as_ref() as &dyn std::error::Error,
+                    "fatal vp error"
+                );
                 Err(HaltReason::VpError {
                     vp: self.vp_index.index(),
                 })
@@ -1389,7 +1398,7 @@ mod vp_state {
         vtl: Vtl,
         gva: u64,
         buf: &mut [u8],
-    ) -> Result<(), anyhow::Error> {
+    ) -> anyhow::Result<()> {
         let mut offset = 0;
         while offset < buf.len() {
             let gpa = translate_gva(guest_memory, debug, vtl, gva + offset as u64)
@@ -1407,7 +1416,7 @@ mod vp_state {
         vtl: Vtl,
         gva: u64,
         buf: &[u8],
-    ) -> Result<(), anyhow::Error> {
+    ) -> anyhow::Result<()> {
         let mut offset = 0;
         while offset < buf.len() {
             let gpa = translate_gva(guest_memory, debug, vtl, gva + offset as u64)

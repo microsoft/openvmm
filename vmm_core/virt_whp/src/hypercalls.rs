@@ -655,8 +655,18 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
 
         let partition = self.vp.vp.partition;
 
-        for page in gpa_pages {
+        for (index, page) in gpa_pages.iter().enumerate() {
             let range = MemoryRange::from_4k_gpn_range(*page..(*page + 1));
+
+            // On VBS, the page must be accepted in order to change visibility.
+            // If the page is not accepted, the hypervisor returns operation
+            // denied.
+            let gpa = *page * HV_PAGE_SIZE;
+            if partition.vtl0.gpa_visibility(gpa).is_none() {
+                tracing::error!(page, "modify visibility called for non-accepted page");
+                return Err((HvError::OperationDenied, index));
+            }
+
             // TODO: Modifying visibility today doesn't return any kind of
             // useful error to the guest. Need to check the hypervisor and
             // determine what the right thing to do is here.
@@ -683,7 +693,6 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
 mod x86 {
     use super::WhpHypercallExit;
     use crate::WhpProcessor;
-    use crate::WhpRunVpError;
     use crate::regs;
     use crate::vtl2;
     use arrayvec::ArrayVec;
@@ -809,7 +818,7 @@ mod x86 {
             bus: &'a T,
             info: &whp::abi::WHV_HYPERCALL_CONTEXT,
             exit_context: &'a whp::abi::WHV_VP_EXIT_CONTEXT,
-        ) -> Result<(), WhpRunVpError> {
+        ) {
             let vpref = vp.vp;
 
             let is_64bit =
@@ -832,7 +841,7 @@ mod x86 {
             this.flush()
         }
 
-        fn flush(&mut self) -> Result<(), WhpRunVpError> {
+        fn flush(&mut self) {
             let registers = &mut self.registers;
             let mut pairs = (
                 ArrayVec::<_, 14>::new(),
@@ -868,10 +877,7 @@ mod x86 {
 
             let (names, values) = &pairs;
             if !names.is_empty() {
-                self.vp
-                    .current_whp()
-                    .set_registers(names, values)
-                    .map_err(WhpRunVpError::Event)?;
+                self.vp.current_whp().set_registers(names, values).unwrap();
 
                 registers.gp_dirty = false;
                 registers.rip_dirty = false;
@@ -890,12 +896,10 @@ mod x86 {
                 self.vp
                     .current_whp()
                     .set_register(whp::Register128::PendingEvent, exception_event.into())
-                    .map_err(WhpRunVpError::Event)?;
+                    .unwrap();
 
                 self.registers.invalid_opcode = false;
             }
-
-            Ok(())
         }
     }
 

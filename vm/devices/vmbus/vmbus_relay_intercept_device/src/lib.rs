@@ -296,14 +296,14 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             .reserve_memory(state, &offer.request_send, 4)
             .await
             .context("reserve memory")?;
+        let guest_to_host_interrupt = offer.guest_to_host_interrupt.clone();
         state.offer = Some(offer);
         let offer = state.offer.as_ref().unwrap();
-        let opened = self
-            .open_channel(&offer.request_send, ring_gpadl_id, &interrupt_event)
+        self.open_channel(&offer.request_send, ring_gpadl_id, &interrupt_event)
             .await
             .context("open channel")?;
         let channel = self
-            .create_vmbus_channel(&memory, &interrupt_event, opened.guest_to_host_signal)
+            .create_vmbus_channel(&memory, &interrupt_event, guest_to_host_interrupt)
             .context("create vmbus queue")?;
 
         let save_restore = self.device.task_mut().0.supports_save_restore();
@@ -517,8 +517,8 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
     fn handle_save(&mut self) -> SavedStateBlob {
         let saved_state = self.saved_state.take();
-        if saved_state.is_some() {
-            let blob = SavedStateBlob::new(saved_state.unwrap());
+        if let Some(saved_state) = saved_state {
+            let blob = SavedStateBlob::new(saved_state);
             self.handle_restore(&blob);
             blob
         } else {
