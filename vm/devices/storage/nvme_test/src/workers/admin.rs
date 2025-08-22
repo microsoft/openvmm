@@ -35,6 +35,7 @@ use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::collections::btree_map;
@@ -42,6 +43,7 @@ use std::future::pending;
 use std::io::Cursor;
 use std::io::Write;
 use std::sync::Arc;
+use std::time::Duration;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTask;
@@ -490,13 +492,15 @@ impl AdminHandler {
                             return Ok(());
                         }
                         QueueFaultBehavior::Default => {}
-                        QueueFaultBehavior::ChangeCompletionId(new_cid) => {
+                        QueueFaultBehavior::Delay(delay) => {
                             tracing::warn!(
-                                "configured fault: admin command changed cid from {} to {}",
-                                command.cdw0.cid(),
-                                new_cid
+                                "configured fault: delaying the execution of the admin command {:?} by {} ms",
+                                &command,
+                                delay
                             );
-                            command.cdw0.set_cid(new_cid);
+                            PolledTimer::new(&self.driver)
+                                .sleep(Duration::from_millis(delay))
+                                .await;
                         }
                     }
                 }
@@ -587,29 +591,6 @@ impl AdminHandler {
             status,
             cid,
         };
-
-        // if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
-        //     let fault = admin_fault.fault_completion_queue(completion.clone()).await;
-
-        //     match fault {
-        //         QueueFaultBehavior::Update(completion_new) => {
-        //             tracelimit::warn_ratelimited!(
-        //                 "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
-        //                 &completion,
-        //                 &completion_new
-        //             );
-        //             completion = completion_new;
-        //         }
-        //         QueueFaultBehavior::Drop => {
-        //             tracelimit::warn_ratelimited!(
-        //                 "configured fault: admin completion dropped from cq {:?}",
-        //                 &completion
-        //             );
-        //             return Ok(());
-        //         }
-        //         QueueFaultBehavior::Default => {}
-        //     }
-        // }
 
         state.admin_cq.write(&self.config.mem, completion)?;
         // Again, for simplicity, update EVT_IDX here.

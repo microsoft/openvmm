@@ -14,10 +14,10 @@ pub enum QueueFaultBehavior<T> {
     Update(T),
     /// Drop the queue entry
     Drop,
-    /// No Fault, proceed as normal
+    /// Delay queue processing. Time in ms
+    Delay(u64),
+    /// No Fault
     Default,
-    /// Change the completion ID of a message
-    ChangeCompletionId(u16),
 }
 
 /// Provides fault logic for a pair of submission and completion queue.
@@ -45,36 +45,35 @@ pub struct FaultConfiguration {
     pub admin_fault: AdminQueueFaultConfig,
 }
 
-/// Something
+/// A mesh sendable fault configuration for the nvme admin queue
 #[derive(MeshPayload)]
 pub struct AdminQueueFaultConfig {
-    /// A mapping from the admin opcode to its fault behavior
-    /// TODO: This should technically be a map but Encode/Decode has not yet been implemented for the HashMap type
-    /// TODO: This should technically also be using an OpCode -> Command mapping. Saving that work for right now
-    pub admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<u32>)>,
+    /// A mapping from the admin opcode to its fault behavior. This should ideally be using a HashMap but Encode/Decode is not yet available for that.
+    /// It should also be a mapping from OpCode -> QueueFaultBehavior<Command> but Encode/Decode is not yet available for those types.
+    pub admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<u64>)>,
 }
 
 impl AdminQueueFaultConfig {
-    /// Some documentation
+    /// Create an empty fault configuration
     pub fn new() -> Self {
         Self {
-            admin_submission_queue_intercept: Vec::new(),
+            admin_submission_queue_intercept: vec![],
         }
     }
 
-    /// Some documentation
+    /// Add a simple submission queue fault based on opcodes
     pub fn with_submission_queue_fault(
         mut self,
         opcode: u8,
-        behaviour: QueueFaultBehavior<u32>,
+        behaviour: QueueFaultBehavior<u64>,
     ) -> Self {
         self.admin_submission_queue_intercept
             .push((opcode, behaviour));
         self
     }
 
-    /// Given a certain op_code this returns the Fault behaviour for that OpCode
-    pub fn fault_submission_queue(&self, command: spec::Command) -> QueueFaultBehavior<u32> {
+    /// Given the opcode, return the fault behaviour for the Admin Command
+    pub fn fault_submission_queue(&self, command: spec::Command) -> QueueFaultBehavior<u64> {
         let opcode: u8 = nvme_spec::AdminOpcode(command.cdw0.opcode()).0;
         if let Some(behavior) = self
             .admin_submission_queue_intercept
@@ -85,14 +84,5 @@ impl AdminQueueFaultConfig {
         } else {
             QueueFaultBehavior::Default
         }
-    }
-
-    // Not implemented for now at least
-    pub fn fault_completion_queue(
-        self,
-        _: spec::Completion,
-    ) -> QueueFaultBehavior<spec::Completion> {
-        // For now, we do not have any specific completion queue faults.
-        QueueFaultBehavior::Default
     }
 }
