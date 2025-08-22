@@ -288,7 +288,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                                 color,
                                 width,
                                 height,
-                            } = match framebuffer_access.screenshot(&mut image) {
+                            } = match framebuffer_access.screenshot(&mut image).await {
                                 Ok(meta) => meta,
                                 Err(e) => {
                                     tracing::error!(?e, "Failed to take screenshot");
@@ -798,16 +798,18 @@ pub struct VmScreenshotMeta {
 }
 
 /// Interface for getting screenshots of the VM
+#[async_trait]
 pub trait PetriVmFramebufferAccess: Send + 'static {
     /// Populates the provided buffer with a screenshot of the VM,
     /// returning the dimensions and color type.
-    fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta>;
+    async fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta>;
 }
 
 /// Use this for the associated type if not supported
 pub struct NoPetriVmFramebufferAccess;
+#[async_trait]
 impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
-    fn screenshot(&mut self, _image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
+    async fn screenshot(&mut self, _image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
         unreachable!()
     }
 }

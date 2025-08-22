@@ -537,6 +537,7 @@ winapi = "0.3"
 windows = "0.59"
 windows-service = "0.8"
 windows-sys = "0.59"
+windows-version = "0.1.4"
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.

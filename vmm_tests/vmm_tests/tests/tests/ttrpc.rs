@@ -56,9 +56,10 @@ fn test_ttrpc_interface(
         let driver = driver;
         let _stderr_task = driver.spawn(
             "stderr",
-            petri::log_stream(
+            petri::log_task(
                 params.logger.log_file("stderr").unwrap(),
                 PolledPipe::new(&driver, stderr_read).unwrap(),
+                "openvmm stderr",
             ),
         );
 
@@ -112,9 +113,10 @@ fn test_ttrpc_interface(
 
             let _com1_task = driver.spawn(
                 "com1",
-                petri::log_stream(
+                petri::log_task(
                     params.logger.log_file("linux").unwrap(),
                     PolledSocket::new(&driver, com1).unwrap(),
+                    "linux com1",
                 ),
             );
 

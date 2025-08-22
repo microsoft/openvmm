@@ -106,7 +106,7 @@ pub struct HyperVNewVMArgs<'a> {
 }
 
 /// Runs New-VM with the given arguments.
-pub fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
+pub async fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
     let vmid = run_cmd(
         PowerShellBuilder::new()
             .cmdlet("New-VM")
@@ -126,13 +126,14 @@ pub fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
             .finish()
             .build(),
     )
+    .await
     .context("new_vm")?;
 
     Guid::from_str(&vmid).context("invalid vmid")
 }
 
 /// Runs New-VM with the given arguments.
-pub fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
+pub async fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -143,6 +144,7 @@ pub fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("remove_vm")
 }
@@ -186,7 +188,10 @@ impl ps::AsVal for HyperVApicMode {
 }
 
 /// Runs Set-VMProcessor with the given arguments.
-pub fn run_set_vm_processor(vmid: &Guid, args: &HyperVSetVMProcessorArgs) -> anyhow::Result<()> {
+pub async fn run_set_vm_processor(
+    vmid: &Guid,
+    args: &HyperVSetVMProcessorArgs,
+) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -200,6 +205,7 @@ pub fn run_set_vm_processor(vmid: &Guid, args: &HyperVSetVMProcessorArgs) -> any
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_vm_processor")
 }
@@ -221,7 +227,7 @@ pub struct HyperVSetVMMemoryArgs {
 }
 
 /// Runs Set-VMMemory with the given arguments.
-pub fn run_set_vm_memory(vmid: &Guid, args: &HyperVSetVMMemoryArgs) -> anyhow::Result<()> {
+pub async fn run_set_vm_memory(vmid: &Guid, args: &HyperVSetVMMemoryArgs) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -235,6 +241,7 @@ pub fn run_set_vm_memory(vmid: &Guid, args: &HyperVSetVMMemoryArgs) -> anyhow::R
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_vm_memory")
 }
@@ -283,7 +290,9 @@ impl ps::AsVal for ControllerType {
 }
 
 /// Runs Add-VMHardDiskDrive with the given arguments.
-pub fn run_add_vm_hard_disk_drive(args: HyperVAddVMHardDiskDriveArgs<'_>) -> anyhow::Result<()> {
+pub async fn run_add_vm_hard_disk_drive(
+    args: HyperVAddVMHardDiskDriveArgs<'_>,
+) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -297,6 +306,7 @@ pub fn run_add_vm_hard_disk_drive(args: HyperVAddVMHardDiskDriveArgs<'_>) -> any
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("add_vm_hard_disk_drive")
 }
@@ -319,7 +329,7 @@ pub struct HyperVAddVMDvdDriveArgs<'a> {
 }
 
 /// Runs Add-VMDvdDrive with the given arguments.
-pub fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::Result<()> {
+pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -332,6 +342,7 @@ pub fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::Result
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("add_vm_dvd_drive")
 }
@@ -339,7 +350,7 @@ pub fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::Result
 /// Runs Add-VMScsiController with the given arguments.
 ///
 /// Returns the controller number.
-pub fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
+pub async fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
     let output = run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -353,12 +364,13 @@ pub fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
             .finish()
             .build(),
     )
+    .await
     .context("add_vm_scsi_controller")?;
     Ok(output.trim().parse::<u32>()?)
 }
 
 /// Sets the target VTL for a SCSI controller.
-pub fn run_set_vm_scsi_controller_target_vtl(
+pub async fn run_set_vm_scsi_controller_target_vtl(
     ps_mod: &Path,
     vmid: &Guid,
     controller_number: u32,
@@ -378,12 +390,13 @@ pub fn run_set_vm_scsi_controller_target_vtl(
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_vm_scsi_controller_target_vtl")
 }
 
 /// Create a new differencing VHD with the provided parent.
-pub fn create_child_vhd(path: &Path, parent_path: &Path) -> anyhow::Result<()> {
+pub async fn create_child_vhd(path: &Path, parent_path: &Path) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("New-VHD")
@@ -393,12 +406,13 @@ pub fn create_child_vhd(path: &Path, parent_path: &Path) -> anyhow::Result<()> {
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("create_child_vhd")
 }
 
 /// Runs Dismount-VHD with the given arguments.
-pub fn run_dismount_vhd(path: &Path) -> anyhow::Result<()> {
+pub async fn run_dismount_vhd(path: &Path) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Dismount-VHD")
@@ -406,6 +420,7 @@ pub fn run_dismount_vhd(path: &Path) -> anyhow::Result<()> {
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("dismount_vhd")
 }
@@ -424,7 +439,7 @@ pub struct HyperVSetVMFirmwareArgs<'a> {
 }
 
 /// Runs Set-VMFirmware with the given arguments.
-pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<()> {
+pub async fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -445,12 +460,13 @@ pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_vm_firmware")
 }
 
 /// Runs Set-OpenHCLFirmware with the given arguments.
-pub fn run_set_openhcl_firmware(
+pub async fn run_set_openhcl_firmware(
     vmid: &Guid,
     ps_mod: &Path,
     igvm_file: &Path,
@@ -470,12 +486,13 @@ pub fn run_set_openhcl_firmware(
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_openhcl_firmware")
 }
 
 /// Runs Set-VmCommandLine with the given arguments.
-pub fn run_set_vm_command_line(
+pub async fn run_set_vm_command_line(
     vmid: &Guid,
     ps_mod: &Path,
     command_line: &str,
@@ -493,12 +510,13 @@ pub fn run_set_vm_command_line(
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_vm_command_line")
 }
 
 /// Sets the initial machine configuration for a VM
-pub fn run_set_initial_machine_configuration(
+pub async fn run_set_initial_machine_configuration(
     vmid: &Guid,
     ps_mod: &Path,
     imc_hive: &Path,
@@ -516,12 +534,13 @@ pub fn run_set_initial_machine_configuration(
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_initial_machine_configuration")
 }
 
 /// Enables the specified vm com port and binds it to the named pipe path
-pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result<()> {
+pub async fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -533,12 +552,17 @@ pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_vm_com_port")
 }
 
 /// Run Set-VMBusRelay commandlet
-pub fn run_set_vmbus_redirect(vmid: &Guid, ps_mod: &Path, enable: bool) -> anyhow::Result<()> {
+pub async fn run_set_vmbus_redirect(
+    vmid: &Guid,
+    ps_mod: &Path,
+    enable: bool,
+) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
@@ -552,12 +576,13 @@ pub fn run_set_vmbus_redirect(vmid: &Guid, ps_mod: &Path, enable: bool) -> anyho
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("set_vmbus_redirect")
 }
 
 /// Runs Restart-OpenHCL, which will perform and OpenHCL servicing operation.
-pub fn run_restart_openhcl(
+pub async fn run_restart_openhcl(
     vmid: &Guid,
     ps_mod: &Path,
     flags: OpenHclServicingFlags,
@@ -588,6 +613,7 @@ pub fn run_restart_openhcl(
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("restart_openhcl")
 }
@@ -609,7 +635,7 @@ pub struct WinEvent {
 }
 
 /// Get event logs
-pub fn run_get_winevent(
+pub async fn run_get_winevent(
     log_name: &[&str],
     start_time: Option<&Timestamp>,
     find: Option<&str>,
@@ -666,7 +692,8 @@ pub fn run_get_winevent(
             .arg("InputObject", ps::Array::new([&output_var]))
             .finish()
             .build(),
-    );
+    )
+    .await;
 
     match output {
         Ok(logs) => serde_json::from_str(&logs).context("parsing winevents"),
@@ -687,7 +714,10 @@ const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
 const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
 
 /// Get Hyper-V event logs for a VM
-pub fn hyperv_event_logs(vmid: &Guid, start_time: &Timestamp) -> anyhow::Result<Vec<WinEvent>> {
+pub async fn hyperv_event_logs(
+    vmid: &Guid,
+    start_time: &Timestamp,
+) -> anyhow::Result<Vec<WinEvent>> {
     let vmid = vmid.to_string();
     run_get_winevent(
         &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
@@ -695,6 +725,7 @@ pub fn hyperv_event_logs(vmid: &Guid, start_time: &Timestamp) -> anyhow::Result<
         Some(&vmid),
         &[],
     )
+    .await
 }
 
 /// boot succeeded
@@ -720,7 +751,10 @@ const BOOT_EVENT_IDS: [u32; 6] = [
 ];
 
 /// Get Hyper-V event logs for a VM
-pub fn hyperv_boot_events(vmid: &Guid, start_time: &Timestamp) -> anyhow::Result<Vec<WinEvent>> {
+pub async fn hyperv_boot_events(
+    vmid: &Guid,
+    start_time: &Timestamp,
+) -> anyhow::Result<Vec<WinEvent>> {
     let vmid = vmid.to_string();
     run_get_winevent(
         &[HYPERV_WORKER_TABLE],
@@ -728,10 +762,11 @@ pub fn hyperv_boot_events(vmid: &Guid, start_time: &Timestamp) -> anyhow::Result
         Some(&vmid),
         &BOOT_EVENT_IDS,
     )
+    .await
 }
 
 /// Get the IDs of the VM(s) with the specified name
-pub fn vm_id_from_name(name: &str) -> anyhow::Result<Vec<Guid>> {
+pub async fn vm_id_from_name(name: &str) -> anyhow::Result<Vec<Guid>> {
     let output = run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -745,6 +780,7 @@ pub fn vm_id_from_name(name: &str) -> anyhow::Result<Vec<Guid>> {
             .finish()
             .build(),
     )
+    .await
     .context("vm_id_from_name")?;
     let mut vmids = Vec::new();
     for s in output.lines() {
@@ -772,7 +808,7 @@ pub enum VmShutdownIcStatus {
 }
 
 /// Get the VM's shutdown IC status
-pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> {
+pub async fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> {
     let status = run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -786,6 +822,7 @@ pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> 
             .finish()
             .build(),
     )
+    .await
     .context("vm_shutdown_ic_status")?;
 
     Ok(match status.as_str() {
@@ -800,7 +837,7 @@ pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> 
 }
 
 /// Runs Remove-VmNetworkAdapter to remove all network adapters from a VM.
-pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
+pub async fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -810,12 +847,16 @@ pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("remove_vm_network_adapters")
 }
 
 /// Runs Remove-VMScsiController with the given arguments.
-pub fn run_remove_vm_scsi_controller(vmid: &Guid, controller_number: u32) -> anyhow::Result<()> {
+pub async fn run_remove_vm_scsi_controller(
+    vmid: &Guid,
+    controller_number: u32,
+) -> anyhow::Result<()> {
     run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
@@ -828,12 +869,13 @@ pub fn run_remove_vm_scsi_controller(vmid: &Guid, controller_number: u32) -> any
             .finish()
             .build(),
     )
+    .await
     .map(|_| ())
     .context("remove_vm_scsi_controller")
 }
 
 /// Run Get-VmScreenshot commandlet
-pub fn run_get_vm_screenshot(
+pub async fn run_get_vm_screenshot(
     vmid: &Guid,
     ps_mod: &Path,
     path: &Path,
@@ -851,6 +893,7 @@ pub fn run_get_vm_screenshot(
             .finish()
             .build(),
     )
+    .await
     .context("get_vm_screenshot")?;
     let (x, y) = output.split_once(',').context("invalid dimensions")?;
     Ok((
