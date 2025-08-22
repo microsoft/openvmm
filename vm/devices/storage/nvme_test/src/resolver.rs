@@ -6,7 +6,6 @@
 use crate::NsidConflict;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
-use crate::QueueFaultBehavior;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use nvme_resources::NamespaceDefinition;
