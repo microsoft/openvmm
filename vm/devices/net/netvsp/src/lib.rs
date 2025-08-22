@@ -153,7 +153,7 @@ struct CoordinatorMessageUpdateType {
     /// This includes adding the guest VF device and switching the data path.
     guest_vf_state: bool,
     /// Update the receive filter for all channels.
-    filter_state: bool,
+    filter_state: Option<u32>,
 }
 
 #[derive(PartialEq)]
@@ -1191,31 +1191,20 @@ impl VmbusDevice for Nic {
         open_request: &OpenRequest,
     ) -> Result<(), ChannelOpenError> {
         // Start the coordinator task if this is the primary channel.
-        let (state, packet_filter) = if channel_idx == 0 {
+        let state = if channel_idx == 0 {
             self.insert_coordinator(1, false);
             // No rx traffic on primary channel until guest sets the packet filter.
-            (WorkerState::Init(None), rndisprot::NDIS_PACKET_TYPE_NONE)
+            WorkerState::Init(None)
         } else {
             self.coordinator.stop().await;
             // Get the buffers created when the primary channel was opened.
             let buffers = self.coordinator.state().unwrap().buffers.clone().unwrap();
             // Get the packet filter of the primary channel.
-            self.coordinator.state_mut().unwrap().workers[0]
-                .stop()
-                .await;
-            let packet_filter = self.coordinator.state().unwrap().workers[0]
-                .state()
-                .unwrap()
-                .channel
-                .packet_filter;
-            (
-                WorkerState::Ready(ReadyState {
-                    state: ActiveState::new(None, buffers.recv_buffer.count),
-                    buffers,
-                    data: ProcessingData::new(),
-                }),
-                packet_filter,
-            )
+            WorkerState::Ready(ReadyState {
+                state: ActiveState::new(None, buffers.recv_buffer.count),
+                buffers,
+                data: ProcessingData::new(),
+            })
         };
 
         let num_opened = self
@@ -1223,7 +1212,7 @@ impl VmbusDevice for Nic {
             .num_sub_channels_opened
             .fetch_add(1, Ordering::SeqCst);
 
-        let r = self.insert_worker(channel_idx, open_request, state, true, packet_filter);
+        let r = self.insert_worker(channel_idx, open_request, state, true);
         if channel_idx != 0
             && num_opened + 1 == self.coordinator.state_mut().unwrap().num_queues as usize
         {
@@ -1363,7 +1352,6 @@ impl Nic {
         open_request: &OpenRequest,
         state: WorkerState,
         start: bool,
-        packet_filter: u32,
     ) -> Result<(), OpenError> {
         let coordinator = self.coordinator.state_mut().unwrap();
 
@@ -1395,7 +1383,7 @@ impl Nic {
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
-                packet_filter,
+                packet_filter: rndisprot::NDIS_PACKET_TYPE_NONE,
             },
             state,
             coordinator_send: self.coordinator_send.clone().unwrap(),
@@ -1485,7 +1473,6 @@ impl Nic {
         mut control: RestoreControl<'_>,
         state: saved_state::SavedState,
     ) -> Result<(), NetRestoreError> {
-        let mut channel_packet_filter = 0u32; // set to primary packet filter
         if let Some(state) = state.open {
             let open = match &state.primary {
                 saved_state::Primary::Version => vec![true],
@@ -1635,7 +1622,6 @@ impl Nic {
                                 pending_link_action,
                                 packet_filter,
                             )?;
-                            channel_packet_filter = primary.packet_filter;
                             active.primary = Some(primary);
                         }
 
@@ -1654,13 +1640,7 @@ impl Nic {
 
             for (channel_idx, (state, request)) in states.into_iter().zip(requests).enumerate() {
                 if let Some(state) = state {
-                    self.insert_worker(
-                        channel_idx as u16,
-                        &request.unwrap(),
-                        state,
-                        false,
-                        channel_packet_filter,
-                    )?;
+                    self.insert_worker(channel_idx as u16, &request.unwrap(), state, false)?;
                 }
             }
         } else {
@@ -2835,9 +2815,7 @@ impl<T: RingMem> NetChannel<T> {
                         if restart_endpoint {
                             self.restart = Some(CoordinatorMessage::Restart);
                         }
-                        if packet_filter.is_some() {
-                            self.send_coordinator_update_filter();
-                        }
+                        self.send_coordinator_update_filter(packet_filter);
                         rndisprot::STATUS_SUCCESS
                     }
                     Err(err) => {
@@ -3022,7 +3000,7 @@ impl<T: RingMem> NetChannel<T> {
         Ok(())
     }
 
-    fn send_coordinator_update_message(&mut self, guest_vf: bool, packet_filter: bool) {
+    fn send_coordinator_update_message(&mut self, guest_vf: bool, packet_filter: Option<u32>) {
         if self.restart.is_none() {
             self.restart = Some(CoordinatorMessage::Update(CoordinatorMessageUpdateType {
                 guest_vf_state: guest_vf,
@@ -3035,16 +3013,18 @@ impl<T: RingMem> NetChannel<T> {
         } else if let Some(CoordinatorMessage::Update(ref mut update)) = self.restart {
             // Add the new update to the existing message.
             update.guest_vf_state |= guest_vf;
-            update.filter_state |= packet_filter;
+            if packet_filter.is_some() {
+                update.filter_state = packet_filter;
+            }
         }
     }
 
     fn send_coordinator_update_vf(&mut self) {
-        self.send_coordinator_update_message(true, false);
+        self.send_coordinator_update_message(true, None);
     }
 
-    fn send_coordinator_update_filter(&mut self) {
-        self.send_coordinator_update_message(false, true);
+    fn send_coordinator_update_filter(&mut self, packet_filter: Option<u32>) {
+        self.send_coordinator_update_message(false, packet_filter);
     }
 }
 
@@ -3960,15 +3940,18 @@ impl Coordinator {
                     sleep_duration = None;
                 }
                 Message::Internal(CoordinatorMessage::Update(update_type)) => {
-                    if update_type.filter_state {
+                    if let Some(packet_filter) = update_type.filter_state {
                         self.stop_workers().await;
-                        if let Some(packet_filter) = self.primary_mut().map(|p| p.packet_filter) {
-                            self.workers.iter_mut().for_each(|worker| {
-                                if let Some(state) = worker.state_mut() {
-                                    state.channel.packet_filter = packet_filter;
-                                }
-                            });
-                        }
+                        self.workers.iter_mut().for_each(|worker| {
+                            if let Some(state) = worker.state_mut() {
+                                state.channel.packet_filter = packet_filter;
+                                tracing::debug!(
+                                    ?packet_filter,
+                                    channel_idx = state.channel_idx,
+                                    "update packet filter"
+                                );
+                            }
+                        });
                     }
 
                     if update_type.guest_vf_state {
