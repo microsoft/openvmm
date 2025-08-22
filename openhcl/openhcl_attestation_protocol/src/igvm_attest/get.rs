@@ -216,9 +216,9 @@ pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: u32 = IGVM_ATTEST_RESPONSE_VERSI
 #[repr(C)]
 #[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmErrorInfo {
-    /// ErrorCode propogated from IgvmAgent
+    /// ErrorCode propagated from IgvmAgent
     pub error_code: u32,
-    /// HttpStatusCode propogated from IgvmAgent that enhances the ErrorCode
+    /// HttpStatusCode propagated from IgvmAgent that enhances the ErrorCode
     pub http_status_code: u32,
     /// Igvm signal from response
     pub igvm_signal: IgvmSignal,
