@@ -380,6 +380,7 @@ pub mod caps {
     #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
     pub mod pci_express {
         use bitfield_struct::bitfield;
+        use inspect::Inspect;
         use zerocopy::FromBytes;
         use zerocopy::Immutable;
         use zerocopy::IntoBytes;
@@ -404,7 +405,7 @@ pub mod caps {
 
         /// Device Capabilities Register (From the 6.4 spec)
         #[bitfield(u32)]
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct DeviceCapabilities {
             #[bits(3)]
             pub max_payload_size: u32,
@@ -452,7 +453,7 @@ pub mod caps {
 
         /// Device Status Register  
         #[bitfield(u16)]
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct DeviceStatus {
             pub correctable_error_detected: bool,
             pub non_fatal_error_detected: bool,
