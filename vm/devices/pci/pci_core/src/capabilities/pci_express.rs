@@ -68,12 +68,11 @@ impl PciExpressCapability {
     /// Creates a new PCI Express capability with FLR support.
     ///
     /// # Arguments
-    /// * `flr_supported` - Whether Function Level Reset is supported
-    /// * `flr_handler` - Optional handler to be called when FLR is initiated
-    pub fn new(flr_supported: bool, flr_handler: Option<Arc<dyn FlrHandler>>) -> Self {
+    /// * `flr_handler` - Optional handler to be called when FLR is initiated. FLR support will be inferred if flr_handler = Some(_)
+    pub fn new(flr_handler: Option<Arc<dyn FlrHandler>>) -> Self {
         Self {
             device_capabilities: pci_express::DeviceCapabilities::new()
-                .with_function_level_reset(flr_supported),
+                .with_function_level_reset(flr_handler.is_some()),
             state: Arc::new(Mutex::new(PciExpressState::new())),
             flr_handler,
         }
