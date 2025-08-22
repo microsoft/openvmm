@@ -19,9 +19,8 @@ pub enum QueueFaultBehavior<T> {
 
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
-    /// A mapping from the admin opcode to its fault behavior. This should ideally be using a HashMap but Encode/Decode is not yet available for that.
-    /// It should also be a mapping from OpCode -> `QueueFaultBehavior<Command>` but Encode/Decode is not yet available for those types.
-    pub admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<Command>)>,
+    /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
+    admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<Command>)>,
 }
 
 /// A simple fault configuration with admin submission queue support
@@ -40,12 +39,21 @@ impl AdminQueueFaultConfig {
         }
     }
 
-    /// Add a simple submission queue fault based on opcodes
+    /// Add a simple submission queue fault based on opcodes. Multiple calls to add faults for the same opcode will panic.
     pub fn with_submission_queue_fault(
         mut self,
         opcode: u8,
         behaviour: QueueFaultBehavior<Command>,
     ) -> Self {
+        if self
+            .admin_submission_queue_intercept
+            .iter()
+            .find_map(|(op, b)| if *op == opcode { Some(b) } else { None })
+            .is_some()
+        {
+            panic!("Duplicate submission queue fault for opcode {}", opcode);
+        }
+
         self.admin_submission_queue_intercept
             .push((opcode, behaviour));
         self
