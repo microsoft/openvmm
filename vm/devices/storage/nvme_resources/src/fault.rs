@@ -59,7 +59,7 @@ impl AdminQueueFaultConfig {
             .iter()
             .find_map(|(op, b)| if *op == opcode { Some(b) } else { None })
         {
-            behavior.clone()
+            *behavior
         } else {
             QueueFaultBehavior::Default
         }
