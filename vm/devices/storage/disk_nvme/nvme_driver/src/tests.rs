@@ -32,7 +32,6 @@ use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
 use vmcore::vm_task::SingleDriverBackend;
-use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -40,7 +39,6 @@ use zerocopy::IntoBytes;
 #[async_test]
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
 async fn test_nvme_command_fault(driver: DefaultDriver) {
-    let task_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple();
     let mut output_cmd = Command::new_zeroed();
     output_cmd.cdw0.set_cid(0);
 
