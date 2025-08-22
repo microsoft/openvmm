@@ -20,18 +20,10 @@ pub trait FlrHandler: Send + Sync + Inspect {
     fn initiate_flr(&self);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 struct PciExpressState {
     device_control: pci_express::DeviceControl,
     device_status: pci_express::DeviceStatus,
-}
-
-impl Inspect for PciExpressState {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond()
-            .field("device_control", &format!("{:?}", self.device_control))
-            .field("device_status", &format!("{:?}", self.device_status));
-    }
 }
 
 impl PciExpressState {
@@ -43,25 +35,13 @@ impl PciExpressState {
     }
 }
 
+#[derive(Inspect)]
 /// PCI Express capability with Function Level Reset support.
 pub struct PciExpressCapability {
     device_capabilities: pci_express::DeviceCapabilities,
     state: Arc<Mutex<PciExpressState>>,
+    #[inspect(skip)]
     flr_handler: Option<Arc<dyn FlrHandler>>,
-}
-
-impl Inspect for PciExpressCapability {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond()
-            .field(
-                "device_capabilities",
-                &format!("{:?}", self.device_capabilities),
-            )
-            .field(
-                "state",
-                &inspect::adhoc(|req| self.state.lock().inspect(req)),
-            );
-    }
 }
 
 impl PciExpressCapability {
