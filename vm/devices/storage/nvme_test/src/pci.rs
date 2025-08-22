@@ -179,7 +179,7 @@ impl NvmeFaultController {
         // Optionally add PCI Express capability with FLR support
         let flr_reset_requested = if caps.flr_support {
             let (flr_handler, reset_requested) = NvmeFlrHandler::new();
-            let pcie_cap = PciExpressCapability::new(true, Some(Arc::new(flr_handler)));
+            let pcie_cap = PciExpressCapability::new(Some(Arc::new(flr_handler)));
             capabilities.push(Box::new(pcie_cap));
             Some(reset_requested)
         } else {
