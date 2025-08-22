@@ -488,9 +488,11 @@ impl AdminHandler {
                                 &command,
                                 &command_updated
                             );
-                            command = spec::Command::mut_from_bytes(command_updated.as_mut_bytes())
-                                .expect("command updated should be valid")
-                                .clone();
+                            // Clone to avoid Alignment errors
+                            command =
+                                spec::Command::mut_from_bytes(&mut command_updated.clone()[..])
+                                    .expect("command updated should be valid")
+                                    .clone();
                         }
                         QueueFaultBehavior::Drop => {
                             tracing::warn!(

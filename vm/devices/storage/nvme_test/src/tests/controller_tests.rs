@@ -19,6 +19,8 @@ use mesh::CellUpdater;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::QueueFaultBehavior;
+use nvme_spec::AdminOpcode;
+use nvme_spec::Cdw0;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use pal_async::DefaultDriver;
