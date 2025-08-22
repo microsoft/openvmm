@@ -184,7 +184,7 @@ async fn keepalive_with_nvme_fault(
     let fault_configuration = FaultConfiguration {
         fault_active: fault_start_updater.cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-            nvme_spec::AdminOpcode::IDENTIFY.0,
+            nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
             QueueFaultBehavior::Drop,
         ),
     };
