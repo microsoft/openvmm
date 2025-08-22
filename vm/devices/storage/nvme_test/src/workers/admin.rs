@@ -569,7 +569,7 @@ impl AdminHandler {
 
         let status = spec::CompletionStatus::new().with_status(result.status.0);
 
-        let mut completion = spec::Completion {
+        let completion = spec::Completion {
             dw0: result.dw[0],
             dw1: result.dw[1],
             sqid: 0,
