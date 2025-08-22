@@ -1099,7 +1099,6 @@ mod test {
     }
 
     const ONE_MB: u64 = 0x10_0000;
-    const PAGE_SIZE_4K: u64 = 0x1000;
 
     #[test]
     fn test_e820_basic() {
@@ -1274,7 +1273,7 @@ mod test {
             let _allocated = address_space
                 .allocate(
                     None,
-                    (ONE_MB / PAGE_SIZE_4K).try_into().unwrap(),
+                    ONE_MB,
                     if i % 2 == 0 {
                         AllocationType::GpaPool
                     } else {

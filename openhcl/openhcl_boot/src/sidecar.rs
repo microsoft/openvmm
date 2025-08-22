@@ -10,7 +10,6 @@ use crate::host_params::shim_params::ShimParams;
 use crate::memory::AddressSpaceManager;
 use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
-use sidecar_defs::PAGE_SIZE;
 use sidecar_defs::SidecarNodeOutput;
 use sidecar_defs::SidecarNodeParams;
 use sidecar_defs::SidecarOutput;
@@ -140,10 +139,7 @@ pub fn start_sidecar<'a>(
         let mut base_vp = 0;
         total_ram = 0;
         for (cpus, node) in cpus_by_node().zip(nodes) {
-            let required_ram = ((sidecar_defs::required_memory(cpus.len() as u32) / PAGE_SIZE)
-                as u64)
-                .try_into()
-                .expect("sidecar memory required is nonzero");
+            let required_ram = sidecar_defs::required_memory(cpus.len() as u32) as u64;
             // Take some VTL2 RAM for sidecar use. Try to use the same NUMA node
             // as the first CPU.
             let local_vnode = cpus[0].vnode as usize;
@@ -186,7 +182,7 @@ pub fn start_sidecar<'a>(
             };
             base_vp += cpus.len() as u32;
             *node_count += 1;
-            total_ram += required_ram.get();
+            total_ram += required_ram;
         }
     }
 
