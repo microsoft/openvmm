@@ -78,7 +78,7 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
     test_nvme_fault_injection(
         driver,
         FaultConfiguration {
-            signal: CellUpdater::new(false).cell(),
+            fault_active: CellUpdater::new(false).cell(),
             admin_fault: AdminQueueFaultConfig::new(), // TODO: Fix this later, only moving this to test some changes
         },
     )

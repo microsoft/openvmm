@@ -466,7 +466,7 @@ impl AdminHandler {
                 let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
-                if self.config.fault_configuration.signal.get() {
+                if self.config.fault_configuration.fault_active.get() {
                     let fault = self
                         .config
                         .fault_configuration

@@ -39,8 +39,8 @@ pub trait QueueFault {
 /// Configuration for NVMe controller faults.
 #[derive(MeshPayload)]
 pub struct FaultConfiguration {
-    /// Signal to start the fault
-    pub signal: Cell<bool>,
+    /// Fault active state
+    pub fault_active: Cell<bool>,
     /// Fault to apply to the admin queues
     pub admin_fault: AdminQueueFaultConfig,
 }

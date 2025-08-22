@@ -207,7 +207,7 @@ pub async fn instantiate_and_build_admin_queue(
 async fn test_basic_registers(driver: DefaultDriver) {
     let gm = test_memory();
     let fault_configuration = FaultConfiguration {
-        signal: CellUpdater::new(false).cell(),
+        fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
     };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
@@ -235,7 +235,7 @@ async fn test_basic_registers(driver: DefaultDriver) {
 async fn test_invalid_configuration(driver: DefaultDriver) {
     let gm = test_memory();
     let fault_configuration = FaultConfiguration {
-        signal: CellUpdater::new(false).cell(),
+        fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
     };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
@@ -253,7 +253,7 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
 async fn test_enable_controller(driver: DefaultDriver) {
     let gm = test_memory();
     let fault_configuration = FaultConfiguration {
-        signal: CellUpdater::new(false).cell(),
+        fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
     };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
@@ -284,7 +284,7 @@ async fn test_enable_controller(driver: DefaultDriver) {
 async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     let gm = test_memory();
     let fault_configuration = FaultConfiguration {
-        signal: CellUpdater::new(false).cell(),
+        fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
     };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
@@ -358,7 +358,7 @@ async fn send_identify(
 #[async_test]
 async fn test_send_identify_no_fault(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
-        signal: CellUpdater::new(false).cell(),
+        fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
     };
     let cqe = send_identify(driver, fault_configuration).await;
@@ -394,7 +394,7 @@ impl QueueFault for TestAdminSQFault {
 #[async_test]
 async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
-        signal: CellUpdater::new(false).cell(),
+        fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(), // TODO: Fix this later, needs to return a bad command upon identify
     };
     let cqe = send_identify(driver, fault_configuration).await;
@@ -430,7 +430,7 @@ impl QueueFault for TestAdminCQFault {
 #[async_test]
 async fn test_cq_fault(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
-        signal: CellUpdater::new(false).cell(),
+        fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
     };
     let cqe = send_identify(driver, fault_configuration).await;

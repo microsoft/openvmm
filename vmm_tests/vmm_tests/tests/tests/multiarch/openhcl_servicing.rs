@@ -16,6 +16,7 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFault;
 use nvme_resources::fault::QueueFaultBehavior;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
@@ -178,12 +179,13 @@ async fn keepalive_with_nvme_fault(
         return Ok(());
     }
 
-    let mut signal_updater = CellUpdater::new(false);
+    let mut fault_start_updater = CellUpdater::new(false);
 
     let fault_configuration = FaultConfiguration {
-        signal: signal_updater.cell(),
+        fault_active: fault_start_updater.cell(),
         admin_fault: AdminQueueFaultConfig::new()
-            .with_submission_queue_fault(0x05, QueueFaultBehavior::Drop),
+            .with_submission_queue_fault(0x05, QueueFaultBehavior::Drop)
+            .with_submission_queue_fault(0x04, QueueFaultBehavior::Delay(5000)),
     };
 
     let (mut vm, agent) = config
@@ -256,7 +258,7 @@ async fn keepalive_with_nvme_fault(
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
 
-    signal_updater.set(true).await;
+    fault_start_updater.set(true).await;
 
     vm.restart_openhcl(
         igvm_file.clone(),
@@ -267,7 +269,7 @@ async fn keepalive_with_nvme_fault(
     )
     .await?;
 
-    signal_updater.set(false).await;
+    fault_start_updater.set(false).await;
 
     agent.ping().await?;
 

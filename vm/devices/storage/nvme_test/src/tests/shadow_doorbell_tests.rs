@@ -40,7 +40,7 @@ async fn setup_shadow_doorbells(
     dq_bases: Option<(u64, u64)>,
 ) -> crate::NvmeFaultController {
     let fault_configuration = FaultConfiguration {
-        signal: CellUpdater::new(false).cell(),
+        fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
     };
     // Build a controller with 64 entries in the admin queue (just so that the ASQ fits in one page).
