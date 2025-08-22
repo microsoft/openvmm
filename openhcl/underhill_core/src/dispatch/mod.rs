@@ -87,10 +87,11 @@ pub enum UhVmRpc {
 pub trait LoadedVmNetworkSettings: Inspect {
     /// Callback to prepare for guest hibernation. This should remove any
     /// directly assigned devices before the guest saves state.
-    ///
-    /// When rollback is 'true' it means the hibernate request was vetoed, so
-    /// any changes can be undone.
-    async fn prepare_for_hibernate(&self, rollback: bool);
+    async fn prepare_for_hibernate(&self);
+
+    /// Callback to cancel preparation for guest hibernation. This should
+    /// restore any state updated via prepare_for_hibernate().
+    async fn cancel_prepare_for_hibernate(&self);
 
     /// Callback when network settings are modified externally.
     async fn modify_network_settings(
@@ -410,7 +411,7 @@ impl LoadedVm {
                     let (msg, send_result) = rpc.split();
                     let is_hibernate = matches!(msg.shutdown_type, ShutdownType::Hibernate);
                     if is_hibernate {
-                        self.handle_hibernate_request(false).await;
+                        self.handle_hibernate_request().await;
                     }
                     let (_, send_guest) =
                         self.shutdown_relay.as_mut().expect("active shutdown_relay");
@@ -443,7 +444,7 @@ impl LoadedVm {
                     if !matches!(response, ShutdownResult::Ok) {
                         tracing::warn!(CVM_ALLOWED, ?response, "Shutdown request failed");
                         if is_hibernate {
-                            self.handle_hibernate_request(true).await;
+                            self.cancel_hibernate_request().await;
                         }
                     }
                     send_result.complete(response);
@@ -630,25 +631,27 @@ impl LoadedVm {
         Ok(state)
     }
 
-    async fn handle_hibernate_request(&self, rollback: bool) {
+    async fn handle_hibernate_request(&self) {
         if let Some(network_settings) = &self.network_settings {
-            if !rollback {
-                network_settings
-                    .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!(
-                        "prepare_for_guest_hibernate",
-                        CVM_ALLOWED
-                    ))
-                    .await;
-            } else {
-                network_settings
-                    .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!(
-                        "rollback_prepare_for_guest_hibernate",
-                        CVM_ALLOWED
-                    ))
-                    .await;
-            };
+            network_settings
+                .prepare_for_hibernate()
+                .instrument(tracing::info_span!(
+                    "prepare_for_guest_hibernate",
+                    CVM_ALLOWED
+                ))
+                .await;
+        }
+    }
+
+    async fn cancel_hibernate_request(&self) {
+        if let Some(network_settings) = &self.network_settings {
+            network_settings
+                .cancel_prepare_for_hibernate()
+                .instrument(tracing::info_span!(
+                    "rollback_prepare_for_guest_hibernate",
+                    CVM_ALLOWED
+                ))
+                .await;
         }
     }
 

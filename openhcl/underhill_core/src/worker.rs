@@ -866,6 +866,19 @@ impl UhVmNetworkSettings {
         self.vf_managers.insert(instance_id, vf_manager);
         Ok(save_state)
     }
+
+    async fn accelerated_device_visible_to_guest(&self, visible: bool) -> anyhow::Result<()> {
+        let result = join_all(
+            self.vf_managers
+                .values()
+                .map(|vf_manager| vf_manager.hide_vtl0_instance(!visible)),
+        )
+        .await
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>();
+        result?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -954,22 +967,24 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             .await;
     }
 
-    async fn prepare_for_hibernate(&self, rollback: bool) {
+    async fn prepare_for_hibernate(&self) {
         // Remove any accelerated devices before notifying the guest to hibernate.
-        let result = join_all(
-            self.vf_managers
-                .values()
-                .map(|vf_manager| vf_manager.hide_vtl0_instance(!rollback)),
-        )
-        .await
-        .into_iter()
-        .collect::<anyhow::Result<Vec<_>>>();
-        if let Err(err) = result {
+        if let Err(err) = self.accelerated_device_visible_to_guest(false).await {
             tracing::error!(
                 CVM_ALLOWED,
                 error = err.as_ref() as &dyn std::error::Error,
-                rollback,
                 "Failed preparing accelerated network devices for hibernate"
+            );
+        }
+    }
+
+    async fn cancel_prepare_for_hibernate(&self) {
+        // Add back any accelerated devices hidden in preparation for hibernate.
+        if let Err(err) = self.accelerated_device_visible_to_guest(true).await {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = err.as_ref() as &dyn std::error::Error,
+                "Failed restoring accelerated network devices for cancelled hibernate"
             );
         }
     }
