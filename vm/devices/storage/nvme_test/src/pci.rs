@@ -5,7 +5,6 @@
 
 use crate::BAR0_LEN;
 use crate::DOORBELL_STRIDE_BITS;
-use crate::FaultConfiguration;
 use crate::IOCQES;
 use crate::IOSQES;
 use crate::MAX_QES;
@@ -30,6 +29,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use nvme_resources::fault::FaultConfiguration;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
