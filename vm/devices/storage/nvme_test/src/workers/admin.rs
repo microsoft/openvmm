@@ -43,6 +43,7 @@ use std::future::pending;
 use std::io::Cursor;
 use std::io::Write;
 use std::sync::Arc;
+use std::time::Duration;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTask;
@@ -502,13 +503,15 @@ impl AdminHandler {
                             self.timer.sleep(duration).await;
                         }
                         QueueFaultBehavior::Default => {}
-                        QueueFaultBehavior::ChangeCompletionId(new_cid) => {
+                        QueueFaultBehavior::Delay(delay) => {
                             tracing::warn!(
-                                "configured fault: admin command changed cid from {} to {}",
-                                command.cdw0.cid(),
-                                new_cid
+                                "configured fault: delaying the execution of the admin command {:?} by {} ms",
+                                &command,
+                                delay
                             );
-                            command.cdw0.set_cid(new_cid);
+                            PolledTimer::new(&self.driver)
+                                .sleep(Duration::from_millis(delay))
+                                .await;
                         }
                     }
                 }
