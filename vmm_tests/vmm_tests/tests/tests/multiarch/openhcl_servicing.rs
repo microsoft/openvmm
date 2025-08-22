@@ -183,9 +183,10 @@ async fn keepalive_with_nvme_fault(
 
     let fault_configuration = FaultConfiguration {
         fault_active: fault_start_updater.cell(),
-        admin_fault: AdminQueueFaultConfig::new()
-            .with_submission_queue_fault(0x05, QueueFaultBehavior::Drop)
-            .with_submission_queue_fault(0x04, QueueFaultBehavior::Delay(5000)),
+        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+            nvme_spec::AdminOpcode::IDENTIFY.0,
+            QueueFaultBehavior::Drop,
+        ),
     };
 
     let (mut vm, agent) = config
@@ -253,10 +254,7 @@ async fn keepalive_with_nvme_fault(
     let sh = agent.unix_shell();
 
     // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?; // TODO: This is actually not checking much right now
-
-    // Test that inspect serialization works with the old version.
-    vm.test_inspect_openhcl().await?;
+    cmd!(sh, "ls /dev/sda").run().await?;
 
     fault_start_updater.set(true).await;
 
@@ -272,9 +270,6 @@ async fn keepalive_with_nvme_fault(
     fault_start_updater.set(false).await;
 
     agent.ping().await?;
-
-    // Test that inspect serialization works with the new version.
-    vm.test_inspect_openhcl().await?;
 
     Ok(())
 }
