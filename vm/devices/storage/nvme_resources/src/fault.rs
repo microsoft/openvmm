@@ -20,7 +20,7 @@ pub enum QueueFaultBehavior<T> {
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A mapping from the admin opcode to its fault behavior. This should ideally be using a HashMap but Encode/Decode is not yet available for that.
-    /// It should also be a mapping from OpCode -> QueueFaultBehavior<Command> but Encode/Decode is not yet available for those types.
+    /// It should also be a mapping from OpCode -> `QueueFaultBehavior<Command>` but Encode/Decode is not yet available for those types.
     pub admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<Command>)>,
 }
 
