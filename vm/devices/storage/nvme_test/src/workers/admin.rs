@@ -461,7 +461,7 @@ impl AdminHandler {
 
         let (cid, result) = match event? {
             Event::Command(command) => {
-                let command = command?;
+                let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
                 if self.config.fault_configuration.fault_active.get() {
