@@ -8,12 +8,13 @@ use arrayvec::ArrayVec;
 use host_fdt_parser::MemoryEntry;
 #[cfg(test)]
 use igvm_defs::MemoryMapEntryType;
-use igvm_defs::PAGE_SIZE_4K;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
 use memory_range::walk_ranges;
 use thiserror::Error;
+
+const PAGE_SIZE_4K: u64 = 4096;
 
 /// The maximum number of reserved memory ranges that we might use.
 /// See [`ReservedMemoryType`] definition for details.
@@ -22,6 +23,7 @@ pub const MAX_RESERVED_MEM_RANGES: usize = 6 + sidecar_defs::MAX_NODES;
 const MAX_MEMORY_RANGES: usize = MAX_VTL2_RAM_RANGES + MAX_RESERVED_MEM_RANGES;
 
 /// Maximum number of ranges in the address space manager.
+/// For simplicity, make it twice the memory and reserved ranges.
 const MAX_ADDRESS_RANGES: usize = MAX_MEMORY_RANGES * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,8 +301,12 @@ impl AddressSpaceManager {
     /// Allocate a new range of memory with the given type and policy. None is
     /// returned if the allocation was unable to be satisfied.
     ///
+    /// `len` is the number of bytes to allocate. The number of bytes are
+    /// rounded up to the next 4K page size increment. if `len` is 0, then
+    /// `None` is returned.
+    ///
     /// `required_vnode` if `Some(u32)` is the vnode to allocate from. If there
-    /// are no free ranges left in that vnode, None is returned to the caller.
+    /// are no free ranges left in that vnode, None is returned.
     pub fn allocate(
         &mut self,
         required_vnode: Option<u32>,
@@ -308,8 +314,13 @@ impl AddressSpaceManager {
         allocation_type: AllocationType,
         allocation_policy: AllocationPolicy,
     ) -> Option<AllocatedRange> {
-        // len must be page aligned
-        assert_eq!(len % PAGE_SIZE_4K, 0);
+        if len == 0 {
+            return None;
+        }
+
+        // Round up to the next 4k page size, if the caller did not specify a
+        // multiple of 4k.
+        let len = len.div_ceil(PAGE_SIZE_4K) * PAGE_SIZE_4K;
 
         // We only support a single VTL2 pool range, today.
         if allocation_type == AllocationType::GpaPool && self.vtl2_pool.is_some() {
@@ -562,6 +573,59 @@ mod tests {
             range.is_none(),
             "allocation should fail, no space left for node 3"
         );
+    }
+
+    // test unaligned 4k allocations
+    #[test]
+    fn test_unaligned_allocations() {
+        let mut address_space = AddressSpaceManager::new_const();
+        address_space
+            .init(
+                &[MemoryEntry {
+                    range: MemoryRange::new(0x0..0x20000),
+                    vnode: 0,
+                    mem_type: MemoryMapEntryType::MEMORY,
+                }],
+                MemoryRange::new(0x0..0xF000),
+                [
+                    MemoryRange::new(0x3000..0x4000),
+                    MemoryRange::new(0x5000..0x6000),
+                ]
+                .iter()
+                .cloned(),
+                Some(MemoryRange::new(0x8000..0xA000)),
+                Some(MemoryRange::new(0xA000..0xC000)),
+                None,
+            )
+            .unwrap();
+
+        let range = address_space
+            .allocate(
+                None,
+                0x1001,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x1E000..0x20000));
+
+        let range = address_space
+            .allocate(
+                None,
+                0xFFF,
+                AllocationType::GpaPool,
+                AllocationPolicy::HighMemory,
+            )
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x1D000..0x1E000));
+
+        let range = address_space.allocate(
+            None,
+            0,
+            AllocationType::GpaPool,
+            AllocationPolicy::HighMemory,
+        );
+        assert!(range.is_none());
     }
 
     // test invalid init ranges
