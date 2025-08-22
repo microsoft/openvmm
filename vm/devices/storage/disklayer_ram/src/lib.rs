@@ -54,6 +54,8 @@ pub struct RamDiskLayer {
     #[inspect(skip)]
     sector_size: u32,
     #[inspect(skip)]
+    sector_shift: u32,
+    #[inspect(skip)]
     resize_event: event_listener::Event,
 }
 
@@ -69,7 +71,7 @@ struct RamState {
 impl RamDiskLayer {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field_with("committed_size", || {
-            self.state.read().data.len() * self.sector_size as usize
+            self.state.read().data.len() << self.sector_shift
         })
         .field_mut_with("sector_count", |new_count| {
             if let Some(new_count) = new_count {
@@ -85,6 +87,7 @@ impl Debug for RamDiskLayer {
         f.debug_struct("RamDiskLayer")
             .field("sector_count", &self.sector_count)
             .field("sector_size", &self.sector_size)
+            .field("sector_shift", &self.sector_shift)
             .finish()
     }
 }
@@ -103,6 +106,12 @@ pub enum Error {
     /// The disk has no sectors.
     #[error("disk has no sectors")]
     EmptyDisk,
+    /// The sector size is not a power of two.
+    #[error("sector size {sector_size} is not a power of two")]
+    SectorSizeNotPowerOfTwo {
+        /// The sector size.
+        sector_size: u32,
+    },
 }
 
 /// Dynamic sector data that can hold different sector sizes
@@ -121,7 +130,7 @@ impl RamDiskLayer {
     ///
     /// # Arguments
     /// * `size` - Total size of the disk in bytes
-    /// * `sector_size` - Size of each sector in bytes (typically 512 or 4096)
+    /// * `sector_size` - Size of each sector in bytes (must be a power of two, typically 512 or 4096)
     pub fn new_with_sector_size(size: u64, sector_size: u32) -> Result<Self, Error> {
         let sector_count = {
             if size == 0 {
@@ -133,6 +142,10 @@ impl RamDiskLayer {
                     sector_size,
                 });
             }
+            // Validate that sector_size is a power of two
+            if !sector_size.is_power_of_two() {
+                return Err(Error::SectorSizeNotPowerOfTwo { sector_size });
+            }
             if size % sector_size as u64 != 0 {
                 return Err(Error::NotSectorMultiple {
                     disk_size: size,
@@ -141,6 +154,10 @@ impl RamDiskLayer {
             }
             size / sector_size as u64
         };
+
+        // Calculate sector_shift where 1 << sector_shift == sector_size
+        let sector_shift = sector_size.trailing_zeros();
+
         Ok(Self {
             state: RwLock::new(RamState {
                 data: BTreeMap::new(),
@@ -149,6 +166,7 @@ impl RamDiskLayer {
             }),
             sector_count: sector_count.into(),
             sector_size,
+            sector_shift,
             resize_event: Default::default(),
         })
     }
@@ -180,7 +198,7 @@ impl RamDiskLayer {
         sector: u64,
         overwrite: bool,
     ) -> Result<(), DiskError> {
-        let count = buffers.len() / self.sector_size as usize;
+        let count = buffers.len() >> self.sector_shift;
         tracing::trace!(sector, count, "write");
         let mut state = self.state.write();
         if sector + count as u64 > state.sector_count {
@@ -188,17 +206,17 @@ impl RamDiskLayer {
         }
         for i in 0..count {
             let cur = i + sector as usize;
-            let buf = buffers.subrange(i * self.sector_size as usize, self.sector_size as usize);
+            let buf = buffers.subrange(i << self.sector_shift, 1 << self.sector_shift);
             let mut reader = buf.reader();
             match state.data.entry(cur as u64) {
                 Entry::Vacant(entry) => {
-                    let mut sector_data = vec![0u8; self.sector_size as usize];
-                    reader.read(&mut sector_data)?;
+                    let sector_data = reader.read_n(1 << self.sector_shift)?;
                     entry.insert(Sector(sector_data));
                 }
                 Entry::Occupied(mut entry) => {
                     if overwrite {
-                        reader.read(&mut entry.get_mut().0)?;
+                        let sector_data = reader.read_n(entry.get_mut().0.len())?;
+                        entry.get_mut().0 = sector_data;
                     }
                 }
             }
@@ -258,7 +276,7 @@ impl LayerIo for RamDiskLayer {
         sector: u64,
         mut marker: SectorMarker<'_>,
     ) -> Result<(), DiskError> {
-        let count = (buffers.len() / self.sector_size as usize) as u64;
+        let count = (buffers.len() >> self.sector_shift) as u64;
         let end = sector + count;
         tracing::trace!(sector, count, "read");
         let state = self.state.read();
@@ -275,15 +293,15 @@ impl LayerIo for RamDiskLayer {
                 // after the zero-after point (due to a resize).
                 let zero_start = last.max(state.zero_after);
                 let zero_count = next - zero_start;
-                let offset = (zero_start - sector) as usize * self.sector_size as usize;
-                let len = zero_count as usize * self.sector_size as usize;
+                let offset = ((zero_start - sector) as usize) << self.sector_shift;
+                let len = (zero_count as usize) << self.sector_shift;
                 buffers.subrange(offset, len).writer().zero(len)?;
                 marker.set_range(zero_start..next);
             }
             if let Some((&s, buf)) = r {
-                let offset = (s - sector) as usize * self.sector_size as usize;
+                let offset = ((s - sector) as usize) << self.sector_shift;
                 buffers
-                    .subrange(offset, self.sector_size as usize)
+                    .subrange(offset, 1 << self.sector_shift)
                     .writer()
                     .write(&buf.0)?;
 
@@ -427,6 +445,7 @@ pub fn ram_disk_with_sector_size(
 #[cfg(test)]
 mod tests {
     use super::DEFAULT_SECTOR_SIZE;
+    use super::Error;
     use super::RamDiskLayer;
     use disk_backend::Disk;
     use disk_backend::DiskIo;
@@ -741,6 +760,21 @@ mod tests {
         assert!(RamDiskLayer::new_with_sector_size(1000, 512).is_err()); // Size not multiple of sector
         assert!(RamDiskLayer::new_with_sector_size(1024, 0).is_err()); // Zero sector size
         assert!(RamDiskLayer::new_with_sector_size(0, 512).is_err()); // Zero size
+
+        // Test non-power-of-two sector sizes
+        assert!(matches!(
+            RamDiskLayer::new_with_sector_size(1024, 300),
+            Err(Error::SectorSizeNotPowerOfTwo { sector_size: 300 })
+        ));
+        assert!(matches!(
+            RamDiskLayer::new_with_sector_size(1024, 1000),
+            Err(Error::SectorSizeNotPowerOfTwo { sector_size: 1000 })
+        ));
+
+        // Test valid power-of-two sector sizes
+        assert!(RamDiskLayer::new_with_sector_size(1024, 256).is_ok());
+        assert!(RamDiskLayer::new_with_sector_size(8192, 1024).is_ok());
+        assert!(RamDiskLayer::new_with_sector_size(16384, 2048).is_ok());
     }
 
     #[async_test]
