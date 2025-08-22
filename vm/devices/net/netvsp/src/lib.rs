@@ -3021,7 +3021,9 @@ impl<T: RingMem> NetChannel<T> {
     }
 
     fn send_coordinator_update_filter(&mut self, packet_filter: Option<u32>) {
-        self.send_coordinator_update_message(false, packet_filter);
+        if packet_filter.is_some() {
+            self.send_coordinator_update_message(false, packet_filter);
+        }
     }
 }
 
