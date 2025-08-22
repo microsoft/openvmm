@@ -433,7 +433,7 @@ pub mod caps {
 
         /// Device Control Register
         #[bitfield(u16)]
-        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct DeviceControl {
             pub correctable_error_reporting_enable: bool,
             pub non_fatal_error_reporting_enable: bool,
