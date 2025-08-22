@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 storage_string.workspace = true
-mesh.workspace = true
 
 inspect.workspace = true
 mesh.workspace = true

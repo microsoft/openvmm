@@ -14,7 +14,6 @@ pub mod nvm;
 
 use bitfield_struct::bitfield;
 use inspect::Inspect;
-use mesh::MeshPayload;
 use open_enum::open_enum;
 use storage_string::AsciiString;
 use zerocopy::FromBytes;
@@ -130,9 +129,7 @@ pub struct Aqa {
 }
 
 #[repr(C)]
-#[derive(
-    Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect, MeshPayload,
-)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct Command {
     pub cdw0: Cdw0,
     pub nsid: u32,
@@ -151,7 +148,7 @@ pub struct Command {
 
 #[derive(Inspect)]
 #[bitfield(u32)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cdw0 {
     pub opcode: u8,
     #[bits(2)]

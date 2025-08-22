@@ -4843,7 +4843,6 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.10.1",
  "inspect",
- "mesh",
  "open_enum",
  "storage_string",
  "zerocopy 0.8.26",
@@ -9315,6 +9314,7 @@ dependencies = [
  "mesh",
  "mesh_rpc",
  "nvme_resources",
+ "nvme_spec",
  "pal",
  "pal_async",
  "petri",
