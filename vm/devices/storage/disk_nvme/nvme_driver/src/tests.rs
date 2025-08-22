@@ -47,7 +47,7 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
         FaultConfiguration {
             fault_active: CellUpdater::new(true).cell(),
             admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-                AdminOpcode::IDENTIFY.0,
+                AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
                 QueueFaultBehavior::Update(output_cmd),
             ),
         },
