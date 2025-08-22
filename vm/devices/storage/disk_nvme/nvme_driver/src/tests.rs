@@ -10,6 +10,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use nvme::NvmeControllerCaps;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFault;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::Cap;
 use nvme_spec::Command;
@@ -41,7 +42,7 @@ struct AdminQueueFault {
 }
 
 #[async_trait::async_trait]
-impl nvme_test::QueueFault for AdminQueueFault {
+impl QueueFault for AdminQueueFault {
     async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultBehavior<Command> {
         tracing::info!("Faulting submission queue using cid sequence number mismatch");
         let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
