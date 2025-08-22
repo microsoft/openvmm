@@ -3,12 +3,9 @@
 
 use super::test_helpers::TestNvmeMmioRegistration;
 use crate::BAR0_LEN;
-use crate::FaultConfiguration;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
 use crate::PAGE_SIZE64;
-use crate::QueueFault;
-use crate::QueueFaultBehavior;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::tests::test_helpers::read_completion_from_queue;
@@ -18,6 +15,9 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
+use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFault;
+use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use pal_async::DefaultDriver;

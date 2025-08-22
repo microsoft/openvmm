@@ -3,7 +3,6 @@
 
 //! Resource resolver for the nvme controller.
 
-use crate::FaultConfiguration;
 use crate::NsidConflict;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
@@ -11,6 +10,7 @@ use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
+use nvme_resources::fault::FaultConfiguration;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;

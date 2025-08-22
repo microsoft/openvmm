@@ -12,6 +12,8 @@ use vm_resource::ResourceId;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 
+pub mod fault;
+
 /// A handle to an NVMe controller.
 #[derive(MeshPayload)]
 pub struct NvmeControllerHandle {

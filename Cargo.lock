@@ -4700,6 +4700,7 @@ dependencies = [
  "inspect_counters",
  "mesh",
  "nvme",
+ "nvme_resources",
  "nvme_spec",
  "nvme_test",
  "pal_async",
@@ -4723,8 +4724,10 @@ dependencies = [
 name = "nvme_resources"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "guid",
  "mesh",
+ "nvme_spec",
  "vm_resource",
 ]
 

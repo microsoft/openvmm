@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::DOORBELL_STRIDE_BITS;
-use crate::FaultConfiguration;
 use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::queue::ShadowDoorbell;
@@ -13,6 +12,7 @@ use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
 use guestmem::GuestMemory;
+use nvme_resources::fault::FaultConfiguration;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::test_helpers::TestPciInterruptController;
