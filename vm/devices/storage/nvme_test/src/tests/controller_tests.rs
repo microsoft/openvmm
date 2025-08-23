@@ -27,6 +27,7 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::test_helpers::TestPciInterruptController;
+use std::sync::Arc;
 use user_driver::backoff::Backoff;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;

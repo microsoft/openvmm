@@ -17,6 +17,7 @@ use pci_core::spec::caps::CapabilityId;
 use pci_core::spec::caps::pci_express::PciExpressCapabilityHeader;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
+use zerocopy::IntoBytes;
 
 fn instantiate_controller_with_flr(
     driver: DefaultDriver,
@@ -72,8 +73,8 @@ async fn test_flr_capability_advertised(driver: DefaultDriver) {
                 )
                 .unwrap();
 
-            // Check Function Level Reset bit (bit 29, not 28)
-            let flr_supported = (device_caps & (1 << 29)) != 0;
+            // Check Function Level Reset bit (bit 28 in Device Capabilities)
+            let flr_supported = (device_caps & (1 << 28)) != 0;
             assert!(
                 flr_supported,
                 "FLR should be advertised in Device Capabilities"
@@ -99,31 +100,10 @@ async fn test_no_flr_capability_when_disabled(driver: DefaultDriver) {
     let mut controller = instantiate_controller_with_flr(driver, &gm, false);
 
     // Find the PCI Express capability - it should not be present
-    let mut cap_ptr = 0x40u16; // Standard capabilities start at 0x40
-    let mut found_pcie_cap = false;
-
-    // Walk through capabilities list
-    for _ in 0..16 {
-        // Reasonable limit on capability chain length
-        let mut cap_header = 0u32;
-        controller.pci_cfg_read(cap_ptr, &mut cap_header).unwrap();
-
-        let cap_id = (cap_header & 0xFF) as u8;
-        let next_ptr = ((cap_header >> 8) & 0xFF) as u16;
-
-        if cap_id == CapabilityId::PCI_EXPRESS.0 {
-            found_pcie_cap = true;
-            break;
-        }
-
-        if next_ptr == 0 {
-            break;
-        }
-        cap_ptr = next_ptr;
-    }
+    let pcie_cap_offset = find_pci_capability(&mut controller, 0x10);
 
     assert!(
-        !found_pcie_cap,
+        pcie_cap_offset.is_none(),
         "PCI Express capability should not be present when FLR is disabled"
     );
 }
@@ -133,29 +113,29 @@ async fn test_flr_trigger(driver: DefaultDriver) {
     let gm = test_memory();
     let mut controller = instantiate_controller_with_flr(driver, &gm, true);
 
+    // Set the ACQ base to 0x1000 and the ASQ base to 0x2000.
+    let mut qword = 0x1000;
+    controller.write_bar0(0x30, qword.as_bytes()).unwrap();
+    qword = 0x2000;
+    controller.write_bar0(0x28, qword.as_bytes()).unwrap();
+
+    // Set the queues so that they have four entries apiece.
+    let mut dword = 0x30003;
+    controller.write_bar0(0x24, dword.as_bytes()).unwrap();
+
+    // Enable the controller.
+    controller.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
+    dword |= 1;
+    controller.write_bar0(0x14, dword.as_bytes()).unwrap();
+    controller.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
+    assert!(dword & 1 != 0);
+
+    // Read CSTS
+    controller.read_bar0(0x1c, dword.as_mut_bytes()).unwrap();
+    assert!(dword & 2 == 0);
+
     // Find the PCI Express capability
-    let mut cap_ptr = 0x40u16; // Standard capabilities start at 0x40
-    let mut pcie_cap_offset = None;
-
-    // Walk through capabilities list
-    for _ in 0..16 {
-        // Reasonable limit on capability chain length
-        let mut cap_header = 0u32;
-        controller.pci_cfg_read(cap_ptr, &mut cap_header).unwrap();
-
-        let cap_id = (cap_header & 0xFF) as u8;
-        let next_ptr = ((cap_header >> 8) & 0xFF) as u16;
-
-        if cap_id == CapabilityId::PCI_EXPRESS.0 {
-            pcie_cap_offset = Some(cap_ptr);
-            break;
-        }
-
-        if next_ptr == 0 {
-            break;
-        }
-        cap_ptr = next_ptr;
-    }
+    let pcie_cap_offset = find_pci_capability(&mut controller, 0x10);
 
     let pcie_cap_offset = pcie_cap_offset.expect("PCI Express capability should be present");
 
@@ -186,11 +166,40 @@ async fn test_flr_trigger(driver: DefaultDriver) {
         "FLR bit should be self-clearing"
     );
 
-    // The device should be reset - check that controller status reflects reset state
-    // Note: In a real implementation, we'd need to check that the device actually reset,
-    // but for this test, we just verify the FLR trigger mechanism works
+    // Check that the controller is disabled after FLR
+    controller.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
+    assert!(dword == 0);
 }
 
 fn test_memory() -> GuestMemory {
     GuestMemory::allocate(0x10000)
+}
+
+// Returns the offset for the PCI capability or None if not found.
+fn find_pci_capability(controller: &mut NvmeFaultController, cap_id: u8) -> Option<u16> {
+    let mut cfg_dword = 0;
+    controller.pci_cfg_read(0x34, &mut cfg_dword).unwrap(); // Cap_ptr is always at 0x34
+    cfg_dword &= 0xff;
+    let mut max_caps = 100; // Limit to avoid infinite loop
+    loop {
+        if max_caps == 0 {
+            return None; // Caps limit reached and nothing found
+        }
+        // Read a cap struct header and pull out the fields.
+        let mut cap_header = 0;
+        controller
+            .pci_cfg_read(cfg_dword as u16, &mut cap_header)
+            .unwrap();
+        if cap_header & 0xff == cap_id as u32 {
+            break;
+        }
+        // Isolate the ptr to the next cap struct.
+        cfg_dword = (cap_header >> 8) & 0xff;
+        if cfg_dword == 0 {
+            return None;
+        }
+        max_caps -= 1;
+    }
+
+    Some(cfg_dword as u16)
 }
