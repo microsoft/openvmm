@@ -735,6 +735,9 @@ impl UhVmNetworkSettings {
         };
         // Complete shutdown on the VFs. Process events on the endpoints to
         // allow for proper shutdown.
+        // run_endpoints is a loop, so the race completes when shutdown_vfs completes.
+        // Also, run_endpoints races wait_for_endpoint_action() so it doesn't guarentee
+        // all endpoints will close their channels before shutdown_vfs completes.
         let _ = (shutdown_vfs, run_endpoints).race().await;
     }
 
