@@ -542,8 +542,9 @@ pub struct OpenVmmFramebufferAccess {
     view: View,
 }
 
+#[async_trait]
 impl PetriVmFramebufferAccess for OpenVmmFramebufferAccess {
-    fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
+    async fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
         // Our framebuffer uses 4 bytes per pixel, approximating an
         // BGRA image, however it only actually contains BGR data.
         // The fourth byte is effectively noise. We can set the 'alpha'

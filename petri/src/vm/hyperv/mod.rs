@@ -24,6 +24,7 @@ use crate::UefiConfig;
 use crate::VmScreenshotMeta;
 use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
+use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::vm::append_cmdline;
 use anyhow::Context;
@@ -43,6 +44,7 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::fs;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -187,7 +189,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             log_source.log_file("hyperv")?,
             firmware.expected_boot_event(),
             driver.clone(),
-        )?;
+        )
+        .await?;
 
         {
             let ProcessorTopology {
@@ -215,7 +218,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 apic_mode,
                 hw_thread_count_per_core: enable_smt.map(|smt| if smt { 2 } else { 1 }),
                 maximum_count_per_numa_node: *vps_per_socket,
-            })?;
+            })
+            .await?;
         }
 
         if let Some(UefiConfig {
@@ -234,7 +238,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
                         HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority
                     }
                 }),
-            )?;
+            )
+            .await?;
 
             if *disable_frontpage {
                 // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
@@ -247,9 +252,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
         for (i, vhds) in vhd_paths.iter().enumerate() {
             let (controller_type, controller_number) = match generation {
                 powershell::HyperVGeneration::One => (powershell::ControllerType::Ide, i as u32),
-                powershell::HyperVGeneration::Two => {
-                    (powershell::ControllerType::Scsi, vm.add_scsi_controller(0)?)
-                }
+                powershell::HyperVGeneration::Two => (
+                    powershell::ControllerType::Scsi,
+                    vm.add_scsi_controller(0).await?,
+                ),
             };
             for (controller_location, vhd) in vhds.iter().enumerate() {
                 let diff_disk_path = temp_dir.path().join(format!(
@@ -267,7 +273,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     controller_type,
                     Some(controller_location as u32),
                     Some(controller_number),
-                )?;
+                )
+                .await?;
             }
         }
 
@@ -292,16 +299,17 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     }
 
                     // Set the IMC
-                    vm.set_imc(&imc_hive)?;
+                    vm.set_imc(&imc_hive).await?;
                 }
 
-                let controller_number = vm.add_scsi_controller(0)?;
+                let controller_number = vm.add_scsi_controller(0).await?;
                 vm.add_vhd(
                     &agent_disk_path,
                     powershell::ControllerType::Scsi,
                     Some(0),
                     Some(controller_number),
-                )?;
+                )
+                .await?;
             }
         }
 
@@ -331,13 +339,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
                         | powershell::HyperVGuestStateIsolationType::Snp
                         | powershell::HyperVGuestStateIsolationType::Tdx
                 ),
-            )?;
+            )
+            .await?;
 
             if let Some(command_line) = command_line {
-                vm.set_vm_firmware_command_line(command_line)?;
+                vm.set_vm_firmware_command_line(command_line).await?;
             }
 
-            vm.set_vmbus_redirect(*vmbus_redirect)?;
+            vm.set_vmbus_redirect(*vmbus_redirect).await?;
 
             if let Some(agent_image) = openhcl_agent_image {
                 let agent_disk_path = temp_dir.path().join("paravisor_cidata.vhd");
@@ -345,49 +354,77 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 if build_and_persist_agent_image(agent_image, &agent_disk_path)
                     .context("vtl2 agent disk")?
                 {
-                    let controller_number = vm.add_scsi_controller(2)?;
+                    let controller_number = vm.add_scsi_controller(2).await?;
                     vm.add_vhd(
                         &agent_disk_path,
                         powershell::ControllerType::Scsi,
                         Some(0),
                         Some(controller_number),
-                    )?;
+                    )
+                    .await?;
                 }
             }
+
+            // Attempt to enable COM3 and use that to get KMSG logs, otherwise
+            // fall back to use diag_client.
+            let supports_com3 = {
+                // Hyper-V VBS VMs don't work with COM3 enabled.
+                // Hypervisor support is needed for this to work.
+                let is_not_vbs = !matches!(
+                    guest_state_isolation_type,
+                    powershell::HyperVGuestStateIsolationType::Vbs
+                );
+
+                // The Hyper-V serial device for ARM doesn't support additional
+                // serial ports yet.
+                let is_x86 = matches!(arch, MachineArch::X86_64);
+
+                // The registry key to enable additional COM ports is only
+                // available in newer builds of Windows.
+                let current_winver = windows_version::OsVersion::current();
+                tracing::debug!(?current_winver, "host windows version");
+                // This is the oldest working build used in CI
+                // TODO: determine the actual minimum version
+                const COM3_MIN_WINVER: u32 = 27813;
+                let is_supported_winver = current_winver.build >= COM3_MIN_WINVER;
+
+                is_not_vbs && is_x86 && is_supported_winver
+            };
 
             let openhcl_log_file = log_source.log_file("openhcl")?;
-            log_tasks.push(driver.spawn("openhcl-log", {
-                let driver = driver.clone();
-                let vmid = *vm.vmid();
-                async move {
-                    let diag_client = diag_client::DiagClient::from_hyperv_id(driver.clone(), vmid);
-                    loop {
-                        diag_client.wait_for_server().await?;
-                        crate::kmsg_log_task(
-                            openhcl_log_file.clone(),
-                            diag_client.kmsg(true).await?,
-                        )
-                        .await?
-                    }
-                }
-            }));
+            if supports_com3 {
+                tracing::debug!("getting kmsg logs from COM3");
+
+                let openhcl_serial_pipe_path = vm.set_vm_com_port(3).await?;
+                log_tasks.push(driver.spawn(
+                    "openhcl-log",
+                    hyperv_serial_log_task(
+                        driver.clone(),
+                        openhcl_serial_pipe_path,
+                        openhcl_log_file,
+                    ),
+                ));
+            } else {
+                tracing::debug!("getting kmsg logs from diag_client");
+
+                log_tasks.push(driver.spawn(
+                    "openhcl-log",
+                    kmsg_log_task(
+                        openhcl_log_file,
+                        diag_client::DiagClient::from_hyperv_id(driver.clone(), *vm.vmid()),
+                    ),
+                ));
+            }
         }
 
-        let serial_pipe_path = vm.set_vm_com_port(1)?;
+        let serial_pipe_path = vm.set_vm_com_port(1).await?;
         let serial_log_file = log_source.log_file("guest")?;
-        log_tasks.push(driver.spawn("guest-log", {
-            let driver = driver.clone();
-            async move {
-                let serial = diag_client::hyperv::open_serial_port(
-                    &driver,
-                    diag_client::hyperv::ComPortAccessInfo::PortPipePath(&serial_pipe_path),
-                )
-                .await?;
-                crate::log_stream(serial_log_file, PolledPipe::new(&driver, serial)?).await
-            }
-        }));
+        log_tasks.push(driver.spawn(
+            "guest-log",
+            hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
+        ));
 
-        vm.start()?;
+        vm.start().await?;
 
         Ok(HyperVPetriRuntime {
             vm: Arc::new(vm),
@@ -410,6 +447,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         Arc::into_inner(self.vm)
             .context("all references to the Hyper-V VM object have not been closed")?
             .remove()
+            .await
     }
 
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
@@ -477,8 +515,8 @@ impl PetriVmRuntime for HyperVPetriRuntime {
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
         match kind {
-            ShutdownKind::Shutdown => self.vm.stop()?,
-            ShutdownKind::Reboot => self.vm.restart()?,
+            ShutdownKind::Shutdown => self.vm.stop().await?,
+            ShutdownKind::Reboot => self.vm.restart().await?,
         }
 
         Ok(())
@@ -505,12 +543,14 @@ pub struct HyperVFramebufferAccess {
     vm: Weak<HyperVVM>,
 }
 
+#[async_trait]
 impl PetriVmFramebufferAccess for HyperVFramebufferAccess {
-    fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
+    async fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
         self.vm
             .upgrade()
             .context("VM no longer exists")?
             .screenshot(image)
+            .await
     }
 }
 
@@ -574,7 +614,7 @@ pub async fn create_child_vhd_locking(
             .open(&lock_file_path)
         {
             Ok(_) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                 tracing::debug!("vhd lock taken, waiting...");
                 PolledTimer::new(driver).sleep(Duration::from_secs(1)).await;
                 continue;
@@ -590,9 +630,45 @@ pub async fn create_child_vhd_locking(
         lock_file_path.to_string_lossy()
     );
 
-    let res = powershell::create_child_vhd(path, parent_path);
+    let res = powershell::create_child_vhd(path, parent_path).await;
 
     fs_err::remove_file(&lock_file_path)?;
 
     res
+}
+
+async fn hyperv_serial_log_task(
+    driver: DefaultDriver,
+    serial_pipe_path: String,
+    log_file: crate::PetriLogFile,
+) -> anyhow::Result<()> {
+    let mut timer = None;
+    loop {
+        match fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&serial_pipe_path)
+        {
+            Ok(file) => {
+                let pipe = PolledPipe::new(&driver, file.into()).expect("failed to create pipe");
+                // connect/disconnect messages logged internally
+                _ = crate::log_task(log_file.clone(), pipe, &serial_pipe_path).await;
+            }
+            Err(err) => {
+                // Log the error if it isn't just that the VM is not running
+                // or the pipe is "busy" (which is reported during reset).
+                const ERROR_PIPE_BUSY: i32 = 231;
+                if !(err.kind() == ErrorKind::NotFound
+                    || matches!(err.raw_os_error(), Some(ERROR_PIPE_BUSY)))
+                {
+                    tracing::warn!("{err:#}")
+                }
+                // Wait a bit and try again.
+                timer
+                    .get_or_insert_with(|| PolledTimer::new(&driver))
+                    .sleep(Duration::from_millis(100))
+                    .await;
+            }
+        }
+    }
 }

@@ -529,7 +529,7 @@ impl PetriVmConfigSetupCore<'_> {
         let (serial0_read, serial0_write) = serial0_host.split();
         let serial0_task = self.driver.spawn(
             "serial0-console",
-            crate::log_stream(serial0_log_file, serial0_read),
+            crate::log_task(serial0_log_file, serial0_read, "serial0-console"),
         );
         serial_tasks.push(serial0_task);
 
@@ -539,7 +539,7 @@ impl PetriVmConfigSetupCore<'_> {
                 .context("failed to create serial2 stream")?;
             let serial2_task = self.driver.spawn(
                 "serial2-openhcl",
-                crate::log_stream(logger.log_file("openhcl")?, serial2_host),
+                crate::log_task(logger.log_file("openhcl")?, serial2_host, "serial2-openhcl"),
             );
             serial_tasks.push(serial2_task);
             serial2

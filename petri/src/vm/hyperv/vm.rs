@@ -41,7 +41,7 @@ pub struct HyperVVM {
 
 impl HyperVVM {
     /// Create a new Hyper-V VM
-    pub fn new(
+    pub async fn new(
         name: &str,
         generation: powershell::HyperVGeneration,
         guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
@@ -62,14 +62,14 @@ impl HyperVVM {
         }
 
         // Delete the VM if it already exists
-        let cleanup = |vmid: &Guid| -> anyhow::Result<()> {
-            hvc::hvc_ensure_off(vmid)?;
-            powershell::run_remove_vm(vmid)
+        let cleanup = async |vmid: &Guid| -> anyhow::Result<()> {
+            hvc::hvc_ensure_off(vmid).await?;
+            powershell::run_remove_vm(vmid).await
         };
 
-        if let Ok(vmids) = powershell::vm_id_from_name(&name) {
+        if let Ok(vmids) = powershell::vm_id_from_name(&name).await {
             for vmid in vmids {
-                match cleanup(&vmid) {
+                match cleanup(&vmid).await {
                     Ok(_) => {
                         tracing::info!("Successfully cleaned up VM from previous test run ({vmid})")
                     }
@@ -89,7 +89,8 @@ impl HyperVVM {
             memory_startup_bytes: Some(memory),
             path: None,
             vhd_path: None,
-        })?;
+        })
+        .await?;
 
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
 
@@ -109,10 +110,12 @@ impl HyperVVM {
 
         // Remove the default network adapter
         powershell::run_remove_vm_network_adapter(&vmid)
+            .await
             .context("remove default network adapter")?;
 
         // Remove the default SCSI controller
         powershell::run_remove_vm_scsi_controller(&vmid, 0)
+            .await
             .context("remove default SCSI controller")?;
 
         // Disable dynamic memory
@@ -122,7 +125,8 @@ impl HyperVVM {
                 dynamic_memory_enabled: Some(false),
                 ..Default::default()
             },
-        )?;
+        )
+        .await?;
 
         // Disable secure boot for generation 2 VMs
         if generation == powershell::HyperVGeneration::Two {
@@ -130,7 +134,8 @@ impl HyperVVM {
                 vmid: &vmid,
                 secure_boot_enabled: Some(false),
                 secure_boot_template: None,
-            })?;
+            })
+            .await?;
         }
 
         Ok(this)
@@ -147,8 +152,8 @@ impl HyperVVM {
     }
 
     /// Get Hyper-V logs and write them to the log file
-    pub fn flush_logs(&self) -> anyhow::Result<()> {
-        for event in powershell::hyperv_event_logs(&self.vmid, &self.create_time)? {
+    pub async fn flush_logs(&self) -> anyhow::Result<()> {
+        for event in powershell::hyperv_event_logs(&self.vmid, &self.create_time).await? {
             self.log_file.write_entry_fmt(
                 Some(event.time_created),
                 match event.level {
@@ -186,8 +191,8 @@ impl HyperVVM {
         self.wait_for_some(Self::boot_event, 240.seconds()).await
     }
 
-    fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
-        let events = powershell::hyperv_boot_events(&self.vmid, &self.create_time)?;
+    async fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
+        let events = powershell::hyperv_boot_events(&self.vmid, &self.create_time).await?;
 
         if events.len() > 1 {
             anyhow::bail!("Got more than one boot event");
@@ -209,15 +214,15 @@ impl HyperVVM {
     }
 
     /// Set the VM processor topology.
-    pub fn set_processor(
+    pub async fn set_processor(
         &mut self,
         args: &powershell::HyperVSetVMProcessorArgs,
     ) -> anyhow::Result<()> {
-        powershell::run_set_vm_processor(&self.vmid, args)
+        powershell::run_set_vm_processor(&self.vmid, args).await
     }
 
     /// Set the OpenHCL firmware file
-    pub fn set_openhcl_firmware(
+    pub async fn set_openhcl_firmware(
         &mut self,
         igvm_file: &Path,
         increase_vtl2_memory: bool,
@@ -228,10 +233,11 @@ impl HyperVVM {
             igvm_file,
             increase_vtl2_memory,
         )
+        .await
     }
 
     /// Configure secure boot
-    pub fn set_secure_boot(
+    pub async fn set_secure_boot(
         &mut self,
         secure_boot_enabled: bool,
         secure_boot_template: Option<powershell::HyperVSecureBootTemplate>,
@@ -241,24 +247,26 @@ impl HyperVVM {
             secure_boot_enabled: Some(secure_boot_enabled),
             secure_boot_template,
         })
+        .await
     }
 
     /// Add a SCSI controller
-    pub fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<u32> {
-        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid)?;
+    pub async fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<u32> {
+        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid).await?;
         if target_vtl != 0 {
             powershell::run_set_vm_scsi_controller_target_vtl(
                 &self.ps_mod,
                 &self.vmid,
                 controller_number,
                 target_vtl,
-            )?;
+            )
+            .await?;
         }
         Ok(controller_number)
     }
 
     /// Add a VHD
-    pub fn add_vhd(
+    pub async fn add_vhd(
         &mut self,
         path: &Path,
         controller_type: powershell::ControllerType,
@@ -272,19 +280,20 @@ impl HyperVVM {
             controller_number,
             path: Some(path),
         })
+        .await
     }
 
     /// Set the initial machine configuration (IMC hive file)
-    pub fn set_imc(&mut self, imc_hive: &Path) -> anyhow::Result<()> {
-        powershell::run_set_initial_machine_configuration(&self.vmid, &self.ps_mod, imc_hive)
+    pub async fn set_imc(&mut self, imc_hive: &Path) -> anyhow::Result<()> {
+        powershell::run_set_initial_machine_configuration(&self.vmid, &self.ps_mod, imc_hive).await
     }
 
-    fn state(&self) -> anyhow::Result<VmState> {
-        hvc::hvc_state(&self.vmid)
+    async fn state(&self) -> anyhow::Result<VmState> {
+        hvc::hvc_state(&self.vmid).await
     }
 
-    fn check_state(&self, expected: VmState) -> anyhow::Result<()> {
-        let state = self.state()?;
+    async fn check_state(&self, expected: VmState) -> anyhow::Result<()> {
+        let state = self.state().await?;
         if state != expected {
             anyhow::bail!("unexpected VM state {state:?}, should be {expected:?}");
         }
@@ -292,42 +301,42 @@ impl HyperVVM {
     }
 
     /// Start the VM
-    pub fn start(&self) -> anyhow::Result<()> {
-        self.check_state(VmState::Off)?;
-        hvc::hvc_start(&self.vmid)?;
+    pub async fn start(&self) -> anyhow::Result<()> {
+        self.check_state(VmState::Off).await?;
+        hvc::hvc_start(&self.vmid).await?;
         Ok(())
     }
 
     /// Attempt to gracefully shut down the VM
-    pub fn stop(&self) -> anyhow::Result<()> {
-        self.check_shutdown_ic()?;
-        self.check_state(VmState::Running)?;
-        hvc::hvc_stop(&self.vmid)?;
+    pub async fn stop(&self) -> anyhow::Result<()> {
+        self.check_shutdown_ic().await?;
+        self.check_state(VmState::Running).await?;
+        hvc::hvc_stop(&self.vmid).await?;
         Ok(())
     }
 
     /// Attempt to gracefully restart the VM
-    pub fn restart(&self) -> anyhow::Result<()> {
-        self.check_shutdown_ic()?;
-        self.check_state(VmState::Running)?;
-        hvc::hvc_restart(&self.vmid)?;
+    pub async fn restart(&self) -> anyhow::Result<()> {
+        self.check_shutdown_ic().await?;
+        self.check_state(VmState::Running).await?;
+        hvc::hvc_restart(&self.vmid).await?;
         Ok(())
     }
 
     /// Kill the VM
-    pub fn kill(&self) -> anyhow::Result<()> {
-        hvc::hvc_kill(&self.vmid).context("hvc_kill")
+    pub async fn kill(&self) -> anyhow::Result<()> {
+        hvc::hvc_kill(&self.vmid).await.context("hvc_kill")
     }
 
     /// Issue a hard reset to the VM
-    pub fn reset(&self) -> anyhow::Result<()> {
-        hvc::hvc_reset(&self.vmid).context("hvc_reset")
+    pub async fn reset(&self) -> anyhow::Result<()> {
+        hvc::hvc_reset(&self.vmid).await.context("hvc_reset")
     }
 
     /// Enable serial output and return the named pipe path
-    pub fn set_vm_com_port(&mut self, port: u8) -> anyhow::Result<String> {
+    pub async fn set_vm_com_port(&mut self, port: u8) -> anyhow::Result<String> {
         let pipe_path = format!(r#"\\.\pipe\{}-{}"#, self.vmid, port);
-        powershell::run_set_vm_com_port(&self.vmid, port, Path::new(&pipe_path))?;
+        powershell::run_set_vm_com_port(&self.vmid, port, Path::new(&pipe_path)).await?;
         Ok(pipe_path)
     }
 
@@ -353,29 +362,27 @@ impl HyperVVM {
         .context("wait_for_enlightened_shutdown_ready")
     }
 
-    fn shutdown_ic_status(&self) -> anyhow::Result<powershell::VmShutdownIcStatus> {
-        powershell::vm_shutdown_ic_status(&self.vmid)
+    async fn shutdown_ic_status(&self) -> anyhow::Result<powershell::VmShutdownIcStatus> {
+        powershell::vm_shutdown_ic_status(&self.vmid).await
     }
 
-    fn check_shutdown_ic(&self) -> anyhow::Result<()> {
-        let status = self.shutdown_ic_status()?;
+    async fn check_shutdown_ic(&self) -> anyhow::Result<()> {
+        let status = self.shutdown_ic_status().await?;
         if status != powershell::VmShutdownIcStatus::Ok {
             anyhow::bail!("unexpected shutdown ic status {status:?}, should be Ok");
         }
         Ok(())
     }
 
-    // TODO: replace timeouts throughout the hyper-v petri infrastructure
-    // with a watchdog
     async fn wait_for<T: std::fmt::Debug + PartialEq>(
         &self,
-        f: fn(&Self) -> anyhow::Result<T>,
+        f: impl AsyncFn(&Self) -> anyhow::Result<T>,
         target: T,
         timeout: jiff::Span,
     ) -> anyhow::Result<()> {
         let start = Timestamp::now();
         loop {
-            let state = f(self)?;
+            let state = f(self).await?;
             if state == target {
                 break;
             }
@@ -392,12 +399,12 @@ impl HyperVVM {
 
     async fn wait_for_some<T: std::fmt::Debug + PartialEq>(
         &self,
-        f: fn(&Self) -> anyhow::Result<Option<T>>,
+        f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
         timeout: jiff::Span,
     ) -> anyhow::Result<T> {
         let start = Timestamp::now();
         loop {
-            let state = f(self)?;
+            let state = f(self).await?;
             if let Some(state) = state {
                 return Ok(state);
             }
@@ -411,16 +418,16 @@ impl HyperVVM {
     }
 
     /// Remove the VM
-    pub fn remove(mut self) -> anyhow::Result<()> {
-        self.remove_inner()
+    pub async fn remove(mut self) -> anyhow::Result<()> {
+        self.remove_inner().await
     }
 
-    fn remove_inner(&mut self) -> anyhow::Result<()> {
+    async fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
-            let res_off = hvc::hvc_ensure_off(&self.vmid);
-            let res_remove = powershell::run_remove_vm(&self.vmid);
+            let res_off = hvc::hvc_ensure_off(&self.vmid).await;
+            let res_remove = powershell::run_remove_vm(&self.vmid).await;
 
-            self.flush_logs()?;
+            self.flush_logs().await?;
 
             res_off?;
             res_remove?;
@@ -431,27 +438,30 @@ impl HyperVVM {
     }
 
     /// Sets the VM firmware  command line.
-    pub fn set_vm_firmware_command_line(&self, openhcl_command_line: &str) -> anyhow::Result<()> {
-        powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line)
+    pub async fn set_vm_firmware_command_line(
+        &self,
+        openhcl_command_line: &str,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line).await
     }
 
     /// Enable VMBusRelay
-    pub fn set_vmbus_redirect(&self, enable: bool) -> anyhow::Result<()> {
-        powershell::run_set_vmbus_redirect(&self.vmid, &self.ps_mod, enable)
+    pub async fn set_vmbus_redirect(&self, enable: bool) -> anyhow::Result<()> {
+        powershell::run_set_vmbus_redirect(&self.vmid, &self.ps_mod, enable).await
     }
 
     /// Perform an OpenHCL servicing operation.
     pub async fn restart_openhcl(&self, flags: OpenHclServicingFlags) -> anyhow::Result<()> {
-        powershell::run_restart_openhcl(&self.vmid, &self.ps_mod, flags)
+        powershell::run_restart_openhcl(&self.vmid, &self.ps_mod, flags).await
     }
 
     /// Take a screenshot of the VM
-    pub fn screenshot(&self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
+    pub async fn screenshot(&self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
         const IN_BYTES_PER_PIXEL: usize = 2;
         const OUT_BYTES_PER_PIXEL: usize = 3;
         let temp_bin_path = self.temp_dir.path().join("screenshot.bin");
         let (width, height) =
-            powershell::run_get_vm_screenshot(&self.vmid, &self.ps_mod, &temp_bin_path)?;
+            powershell::run_get_vm_screenshot(&self.vmid, &self.ps_mod, &temp_bin_path).await?;
         let (widthsize, heightsize) = (width as usize, height as usize);
         let in_len = widthsize * heightsize * IN_BYTES_PER_PIXEL;
         let out_len = widthsize * heightsize * OUT_BYTES_PER_PIXEL;
@@ -491,7 +501,7 @@ impl Drop for HyperVVM {
             .ok()
             .is_none_or(|v| v.is_empty() || v == "0")
         {
-            let _ = self.remove_inner();
+            let _ = futures::executor::block_on(self.remove_inner());
         }
     }
 }
@@ -511,19 +521,20 @@ pub(crate) enum CommandError {
 }
 
 /// Run the PowerShell script and return the output
-pub(crate) fn run_cmd(mut cmd: Command) -> Result<String, CommandError> {
+pub(crate) async fn run_cmd(mut cmd: Command) -> Result<String, CommandError> {
     cmd.stderr(Stdio::piped()).stdin(Stdio::null());
 
-    tracing::debug!(?cmd, "executing command");
+    let cmd_debug = format!("{cmd:?}");
+    tracing::debug!(cmd = cmd_debug, "executing command");
 
     let start = Timestamp::now();
-    let output = cmd.output()?;
+    let output = blocking::unblock(move || cmd.output()).await?;
     let time_elapsed = Timestamp::now() - start;
 
     let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
     tracing::debug!(
-        ?cmd,
+        cmd = cmd_debug,
         stdout_str,
         stderr_str,
         "command exited in {:.3}s with status {}",
