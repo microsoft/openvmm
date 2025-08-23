@@ -45,10 +45,22 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
+
+/// Input parameters needed to create new NvmeWorkers
+#[derive(Clone)]
+struct WorkerInput {
+    driver_source: VmTaskDriverSource,
+    guest_memory: GuestMemory,
+    interrupts: Vec<Interrupt>,
+    max_io_queues: u16,
+    subsystem_id: Guid,
+    fault_configuration: FaultConfiguration,
+}
 
 /// FLR handler that signals reset requests.
 #[derive(Inspect)]
@@ -89,6 +101,8 @@ pub struct NvmeFaultController {
     workers: NvmeWorkers,
     #[inspect(skip)]
     flr_reset_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[inspect(skip)]
+    worker_input: WorkerInput,
 }
 
 #[derive(Inspect)]
@@ -188,7 +202,7 @@ impl NvmeFaultController {
             bars,
         );
 
-        let interrupts = (0..caps.msix_count)
+        let interrupts: Vec<Interrupt> = (0..caps.msix_count)
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
 
@@ -211,6 +225,7 @@ impl NvmeFaultController {
             workers: admin,
             qe_sizes,
             flr_reset_requested,
+            worker_input,
         }
     }
 
@@ -477,17 +492,13 @@ impl ChangeDeviceState for NvmeFaultController {
             registers,
             qe_sizes,
             workers,
-            flr_reset_requested,
+            flr_reset_requested: _,
+            worker_input: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
         *registers = RegState::new();
         *qe_sizes.lock() = Default::default();
-
-        // Clear any pending FLR requests
-        if let Some(flr_requested) = flr_reset_requested {
-            flr_requested.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
     }
 }
 
@@ -541,13 +552,28 @@ impl PciConfigSpace for NvmeFaultController {
 
         // Check for FLR requests
         if let Some(flr_requested) = &self.flr_reset_requested {
+            // According to the spec, FLR bit should always read 0, reset it before responding.
             if flr_requested.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                // FLR was requested, initiate controller reset
-                self.workers.controller_reset();
-                // Reset configuration space and registers to default state
-                self.registers = RegState::new();
+                // FLR entails a state agnostic hard-reset. Instead of just resetting the controller,
+                // create a completely new worker backend to ensure clean state.
                 self.cfg_space.reset();
+                self.registers = RegState::new();
                 *self.qe_sizes.lock() = Default::default();
+
+                // Create new workers from saved input parameters
+                let new_workers = NvmeWorkers::new(
+                    &self.worker_input.driver_source,
+                    self.worker_input.guest_memory.clone(),
+                    self.worker_input.interrupts.clone(),
+                    self.worker_input.max_io_queues,
+                    self.worker_input.max_io_queues,
+                    Arc::clone(&self.qe_sizes),
+                    self.worker_input.subsystem_id,
+                    self.worker_input.fault_configuration.clone(),
+                );
+
+                // Replace the old workers with the new ones
+                self.workers = new_workers;
             }
         }
 
