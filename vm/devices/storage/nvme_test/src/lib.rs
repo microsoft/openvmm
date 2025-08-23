@@ -23,7 +23,6 @@ pub use workers::NvmeFaultControllerClient;
 
 use guestmem::ranges::PagedRange;
 use nvme_spec as spec;
-use std::sync::Arc;
 use workers::NsidConflict;
 
 // Device configuration shared by PCI and NVMe.
