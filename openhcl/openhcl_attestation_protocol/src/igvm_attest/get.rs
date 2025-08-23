@@ -36,8 +36,10 @@ pub const KEY_RELEASE_RESPONSE_BUFFER_SIZE: usize = 16 * PAGE_SIZE;
 /// Currently the AK cert request only requires 1 page.
 pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
 
-/// Current AK cert response header version
-pub const AK_CERT_RESPONSE_HEADER_VERSION: u32 = 1;
+// IGVM Attest response header version
+pub const IGVM_ATTEST_RESPONSE_VERSION_1: u32 = 1;
+pub const IGVM_ATTEST_RESPONSE_VERSION_2: u32 = 2;
+pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: u32 = IGVM_ATTEST_RESPONSE_VERSION_2;
 
 /// Request structure (C-style)
 /// The struct (includes the appended [`runtime_claims::RuntimeClaims`]) also serves as the
@@ -207,10 +209,6 @@ pub struct IgvmAttestCommonResponseHeader {
     /// Version
     pub version: u32,
 }
-
-pub const IGVM_ATTEST_RESPONSE_VERSION_1: u32 = 1;
-pub const IGVM_ATTEST_RESPONSE_VERSION_2: u32 = 2;
-pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: u32 = IGVM_ATTEST_RESPONSE_VERSION_2;
 
 /// The response header for `IGVM_ERROR_INFO` (C-style struct)
 #[repr(C)]
