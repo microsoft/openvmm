@@ -10,6 +10,8 @@ use crate::tests::test_helpers::find_pci_capability;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
+use mesh::CellUpdater;
+use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
@@ -41,7 +43,10 @@ fn instantiate_controller_with_flr(
             subsystem_id: Guid::new_random(),
             flr_support,
         },
-        FaultConfiguration { admin_fault: None },
+        FaultConfiguration {
+            fault_active: CellUpdater::new(false).cell(),
+            admin_fault: AdminQueueFaultConfig::new(),
+        },
     )
 }
 
