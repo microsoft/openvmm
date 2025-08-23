@@ -37,12 +37,16 @@ struct Header {
     dropped: u16,
 }
 
+/// Errors that can occur while parsing individual entries inside a backing buffer.
 #[derive(Debug, Error)]
 pub enum EntryError {
+    /// The buffer is too small to contain even the header of an entry.
     #[error("buffer too small for header")]
     BufferHeader,
+    /// The declared entry length exceeds the remaining bytes in the buffer.
     #[error("header len past remaining buffer")]
     BufferLen,
+    /// The entry payload is not valid UTF-8.
     #[error("buffer is not valid utf8")]
     BufferInvalidUtf8(#[source] Utf8Error),
 }
@@ -88,18 +92,25 @@ pub struct StringBuffer<'a> {
 }
 
 /// Error types that can occur when working with the string buffer.
+/// Errors returned by public `StringBuffer` APIs for construction, parsing or mutation.
 #[derive(Debug, Error)]
 pub enum StringBufferError {
+    /// The string exceeds the maximum encodable u16 length.
     #[error("string is too long to write to buffer")]
     StringTooLong,
+    /// The provided backing buffer length is not 4K aligned.
     #[error("buffer is not 4k aligned")]
     BufferAlignment,
+    /// The provided backing buffer size is outside the allowed range (4K - 60K, inclusive) or invalid.
     #[error("buffer size is invalid")]
     BufferSize,
+    /// The header's recorded data length does not match the actual data region length.
     #[error("header data len does not match buffer len")]
     InvalidHeaderDataLen,
+    /// The header's next insertion offset is past the end of the data region.
     #[error("header next insert past end of buffer")]
     InvalidHeaderNextInsert,
+    /// An existing entry in the buffer is invalid.
     #[error("entry is invalid")]
     InvalidEntry(#[source] EntryError),
 }
@@ -251,6 +262,7 @@ impl<'a> Iterator for StringBufferIterator<'a> {
 mod tests {
     use super::*;
     extern crate alloc;
+    use alloc::vec;
     use alloc::vec::Vec;
     use core::mem::size_of;
 
@@ -339,5 +351,120 @@ mod tests {
         let buffer = StringBuffer::new(&mut storage).unwrap();
         let strings: Vec<_> = buffer.iter().collect();
         assert!(strings.is_empty());
+    }
+
+    #[test]
+    fn test_new_buffer_too_small() {
+        let mut storage = [0u8; 1024];
+        let res = StringBuffer::new(&mut storage);
+        assert!(matches!(res, Err(StringBufferError::BufferSize)));
+    }
+
+    #[test]
+    fn test_new_buffer_too_large() {
+        // 16 pages (> 15 allowed)
+        let mut storage = [0u8; PAGE_SIZE_4K * 16];
+        let res = StringBuffer::new(&mut storage);
+        assert!(matches!(res, Err(StringBufferError::BufferSize)));
+    }
+
+    #[test]
+    fn test_new_buffer_misaligned() {
+        // size not a multiple of 4K but within range
+        let mut storage = vec![0u8; PAGE_SIZE_4K * 2 + 1];
+        let res = StringBuffer::new(&mut storage);
+        assert!(matches!(res, Err(StringBufferError::BufferAlignment)));
+    }
+
+    #[test]
+    fn test_from_existing_invalid_header_data_len() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let header_size = size_of::<Header>();
+        let data_len = (TEST_BUFFER_SIZE - header_size) as u16;
+        // Corrupt: set data_len to wrong value (0)
+        storage[0..2].copy_from_slice(&0u16.to_le_bytes());
+        // next_insert = 0, dropped = 0 already
+        let res = StringBuffer::from_existing(&mut storage);
+        assert!(matches!(res, Err(StringBufferError::InvalidHeaderDataLen)));
+        // Make a valid header first then corrupt after creation
+        storage[0..2].copy_from_slice(&data_len.to_le_bytes());
+        // Now make next_insert invalid (past end)
+        storage[2..4].copy_from_slice(&(data_len + 1).to_le_bytes());
+        let res2 = StringBuffer::from_existing(&mut storage);
+        assert!(matches!(
+            res2,
+            Err(StringBufferError::InvalidHeaderNextInsert)
+        ));
+    }
+
+    #[test]
+    fn test_from_existing_invalid_entry_length_overflow() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let header_size = size_of::<Header>();
+        let data_len = (TEST_BUFFER_SIZE - header_size) as u16;
+        // Valid data_len
+        storage[0..2].copy_from_slice(&data_len.to_le_bytes());
+        // next_insert = 2 (only length field present)
+        storage[2..4].copy_from_slice(&2u16.to_le_bytes());
+        // dropped = 0
+        // Entry length header claims 16 bytes, but only 0 bytes of payload follow
+        storage[header_size..header_size + 2].copy_from_slice(&16u16.to_le_bytes());
+        let res = StringBuffer::from_existing(&mut storage);
+        assert!(matches!(
+            res,
+            Err(StringBufferError::InvalidEntry(EntryError::BufferLen))
+        ));
+    }
+
+    #[test]
+    fn test_from_existing_invalid_entry_utf8() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let header_size = size_of::<Header>();
+        let data_len = (TEST_BUFFER_SIZE - header_size) as u16;
+        storage[0..2].copy_from_slice(&data_len.to_le_bytes());
+        // next_insert = 3 (len header + 1 byte of data)
+        storage[2..4].copy_from_slice(&3u16.to_le_bytes());
+        // dropped = 0
+        // len = 1
+        storage[header_size..header_size + 2].copy_from_slice(&1u16.to_le_bytes());
+        // invalid utf-8 byte 0xFF
+        storage[header_size + 2] = 0xFF;
+        let res = StringBuffer::from_existing(&mut storage);
+        assert!(matches!(
+            res,
+            Err(StringBufferError::InvalidEntry(
+                EntryError::BufferInvalidUtf8(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_append_multiple_drops_increment() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+        // Fill the buffer completely
+        let space = buffer.remaining_capacity();
+        let filler = "x".repeat(space - 2);
+        assert!(matches!(buffer.append(&filler), Ok(true)));
+        assert_eq!(buffer.remaining_capacity(), 0);
+        // Multiple failed appends increment dropped each time
+        assert!(matches!(buffer.append("a"), Ok(false)));
+        assert_eq!(buffer.dropped_messages(), 1);
+        assert!(matches!(buffer.append("b"), Ok(false)));
+        assert_eq!(buffer.dropped_messages(), 2);
+        assert!(matches!(buffer.append("c"), Ok(false)));
+        assert_eq!(buffer.dropped_messages(), 3);
+    }
+
+    #[test]
+    fn test_append_utf8_strings() {
+        let mut storage = [0u8; TEST_BUFFER_SIZE];
+        let mut buffer = StringBuffer::new(&mut storage).unwrap();
+        let strings = ["hé", "über", "数据", "emoji 😊"];
+        for s in &strings {
+            assert!(matches!(buffer.append(s), Ok(true)));
+        }
+        let collected: Vec<&str> = buffer.iter().collect();
+        assert_eq!(collected, strings);
     }
 }
