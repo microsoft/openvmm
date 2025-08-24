@@ -36,7 +36,7 @@ impl PciExpressState {
 }
 
 #[derive(Inspect)]
-/// PCI Express capability with Function Level Reset support.
+/// Configurable PCI Express capability.
 pub struct PciExpressCapability {
     device_capabilities: pci_express::DeviceCapabilities,
     state: Arc<Mutex<PciExpressState>>,
@@ -97,7 +97,7 @@ impl PciCapability for PciExpressCapability {
                 // PCIe Capabilities Register (16 bits) + Next Pointer (8 bits) + Capability ID (8 bits)
                 // For basic endpoint: Version=2, Device/Port Type=0 (PCI Express Endpoint)
                 let pcie_caps: u16 = 0x0002; // Version 2, Device/Port Type 0
-                (pcie_caps as u32) << 16 | (0x00 << 8) | CapabilityId::PCI_EXPRESS.0 as u32
+                (pcie_caps as u32) << 16 | CapabilityId::PCI_EXPRESS.0 as u32
             }
             PciExpressCapabilityHeader::DEVICE_CAPS => self.device_capabilities.into_bits(),
             PciExpressCapabilityHeader::DEVICE_CTL_STS => {
