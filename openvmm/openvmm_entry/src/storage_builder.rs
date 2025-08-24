@@ -28,12 +28,22 @@ use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::storage_controller;
 
+use std::collections::HashMap;
+
+#[derive(Clone, Debug)]
+pub struct NvmeControllerConfig {
+    pub namespaces: Vec<NamespaceDefinition>,
+    pub max_ioqpairs: u16,
+    pub instance_id: Guid,
+}
+
 pub(super) struct StorageBuilder {
     vtl0_ide_disks: Vec<IdeDeviceConfig>,
     vtl0_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
-    vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
-    vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
+    // Map from controller_id to controller config
+    vtl0_nvme_controllers: HashMap<u32, NvmeControllerConfig>,
+    vtl2_nvme_controllers: HashMap<u32, NvmeControllerConfig>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
     openhcl_vtl: Option<DeviceVtl>,
@@ -70,8 +80,8 @@ impl StorageBuilder {
             vtl0_ide_disks: Vec::new(),
             vtl0_scsi_devices: Vec::new(),
             vtl2_scsi_devices: Vec::new(),
-            vtl0_nvme_namespaces: Vec::new(),
-            vtl2_nvme_namespaces: Vec::new(),
+            vtl0_nvme_controllers: HashMap::new(),
+            vtl2_nvme_controllers: HashMap::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
             openhcl_vtl,
@@ -80,6 +90,10 @@ impl StorageBuilder {
 
     pub fn has_vtl0_nvme(&self) -> bool {
         !self.vtl0_nvme_namespaces.is_empty() || !self.underhill_nvme_luns.is_empty()
+    }
+
+    pub fn has_vtl0_nvme(&self) -> bool {
+        !self.vtl0_nvme_controllers.is_empty() || !self.underhill_nvme_luns.is_empty()
     }
 
     pub fn add(
@@ -98,6 +112,46 @@ impl StorageBuilder {
             self.add_underhill(source.into(), target, kind, is_dvd, read_only)?;
         } else {
             self.add_inner(vtl, target, kind, is_dvd, read_only)?;
+        }
+        Ok(())
+    }
+
+    pub fn add_nvme(
+        &mut self,
+        vtl: DeviceVtl,
+        underhill: Option<UnderhillDiskSource>,
+        target: DiskLocation,
+        kind: &DiskCliKind,
+        read_only: bool,
+        max_ioqpairs: Option<u32>,
+    ) -> anyhow::Result<()> {
+        // Validate and set max_ioqpairs for this VTL
+        if let Some(max_ioqpairs) = max_ioqpairs {
+            let max_ioqpairs = max_ioqpairs.min(u16::MAX as u32) as u16;
+            let current_max = match vtl {
+                DeviceVtl::Vtl0 => &mut self.vtl0_nvme_max_ioqpairs,
+                DeviceVtl::Vtl2 => &mut self.vtl2_nvme_max_ioqpairs,
+                DeviceVtl::Vtl1 => anyhow::bail!("vtl1 unsupported"),
+            };
+            
+            match current_max {
+                None => *current_max = Some(max_ioqpairs),
+                Some(existing) if *existing != max_ioqpairs => {
+                    anyhow::bail!("conflicting max_ioqpairs values for VTL{}: {} vs {}", 
+                                 match vtl { DeviceVtl::Vtl0 => 0, DeviceVtl::Vtl2 => 2, _ => unreachable!() }, 
+                                 existing, max_ioqpairs);
+                }
+                _ => {} // Same value, no conflict
+            }
+        }
+
+        if let Some(source) = underhill {
+            if vtl != DeviceVtl::Vtl0 {
+                anyhow::bail!("underhill can only offer devices to vtl0");
+            }
+            self.add_underhill(source.into(), target, kind, false, read_only)?;
+        } else {
+            self.add_inner(vtl, target, kind, false, read_only)?;
         }
         Ok(())
     }
@@ -335,8 +389,8 @@ impl StorageBuilder {
                 resource: NvmeControllerHandle {
                     subsystem_id: NVME_VTL0_INSTANCE_ID,
                     namespaces: std::mem::take(&mut self.vtl0_nvme_namespaces),
-                    max_io_queues: 64,
-                    msix_count: 64,
+                    max_io_queues: self.vtl0_nvme_max_ioqpairs.unwrap_or(64),
+                    msix_count: self.vtl0_nvme_max_ioqpairs.unwrap_or(64),
                 }
                 .into_resource(),
             });
@@ -367,8 +421,8 @@ impl StorageBuilder {
                 resource: NvmeControllerHandle {
                     subsystem_id: NVME_VTL2_INSTANCE_ID,
                     namespaces: std::mem::take(&mut self.vtl2_nvme_namespaces),
-                    max_io_queues: 64,
-                    msix_count: 64,
+                    max_io_queues: self.vtl2_nvme_max_ioqpairs.unwrap_or(64),
+                    msix_count: self.vtl2_nvme_max_ioqpairs.unwrap_or(64),
                 }
                 .into_resource(),
             });
