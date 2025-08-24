@@ -1634,11 +1634,24 @@ impl UhProcessor<'_, SnpBacked> {
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
                     self.handle_synic_deliverable_exit();
                 }
-                HvMessageType::HvMessageTypeX64Halt
-                | HvMessageType::HvMessageTypeExceptionIntercept => {
-                    // Ignore.
-                    //
-                    // TODO SNP: Figure out why we are getting these.
+                HvMessageType::HvMessageTypeX64Halt => {
+                    // Nothing to do here, the halt has already been processed.
+                }
+                HvMessageType::HvMessageTypeExceptionIntercept => {
+                    // Only #VC's are expected due to the alternate injection.
+                    let exception_message = self
+                        .runner
+                        .exit_message()
+                        .as_message::<hvdef::HvX64ExceptionInterceptMessage>();
+                    if exception_message.vector
+                        != x86defs::Exception::SEV_VMM_COMMUNICATION.0 as u16
+                    {
+                        tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
+                            "unexpected intercept message {:x?}",
+                            exception_message
+                        );
+                    }
                 }
                 message_type => {
                     tracelimit::error_ratelimited!(
