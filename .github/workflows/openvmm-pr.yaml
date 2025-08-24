@@ -524,7 +524,7 @@ jobs:
     - name: collect openvmm_hcl files for analysis
       run: |-
         flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
-        flowey v 10 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:9:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:105:27' --is-raw-string write-to-env github floweyvar1
+        flowey v 10 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:9:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:108:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__3
       uses: actions/upload-artifact@v4
@@ -582,10 +582,19 @@ jobs:
         flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
       shell: bash
     - name: download artifacts from github actions run
-      run: flowey e 10 flowey_lib_common::download_gh_artifact 0
+      run: flowey e 10 flowey_lib_common::download_gh_artifact 1
       shell: bash
     - name: binary size comparison
       run: flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 4
+      shell: bash
+    - name: download artifacts from github actions run
+      run: flowey e 10 flowey_lib_common::download_gh_artifact 0
+      shell: bash
+    - name: unpack kernel package
+      run: flowey e 10 flowey_lib_hvlite::download_openhcl_kernel_package 0
+      shell: bash
+    - name: kernel size comparison
+      run: flowey e 10 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 5
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 10 flowey_lib_common::cache 3
