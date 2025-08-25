@@ -42,6 +42,8 @@ pub struct NvmeFaultControllerHandle {
     pub max_io_queues: u16,
     /// The initial set of namespaces.
     pub namespaces: Vec<NamespaceDefinition>,
+    /// Whether to enable flr support.
+    pub flr_support: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {

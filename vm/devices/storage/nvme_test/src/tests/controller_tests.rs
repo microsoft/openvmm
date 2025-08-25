@@ -8,6 +8,7 @@ use crate::NvmeFaultControllerCaps;
 use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::spec;
+use crate::tests::test_helpers::find_pci_capability;
 use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
@@ -15,8 +16,9 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
+use mesh::CellUpdater;
+use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFault;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::Command;
 use nvme_spec::Completion;
@@ -48,6 +50,7 @@ fn instantiate_controller(
             msix_count: 64,
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
+            flr_support: false, // TODO: Add tests with flr support.
         },
         fault_configuration,
     );
@@ -122,38 +125,23 @@ pub async fn instantiate_and_build_admin_queue(
     nvmec.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
 
     // Find the MSI-X cap struct.
-    let mut cfg_dword = 0;
-    nvmec.pci_cfg_read(0x34, &mut cfg_dword).unwrap();
-    cfg_dword &= 0xff;
-    loop {
-        // Read a cap struct header and pull out the fields.
-        let mut cap_header = 0;
-        nvmec
-            .pci_cfg_read(cfg_dword as u16, &mut cap_header)
-            .unwrap();
-        if cap_header & 0xff == 0x11 {
-            // Read the table BIR and offset.
-            let mut table_loc = 0;
-            nvmec
-                .pci_cfg_read(cfg_dword as u16 + 4, &mut table_loc)
-                .unwrap();
-            // Code in other places assumes that the MSI-X table is at the beginning
-            // of BAR 4.  If this becomes a fluid concept, capture the values
-            // here and use them, rather than just asserting on them.
-            assert_eq!(table_loc & 0x7, 4);
-            assert_eq!(table_loc >> 3, 0);
+    let cfg_dword =
+        find_pci_capability(&mut nvmec, 0x11).expect("MSI-X capability should be present");
 
-            // Found MSI-X, enable it.
-            nvmec.pci_cfg_write(cfg_dword as u16, 0x80000000).unwrap();
-            break;
-        }
-        // Isolate the ptr to the next cap struct.
-        cfg_dword = (cap_header >> 8) & 0xff;
-        if cfg_dword == 0 {
-            // Hit the end.
-            panic!();
-        }
-    }
+    // Read the table BIR and offset.
+    let mut table_loc = 0;
+    nvmec
+        .pci_cfg_read(cfg_dword as u16 + 4, &mut table_loc)
+        .unwrap();
+
+    // Code in other places assumes that the MSI-X table is at the beginning
+    // of BAR 4.  If this becomes a fluid concept, capture the values
+    // here and use them, rather than just asserting on them.
+    assert_eq!(table_loc & 0x7, 4);
+    assert_eq!(table_loc >> 3, 0);
+
+    // Found MSI-X, enable it.
+    nvmec.pci_cfg_write(cfg_dword as u16, 0x80000000).unwrap();
 
     // Turn on MMIO access by writing to the Command register in config space.  Enable
     // MMIO and DMA.
@@ -204,7 +192,10 @@ pub async fn instantiate_and_build_admin_queue(
 #[async_test]
 async fn test_basic_registers(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
 
@@ -229,7 +220,10 @@ async fn test_basic_registers(driver: DefaultDriver) {
 #[async_test]
 async fn test_invalid_configuration(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
     nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
@@ -244,7 +238,10 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
 #[async_test]
 async fn test_enable_controller(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x2000.
@@ -272,7 +269,10 @@ async fn test_enable_controller(driver: DefaultDriver) {
 #[async_test]
 async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x3000.
@@ -343,77 +343,29 @@ async fn send_identify(
 
 #[async_test]
 async fn test_send_identify_no_fault(driver: DefaultDriver) {
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let cqe = send_identify(driver, fault_configuration).await;
 
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
     assert_eq!(cqe.cid, 0);
 }
 
-struct TestAdminSQFault;
-
-#[async_trait::async_trait]
-impl QueueFault for TestAdminSQFault {
-    async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultBehavior<Command> {
-        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-        match opcode {
-            nvme_spec::AdminOpcode::IDENTIFY => {
-                // Overwrite the previous cid to cause a panic.
-                command.cdw0.set_cid(10);
-                QueueFaultBehavior::Update(command)
-            }
-            _ => QueueFaultBehavior::Default,
-        }
-    }
-
-    async fn fault_completion_queue(
-        &self,
-        _completion: Completion,
-    ) -> QueueFaultBehavior<Completion> {
-        QueueFaultBehavior::Default
-    }
-}
-
 #[async_test]
 async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
+    let mut faulty_identify = Command::new_zeroed();
+    faulty_identify.cdw0.set_cid(10);
     let fault_configuration = FaultConfiguration {
-        admin_fault: Some(Box::new(TestAdminSQFault)),
+        fault_active: CellUpdater::new(true).cell(),
+        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+            nvme_spec::AdminOpcode::IDENTIFY.0,
+            QueueFaultBehavior::Update(faulty_identify),
+        ),
     };
     let cqe = send_identify(driver, fault_configuration).await;
 
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
     assert_eq!(cqe.cid, 10); // The CID should have been overwritten by the fault.
-}
-
-struct TestAdminCQFault;
-
-#[async_trait::async_trait]
-impl QueueFault for TestAdminCQFault {
-    async fn fault_submission_queue(&self, _command: Command) -> QueueFaultBehavior<Command> {
-        QueueFaultBehavior::Default
-    }
-
-    async fn fault_completion_queue(
-        &self,
-        mut completion: Completion,
-    ) -> QueueFaultBehavior<Completion> {
-        let status = spec::Status(completion.status.status());
-        match status {
-            spec::Status::SUCCESS => {
-                // Overwrite the CID to cause a panic.
-                completion.status.set_status(spec::Status::INVALID_FORMAT.0);
-                QueueFaultBehavior::Update(completion)
-            }
-            _ => QueueFaultBehavior::Default,
-        }
-    }
-}
-
-#[async_test]
-async fn test_cq_fault(driver: DefaultDriver) {
-    let fault_configuration = FaultConfiguration {
-        admin_fault: Some(Box::new(TestAdminCQFault)),
-    };
-    let cqe = send_identify(driver, fault_configuration).await;
-    assert_eq!(cqe.status.status(), spec::Status::INVALID_FORMAT.0); // Status should be overwritten by the fault.
 }

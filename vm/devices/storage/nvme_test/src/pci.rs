@@ -32,6 +32,8 @@ use inspect::InspectMut;
 use nvme_resources::fault::FaultConfiguration;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
+use pci_core::capabilities::pci_express::FlrHandler;
+use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
@@ -42,10 +44,48 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
+
+/// Input parameters needed to create new NvmeWorkers
+#[derive(Clone)]
+struct WorkerInput {
+    driver_source: VmTaskDriverSource,
+    guest_memory: GuestMemory,
+    interrupts: Vec<Interrupt>,
+    max_io_queues: u16,
+    subsystem_id: Guid,
+    fault_configuration: FaultConfiguration,
+}
+
+/// FLR handler that signals reset requests.
+#[derive(Inspect)]
+struct NvmeFlrHandler {
+    #[inspect(skip)]
+    reset_requested: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl NvmeFlrHandler {
+    fn new() -> (Self, Arc<std::sync::atomic::AtomicBool>) {
+        let reset_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        (
+            Self {
+                reset_requested: reset_requested.clone(),
+            },
+            reset_requested,
+        )
+    }
+}
+
+impl FlrHandler for NvmeFlrHandler {
+    fn initiate_flr(&self) {
+        self.reset_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// An NVMe controller.
 #[derive(InspectMut)]
@@ -58,6 +98,10 @@ pub struct NvmeFaultController {
     qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
+    #[inspect(skip)]
+    flr_reset_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[inspect(skip)]
+    worker_input: WorkerInput,
 }
 
 #[derive(Inspect)]
@@ -103,6 +147,8 @@ pub struct NvmeFaultControllerCaps {
     /// The subsystem ID, used as part of the subnqn field of the identify
     /// controller response.
     pub subsystem_id: Guid,
+    /// Whether to advertise Function Level Reset (FLR) support.
+    pub flr_support: bool,
 }
 
 impl NvmeFaultController {
@@ -126,6 +172,20 @@ impl NvmeFaultController {
                 BarMemoryKind::Intercept(register_mmio.new_io_region("msix", msix.bar_len())),
             );
 
+        // Prepare capabilities list
+        let mut capabilities: Vec<Box<dyn pci_core::capabilities::PciCapability>> =
+            vec![Box::new(msix_cap)];
+
+        // Optionally add PCI Express capability with FLR support
+        let flr_reset_requested = if caps.flr_support {
+            let (flr_handler, reset_requested) = NvmeFlrHandler::new();
+            let pcie_cap = PciExpressCapability::new(Some(Arc::new(flr_handler)));
+            capabilities.push(Box::new(pcie_cap));
+            Some(reset_requested)
+        } else {
+            None
+        };
+
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
@@ -137,15 +197,26 @@ impl NvmeFaultController {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            vec![Box::new(msix_cap)],
+            capabilities,
             bars,
         );
 
-        let interrupts = (0..caps.msix_count)
+        let interrupts: Vec<Interrupt> = (0..caps.msix_count)
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
 
         let qe_sizes = Arc::new(Default::default());
+
+        // Save the input parameters for potential recreation of the NvmeWorkers upon FLR
+        let worker_input = WorkerInput {
+            driver_source: driver_source.clone(),
+            guest_memory: guest_memory.clone(),
+            interrupts: interrupts.clone(),
+            max_io_queues: caps.max_io_queues,
+            subsystem_id: caps.subsystem_id,
+            fault_configuration: fault_configuration.clone(),
+        };
+
         let admin = NvmeWorkers::new(
             driver_source,
             guest_memory,
@@ -163,6 +234,8 @@ impl NvmeFaultController {
             registers: RegState::new(),
             workers: admin,
             qe_sizes,
+            flr_reset_requested,
+            worker_input,
         }
     }
 
@@ -429,6 +502,8 @@ impl ChangeDeviceState for NvmeFaultController {
             registers,
             qe_sizes,
             workers,
+            flr_reset_requested: _,
+            worker_input: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
@@ -483,7 +558,32 @@ impl PciConfigSpace for NvmeFaultController {
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        self.cfg_space.write_u32(offset, value)
+        let result = self.cfg_space.write_u32(offset, value);
+
+        // Check for FLR requests
+        if let Some(flr_requested) = &self.flr_reset_requested {
+            // According to the spec, FLR bit should always read 0, reset it before responding.
+            if flr_requested.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                // FLR entails a state agnostic hard-reset. Instead of just resetting the controller,
+                // create a completely new worker backend to ensure clean state.
+                self.cfg_space.reset();
+                self.registers = RegState::new();
+                *self.qe_sizes.lock() = Default::default();
+
+                self.workers = NvmeWorkers::new(
+                    &self.worker_input.driver_source,
+                    self.worker_input.guest_memory.clone(),
+                    self.worker_input.interrupts.clone(),
+                    self.worker_input.max_io_queues,
+                    self.worker_input.max_io_queues,
+                    Arc::clone(&self.qe_sizes),
+                    self.worker_input.subsystem_id,
+                    self.worker_input.fault_configuration.clone(),
+                );
+            }
+        }
+
+        result
     }
 }
 

@@ -4788,7 +4788,6 @@ name = "nvme_driver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "chipset_device",
  "disklayer_ram",
  "event-listener",
@@ -4823,7 +4822,6 @@ dependencies = [
 name = "nvme_resources"
 version = "0.0.0"
 dependencies = [
- "async-trait",
  "guid",
  "mesh",
  "nvme_spec",
