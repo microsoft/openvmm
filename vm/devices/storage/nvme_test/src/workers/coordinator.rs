@@ -87,8 +87,8 @@ impl NvmeWorkers {
             driver.clone(),
             AdminConfig {
                 driver_source: driver_source.clone(),
-                mem: mem.clone(),
-                interrupts: interrupts.clone(),
+                mem,
+                interrupts,
                 doorbells: doorbells.clone(),
                 subsystem_id,
                 max_sqs,
