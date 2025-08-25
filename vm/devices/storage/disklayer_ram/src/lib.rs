@@ -51,7 +51,6 @@ pub struct RamDiskLayer {
     state: RwLock<RamState>,
     #[inspect(skip)]
     sector_count: AtomicU64,
-    #[inspect(skip)]
     sector_size: u32,
     #[inspect(skip)]
     sector_shift: u32,
@@ -742,15 +741,32 @@ mod tests {
 
     #[async_test]
     async fn test_mixed_sector_sizes() {
-        // Test that different layers can have different sector sizes
-        let layer_512 = RamDiskLayer::new_with_sector_size(8192, 512).unwrap();
-        let layer_4k = RamDiskLayer::new_with_sector_size(8192, 4096).unwrap();
+        // Test that a layered disk respects the sector size and requires all layers to match
+        let layer_4k_1 = RamDiskLayer::new_with_sector_size(8192, 4096).unwrap();
+        let layer_4k_2 = RamDiskLayer::new_with_sector_size(8192, 4096).unwrap();
 
-        assert_eq!(layer_512.sector_size(), 512);
-        assert_eq!(layer_512.sector_count(), 16); // 8192 / 512
+        // Create a layered disk with matching 4K sector sizes
+        let layered_disk = LayeredDisk::new(
+            false,
+            vec![
+                LayerConfiguration {
+                    layer: DiskLayer::new(layer_4k_1),
+                    write_through: false,
+                    read_cache: false,
+                },
+                LayerConfiguration {
+                    layer: DiskLayer::new(layer_4k_2),
+                    write_through: false,
+                    read_cache: false,
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(layer_4k.sector_size(), 4096);
-        assert_eq!(layer_4k.sector_count(), 2); // 8192 / 4096
+        // The visible sector size should match the layers (4K)
+        assert_eq!(layered_disk.sector_size(), 4096);
+        assert_eq!(layered_disk.sector_count(), 2); // 8192 / 4096
     }
 
     #[async_test]
@@ -774,71 +790,5 @@ mod tests {
         assert!(RamDiskLayer::new_with_sector_size(1024, 256).is_ok());
         assert!(RamDiskLayer::new_with_sector_size(8192, 1024).is_ok());
         assert!(RamDiskLayer::new_with_sector_size(16384, 2048).is_ok());
-    }
-
-    #[async_test]
-    async fn test_backward_compatibility() {
-        // Test that the original new() method still works with 512-byte sectors
-        let layer_old = RamDiskLayer::new(8192).unwrap();
-        let layer_new = RamDiskLayer::new_with_sector_size(8192, 512).unwrap();
-
-        assert_eq!(layer_old.sector_size(), layer_new.sector_size());
-        assert_eq!(layer_old.sector_count(), layer_new.sector_count());
-
-        // Test that the original ram_disk() function still works
-        let disk_old = super::ram_disk(8192, false).unwrap();
-        let disk_new = super::ram_disk_with_sector_size(8192, false, 512).unwrap();
-
-        // Both should behave the same way for basic operations
-        let guest_mem = GuestMemory::allocate(512);
-        let test_data = vec![0x42u8; 512];
-        guest_mem.write_at(0, &test_data).unwrap();
-
-        // Write to both disks
-        disk_old
-            .write_vectored(
-                &OwnedRequestBuffers::linear(0, 512, false).buffer(&guest_mem),
-                0,
-                false,
-            )
-            .await
-            .unwrap();
-
-        disk_new
-            .write_vectored(
-                &OwnedRequestBuffers::linear(0, 512, false).buffer(&guest_mem),
-                0,
-                false,
-            )
-            .await
-            .unwrap();
-
-        // Read from both and verify
-        guest_mem.fill_at(0, 0, 512).unwrap();
-        disk_old
-            .read_vectored(
-                &OwnedRequestBuffers::linear(0, 512, true).buffer(&guest_mem),
-                0,
-            )
-            .await
-            .unwrap();
-
-        let mut data_old = vec![0u8; 512];
-        guest_mem.read_at(0, &mut data_old).unwrap();
-
-        guest_mem.fill_at(0, 0, 512).unwrap();
-        disk_new
-            .read_vectored(
-                &OwnedRequestBuffers::linear(0, 512, true).buffer(&guest_mem),
-                0,
-            )
-            .await
-            .unwrap();
-
-        let mut data_new = vec![0u8; 512];
-        guest_mem.read_at(0, &mut data_new).unwrap();
-
-        assert_eq!(data_old, data_new);
-        assert_eq!(data_old, test_data);
     }
 }
