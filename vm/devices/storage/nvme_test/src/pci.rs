@@ -51,17 +51,6 @@ use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
 
-/// Input parameters needed to create new NvmeWorkers
-#[derive(Clone)]
-struct WorkerInput {
-    driver_source: VmTaskDriverSource,
-    guest_memory: GuestMemory,
-    interrupts: Vec<Interrupt>,
-    max_io_queues: u16,
-    subsystem_id: Guid,
-    fault_configuration: FaultConfiguration,
-}
-
 /// FLR handler that signals reset requests.
 #[derive(Inspect)]
 struct NvmeFlrHandler {
@@ -102,7 +91,7 @@ pub struct NvmeFaultController {
     #[inspect(skip)]
     flr_reset_requested: Option<Arc<std::sync::atomic::AtomicBool>>,
     #[inspect(skip)]
-    worker_input: WorkerInput,
+    worker_context: NvmeWorkersContext,
 }
 
 #[derive(Inspect)]
@@ -207,8 +196,8 @@ impl NvmeFaultController {
             .collect();
 
         let qe_sizes = Arc::new(Default::default());
-        let admin = NvmeWorkers::new(NvmeWorkersContext {
-            driver_source,
+        let worker_context = NvmeWorkersContext {
+            driver_source: driver_source.clone(),
             mem: guest_memory,
             interrupts,
             max_sqs: caps.max_io_queues,
@@ -216,7 +205,9 @@ impl NvmeFaultController {
             qe_sizes: Arc::clone(&qe_sizes),
             subsystem_id: caps.subsystem_id,
             fault_configuration,
-        });
+        };
+
+        let admin = NvmeWorkers::new(worker_context.clone());
 
         Self {
             cfg_space,
@@ -225,7 +216,7 @@ impl NvmeFaultController {
             workers: admin,
             qe_sizes,
             flr_reset_requested,
-            worker_input,
+            worker_context,
         }
     }
 
@@ -493,7 +484,7 @@ impl ChangeDeviceState for NvmeFaultController {
             qe_sizes,
             workers,
             flr_reset_requested: _,
-            worker_input: _,
+            worker_context: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
@@ -560,16 +551,7 @@ impl PciConfigSpace for NvmeFaultController {
                 self.registers = RegState::new();
                 *self.qe_sizes.lock() = Default::default();
 
-                self.workers = NvmeWorkers::new(
-                    &self.worker_input.driver_source,
-                    self.worker_input.guest_memory.clone(),
-                    self.worker_input.interrupts.clone(),
-                    self.worker_input.max_io_queues,
-                    self.worker_input.max_io_queues,
-                    Arc::clone(&self.qe_sizes),
-                    self.worker_input.subsystem_id,
-                    self.worker_input.fault_configuration.clone(),
-                );
+                self.workers = NvmeWorkers::new(self.worker_context.clone());
             }
         }
 
