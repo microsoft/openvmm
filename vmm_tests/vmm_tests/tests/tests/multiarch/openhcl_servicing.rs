@@ -160,8 +160,6 @@ async fn keepalive<T: PetriVmmBackend>(
     .await
 }
 
-=======
->>>>>>> d3c9492c (Revert "flowey: use release branches to download artifacts for servicing tests" (#1915))
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn shutdown_ic(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
