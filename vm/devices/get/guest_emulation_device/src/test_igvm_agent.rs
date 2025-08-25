@@ -14,12 +14,13 @@
 use aes_kw::KekAes256;
 use base64::Engine;
 use get_resources::ged::IgvmAttestTestConfig;
-use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use rsa::Oaep;
 use rsa::RsaPrivateKey;
 use rsa::RsaPublicKey;
@@ -163,7 +164,8 @@ impl TestIgvmAgent {
                     let header = IgvmAttestAkCertResponseHeader {
                         data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
                             as u32,
-                        version: AK_CERT_RESPONSE_HEADER_VERSION,
+                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                        error_info: IgvmErrorInfo::default(),
                     };
                     let payload = [header.as_bytes(), &data].concat();
                     let payload_len = payload.len() as u32;
@@ -195,7 +197,8 @@ impl TestIgvmAgent {
                 let header = IgvmAttestWrappedKeyResponseHeader {
                     data_size: (data.len() + size_of::<IgvmAttestWrappedKeyResponseHeader>())
                         as u32,
-                    version: AK_CERT_RESPONSE_HEADER_VERSION,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info: IgvmErrorInfo::default(),
                 };
                 let payload = [header.as_bytes(), &data].concat();
                 let payload_len = payload.len() as u32;
@@ -223,7 +226,8 @@ impl TestIgvmAgent {
                 let header = IgvmAttestKeyReleaseResponseHeader {
                     data_size: (data.len() + size_of::<IgvmAttestKeyReleaseResponseHeader>())
                         as u32,
-                    version: AK_CERT_RESPONSE_HEADER_VERSION,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info: IgvmErrorInfo::default(),
                 };
                 let payload = [header.as_bytes(), &data].concat();
                 let payload_len = payload.len() as u32;
