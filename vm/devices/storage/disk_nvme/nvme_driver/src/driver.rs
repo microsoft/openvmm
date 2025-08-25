@@ -357,7 +357,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .identify
             .insert(Arc::new(spec::IdentifyController::new_zeroed()));
 
-        tracing::info!("Called enable on the admin queue");
         admin
             .issuer()
             .issue_out(

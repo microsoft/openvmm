@@ -15,8 +15,6 @@ pub enum QueueFaultBehavior<T> {
     Update(T),
     /// Drop the queue entry
     Drop,
-    /// Delay queue processing. Time in ms
-    Delay(u64),
     /// No Fault
     Default,
     /// Delay
