@@ -58,10 +58,11 @@ use jiff::civil::date;
 use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
-use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -966,7 +967,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     let header = IgvmAttestAkCertResponseHeader {
                         data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
                             as u32,
-                        version: AK_CERT_RESPONSE_HEADER_VERSION,
+                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                        error_info: IgvmErrorInfo::default(),
                     };
                     let payload = [header.as_bytes(), &data].concat();
 
