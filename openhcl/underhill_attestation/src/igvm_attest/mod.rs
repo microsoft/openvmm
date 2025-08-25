@@ -6,12 +6,18 @@
 //! `IGVM_ATTEST` host request.
 
 use base64_serde::base64_serde_type;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmCapabilityBitMap;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use tee_call::TeeType;
 use thiserror::Error;
+use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -30,6 +36,26 @@ pub enum Error {
     InvalidAttestationReportSize {
         report_size: usize,
         expected_size: usize,
+    },
+    #[error("the size of the attestation response {response_size} is too small to parse")]
+    ResponseSizeTooSmall { response_size: usize },
+    #[error(
+        "the header of the attestation response (size {response_size}) is not in correct format"
+    )]
+    ResponseHeaderInvalidFormat { response_size: usize },
+    #[error(
+        "response size {specified_size} specified in the header not match the actual size {size}"
+    )]
+    ResponseSizeMismatch { size: usize, specified_size: usize },
+    #[error("response header version {version} larger than current version {latest_version}")]
+    InvalidResponseHeaderVersion { version: u32, latest_version: u32 },
+    #[error(
+        "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal})"
+    )]
+    Attestation {
+        igvm_error_code: u32,
+        http_status_code: u32,
+        retry_signal: bool,
     },
 }
 
@@ -172,6 +198,55 @@ impl IgvmAttestRequestHelper {
     }
 }
 
+/// Verify response header and try to extract IgvmErrorInfo from the header
+pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponseHeader, Error> {
+    // Extract common header fields regardless of header version or request type
+    // For V1 request, response buffer should be empty in case of attestation failure
+    let header = IgvmAttestCommonResponseHeader::read_from_prefix(response)
+        .map_err(|_| Error::ResponseSizeTooSmall {
+            response_size: response.len(),
+        })?
+        .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+
+    // Check header data_size and version
+    if header.data_size as usize > response.len() {
+        Err(Error::ResponseSizeMismatch {
+            size: response.len(),
+            specified_size: header.data_size as usize,
+        })?
+    }
+    if header.version > IGVM_ATTEST_RESPONSE_CURRENT_VERSION {
+        Err(Error::InvalidResponseHeaderVersion {
+            version: header.version,
+            latest_version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+        })?
+    }
+
+    // IgvmErrorInfo is added in response header since IGVM_ATTEST_RESPONSE_VERSION_2
+    if header.version >= IGVM_ATTEST_RESPONSE_VERSION_2 {
+        // Extract result info from response header
+        let igvm_error_info = IgvmErrorInfo::read_from_prefix(
+            &response[size_of::<IgvmAttestCommonResponseHeader>()..],
+        )
+        .map_err(|_| Error::ResponseHeaderInvalidFormat {
+            response_size: response.len(),
+        })?
+        .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+
+        if 0 != igvm_error_info.error_code {
+            Err(Error::Attestation {
+                igvm_error_code: igvm_error_info.error_code,
+                http_status_code: igvm_error_info.http_status_code,
+                retry_signal: igvm_error_info.igvm_signal.retry(),
+            })?
+        }
+    }
+    Ok(IgvmAttestCommonResponseHeader {
+        data_size: header.data_size,
+        version: header.version,
+    })
+}
+
 /// Create a request in raw bytes.
 /// A request looks like:
 ///     `IgvmAttestRequest` in raw bytes | `runtime_claims` (raw bytes)
@@ -207,6 +282,9 @@ fn create_request(
         report_type.to_external_type(),
         hash_type,
         runtime_claims.len() as u32,
+        IgvmCapabilityBitMap::new()
+            .with_error_code(true)
+            .with_retry(true),
     );
 
     Ok([request.as_bytes(), runtime_claims].concat())
@@ -323,5 +401,204 @@ mod tests {
 
         let vm_config = result.unwrap();
         assert_eq!(vm_config, EXPECTED_JWK);
+    }
+
+    #[test]
+    fn test_empty_response() {
+        let result = parse_response_header(&[]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::ResponseSizeTooSmall { response_size: 0 }.to_string()
+        );
+    }
+
+    #[test]
+    fn test_invalid_response_size_smaller_than_header_size() {
+        const INVALID_RESPONSE: [u8; 4] = [0x04, 0x00, 0x00, 0x00];
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::ResponseSizeTooSmall { response_size: 4 }.to_string()
+        );
+    }
+
+    #[test]
+    fn test_valid_v1_response_size_match() {
+        const VALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x30, 0x82, 0x03, 0xeb, 0x30, 0x82,
+            0x02, 0xd3, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x10, 0x3b, 0xa3, 0x33, 0x97, 0xef,
+            0x2f, 0x9e, 0xef, 0xbd, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&VALID_RESPONSE);
+        assert!(result.is_ok());
+        let header = result.unwrap();
+        assert_eq!(VALID_RESPONSE.len(), header.data_size as usize);
+        assert_eq!(1, header.version);
+    }
+
+    #[test]
+    fn test_valid_v2_response_size_match() {
+        const VALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&VALID_RESPONSE);
+        assert!(result.is_ok());
+        let header = result.unwrap();
+        assert_eq!(VALID_RESPONSE.len(), header.data_size as usize);
+        assert_eq!(2, header.version);
+    }
+
+    #[test]
+    fn test_valid_v1_response_size_smaller_than_specified() {
+        const VALID_RESPONSE: [u8; 42] = [
+            0x29, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x30, 0x82, 0x03, 0xeb, 0x30, 0x82,
+            0x02, 0xd3, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x10, 0x3b, 0xa3, 0x33, 0x97, 0xef,
+            0x2f, 0x9e, 0xef, 0xbd, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let header = parse_response_header(&VALID_RESPONSE);
+        assert!(header.is_ok());
+        assert_eq!(0x29, header.unwrap().data_size as usize);
+    }
+
+    #[test]
+    fn test_valid_v2_response_size_smaller_than_specified() {
+        const VALID_RESPONSE: [u8; 42] = [
+            0x29, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let header = parse_response_header(&VALID_RESPONSE);
+        assert!(header.is_ok());
+        assert_eq!(0x29, header.unwrap().data_size as usize);
+    }
+
+    #[test]
+    fn test_invalid_v1_response_size() {
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x30, 0x82, 0x03, 0xeb, 0x30, 0x82,
+            0x02, 0xd3, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x10, 0x3b, 0xa3, 0x33, 0x97, 0xef,
+            0x2f, 0x9e, 0xef, 0xbd, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::ResponseSizeMismatch {
+                size: INVALID_RESPONSE.len(),
+                specified_size: 0x2b
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_invalid_v2_response_size() {
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x30, 0x82, 0x03, 0xeb, 0x30, 0x82,
+            0x02, 0xd3, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x10, 0x3b, 0xa3, 0x33, 0x97, 0xef,
+            0x2f, 0x9e, 0xef, 0xbd, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::ResponseSizeMismatch {
+                size: INVALID_RESPONSE.len(),
+                specified_size: 0x2b
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_invalid_header_version() {
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x30, 0x82, 0x03, 0xeb, 0x30, 0x82,
+            0x02, 0xd3, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x10, 0x3b, 0xa3, 0x33, 0x97, 0xef,
+            0x2f, 0x9e, 0xef, 0xbd, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::InvalidResponseHeaderVersion {
+                version: 3,
+                latest_version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_invalid_v2_response_size_smaller_than_specified_header_size() {
+        const INVALID_RESPONSE: [u8; 28] = [
+            0x1c, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::ResponseHeaderInvalidFormat {
+                response_size: 0x1c
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_failed_response_with_retryable_error() {
+        // error_code: 1103 (0x44f), http_status_code: 403 (0x193), retryable
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x4f, 0x04, 0x00, 0x00, 0x93, 0x01,
+            0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::Attestation {
+                igvm_error_code: 1103,
+                http_status_code: 403,
+                retry_signal: true
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn test_failed_response_with_non_retryable_error() {
+        // error_code: 1103 (0x44f), http_status_code: 503 (0x1f7), not retryable
+        const INVALID_RESPONSE: [u8; 42] = [
+            0x2a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x4f, 0x04, 0x00, 0x00, 0xf7, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x35, 0x5e, 0xda, 0xdd, 0x27, 0x38, 0x42, 0x30, 0x0d, 0x06,
+        ];
+
+        let result = parse_response_header(&INVALID_RESPONSE);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            Error::Attestation {
+                igvm_error_code: 1103,
+                http_status_code: 503,
+                retry_signal: false
+            }
+            .to_string()
+        );
     }
 }

@@ -4948,6 +4948,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "base64-serde",
+ "bitfield-struct 0.10.1",
  "guid",
  "hex",
  "hvdef",
