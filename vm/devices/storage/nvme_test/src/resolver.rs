@@ -8,8 +8,10 @@ use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
+use mesh::CellUpdater;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
+use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
@@ -65,7 +67,10 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
             },
-            FaultConfiguration { admin_fault: None },
+            FaultConfiguration {
+                fault_active: CellUpdater::new(false).cell(),
+                admin_fault: AdminQueueFaultConfig::new(),
+            },
         );
         for NamespaceDefinition {
             nsid,

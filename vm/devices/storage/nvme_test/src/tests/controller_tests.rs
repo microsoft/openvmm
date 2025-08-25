@@ -15,8 +15,9 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use guid::Guid;
+use mesh::CellUpdater;
+use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFault;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::Command;
 use nvme_spec::Completion;
@@ -204,7 +205,10 @@ pub async fn instantiate_and_build_admin_queue(
 #[async_test]
 async fn test_basic_registers(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
 
@@ -229,7 +233,10 @@ async fn test_basic_registers(driver: DefaultDriver) {
 #[async_test]
 async fn test_invalid_configuration(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
     nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
@@ -244,7 +251,10 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
 #[async_test]
 async fn test_enable_controller(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x2000.
@@ -272,7 +282,10 @@ async fn test_enable_controller(driver: DefaultDriver) {
 #[async_test]
 async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x3000.
@@ -343,77 +356,29 @@ async fn send_identify(
 
 #[async_test]
 async fn test_send_identify_no_fault(driver: DefaultDriver) {
-    let fault_configuration = FaultConfiguration { admin_fault: None };
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    };
     let cqe = send_identify(driver, fault_configuration).await;
 
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
     assert_eq!(cqe.cid, 0);
 }
 
-struct TestAdminSQFault;
-
-#[async_trait::async_trait]
-impl QueueFault for TestAdminSQFault {
-    async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultBehavior<Command> {
-        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-        match opcode {
-            nvme_spec::AdminOpcode::IDENTIFY => {
-                // Overwrite the previous cid to cause a panic.
-                command.cdw0.set_cid(10);
-                QueueFaultBehavior::Update(command)
-            }
-            _ => QueueFaultBehavior::Default,
-        }
-    }
-
-    async fn fault_completion_queue(
-        &self,
-        _completion: Completion,
-    ) -> QueueFaultBehavior<Completion> {
-        QueueFaultBehavior::Default
-    }
-}
-
 #[async_test]
 async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
+    let mut faulty_identify = Command::new_zeroed();
+    faulty_identify.cdw0.set_cid(10);
     let fault_configuration = FaultConfiguration {
-        admin_fault: Some(Box::new(TestAdminSQFault)),
+        fault_active: CellUpdater::new(true).cell(),
+        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+            nvme_spec::AdminOpcode::IDENTIFY.0,
+            QueueFaultBehavior::Update(faulty_identify),
+        ),
     };
     let cqe = send_identify(driver, fault_configuration).await;
 
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
     assert_eq!(cqe.cid, 10); // The CID should have been overwritten by the fault.
-}
-
-struct TestAdminCQFault;
-
-#[async_trait::async_trait]
-impl QueueFault for TestAdminCQFault {
-    async fn fault_submission_queue(&self, _command: Command) -> QueueFaultBehavior<Command> {
-        QueueFaultBehavior::Default
-    }
-
-    async fn fault_completion_queue(
-        &self,
-        mut completion: Completion,
-    ) -> QueueFaultBehavior<Completion> {
-        let status = spec::Status(completion.status.status());
-        match status {
-            spec::Status::SUCCESS => {
-                // Overwrite the CID to cause a panic.
-                completion.status.set_status(spec::Status::INVALID_FORMAT.0);
-                QueueFaultBehavior::Update(completion)
-            }
-            _ => QueueFaultBehavior::Default,
-        }
-    }
-}
-
-#[async_test]
-async fn test_cq_fault(driver: DefaultDriver) {
-    let fault_configuration = FaultConfiguration {
-        admin_fault: Some(Box::new(TestAdminCQFault)),
-    };
-    let cqe = send_identify(driver, fault_configuration).await;
-    assert_eq!(cqe.status.status(), spec::Status::INVALID_FORMAT.0); // Status should be overwritten by the fault.
 }

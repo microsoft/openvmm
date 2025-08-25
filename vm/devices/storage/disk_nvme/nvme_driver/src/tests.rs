@@ -8,22 +8,21 @@ use chipset_device::pci::PciConfigSpace;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::CellUpdater;
 use nvme::NvmeControllerCaps;
+use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFault;
 use nvme_resources::fault::QueueFaultBehavior;
+use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
 use nvme_spec::Command;
-use nvme_spec::Completion;
 use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
-use std::time::Duration;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
@@ -33,52 +32,24 @@ use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
 use vmcore::vm_task::SingleDriverBackend;
-use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
-
-struct AdminQueueFault {
-    pub driver: VmTaskDriver,
-}
-
-#[async_trait::async_trait]
-impl QueueFault for AdminQueueFault {
-    async fn fault_submission_queue(&self, mut command: Command) -> QueueFaultBehavior<Command> {
-        tracing::info!("Faulting submission queue using cid sequence number mismatch");
-        let opcode = nvme_spec::AdminOpcode(command.cdw0.opcode());
-        match opcode {
-            nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE => {
-                // Overwrite the previous cid to cause a panic.
-                command.cdw0.set_cid(0);
-                QueueFaultBehavior::Update(command)
-            }
-            _ => QueueFaultBehavior::Default,
-        }
-    }
-
-    async fn fault_completion_queue(
-        &self,
-        _completion: Completion,
-    ) -> QueueFaultBehavior<Completion> {
-        tracing::info!("Faulting completion queue using delay");
-        PolledTimer::new(&self.driver)
-            .sleep(Duration::from_millis(100))
-            .await;
-        QueueFaultBehavior::Default
-    }
-}
 
 #[async_test]
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
 async fn test_nvme_command_fault(driver: DefaultDriver) {
-    let task_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple();
+    let mut output_cmd = Command::new_zeroed();
+    output_cmd.cdw0.set_cid(0);
 
     test_nvme_fault_injection(
         driver,
         FaultConfiguration {
-            admin_fault: Some(Box::new(AdminQueueFault {
-                driver: task_driver,
-            })),
+            fault_active: CellUpdater::new(true).cell(),
+            admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+                AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
+                QueueFaultBehavior::Update(output_cmd),
+            ),
         },
     )
     .await;
