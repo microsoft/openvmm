@@ -26,7 +26,6 @@ use aarch64defs::Cpsr64;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
 use hcl::GuestVtl;
-use hcl::UnsupportedGuestVtl;
 use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hv1_emulator::hv::ProcessorVtlHv;
