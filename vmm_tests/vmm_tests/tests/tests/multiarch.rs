@@ -773,17 +773,17 @@ async fn mnf_guest_support(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 
     let mut sh = agent.unix_shell();
 
-    // 1) List all items recursively under /sys/bus/vmbus/drivers
-    // Linux command:
-    // ls -laR /sys/bus/vmbus/drivers 2>/dev/null || true
+    // 1) List all items recursively under /sys/bus/vmbus/drivers/hv_netvsc
+
     let listing = cmd!(sh, "ls -laR /sys/bus/vmbus/drivers/hv_netvsc")
         .read()
         .await?;
-    tracing::info!("Recursive listing of /sys/bus/vmbus/drivers:\n{}", listing);
+    tracing::info!(
+        "Recursive listing of /sys/bus/vmbus/drivers/hv_netvsc:\n{}",
+        listing
+    );
 
-    // 2) Parse for GUID-named symlink entries and resolve targets (in Rust)
-    // We parse the `ls -laR` output to find symlink lines whose file name is a GUID.
-    // Then we resolve each symlink to an absolute path with readlink -f.
+    // 2) Parse for GUID-named symlink entries and resolve targets
     let mut current_dir = String::new();
     let mut resolved = Vec::new();
     let mut target_dirs = Vec::new();
