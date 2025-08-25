@@ -141,7 +141,6 @@ sev_guest_device = { path = "support/sev_guest_device" }
 sparse_mmap = { path = "support/sparse_mmap" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
-tee_call = { path = "support/tee_call" }
 term = { path = "support/term" }
 test_with_tracing = { path = "support/test_with_tracing" }
 test_with_tracing_macro = { path = "support/test_with_tracing/test_with_tracing_macro" }
@@ -168,6 +167,7 @@ minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
+tee_call = { path = "openhcl/tee_call" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
 underhill_confidentiality = { path = "openhcl/underhill_confidentiality" }
 underhill_core = { path = "openhcl/underhill_core" }
@@ -392,6 +392,7 @@ vnc = { path = "workers/vnc_worker/vnc" }
 profiler_worker = { path = "openhcl/profiler_worker" }
 
 # crates.io
+aes-kw = { version = "0.2.1", features = ["alloc"] }
 anyhow = "1.0"
 arbitrary = "1.3"
 arrayvec = { version = "0.7", default-features = false }
@@ -496,6 +497,7 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
+rsa = "0.9.8"
 rusqlite = "0.34"
 rustc-hash = "2.1.1"
 rustyline = "13"
@@ -503,6 +505,7 @@ seccompiler = "0.5"
 serde = "1.0.185"
 serde_json = "1.0"
 serde_yaml = "0.9"
+sha1 = "0.10.6"
 sha2 = { version = "0.10.8", default-features = false }
 shell-words = "1.1"
 signal-hook = { version = "0.3", default-features = false }

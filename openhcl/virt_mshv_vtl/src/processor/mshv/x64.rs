@@ -88,6 +88,9 @@ pub struct HypervisorBackedX86 {
     #[inspect(hex, with = "|&x| u64::from(x)")]
     pub(super) next_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     stats: ProcessorStatsX86,
+    /// Send an INIT to VTL0 before running the VP, to simulate setting startup
+    /// suspend. Newer hypervisors allow setting startup suspend explicitly.
+    deferred_init: bool,
 }
 
 /// Partition-wide shared data for hypervisor backed VMs.
@@ -174,10 +177,17 @@ impl BackingPrivate for HypervisorBackedX86 {
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),
             stats: Default::default(),
+            deferred_init: false,
         })
     }
 
-    fn init(_this: &mut UhProcessor<'_, Self>) {}
+    fn init(this: &mut UhProcessor<'_, Self>) {
+        // The hypervisor initializes startup suspend to false. Set it to the
+        // architectural default.
+        if !this.vp_index().is_bsp() {
+            this.backing.deferred_init = true;
+        }
+    }
 
     type StateAccess<'p, 'a>
         = UhVpStateAccess<'a, 'p, Self>
@@ -190,6 +200,25 @@ impl BackingPrivate for HypervisorBackedX86 {
         vtl: GuestVtl,
     ) -> Self::StateAccess<'p, 'a> {
         UhVpStateAccess::new(this, vtl)
+    }
+
+    fn pre_run_vp(this: &mut UhProcessor<'_, Self>) {
+        if std::mem::take(&mut this.backing.deferred_init) {
+            tracelimit::info_ratelimited!(
+                vp = this.vp_index().index(),
+                "sending deferred INIT to set startup suspend"
+            );
+            this.partition.request_msi(
+                GuestVtl::Vtl0,
+                virt::irqcon::MsiRequest::new_x86(
+                    virt::irqcon::DeliveryMode::INIT,
+                    this.inner.vp_info.apic_id,
+                    false,
+                    0,
+                    true,
+                ),
+            );
+        }
     }
 
     async fn run_vp(
@@ -1813,7 +1842,6 @@ mod save_restore {
     use hvdef::HvX64RegisterName;
     use hvdef::Vtl;
     use virt::Processor;
-    use virt::irqcon::MsiRequest;
     use virt::vp::AccessVpState;
     use virt::vp::Mtrrs;
     use vmcore::save_restore::RestoreError;
@@ -1937,24 +1965,6 @@ mod save_restore {
                 .context("failed to get shared registers")
                 .map_err(SaveError::Other)?;
 
-            // Non-VTL0 VPs should never be in startup suspend, so we only need to check VTL0.
-            // The hypervisor handles halt and idle for us.
-            let internal_activity = self
-                .runner
-                .get_vp_register(GuestVtl::Vtl0, HvX64RegisterName::InternalActivityState)
-                .inspect_err(|e| {
-                    // The ioctl get_vp_register path does not tell us
-                    // hv_status directly, so just log if it failed for any
-                    // reason.
-                    tracing::warn!(
-                        error = e as &dyn std::error::Error,
-                        "unable to query startup suspend, unable to save VTL0 startup suspend state"
-                    );
-                })
-                .ok();
-            let startup_suspend = internal_activity
-                .map(|a| HvInternalActivityRegister::from(a.as_u64()).startup_suspend());
-
             let [
                 rax,
                 rcx,
@@ -2027,11 +2037,39 @@ mod save_restore {
                 shared: _,
                 // The runner doesn't hold anything needing saving
                 runner: _,
-                // TODO CVM Servicing: The hypervisor backing doesn't need to save anything, but CVMs will.
-                backing: _,
+                backing:
+                    HypervisorBackedX86 {
+                        deliverability_notifications: _,
+                        next_deliverability_notifications: _,
+                        stats: _,
+                        deferred_init,
+                    },
                 // Currently only meaningful for CVMs
                 exit_activities: _,
-            } = self;
+            } = *self;
+
+            // Non-VTL0 VPs should never be in startup suspend, so we only need to check VTL0.
+            // The hypervisor handles halt and idle for us.
+            let startup_suspend = if deferred_init {
+                Some(true)
+            } else {
+                let internal_activity = self
+                    .runner
+                    .get_vp_register(GuestVtl::Vtl0, HvX64RegisterName::InternalActivityState)
+                    .inspect_err(|e| {
+                        // The ioctl get_vp_register path does not tell us
+                        // hv_status directly, so just log if it failed for any
+                        // reason.
+                        tracing::warn!(
+                            error = e as &dyn std::error::Error,
+                            "unable to query startup suspend, unable to save VTL0 startup suspend state"
+                        );
+                    })
+                    .ok();
+
+                internal_activity
+                    .map(|a| HvInternalActivityRegister::from(a.as_u64()).startup_suspend())
+            };
 
             let per_vtl = [GuestVtl::Vtl0, GuestVtl::Vtl1]
                 .map(|vtl| state::ProcessorVtlSavedState {
@@ -2063,7 +2101,7 @@ mod save_restore {
                 dr3: values[3].as_u64(),
                 dr6: dr6_shared.then(|| values[4].as_u64()),
                 startup_suspend,
-                crash_reg: Some(*crash_reg),
+                crash_reg: Some(crash_reg),
                 crash_control,
                 msr_mtrr_def_type,
                 fixed_mtrrs: Some(fixed_mtrrs),
@@ -2167,7 +2205,7 @@ mod save_restore {
                 self.inner.message_queues[vtl].restore(&per.message_queue);
             }
 
-            let inject_startup_suspend = match startup_suspend {
+            let startup_suspend = match startup_suspend {
                 Some(true) => {
                     // When Underhill brings up APs during a servicing update
                     // via hypercall, this clears the VTL0 startup suspend
@@ -2209,35 +2247,18 @@ mod save_restore {
                 Some(false) | None => false,
             };
 
-            if inject_startup_suspend {
-                let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
-                // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
-                let result = self.runner.set_vp_registers(
-                    GuestVtl::Vtl0,
-                    [(HvX64RegisterName::InternalActivityState, reg)],
-                );
-
-                if let Err(e) = result {
-                    // The ioctl set_vp_register path does not tell us hv_status
-                    // directly, so just log if it failed for any reason.
-                    tracing::warn!(
-                        error = &e as &dyn std::error::Error,
-                        "unable to set internal activity register, falling back to init"
-                    );
-
-                    self.partition.request_msi(
-                        GuestVtl::Vtl0,
-                        MsiRequest::new_x86(
-                            virt::irqcon::DeliveryMode::INIT,
-                            self.inner.vp_info.apic_id,
-                            false,
-                            0,
-                            true,
-                        ),
-                    );
+            self.backing.deferred_init = match self.set_vtl0_startup_suspend(startup_suspend) {
+                Ok(()) => false,
+                Err(e) => {
+                    if startup_suspend {
+                        tracing::warn!(
+                            error = &e as &dyn std::error::Error,
+                            "unable to set internal activity register, falling back to deferred init"
+                        );
+                    }
+                    startup_suspend
                 }
-            }
-
+            };
             Ok(())
         }
     }

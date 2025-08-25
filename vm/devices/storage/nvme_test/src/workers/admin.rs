@@ -464,8 +464,17 @@ impl AdminHandler {
                 let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
-                if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
-                    let fault = admin_fault.fault_submission_queue(command).await;
+                if self.config.fault_configuration.fault_active.get() {
+                    // Get a configured fault. Default if nothing was configured
+                    let fault = self
+                        .config
+                        .fault_configuration
+                        .admin_fault
+                        .admin_submission_queue_faults
+                        .iter()
+                        .find(|(op, _)| *op == opcode.0)
+                        .map(|(_, behavior)| *behavior)
+                        .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {
                         QueueFaultBehavior::Update(command_updated) => {
@@ -565,7 +574,7 @@ impl AdminHandler {
 
         let status = spec::CompletionStatus::new().with_status(result.status.0);
 
-        let mut completion = spec::Completion {
+        let completion = spec::Completion {
             dw0: result.dw[0],
             dw1: result.dw[1],
             sqid: 0,
@@ -573,29 +582,6 @@ impl AdminHandler {
             status,
             cid,
         };
-
-        if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
-            let fault = admin_fault.fault_completion_queue(completion.clone()).await;
-
-            match fault {
-                QueueFaultBehavior::Update(completion_new) => {
-                    tracelimit::warn_ratelimited!(
-                        "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
-                        &completion,
-                        &completion_new
-                    );
-                    completion = completion_new;
-                }
-                QueueFaultBehavior::Drop => {
-                    tracelimit::warn_ratelimited!(
-                        "configured fault: admin completion dropped from cq {:?}",
-                        &completion
-                    );
-                    return Ok(());
-                }
-                QueueFaultBehavior::Default => {}
-            }
-        }
 
         state.admin_cq.write(&self.config.mem, completion)?;
         // Again, for simplicity, update EVT_IDX here.

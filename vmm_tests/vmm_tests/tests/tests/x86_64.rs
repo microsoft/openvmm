@@ -74,7 +74,7 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 
 /// Test AK cert is persistent across boots on Linux.
 // TODO: Add in-guest TPM tests for Windows as we currently
-// do have an easy way to interact with TPM without a private
+// do not have an easy way to interact with TPM without a private
 // or custom tool.
 #[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
 async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
@@ -123,7 +123,7 @@ async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
 
 /// Test AK cert retry logic on Linux.
 // TODO: Add in-guest TPM tests for Windows as we currently
-// do have an easy way to interact with TPM without a private
+// do not have an easy way to interact with TPM without a private
 // or custom tool.
 #[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
 async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
@@ -194,6 +194,44 @@ async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 
     let mut vm = match os_flavor {
         OsFlavor::Windows => config.run_without_agent().await?,
+        OsFlavor::Linux => {
+            let mut vm = config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                .run_without_agent()
+                .await?;
+            // Workaround to https://github.com/microsoft/openvmm/issues/379
+            assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+            vm.backend().reset().await?;
+            vm
+        }
+        _ => unreachable!(),
+    };
+
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// VBS boot test with attestation enabled
+// TODO: Add in-guest tests to retrieve and verify the report.
+#[openvmm_test_no_agent(
+    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
+)]
+async fn vbs_boot_with_attestation(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let config = config.modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
+
+    let mut vm = match os_flavor {
+        OsFlavor::Windows => {
+            config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                .run_without_agent()
+                .await?
+        }
         OsFlavor::Linux => {
             let mut vm = config
                 .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)

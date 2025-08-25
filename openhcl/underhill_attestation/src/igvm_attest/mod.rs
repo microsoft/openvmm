@@ -62,8 +62,6 @@ pub enum Error {
 /// Rust-style enum for `IgvmAttestReportType`
 pub enum ReportType {
     /// VBS report
-    // TODO VBS
-    #[expect(dead_code)]
     Vbs,
     /// SNP report
     Snp,
@@ -112,6 +110,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             TeeType::Snp => ReportType::Snp,
             TeeType::Tdx => ReportType::Tdx,
+            TeeType::Vbs => ReportType::Vbs,
         };
 
         let attestation_vm_config =
@@ -147,6 +146,7 @@ impl IgvmAttestRequestHelper {
         let report_type = match tee_type {
             Some(TeeType::Snp) => ReportType::Snp,
             Some(TeeType::Tdx) => ReportType::Tdx,
+            Some(TeeType::Vbs) => ReportType::Vbs,
             None => ReportType::Tvm,
         };
 

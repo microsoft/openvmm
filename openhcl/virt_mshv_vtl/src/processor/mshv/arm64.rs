@@ -120,7 +120,13 @@ impl BackingPrivate for HypervisorBackedArm64 {
         })
     }
 
-    fn init(_this: &mut UhProcessor<'_, Self>) {}
+    fn init(this: &mut UhProcessor<'_, Self>) {
+        // The hypervisor initializes startup suspend to false. Set it to the
+        // architectural default.
+        if !this.vp_index().is_bsp() {
+            this.set_vtl0_startup_suspend(true).unwrap();
+        }
+    }
 
     type StateAccess<'p, 'a>
         = UhVpStateAccess<'a, 'p, Self>
@@ -940,23 +946,8 @@ mod save_restore {
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             self.runner.cpu_context_mut().x = state.x;
             self.runner.cpu_context_mut().q = state.q;
-            if state.startup_suspend {
-                let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
-                self.runner
-                    .set_vp_registers(
-                        // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
-                        // The hypervisor handles halt and idle for us.
-                        GuestVtl::Vtl0,
-                        [(HvArm64RegisterName::InternalActivityState, reg)],
-                    )
-                    .map_err(|err| {
-                        RestoreError::Other(anyhow!(
-                            "unable to set internal activity register: {}",
-                            err
-                        ))
-                    })?;
-            }
-
+            self.set_vtl0_startup_suspend(state.startup_suspend)
+                .expect("setting startup suspend should not fail");
             Ok(())
         }
     }

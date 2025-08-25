@@ -622,29 +622,6 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
     }
 }
 
-fn get_hw_debug_bit(isolation: IsolationType) -> bool {
-    match isolation {
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Tdx => {
-            use x86defs::tdx::TdReport;
-
-            use crate::arch::tdx::get_tdreport;
-
-            let mut report = off_stack!(PageAlign<TdReport>, zeroed());
-            match get_tdreport(&mut report.0) {
-                Ok(()) => report.0.td_info.td_info_base.attributes.debug(),
-                Err(_) => false,
-            }
-        }
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Snp => {
-            // Not implemented yet for SNP.
-            false
-        }
-        _ => false,
-    }
-}
-
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
     if p.isolation_type == IsolationType::None {
@@ -668,10 +645,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         static_options.parse(cmdline);
     }
 
-    let hw_debug_bit = get_hw_debug_bit(p.isolation_type);
-    let can_trust_host = p.isolation_type == IsolationType::None
-        || static_options.confidential_debug
-        || hw_debug_bit;
+    let static_confidential_debug = static_options.confidential_debug;
+    let can_trust_host = p.isolation_type == IsolationType::None || static_confidential_debug;
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info =
@@ -689,8 +664,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Confidential debug will show up in boot_options only if included in the
     // static command line, or if can_trust_host is true (so the dynamic command
     // line has been parsed).
-    let is_confidential_debug = (can_trust_host && p.isolation_type != IsolationType::None)
-        || partition_info.boot_options.confidential_debug;
+    let is_confidential_debug =
+        static_confidential_debug || partition_info.boot_options.confidential_debug;
 
     // Fill out the non-devicetree derived parts of PartitionInfo.
     if !p.isolation_type.is_hardware_isolated()

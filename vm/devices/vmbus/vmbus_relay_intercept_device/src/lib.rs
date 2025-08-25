@@ -7,7 +7,6 @@
 //! and send any vmbus notifications for that device to the
 //! SimpleVmbusClientDeviceWrapper instance.
 
-#![cfg(target_os = "linux")]
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 

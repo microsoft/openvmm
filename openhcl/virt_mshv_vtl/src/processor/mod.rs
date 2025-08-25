@@ -216,6 +216,11 @@ mod private {
             vtl: GuestVtl,
         ) -> Self::StateAccess<'p, 'a>;
 
+        /// Called before the first `run_vp` call to allow the backing to
+        /// perform any pre-run tasks. Must be idempotent--may be called again
+        /// before some subsequent `run_vp` calls.
+        fn pre_run_vp(_this: &mut UhProcessor<'_, Self>) {}
+
         fn run_vp(
             this: &mut UhProcessor<'_, Self>,
             dev: &impl CpuIo,
@@ -701,6 +706,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         mut stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
+        T::pre_run_vp(self);
+
         if self.runner.is_sidecar() {
             if self.force_exit_sidecar && !self.signaled_sidecar_exit {
                 self.inner
