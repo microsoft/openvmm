@@ -5012,6 +5012,7 @@ dependencies = [
  "safe_intrinsics",
  "sha2",
  "sidecar_defs",
+ "stringbuf",
  "tdcall",
  "thiserror 2.0.16",
  "underhill_confidentiality",

@@ -258,6 +258,16 @@ impl<'a> Iterator for StringBufferIterator<'a> {
     }
 }
 
+impl core::fmt::Write for StringBuffer<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        match self.append(s) {
+            Ok(true) => Ok(()),
+            Ok(false) => Ok(()), // treat buffer full errors as success
+            Err(_) => Err(core::fmt::Error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

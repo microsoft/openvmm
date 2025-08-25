@@ -15,9 +15,11 @@ use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
 use core::fmt;
 use core::fmt::Write;
+use memory_range::MemoryRange;
 #[cfg(target_arch = "x86_64")]
 use minimal_rt::arch::InstrIoAccess;
 use minimal_rt::arch::Serial;
+use stringbuf::StringBuffer;
 
 enum Logger {
     #[cfg(target_arch = "x86_64")]
@@ -42,12 +44,37 @@ impl Logger {
 
 pub struct BootLogger {
     logger: SingleThreaded<RefCell<Logger>>,
+    in_memory_logger: SingleThreaded<RefCell<Option<StringBuffer<'static>>>>,
 }
 
 pub static BOOT_LOGGER: BootLogger = BootLogger {
     logger: SingleThreaded(RefCell::new(Logger::None)),
+    in_memory_logger: SingleThreaded(RefCell::new(None)),
 };
 
+/// initialize the in-memory log buffer. This range must be identity mapped, and
+/// unused by anything else.
+pub fn boot_logger_memory_init(buffer: MemoryRange) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let log_buffer_ptr = buffer.start() as *mut u8;
+    // SAFETY: At file build time, this range is enforced to be unused by
+    // anything else. The rest of the bootshim will mark this range as reserved
+    // and not free to be used by anything else.
+    //
+    // The VA is valid as we are identity mapped.
+    let log_buffer_slice =
+        unsafe { core::slice::from_raw_parts_mut(log_buffer_ptr, buffer.len() as usize) };
+
+    *BOOT_LOGGER.in_memory_logger.borrow_mut() = Some(
+        StringBuffer::new(log_buffer_slice)
+            .expect("log buffer should be valid from fixed at build config"),
+    );
+}
+
+// fixme: runtime logger init only
 /// Initialize the boot logger. This replaces any previous init calls.
 pub fn boot_logger_init(isolation_type: IsolationType, com3_serial_available: bool) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
@@ -65,7 +92,21 @@ pub fn boot_logger_init(isolation_type: IsolationType, com3_serial_available: bo
 
 impl Write for &BootLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
+            // Ignore the errors from the in memory logger.
+            let _ = buf.write_str(s);
+        }
         self.logger.borrow_mut().write_str(s)
+    }
+}
+
+pub fn remove_me_debug_dump_in_memory() {
+    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow_mut().as_mut() {
+        let mut logger = BOOT_LOGGER.logger.borrow_mut();
+        logger.write_str("In-memory boot log dump:\n").unwrap();
+        for str in buf.iter() {
+            logger.write_str(str).unwrap();
+        }
     }
 }
 

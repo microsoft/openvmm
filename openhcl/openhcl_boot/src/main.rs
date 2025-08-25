@@ -26,6 +26,7 @@ use crate::arch::setup_vtl2_vp;
 use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
+use crate::boot_logger::boot_logger_memory_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
@@ -399,7 +400,8 @@ mod x86_boot {
                 | MemoryVtlType::VTL2_SIDECAR_NODE
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
-                | MemoryVtlType::VTL2_TDX_PAGE_TABLES => {
+                | MemoryVtlType::VTL2_TDX_PAGE_TABLES
+                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER => {
                     add_e820_entry(entries.next(), range, E820_RESERVED)?;
                     n += 1;
                 }
@@ -513,6 +515,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     if p.isolation_type == IsolationType::None {
         enable_enlightened_panic();
     }
+
+    // Enable the in-memory log.
+    boot_logger_memory_init(p.log_buffer);
 
     let boot_reftime = get_ref_time(p.isolation_type);
 
@@ -724,6 +729,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     rt::verify_stack_cookie();
 
     log!("uninitializing hypercalls, about to jump to kernel");
+    boot_logger::remove_me_debug_dump_in_memory();
     hvcall().uninitialize();
 
     cfg_if::cfg_if! {
