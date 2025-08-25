@@ -21,12 +21,13 @@ pub struct ChipsetPlusSynic {
     fatal_policy: FatalErrorPolicy,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub enum FatalErrorPolicy {
-    /// Panic the process
-    Panic,
-    /// Convert the failure to a debugger break
-    DebugBreak,
+    /// Panic the process, running the given closure immediately before panicking.
+    Panic(Arc<dyn Fn() + Send + Sync>),
+    /// Convert the failure to a debugger break, and send the error over the
+    /// given channel.
+    DebugBreak(mesh::Sender<Box<dyn std::error::Error + Send + Sync>>),
 }
 
 impl ChipsetPlusSynic {
@@ -94,10 +95,15 @@ impl CpuIo for ChipsetPlusSynic {
             err = error.as_ref() as &dyn std::error::Error,
             "fatal error"
         );
-        // TODO: Flush tracing?
-        match self.fatal_policy {
-            FatalErrorPolicy::Panic => panic!("fatal error: {}", error),
-            FatalErrorPolicy::DebugBreak => virt::VpHaltReason::SingleStep,
+        match &self.fatal_policy {
+            FatalErrorPolicy::Panic(prep) => {
+                prep();
+                panic!("fatal error: {}", error)
+            }
+            FatalErrorPolicy::DebugBreak(channel) => {
+                channel.send(error);
+                virt::VpHaltReason::SingleStep
+            }
         }
     }
 }
