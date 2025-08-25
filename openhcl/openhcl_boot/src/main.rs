@@ -11,6 +11,7 @@
 
 mod arch;
 mod boot_logger;
+mod bump_alloc;
 mod cmdline;
 mod dt;
 mod host_params;
@@ -19,6 +20,8 @@ mod memory;
 mod rt;
 mod sidecar;
 mod single_threaded;
+
+extern crate alloc;
 
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
