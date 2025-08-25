@@ -15,6 +15,7 @@ use crate::VENDOR_ID;
 use crate::spec;
 use crate::workers::IoQueueEntrySizes;
 use crate::workers::NvmeWorkers;
+use crate::workers::NvmeWorkersContext;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoError::InvalidRegister;
@@ -146,16 +147,16 @@ impl NvmeFaultController {
             .collect();
 
         let qe_sizes = Arc::new(Default::default());
-        let admin = NvmeWorkers::new(
+        let admin = NvmeWorkers::new(NvmeWorkersContext {
             driver_source,
-            guest_memory,
+            mem: guest_memory,
             interrupts,
-            caps.max_io_queues,
-            caps.max_io_queues,
-            Arc::clone(&qe_sizes),
-            caps.subsystem_id,
+            max_sqs: caps.max_io_queues,
+            max_cqs: caps.max_io_queues,
+            qe_sizes: Arc::clone(&qe_sizes),
+            subsystem_id: caps.subsystem_id,
             fault_configuration,
-        );
+        });
 
         Self {
             cfg_space,

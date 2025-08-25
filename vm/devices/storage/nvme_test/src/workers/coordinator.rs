@@ -31,6 +31,18 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
+/// An input context for the NvmeWorker
+pub struct NvmeWorkersContext<'a> {
+    pub driver_source: &'a VmTaskDriverSource,
+    pub mem: GuestMemory,
+    pub interrupts: Vec<Interrupt>,
+    pub max_sqs: u16,
+    pub max_cqs: u16,
+    pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
+    pub subsystem_id: Guid,
+    pub fault_configuration: FaultConfiguration,
+}
+
 pub struct NvmeWorkers {
     _task: Task<()>,
     send: mesh::Sender<CoordinatorRequest>,
@@ -53,34 +65,25 @@ impl InspectMut for NvmeWorkers {
 }
 
 impl NvmeWorkers {
-    pub fn new(
-        driver_source: &VmTaskDriverSource,
-        mem: GuestMemory,
-        interrupts: Vec<Interrupt>,
-        max_sqs: u16,
-        max_cqs: u16,
-        qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
-        subsystem_id: Guid,
-        fault_configuration: FaultConfiguration,
-    ) -> Self {
-        let num_qids = 2 + max_sqs.max(max_cqs) * 2;
+    pub fn new(context: NvmeWorkersContext<'_>) -> Self {
+        let num_qids = 2 + context.max_sqs.max(context.max_cqs) * 2;
         let doorbells: Vec<_> = (0..num_qids)
             .map(|_| Arc::new(DoorbellRegister::new()))
             .collect();
 
-        let driver = driver_source.simple();
+        let driver = context.driver_source.simple();
         let handler: AdminHandler = AdminHandler::new(
             driver.clone(),
             AdminConfig {
-                driver_source: driver_source.clone(),
-                mem,
-                interrupts,
+                driver_source: context.driver_source.clone(),
+                mem: context.mem.clone(),
+                interrupts: context.interrupts.clone(),
                 doorbells: doorbells.clone(),
-                subsystem_id,
-                max_sqs,
-                max_cqs,
-                qe_sizes,
-                fault_configuration,
+                subsystem_id: context.subsystem_id,
+                max_sqs: context.max_sqs,
+                max_cqs: context.max_cqs,
+                qe_sizes: context.qe_sizes,
+                fault_configuration: context.fault_configuration,
             },
         );
         let coordinator = Coordinator {
