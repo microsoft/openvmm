@@ -43,7 +43,6 @@ use std::future::pending;
 use std::io::Cursor;
 use std::io::Write;
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::Duration;
 use task_control::AsyncRun;
 use task_control::Cancelled;
