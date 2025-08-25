@@ -66,24 +66,35 @@ impl InspectMut for NvmeWorkers {
 
 impl NvmeWorkers {
     pub fn new(context: NvmeWorkersContext<'_>) -> Self {
-        let num_qids = 2 + context.max_sqs.max(context.max_cqs) * 2;
+        let NvmeWorkersContext {
+            driver_source,
+            mem,
+            interrupts,
+            subsystem_id,
+            max_sqs,
+            max_cqs,
+            qe_sizes,
+            fault_configuration,
+        } = context;
+
+        let num_qids = 2 + max_sqs.max(max_cqs) * 2;
         let doorbells: Vec<_> = (0..num_qids)
             .map(|_| Arc::new(DoorbellRegister::new()))
             .collect();
 
-        let driver = context.driver_source.simple();
+        let driver = driver_source.simple();
         let handler: AdminHandler = AdminHandler::new(
             driver.clone(),
             AdminConfig {
-                driver_source: context.driver_source.clone(),
-                mem: context.mem.clone(),
-                interrupts: context.interrupts.clone(),
+                driver_source: driver_source.clone(),
+                mem: mem.clone(),
+                interrupts: interrupts.clone(),
                 doorbells: doorbells.clone(),
-                subsystem_id: context.subsystem_id,
-                max_sqs: context.max_sqs,
-                max_cqs: context.max_cqs,
-                qe_sizes: context.qe_sizes,
-                fault_configuration: context.fault_configuration,
+                subsystem_id,
+                max_sqs,
+                max_cqs,
+                qe_sizes,
+                fault_configuration,
             },
         );
         let coordinator = Coordinator {
