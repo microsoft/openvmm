@@ -35,6 +35,7 @@ use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::collections::btree_map;
@@ -42,6 +43,8 @@ use std::future::pending;
 use std::io::Cursor;
 use std::io::Write;
 use std::sync::Arc;
+use std::task::Poll;
+use std::time::Duration;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTask;
@@ -491,6 +494,11 @@ impl AdminHandler {
                                 &command
                             );
                             return Ok(());
+                        }
+                        QueueFaultBehavior::Delay(ms) => {
+                            PolledTimer::new(&self.driver)
+                                .sleep(Duration::from_millis(ms))
+                                .await;
                         }
                         QueueFaultBehavior::Default => {}
                     }
