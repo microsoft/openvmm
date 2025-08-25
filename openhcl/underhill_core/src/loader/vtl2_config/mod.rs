@@ -21,8 +21,10 @@ use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
 use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
+use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use sparse_mmap::SparseMapping;
+use stringbuf::StringBuffer;
 use vm_topology::memory::MemoryRangeWithNode;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -37,6 +39,7 @@ pub struct RuntimeParameters {
     pptt: Option<Vec<u8>>,
     cvm_cpuid_info: Option<Vec<u8>>,
     snp_secrets: Option<Vec<u8>>,
+    bootshim_logs: String,
 }
 
 impl RuntimeParameters {
@@ -260,6 +263,46 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         }
     };
 
+    // Read bootshim logs.
+    let bootshim_logs = {
+        let range = *parsed_openhcl_boot
+            .partition_memory_map
+            .iter()
+            .find(|range| range.vtl_usage() == MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER)
+            .context("no bootshim log buffer found")?
+            .range();
+        let ranges = &[range];
+        let mapping =
+            Vtl2ParamsMap::new(ranges, false).context("failed to map bootshim log buffer")?;
+
+        let mut raw = vec![0; range.len() as usize];
+        mapping
+            .read_at(0, raw.as_mut_slice())
+            .context("unable to read raw bootshim logs")?;
+
+        let buf = StringBuffer::from_existing(raw.as_mut_slice())
+            .context("bootshim buffer contents invalid")?;
+
+        // Flatten the encoded logs, because each entry does not necessarily
+        // end with a newline.
+        let mut flattened = String::new();
+        for str in buf.iter() {
+            flattened.push_str(str);
+        }
+
+        let dropped = buf.dropped_messages();
+        if dropped != 0 {
+            tracing::info!(dropped, "bootshim logger dropped messages");
+        }
+
+        flattened
+    };
+
+    // FIXME: tracing here or somewhere else?
+    for line in bootshim_logs.lines() {
+        tracing::error!(line, "bootshim log");
+    }
+
     let accepted_regions = if parsed_openhcl_boot.isolation != IsolationType::None {
         parsed_openhcl_boot.accepted_ranges.clone()
     } else {
@@ -288,6 +331,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         pptt,
         cvm_cpuid_info,
         snp_secrets,
+        bootshim_logs,
     };
 
     let measured_vtl2_info = MeasuredVtl2Info {

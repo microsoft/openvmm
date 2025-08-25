@@ -136,6 +136,7 @@ where
     // free space
     //
     // page tables
+    // 8K bootshim logs
     // IGVM parameters
     // reserved vtl2 ranges
     // initrd

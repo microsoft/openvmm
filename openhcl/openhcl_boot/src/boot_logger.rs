@@ -94,19 +94,16 @@ impl Write for &BootLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
             // Ignore the errors from the in memory logger.
-            let _ = buf.write_str(s);
+            //
+            // TODO: `writeln!` may result in multiple `write_str` calls, which
+            // result in multiple entries in StringBuffer. This is fine but
+            // wastes a lot of space due to how strings are encoded. There
+            // aren't many bootshim logs today, but it may be better to modify
+            // StringBuffer to have some modify method to update a message until
+            // a newline is written.
+            let _ = buf.append(s);
         }
         self.logger.borrow_mut().write_str(s)
-    }
-}
-
-pub fn remove_me_debug_dump_in_memory() {
-    if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow_mut().as_mut() {
-        let mut logger = BOOT_LOGGER.logger.borrow_mut();
-        logger.write_str("In-memory boot log dump:\n").unwrap();
-        for str in buf.iter() {
-            logger.write_str(str).unwrap();
-        }
     }
 }
 

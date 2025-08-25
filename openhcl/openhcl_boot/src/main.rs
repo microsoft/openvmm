@@ -729,7 +729,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     rt::verify_stack_cookie();
 
     log!("uninitializing hypercalls, about to jump to kernel");
-    boot_logger::remove_me_debug_dump_in_memory();
     hvcall().uninitialize();
 
     cfg_if::cfg_if! {

@@ -195,6 +195,11 @@ impl<'a> StringBuffer<'a> {
     /// string is valid to add, but was dropped due to not enough space
     /// remaining.
     pub fn append(&mut self, s: &str) -> Result<bool, StringBufferError> {
+        if s.is_empty() {
+            // Do not store empty strings.
+            return Ok(true);
+        }
+
         if s.len() > u16::MAX as usize {
             return Err(StringBufferError::StringTooLong);
         }
@@ -218,9 +223,6 @@ impl<'a> StringBuffer<'a> {
     }
 
     /// Returns an iterator over all strings in the buffer.
-    ///
-    /// # Returns
-    /// An iterator that yields `Result<&str, StringBufferError>` for each string.
     pub fn iter(&self) -> StringBufferIterator<'_> {
         StringBufferIterator {
             entries: self.data.split_at(self.header.next_insert as usize).0,
@@ -255,16 +257,6 @@ impl<'a> Iterator for StringBufferIterator<'a> {
         let (entry, rest) = Entry::parse(self.entries).expect("buffer should be valid");
         self.entries = rest;
         Some(entry.data)
-    }
-}
-
-impl core::fmt::Write for StringBuffer<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        match self.append(s) {
-            Ok(true) => Ok(()),
-            Ok(false) => Ok(()), // treat buffer full errors as success
-            Err(_) => Err(core::fmt::Error),
-        }
     }
 }
 
