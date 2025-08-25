@@ -2819,8 +2819,10 @@ impl<T: RingMem> NetChannel<T> {
                             self.restart = Some(CoordinatorMessage::Restart);
                         }
                         if let Some(filter) = packet_filter {
-                            self.packet_filter = filter;
-                            self.send_coordinator_update_filter();
+                            if self.packet_filter != filter {
+                                self.packet_filter = filter;
+                                self.send_coordinator_update_filter();
+                            }
                         }
                         rndisprot::STATUS_SUCCESS
                     }
