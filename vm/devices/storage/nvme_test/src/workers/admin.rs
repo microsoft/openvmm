@@ -481,7 +481,7 @@ impl AdminHandler {
                         .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {
-                        QueueFaultBehavior::Update(mut command_updated) => {
+                        QueueFaultBehavior::Update(command_updated) => {
                             tracing::warn!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
