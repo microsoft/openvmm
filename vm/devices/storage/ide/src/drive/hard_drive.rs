@@ -1686,9 +1686,14 @@ pub(crate) mod save_restore {
 
 #[cfg(test)]
 mod tests {
+    use super::CommandState;
     use super::DriveState;
+    use super::HardDrive;
     use super::MediaGeometry;
     use super::Registers;
+    use disk_backend::Disk;
+    use ide_resources::IdePath;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_lba() {
@@ -1726,5 +1731,255 @@ mod tests {
         roundtrip_chs(&mut state.regs, 0);
         roundtrip_chs(&mut state.regs, 0x10000);
         roundtrip_chs(&mut state.regs, 0xfbffff);
+    }
+
+    /// Helper function to create a minimal HardDrive instance for testing
+    fn create_test_hard_drive() -> HardDrive {
+        // Create a temporary file and minimal disk for testing
+        let temp_file = NamedTempFile::new().unwrap();
+        let handle = temp_file.reopen().unwrap();
+
+        // Write some minimal data to make it a valid disk
+        let disk = Disk::new(disk_file::FileDisk::open(handle, false).unwrap()).unwrap();
+        let path = IdePath::default();
+        HardDrive::new(disk, path).unwrap()
+    }
+
+    #[test]
+    fn test_write_media_sectors_complete_normal() {
+        let mut drive = create_test_hard_drive();
+
+        // Set up a write command with 10 sectors remaining, 2 sectors before interrupt
+        let mut command = CommandState::write(10);
+        command.sectors_before_interrupt = 2;
+        command.next_lba = 100;
+        command.use_dma = true;
+
+        drive.state.command = Some(command);
+        drive.state.prd_exhausted = false;
+
+        // Call the function under test
+        let result = drive.write_media_sectors_complete();
+
+        // Verify the result
+        assert!(result.is_ok());
+
+        // Check that sectors_remaining was decremented correctly
+        let command = drive.state.command.as_ref().unwrap();
+        assert_eq!(command.sectors_remaining, 8); // 10 - 2 = 8
+        assert_eq!(command.next_lba, 102); // 100 + 2 = 102
+    }
+
+    #[test]
+    fn test_write_media_sectors_complete_prd_exhausted() {
+        let mut drive = create_test_hard_drive();
+
+        // Set up a write command with 10 sectors remaining, 2 sectors before interrupt
+        // This simulates the bug scenario from PR #633
+        let mut command = CommandState::write(10);
+        command.sectors_before_interrupt = 2;
+        command.next_lba = 100;
+        command.use_dma = true;
+
+        drive.state.command = Some(command);
+        drive.state.prd_exhausted = true; // This is the key difference
+
+        // Call the function under test
+        let result = drive.write_media_sectors_complete();
+
+        // Verify the result
+        assert!(result.is_ok());
+
+        // When PRD is exhausted, sectors_remaining is set to 0, which causes
+        // the command to be cleared and an interrupt to be pending
+        assert!(drive.state.command.is_none());
+        assert!(drive.state.pending_interrupt);
+    }
+
+    #[test]
+    fn test_prd_exhausted_behavior_difference() {
+        // This test demonstrates the key difference between normal and PRD exhausted scenarios
+
+        // Normal case - sectors_remaining should be decremented
+        let mut drive1 = create_test_hard_drive();
+        let mut command1 = CommandState::write(10);
+        command1.sectors_before_interrupt = 2;
+        command1.next_lba = 100;
+        command1.use_dma = true;
+        drive1.state.command = Some(command1);
+        drive1.state.prd_exhausted = false;
+
+        let result1 = drive1.write_media_sectors_complete();
+        assert!(result1.is_ok());
+        let command1_after = drive1.state.command.as_ref().unwrap();
+        assert_eq!(command1_after.sectors_remaining, 8); // 10 - 2 = 8
+
+        // PRD exhausted case - sectors_remaining should be set to 0
+        let mut drive2 = create_test_hard_drive();
+        let mut command2 = CommandState::write(10);
+        command2.sectors_before_interrupt = 2;
+        command2.next_lba = 100;
+        command2.use_dma = true;
+        drive2.state.command = Some(command2);
+        drive2.state.prd_exhausted = true; // Key difference
+
+        let result2 = drive2.write_media_sectors_complete();
+        assert!(result2.is_ok());
+        // Command should be cleared because sectors_remaining was set to 0
+        assert!(drive2.state.command.is_none());
+        assert!(drive2.state.pending_interrupt);
+    }
+
+    #[test]
+    fn test_write_media_sectors_complete_finishes_command() {
+        let mut drive = create_test_hard_drive();
+
+        // Set up a write command with exactly the number of sectors before interrupt
+        let mut command = CommandState::write(2);
+        command.sectors_before_interrupt = 2;
+        command.next_lba = 100;
+        command.use_dma = true;
+
+        drive.state.command = Some(command);
+        drive.state.prd_exhausted = false;
+
+        // Call the function under test
+        let result = drive.write_media_sectors_complete();
+
+        // Verify the result
+        assert!(result.is_ok());
+
+        // Check that command is cleared when sectors_remaining reaches 0
+        assert!(drive.state.command.is_none());
+        assert!(drive.state.pending_interrupt);
+    }
+
+    #[test]
+    fn test_read_media_sectors_complete_normal() {
+        let mut drive = create_test_hard_drive();
+
+        // Set up a read command with 10 sectors remaining, 2 sectors before interrupt
+        let mut command = CommandState::read(10);
+        command.sectors_before_interrupt = 2;
+        command.next_lba = 100;
+        command.use_dma = true;
+
+        drive.state.command = Some(command);
+        drive.state.prd_exhausted = false;
+
+        // Call the function under test
+        let result = drive.read_media_sectors_complete();
+
+        // Verify the result
+        assert!(result.is_ok());
+
+        // Check that sectors_remaining was decremented correctly
+        let command = drive.state.command.as_ref().unwrap();
+        assert_eq!(command.sectors_remaining, 8); // 10 - 2 = 8
+        assert_eq!(command.next_lba, 102); // 100 + 2 = 102
+    }
+
+    #[test]
+    fn test_read_media_sectors_complete_prd_exhausted() {
+        let mut drive = create_test_hard_drive();
+
+        // Set up a read command with 10 sectors remaining, 2 sectors before interrupt
+        let mut command = CommandState::read(10);
+        command.sectors_before_interrupt = 2;
+        command.next_lba = 100;
+        command.use_dma = true;
+
+        drive.state.command = Some(command);
+        drive.state.prd_exhausted = true; // PRD exhausted scenario
+
+        // Call the function under test
+        let result = drive.read_media_sectors_complete();
+
+        // Verify the result
+        assert!(result.is_ok());
+
+        // When PRD is exhausted, sectors_remaining is set to 0, which causes
+        // the command to be cleared
+        assert!(drive.state.command.is_none());
+
+        // Check that buffer is cleared when PRD exhausted
+        assert!(drive.state.buffer.is_none());
+    }
+
+    #[test]
+    fn test_read_media_sectors_complete_finishes_command() {
+        let mut drive = create_test_hard_drive();
+
+        // Set up a read command with exactly the number of sectors before interrupt
+        let mut command = CommandState::read(2);
+        command.sectors_before_interrupt = 2;
+        command.next_lba = 100;
+        command.use_dma = true;
+
+        drive.state.command = Some(command);
+        drive.state.prd_exhausted = false;
+
+        // Call the function under test
+        let result = drive.read_media_sectors_complete();
+
+        // Verify the result
+        assert!(result.is_ok());
+
+        // Check that command is cleared when sectors_remaining reaches 0
+        assert!(drive.state.command.is_none());
+    }
+
+    #[test]
+    fn test_prd_exhausted_state_handling() {
+        let mut drive = create_test_hard_drive();
+
+        // Initially PRD should not be exhausted
+        assert!(!drive.state.prd_exhausted);
+
+        // Test setting PRD exhausted
+        drive.set_prd_exhausted();
+        assert!(drive.state.prd_exhausted);
+    }
+
+    #[test]
+    fn test_sectors_remaining_edge_cases() {
+        let mut drive = create_test_hard_drive();
+
+        // Test case where sectors_before_interrupt equals sectors_remaining
+        let mut command = CommandState::write(5);
+        command.sectors_before_interrupt = 5;
+        command.next_lba = 0;
+        command.use_dma = true;
+
+        drive.state.command = Some(command);
+        drive.state.prd_exhausted = false;
+
+        let result = drive.write_media_sectors_complete();
+        assert!(result.is_ok());
+
+        // Command should be finished
+        assert!(drive.state.command.is_none());
+        assert!(drive.state.pending_interrupt);
+    }
+
+    #[test]
+    fn test_sectors_remaining_with_large_values() {
+        let mut drive = create_test_hard_drive();
+
+        // Test with maximum sector count
+        let mut command = CommandState::write(0xFFFF);
+        command.sectors_before_interrupt = 256;
+        command.next_lba = 0;
+        command.use_dma = true;
+
+        drive.state.command = Some(command);
+        drive.state.prd_exhausted = false;
+
+        let result = drive.write_media_sectors_complete();
+        assert!(result.is_ok());
+
+        let command = drive.state.command.as_ref().unwrap();
+        assert_eq!(command.sectors_remaining, 0xFFFF - 256);
+        assert_eq!(command.next_lba, 256);
     }
 }
