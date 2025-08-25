@@ -16,6 +16,7 @@ use hvdef::HvMapGpaFlags;
 use hvdef::Vtl;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvInterceptType;
+use hvdef::hypercall::VbsVmCallReportOutput;
 use memory_range::MemoryRange;
 use std::iter::zip;
 use std::ops::RangeInclusive;
@@ -63,6 +64,7 @@ impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
             hv1_hypercall::HvGetVpIndexFromApicId,
             hv1_hypercall::HvAcceptGpaPages,
             hv1_hypercall::HvModifySparseGpaPageHostVisibility,
+            hv1_hypercall::HvVbsVmCallReport,
         ]
     );
 }
@@ -686,6 +688,16 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
         }
 
         Ok(())
+    }
+}
+
+impl<T: CpuIo> hv1_hypercall::VbsVmCallReport for WhpHypercallExit<'_, '_, T> {
+    fn vbs_vm_call_report(&self, _report_data: &[u8]) -> hvdef::HvResult<VbsVmCallReportOutput> {
+        // For now, we return a dummy report.
+        // TODO: Implement actual VBS VM call report generation based on report_data.
+        Ok(VbsVmCallReportOutput {
+            report: [0xcdu8; hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE],
+        })
     }
 }
 

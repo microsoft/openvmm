@@ -1325,6 +1325,7 @@ async fn new_underhill_vm(
 
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
         }
+        virt::IsolationType::Vbs => round_up_to_2mb(device_dma + attestation),
         _ if env_cfg.enable_shared_visibility_pool => round_up_to_2mb(device_dma + attestation),
         _ => 0,
     };
@@ -1620,25 +1621,20 @@ async fn new_underhill_vm(
     tracing::info!("guest memory self test complete");
 
     // Set the gpa allocator to GET that is required by the attestation message.
-    //
-    // TODO: VBS does not support attestation, so only do this on non-VBS
-    // platforms for now.
-    if !matches!(isolation, virt::IsolationType::Vbs) {
-        get_client.set_gpa_allocator(
-            dma_manager
-                .new_client(DmaClientParameters {
-                    device_name: "get".into(),
-                    lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                    allocation_visibility: if isolation.is_isolated() {
-                        AllocationVisibility::Shared
-                    } else {
-                        AllocationVisibility::Private
-                    },
-                    persistent_allocations: false,
-                })
-                .context("get dma client")?,
-        );
-    }
+    get_client.set_gpa_allocator(
+        dma_manager
+            .new_client(DmaClientParameters {
+                device_name: "get".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                allocation_visibility: if isolation.is_isolated() {
+                    AllocationVisibility::Shared
+                } else {
+                    AllocationVisibility::Private
+                },
+                persistent_allocations: false,
+            })
+            .context("get dma client")?,
+    );
 
     if confidential_debug_enabled() {
         tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
@@ -1667,15 +1663,8 @@ async fn new_underhill_vm(
     let attestation_type = match isolation {
         virt::IsolationType::Snp => AttestationType::Snp,
         virt::IsolationType::Tdx => AttestationType::Tdx,
+        virt::IsolationType::Vbs => AttestationType::Vbs,
         virt::IsolationType::None => AttestationType::Host,
-        virt::IsolationType::Vbs => {
-            // VBS not supported yet, fall back to the host type.
-            // Raise an error message instead of aborting so that
-            // we do not block VBS bringup.
-            tracing::error!(CVM_ALLOWED, "VBS attestation not supported yet");
-            // TODO VBS: Support VBS attestation
-            AttestationType::Host
-        }
     };
 
     // use the encryption policy from the command line if it is provided
@@ -2566,8 +2555,7 @@ async fn new_underhill_vm(
             )
         };
 
-        // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-        let ak_cert_type = if !matches!(isolation, virt::IsolationType::Vbs) {
+        let ak_cert_type = {
             let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
                 attestation_type,
                 attestation_vm_config,
@@ -2579,6 +2567,7 @@ async fn new_underhill_vm(
                 AttestationType::Snp | AttestationType::Tdx => {
                     TpmAkCertTypeResource::HwAttested(request_ak_cert)
                 }
+                AttestationType::Vbs => TpmAkCertTypeResource::SwAttested(request_ak_cert),
                 AttestationType::Host
                     if management_vtl_features.control_ak_cert_provisioning()
                         && management_vtl_features.attempt_ak_cert_callback() =>
@@ -2587,8 +2576,6 @@ async fn new_underhill_vm(
                 }
                 AttestationType::Host => TpmAkCertTypeResource::TrustedPreProvisionedOnly,
             }
-        } else {
-            TpmAkCertTypeResource::None
         };
 
         let register_layout = if cfg!(guest_arch = "x86_64") {

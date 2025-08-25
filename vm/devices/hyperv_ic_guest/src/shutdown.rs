@@ -3,7 +3,6 @@
 
 //! The shutdown IC client.
 
-#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
 pub use hyperv_ic_protocol::shutdown::INSTANCE_ID;

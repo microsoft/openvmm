@@ -60,6 +60,10 @@ pub enum TpmAkCertTypeResource {
     /// a TEE attestation report).
     /// Used by CVM
     HwAttested(Resource<RequestAkCertKind>),
+    /// Authorized and software-attested AK cert (backed by
+    /// a software-based VM attestation report).
+    /// Used by Vbs VM
+    SwAttested(Resource<RequestAkCertKind>),
 }
 
 /// The vTPM control area register layout

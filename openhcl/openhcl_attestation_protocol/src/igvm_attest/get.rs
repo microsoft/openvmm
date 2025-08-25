@@ -17,7 +17,7 @@ const ATTESTATION_SIGNATURE: u32 = 0x414c4348; // 'HCLA'
 /// Currently it's the size of a SNP report.
 const ATTESTATION_REPORT_SIZE_MAX: usize = SNP_VM_REPORT_SIZE;
 
-pub const VBS_VM_REPORT_SIZE: usize = 0x230;
+pub const VBS_VM_REPORT_SIZE: usize = hvdef::vbs::VBS_REPORT_SIZE;
 pub const SNP_VM_REPORT_SIZE: usize = x86defs::snp::SNP_REPORT_SIZE;
 pub const TDX_VM_REPORT_SIZE: usize = x86defs::tdx::TDX_REPORT_SIZE;
 /// No TEE attestation report for TVM
