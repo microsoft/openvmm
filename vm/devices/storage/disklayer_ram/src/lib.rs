@@ -132,31 +132,31 @@ impl RamDiskLayer {
     /// * `size` - Total size of the disk in bytes
     /// * `sector_size` - Size of each sector in bytes (must be a power of two, typically 512 or 4096)
     pub fn new_with_sector_size(size: u64, sector_size: u32) -> Result<Self, Error> {
-        let sector_count = {
-            if size == 0 {
-                return Err(Error::EmptyDisk);
-            }
-            if sector_size == 0 {
-                return Err(Error::NotSectorMultiple {
-                    disk_size: size,
-                    sector_size,
-                });
-            }
-            // Validate that sector_size is a power of two
-            if !sector_size.is_power_of_two() {
-                return Err(Error::SectorSizeNotPowerOfTwo { sector_size });
-            }
-            if size % sector_size as u64 != 0 {
-                return Err(Error::NotSectorMultiple {
-                    disk_size: size,
-                    sector_size,
-                });
-            }
-            size / sector_size as u64
-        };
+        if size == 0 {
+            return Err(Error::EmptyDisk);
+        }
+        if sector_size == 0 {
+            return Err(Error::NotSectorMultiple {
+                disk_size: size,
+                sector_size,
+            });
+        }
+        // Validate that sector_size is a power of two
+        if !sector_size.is_power_of_two() {
+            return Err(Error::SectorSizeNotPowerOfTwo { sector_size });
+        }
 
         // Calculate sector_shift where 1 << sector_shift == sector_size
         let sector_shift = sector_size.trailing_zeros();
+
+        if size % sector_size as u64 != 0 {
+            return Err(Error::NotSectorMultiple {
+                disk_size: size,
+                sector_size,
+            });
+        }
+
+        let sector_count = size >> sector_shift;
 
         Ok(Self {
             state: RwLock::new(RamState {
@@ -206,17 +206,16 @@ impl RamDiskLayer {
         }
         for i in 0..count {
             let cur = i + sector as usize;
-            let buf = buffers.subrange(i << self.sector_shift, 1 << self.sector_shift);
+            let buf = buffers.subrange(i << self.sector_shift, self.sector_size as usize);
             let mut reader = buf.reader();
             match state.data.entry(cur as u64) {
                 Entry::Vacant(entry) => {
-                    let sector_data = reader.read_n(1 << self.sector_shift)?;
+                    let sector_data = reader.read_n(self.sector_size as usize)?;
                     entry.insert(Sector(sector_data));
                 }
                 Entry::Occupied(mut entry) => {
                     if overwrite {
-                        let sector_data = reader.read_n(entry.get_mut().0.len())?;
-                        entry.get_mut().0 = sector_data;
+                        reader.read(&mut entry.get_mut().0)?;
                     }
                 }
             }
@@ -301,7 +300,7 @@ impl LayerIo for RamDiskLayer {
             if let Some((&s, buf)) = r {
                 let offset = ((s - sector) as usize) << self.sector_shift;
                 buffers
-                    .subrange(offset, 1 << self.sector_shift)
+                    .subrange(offset, self.sector_size as usize)
                     .writer()
                     .write(&buf.0)?;
 
