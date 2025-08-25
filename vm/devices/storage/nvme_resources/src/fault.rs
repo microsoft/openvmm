@@ -20,7 +20,7 @@ pub enum QueueFaultBehavior<T> {
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
-    admin_submission_queue_intercept: Vec<(u8, QueueFaultBehavior<Command>)>,
+    pub admin_submission_queue_faults: Vec<(u8, QueueFaultBehavior<Command>)>,
 }
 
 /// A simple fault configuration with admin submission queue support
@@ -35,41 +35,26 @@ impl AdminQueueFaultConfig {
     /// Create an empty fault configuration
     pub fn new() -> Self {
         Self {
-            admin_submission_queue_intercept: vec![],
+            admin_submission_queue_faults: vec![],
         }
     }
 
-    /// Add a simple submission queue fault based on opcodes. Multiple calls to add faults for the same opcode will panic.
+    /// Add an opcode -> FaultBehavior mapping. Cannot configure an opcode more than once
     pub fn with_submission_queue_fault(
         mut self,
         opcode: u8,
         behaviour: QueueFaultBehavior<Command>,
     ) -> Self {
         if self
-            .admin_submission_queue_intercept
+            .admin_submission_queue_faults
             .iter()
-            .find_map(|(op, b)| if *op == opcode { Some(b) } else { None })
-            .is_some()
+            .map(|(op, _)| op)
+            .any(|&op| op == opcode)
         {
             panic!("Duplicate submission queue fault for opcode {}", opcode);
         }
 
-        self.admin_submission_queue_intercept
-            .push((opcode, behaviour));
+        self.admin_submission_queue_faults.push((opcode, behaviour));
         self
-    }
-
-    /// Given the opcode, return the fault behaviour for the Admin Command
-    pub fn fault_submission_queue(&self, command: Command) -> QueueFaultBehavior<Command> {
-        let opcode: u8 = nvme_spec::AdminOpcode(command.cdw0.opcode()).0;
-        if let Some(behavior) = self
-            .admin_submission_queue_intercept
-            .iter()
-            .find_map(|(op, b)| if *op == opcode { Some(b) } else { None })
-        {
-            *behavior
-        } else {
-            QueueFaultBehavior::Default
-        }
     }
 }

@@ -465,11 +465,16 @@ impl AdminHandler {
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
                 if self.config.fault_configuration.fault_active.get() {
+                    // Get a configured fault. Default if nothing was configured
                     let fault = self
                         .config
                         .fault_configuration
                         .admin_fault
-                        .fault_submission_queue(command);
+                        .admin_submission_queue_faults
+                        .iter()
+                        .find(|(op, _)| *op == opcode.0)
+                        .map(|(_, behavior)| *behavior)
+                        .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {
                         QueueFaultBehavior::Update(command_updated) => {
