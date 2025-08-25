@@ -761,21 +761,24 @@ async fn boot_expect_fail(
 
 /// MNF guest support: capture and print recursive listing of vmbus drivers.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
-async fn mnf_guest_support<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+async fn mnf_guest_support(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_vmbus_redirect(true)
         .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
+        .modify_backend(|c| c.with_nic())
         .run()
         .await?;
     tracing::info!("VM started with MNF enabled");
     // Recursively list the contents of /sys/bus/vmbus/drivers in the guest and capture output.
 
-    let sh = agent.unix_shell();
+    let mut sh = agent.unix_shell();
 
     // 1) List all items recursively under /sys/bus/vmbus/drivers
     // Linux command:
     // ls -laR /sys/bus/vmbus/drivers 2>/dev/null || true
-    let listing = cmd!(sh, "ls -laR /sys/bus/vmbus/drivers").read().await?;
+    let listing = cmd!(sh, "ls -laR /sys/bus/vmbus/drivers/hv_netvsc")
+        .read()
+        .await?;
     tracing::info!("Recursive listing of /sys/bus/vmbus/drivers:\n{}", listing);
 
     // 2) Parse for GUID-named symlink entries and resolve targets (in Rust)
@@ -852,30 +855,25 @@ async fn mnf_guest_support<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> any
         resolved.join("\n")
     );
 
-    // Find all files named "monitor_id" anywhere in /sys and filter to those under the
-    // resolved symlink target directories. This mirrors running:
-    //   find | grep monitor_id | xargs grep .
-    // from within each target directory, but we do the text processing in Rust to keep it robust.
-    target_dirs.sort();
-    target_dirs.dedup();
+    tracing::info!("target dirs:\n{}", target_dirs.join("\n"));
 
-    let find_out = cmd!(sh, "find /sys -type f -name monitor_id")
-        .read()
-        .await?;
-    let mut monitor_paths: Vec<String> = find_out
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|p| !p.is_empty())
-        .filter(|p| target_dirs.iter().any(|dir| p.starts_with(dir)))
-        .collect();
+    for entry in target_dirs {
+        sh.change_dir(entry.clone());
+        let find_out = cmd!(sh, "find . -type f -name 'monitor_id'").read().await?;
+        let mut monitor_paths: Vec<String> = find_out
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
 
-    monitor_paths.sort();
-    monitor_paths.dedup();
+        monitor_paths.sort();
+        monitor_paths.dedup();
 
-    tracing::info!(
-        "monitor_id files under resolved symlink targets:\n{}",
-        monitor_paths.join("\n")
-    );
+        tracing::info!(
+            "monitor_id files under resolved symlink targets:\n{}",
+            monitor_paths.join("\n")
+        );
+    }
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
