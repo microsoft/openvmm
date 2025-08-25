@@ -16,7 +16,7 @@ pub enum QueueFaultBehavior<T> {
     Drop,
     /// No Fault, proceed as normal
     Default,
-    /// Delay, with value in ms
+    /// Delay
     Delay(Duration),
 }
 
