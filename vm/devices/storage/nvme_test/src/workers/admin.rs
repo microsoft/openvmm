@@ -88,6 +88,8 @@ pub struct AdminHandler {
     config: AdminConfig,
     #[inspect(iter_by_key)]
     namespaces: BTreeMap<u32, Arc<Namespace>>,
+    #[inspect(skip)]
+    timer: PolledTimer,
 }
 
 #[derive(Inspect)]
@@ -363,9 +365,10 @@ pub struct NsidConflict(u32);
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
         Self {
-            driver,
+            driver: driver.clone(),
             config,
             namespaces: Default::default(),
+            timer: PolledTimer::new(&driver),
         }
     }
 
@@ -496,9 +499,7 @@ impl AdminHandler {
                             return Ok(());
                         }
                         QueueFaultBehavior::Delay(ms) => {
-                            PolledTimer::new(&self.driver)
-                                .sleep(Duration::from_millis(ms))
-                                .await;
+                            self.timer.sleep(Duration::from_millis(ms)).await;
                         }
                         QueueFaultBehavior::Default => {}
                     }
