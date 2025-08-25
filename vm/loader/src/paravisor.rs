@@ -336,10 +336,19 @@ where
 
     tracing::debug!(parameter_region_start);
 
-    // Reserve 8K for the bootshim log buffer.
+    // Reserve 8K for the bootshim log buffer. Import these pages so they are
+    // available early without extra acceptance calls.
     let bootshim_log_size = HV_PAGE_SIZE * 2;
     let bootshim_log_start = offset;
     offset += bootshim_log_size;
+
+    importer.import_pages(
+        bootshim_log_start / HV_PAGE_SIZE,
+        bootshim_log_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-log-buffer",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
@@ -1044,6 +1053,14 @@ where
     let bootshim_log_size = HV_PAGE_SIZE * 2;
     let bootshim_log_start = next_addr;
     next_addr += bootshim_log_size;
+
+    importer.import_pages(
+        bootshim_log_start / HV_PAGE_SIZE,
+        bootshim_log_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-log-buffer",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
 
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
