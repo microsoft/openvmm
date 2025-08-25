@@ -8,7 +8,6 @@ use guid::Guid;
 use protocol::VmbusMessage;
 use std::collections::VecDeque;
 use std::sync::mpsc;
-use std::u32;
 use test_with_tracing::test;
 use vmbus_core::protocol::TargetInfo;
 use zerocopy::FromBytes;
