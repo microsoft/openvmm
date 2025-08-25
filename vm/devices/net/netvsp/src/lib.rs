@@ -3945,7 +3945,7 @@ impl Coordinator {
                         self.stop_workers().await;
                         let worker_0_packet_filter =
                             self.workers[0].state().unwrap().channel.packet_filter;
-                        self.workers.iter_mut().for_each(|worker| {
+                        self.workers.iter_mut().skip(1).for_each(|worker| {
                             if let Some(state) = worker.state_mut() {
                                 state.channel.packet_filter = worker_0_packet_filter;
                                 tracing::debug!(
