@@ -7,9 +7,9 @@ use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
 use crate::host_params::shim_params::ShimParams;
-use crate::single_threaded::off_stack;
-use arrayvec::ArrayVec;
-use memory_range::MemoryRange;
+use crate::memory::AddressSpaceManager;
+use crate::memory::AllocationPolicy;
+use crate::memory::AllocationType;
 use sidecar_defs::SidecarNodeOutput;
 use sidecar_defs::SidecarNodeParams;
 use sidecar_defs::SidecarOutput;
@@ -26,7 +26,6 @@ const _: () = assert!(
 );
 
 pub struct SidecarConfig<'a> {
-    pub image: MemoryRange,
     pub node_params: &'a [SidecarNodeParams],
     pub nodes: &'a [SidecarNodeOutput],
     pub start_reftime: u64,
@@ -61,6 +60,7 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
 pub fn start_sidecar<'a>(
     p: &ShimParams,
     partition_info: &PartitionInfo,
+    address_space: &mut AddressSpaceManager,
     sidecar_params: &'a mut SidecarParams,
     sidecar_output: &'a mut SidecarOutput,
 ) -> Option<SidecarConfig<'a>> {
@@ -78,8 +78,6 @@ pub fn start_sidecar<'a>(
         return None;
     }
 
-    let image = MemoryRange::new(p.sidecar_base..p.sidecar_base + p.sidecar_size);
-
     // Ensure the host didn't provide an out-of-bounds NUMA node.
     let max_vnode = partition_info
         .cpus
@@ -92,25 +90,6 @@ pub fn start_sidecar<'a>(
     if max_vnode >= MAX_NUMA_NODES as u32 {
         log!("sidecar: NUMA node {max_vnode} too large");
         return None;
-    }
-
-    // Compute a free list of VTL2 memory per NUMA node.
-    let mut free_memory = off_stack!(ArrayVec<MemoryRange, MAX_NUMA_NODES>, ArrayVec::new_const());
-    free_memory.extend((0..max_vnode + 1).map(|_| MemoryRange::EMPTY));
-    for (range, r) in memory_range::walk_ranges(
-        partition_info.vtl2_ram.iter().map(|e| (e.range, e.vnode)),
-        partition_info
-            .vtl2_used_ranges
-            .iter()
-            .cloned()
-            .map(|range| (range, ())),
-    ) {
-        if let memory_range::RangeWalkResult::Left(vnode) = r {
-            let free = &mut free_memory[vnode as usize];
-            if range.len() > free.len() {
-                *free = range;
-            }
-        }
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -164,30 +143,40 @@ pub fn start_sidecar<'a>(
             // Take some VTL2 RAM for sidecar use. Try to use the same NUMA node
             // as the first CPU.
             let local_vnode = cpus[0].vnode as usize;
-            let mut vtl2_ram = &mut free_memory[local_vnode];
-            if required_ram >= vtl2_ram.len() {
-                // Take RAM from the next NUMA node with enough memory.
-                let remote_vnode = free_memory
-                    .iter()
-                    .enumerate()
-                    .cycle()
-                    .skip(local_vnode + 1)
-                    .take(free_memory.len())
-                    .find_map(|(vnode, mem)| (mem.len() >= required_ram).then_some(vnode));
-                let Some(remote_vnode) = remote_vnode else {
-                    log!("sidecar: not enough memory for sidecar");
-                    return None;
-                };
-                log!(
-                    "sidecar: not enough memory for sidecar on node {local_vnode}, falling back to node {remote_vnode}"
-                );
-                vtl2_ram = &mut free_memory[remote_vnode];
-            }
-            let (rest, mem) = vtl2_ram.split_at_offset(vtl2_ram.len() - required_ram);
-            *vtl2_ram = rest;
+
+            let mem = match address_space.allocate(
+                Some(local_vnode as u32),
+                required_ram,
+                AllocationType::SidecarNode,
+                AllocationPolicy::LowMemory,
+            ) {
+                Some(mem) => mem,
+                None => {
+                    // Fallback to no numa requirement.
+                    match address_space.allocate(
+                        None,
+                        required_ram,
+                        AllocationType::SidecarNode,
+                        AllocationPolicy::LowMemory,
+                    ) {
+                        Some(mem) => {
+                            log!(
+                                "sidecar: unable to allocate memory for sidecar node on node {local_vnode}, falling back to node {}",
+                                mem.vnode
+                            );
+                            mem
+                        }
+                        None => {
+                            log!("sidecar: not enough memory for sidecar");
+                            return None;
+                        }
+                    }
+                }
+            };
+
             *node = SidecarNodeParams {
-                memory_base: mem.start(),
-                memory_size: mem.len(),
+                memory_base: mem.range.start(),
+                memory_size: mem.range.len(),
                 base_vp,
                 vp_count: cpus.len() as u32,
             };
@@ -219,7 +208,6 @@ pub fn start_sidecar<'a>(
 
     let SidecarOutput { nodes, error: _ } = sidecar_output;
     Some(SidecarConfig {
-        image,
         start_reftime: boot_start_reftime,
         end_reftime: boot_end_reftime,
         node_params: &sidecar_params.nodes[..node_count],

@@ -17,7 +17,6 @@ pub enum IsolationType {
     Vbs,
     #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     Snp,
-    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     Tdx,
 }
 
