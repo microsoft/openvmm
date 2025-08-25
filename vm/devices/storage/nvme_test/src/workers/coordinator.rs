@@ -31,7 +31,7 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-/// An input context for the NvmeWorker
+/// An input context for the NvmeWorkers
 pub struct NvmeWorkersContext<'a> {
     pub driver_source: &'a VmTaskDriverSource,
     pub mem: GuestMemory,
