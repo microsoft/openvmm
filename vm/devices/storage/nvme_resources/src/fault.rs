@@ -5,6 +5,7 @@
 
 use mesh::Cell;
 use nvme_spec::Command;
+use std::time::Duration;
 
 /// Supported fault behaviour for NVMe queues
 #[derive(Debug, Clone, Copy)]
@@ -16,7 +17,7 @@ pub enum QueueFaultBehavior<T> {
     /// No Fault, proceed as normal
     Default,
     /// Delay, with value in ms
-    Delay(u64),
+    Delay(Duration),
 }
 
 /// A buildable fault configuration

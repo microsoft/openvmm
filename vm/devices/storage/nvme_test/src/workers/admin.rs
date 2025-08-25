@@ -497,8 +497,8 @@ impl AdminHandler {
                             );
                             return Ok(());
                         }
-                        QueueFaultBehavior::Delay(ms) => {
-                            self.timer.sleep(Duration::from_millis(ms)).await;
+                        QueueFaultBehavior::Delay(duration) => {
+                            self.timer.sleep(duration).await;
                         }
                         QueueFaultBehavior::Default => {}
                     }
