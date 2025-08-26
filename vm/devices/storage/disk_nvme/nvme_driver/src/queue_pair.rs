@@ -176,12 +176,15 @@ impl PendingCommands {
 impl QueuePair {
     /// Submission Queue size in bytes.
     const SQ_SIZE: usize = PAGE_SIZE * 4;
+    // const SQ_SIZE: usize = PAGE_SIZE;
+    /// Completion Queue size in bytes.
+    ///     const CQ_SIZE: usize = PAGE_SIZE;
+    const CQ_SIZE: usize = PAGE_SIZE * 4;
     /// Maximum SQ size in entries.
     pub const MAX_SQ_ENTRIES: u16 = (Self::SQ_SIZE / 64) as u16;
     /// Maximum CQ size in entries.
-    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
-    /// Completion Queue size in bytes.
-    const CQ_SIZE: usize = PAGE_SIZE;
+    // pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
+    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 32) as u16;
     /// Number of pages per queue if bounce buffering.
     const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
     /// Number of pages per queue if not bounce buffering.

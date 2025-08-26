@@ -124,6 +124,7 @@ pub(crate) struct CompletionQueue {
 
 impl CompletionQueue {
     pub fn new(cqid: u16, len: u16, mem: MemoryBlock) -> CompletionQueue {
+        tracing::error!(cqid, len, pfns = ?mem.pfns(), "new completion queue");
         Self {
             cqid,
             head: 0,
