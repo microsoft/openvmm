@@ -1514,9 +1514,9 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "elfcore"
-version = "2.0.0"
+version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824386967a6a98e7f99d5c15d40cd1534b0ebfc4193a7109689dcf5322e8d744"
+checksum = "051a3f44a8f1d574d13116351c3f2bc466801495d52578d1d34ac4ddbcd6ecb4"
 dependencies = [
  "libc",
  "nix 0.26.4",
