@@ -8,6 +8,7 @@ use hvdef::HvMapGpaFlags;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;
 use std::ops::Deref;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicU8;
 
 pub(crate) struct LockedPage {
@@ -33,7 +34,7 @@ impl Deref for LockedPage {
 #[derive(Inspect)]
 #[inspect(external_tag)]
 pub(crate) enum OverlayPage {
-    Local(#[inspect(skip)] Box<Page>),
+    Local(#[inspect(skip)] OnceLock<Box<Page>>),
     Mapped(#[inspect(skip)] LockedPage),
 }
 
@@ -51,27 +52,33 @@ impl OverlayPage {
             None,
         )?;
         let new_page = LockedPage::new(new_gpn, new_page);
-        new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; 4096]>());
 
-        self.unlock_prev_gpn(prot_access);
+        match self {
+            Self::Local(old_page) => {
+                // Avoid the Deref initialization if we don't have to.
+                if let Some(old_page) = old_page.get() {
+                    new_page.atomic_write_obj(&old_page.atomic_read_obj::<[u8; 4096]>());
+                }
+            }
+            Self::Mapped(old_page) => {
+                new_page.atomic_write_obj(&old_page.atomic_read_obj::<[u8; 4096]>());
+                prot_access.unlock_overlay_page(old_page.gpn).unwrap();
+            }
+        }
 
         *self = OverlayPage::Mapped(new_page);
         Ok(())
     }
 
     pub fn unmap(&mut self, prot_access: &mut dyn VtlProtectAccess) {
-        let new_page = Box::new(std::array::from_fn(|_| AtomicU8::new(0)));
-        new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; 4096]>());
-
-        self.unlock_prev_gpn(prot_access);
-
-        *self = OverlayPage::Local(new_page);
-    }
-
-    fn unlock_prev_gpn(&mut self, prot_access: &mut dyn VtlProtectAccess) {
-        if let Self::Mapped(page) = self {
-            prot_access.unlock_overlay_page(page.gpn).unwrap();
+        if matches!(self, OverlayPage::Local(_)) {
+            return;
         }
+        let OverlayPage::Mapped(old_page) = std::mem::take(self) else {
+            unreachable!()
+        };
+        self.atomic_write_obj(&old_page.atomic_read_obj::<[u8; 4096]>());
+        prot_access.unlock_overlay_page(old_page.gpn).unwrap();
     }
 }
 
@@ -80,7 +87,9 @@ impl Deref for OverlayPage {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            OverlayPage::Local(page) => page,
+            OverlayPage::Local(page) => {
+                page.get_or_init(|| Box::new(std::array::from_fn(|_| AtomicU8::new(0))))
+            }
             OverlayPage::Mapped(page) => page,
         }
     }
@@ -88,6 +97,6 @@ impl Deref for OverlayPage {
 
 impl Default for OverlayPage {
     fn default() -> Self {
-        OverlayPage::Local(Box::new(std::array::from_fn(|_| AtomicU8::new(0))))
+        OverlayPage::Local(OnceLock::new())
     }
 }
