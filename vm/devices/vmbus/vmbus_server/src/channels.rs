@@ -49,6 +49,7 @@ use vmbus_core::protocol::UserDefinedData;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
 use vmcore::synic::MonitorInfo;
+use vmcore::synic::MonitorPageGpaInfo;
 use vmcore::synic::MonitorPageGpas;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -207,8 +208,7 @@ struct ConnectionInfo {
     trusted: bool,
     offers_sent: bool,
     interrupt_page: Option<u64>,
-    monitor_page: Option<MonitorPageGpas>,
-    server_allocated_monitor_page: bool,
+    monitor_page: Option<MonitorPageGpaInfo>,
     target_message_vp: u32,
     modifying: bool,
     client_id: Guid,
@@ -2255,8 +2255,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 version,
                 trusted: request.trusted,
                 interrupt_page: request.interrupt_page,
-                monitor_page,
-                server_allocated_monitor_page: false,
+                monitor_page: monitor_page.map(|page| MonitorPageGpaInfo {
+                    gpas: page,
+                    server_allocated: false,
+                }),
                 target_message_vp: request.target_message_vp,
                 modifying: false,
                 offers_sent: false,
@@ -2319,10 +2321,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
                 // We still report the supported feature flags with an error, so make sure those
                 // are correct.
-                info.version.feature_flags &= feature_flags
-                    | LOCAL_FEATURE_FLAGS.with_server_specified_monitor_pages(
-                        server_specified_monitor_page.is_some(),
-                    );
+                info.version.feature_flags &= (feature_flags | LOCAL_FEATURE_FLAGS)
+                    .with_server_specified_monitor_pages(server_specified_monitor_page.is_some());
 
                 self.send_version_response(Some(VersionResponseData::new(
                     info.version,
@@ -2347,11 +2347,17 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // If the server allocated a monitor page, also indicate the relevant feature is supported,
         // and store the server pages.
         if let Some(monitor_pages) = server_specified_monitor_page {
-            info.monitor_page = Some(monitor_pages);
-            info.server_allocated_monitor_page = true;
+            info.monitor_page = Some(MonitorPageGpaInfo {
+                gpas: monitor_pages,
+                server_allocated: true,
+            });
             info.version
                 .feature_flags
                 .set_server_specified_monitor_pages(true);
+        } else {
+            info.version
+                .feature_flags
+                .set_server_specified_monitor_pages(false);
         }
 
         let version = info.version;
@@ -3397,7 +3403,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
         }
 
-        if info.server_allocated_monitor_page {
+        if matches!(
+            info.monitor_page,
+            Some(MonitorPageGpaInfo {
+                server_allocated: true,
+                ..
+            })
+        ) {
             anyhow::bail!("cannot modify server allocated monitor pages");
         }
 
@@ -3408,9 +3420,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }
 
         let monitor_page =
-            (request.child_to_parent_monitor_page_gpa != 0).then_some(MonitorPageGpas {
-                child_to_parent: request.child_to_parent_monitor_page_gpa,
-                parent_to_child: request.parent_to_child_monitor_page_gpa,
+            (request.child_to_parent_monitor_page_gpa != 0).then_some(MonitorPageGpaInfo {
+                gpas: MonitorPageGpas {
+                    child_to_parent: request.child_to_parent_monitor_page_gpa,
+                    parent_to_child: request.parent_to_child_monitor_page_gpa,
+                },
+                server_allocated: false,
             });
 
         info.modifying = true;

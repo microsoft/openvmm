@@ -201,14 +201,14 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
                     } => Some(super::ModifyConnectionRequest {
                         version: Some(info.version),
                         interrupt_page: info.interrupt_page.into(),
-                        monitor_page: info.monitor_page.into(),
+                        monitor_page: info.monitor_page.map(|mp| mp.gpas).into(),
                         target_message_vp: Some(info.target_message_vp),
                         notify_relay: true,
                     }),
                     super::ConnectionState::Connected(info) => {
                         Some(super::ModifyConnectionRequest {
                             version: None,
-                            monitor_page: info.monitor_page.into(),
+                            monitor_page: info.monitor_page.map(|mp| mp.gpas).into(),
                             interrupt_page: info.interrupt_page.into(),
                             target_message_vp: Some(info.target_message_vp),
                             // If the save didn't happen while modifying, the relay doesn't need to be notified
@@ -516,10 +516,6 @@ impl Connection {
                 None
             }
             super::ConnectionState::Connecting { info, next_action } => {
-                assert!(
-                    !info.server_allocated_monitor_page,
-                    "cannot save a server allocated page"
-                );
                 Some(Connection::Connecting {
                     version: VersionInfo::save(&info.version),
                     interrupt_page: info.interrupt_page,
@@ -530,23 +526,17 @@ impl Connection {
                     trusted: info.trusted,
                 })
             }
-            super::ConnectionState::Connected(info) => {
-                assert!(
-                    !info.server_allocated_monitor_page,
-                    "cannot save a server allocated page"
-                );
-                Some(Connection::Connected {
-                    version: VersionInfo::save(&info.version),
-                    offers_sent: info.offers_sent,
-                    interrupt_page: info.interrupt_page,
-                    monitor_page: info.monitor_page.map(MonitorPageGpas::save),
-                    target_message_vp: info.target_message_vp,
-                    modifying: info.modifying,
-                    client_id: Some(info.client_id),
-                    trusted: info.trusted,
-                    paused: info.paused,
-                })
-            }
+            super::ConnectionState::Connected(info) => Some(Connection::Connected {
+                version: VersionInfo::save(&info.version),
+                offers_sent: info.offers_sent,
+                interrupt_page: info.interrupt_page,
+                monitor_page: info.monitor_page.map(MonitorPageGpas::save),
+                target_message_vp: info.target_message_vp,
+                modifying: info.modifying,
+                client_id: Some(info.client_id),
+                trusted: info.trusted,
+                paused: info.paused,
+            }),
             super::ConnectionState::Disconnecting {
                 next_action,
                 modify_sent: _,
@@ -572,7 +562,6 @@ impl Connection {
                     trusted,
                     interrupt_page,
                     monitor_page: monitor_page.map(MonitorPageGpas::restore),
-                    server_allocated_monitor_page: false,
                     target_message_vp,
                     offers_sent: false,
                     modifying: false,
@@ -597,7 +586,6 @@ impl Connection {
                 offers_sent,
                 interrupt_page,
                 monitor_page: monitor_page.map(MonitorPageGpas::restore),
-                server_allocated_monitor_page: false,
                 target_message_vp,
                 modifying,
                 client_id: client_id.unwrap_or(Guid::ZERO),
@@ -794,17 +782,24 @@ struct MonitorPageGpas {
 }
 
 impl MonitorPageGpas {
-    fn save(value: super::MonitorPageGpas) -> Self {
+    fn save(value: super::MonitorPageGpaInfo) -> Self {
+        assert!(
+            !value.server_allocated,
+            "cannot save with server-allocated monitor pages"
+        );
         Self {
-            child_to_parent: value.child_to_parent,
-            parent_to_child: value.parent_to_child,
+            child_to_parent: value.gpas.child_to_parent,
+            parent_to_child: value.gpas.parent_to_child,
         }
     }
 
-    fn restore(self) -> super::MonitorPageGpas {
-        super::MonitorPageGpas {
-            child_to_parent: self.child_to_parent,
-            parent_to_child: self.parent_to_child,
+    fn restore(self) -> super::MonitorPageGpaInfo {
+        super::MonitorPageGpaInfo {
+            gpas: super::MonitorPageGpas {
+                child_to_parent: self.child_to_parent,
+                parent_to_child: self.parent_to_child,
+            },
+            server_allocated: false,
         }
     }
 }
@@ -825,7 +820,10 @@ impl MonitorPageRequest {
         match value {
             super::MonitorPageRequest::None => MonitorPageRequest::None,
             super::MonitorPageRequest::Some(mp) => {
-                MonitorPageRequest::Some(MonitorPageGpas::save(mp))
+                MonitorPageRequest::Some(MonitorPageGpas::save(super::MonitorPageGpaInfo {
+                    gpas: mp,
+                    server_allocated: false,
+                }))
             }
             super::MonitorPageRequest::Invalid => MonitorPageRequest::Invalid,
         }
@@ -834,7 +832,7 @@ impl MonitorPageRequest {
     fn restore(self) -> super::MonitorPageRequest {
         match self {
             MonitorPageRequest::None => super::MonitorPageRequest::None,
-            MonitorPageRequest::Some(mp) => super::MonitorPageRequest::Some(mp.restore()),
+            MonitorPageRequest::Some(mp) => super::MonitorPageRequest::Some(mp.restore().gpas),
             MonitorPageRequest::Invalid => super::MonitorPageRequest::Invalid,
         }
     }

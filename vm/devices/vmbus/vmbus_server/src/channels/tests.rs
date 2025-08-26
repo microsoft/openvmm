@@ -4,6 +4,7 @@
 use crate::MESSAGE_CONNECTION_ID;
 
 use super::*;
+use crate::channels::ConnectionState;
 use guid::Guid;
 use protocol::VmbusMessage;
 use std::collections::VecDeque;
@@ -1576,6 +1577,121 @@ fn test_mnf_channel() {
 }
 
 #[test]
+fn test_server_monitor_page() {
+    test_server_monitor_page_helper(true);
+    test_server_monitor_page_helper(false);
+}
+
+fn test_server_monitor_page_helper(provide_guest_pages: bool) {
+    let mut env = TestEnv::new();
+    let _offer_id1 = env.offer_with_mnf(1);
+
+    let version = Version::Copper;
+    let feature_flags = FeatureFlags::new().with_server_specified_monitor_pages(true);
+    env.c()
+        .handle_synic_message(in_msg(
+            protocol::MessageType::INITIATE_CONTACT,
+            protocol::InitiateContact {
+                version_requested: version as u32,
+                interrupt_page_or_target_info: TargetInfo::new()
+                    .with_sint(SINT)
+                    .with_vtl(0)
+                    .with_feature_flags(feature_flags.into())
+                    .into(),
+                child_to_parent_monitor_page_gpa: if provide_guest_pages { 0x123f000 } else { 0 },
+                parent_to_child_monitor_page_gpa: if provide_guest_pages { 0x321f000 } else { 0 },
+                ..FromZeros::new_zeroed()
+            },
+        ))
+        .unwrap();
+
+    let request = env.notifier.next_action();
+    assert_eq!(
+        request,
+        ModifyConnectionRequest {
+            version: Some(VersionInfo {
+                version,
+                feature_flags
+            }),
+            monitor_page: if provide_guest_pages {
+                Update::Set(MonitorPageGpas {
+                    child_to_parent: 0x123f000,
+                    parent_to_child: 0x321f000,
+                })
+            } else {
+                Update::Reset
+            },
+            interrupt_page: Update::Reset,
+            target_message_vp: Some(0),
+            ..Default::default()
+        }
+    );
+
+    env.c()
+        .complete_initiate_contact(ModifyConnectionResponse::Supported(
+            protocol::ConnectionState::SUCCESSFUL,
+            feature_flags,
+            Some(MonitorPageGpas {
+                parent_to_child: 0x456f000,
+                child_to_parent: 0x654f000,
+            }),
+        ));
+
+    assert!(matches!(
+        env.server.state,
+        ConnectionState::Connected(ConnectionInfo {
+            monitor_page: Some(MonitorPageGpaInfo {
+                gpas: MonitorPageGpas {
+                    parent_to_child: 0x456f000,
+                    child_to_parent: 0x654f000
+                },
+                server_allocated: true,
+            }),
+            ..
+        })
+    ));
+
+    env.notifier
+        .check_message(OutgoingMessage::new(&protocol::VersionResponse3 {
+            version_response2: protocol::VersionResponse2 {
+                version_response: protocol::VersionResponse {
+                    version_supported: 1,
+                    connection_state: protocol::ConnectionState::SUCCESSFUL,
+                    padding: 0,
+                    selected_version_or_connection_id: 1,
+                },
+                supported_features: feature_flags.into(),
+            },
+            _padding: 0,
+            parent_to_child_monitor_page_gpa: 0x456f000,
+            child_to_parent_monitor_page_gpa: 0x654f000,
+        }));
+
+    // Make sure the monitor ID is sent for the channel, even if the guest didn't try to supply its
+    // own monitor pages.
+    env.c().handle_request_offers().unwrap();
+    env.notifier.check_messages([
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: Guid {
+                data1: 1,
+                ..Guid::ZERO
+            },
+            instance_id: Guid {
+                data1: 1,
+                ..Guid::ZERO
+            },
+            channel_id: ChannelId(1),
+            connection_id: 0x2001,
+            is_dedicated: 1,
+            monitor_id: 0,
+            monitor_allocated: 1,
+            ..protocol::OfferChannel::new_zeroed()
+        }),
+        OutgoingMessage::new(&protocol::AllOffersDelivered {}),
+    ]);
+}
+
+#[test]
 fn test_channel_id_order() {
     let mut env = TestEnv::new();
 
@@ -2404,7 +2520,7 @@ impl TestEnv {
     fn start_connect(
         &mut self,
         version: Version,
-        feature_flags: FeatureFlags,
+        mut feature_flags: FeatureFlags,
         trusted: bool,
         use_mnf: bool,
     ) {
@@ -2435,6 +2551,10 @@ impl TestEnv {
         assert!(result.is_ok());
 
         let request = self.notifier.next_action();
+        if !trusted {
+            feature_flags.set_confidential_channels(false);
+        }
+
         assert_eq!(
             request,
             ModifyConnectionRequest {
