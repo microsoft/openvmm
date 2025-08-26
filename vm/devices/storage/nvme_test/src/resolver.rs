@@ -67,10 +67,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
             },
-            FaultConfiguration {
-                fault_active: CellUpdater::new(false).cell(),
-                admin_fault: AdminQueueFaultConfig::new(),
-            },
+            resource.fault_config,
         );
         for NamespaceDefinition {
             nsid,
