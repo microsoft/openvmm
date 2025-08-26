@@ -1,0 +1,87 @@
+use core::fmt::Display;
+
+use thiserror::Error;
+
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Error)]
+pub enum TmkError {
+    AllocationFailed,
+    InvalidParameter,
+    EnableVtlFailed,
+    SetDefaultCtxFailed,
+    StartVpFailed,
+    QueueCommandFailed,
+    SetupVtlProtectionFailed,
+    SetupPartitionVtlFailed,
+    SetupInterruptHandlerFailed,
+    SetInterruptIdxFailed,
+    SetupSecureInterceptFailed,
+    ApplyVtlProtectionForMemoryFailed,
+    ReadMsrFailed,
+    WriteMsrFailed,
+    GetRegisterFailed,
+    InvalidHypercallCode,
+    InvalidHypercallInput,
+    InvalidAlignment,
+    AccessDenied,
+    InvalidPartitionState,
+    OperationDenied,
+    UnknownProperty,
+    PropertyValueOutOfRange,
+    InsufficientMemory,
+    PartitionTooDeep,
+    InvalidPartitionId,
+    InvalidVpIndex,
+    NotFound,
+    InvalidPortId,
+    InvalidConnectionId,
+    InsufficientBuffers,
+    NotAcknowledged,
+    InvalidVpState,
+    Acknowledged,
+    InvalidSaveRestoreState,
+    InvalidSynicState,
+    ObjectInUse,
+    InvalidProximityDomainInfo,
+    NoData,
+    Inactive,
+    NoResources,
+    FeatureUnavailable,
+    PartialPacket,
+    ProcessorFeatureNotSupported,
+    ProcessorCacheLineFlushSizeIncompatible,
+    InsufficientBuffer,
+    IncompatibleProcessor,
+    InsufficientDeviceDomains,
+    CpuidFeatureValidationError,
+    CpuidXsaveFeatureValidationError,
+    ProcessorStartupTimeout,
+    SmxEnabled,
+    InvalidLpIndex,
+    InvalidRegisterValue,
+    InvalidVtlState,
+    NxNotDetected,
+    InvalidDeviceId,
+    InvalidDeviceState,
+    PendingPageRequests,
+    PageRequestInvalid,
+    KeyAlreadyExists,
+    DeviceAlreadyInDomain,
+    InvalidCpuGroupId,
+    InvalidCpuGroupState,
+    OperationFailed,
+    NotAllowedWithNestedVirtActive,
+    InsufficientRootMemory,
+    EventBufferAlreadyFreed,
+    Timeout,
+    VtlAlreadyEnabled,
+    UnknownRegisterName,
+}
+
+impl Display for TmkError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+pub type TmkResult<T> = Result<T, TmkError>;

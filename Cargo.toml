@@ -27,6 +27,8 @@ members = [
   "support/sparse_mmap/fuzz",
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
+  #opentmk support
+  "support/nostd_spin_channel",
   "vm/devices/firmware/firmware_uefi/fuzz",
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
@@ -43,8 +45,7 @@ members = [
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   # opentmk
-  "opentmk/opentmk",
-  "opentmk/sync"
+  "opentmk/",
 ]
 exclude = [
   "xsync",
@@ -378,7 +379,7 @@ vnc = { path = "workers/vnc_worker/vnc" }
 profiler_worker = { path = "openhcl/profiler_worker" }
 
 # opentmk
-sync_nostd = { path = "opentmk/sync"}
+nostd_spin_channel = { path = "support/nostd_spin_channel"}
 
 # crates.io
 anyhow = "1.0"
@@ -451,7 +452,7 @@ jiff = "0.1"
 kvm-bindings = "0.7"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.3.1"
-lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
+lazy_static = "1.4.0"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"

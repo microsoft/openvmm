@@ -4437,6 +4437,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostd_spin_channel"
+version = "0.1.0"
+dependencies = [
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "ntapi"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4785,7 +4792,6 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "arrayvec",
  "bitfield-struct",
  "cfg-if",
@@ -4797,9 +4803,10 @@ dependencies = [
  "memory_range",
  "minimal_rt",
  "minimal_rt_build",
+ "nostd_spin_channel",
  "serde",
  "serde_json",
- "sync_nostd",
+ "spin 0.10.0",
  "thiserror 2.0.0",
  "uefi",
  "x86_64",
@@ -6541,13 +6548,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "sync_nostd"
-version = "0.1.0"
-dependencies = [
- "spin 0.10.0",
 ]
 
 [[package]]
