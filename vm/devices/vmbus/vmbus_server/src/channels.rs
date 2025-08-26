@@ -2126,19 +2126,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         {
             MonitorPageRequest::Invalid
         } else if input.initiate_contact.parent_to_child_monitor_page_gpa != 0 {
-            if self.inner.require_server_allocated_mnf {
-                // TODO: Need an update here if specifying this is allowed along with the feature bit.
-                // Or if it's not, check that too.
-                tracelimit::warn_ratelimited!(
-                    "guest supplied monitor pages not supported; MNF will be disabled"
-                );
-                MonitorPageRequest::None
-            } else {
-                MonitorPageRequest::Some(MonitorPageGpas {
-                    parent_to_child: input.initiate_contact.parent_to_child_monitor_page_gpa,
-                    child_to_parent: input.initiate_contact.child_to_parent_monitor_page_gpa,
-                })
-            }
+            MonitorPageRequest::Some(MonitorPageGpas {
+                parent_to_child: input.initiate_contact.parent_to_child_monitor_page_gpa,
+                child_to_parent: input.initiate_contact.child_to_parent_monitor_page_gpa,
+            })
         } else {
             MonitorPageRequest::None
         };
@@ -2234,7 +2225,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Make sure we can receive incoming interrupts on the monitor page. The parent to child
         // page is not used as this server doesn't send monitored interrupts.
         let monitor_page = match request.monitor_page {
-            MonitorPageRequest::Some(mp) => Some(mp),
+            MonitorPageRequest::Some(mp) => {
+                if self.inner.require_server_allocated_mnf {
+                    if !version.feature_flags.server_specified_monitor_pages() {
+                        tracelimit::warn_ratelimited!(
+                            "guest supplied monitor pages not supported; MNF will be disabled"
+                        );
+                    }
+
+                    None
+                } else {
+                    Some(mp)
+                }
+            }
             MonitorPageRequest::None => None,
             MonitorPageRequest::Invalid => {
                 // Do not notify the relay in this case.
