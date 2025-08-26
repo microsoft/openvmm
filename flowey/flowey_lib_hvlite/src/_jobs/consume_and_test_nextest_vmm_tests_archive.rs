@@ -126,18 +126,13 @@ impl SimpleFlowNode for Node {
             },
         ));
 
-        let mut pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
+        let release_igvm_files =
+            ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
+                release_igvm_files: v,
+                release_version: OpenhclReleaseVersion::latest(),
+            });
 
-        if ctx.backend() != FlowBackend::Ado {
-            pre_run_deps.push(
-                ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
-                    release_igvm_files: v,
-                    release_version: OpenhclReleaseVersion::latest(),
-                    test_content_dir: test_content_dir.clone(),
-                })
-                .into_side_effect(),
-            );
-        }
+        let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
 
@@ -155,6 +150,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
+            release_igvm_files,
             use_relative_paths: false,
         });
 

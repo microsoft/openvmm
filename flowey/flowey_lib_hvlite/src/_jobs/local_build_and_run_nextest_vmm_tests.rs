@@ -663,6 +663,12 @@ impl SimpleFlowNode for Node {
         copy_to_dir.push((nextest_bin.to_owned(), nextest_bin_src));
         let nextest_bin = test_content_dir.join(nextest_bin);
 
+        let release_igvm_files =
+            ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
+                release_igvm_files: v,
+                release_version: OpenhclReleaseVersion::latest(),
+            });
+
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
             vmm_tests_target: target.clone(),
@@ -677,19 +683,11 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,
+            release_igvm_files,
             use_relative_paths: build_only,
         });
 
         let mut side_effects = Vec::new();
-
-        side_effects.push(
-            ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
-                release_igvm_files: v,
-                release_version: OpenhclReleaseVersion::latest(),
-                test_content_dir: ReadVar::from_static(test_content_dir.clone()),
-            })
-            .into_side_effect(),
-        );
 
         side_effects.push(
             ctx.emit_rust_step("copy additional files to test content dir", |ctx| {

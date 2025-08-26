@@ -97,21 +97,48 @@ impl SimpleFlowNode for Node {
             }
         }
 
-        let latest_openhcl_release =
+        let latest_release_igvm_files =
             ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
                 release_igvm_files: v,
                 release_version: OpenhclReleaseVersion::latest(),
-                test_content_dir: release_artifact,
             });
 
         deps.push(ctx.emit_rust_step(
-            "fetch downloaded release igvm files to artifact dir",
+            "copy downloaded release igvm files to artifact dir",
             |ctx| {
-                let _latest_openhcl_release = latest_openhcl_release.claim(ctx);
+                let latest_release_igvm_files = latest_release_igvm_files.claim(ctx);
+                let latest_release_artifact = release_artifact.claim(ctx);
 
-                |_rt| Ok(())
+                |rt| {
+                    let latest_release_igvm_files = rt.read(latest_release_igvm_files);
+                    let latest_release_artifact = rt.read(latest_release_artifact);
+                    let latest_release_version = OpenhclReleaseVersion::latest();
+
+                    fs_err::copy(
+                        latest_release_igvm_files.aarch64_bin,
+                        latest_release_artifact.join(
+                            latest_release_version.clone().to_string() + "-aarch64-openhcl.bin",
+                        ),
+                    )?;
+
+                    fs_err::copy(
+                        latest_release_igvm_files.x64_bin,
+                        latest_release_artifact
+                            .join(latest_release_version.clone().to_string() + "-x64-openhcl.bin"),
+                    )?;
+
+                    fs_err::copy(
+                        latest_release_igvm_files.x64_direct_bin,
+                        latest_release_artifact.join(
+                            latest_release_version.clone().to_string() + "-x64-direct-openhcl.bin",
+                        ),
+                    )?;
+
+                    Ok(())
+                }
             },
         ));
+
         ctx.emit_side_effect_step(deps, [done]);
 
         Ok(())
