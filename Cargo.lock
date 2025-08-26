@@ -324,9 +324,9 @@ checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
 
 [[package]]
 name = "bitfield-struct"
-version = "0.7.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c2ce686adbebce0ee484a502c440b4657739adbad65eadf06d64f5816ee9765"
+checksum = "2be5a46ba01b60005ae2c51a36a29cfe134bcacae2dd5cedcd4615fbaad1494b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3431,27 +3431,29 @@ dependencies = [
 
 [[package]]
 name = "igvm"
-version = "0.3.4"
-source = "git+https://github.com/microsoft/igvm?rev=365065d7e31da0a0116e7934de3ecd85f00bab70#365065d7e31da0a0116e7934de3ecd85f00bab70"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67578b05ebcdfa1aa0fe13f77a13bdd7d87036128898a327f1bf8e7356cf09cd"
 dependencies = [
- "bitfield-struct 0.7.0",
+ "bitfield-struct 0.10.1",
  "crc32fast",
  "hex",
  "igvm_defs",
  "open-enum",
  "range_map_vec",
  "static_assertions",
- "thiserror 1.0.69",
+ "thiserror 2.0.16",
  "tracing",
  "zerocopy 0.8.25",
 ]
 
 [[package]]
 name = "igvm_defs"
-version = "0.3.4"
-source = "git+https://github.com/microsoft/igvm?rev=365065d7e31da0a0116e7934de3ecd85f00bab70#365065d7e31da0a0116e7934de3ecd85f00bab70"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eedd8c64460676101062f9f2ecdeb52d8f43e622da6a6c5bf5158f4ef08b0906"
 dependencies = [
- "bitfield-struct 0.7.0",
+ "bitfield-struct 0.10.1",
  "open-enum",
  "static_assertions",
  "zerocopy 0.8.25",
