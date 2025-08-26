@@ -30,7 +30,6 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
-use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -235,7 +234,7 @@ async fn shutdown_ic(
 // TODO: add tests from previous release branch to current.
 
 /// Test servicing an OpenHCL VM from the current version to itself
-/// with NVMe keepalive support.
+/// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn keepalive_with_nvme_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -255,12 +254,10 @@ async fn keepalive_with_nvme_fault(
 
     let fault_configuration = FaultConfiguration {
         fault_active: fault_start_updater.cell(),
-        admin_fault: AdminQueueFaultConfig::new()
-            .with_submission_queue_fault(0x05, QueueFaultBehavior::Drop)
-            .with_submission_queue_fault(
-                0x04,
-                QueueFaultBehavior::Delay(Duration::from_millis(5000)),
-            ),
+        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+            nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
+            QueueFaultBehavior::Drop,
+        ),
     };
 
     let (mut vm, agent) = config
@@ -289,6 +286,7 @@ async fn keepalive_with_nvme_fault(
                     .into_resource(),
                 })
             })
+            // Assign the fault controller to VTL2
             .with_custom_vtl2_settings(|v| {
                 v.dynamic.as_mut().unwrap().storage_controllers.push(
                     vtl2_settings_proto::StorageController {
