@@ -686,6 +686,7 @@ impl SimpleFlowNode for Node {
             ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
                 release_igvm_files: v,
                 release_version: OpenhclReleaseVersion::latest(),
+                test_content_dir: ReadVar::from_static(test_content_dir.clone()),
             })
             .into_side_effect(),
         );

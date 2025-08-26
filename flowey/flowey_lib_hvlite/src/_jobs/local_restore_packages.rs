@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::download_lxutil::LxutilArch;
+use crate::download_release_igvm_files::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
 use crate::init_openvmm_magicpath_linux_test_kernel::OpenvmmLinuxTestKernelArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
@@ -10,8 +11,9 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request{
-        pub arch: CommonArch,
+        pub arches: Vec<CommonArch>,
         pub done: WriteVar<SideEffect>,
+        pub release_artifact: ReadVar<PathBuf>,
     }
 }
 
@@ -21,6 +23,7 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
+        ctx.import::<crate::download_release_igvm_files::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_linux_test_kernel::Node>();
         ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
@@ -29,65 +32,86 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request { arch, done } = request;
+        let Request {
+            arches,
+            done,
+            release_artifact,
+        } = request;
 
         let mut deps = vec![ctx.reqv(crate::init_openvmm_magicpath_protoc::Request)];
 
-        match arch {
-            CommonArch::X86_64 => {
-                if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
-                    deps.extend_from_slice(&[ctx
-                        .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                            arch: OpenvmmSysrootArch::X64,
-                            path: v,
-                        })
-                        .into_side_effect()]);
-                }
-                deps.extend_from_slice(&[
-                    ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
-                        arch: LxutilArch::X86_64,
-                        done,
-                    }),
-                    ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
-                        arch: MuMsvmArch::X86_64,
-                        done,
-                    }),
-                    ctx.reqv(
-                        |done| crate::init_openvmm_magicpath_linux_test_kernel::Request {
-                            arch: OpenvmmLinuxTestKernelArch::X64,
+        for arch in arches {
+            match arch {
+                CommonArch::X86_64 => {
+                    if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
+                        deps.extend_from_slice(&[ctx
+                            .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
+                                arch: OpenvmmSysrootArch::X64,
+                                path: v,
+                            })
+                            .into_side_effect()]);
+                    }
+                    deps.extend_from_slice(&[
+                        ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
+                            arch: LxutilArch::X86_64,
                             done,
-                        },
-                    ),
-                ]);
-            }
-            CommonArch::Aarch64 => {
-                if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
-                    deps.extend_from_slice(&[ctx
-                        .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                            arch: OpenvmmSysrootArch::Aarch64,
-                            path: v,
-                        })
-                        .into_side_effect()]);
-                }
-                deps.extend_from_slice(&[
-                    ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
-                        arch: LxutilArch::Aarch64,
-                        done,
-                    }),
-                    ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
-                        arch: MuMsvmArch::Aarch64,
-                        done,
-                    }),
-                    ctx.reqv(
-                        |done| crate::init_openvmm_magicpath_linux_test_kernel::Request {
-                            arch: OpenvmmLinuxTestKernelArch::Aarch64,
+                        }),
+                        ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
+                            arch: MuMsvmArch::X86_64,
                             done,
-                        },
-                    ),
-                ]);
+                        }),
+                        ctx.reqv(
+                            |done| crate::init_openvmm_magicpath_linux_test_kernel::Request {
+                                arch: OpenvmmLinuxTestKernelArch::X64,
+                                done,
+                            },
+                        ),
+                    ]);
+                }
+                CommonArch::Aarch64 => {
+                    if matches!(ctx.platform(), FlowPlatform::Linux(_)) {
+                        deps.extend_from_slice(&[ctx
+                            .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
+                                arch: OpenvmmSysrootArch::Aarch64,
+                                path: v,
+                            })
+                            .into_side_effect()]);
+                    }
+                    deps.extend_from_slice(&[
+                        ctx.reqv(|done| crate::init_openvmm_magicpath_lxutil::Request {
+                            arch: LxutilArch::Aarch64,
+                            done,
+                        }),
+                        ctx.reqv(|done| crate::init_openvmm_magicpath_uefi_mu_msvm::Request {
+                            arch: MuMsvmArch::Aarch64,
+                            done,
+                        }),
+                        ctx.reqv(
+                            |done| crate::init_openvmm_magicpath_linux_test_kernel::Request {
+                                arch: OpenvmmLinuxTestKernelArch::Aarch64,
+                                done,
+                            },
+                        ),
+                    ]);
+                }
             }
         }
 
+        let latest_openhcl_release =
+            ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
+                release_igvm_files: v,
+                release_version: OpenhclReleaseVersion::latest(),
+                test_content_dir: release_artifact,
+            });
+
+        deps.push(ctx.emit_rust_step(
+            "fetch downloaded release igvm files to artifact dir",
+            |ctx| {
+                let _latest_openhcl_release = latest_openhcl_release.claim(ctx);
+
+                |_rt| Ok(())
+            },
+        ));
         ctx.emit_side_effect_step(deps, [done]);
 
         Ok(())

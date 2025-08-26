@@ -59,6 +59,7 @@ pub mod resolve {
         pub struct Request {
             pub release_igvm_files: WriteVar<ReleaseOutput>,
             pub release_version: OpenhclReleaseVersion,
+            pub test_content_dir: ReadVar<PathBuf>,
         }
     }
 
@@ -73,8 +74,12 @@ pub mod resolve {
         }
 
         fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-            let branch_name: ReadVar<String> =
-                ReadVar::from_static(request.release_version.branch_name());
+            let Request {
+                release_igvm_files,
+                release_version,
+                test_content_dir,
+            } = request;
+            let branch_name: ReadVar<String> = ReadVar::from_static(release_version.branch_name());
 
             let run_id =
                 ctx.reqv(
@@ -85,7 +90,6 @@ pub mod resolve {
                         gh_workflow_id: v,
                     },
                 );
-            let output = request.release_igvm_files;
 
             let mut downloaded_aarch64 = None;
             let mut downloaded_x64 = None;
@@ -111,23 +115,53 @@ pub mod resolve {
                 }
             }
 
+            let release_version_str = release_version.to_string();
+
             ctx.emit_rust_step("write to directory variables", |ctx| {
                 let downloaded_x64 = downloaded_x64.unwrap().claim(ctx);
                 let downloaded_aarch64 = downloaded_aarch64.unwrap().claim(ctx);
 
-                let write_release_output = output.claim(ctx);
+                let write_release_output = release_igvm_files.claim(ctx);
 
-                |rt| {
+                let test_content_dir = test_content_dir.claim(ctx);
+
+                move |rt| {
                     let downloaded_x64 = rt.read(downloaded_x64).join("x64-openhcl-igvm");
                     let downloaded_aarch64 =
                         rt.read(downloaded_aarch64).join("aarch64-openhcl-igvm");
 
+                    let test_content_dir = rt.read(test_content_dir);
+
+                    fs_err::copy(
+                        downloaded_aarch64.clone().join("openhcl-aarch64.bin"),
+                        test_content_dir
+                            .clone()
+                            .join(format!("{}-aarch64-openhcl.bin", release_version_str)),
+                    )?;
+
+                    fs_err::copy(
+                        downloaded_x64.clone().join("openhcl.bin"),
+                        test_content_dir
+                            .clone()
+                            .join(format!("{}-x64-openhcl.bin", release_version_str)),
+                    )?;
+
+                    fs_err::copy(
+                        downloaded_x64.clone().join("openhcl-direct.bin"),
+                        test_content_dir
+                            .clone()
+                            .join(format!("{}-x64-direct-openhcl.bin", release_version_str)),
+                    )?;
+
                     rt.write_not_secret(
                         write_release_output,
                         &ReleaseOutput {
-                            x64_direct_bin: downloaded_x64.join("openhcl-direct.bin"),
-                            x64_bin: downloaded_x64.join("openhcl.bin"),
-                            aarch64_bin: downloaded_aarch64.join("openhcl-aarch64.bin"),
+                            x64_direct_bin: test_content_dir
+                                .join(format!("{}-x64-direct-openhcl.bin", release_version_str)),
+                            x64_bin: test_content_dir
+                                .join(format!("{}-x64-openhcl.bin", release_version_str)),
+                            aarch64_bin: test_content_dir
+                                .join(format!("{}-aarch64-openhcl.bin", release_version_str)),
                         },
                     );
 
