@@ -71,7 +71,10 @@ pub fn do_main() -> anyhow::Result<()> {
         anyhow::bail!("unexpected extra arguments");
     }
 
-    let mut builder = elfcore::CoreDumpBuilder::new(pid)?;
+    let mut builder = elfcore::CoreDumpBuilder::<
+        elfcore::ProcessView,
+        elfcore::LinuxProcessMemoryReader,
+    >::new(pid)?;
 
     let mut kmsg_file = NonBlockingFile::new("/dev/kmsg");
     match kmsg_file.as_mut() {
