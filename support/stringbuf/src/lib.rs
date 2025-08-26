@@ -1,20 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A header + length-prefixed string buffer for storing logs over a buffer sized in 4K pages.
+//! A header + concatenated UTF-8 string buffer for storing logs over a buffer
+//! sized in 4K pages.
 //!
-//! Format (little-endian):
-//! - Header
-//!   - u16: total length in bytes of the data region currently used (sum of all encoded strings)
-//!   - u32: number of messages that were dropped because the buffer was full
-//! - Repeated entries:
-//!   - u16: length of UTF-8 string payload. does not include the len of the u16 itself
-//!   - [u8; len]: UTF-8 bytes
+//! New Format (little-endian):
+//! - Header (6 bytes total)
+//!   - u16: total length in bytes of the data region (capacity usable for UTF-8
+//!     data)
+//!   - u16: next insertion offset (number of valid bytes currently used)
+//!   - u16: number of messages that were dropped because there was insufficient
+//!     space
+//! - Data region: raw UTF-8 bytes, representing the simple concatenation of all
+//!   appended strings.
 //!
 //! Invariants:
-//! - total_len <= DATA_CAPACITY (BUFFER_SIZE - HEADER_SIZE)
-//! - Strings never partially written
-//! - When append fails due to insufficient space, the dropped counter increments
+//! - next_insert <= data_len
+//! - Data bytes [0, next_insert) always form valid UTF-8
+//! - Appends never partially write data
+//! - On insufficient space, the append is dropped and `dropped` is incremented
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -32,46 +36,9 @@ const PAGE_SIZE_4K: usize = 4096;
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct Header {
-    data_len: u16,
-    next_insert: u16,
-    dropped: u16,
-}
-
-/// Errors that can occur while parsing individual entries inside a backing buffer.
-#[derive(Debug, Error)]
-pub enum EntryError {
-    /// The buffer is too small to contain even the header of an entry.
-    #[error("buffer too small for header")]
-    BufferHeader,
-    /// The declared entry length exceeds the remaining bytes in the buffer.
-    #[error("header len past remaining buffer")]
-    BufferLen,
-    /// The entry payload is not valid UTF-8.
-    #[error("buffer is not valid utf8")]
-    BufferInvalidUtf8(#[source] Utf8Error),
-}
-
-/// an entry in the string buffer.
-/// this consists of a u16 length, followed by a valid utf8 data payload.
-#[derive(Debug, Clone, Copy)]
-struct Entry<'a> {
-    data: &'a str,
-}
-
-impl<'a> Entry<'a> {
-    // parse an entry, and return remaining buffer
-    fn parse(buf: &'a [u8]) -> Result<(Entry<'a>, &'a [u8]), EntryError> {
-        let (header, rest) = buf.split_at_checked(2).ok_or(EntryError::BufferHeader)?;
-
-        let len = u16::from_le_bytes(header.try_into().unwrap());
-        let (data, rest) = rest
-            .split_at_checked(len as usize)
-            .ok_or(EntryError::BufferLen)?;
-
-        let data = str::from_utf8(data).map_err(EntryError::BufferInvalidUtf8)?;
-
-        Ok((Entry { data }, rest))
-    }
+    data_len: u16,    // capacity of the data region
+    next_insert: u16, // number of bytes currently used (next offset)
+    dropped: u16,     // number of dropped messages
 }
 
 /// A length-prefixed string buffer that stores strings in a 4K buffer.
@@ -92,7 +59,6 @@ pub struct StringBuffer<'a> {
 }
 
 /// Error types that can occur when working with the string buffer.
-/// Errors returned by public `StringBuffer` APIs for construction, parsing or mutation.
 #[derive(Debug, Error)]
 pub enum StringBufferError {
     /// The string exceeds the maximum encodable u16 length.
@@ -110,9 +76,9 @@ pub enum StringBufferError {
     /// The header's next insertion offset is past the end of the data region.
     #[error("header next insert past end of buffer")]
     InvalidHeaderNextInsert,
-    /// An existing entry in the buffer is invalid.
-    #[error("entry is invalid")]
-    InvalidEntry(#[source] EntryError),
+    /// Existing used bytes are invalid UTF-8.
+    #[error("buffer data is not valid utf8")]
+    InvalidUtf8(#[source] Utf8Error),
 }
 
 impl<'a> StringBuffer<'a> {
@@ -171,21 +137,17 @@ impl<'a> StringBuffer<'a> {
             return Err(StringBufferError::InvalidHeaderNextInsert);
         }
 
-        // Validate each individual entry is a valid entry
-        let mut entries = data.split_at(next_insert).0;
-
-        while !entries.is_empty() {
-            let (_entry, rest) = Entry::parse(entries).map_err(StringBufferError::InvalidEntry)?;
-            entries = rest;
-        }
+        // Validate concatenated UTF-8 over used bytes
+        let used = &data[..next_insert];
+        str::from_utf8(used).map_err(StringBufferError::InvalidUtf8)?;
 
         Ok(Self { header, data })
     }
 
     /// Appends a string to the buffer.
     ///
-    /// The string will be stored with a length prefix (u16) followed by the
-    /// UTF-8 data.
+    /// The string is appended directly as raw UTF-8 bytes to the end of the
+    /// current data payload (no delimiters).
     ///
     /// # Arguments
     /// * `s` - The string to append
@@ -204,29 +166,23 @@ impl<'a> StringBuffer<'a> {
             return Err(StringBufferError::StringTooLong);
         }
 
-        let required_space = s.len() + 2;
+        let required_space = s.len();
         if required_space > self.remaining_capacity() {
             self.header.dropped = self.header.dropped.saturating_add(1);
             return Ok(false);
         }
-
-        let (header, data) = &mut self.data
-            [self.header.next_insert as usize..self.header.next_insert as usize + required_space]
-            .split_at_mut(2);
-        let str_len = s.len() as u16;
-        header.copy_from_slice(str_len.as_bytes());
-        data.copy_from_slice(s.as_bytes());
+        let start = self.header.next_insert as usize;
+        let end = start + required_space;
+        self.data[start..end].copy_from_slice(s.as_bytes());
 
         self.header.next_insert += required_space as u16;
 
         Ok(true)
     }
 
-    /// Returns an iterator over all strings in the buffer.
-    pub fn iter(&self) -> StringBufferIterator<'_> {
-        StringBufferIterator {
-            entries: self.data.split_at(self.header.next_insert as usize).0,
-        }
+    /// Returns the concatenated UTF-8 contents stored so far.
+    pub fn contents(&self) -> &str {
+        str::from_utf8(&self.data[..self.header.next_insert as usize]).unwrap()
     }
 
     /// Returns the number of bytes remaining in the buffer.
@@ -240,32 +196,13 @@ impl<'a> StringBuffer<'a> {
     }
 }
 
-/// Iterator over strings in a `StringBuffer`.
-#[derive(Debug)]
-pub struct StringBufferIterator<'a> {
-    entries: &'a [u8],
-}
-
-impl<'a> Iterator for StringBufferIterator<'a> {
-    type Item = &'a str;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.entries.is_empty() {
-            return None;
-        }
-
-        let (entry, rest) = Entry::parse(self.entries).expect("buffer should be valid");
-        self.entries = rest;
-        Some(entry.data)
-    }
-}
+// Iterator removed: entries are no longer individually length-prefixed.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     extern crate alloc;
     use alloc::vec;
-    use alloc::vec::Vec;
     use core::mem::size_of;
 
     const TEST_BUFFER_SIZE: usize = 4096; // 4K page
@@ -280,8 +217,7 @@ mod tests {
         let expected_remaining = TEST_BUFFER_SIZE - header_size;
         assert_eq!(buffer.remaining_capacity(), expected_remaining);
         assert_eq!(buffer.dropped_messages(), 0);
-        // Iterator yields no entries
-        assert!(buffer.iter().next().is_none());
+        assert_eq!(buffer.contents(), "");
     }
 
     #[test]
@@ -290,7 +226,7 @@ mod tests {
         let mut buffer = StringBuffer::new(&mut storage).unwrap();
         let test_string = "Hello, World!";
         assert!(buffer.append(test_string).is_ok());
-        assert!(buffer.iter().next().is_some());
+        assert_eq!(buffer.contents(), test_string);
     }
 
     #[test]
@@ -301,8 +237,8 @@ mod tests {
         for s in &strings {
             assert!(buffer.append(s).is_ok());
         }
-        let collected: Vec<&str> = buffer.iter().collect();
-        assert_eq!(collected.as_slice(), &strings);
+        let expected = strings.join("");
+        assert_eq!(buffer.contents(), expected);
     }
 
     #[test]
@@ -315,7 +251,7 @@ mod tests {
         assert!(matches!(result, Err(StringBufferError::StringTooLong)));
         // Fill remaining capacity exactly
         let space = buffer.remaining_capacity();
-        let max_string = "x".repeat(space - 2); // account for length prefix
+        let max_string = "x".repeat(space);
         assert!(matches!(buffer.append(&max_string), Ok(true)));
         assert_eq!(buffer.remaining_capacity(), 0);
         // Try to append another string (should be dropped, Ok(false))
@@ -332,7 +268,7 @@ mod tests {
             let _buf = StringBuffer::new(&mut storage).unwrap();
         }
         let reopened = StringBuffer::from_existing(&mut storage).unwrap();
-        assert!(reopened.iter().next().is_none());
+        assert_eq!(reopened.contents(), "");
     }
 
     #[test]
@@ -342,17 +278,14 @@ mod tests {
         assert!(matches!(buffer.append("Hello"), Ok(true)));
         // Reconstruct using from_existing
         let buffer2 = StringBuffer::from_existing(&mut storage).unwrap();
-        let strings: Vec<&str> = buffer2.iter().collect();
-        // Depending on internal offset strategy, string should be present as last entry
-        assert!(strings.contains(&"Hello"));
+        assert!(buffer2.contents().contains("Hello"));
     }
 
     #[test]
-    fn test_iterator_empty() {
+    fn test_contents_empty() {
         let mut storage = [0u8; TEST_BUFFER_SIZE];
         let buffer = StringBuffer::new(&mut storage).unwrap();
-        let strings: Vec<_> = buffer.iter().collect();
-        assert!(strings.is_empty());
+        assert_eq!(buffer.contents(), "");
     }
 
     #[test]
@@ -400,44 +333,17 @@ mod tests {
     }
 
     #[test]
-    fn test_from_existing_invalid_entry_length_overflow() {
-        let mut storage = [0u8; TEST_BUFFER_SIZE];
-        let header_size = size_of::<Header>();
-        let data_len = (TEST_BUFFER_SIZE - header_size) as u16;
-        // Valid data_len
-        storage[0..2].copy_from_slice(&data_len.to_le_bytes());
-        // next_insert = 2 (only length field present)
-        storage[2..4].copy_from_slice(&2u16.to_le_bytes());
-        // dropped = 0
-        // Entry length header claims 16 bytes, but only 0 bytes of payload follow
-        storage[header_size..header_size + 2].copy_from_slice(&16u16.to_le_bytes());
-        let res = StringBuffer::from_existing(&mut storage);
-        assert!(matches!(
-            res,
-            Err(StringBufferError::InvalidEntry(EntryError::BufferLen))
-        ));
-    }
-
-    #[test]
-    fn test_from_existing_invalid_entry_utf8() {
+    fn test_from_existing_invalid_utf8() {
         let mut storage = [0u8; TEST_BUFFER_SIZE];
         let header_size = size_of::<Header>();
         let data_len = (TEST_BUFFER_SIZE - header_size) as u16;
         storage[0..2].copy_from_slice(&data_len.to_le_bytes());
-        // next_insert = 3 (len header + 1 byte of data)
-        storage[2..4].copy_from_slice(&3u16.to_le_bytes());
-        // dropped = 0
-        // len = 1
-        storage[header_size..header_size + 2].copy_from_slice(&1u16.to_le_bytes());
-        // invalid utf-8 byte 0xFF
-        storage[header_size + 2] = 0xFF;
+        // next_insert = 1 (one byte used)
+        storage[2..4].copy_from_slice(&1u16.to_le_bytes());
+        // dropped = 0 (already zeroed)
+        storage[header_size] = 0xFF; // invalid UTF-8
         let res = StringBuffer::from_existing(&mut storage);
-        assert!(matches!(
-            res,
-            Err(StringBufferError::InvalidEntry(
-                EntryError::BufferInvalidUtf8(_)
-            ))
-        ));
+        assert!(matches!(res, Err(StringBufferError::InvalidUtf8(_))));
     }
 
     #[test]
@@ -446,7 +352,7 @@ mod tests {
         let mut buffer = StringBuffer::new(&mut storage).unwrap();
         // Fill the buffer completely
         let space = buffer.remaining_capacity();
-        let filler = "x".repeat(space - 2);
+        let filler = "x".repeat(space);
         assert!(matches!(buffer.append(&filler), Ok(true)));
         assert_eq!(buffer.remaining_capacity(), 0);
         // Multiple failed appends increment dropped each time
@@ -466,7 +372,7 @@ mod tests {
         for s in &strings {
             assert!(matches!(buffer.append(s), Ok(true)));
         }
-        let collected: Vec<&str> = buffer.iter().collect();
-        assert_eq!(collected, strings);
+        let expected = strings.join("");
+        assert_eq!(buffer.contents(), expected);
     }
 }

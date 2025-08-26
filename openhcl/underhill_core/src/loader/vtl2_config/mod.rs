@@ -283,19 +283,12 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         let buf = StringBuffer::from_existing(raw.as_mut_slice())
             .context("bootshim buffer contents invalid")?;
 
-        // Flatten the encoded logs, because each entry does not necessarily
-        // end with a newline.
-        let mut flattened = String::new();
-        for str in buf.iter() {
-            flattened.push_str(str);
-        }
-
         let dropped = buf.dropped_messages();
         if dropped != 0 {
             tracing::info!(dropped, "bootshim logger dropped messages");
         }
 
-        flattened
+        buf.contents().to_string()
     };
 
     // FIXME: tracing here or somewhere else?
