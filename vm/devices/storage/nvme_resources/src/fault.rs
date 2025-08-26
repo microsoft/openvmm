@@ -4,11 +4,12 @@
 //! Fault definitions for NVMe fault controller.
 
 use mesh::Cell;
+use mesh::MeshPayload;
 use nvme_spec::Command;
 use std::time::Duration;
 
 /// Supported fault behaviour for NVMe queues
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, MeshPayload)]
 pub enum QueueFaultBehavior<T> {
     /// Update the queue entry with the returned data
     Update(T),
@@ -20,12 +21,14 @@ pub enum QueueFaultBehavior<T> {
     Delay(Duration),
 }
 
+#[derive(MeshPayload)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
     pub admin_submission_queue_faults: Vec<(u8, QueueFaultBehavior<Command>)>,
 }
 
+#[derive(MeshPayload)]
 /// A simple fault configuration with admin submission queue support
 pub struct FaultConfiguration {
     /// Fault active state

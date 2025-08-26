@@ -4834,6 +4834,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.10.1",
  "inspect",
+ "mesh",
  "open_enum",
  "storage_string",
  "zerocopy 0.8.24",
