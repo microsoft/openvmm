@@ -34,7 +34,7 @@ impl MonitorId {
 /// Holds information about the monitor page and registered monitors.
 #[derive(Debug)]
 pub struct MonitorPage {
-    gpa: AtomicU64,
+    page: AtomicU64,
     monitors: Arc<MonitorList>,
 }
 
@@ -93,7 +93,7 @@ impl MonitorPage {
     /// Creates a new `MonitorPage`.
     pub fn new() -> Self {
         Self {
-            gpa: AtomicU64::new(INVALID_MONITOR_GPA),
+            page: AtomicU64::new(INVALID_MONITOR_GPA),
             monitors: Arc::new(MonitorList::new()),
         }
     }

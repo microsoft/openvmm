@@ -1025,10 +1025,8 @@ fn test_save_restore_modifying() {
 
     // We can complete the modify request after restore.
     env.c()
-        .complete_modify_connection(ModifyConnectionResponse::Supported(
+        .complete_modify_connection(ModifyConnectionResponse::Modified(
             protocol::ConnectionState::SUCCESSFUL,
-            SUPPORTED_FEATURE_FLAGS,
-            None,
         ));
 
     env.notifier
@@ -1312,10 +1310,8 @@ fn test_modify_connection() {
     );
 
     env.c()
-        .complete_modify_connection(ModifyConnectionResponse::Supported(
+        .complete_modify_connection(ModifyConnectionResponse::Modified(
             protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-            SUPPORTED_FEATURE_FLAGS,
-            None,
         ));
 
     env.notifier
@@ -1578,7 +1574,10 @@ fn test_mnf_channel() {
 
 #[test]
 fn test_server_monitor_page() {
+    // Guest pages provided, but overridden by server-allocated pages.
     test_server_monitor_page_helper(true);
+
+    // No guest pages supplied, server will allocate them.
     test_server_monitor_page_helper(false);
 }
 
@@ -1605,6 +1604,7 @@ fn test_server_monitor_page_helper(provide_guest_pages: bool) {
         ))
         .unwrap();
 
+    // The server will notify with the guest-provided pages (if present).
     let request = env.notifier.next_action();
     assert_eq!(
         request,
@@ -1627,6 +1627,7 @@ fn test_server_monitor_page_helper(provide_guest_pages: bool) {
         }
     );
 
+    // Specify server-allocated pages when completing the request.
     env.c()
         .complete_initiate_contact(ModifyConnectionResponse::Supported(
             protocol::ConnectionState::SUCCESSFUL,
@@ -1637,6 +1638,7 @@ fn test_server_monitor_page_helper(provide_guest_pages: bool) {
             }),
         ));
 
+    // This is reflected in the server state.
     assert!(matches!(
         env.server.state,
         ConnectionState::Connected(ConnectionInfo {
@@ -1651,6 +1653,7 @@ fn test_server_monitor_page_helper(provide_guest_pages: bool) {
         })
     ));
 
+    // The version response should include the server-allocated pages.
     env.notifier
         .check_message(OutgoingMessage::new(&protocol::VersionResponse3 {
             version_response2: protocol::VersionResponse2 {
@@ -2348,13 +2351,18 @@ impl TestEnv {
 
     // Completes a reset operation if the server sends a modify request as part of it.
     fn complete_reset(&mut self) {
-        let _ = self.next_action();
-        self.c()
-            .complete_modify_connection(ModifyConnectionResponse::Supported(
+        let request = self.next_action();
+        let response = if request.version.is_some() {
+            ModifyConnectionResponse::Supported(
                 protocol::ConnectionState::SUCCESSFUL,
                 SUPPORTED_FEATURE_FLAGS,
                 None,
-            ));
+            )
+        } else {
+            ModifyConnectionResponse::Modified(protocol::ConnectionState::SUCCESSFUL)
+        };
+
+        self.c().complete_modify_connection(response);
     }
 
     fn offer(&mut self, id: u32) -> OfferId {

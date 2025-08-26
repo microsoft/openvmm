@@ -1879,19 +1879,15 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
             .partition
             .monitor_page
             .check_write(gpa, bytes, |connection_id| {
-                signal_mnf(self.devices, connection_id)
+                if let Err(err) = self.devices.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        error = &err as &dyn std::error::Error,
+                        connection_id,
+                        "failed to signal mnf"
+                    );
+                }
             })
-    }
-}
-
-fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {
-    if let Err(err) = dev.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
-        tracelimit::warn_ratelimited!(
-            CVM_ALLOWED,
-            error = &err as &dyn std::error::Error,
-            connection_id,
-            "failed to signal mnf"
-        );
     }
 }
 

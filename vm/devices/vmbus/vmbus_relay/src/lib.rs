@@ -790,7 +790,12 @@ impl RelayTask {
             }
         };
 
-        ModifyRelayResponse::Supported(state, self.version.feature_flags)
+        // Use Supported only for new connections (with a version).
+        if request.version.is_some() {
+            ModifyRelayResponse::Supported(state, self.version.feature_flags)
+        } else {
+            ModifyRelayResponse::Modified(state)
+        }
     }
 
     async fn handle_server_request(&mut self, request: vmbus_server::ModifyRelayRequest) {

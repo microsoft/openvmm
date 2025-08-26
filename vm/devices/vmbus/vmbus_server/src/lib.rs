@@ -201,17 +201,19 @@ pub struct ModifyRelayRequest {
     pub use_interrupt_page: Option<bool>,
 }
 
-/// Response to a ModifyConnectionRequest.
+/// Response to a ModifyRelayRequest.
 #[derive(Debug, Copy, Clone)]
 pub enum ModifyRelayResponse {
-    /// No version change was was requested, or the requested version is supported. Includes all the
-    /// feature flags supported by the relay host, so that supported flags reported to the guest can
-    /// be limited to that. The FeatureFlags field is not relevant if no version change was
-    /// requested.
+    /// The requested version change is supported, and the relay completed the connection
+    /// modification with the specified status. All of the feature flags supported by the relay host
+    /// are included, regardless of what features were requested.
     Supported(protocol::ConnectionState, protocol::FeatureFlags),
     /// A version change was requested but the relay host doesn't support that version. This
     /// response cannot be returned for a request with no version change set.
     Unsupported,
+    /// The connection modification completed with the specified status. This is the response that
+    /// must be sent if no version change was requested.
+    Modified(protocol::ConnectionState),
 }
 
 impl From<ModifyConnectionRequest> for ModifyRelayRequest {
@@ -436,6 +438,8 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         self
     }
 
+    /// Sets a DMA client that can be used to allocate server-specified monitor pages. If not set,
+    /// the server will not support using server-specified monitor pages.
     pub fn dma_client(mut self, dma_client: Option<Arc<dyn DmaClient>>) -> Self {
         self.dma_client = dma_client;
         self
@@ -523,11 +527,15 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             } else {
                 let (req_send, req_recv) = mesh::channel();
                 let resp_recv = req_recv
-                    .map(|_| {
-                        ModifyRelayResponse::Supported(
-                            protocol::ConnectionState::SUCCESSFUL,
-                            protocol::FeatureFlags::from_bits(u32::MAX),
-                        )
+                    .map(|req: ModifyRelayRequest| {
+                        if req.version.is_some() {
+                            ModifyRelayResponse::Supported(
+                                protocol::ConnectionState::SUCCESSFUL,
+                                protocol::FeatureFlags::from_bits(u32::MAX),
+                            )
+                        } else {
+                            ModifyRelayResponse::Modified(protocol::ConnectionState::SUCCESSFUL)
+                        }
                     })
                     .boxed()
                     .fuse();
@@ -743,6 +751,8 @@ struct ServerTaskInner {
     channel_bitmap: Option<Arc<ChannelBitmap>>,
     shared_event_port: Option<Box<dyn Send>>,
     reset_done: Vec<Rpc<(), ()>>,
+    /// Stores information needed to support MNF. If `None`, this server doesn't support MNF (in
+    /// the case of OpenHCL, that means it will be handled by the relay host).
     mnf_info: Option<MnfInfo>,
     dma_client: Option<Arc<dyn DmaClient>>,
 }
@@ -1125,6 +1135,8 @@ impl ServerTask {
     }
 
     fn handle_relay_response(&mut self, response: ModifyRelayResponse) {
+        // Provide the server-allocated monitor page to the server only if they're actually being
+        // used (they may still be allocated from a previous connection).
         let allocated_monitor_gpas = self
             .inner
             .mnf_info
@@ -1132,11 +1144,13 @@ impl ServerTask {
             .and_then(|info| info.allocated_pages_in_use.then(|| info.gpas()))
             .flatten();
 
+        // Convert to a matching MonitorConnectionResponse.
         let response = match response {
             ModifyRelayResponse::Supported(state, features) => {
                 ModifyConnectionResponse::Supported(state, features, allocated_monitor_gpas)
             }
             ModifyRelayResponse::Unsupported => ModifyConnectionResponse::Unsupported,
+            ModifyRelayResponse::Modified(state) => ModifyConnectionResponse::Modified(state),
         };
 
         self.server
@@ -1869,7 +1883,7 @@ impl ServerTaskInner {
         let mut monitor_page = match request.monitor_page {
             Update::Unchanged => return Ok(()),
             Update::Reset => None,
-            Update::Set(value) => Some(value),
+            Update::Set(value) => Some(MonitorPageGpaInfo::from_guest_gpas(value)),
         };
 
         // TODO: can this check be moved into channels.rs?
@@ -1882,6 +1896,9 @@ impl ServerTaskInner {
             anyhow::bail!("attempt to change monitor page while open channels using mnf");
         }
 
+        // Check if the server is handling MNF.
+        // N.B. If the server is not handling MNF, there is currently no way to request
+        //      server-allocated monitor pages from the relay host.
         if let Some(mnf_info) = self.mnf_info.as_mut() {
             if let Some(monitor) = self.synic.monitor_support() {
                 mnf_info.allocated_pages_in_use = false;
@@ -1892,7 +1909,8 @@ impl ServerTaskInner {
                 if let Some(version) = request.version {
                     if version.feature_flags.server_specified_monitor_pages() {
                         if let Some(dma_client) = self.dma_client.as_ref() {
-                            // If we haven't allocated monitor pages yet, do so now.
+                            // If we haven't allocated monitor pages yet, do so now. They may have
+                            // been allocated already for a previous connection.
                             if mnf_info.allocated_monitor_pages.is_none() {
                                 mnf_info.allocated_monitor_pages =
                                     Some(dma_client.allocate_dma_buffer(PAGE_SIZE * 2)?);

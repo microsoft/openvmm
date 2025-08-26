@@ -12,15 +12,15 @@ mod devmsr;
 cfg_if::cfg_if!(
     if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
         mod cvm_cpuid;
-        pub use processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
+        pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
+        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
         use devmsr::MsrDevice;
         use hv1_emulator::hv::ProcessorVtlHv;
         use processor::LapicState;
-        use processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use processor::snp::SnpBackedShared;
         use processor::tdx::TdxBackedShared;
         use std::arch::x86_64::CpuidResult;
@@ -31,8 +31,8 @@ cfg_if::cfg_if!(
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
-        pub use processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
-        use processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
+        pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
+        use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
     }
 );
 

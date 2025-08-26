@@ -194,7 +194,7 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
 
                 // Restore server state, and resend server notifications if needed. If these notifications
                 // were processed before the save, it's harmless as the values will be the same.
-                let request = match &self.inner.state {
+                let request = match self.inner.state {
                     super::ConnectionState::Connecting {
                         info,
                         next_action: _,
@@ -794,13 +794,10 @@ impl MonitorPageGpas {
     }
 
     fn restore(self) -> super::MonitorPageGpaInfo {
-        super::MonitorPageGpaInfo {
-            gpas: super::MonitorPageGpas {
-                child_to_parent: self.child_to_parent,
-                parent_to_child: self.parent_to_child,
-            },
-            server_allocated: false,
-        }
+        super::MonitorPageGpaInfo::from_guest_gpas(super::MonitorPageGpas {
+            child_to_parent: self.child_to_parent,
+            parent_to_child: self.parent_to_child,
+        })
     }
 }
 
@@ -819,12 +816,9 @@ impl MonitorPageRequest {
     fn save(value: super::MonitorPageRequest) -> Self {
         match value {
             super::MonitorPageRequest::None => MonitorPageRequest::None,
-            super::MonitorPageRequest::Some(mp) => {
-                MonitorPageRequest::Some(MonitorPageGpas::save(super::MonitorPageGpaInfo {
-                    gpas: mp,
-                    server_allocated: false,
-                }))
-            }
+            super::MonitorPageRequest::Some(mp) => MonitorPageRequest::Some(MonitorPageGpas::save(
+                super::MonitorPageGpaInfo::from_guest_gpas(mp),
+            )),
             super::MonitorPageRequest::Invalid => MonitorPageRequest::Invalid,
         }
     }
