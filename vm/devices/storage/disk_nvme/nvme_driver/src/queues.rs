@@ -141,8 +141,7 @@ impl CompletionQueue {
 
     pub fn read(&mut self) -> Option<spec::Completion> {
         let completion_mem = self.mem.as_slice()
-            [self.head as usize * size_of::<spec::Completion>()..]
-            [..size_of::<spec::Completion>() * 2]
+            [self.head as usize * size_of::<spec::Completion>()..][..size_of::<spec::Completion>()]
             .as_atomic_slice::<AtomicU64>()
             .unwrap();
 
