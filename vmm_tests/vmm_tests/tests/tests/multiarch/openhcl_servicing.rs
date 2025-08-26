@@ -242,7 +242,7 @@ async fn keepalive_with_nvme_fault(
 ) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl0_nvme_lun = 1;
-    let vtl2_nsid = 37;
+    let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
     let scsi_instance = Guid::new_random();
 
     if !host_supports_servicing() {
