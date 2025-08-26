@@ -31,6 +31,8 @@ pub(crate) struct QueueFull;
 
 impl SubmissionQueue {
     pub fn new(sqid: u16, len: u16, mem: MemoryBlock) -> Self {
+        tracing::error!(sqid, len, pfns = ?mem.pfns(), "new submission queue");
+
         Self {
             sqid,
             head: 0,

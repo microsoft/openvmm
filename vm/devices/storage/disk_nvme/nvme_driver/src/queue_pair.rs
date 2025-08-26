@@ -53,6 +53,8 @@ pub(crate) struct QueuePair {
     qid: u16,
     sq_entries: u16,
     cq_entries: u16,
+    sq_addr: u64,
+    cq_addr: u64,
 }
 
 impl Inspect for QueuePair {
@@ -65,6 +67,8 @@ impl Inspect for QueuePair {
             qid: _,
             sq_entries: _,
             cq_entries: _,
+            sq_addr: _,
+            cq_addr: _,
         } = self;
         issuer.send.send(Req::Inspect(req.defer()));
     }
@@ -170,12 +174,12 @@ impl PendingCommands {
 }
 
 impl QueuePair {
+    /// Submission Queue size in bytes.
+    const SQ_SIZE: usize = PAGE_SIZE * 4;
     /// Maximum SQ size in entries.
-    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
+    pub const MAX_SQ_ENTRIES: u16 = (Self::SQ_SIZE / 64) as u16;
     /// Maximum CQ size in entries.
     pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
-    /// Submission Queue size in bytes.
-    const SQ_SIZE: usize = PAGE_SIZE;
     /// Completion Queue size in bytes.
     const CQ_SIZE: usize = PAGE_SIZE;
     /// Number of pages per queue if bounce buffering.
@@ -201,8 +205,17 @@ impl QueuePair {
                 QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
             };
         let dma_client = device.dma_client();
+
+        // FIXME: do not round to 2mb here but chunk it in dma_manager itself
+        let rounded_2mb = (total_size / (2 * 1024 * 1024) + 1) * (2 * 1024 * 1024);
+        tracing::error!(
+            total_size,
+            extra_bytes = rounded_2mb - total_size,
+            "nvme queues"
+        );
+
         let mem = dma_client
-            .allocate_dma_buffer(total_size)
+            .allocate_dma_buffer(rounded_2mb)
             .context("failed to allocate memory for queues")?;
 
         assert!(sq_entries <= Self::MAX_SQ_ENTRIES);
@@ -237,6 +250,29 @@ impl QueuePair {
         let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
         let cq_mem_block = mem.subblock(QueuePair::SQ_SIZE, QueuePair::CQ_SIZE);
         let data_offset = QueuePair::SQ_SIZE + QueuePair::CQ_SIZE;
+
+        // FIXME: must validate that the sq and cq are contigious pages, if not we must clamp both queues back to one page and log
+        let sq_mem_pages = sq_mem_block.pfns();
+        tracing::error!(?sq_mem_pages, "sq pages");
+
+        for (curr, next) in sq_mem_pages.iter().zip(sq_mem_pages.iter().skip(1)) {
+            if *curr + 1 != *next {
+                anyhow::bail!("submission queue memory must be contiguous");
+            }
+        }
+
+        let sq_addr = sq_mem_block.pfns()[0] * PAGE_SIZE64;
+
+        let cq_mem_pages = cq_mem_block.pfns();
+        tracing::error!(?cq_mem_pages, "cq pages");
+
+        for (curr, next) in cq_mem_pages.iter().zip(cq_mem_pages.iter().skip(1)) {
+            if *curr + 1 != *next {
+                anyhow::bail!("completion queue memory must be contiguous");
+            }
+        }
+
+        let cq_addr = cq_mem_block.pfns()[0] * PAGE_SIZE64;
 
         let mut queue_handler = match saved_state {
             Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s)?,
@@ -298,15 +334,17 @@ impl QueuePair {
             qid,
             sq_entries,
             cq_entries,
+            sq_addr,
+            cq_addr,
         })
     }
 
     pub fn sq_addr(&self) -> u64 {
-        self.mem.pfns()[0] * PAGE_SIZE64
+        self.sq_addr
     }
 
     pub fn cq_addr(&self) -> u64 {
-        self.mem.pfns()[1] * PAGE_SIZE64
+        self.cq_addr
     }
 
     pub fn issuer(&self) -> &Arc<Issuer> {

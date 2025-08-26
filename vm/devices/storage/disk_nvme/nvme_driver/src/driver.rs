@@ -426,8 +426,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 anyhow::bail!("bad device behavior. mqes cannot be 0");
             }
 
+            let hw_size = worker.registers.cap.mqes_z() + 1;
             let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
             let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+
+            tracing::error!(io_cqsize, io_sqsize, hw_size, "io queue sizes");
 
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)
