@@ -271,10 +271,10 @@ async fn keepalive_with_nvme_fault(
                     instance_id: NVME_INSTANCE,
                     resource: NvmeFaultControllerHandle {
                         subsystem_id: Guid::new_random(),
-                        msix_count: 1,
-                        max_io_queues: 1,
+                        msix_count: 10,
+                        max_io_queues: 10,
                         namespaces: vec![NamespaceDefinition {
-                            nsid: 37,
+                            nsid: vtl2_nsid,
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(256 * 1024),
