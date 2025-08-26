@@ -10,7 +10,6 @@ use crate::SINT;
 use crate::SynicMessage;
 use crate::monitor::AssignedMonitors;
 use crate::protocol::Version;
-use hvdef::HV_PAGE_SHIFT;
 use hvdef::Vtl;
 use inspect::Inspect;
 pub use saved_state::RestoreError;
@@ -28,7 +27,6 @@ use std::task::Poll;
 use std::task::ready;
 use std::time::Duration;
 use thiserror::Error;
-use user_driver::memory::MemoryBlock;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::OfferKey;
@@ -210,8 +208,7 @@ struct ConnectionInfo {
     offers_sent: bool,
     interrupt_page: Option<u64>,
     monitor_page: Option<MonitorPageGpas>,
-    #[inspect(skip)]
-    allocated_monitor_page: Option<MemoryBlock>,
+    server_allocated_monitor_page: bool,
     target_message_vp: u32,
     modifying: bool,
     client_id: Guid,
@@ -338,7 +335,7 @@ impl<T: std::fmt::Debug + Copy + Clone> From<Option<T>> for Update<T> {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct ModifyConnectionRequest {
-    pub version: Option<u32>,
+    pub version: Option<VersionInfo>,
     pub monitor_page: Update<MonitorPageGpas>,
     pub interrupt_page: Update<u64>,
     pub target_message_vp: Option<u32>,
@@ -383,7 +380,11 @@ pub enum ModifyConnectionResponse {
     /// feature flags supported by the relay host, so that supported flags reported to the guest can
     /// be limited to that. The FeatureFlags field is not relevant if no version change was
     /// requested.
-    Supported(protocol::ConnectionState, FeatureFlags),
+    Supported(
+        protocol::ConnectionState,
+        FeatureFlags,
+        Option<MonitorPageGpas>,
+    ),
     /// A version change was requested but the relay host doesn't support that version. This
     /// response cannot be returned for a request with no version change set.
     Unsupported,
@@ -1316,10 +1317,6 @@ pub trait Notifier: Send {
 
     /// Notifies that a guest-requested unload is complete.
     fn unload_complete(&mut self);
-
-    fn allocate_monitor_pages(&self) -> anyhow::Result<Option<MemoryBlock>> {
-        Ok(None)
-    }
 }
 
 impl Server {
@@ -2236,7 +2233,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         // Make sure we can receive incoming interrupts on the monitor page. The parent to child
         // page is not used as this server doesn't send monitored interrupts.
-        let mut monitor_page = match request.monitor_page {
+        let monitor_page = match request.monitor_page {
             MonitorPageRequest::Some(mp) => Some(mp),
             MonitorPageRequest::None => None,
             MonitorPageRequest::Invalid => {
@@ -2250,35 +2247,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
         };
 
-        // TODO: Fallback to guest supplied?
-        let allocated_monitor_page = if version.feature_flags.server_specified_monitor_pages() {
-            match self.notifier.allocate_monitor_pages() {
-                Ok(Some(buffer)) => {
-                    let new_monitor_page = MonitorPageGpas {
-                        parent_to_child: buffer.pfns()[0] << HV_PAGE_SHIFT,
-                        child_to_parent: buffer.pfns()[1] << HV_PAGE_SHIFT,
-                    };
-                    monitor_page = Some(new_monitor_page);
-                    tracelimit::info_ratelimited!(?new_monitor_page, "allocated monitor pages");
-                    Some(buffer)
-                }
-                Ok(None) => None,
-                Err(err) => {
-                    tracelimit::error_ratelimited!(?err, "failed to allocate monitor pages");
-                    return;
-                }
-            }
-        } else {
-            None
-        };
-
         self.inner.state = ConnectionState::Connecting {
             info: ConnectionInfo {
                 version,
                 trusted: request.trusted,
                 interrupt_page: request.interrupt_page,
                 monitor_page,
-                allocated_monitor_page,
+                server_allocated_monitor_page: false,
                 target_message_vp: request.target_message_vp,
                 modifying: false,
                 offers_sent: false,
@@ -2291,7 +2266,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Update server state and notify the relay, if any. When complete,
         // complete_initiate_contact will be invoked.
         if let Err(err) = self.notifier.modify_connection(ModifyConnectionRequest {
-            version: Some(request.version_requested),
+            version: Some(version),
             monitor_page: monitor_page.into(),
             interrupt_page: request.interrupt_page.into(),
             target_message_vp: Some(request.target_message_vp),
@@ -2318,18 +2293,22 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Some features are handled locally without needing relay support.
         const LOCAL_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
             .with_client_id(true)
-            .with_confidential_channels(true)
-            .with_server_specified_monitor_pages(true);
+            .with_confidential_channels(true);
 
-        let relay_feature_flags = match response {
+        let (relay_feature_flags, server_specified_monitor_page) = match response {
             // There is no relay, or it successfully processed our request.
             ModifyConnectionResponse::Supported(
                 protocol::ConnectionState::SUCCESSFUL,
                 feature_flags,
-            ) => feature_flags,
+                server_specified_monitor_page,
+            ) => (feature_flags, server_specified_monitor_page),
             // The relay supports the requested version, but encountered an error, so pass it
             // along to the guest.
-            ModifyConnectionResponse::Supported(connection_state, feature_flags) => {
+            ModifyConnectionResponse::Supported(
+                connection_state,
+                feature_flags,
+                server_specified_monitor_page,
+            ) => {
                 tracelimit::error_ratelimited!(
                     ?connection_state,
                     "initiate contact failed because relay request failed"
@@ -2337,7 +2316,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
                 // We still report the supported feature flags with an error, so make sure those
                 // are correct.
-                info.version.feature_flags &= feature_flags | LOCAL_FEATURE_FLAGS;
+                info.version.feature_flags &= feature_flags
+                    | LOCAL_FEATURE_FLAGS.with_server_specified_monitor_pages(
+                        server_specified_monitor_page.is_some(),
+                    );
 
                 self.send_version_response(Some(VersionResponseData::new(
                     info.version,
@@ -2358,16 +2340,23 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // The relay responds with all the feature flags it supports, so limit the flags reported to
         // the guest to include only those handled by the relay or locally.
         info.version.feature_flags &= relay_feature_flags | LOCAL_FEATURE_FLAGS;
+
+        // If the server allocated a monitor page, also indicate the relevant feature is supported,
+        // and store the server pages.
+        if let Some(monitor_pages) = server_specified_monitor_page {
+            info.monitor_page = Some(monitor_pages);
+            info.server_allocated_monitor_page = true;
+            info.version
+                .feature_flags
+                .set_server_specified_monitor_pages(true);
+        }
+
         let version = info.version;
-        let monitor_pages = info
-            .allocated_monitor_page
-            .as_ref()
-            .map(|_| info.monitor_page.unwrap());
         self.inner.state = ConnectionState::Connected(info);
 
         self.send_version_response(Some(
             VersionResponseData::new(version, protocol::ConnectionState::SUCCESSFUL)
-                .with_monitor_pages(monitor_pages),
+                .with_monitor_pages(server_specified_monitor_page),
         ));
         if !matches!(next_action, ConnectionAction::None) && self.request_disconnect(next_action) {
             self.do_next_action(next_action);
@@ -3385,6 +3374,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             self.complete_modify_connection(ModifyConnectionResponse::Supported(
                 protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
                 FeatureFlags::new(),
+                None,
             ));
         }
     }
@@ -3402,6 +3392,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 "Duplicate ModifyConnection request, state: {:?}",
                 self.inner.state
             );
+        }
+
+        if info.server_allocated_monitor_page {
+            anyhow::bail!("cannot modify server allocated monitor pages");
         }
 
         if (request.child_to_parent_monitor_page_gpa == 0)

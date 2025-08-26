@@ -199,7 +199,7 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
                         info,
                         next_action: _,
                     } => Some(super::ModifyConnectionRequest {
-                        version: Some(info.version.version as u32),
+                        version: Some(info.version),
                         interrupt_page: info.interrupt_page.into(),
                         monitor_page: info.monitor_page.into(),
                         target_message_vp: Some(info.target_message_vp),
@@ -517,8 +517,8 @@ impl Connection {
             }
             super::ConnectionState::Connecting { info, next_action } => {
                 assert!(
-                    info.allocated_monitor_page.is_none(),
-                    "cannot save allocate monitor pages"
+                    !info.server_allocated_monitor_page,
+                    "cannot save a server allocated page"
                 );
                 Some(Connection::Connecting {
                     version: VersionInfo::save(&info.version),
@@ -532,8 +532,8 @@ impl Connection {
             }
             super::ConnectionState::Connected(info) => {
                 assert!(
-                    info.allocated_monitor_page.is_none(),
-                    "cannot save allocate monitor pages"
+                    !info.server_allocated_monitor_page,
+                    "cannot save a server allocated page"
                 );
                 Some(Connection::Connected {
                     version: VersionInfo::save(&info.version),
@@ -572,7 +572,7 @@ impl Connection {
                     trusted,
                     interrupt_page,
                     monitor_page: monitor_page.map(MonitorPageGpas::restore),
-                    allocated_monitor_page: None,
+                    server_allocated_monitor_page: false,
                     target_message_vp,
                     offers_sent: false,
                     modifying: false,
@@ -597,7 +597,7 @@ impl Connection {
                 offers_sent,
                 interrupt_page,
                 monitor_page: monitor_page.map(MonitorPageGpas::restore),
-                allocated_monitor_page: None,
+                server_allocated_monitor_page: false,
                 target_message_vp,
                 modifying,
                 client_id: client_id.unwrap_or(Guid::ZERO),

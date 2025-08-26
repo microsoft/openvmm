@@ -22,7 +22,7 @@ pub use channels::InitiateContactRequest;
 use channels::MessageTarget;
 pub use channels::MnfUsage;
 use channels::ModifyConnectionRequest;
-pub use channels::ModifyConnectionResponse;
+use channels::ModifyConnectionResponse;
 use channels::Notifier;
 use channels::OfferId;
 pub use channels::OfferParamsInternal;
@@ -37,6 +37,7 @@ use futures::future::OptionFuture;
 use futures::future::poll_fn;
 use futures::stream::SelectAll;
 use guestmem::GuestMemory;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::Vtl;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
@@ -64,6 +65,7 @@ use std::task::ready;
 use std::time::Duration;
 use unicycle::FuturesUnordered;
 use user_driver::DmaClient;
+use user_driver::memory::MemoryBlock;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
@@ -180,9 +182,9 @@ impl<Request: 'static + Send, Response: 'static + Send> RelayChannel<Request, Re
     }
 }
 
-pub type VmbusServerChannelHalf = ServerChannelHalf<ModifyRelayRequest, ModifyConnectionResponse>;
-pub type VmbusRelayChannelHalf = RelayChannelHalf<ModifyRelayRequest, ModifyConnectionResponse>;
-pub type VmbusRelayChannel = RelayChannel<ModifyRelayRequest, ModifyConnectionResponse>;
+pub type VmbusServerChannelHalf = ServerChannelHalf<ModifyRelayRequest, ModifyRelayResponse>;
+pub type VmbusRelayChannelHalf = RelayChannelHalf<ModifyRelayRequest, ModifyRelayResponse>;
+pub type VmbusRelayChannel = RelayChannel<ModifyRelayRequest, ModifyRelayResponse>;
 pub type HvsockServerChannelHalf = ServerChannelHalf<HvsockConnectRequest, HvsockConnectResult>;
 pub type HvsockRelayChannelHalf = RelayChannelHalf<HvsockConnectRequest, HvsockConnectResult>;
 pub type HvsockRelayChannel = RelayChannel<HvsockConnectRequest, HvsockConnectResult>;
@@ -198,10 +200,23 @@ pub struct ModifyRelayRequest {
     pub use_interrupt_page: Option<bool>,
 }
 
+/// Response to a ModifyConnectionRequest.
+#[derive(Debug, Copy, Clone)]
+pub enum ModifyRelayResponse {
+    /// No version change was was requested, or the requested version is supported. Includes all the
+    /// feature flags supported by the relay host, so that supported flags reported to the guest can
+    /// be limited to that. The FeatureFlags field is not relevant if no version change was
+    /// requested.
+    Supported(protocol::ConnectionState, protocol::FeatureFlags),
+    /// A version change was requested but the relay host doesn't support that version. This
+    /// response cannot be returned for a request with no version change set.
+    Unsupported,
+}
+
 impl From<ModifyConnectionRequest> for ModifyRelayRequest {
     fn from(value: ModifyConnectionRequest) -> Self {
         Self {
-            version: value.version,
+            version: value.version.map(|v| v.version as u32),
             monitor_page: value.monitor_page,
             use_interrupt_page: match value.interrupt_page {
                 Update::Unchanged => None,
@@ -508,7 +523,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
                 let (req_send, req_recv) = mesh::channel();
                 let resp_recv = req_recv
                     .map(|_| {
-                        ModifyConnectionResponse::Supported(
+                        ModifyRelayResponse::Supported(
                             protocol::ConnectionState::SUCCESSFUL,
                             protocol::FeatureFlags::from_bits(u32::MAX),
                         )
@@ -553,7 +568,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             channel_bitmap: None,
             shared_event_port: None,
             reset_done: Vec::new(),
-            enable_mnf: self.enable_mnf,
+            mnf_info: self.enable_mnf.then(MnfInfo::default),
             dma_client: self.dma_client,
         };
 
@@ -664,6 +679,23 @@ pub struct SynicMessage {
     trusted: bool,
 }
 
+#[derive(Default)]
+struct MnfInfo {
+    allocated_monitor_pages: Option<MemoryBlock>,
+    allocated_pages_in_use: bool,
+}
+
+impl MnfInfo {
+    fn gpas(&self) -> Option<MonitorPageGpas> {
+        self.allocated_monitor_pages
+            .as_ref()
+            .map(|allocated| MonitorPageGpas {
+                parent_to_child: allocated.pfns()[0] << HV_PAGE_SHIFT,
+                child_to_parent: allocated.pfns()[1] << HV_PAGE_SHIFT,
+            })
+    }
+}
+
 /// Disambiguates offer instances that may have reused the same offer ID.
 #[derive(Debug, Clone, Copy)]
 struct OfferInstanceId {
@@ -710,7 +742,7 @@ struct ServerTaskInner {
     channel_bitmap: Option<Arc<ChannelBitmap>>,
     shared_event_port: Option<Box<dyn Send>>,
     reset_done: Vec<Rpc<(), ()>>,
-    enable_mnf: bool,
+    mnf_info: Option<MnfInfo>,
     dma_client: Option<Arc<dyn DmaClient>>,
 }
 
@@ -769,7 +801,7 @@ impl ServerTask {
         let key = info.params.key();
         let flags = info.params.flags;
 
-        if self.inner.enable_mnf && self.inner.synic.monitor_support().is_some() {
+        if self.inner.mnf_info.is_some() && self.inner.synic.monitor_support().is_some() {
             // If this server is handling MnF, ignore any relayed monitor IDs but still enable MnF
             // for those channels.
             // N.B. Since this can only happen in OpenHCL, which emulates MnF, the latency is
@@ -1091,7 +1123,21 @@ impl ServerTask {
         }
     }
 
-    fn handle_relay_response(&mut self, response: ModifyConnectionResponse) {
+    fn handle_relay_response(&mut self, response: ModifyRelayResponse) {
+        let allocated_monitor_gpas = self
+            .inner
+            .mnf_info
+            .as_ref()
+            .and_then(|info| info.allocated_pages_in_use.then(|| info.gpas()))
+            .flatten();
+
+        let response = match response {
+            ModifyRelayResponse::Supported(state, features) => {
+                ModifyConnectionResponse::Supported(state, features, allocated_monitor_gpas)
+            }
+            ModifyRelayResponse::Unsupported => ModifyConnectionResponse::Unsupported,
+        };
+
         self.server
             .with_notifier(&mut self.inner)
             .complete_modify_connection(response);
@@ -1136,8 +1182,7 @@ impl ServerTask {
 
     async fn run(
         &mut self,
-        mut relay_response_recv: impl futures::stream::FusedStream<Item = ModifyConnectionResponse>
-        + Unpin,
+        mut relay_response_recv: impl futures::stream::FusedStream<Item = ModifyRelayResponse> + Unpin,
         mut hvsock_recv: impl futures::stream::FusedStream<Item = HvsockConnectResult> + Unpin,
     ) {
         loop {
@@ -1563,7 +1608,7 @@ impl Notifier for ServerTaskInner {
         self.map_interrupt_page(request.interrupt_page)
             .context("Failed to map interrupt page.")?;
 
-        self.set_monitor_page(request.monitor_page)
+        self.set_monitor_page(&mut request)
             .context("Failed to map monitor page.")?;
 
         if let Some(vp) = request.target_message_vp {
@@ -1575,7 +1620,7 @@ impl Notifier for ServerTaskInner {
             // N.B. Since the relay is being asked not to update the monitor pages, rather than
             //      reset them, this is only safe because the value of enable_mnf won't change after
             //      the server has been created.
-            if self.enable_mnf {
+            if self.mnf_info.is_some() {
                 request.monitor_page = Update::Unchanged;
             }
 
@@ -1693,20 +1738,6 @@ impl Notifier for ServerTaskInner {
 
     fn unload_complete(&mut self) {
         self.unreserve_channels();
-    }
-
-    fn allocate_monitor_pages(&self) -> anyhow::Result<Option<user_driver::memory::MemoryBlock>> {
-        if !self.enable_mnf {
-            return Ok(None);
-        }
-
-        let block = if let Some(dma_client) = self.dma_client.as_ref() {
-            Some(dma_client.allocate_dma_buffer(PAGE_SIZE * 2)?)
-        } else {
-            None
-        };
-
-        Ok(block)
     }
 }
 
@@ -1833,8 +1864,8 @@ impl ServerTaskInner {
         Ok(())
     }
 
-    fn set_monitor_page(&mut self, monitor_page: Update<MonitorPageGpas>) -> anyhow::Result<()> {
-        let monitor_page = match monitor_page {
+    fn set_monitor_page(&mut self, request: &mut ModifyConnectionRequest) -> anyhow::Result<()> {
+        let mut monitor_page = match request.monitor_page {
             Update::Unchanged => return Ok(()),
             Update::Reset => None,
             Update::Set(value) => Some(value),
@@ -1850,14 +1881,38 @@ impl ServerTaskInner {
             anyhow::bail!("attempt to change monitor page while open channels using mnf");
         }
 
-        if self.enable_mnf {
+        if let Some(mnf_info) = self.mnf_info.as_mut() {
             if let Some(monitor) = self.synic.monitor_support() {
+                mnf_info.allocated_pages_in_use = false;
+
+                // If a version is present in the request, then Update::Reset actually means that
+                // the guest didn't specify the monitor pages, but may still want to use
+                // server-allocated ones.
+                if let Some(version) = request.version {
+                    if version.feature_flags.server_specified_monitor_pages() {
+                        if let Some(dma_client) = self.dma_client.as_ref() {
+                            // If we haven't allocated monitor pages yet, do so now.
+                            if mnf_info.allocated_monitor_pages.is_none() {
+                                mnf_info.allocated_monitor_pages =
+                                    Some(dma_client.allocate_dma_buffer(PAGE_SIZE * 2)?);
+                            }
+
+                            // Utilize the server-allocated pages.
+                            mnf_info.allocated_pages_in_use = true;
+                            monitor_page = mnf_info.gpas();
+                        }
+                    }
+                }
                 if let Err(err) = monitor.set_monitor_page(self.vtl, monitor_page) {
                     anyhow::bail!(
                         "setting monitor page failed, err = {err:?}, monitor_page = {monitor_page:?}"
                     );
                 }
             }
+
+            // If MNF is configured to be handled by this server (even if it's not actually
+            // supported by the synic), don't forward the pages to the relay.
+            request.monitor_page = Update::Unchanged;
         }
 
         Ok(())
