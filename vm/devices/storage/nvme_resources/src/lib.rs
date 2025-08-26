@@ -7,7 +7,6 @@
 
 use crate::fault::FaultConfiguration;
 use guid::Guid;
-use mesh::Cell;
 use mesh::MeshPayload;
 use vm_resource::Resource;
 use vm_resource::ResourceId;

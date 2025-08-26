@@ -487,7 +487,6 @@ impl AdminHandler {
                                 &command,
                                 &command_updated
                             );
-                            // Clone to avoid Alignment errors
                             command = command_updated;
                         }
                         QueueFaultBehavior::Drop => {

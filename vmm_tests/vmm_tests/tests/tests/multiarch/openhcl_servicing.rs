@@ -8,13 +8,14 @@
 
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
+use mesh::CellUpdater;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFault;
 use nvme_resources::fault::QueueFaultBehavior;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
@@ -29,6 +30,7 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
+use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -179,7 +181,7 @@ async fn shutdown_ic(
                 c.vmbus_devices.push((
                     DeviceVtl::Vtl0,
                     ScsiControllerHandle {
-                        instance_id: guid::Guid::new_random(),
+                        instance_id: Guid::new_random(),
                         max_sub_channel_count: 1,
                         devices: vec![ScsiDeviceAndPath {
                             path: ScsiPath {
@@ -255,7 +257,10 @@ async fn keepalive_with_nvme_fault(
         fault_active: fault_start_updater.cell(),
         admin_fault: AdminQueueFaultConfig::new()
             .with_submission_queue_fault(0x05, QueueFaultBehavior::Drop)
-            .with_submission_queue_fault(0x04, QueueFaultBehavior::Delay(5000)),
+            .with_submission_queue_fault(
+                0x04,
+                QueueFaultBehavior::Delay(Duration::from_millis(5000)),
+            ),
     };
 
     let (mut vm, agent) = config
@@ -268,7 +273,7 @@ async fn keepalive_with_nvme_fault(
                     vtl: DeviceVtl::Vtl2,
                     instance_id: NVME_INSTANCE,
                     resource: NvmeFaultControllerHandle {
-                        subsystem_id: guid::Guid::new_random(),
+                        subsystem_id: Guid::new_random(),
                         msix_count: 1,
                         max_io_queues: 1,
                         namespaces: vec![NamespaceDefinition {
