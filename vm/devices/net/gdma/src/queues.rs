@@ -73,7 +73,7 @@ impl<T: IntoBytes + Immutable + KnownLayout> CqEq<T> {
             return Err(QueueAllocError::InvalidAlignment);
         }
         let len = region.len();
-        if !len < PAGE_SIZE64 as usize || len > u32::MAX as usize || !region.len().is_power_of_two()
+        if len < PAGE_SIZE64 as usize || len > u32::MAX as usize || !region.len().is_power_of_two()
         {
             return Err(QueueAllocError::InvalidLen);
         }
