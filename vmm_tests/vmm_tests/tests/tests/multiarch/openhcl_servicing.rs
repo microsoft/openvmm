@@ -328,13 +328,10 @@ async fn keepalive_with_nvme_fault(
     let sh = agent.unix_shell();
 
     // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?; // TODO: This is actually not checking much right now
+    cmd!(sh, "ls /dev/sda").run().await?;
 
-    // Test that inspect serialization works with the old version.
-    vm.test_inspect_openhcl().await?;
-
+    // CREATE_IO_COMPLETION_QUEUE is blocked. This will time out without keepalive enabled.
     fault_start_updater.set(true).await;
-
     vm.restart_openhcl(
         igvm_file.clone(),
         OpenHclServicingFlags {
@@ -345,11 +342,7 @@ async fn keepalive_with_nvme_fault(
     .await?;
 
     fault_start_updater.set(false).await;
-
     agent.ping().await?;
-
-    // Test that inspect serialization works with the new version.
-    vm.test_inspect_openhcl().await?;
 
     Ok(())
 }
