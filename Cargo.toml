@@ -544,7 +544,7 @@ windows-version = "0.1.4"
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
-zerocopy = { version = "0.8.26", features = ["derive"]}
+zerocopy = { version = "0.8.24", features = ["derive"]}
 
 [workspace.metadata.xtask.unused-deps]
 # Pulled in through "tracing", but we need to pin the version
