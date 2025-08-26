@@ -735,6 +735,9 @@ impl UhVmNetworkSettings {
         };
         // Complete shutdown on the VFs. Process events on the endpoints to
         // allow for proper shutdown.
+        // run_endpoints is a loop, so the race completes when shutdown_vfs completes.
+        // Also, run_endpoints races wait_for_endpoint_action() so it doesn't guarentee
+        // all endpoints will close their channels before shutdown_vfs completes.
         let _ = (shutdown_vfs, run_endpoints).race().await;
     }
 
@@ -1786,8 +1789,10 @@ async fn new_underhill_vm(
     // Only advertise extended IOAPIC on non-PCAT systems.
     #[cfg(guest_arch = "x86_64")]
     let cpuid = {
+        let confidential_vmbus = isolation.is_hardware_isolated() && with_vmbus_relay;
         let extended_ioapic_rte = !matches!(firmware_type, FirmwareType::Pcat);
-        vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte).collect::<Vec<_>>()
+        vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte, confidential_vmbus)
+            .collect::<Vec<_>>()
     };
 
     let (crash_notification_send, crash_notification_recv) = mesh::channel();
