@@ -49,7 +49,6 @@ use vmbus_core::protocol::UserDefinedData;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
 use vmcore::synic::MonitorInfo;
-use vmcore::synic::MonitorPageGpaInfo;
 use vmcore::synic::MonitorPageGpas;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -199,6 +198,28 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
                     );
                 }
             });
+    }
+}
+
+#[derive(Debug, Copy, Clone, Inspect)]
+struct MonitorPageGpaInfo {
+    gpas: MonitorPageGpas,
+    server_allocated: bool,
+}
+
+impl MonitorPageGpaInfo {
+    fn from_guest_gpas(gpas: MonitorPageGpas) -> Self {
+        Self {
+            gpas,
+            server_allocated: false,
+        }
+    }
+
+    fn from_server_gpas(gpas: MonitorPageGpas) -> Self {
+        Self {
+            gpas,
+            server_allocated: true,
+        }
     }
 }
 

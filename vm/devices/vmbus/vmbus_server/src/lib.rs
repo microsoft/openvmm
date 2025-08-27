@@ -1883,7 +1883,7 @@ impl ServerTaskInner {
         let mut monitor_page = match request.monitor_page {
             Update::Unchanged => return Ok(()),
             Update::Reset => None,
-            Update::Set(value) => Some(MonitorPageGpaInfo::from_guest_gpas(value)),
+            Update::Set(value) => Some(value),
         };
 
         // TODO: can this check be moved into channels.rs?

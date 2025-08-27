@@ -35,7 +35,7 @@ use zerocopy::KnownLayout;
 
 struct MockSynicInner {
     message_port: Option<Arc<dyn MessagePort>>,
-    monitor_page: Option<MonitorPageGpaInfo>,
+    monitor_page: Option<MonitorPageGpas>,
 }
 
 struct MockSynic {
@@ -196,7 +196,7 @@ impl SynicPortAccess for MockSynic {
 }
 
 impl SynicMonitorAccess for MockSynic {
-    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpaInfo>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()> {
         assert!(vtl == Vtl::Vtl0);
         let mut inner = self.inner.lock();
         inner.monitor_page = gpa;
@@ -935,12 +935,9 @@ async fn test_server_monitor_page_helper(
         assert_eq!(response.child_to_parent_monitor_page_gpa, 0x124000);
         assert_eq!(
             env.synic.inner.lock().monitor_page,
-            Some(MonitorPageGpaInfo {
-                gpas: MonitorPageGpas {
-                    parent_to_child: 0x123000,
-                    child_to_parent: 0x124000
-                },
-                server_allocated: true
+            Some(MonitorPageGpas {
+                parent_to_child: 0x123000,
+                child_to_parent: 0x124000,
             })
         );
     } else {
@@ -951,12 +948,9 @@ async fn test_server_monitor_page_helper(
         if supply_guest_pages {
             assert_eq!(
                 env.synic.inner.lock().monitor_page,
-                Some(MonitorPageGpaInfo {
-                    gpas: MonitorPageGpas {
-                        child_to_parent: 0x123f000,
-                        parent_to_child: 0x321f000,
-                    },
-                    server_allocated: false
+                Some(MonitorPageGpas {
+                    child_to_parent: 0x123f000,
+                    parent_to_child: 0x321f000,
                 })
             );
         } else {
