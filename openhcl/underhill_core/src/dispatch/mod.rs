@@ -560,7 +560,7 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED))
+                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id))
                         .await;
                 }
             };
@@ -579,7 +579,7 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED))
+                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id))
                     .await
             };
 
