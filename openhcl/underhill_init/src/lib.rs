@@ -523,6 +523,9 @@ fn do_main() -> anyhow::Result<()> {
         ("/proc/sys/vm/watermark_scale_factor", "1"),
         // Disable the watermark boost feature
         ("/proc/sys/vm/watermark_boost_factor", "0"),
+        // enable overcommit hugepages
+        // TODO: dynamic number based on vp count and memsize
+        ("/proc/sys/vm/nr_overcommit_hugepages", "50"),
     ];
     let filesystems = [
         FilesystemMount::new(
