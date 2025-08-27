@@ -14,6 +14,13 @@ pub struct NugetPackage {
     pub version: String,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct NugetPackageDestination {
+    pub path: PathBuf,
+}
+
+impl Artifact for NugetPackageDestination {}
+
 flowey_request! {
     pub enum Request {
         /// A bundle of packages to install in one nuget invocation
@@ -22,7 +29,7 @@ flowey_request! {
             nuget_config_file: ReadVar<PathBuf>,
             /// A list of nuget packages to install, and outvars denoting where they
             /// were extracted to.
-            packages: Vec<(ReadVar<NugetPackage>, WriteVar<PathBuf>)>,
+            packages: Vec<(ReadVar<NugetPackage>, WriteVar<NugetPackageDestination>)>,
             /// Directory to install the packages into.
             install_dir: ReadVar<PathBuf>,
             /// Side effects that must have run before installing these packages.
@@ -37,7 +44,7 @@ flowey_request! {
 
 struct InstallRequest {
     nuget_config_file: ReadVar<PathBuf>,
-    packages: Vec<(ReadVar<NugetPackage>, WriteVar<PathBuf>)>,
+    packages: Vec<(ReadVar<NugetPackage>, WriteVar<NugetPackageDestination>)>,
     install_dir: ReadVar<PathBuf>,
     pre_install_side_effects: Vec<ReadVar<SideEffect>>,
 }
@@ -197,11 +204,11 @@ impl FlowNode for Node {
                     )
                     .run()?;
 
-                    for (package, package_out_dir) in packages {
-                        for var in package_out_dir {
-                            rt.write(var, &install_dir.join(&package.id).absolute()?);
-                        }
-                    }
+            for (package, package_out_dir) in packages {
+                for var in package_out_dir {
+                    rt.write(var, &NugetPackageDestination { path: install_dir.join(&package.id).absolute()? });
+                }
+            }
 
                     Ok(())
                 }

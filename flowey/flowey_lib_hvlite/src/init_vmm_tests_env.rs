@@ -6,11 +6,16 @@
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
-use crate::download_release_igvm_files::OpenhclReleaseVersion;
-use crate::download_release_igvm_files::ReleaseOutput;
+use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+
+#[derive(Serialize, Deserialize)]
+pub enum ReleaseIgvmFilesInput {
+    ReleaseOutput(ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>),
+    NugetPackageDestination(ReadVar<flowey_lib_common::nuget_install_package::NugetPackageDestination>),
+}
 
 flowey_request! {
     pub struct Request {
@@ -54,8 +59,7 @@ flowey_request! {
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
         /// Get a map of env vars required to be set when running VMM tests
         pub get_env: WriteVar<BTreeMap<String, String>>,
-        /// The latest release igvm files
-        pub release_igvm_files: Option<ReadVar<ReleaseOutput>>,
+        pub release_igvm_files: Option<ReleaseIgvmFilesInput>,
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
     }
@@ -114,6 +118,12 @@ impl SimpleFlowNode for Node {
             msvm_fd: v,
         });
 
+        let release_igvm_files = release_igvm_files.unwrap();
+        let release_igvm_files = match release_igvm_files {
+            ReleaseIgvmFilesInput::ReleaseOutput(v) => Some(v.map(ctx, |v| v.bins_dir)),
+            ReleaseIgvmFilesInput::NugetPackageDestination(v) => Some(v.map(ctx, |v| v.path)),
+        };
+
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
@@ -130,12 +140,12 @@ impl SimpleFlowNode for Node {
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
             let uefi = uefi.claim(ctx);
-            let release_igvm_files = release_igvm_files.claim(ctx);
+            let release_igvm_files_dir = release_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
                 let uefi = rt.read(uefi);
-
+                let release_igvm_files_dir = rt.read(release_igvm_files_dir);
                 let test_content_dir = rt.read(test_content_dir);
 
                 let mut env = BTreeMap::new();
@@ -309,24 +319,21 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
-                if release_igvm_files.is_some() {
-                    let release_igvm_files = rt.read(release_igvm_files.unwrap());
+                if release_igvm_files_dir.is_some() {
+                    let release_igvm_files_dir = release_igvm_files_dir.unwrap();
                     let latest_release_version = OpenhclReleaseVersion::latest();
-
-                    fs_err::copy(
-                        release_igvm_files.x64_bin,
-                        test_content_dir.join(format!("{latest_release_version}-x64-openhcl.bin")),
-                    )?;
-                    fs_err::copy(
-                        release_igvm_files.x64_direct_bin,
-                        test_content_dir
-                            .join(format!("{latest_release_version}-x64-direct-openhcl.bin")),
-                    )?;
-                    fs_err::copy(
-                        release_igvm_files.aarch64_bin,
-                        test_content_dir
-                            .join(format!("{latest_release_version}-aarch64-openhcl.bin")),
-                    )?;
+                    let filenames = vec![
+                        ("openhcl.bin", format!("{latest_release_version}-x64-openhcl.bin")),
+                        ("openhcl-aarch64.bin", format!("{latest_release_version}-aarch64-openhcl.bin")),
+                        ("openhcl-direct.bin", format!("{latest_release_version}-x64-direct-openhcl.bin")),
+                    ];
+                    // For each entry in filenames check if the file exists in the release_igvm_files_dir
+                    for (filename, new_name) in filenames {
+                        let src = release_igvm_files_dir.join(filename);
+                        if src.exists() {
+                            fs_err::copy(src, test_content_dir.join(new_name))?;
+                        }
+                    }
                 }
 
                 let (arch_dir, kernel_file_name) = match openvmm_deps_arch {

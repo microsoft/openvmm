@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::download_lxutil::LxutilArch;
-use crate::download_release_igvm_files::OpenhclReleaseVersion;
+use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
 use crate::init_openvmm_magicpath_linux_test_kernel::OpenvmmLinuxTestKernelArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
@@ -23,7 +23,7 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_release_igvm_files::resolve::Node>();
+        ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_linux_test_kernel::Node>();
         ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
@@ -98,7 +98,7 @@ impl SimpleFlowNode for Node {
         }
 
         let latest_release_igvm_files =
-            ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
+            ctx.reqv(|v| crate::download_release_igvm_files_from_gh::resolve::Request {
                 release_igvm_files: v,
                 release_version: OpenhclReleaseVersion::latest(),
             });
@@ -115,20 +115,20 @@ impl SimpleFlowNode for Node {
                     let latest_release_version = OpenhclReleaseVersion::latest();
 
                     fs_err::copy(
-                        latest_release_igvm_files.aarch64_bin,
+                        latest_release_igvm_files.bins_dir.join("openhcl-aarch64.bin".to_string()),
                         latest_release_artifact.join(
                             latest_release_version.clone().to_string() + "-aarch64-openhcl.bin",
                         ),
                     )?;
 
                     fs_err::copy(
-                        latest_release_igvm_files.x64_bin,
+                        latest_release_igvm_files.bins_dir.join("openhcl.bin".to_string()),
                         latest_release_artifact
                             .join(latest_release_version.clone().to_string() + "-x64-openhcl.bin"),
                     )?;
 
                     fs_err::copy(
-                        latest_release_igvm_files.x64_direct_bin,
+                        latest_release_igvm_files.bins_dir.join("openhcl-direct.bin".to_string()),
                         latest_release_artifact.join(
                             latest_release_version.clone().to_string() + "-x64-direct-openhcl.bin",
                         ),

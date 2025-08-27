@@ -994,6 +994,20 @@ impl IntoPipeline for CheckinGatesCli {
                 _ => unreachable!(),
             };
 
+            let (pub_latest_release_igvm_files, use_latest_release_igvm_files) = 
+                pipeline.new_typed_artifact(format!("{label}-latest-release-igvm-files"));
+
+            let download_test_artifacts_job = pipeline.new_job(platform, arch, format!("download vmm-tests artifacts[{label}]"))
+                .gh_set_pool(gh_pool.clone())
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve::Request {
+                        release_igvm_files: ctx.publish_typed_artifact(pub_latest_release_igvm_files),
+                        release_version: flowey_lib_hvlite::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest()
+                    }
+                });
+
+            all_jobs.push(download_test_artifacts_job.finish());
+
             let mut vmm_tests_run_job = pipeline
                 .new_job(platform, arch, format!("run vmm-tests [{label}]"))
                 .gh_set_pool(gh_pool)
@@ -1009,6 +1023,7 @@ impl IntoPipeline for CheckinGatesCli {
                         test_artifacts,
                         fail_job_on_test_fail: true,
                         artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
+                        release_igvm_files: Some(flowey_lib_hvlite::init_vmm_tests_env::ReleaseIgvmFilesInput::ReleaseOutput(ctx.use_typed_artifact(&use_latest_release_igvm_files))),
                         done: ctx.new_done_handle(),
                     }
                 });

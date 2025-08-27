@@ -5,12 +5,8 @@ use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
 pub struct ReleaseOutput {
-    #[serde(rename = "release-x64-openhcl-direct.bin")]
-    pub x64_direct_bin: PathBuf,
-    #[serde(rename = "release-x64-openhcl.bin")]
-    pub x64_bin: PathBuf,
-    #[serde(rename = "release-aarch64-openhcl.bin")]
-    pub aarch64_bin: PathBuf,
+    // Directory containing: openhcl-direct.bin, openhcl.bin, openhcl-aarch64.bin
+    pub bins_dir: PathBuf,
 }
 
 impl Artifact for ReleaseOutput {}
@@ -122,13 +118,18 @@ pub mod resolve {
                     let downloaded_aarch64 =
                         rt.read(downloaded_aarch64).join("aarch64-openhcl-igvm");
 
+                    // Choose the x64 download directory as the common directory and copy the aarch64 bin into it
+                    let target_dir = downloaded_x64.clone();
+
+                    let aarch64_src = downloaded_aarch64.join("openhcl-aarch64.bin");
+                    let aarch64_dst = target_dir.join("openhcl-aarch64.bin");
+                    if aarch64_src != aarch64_dst {
+                        fs_err::copy(&aarch64_src, &aarch64_dst).map_err(|e| anyhow::anyhow!(e))?;
+                    }
+
                     rt.write_not_secret(
                         write_release_output,
-                        &ReleaseOutput {
-                            x64_direct_bin: downloaded_x64.join("openhcl-direct.bin"),
-                            x64_bin: downloaded_x64.join("openhcl.bin"),
-                            aarch64_bin: downloaded_aarch64.join("openhcl-aarch64.bin"),
-                        },
+                        &ReleaseOutput { bins_dir: target_dir },
                     );
 
                     Ok(())
