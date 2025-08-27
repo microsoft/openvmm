@@ -62,7 +62,7 @@ where
 }
 
 pub(crate) fn write_str(s: &str) {
-    _ = crate::tmk_logger::LOGGER.get_writter().write_str(s);
+    _ = crate::tmk_logger::LOGGER.get_writer().write_str(s);
 }
 
 #[macro_export]

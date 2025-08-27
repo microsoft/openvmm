@@ -50,7 +50,7 @@ pub(crate) fn format_log_string_to_json(
 }
 
 pub struct TmkLogger<T> {
-    pub writter: T,
+    pub writer: T,
 }
 
 impl<T> TmkLogger<Mutex<T>>
@@ -59,15 +59,15 @@ where
 {
     pub const fn new(provider: T) -> Self {
         TmkLogger {
-            writter: Mutex::new(provider),
+            writer: Mutex::new(provider),
         }
     }
 
-    pub fn get_writter(&self) -> MutexGuard<'_, T>
+    pub fn get_writer(&self) -> MutexGuard<'_, T>
     where
         T: Write + Send,
     {
-        self.writter.lock()
+        self.writer.lock()
     }
 }
 
@@ -87,7 +87,7 @@ where
             record.line().unwrap_or_default()
         );
         let str = format_log_string_to_json(&str, &line, true, record.level());
-        _ = self.writter.lock().write_str(str.as_str());
+        _ = self.writer.lock().write_str(str.as_str());
     }
 
     fn flush(&self) {}

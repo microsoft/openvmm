@@ -41,7 +41,7 @@ where
     let vp_count = ctx.get_vp_count();
     tmk_assert!(vp_count.is_ok(), "get_vp_count should succeed");
     let vp_count = vp_count.unwrap();
-    tmk_assert!(vp_count == 4, "vp count should be 8");
+    tmk_assert!(vp_count == 4, "vp count should be 4");
     let r = ctx.setup_interrupt_handler();
     tmk_assert!(r.is_ok(), "setup_interrupt_handler should succeed");
     log::info!("set intercept handler successfully!");

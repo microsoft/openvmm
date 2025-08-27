@@ -58,8 +58,8 @@ fn register_command_queue(vp_index: u32) {
 
 pub struct HvTestCtx {
     pub hvcall: HvCall,
-    // BUG: make this static
-    pub vp_runing: BTreeSet<u32>,
+    // TODO: make this static, this could lead to bugs when init a VP from AP
+    pub vp_running: BTreeSet<u32>,
     pub my_vp_idx: u32,
     pub my_vtl: Vtl,
 }
@@ -82,7 +82,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     /// hypervisor side notifications back to the guest.  
     /// Returns [`TmkError`] if the allocation of the SIMP buffer fails.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
-        let layout = Layout::from_size_align(4096, ALIGNMENT)
+        let layout = Layout::from_size_align(4096, 4096)
             .map_err(|_| TmkError::AllocationFailed)?;
 
         let ptr = unsafe { alloc(layout) };
@@ -215,7 +215,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         if vtl >= Vtl::Vtl2 {
             return Err(TmkError::InvalidParameter);
         }
-        let is_vp_running = self.vp_runing.get(&vp_index);
+        let is_vp_running = self.vp_running.get(&vp_index);
         if let Some(_running_vtl) = is_vp_running {
             log::debug!("both vtl0 and vtl1 are running for VP: {:?}", vp_index);
         } else {
@@ -232,7 +232,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                 log::info!("self addr: {:p}", self as *const _);
                 self.switch_to_high_vtl();
                 log::info!("self addr after switch: {:p}", self as *const _);
-                self.vp_runing.insert(vp_index);
+                self.vp_running.insert(vp_index);
             } else {
                 let (tx, rx) = nostd_spin_channel::Channel::<TmkResult<()>>::new().split();
                 let self_vp_idx = self.my_vp_idx;
@@ -266,7 +266,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                 if let Ok(r) = rx {
                     r?;
                 }
-                self.vp_runing.insert(vp_index);
+                self.vp_running.insert(vp_index);
             }
         }
         cmdt()
@@ -525,7 +525,7 @@ impl HvTestCtx {
     pub const fn new() -> Self {
         HvTestCtx {
             hvcall: HvCall::new(),
-            vp_runing: BTreeSet::new(),
+            vp_running: BTreeSet::new(),
             my_vp_idx: 0,
             my_vtl: Vtl::Vtl0,
         }

@@ -30,7 +30,7 @@ struct ChannelInner<T> {
 
 // SAFETY: ChannelInner<T> is safe to share across threads as it uses atomic operations for senders and receivers counts
 unsafe impl<T: Send> Send for ChannelInner<T> {}
-// SAFETY: ChannelInner<T> is safe to used across threads as it uses atomic operations for senders and receivers counts
+// SAFETY: ChannelInner<T> is safe to use across threads as it uses atomic operations for senders and receivers counts
 unsafe impl<T: Send> Sync for ChannelInner<T> {}
 
 /// Error type for sending operations
