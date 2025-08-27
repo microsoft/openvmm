@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 spin.workspace = true
-
+thiserror.workspace = true
 
 [lints]
 workspace = true

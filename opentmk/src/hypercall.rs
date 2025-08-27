@@ -613,7 +613,6 @@ impl HvCall {
         let efer = unsafe { read_msr(0xC0000080) };
         context.efer = efer;
 
-        log::info!("Current VTL VP context: {:?}", context);
         Ok(context)
     }
 

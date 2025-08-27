@@ -4441,6 +4441,7 @@ name = "nostd_spin_channel"
 version = "0.1.0"
 dependencies = [
  "spin 0.10.0",
+ "thiserror 2.0.0",
 ]
 
 [[package]]

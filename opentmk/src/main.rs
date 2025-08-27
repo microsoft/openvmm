@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 #![no_std]
 #![expect(unsafe_code)]
-#![feature(abi_x86_interrupt)]
+#![cfg_attr(feature = "nightly", feature(abi_x86_interrupt))]
+
 #![doc = include_str!("../README.md")]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_main)]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_std)]
@@ -10,6 +11,7 @@
 // Actual entrypoint is `uefi::uefi_main`, via the `#[entry]` macro
 #[cfg(any(test, not(target_os = "uefi")))]
 fn main() {}
+
 
 #[macro_use]
 extern crate alloc;

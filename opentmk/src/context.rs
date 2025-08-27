@@ -16,6 +16,7 @@ pub trait SecureInterceptPlatformTrait {
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()>;
 }
 
+#[cfg(feature = "nightly")]
 pub trait InterruptPlatformTrait {
     /// Associates an interrupt vector with a handler inside the
     /// non-secure world.

@@ -6,6 +6,11 @@ name = "opentmk"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+nightly = []
+
+
 [dependencies]
 arrayvec.workspace = true
 bitfield-struct.workspace = true

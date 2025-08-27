@@ -1,7 +1,6 @@
 use hvdef::Vtl;
 use nostd_spin_channel::Channel;
 
-use crate::context::InterruptPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VpExecutor;
 use crate::context::VtlPlatformTrait;
@@ -10,7 +9,7 @@ use crate::tmk_assert;
 #[inline(never)]
 pub fn exec<T>(ctx: &mut T)
 where
-    T: VtlPlatformTrait + VirtualProcessorPlatformTrait<T> + InterruptPlatformTrait,
+    T: VtlPlatformTrait + VirtualProcessorPlatformTrait<T>,
 {
     let r = ctx.setup_partition_vtl(Vtl::Vtl1);
     tmk_assert!(r.is_ok(), "setup_partition_vtl should succeed");
@@ -20,10 +19,6 @@ where
 
     let vp_count = vp_count.unwrap();
     tmk_assert!(vp_count == 4, "vp count should be 4");
-
-    _ = ctx.setup_interrupt_handler();
-
-    _ = ctx.set_interrupt_idx(0x6, || loop {});
 
     // Testing BSP VTL Bringup
     {

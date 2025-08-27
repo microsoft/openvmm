@@ -11,7 +11,6 @@ use super::io;
 
 /// Serial port addresses.
 /// These are the standard COM ports used in x86 systems.
-#[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SerialPort {
     COM1,

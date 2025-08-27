@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use alloc::collections::VecDeque;
-use core::error::Error;
+use thiserror::Error;
 use core::fmt;
 
 /// An unbounded channel implementation with priority send capability.
@@ -33,41 +33,21 @@ unsafe impl<T: Send> Send for ChannelInner<T> {}
 unsafe impl<T: Send> Sync for ChannelInner<T> {}
 
 /// Error type for sending operations
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Error)]
 pub enum SendError<T> {
     /// All receivers have been dropped
+    #[error("send failed because receiver is disconnected")]
     Disconnected(T),
 }
 
-impl<T> fmt::Display for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SendError::Disconnected(_) => write!(f, "send failed because receiver is disconnected"),
-        }
-    }
-}
-
-impl<T: fmt::Debug> Error for SendError<T> {}
-
 /// Error type for receiving operations
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Error)]
 pub enum RecvError {
-    /// Channel is empty
+    #[error("receive failed because channel is empty")]
     Empty,
-    /// All senders have been dropped
+    #[error("receive failed because all senders are disconnected")]
     Disconnected,
 }
-
-impl fmt::Display for RecvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RecvError::Empty => write!(f, "receive failed because channel is empty"),
-            RecvError::Disconnected => write!(f, "receive failed because sender is disconnected"),
-        }
-    }
-}
-
-impl Error for RecvError {}
 
 /// Sender half of the channel
 pub struct Sender<T> {

@@ -17,6 +17,7 @@ use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
 use spin::Mutex;
 
+#[cfg(feature = "nightly")]
 use crate::context::InterruptPlatformTrait;
 use crate::context::MsrPlatformTrait;
 use crate::context::SecureInterceptPlatformTrait;
@@ -93,6 +94,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     }
 }
 
+#[cfg(feature = "nightly")]
 impl InterruptPlatformTrait for HvTestCtx {
     /// Install an interrupt handler for the supplied vector on x86-64.
     /// For non-x86-64 targets the call returns
