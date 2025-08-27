@@ -5,6 +5,8 @@ use hvdef::Vtl;
 
 use crate::tmkdefs::TmkResult;
 
+#[cfg(feature = "nightly")]
+#[cfg(target_arch = "x86_64")]
 pub trait SecureInterceptPlatformTrait {
     /// Installs a secure-world intercept for the given interrupt.
     ///
@@ -31,6 +33,7 @@ pub trait InterruptPlatformTrait {
     fn setup_interrupt_handler(&mut self) -> TmkResult<()>;
 }
 
+#[cfg(target_arch = "x86_64")]
 pub trait MsrPlatformTrait {
     /// Reads the content of `msr`.
     ///

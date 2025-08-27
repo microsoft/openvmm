@@ -219,11 +219,7 @@ pub enum SerialPort {
 }
 
 
-impl Serial<T: IoAccess> {
-
-    pub fn new(serial: SerialPort, io: T) -> Self {
-    }
-
+impl Serial {
     /// Initializes the serial port.
     pub fn init() -> Serial {
         const SUPPORTED_PL011_CELLS: &[u32] = &[0xB105_F00D];

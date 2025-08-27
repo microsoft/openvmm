@@ -76,6 +76,7 @@ pub enum TmkError {
     Timeout,
     VtlAlreadyEnabled,
     UnknownRegisterName,
+    NotImplemented,
 }
 
 impl Display for TmkError {

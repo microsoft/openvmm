@@ -1,25 +1,35 @@
+#![cfg_attr(target_arch = "aarch64", expect(unused_imports))]
 use alloc::alloc::alloc;
 use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::collections::linked_list::LinkedList;
+#[cfg(target_arch = "aarch64")]
+use hvdef::hypercall::InitialVpContextArm64;
 use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::Display;
 use core::ops::Range;
 
 use hvdef::hypercall::HvInputVtl;
+#[cfg(target_arch = "x86_64")]
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::AlignedU128;
 use hvdef::Vtl;
 use memory_range::MemoryRange;
+#[cfg(target_arch = "x86_64")]
 use minimal_rt::arch::msr::read_msr;
+#[cfg(target_arch = "x86_64")]
 use minimal_rt::arch::msr::write_msr;
 use spin::Mutex;
 
 #[cfg(feature = "nightly")]
+#[cfg(target_arch = "x86_64")]
 use crate::context::InterruptPlatformTrait;
+#[cfg(target_arch = "x86_64")]
 use crate::context::MsrPlatformTrait;
+#[cfg(feature = "nightly")]
+#[cfg(target_arch = "x86_64")]
 use crate::context::SecureInterceptPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VpExecutor;
@@ -28,13 +38,11 @@ use crate::hypercall::HvCall;
 use crate::tmkdefs::TmkError;
 use crate::tmkdefs::TmkResult;
 
-const ALIGNMENT: usize = 4096;
-
-type ComandTable = BTreeMap<u32, LinkedList<(Box<dyn FnOnce(&mut HvTestCtx) + 'static>, Vtl)>>;
-static mut CMD: Mutex<ComandTable> = Mutex::new(BTreeMap::new());
+type CommandTable = BTreeMap<u32, LinkedList<(Box<dyn FnOnce(&mut HvTestCtx) + 'static>, Vtl)>>;
+static mut CMD: Mutex<CommandTable> = Mutex::new(BTreeMap::new());
 
 #[expect(static_mut_refs)]
-fn cmdt() -> &'static Mutex<ComandTable> {
+fn cmdt() -> &'static Mutex<CommandTable> {
     unsafe { &CMD }
 }
 
@@ -66,11 +74,13 @@ impl Display for HvTestCtx {
     }
 }
 
+#[cfg(feature = "nightly")]
+#[cfg(target_arch = "x86_64")]
 impl SecureInterceptPlatformTrait for HvTestCtx {
     /// Configure the Secure Interrupt Message Page (SIMP) and the first
     /// SynIC interrupt (SINT0) so that the hypervisor can vector
     /// hypervisor side notifications back to the guest.  
-    /// Returns [`TmkResult::Err`] if the allocation of the SIMP buffer fails.
+    /// Returns [`TmkError`] if the allocation of the SIMP buffer fails.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
         let layout = Layout::from_size_align(4096, ALIGNMENT)
             .map_err(|_| TmkError::AllocationFailed)?;
@@ -95,6 +105,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
 }
 
 #[cfg(feature = "nightly")]
+#[cfg(target_arch = "x86_64")]
 impl InterruptPlatformTrait for HvTestCtx {
     /// Install an interrupt handler for the supplied vector on x86-64.
     /// For non-x86-64 targets the call returns
@@ -108,7 +119,7 @@ impl InterruptPlatformTrait for HvTestCtx {
 
         #[cfg(not(target_arch = "x86_64"))]
         {
-            Err(TmkError(TmkError::NotImplemented))
+            Err(TmkError::NotImplemented)
         }
     }
 
@@ -120,6 +131,7 @@ impl InterruptPlatformTrait for HvTestCtx {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 impl MsrPlatformTrait for HvTestCtx {
     /// Read an MSR directly from the CPU and return the raw value.
     fn read_msr(&mut self, msr: u32) -> TmkResult<u64> {
@@ -148,8 +160,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
 
         #[cfg(target_arch = "aarch64")]
         {
-            use hvdef::HvAarch64RegisterName;
-            let reg = HvAarch64RegisterName(reg);
+            let reg = hvdef::HvArm64RegisterName(reg);
             let val = self.hvcall.get_register(reg.into(), None)?.as_u128();
             Ok(val)
         }
@@ -170,7 +181,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
 
         #[cfg(not(target_arch = "x86_64"))]
         {
-            Err(TmkError(TmkError::NotImplemented))
+            Err(TmkError::NotImplemented)
         }
     }
 
@@ -281,7 +292,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         cmd: VpExecutor<HvTestCtx>,
     ) -> TmkResult<()> {
         let (vp_index, vtl, _cmd) = cmd.get();
-        let vp_ctx: InitialVpContextX64 = self.get_default_context(vtl)?;
+        let vp_ctx = self.get_default_context(vtl)?;
         self.hvcall
             .start_virtual_processor(vp_index, vtl, Some(vp_ctx))?;
         Ok(())
@@ -507,6 +518,7 @@ fn vtl_transform(vtl: Vtl) -> HvInputVtl {
         .with_use_target_vtl(true)
 }
 
+#[cfg_attr(target_arch = "aarch64", expect(dead_code))]
 impl HvTestCtx {
     /// Construct an *un-initialised* test context.  
     /// Call [`HvTestCtx::init`] before using the value.
@@ -537,9 +549,19 @@ impl HvTestCtx {
         // let reg = reg.as_u64();
         // self.my_vp_idx = reg as u32;
 
-        let result = unsafe { core::arch::x86_64::__cpuid(0x1) };
-        self.my_vp_idx = (result.ebx >> 24) & 0xFF;
+        self.my_vp_idx = Self::get_vp_idx();
         Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn get_vp_idx() -> u32 {
+        let result = unsafe { core::arch::x86_64::__cpuid(0x1) };
+        (result.ebx >> 24) & 0xFF
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn get_vp_idx() -> u32 {
+        unimplemented!()
     }
 
     fn secure_exec_handler() {
@@ -556,10 +578,6 @@ impl HvTestCtx {
     fn exec_handler(vtl: Vtl) {
         let mut ctx = HvTestCtx::new();
         ctx.init(vtl).expect("error: failed to init on a VP");
-
-        ctx.print_rbp();
-        ctx.print_rsp();
-
         loop {
             let mut vtl: Option<Vtl> = None;
             let mut cmd: Option<Box<dyn FnOnce(&mut HvTestCtx) + 'static>> = None;
@@ -604,6 +622,14 @@ impl HvTestCtx {
             _ => return Err(TmkError::InvalidParameter.into()),
         };
         self.run_fn_with_current_context(handler)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    /// Capture the current VP context, patch the entry point and stack
+    /// so that the new VP starts in `exec_handler`.
+    fn get_default_context(&mut self, _vtl: Vtl) -> Result<InitialVpContextArm64, TmkError> {
+        use core::panic;
+        panic!("aarch64 not implemented");
     }
 
     #[cfg(target_arch = "x86_64")]

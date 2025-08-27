@@ -1,12 +1,13 @@
 #![no_std]
 #![allow(unsafe_code)]
 extern crate alloc;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::Ordering;
 use spin::Mutex;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 use thiserror::Error;
-use core::fmt;
 
 /// An unbounded channel implementation with priority send capability.
 /// This implementation works in no_std environments using spin-rs.

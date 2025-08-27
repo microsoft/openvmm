@@ -8,8 +8,10 @@ use serde::Serialize;
 use spin::Mutex;
 use spin::MutexGuard;
 
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::InstrIoAccess;
 use crate::arch::serial::Serial;
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::SerialPort;
 
 #[derive(Serialize)]
@@ -91,10 +93,16 @@ where
     fn flush(&self) {}
 }
 
+#[cfg(target_arch = "x86_64")]
 type SerialPortWriter = Serial<InstrIoAccess>;
+#[cfg(target_arch = "x86_64")]
 pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
     TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
 
-pub fn init() -> Result<(), SetLoggerError> {
+#[cfg(target_arch = "aarch64")]
+pub static LOGGER: TmkLogger<Mutex<Serial>> =
+    TmkLogger::new(Serial{});
+
+pub fn init() -> Result<(), SetLoggerError> { 
     log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Debug))
 }
