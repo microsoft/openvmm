@@ -322,7 +322,18 @@ impl SimpleFlowNode for Node {
                 }
 
                 if release_igvm_files_dir.is_some() {
+                    // Log all files in release_igvm_files_dir
+                    for entry in fs_err::read_dir(
+                        release_igvm_files_dir.as_ref().unwrap(),
+                    )? {
+                        let entry = entry?;
+                        log::info!(
+                            "release_igvm_files_dir contains: {:?}",
+                            entry.file_name()
+                        );
+                    }
                     let release_igvm_files_dir = release_igvm_files_dir.unwrap();
+                    log::info!("Release IGVM files found in: {}", release_igvm_files_dir.display());
                     let latest_release_version = OpenhclReleaseVersion::latest();
                     let filenames = vec![
                         (
