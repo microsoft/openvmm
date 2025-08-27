@@ -55,7 +55,7 @@ impl OverlayPage {
 
         match self {
             Self::Local(old_page) => {
-                // Avoid the Deref initialization if we don't have to.
+                // Avoid the Deref initialization, since we're about to replace it anyways.
                 if let Some(old_page) = old_page.get() {
                     new_page.atomic_write_obj(&old_page.atomic_read_obj::<[u8; 4096]>());
                 }
