@@ -324,7 +324,8 @@ impl SimpleFlowNode for Node {
                     )?;
                     fs_err::copy(
                         release_igvm_files.aarch64_bin,
-                        test_content_dir.join(format!("{latest_release_version}-aarch64-openhcl.bin")),
+                        test_content_dir
+                            .join(format!("{latest_release_version}-aarch64-openhcl.bin")),
                     )?;
                 }
 
