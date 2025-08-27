@@ -59,6 +59,8 @@ pub struct NvmeFaultController {
     qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
+    #[inspect(skip)]
+    fault_configuration: FaultConfiguration,
 }
 
 #[derive(Inspect)]
@@ -341,6 +343,9 @@ impl NvmeFaultController {
 
         if cc.en() != self.registers.cc.en() {
             if cc.en() {
+                // If any, perform the fault at the beginning of the enable sequence.
+                if 
+
                 // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.
                 if cc.iocqes() == 0 {
                     cc.set_iocqes(IOCQES);
@@ -383,6 +388,8 @@ impl NvmeFaultController {
                 return;
             }
         }
+
+
 
         self.registers.cc = cc;
         *self.qe_sizes.lock() = IoQueueEntrySizes {

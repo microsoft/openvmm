@@ -23,11 +23,25 @@ pub enum QueueFaultBehavior<T> {
     Panic(String),
 }
 
+#[derive(MeshPayload)]
+/// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
+pub struct ControllerManagementFaultConfig {
+    /// Fault to apply to cc.en() bit during enablement
+    pub controller_management_fault_enable: FaultBehaviour<bool>,
+}
+
+#[derive(MeshPayload)]
+/// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
+pub struct ControllerManagementFaultConfig {
+    /// Fault to apply to cc.en() bit during enablement
+    pub controller_management_fault_enable: FaultBehaviour<bool>,
+}
+
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
-    pub admin_submission_queue_faults: Vec<(u8, QueueFaultBehavior<Command>)>,
+    pub admin_submission_queue_faults: Vec<(u8, FaultBehaviour<Command>)>,
 }
 
 #[derive(MeshPayload, Clone)]
@@ -37,6 +51,26 @@ pub struct FaultConfiguration {
     pub fault_active: Cell<bool>,
     /// Fault to apply to the admin queues
     pub admin_fault: AdminQueueFaultConfig,
+    /// Fault to apply to management layer of the controller
+    pub controller_management_fault: ControllerManagementFaultConfig,
+}
+
+impl ControllerManagementFaultConfig {
+    /// Create a new no-op fault configuration
+    pub fn new() -> Self {
+        Self {
+            controller_management_fault_enable: FaultBehaviour::Default,
+        }
+    }
+
+    /// Create a new fault configuration
+    pub fn with_controller_management_enable_fault(
+        mut self,
+        behaviour: FaultBehaviour<bool>,
+    ) -> Self {
+        self.controller_management_fault_enable = behaviour;
+        self
+    }
 }
 
 impl AdminQueueFaultConfig {
@@ -51,7 +85,7 @@ impl AdminQueueFaultConfig {
     pub fn with_submission_queue_fault(
         mut self,
         opcode: u8,
-        behaviour: QueueFaultBehavior<Command>,
+        behaviour: FaultBehaviour<Command>,
     ) -> Self {
         if self
             .admin_submission_queue_faults

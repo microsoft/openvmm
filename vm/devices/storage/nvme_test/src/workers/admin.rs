@@ -31,8 +31,8 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use nvme_resources::fault::FaultBehaviour;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
@@ -481,7 +481,7 @@ impl AdminHandler {
                         .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {
-                        QueueFaultBehavior::Update(command_updated) => {
+                        FaultBehaviour::Update(command_updated) => {
                             tracing::warn!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
@@ -489,14 +489,14 @@ impl AdminHandler {
                             );
                             command = command_updated;
                         }
-                        QueueFaultBehavior::Drop => {
+                        FaultBehaviour::Drop => {
                             tracing::warn!(
                                 "configured fault: admin command dropped from sq {:?}",
                                 &command
                             );
                             return Ok(());
                         }
-                        QueueFaultBehavior::Delay(duration) => {
+                        FaultBehaviour::Delay(duration) => {
                             self.timer.sleep(duration).await;
                         }
                         QueueFaultBehavior::Panic(message) => {
