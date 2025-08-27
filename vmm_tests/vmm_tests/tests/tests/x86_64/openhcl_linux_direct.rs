@@ -405,6 +405,13 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     // Account for the pipette drive too
     assert_eq!(reported_sizes.len(), 3);
 
+    let _io_to_sda = cmd!(sh, "sh -c 'dd if=/dev/urandom of=/dev/sda bs=1M count=100'")
+        .run()
+        .await?;
+    let _io_to_sdb = cmd!(sh, "sh -c 'dd if=/dev/urandom of=/dev/sdb bs=1M count=100'")
+        .run()
+        .await?;
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
