@@ -306,9 +306,3 @@ impl<T> Drop for Receiver<T> {
         self.inner.receivers.fetch_sub(1, Ordering::SeqCst);
     }
 }
-
-impl<T> Default for Channel<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
