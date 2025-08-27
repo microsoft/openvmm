@@ -21,14 +21,14 @@ pub enum QueueFaultBehavior<T> {
     Delay(Duration),
 }
 
-#[derive(MeshPayload)]
+#[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
     pub admin_submission_queue_faults: Vec<(u8, QueueFaultBehavior<Command>)>,
 }
 
-#[derive(MeshPayload)]
+#[derive(MeshPayload, Clone)]
 /// A simple fault configuration with admin submission queue support
 pub struct FaultConfiguration {
     /// Fault active state
