@@ -4,6 +4,9 @@
 //! This module implements a page memory allocator for allocating pages from a
 //! given portion of the guest address space.
 
+// BUGBUG move growable into own module or trait or something
+#![expect(unsafe_code)]
+
 mod device_dma;
 
 pub use device_dma::PagePoolDmaBuffer;
@@ -18,11 +21,17 @@ use sparse_mmap::Mappable;
 use sparse_mmap::MappableRef;
 use sparse_mmap::SparseMapping;
 use sparse_mmap::alloc_shared_memory;
+use std::ffi::c_void;
 use std::fmt::Debug;
+use std::fs::File;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use thiserror::Error;
+use zerocopy::IntoBytes;
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -32,7 +41,9 @@ pub mod save_restore {
     use super::PagePool;
     use super::Slot;
     use super::SlotState;
+    use crate::BackingType;
     use crate::ResolvedSlotState;
+    use crate::SlotMapping;
     use memory_range::MemoryRange;
     use mesh::payload::Protobuf;
     use vmcore::save_restore::SaveRestore;
@@ -85,6 +96,7 @@ pub mod save_restore {
 
         fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
             let state = self.inner.state.lock();
+
             Ok(PagePoolState {
                 state: state
                     .slots
@@ -151,6 +163,17 @@ pub mod save_restore {
                 ));
             }
 
+            // A pool can only be restored if it was a mapping based pool, not a
+            // growable one.
+            let mapping_len = match &self.inner.backing {
+                BackingType::PoolSource { mapping, .. } => mapping.len() as u64,
+                BackingType::Growable { .. } => {
+                    return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
+                        anyhow::anyhow!("cannot restore growable pool"),
+                    ));
+                }
+            };
+
             state.state.sort_by_key(|slot| slot.base_pfn);
 
             let mut mapping_offset = 0;
@@ -170,7 +193,7 @@ pub mod save_restore {
 
                     let slot = Slot {
                         base_pfn: slot.base_pfn,
-                        mapping_offset: mapping_offset as usize,
+                        mapping: SlotMapping::Mapping(mapping_offset as usize),
                         size_pages: slot.size_pages,
                         state: inner,
                     };
@@ -179,7 +202,7 @@ pub mod save_restore {
                 })
                 .collect();
 
-            if mapping_offset != self.inner.mapping.len() as u64 {
+            if mapping_offset != mapping_len as u64 {
                 return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
                     anyhow::anyhow!("missing slots in saved state"),
                 ));
@@ -207,6 +230,9 @@ pub enum Error {
     /// No matching allocation found for restore.
     #[error("no matching allocation found for restore")]
     NoMatchingAllocation,
+    /// Unable to create new growable allocation.
+    #[error("failed to create new growable allocation")]
+    Growable(#[source] anyhow::Error),
 }
 
 /// Error returned when unrestored allocations are found.
@@ -214,10 +240,25 @@ pub enum Error {
 #[error("unrestored allocations found")]
 pub struct UnrestoredAllocations;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum SlotMapping {
+    // outer pool inner is mappable with this being the offset into the mapping
+    Mapping(usize),
+    // outer pool inner is growable and this is the VA base to use
+    Va {
+        va: *mut u8,
+        allocation_index: usize,
+    },
+}
+
+// c_void from mmap is safe to send across threads
+unsafe impl Send for SlotMapping {}
+unsafe impl Sync for SlotMapping {}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Slot {
     base_pfn: u64,
-    mapping_offset: usize,
+    mapping: SlotMapping,
     size_pages: u64,
     state: SlotState,
 }
@@ -248,7 +289,14 @@ impl Slot {
     fn resolve<'a>(&'a self, device_ids: &'a [DeviceId]) -> ResolvedSlot<'a> {
         ResolvedSlot {
             base_pfn: self.base_pfn,
-            mapping_offset: self.mapping_offset,
+            // FIXME: fixup resolved slot to use the enum type
+            mapping_offset: match self.mapping {
+                SlotMapping::Mapping(offset) => offset,
+                SlotMapping::Va {
+                    va,
+                    allocation_index: _,
+                } => va as usize,
+            },
             size_pages: self.size_pages,
             state: match self.state {
                 SlotState::Free => ResolvedSlotState::Free,
@@ -324,15 +372,158 @@ impl DeviceId {
 }
 
 #[derive(Inspect)]
+#[inspect(external_tag)]
+enum BackingType {
+    // pages are provided upfront, mapped via some fd
+    PoolSource {
+        source: Box<dyn PoolSource>,
+        #[inspect(skip)]
+        mapping: SparseMapping,
+    },
+    // pages are allocated on demand via the trait, and instead we store VAs representing different ranges
+    Growable {
+        #[inspect(
+            with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.lock()).inspect(req))"
+        )]
+        pages: Mutex<Vec<Allocation>>,
+    },
+}
+
+impl Debug for BackingType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackingType::PoolSource { source, mapping } => f
+                .debug_struct("PoolSource")
+                .field("mapping", mapping)
+                .finish(),
+            BackingType::Growable { pages } => {
+                f.debug_struct("Growable").field("pages", pages).finish()
+            }
+        }
+    }
+}
+
+#[derive(Inspect, Debug)]
+struct Allocation {
+    #[inspect(hex)]
+    base: *mut c_void,
+    #[inspect(hex)]
+    len_bytes: usize,
+    #[inspect(hex)]
+    pfn_base: u64,
+}
+
+// c_void from mmap is safe to send across threads
+unsafe impl Send for Allocation {}
+unsafe impl Sync for Allocation {}
+
+fn allocate_new(len: usize) -> anyhow::Result<Allocation> {
+    let size_2m = 0x200000;
+
+    // round up len to nearest 2m increment
+    let aligned = (len + size_2m - 1) & !(size_2m - 1);
+
+    tracing::error!(?aligned, "attempting to allocate new growable allocation");
+
+    // attempt to allocate first with hugetlb
+    let addr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            aligned,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE
+                | libc::MAP_ANONYMOUS
+                | libc::MAP_LOCKED
+                | libc::MAP_HUGETLB
+                | libc::MAP_HUGE_2MB,
+            -1,
+            0,
+        )
+    };
+
+    if addr == libc::MAP_FAILED {
+        let last_error = std::io::Error::last_os_error();
+        tracing::error!(?last_error, ?addr, aligned, "mmap failed");
+        anyhow::bail!(last_error);
+    }
+
+    // FIXME: figure out if we can support non-huge pages. this means that the
+    // pfns are non-contiguous, and we'd have to return different allocations
+    // somehow. Or just make dma_manager handle this allocation failure and do
+    // some lockedmem mmap that is non-contiguous instead?
+
+    // if addr == libc::MAP_FAILED {
+    //     tracing::error!(
+    //         ?aligned,
+    //         "mmap with hugetlb failed, falling back to normal mmap"
+    //     );
+
+    //     addr = unsafe {
+    //         libc::mmap(
+    //             std::ptr::null_mut(),
+    //             aligned,
+    //             libc::PROT_READ | libc::PROT_WRITE,
+    //             libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_LOCKED,
+    //             -1,
+    //             0,
+    //         )
+    //     };
+
+    //     if addr == libc::MAP_FAILED {
+    //         let last_error = std::io::Error::last_os_error();
+    //         tracing::error!(?last_error, ?addr, aligned, "mmap failed");
+    //         anyhow::bail!(last_error);
+    //     }
+    // }
+
+    // find the pfns
+    let mut pagemap = File::open("/proc/self/pagemap").context("failed to open pagemap")?;
+    pagemap
+        .seek(SeekFrom::Start(8 * addr as u64 / PAGE_SIZE))
+        .context("failed to seek")?;
+    let n = aligned / PAGE_SIZE as usize;
+    let mut pfns = vec![0u64; n];
+    pagemap
+        .read(pfns.as_mut_bytes())
+        .context("failed to read from pagemap")?;
+    for pfn in &mut pfns {
+        if *pfn & (1 << 63) == 0 {
+            anyhow::bail!("page not present in RAM");
+        }
+        *pfn &= 0x3f_ffff_ffff_ffff;
+    }
+
+    // verify all pfns are contiguous
+    for i in 1..pfns.len() {
+        if pfns[i] != pfns[i - 1] + 1 {
+            // munmap free mem
+            let result = unsafe { libc::munmap(addr, aligned) };
+
+            if result < 0 {
+                let last_error = std::io::Error::last_os_error();
+                tracing::error!(?last_error, ?addr, aligned, "munmap failed");
+                panic!("munmap failed");
+            }
+
+            anyhow::bail!("pfns are not contiguous");
+        }
+    }
+
+    Ok(Allocation {
+        base: addr,
+        len_bytes: aligned,
+        pfn_base: pfns[0],
+    })
+}
+
+#[derive(Inspect)]
 struct PagePoolInner {
     #[inspect(flatten)]
     state: Mutex<PagePoolState>,
     /// The pfn_bias for the pool.
     pfn_bias: u64,
-    /// The mapper used to create mappings for allocations.
-    source: Box<dyn PoolSource>,
-    #[inspect(skip)]
-    mapping: SparseMapping,
+    /// the backing type for this pool
+    backing: BackingType,
 }
 
 impl Debug for PagePoolInner {
@@ -340,7 +531,7 @@ impl Debug for PagePoolInner {
         f.debug_struct("PagePoolInner")
             .field("state", &self.state)
             .field("pfn_bias", &self.pfn_bias)
-            .field("mapping", &self.mapping)
+            .field("mapping", &self.backing)
             .finish()
     }
 }
@@ -371,7 +562,7 @@ pub struct PagePoolHandle {
     inner: Arc<PagePoolInner>,
     base_pfn: u64,
     size_pages: u64,
-    mapping_offset: usize,
+    mapping: SlotMapping,
 }
 
 impl PagePoolHandle {
@@ -392,9 +583,28 @@ impl PagePoolHandle {
 
     /// The associated mapping with this allocation.
     pub fn mapping(&self) -> &[AtomicU8] {
-        self.inner
-            .mapping
-            .atomic_slice(self.mapping_offset, (self.size_pages * PAGE_SIZE) as usize)
+        let len = (self.size_pages * PAGE_SIZE) as usize;
+        match self.mapping {
+            SlotMapping::Mapping(offset) => match &self.inner.backing {
+                BackingType::PoolSource { source: _, mapping } => mapping.atomic_slice(offset, len),
+                BackingType::Growable { .. } => unreachable!(),
+            },
+
+            SlotMapping::Va {
+                va,
+                allocation_index: _,
+            } => {
+                // SAFETY: The allocation is guaranteed to be valid for the
+                // lifetime of this handle, and should be valid for `size_pages
+                // * PAGE_SIZE` starting at the given VA.The memory was
+                // allocated as locked via mmap, so it should always be safe to
+                // access.
+                //
+                // TODO other justification, see guestmem
+                // `dangerous_access_pre_locked_memory` maybe?
+                unsafe { std::slice::from_raw_parts(va.cast(), len) }
+            }
+        }
     }
 
     /// Create a memory block from this allocation.
@@ -423,8 +633,10 @@ impl Drop for PagePoolHandle {
             })
             .expect("must find allocation");
 
-        assert_eq!(slot.mapping_offset, self.mapping_offset);
+        assert_eq!(slot.mapping, self.mapping);
         slot.state = SlotState::Free;
+
+        // TODO: merge adjacent free?
     }
 }
 
@@ -513,6 +725,24 @@ impl PagePool {
         Self::new_internal(ranges, Box::new(source))
     }
 
+    // TODO: remove result?
+    pub fn new_growable() -> anyhow::Result<Self> {
+        Ok(Self {
+            inner: Arc::new(PagePoolInner {
+                state: Mutex::new(PagePoolState {
+                    slots: Vec::new(),
+                    device_ids: Vec::new(),
+                }),
+                pfn_bias: 0,
+                backing: BackingType::Growable {
+                    pages: Mutex::new(Vec::new()),
+                },
+            }),
+            ranges: Vec::new(),
+        })
+    }
+
+    // FIXME rename to new with source or something
     fn new_internal(memory: &[MemoryRange], source: Box<dyn PoolSource>) -> anyhow::Result<Self> {
         let mut mapping_offset = 0;
         let pages = memory
@@ -521,7 +751,7 @@ impl PagePool {
                 let slot = Slot {
                     base_pfn: range.start() / PAGE_SIZE,
                     size_pages: range.len() / PAGE_SIZE,
-                    mapping_offset,
+                    mapping: SlotMapping::Mapping(mapping_offset),
                     state: SlotState::Free,
                 };
                 mapping_offset += range.len() as usize;
@@ -553,8 +783,7 @@ impl PagePool {
                     device_ids: Vec::new(),
                 }),
                 pfn_bias: source.address_bias() / PAGE_SIZE,
-                source,
-                mapping,
+                backing: BackingType::PoolSource { source, mapping },
             }),
             ranges: memory.to_vec(),
         })
@@ -702,30 +931,52 @@ impl PagePoolAllocator {
         let mut inner = self.inner.state.lock();
         let size_pages = size_pages.get();
 
-        let index = inner
-            .slots
-            .iter()
-            .position(|slot| match slot.state {
-                SlotState::Free => slot.size_pages >= size_pages,
-                SlotState::Allocated { .. }
-                | SlotState::AllocatedPendingRestore { .. }
-                | SlotState::Leaked { .. } => false,
-            })
-            .ok_or(Error::PagePoolOutOfMemory {
-                size: size_pages,
-                tag: tag.clone(),
-            })?;
+        let index = inner.slots.iter().position(|slot| match slot.state {
+            SlotState::Free => slot.size_pages >= size_pages,
+            SlotState::Allocated { .. }
+            | SlotState::AllocatedPendingRestore { .. }
+            | SlotState::Leaked { .. } => false,
+        });
 
-        // Track which slots we should append if the mapping creation succeeds.
-        // If the mapping creation fails, we instead commit the original free
-        // slot back to the pool.
+        let index = match (index, &self.inner.backing) {
+            (Some(index), _) => index,
+            (None, BackingType::Growable { pages }) => {
+                // allocate region
+                let allocation =
+                    allocate_new((size_pages * PAGE_SIZE) as usize).map_err(Error::Growable)?;
+
+                let mut pages = pages.lock();
+                let index = inner.slots.len();
+                let allocation_index = pages.len();
+                inner.slots.push(Slot {
+                    base_pfn: allocation.pfn_base,
+                    mapping: SlotMapping::Va {
+                        va: allocation.base.cast(),
+                        allocation_index,
+                    },
+                    size_pages,
+                    state: SlotState::Free,
+                });
+                pages.push(allocation);
+                index
+            }
+            (None, BackingType::PoolSource { .. }) => {
+                return Err(Error::PagePoolOutOfMemory {
+                    size: size_pages,
+                    tag: tag.clone(),
+                });
+            }
+        };
+
+        // Track the slot we allocated, and an optional free slot if there is
+        // additional space left over.
         let (allocation_slot, free_slot) = {
             let slot = inner.slots.swap_remove(index);
             assert!(matches!(slot.state, SlotState::Free));
 
             let allocation_slot = Slot {
                 base_pfn: slot.base_pfn,
-                mapping_offset: slot.mapping_offset,
+                mapping: slot.mapping,
                 size_pages,
                 state: SlotState::Allocated {
                     device_id: self.device_id,
@@ -736,7 +987,22 @@ impl PagePoolAllocator {
             let free_slot = if slot.size_pages > size_pages {
                 Some(Slot {
                     base_pfn: slot.base_pfn + size_pages,
-                    mapping_offset: slot.mapping_offset + (size_pages * PAGE_SIZE) as usize,
+                    mapping: match slot.mapping {
+                        SlotMapping::Mapping(offset) => {
+                            SlotMapping::Mapping(offset + (size_pages * PAGE_SIZE) as usize)
+                        }
+                        SlotMapping::Va {
+                            va,
+                            allocation_index,
+                        } => SlotMapping::Va {
+                            // SAFETY: The VA region described by the allocation
+                            // is large enough to add, as we've verified there
+                            // is remaining free space in the original
+                            // allocation with the outer check.
+                            va: unsafe { va.add((size_pages * PAGE_SIZE) as usize) },
+                            allocation_index,
+                        },
+                    },
                     size_pages: slot.size_pages - size_pages,
                     state: SlotState::Free,
                 })
@@ -748,8 +1014,7 @@ impl PagePoolAllocator {
         };
 
         let base_pfn = allocation_slot.base_pfn;
-        let mapping_offset = allocation_slot.mapping_offset;
-        assert_eq!(mapping_offset % PAGE_SIZE as usize, 0);
+        let mapping = allocation_slot.mapping;
 
         // Commit state to the pool.
         inner.slots.push(allocation_slot);
@@ -761,7 +1026,7 @@ impl PagePoolAllocator {
             inner: self.inner.clone(),
             base_pfn,
             size_pages,
-            mapping_offset,
+            mapping,
         })
     }
 
@@ -800,13 +1065,19 @@ impl PagePoolAllocator {
             .ok_or(Error::NoMatchingAllocation)?;
 
         slot.state.restore_allocated(self.device_id);
-        assert_eq!(slot.mapping_offset % PAGE_SIZE as usize, 0);
+
+        let offset = match slot.mapping {
+            SlotMapping::Mapping(offset) => offset,
+            SlotMapping::Va { .. } => unreachable!(),
+        };
+
+        assert_eq!(offset % PAGE_SIZE as usize, 0);
 
         Ok(PagePoolHandle {
             inner: self.inner.clone(),
             base_pfn,
             size_pages,
-            mapping_offset: slot.mapping_offset,
+            mapping: SlotMapping::Mapping(offset),
         })
     }
 
@@ -837,7 +1108,7 @@ impl PagePoolAllocator {
                     inner: self.inner.clone(),
                     base_pfn: slot.base_pfn,
                     size_pages: slot.size_pages,
-                    mapping_offset: slot.mapping_offset,
+                    mapping: slot.mapping,
                 }
             })
             .collect()
@@ -895,6 +1166,7 @@ mod test {
     use memory_range::MemoryRange;
     use safeatomic::AtomicSliceOps;
     use sparse_mmap::MappableRef;
+    use test_with_tracing::test;
     use vmcore::save_restore::SaveRestore;
 
     #[derive(Inspect)]
@@ -1171,5 +1443,21 @@ mod test {
         let mut data = [0; 2];
         a1_mapping[125..][..2].atomic_read(&mut data);
         assert_eq!(data, [3, 4]);
+    }
+
+    #[test]
+    fn test_growable() {
+        // TODO: test if kernel supports HUGE_TLB and has the right options
+        // TODO: must run test as sudo, as otherwise can't read pfns
+
+        let pool = PagePool::new_growable().unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        assert_eq!(a1.size_pages, 5);
+        let a2 = alloc
+            .alloc(10.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+        assert_eq!(a2.size_pages, 10);
     }
 }

@@ -21,5 +21,12 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

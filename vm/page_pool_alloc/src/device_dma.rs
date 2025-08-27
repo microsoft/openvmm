@@ -8,8 +8,10 @@
 // `base()..len()` mapped for the lifetime of the struct.
 #![expect(unsafe_code)]
 
+use crate::BackingType;
 use crate::PAGE_SIZE;
 use crate::PagePoolHandle;
+use crate::SlotMapping;
 use user_driver::memory::MappedDmaTarget;
 
 /// Page pool memory representing a DMA buffer useable by devices.
@@ -24,12 +26,21 @@ pub struct PagePoolDmaBuffer {
 /// satisfying the trait.
 unsafe impl MappedDmaTarget for PagePoolDmaBuffer {
     fn base(&self) -> *const u8 {
-        self.alloc
-            .inner
-            .mapping
-            .as_ptr()
-            .wrapping_byte_add(self.alloc.mapping_offset)
-            .cast()
+        // fixme: seems like we could abstract this better
+        match (self.alloc.mapping, &self.alloc.inner.backing) {
+            (SlotMapping::Mapping(offset), BackingType::PoolSource { source: _, mapping }) => {
+                assert_eq!(offset % PAGE_SIZE as usize, 0);
+                mapping.as_ptr().wrapping_byte_add(offset).cast()
+            }
+            (
+                SlotMapping::Va {
+                    va,
+                    allocation_index: _,
+                },
+                BackingType::Growable { .. },
+            ) => va.cast(),
+            _ => unreachable!("unexpected state for page pool"),
+        }
     }
 
     fn len(&self) -> usize {
