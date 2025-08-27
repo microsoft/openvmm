@@ -256,7 +256,7 @@ async fn keepalive_with_nvme_fault(
         fault_active: fault_start_updater.cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
             nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
-            QueueFaultBehavior::Drop,
+            QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. This should never happen.".to_string()),
         ),
     };
 

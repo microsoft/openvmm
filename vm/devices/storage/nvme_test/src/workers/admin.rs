@@ -477,7 +477,7 @@ impl AdminHandler {
                         .admin_submission_queue_faults
                         .iter()
                         .find(|(op, _)| *op == opcode.0)
-                        .map(|(_, behavior)| *behavior)
+                        .map(|(_, behavior)| behavior.clone())
                         .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {
@@ -498,6 +498,12 @@ impl AdminHandler {
                         }
                         QueueFaultBehavior::Delay(duration) => {
                             self.timer.sleep(duration).await;
+                        }
+                        QueueFaultBehavior::Panic(message) => {
+                            panic!(
+                                "configured fault: admin command panic with command: {:?} and message: {}",
+                                &command, &message
+                            );
                         }
                         QueueFaultBehavior::Default => {}
                     }

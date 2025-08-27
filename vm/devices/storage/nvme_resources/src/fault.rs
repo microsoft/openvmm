@@ -9,7 +9,7 @@ use nvme_spec::Command;
 use std::time::Duration;
 
 /// Supported fault behaviour for NVMe queues
-#[derive(Debug, Clone, Copy, MeshPayload)]
+#[derive(Debug, Clone, MeshPayload)]
 pub enum QueueFaultBehavior<T> {
     /// Update the queue entry with the returned data
     Update(T),
@@ -19,6 +19,8 @@ pub enum QueueFaultBehavior<T> {
     Default,
     /// Delay
     Delay(Duration),
+    /// Panic
+    Panic(String),
 }
 
 #[derive(MeshPayload, Clone)]
