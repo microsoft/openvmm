@@ -30,6 +30,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use nvme_resources::fault::FaultBehaviour;
 use nvme_resources::fault::FaultConfiguration;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
@@ -157,7 +158,7 @@ impl NvmeFaultController {
             max_cqs: caps.max_io_queues,
             qe_sizes: Arc::clone(&qe_sizes),
             subsystem_id: caps.subsystem_id,
-            fault_configuration,
+            fault_configuration: fault_configuration.clone(),
         });
 
         Self {
@@ -166,6 +167,7 @@ impl NvmeFaultController {
             registers: RegState::new(),
             workers: admin,
             qe_sizes,
+            fault_configuration,
         }
     }
 
@@ -343,8 +345,23 @@ impl NvmeFaultController {
 
         if cc.en() != self.registers.cc.en() {
             if cc.en() {
-                // If any, perform the fault at the beginning of the enable sequence.
-                if 
+                // If any fault was configured for cc.en() process it here
+                match self
+                    .fault_configuration
+                    .controller_management_fault
+                    .controller_management_fault_enable
+                {
+                    FaultBehaviour::Delay(duration) => {
+                        std::thread::sleep(duration);
+                    }
+                    FaultBehaviour::Drop => {
+                        tracelimit::warn_ratelimited!(
+                            "Dropping enable command due to fault injection"
+                        );
+                        return;
+                    }
+                    _ => {} // Update is not yet configured for this fault. Treat that as a default action for now
+                }
 
                 // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.
                 if cc.iocqes() == 0 {
@@ -388,8 +405,6 @@ impl NvmeFaultController {
                 return;
             }
         }
-
-
 
         self.registers.cc = cc;
         *self.qe_sizes.lock() = IoQueueEntrySizes {
@@ -437,6 +452,7 @@ impl ChangeDeviceState for NvmeFaultController {
             registers,
             qe_sizes,
             workers,
+            fault_configuration: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();

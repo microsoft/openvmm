@@ -30,7 +30,7 @@ pub struct ControllerManagementFaultConfig {
     pub controller_management_fault_enable: FaultBehaviour<bool>,
 }
 
-#[derive(MeshPayload)]
+#[derive(MeshPayload, Clone)]
 /// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
 pub struct ControllerManagementFaultConfig {
     /// Fault to apply to cc.en() bit during enablement

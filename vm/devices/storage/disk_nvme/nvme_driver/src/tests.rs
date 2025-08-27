@@ -11,8 +11,9 @@ use inspect::InspectMut;
 use mesh::CellUpdater;
 use nvme::NvmeControllerCaps;
 use nvme_resources::fault::AdminQueueFaultConfig;
-use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::ControllerManagementFaultConfig;
 use nvme_resources::fault::FaultBehaviour;
+use nvme_resources::fault::FaultConfiguration;
 use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
 use nvme_spec::Command;
@@ -50,6 +51,7 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
                 AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
                 FaultBehaviour::Update(output_cmd),
             ),
+            controller_management_fault: ControllerManagementFaultConfig::new(),
         },
     )
     .await;
