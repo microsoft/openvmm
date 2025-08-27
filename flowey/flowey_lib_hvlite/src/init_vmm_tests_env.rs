@@ -14,7 +14,9 @@ use std::collections::BTreeMap;
 #[derive(Serialize, Deserialize)]
 pub enum ReleaseIgvmFilesInput {
     ReleaseOutput(ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>),
-    NugetPackageDestination(ReadVar<flowey_lib_common::nuget_install_package::NugetPackageDestination>),
+    NugetPackageDestination(
+        ReadVar<flowey_lib_common::nuget_install_package::NugetPackageDestination>,
+    ),
 }
 
 flowey_request! {
@@ -323,9 +325,18 @@ impl SimpleFlowNode for Node {
                     let release_igvm_files_dir = release_igvm_files_dir.unwrap();
                     let latest_release_version = OpenhclReleaseVersion::latest();
                     let filenames = vec![
-                        ("openhcl.bin", format!("{latest_release_version}-x64-openhcl.bin")),
-                        ("openhcl-aarch64.bin", format!("{latest_release_version}-aarch64-openhcl.bin")),
-                        ("openhcl-direct.bin", format!("{latest_release_version}-x64-direct-openhcl.bin")),
+                        (
+                            "openhcl.bin",
+                            format!("{latest_release_version}-x64-openhcl.bin"),
+                        ),
+                        (
+                            "openhcl-aarch64.bin",
+                            format!("{latest_release_version}-aarch64-openhcl.bin"),
+                        ),
+                        (
+                            "openhcl-direct.bin",
+                            format!("{latest_release_version}-x64-direct-openhcl.bin"),
+                        ),
                     ];
                     // For each entry in filenames check if the file exists in the release_igvm_files_dir
                     for (filename, new_name) in filenames {

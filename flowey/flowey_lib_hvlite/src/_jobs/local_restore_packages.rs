@@ -98,10 +98,12 @@ impl SimpleFlowNode for Node {
         }
 
         let latest_release_igvm_files =
-            ctx.reqv(|v| crate::download_release_igvm_files_from_gh::resolve::Request {
-                release_igvm_files: v,
-                release_version: OpenhclReleaseVersion::latest(),
-            });
+            ctx.reqv(
+                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
+                    release_igvm_files: v,
+                    release_version: OpenhclReleaseVersion::latest(),
+                },
+            );
 
         deps.push(ctx.emit_rust_step(
             "copy downloaded release igvm files to artifact dir",
@@ -115,20 +117,26 @@ impl SimpleFlowNode for Node {
                     let latest_release_version = OpenhclReleaseVersion::latest();
 
                     fs_err::copy(
-                        latest_release_igvm_files.bins_dir.join("openhcl-aarch64.bin".to_string()),
+                        latest_release_igvm_files
+                            .bins_dir
+                            .join("openhcl-aarch64.bin".to_string()),
                         latest_release_artifact.join(
                             latest_release_version.clone().to_string() + "-aarch64-openhcl.bin",
                         ),
                     )?;
 
                     fs_err::copy(
-                        latest_release_igvm_files.bins_dir.join("openhcl.bin".to_string()),
+                        latest_release_igvm_files
+                            .bins_dir
+                            .join("openhcl.bin".to_string()),
                         latest_release_artifact
                             .join(latest_release_version.clone().to_string() + "-x64-openhcl.bin"),
                     )?;
 
                     fs_err::copy(
-                        latest_release_igvm_files.bins_dir.join("openhcl-direct.bin".to_string()),
+                        latest_release_igvm_files
+                            .bins_dir
+                            .join("openhcl-direct.bin".to_string()),
                         latest_release_artifact.join(
                             latest_release_version.clone().to_string() + "-x64-direct-openhcl.bin",
                         ),

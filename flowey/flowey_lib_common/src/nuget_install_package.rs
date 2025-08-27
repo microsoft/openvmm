@@ -204,11 +204,16 @@ impl FlowNode for Node {
                     )
                     .run()?;
 
-            for (package, package_out_dir) in packages {
-                for var in package_out_dir {
-                    rt.write(var, &NugetPackageDestination { path: install_dir.join(&package.id).absolute()? });
-                }
-            }
+                    for (package, package_out_dir) in packages {
+                        for var in package_out_dir {
+                            rt.write(
+                                var,
+                                &NugetPackageDestination {
+                                    path: install_dir.join(&package.id).absolute()?,
+                                },
+                            );
+                        }
+                    }
 
                     Ok(())
                 }

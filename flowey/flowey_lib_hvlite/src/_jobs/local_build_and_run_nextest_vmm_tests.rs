@@ -663,10 +663,13 @@ impl SimpleFlowNode for Node {
         let nextest_bin = test_content_dir.join(nextest_bin);
 
         let release_igvm_files =
-            ctx.reqv(|v| crate::download_release_igvm_files_from_gh::resolve::Request {
-                release_igvm_files: v,
-                release_version: crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
-            });
+            ctx.reqv(
+                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
+                    release_igvm_files: v,
+                    release_version:
+                        crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
+                },
+            );
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
@@ -682,7 +685,9 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,
-            release_igvm_files: Some(crate::init_vmm_tests_env::ReleaseIgvmFilesInput::ReleaseOutput(release_igvm_files)),
+            release_igvm_files: Some(
+                crate::init_vmm_tests_env::ReleaseIgvmFilesInput::ReleaseOutput(release_igvm_files),
+            ),
             use_relative_paths: build_only,
         });
 

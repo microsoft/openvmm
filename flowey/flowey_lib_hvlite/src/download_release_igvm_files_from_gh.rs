@@ -129,7 +129,9 @@ pub mod resolve {
 
                     rt.write_not_secret(
                         write_release_output,
-                        &ReleaseOutput { bins_dir: target_dir },
+                        &ReleaseOutput {
+                            bins_dir: target_dir,
+                        },
                     );
 
                     Ok(())
