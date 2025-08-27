@@ -99,10 +99,6 @@ impl SimpleFlowNode for Node {
             ctx.req(flowey_lib_common::install_azure_cli::Request::AutoInstall(
                 true,
             ));
-            let token = ctx.get_gh_context_var().global().token();
-            ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
-                flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(token),
-            ));
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =
                 local_only.ok_or(anyhow::anyhow!("missing essential request: local_only"))?;

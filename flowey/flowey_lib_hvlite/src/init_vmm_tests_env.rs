@@ -55,7 +55,7 @@ flowey_request! {
         /// Get a map of env vars required to be set when running VMM tests
         pub get_env: WriteVar<BTreeMap<String, String>>,
         /// The latest release igvm files
-        pub release_igvm_files: ReadVar<ReleaseOutput>,
+        pub release_igvm_files: Option<ReadVar<ReleaseOutput>>,
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
     }
@@ -309,22 +309,24 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
-                let release_igvm_files = rt.read(release_igvm_files);
-                let latest_release_version = OpenhclReleaseVersion::latest();
+                if release_igvm_files.is_some() {
+                    let release_igvm_files = rt.read(release_igvm_files.unwrap());
+                    let latest_release_version = OpenhclReleaseVersion::latest();
 
-                fs_err::copy(
-                    release_igvm_files.x64_bin,
-                    test_content_dir.join(format!("{latest_release_version}-x64-openhcl.bin")),
-                )?;
-                fs_err::copy(
-                    release_igvm_files.x64_direct_bin,
-                    test_content_dir
-                        .join(format!("{latest_release_version}-x64-direct-openhcl.bin")),
-                )?;
-                fs_err::copy(
-                    release_igvm_files.aarch64_bin,
-                    test_content_dir.join(format!("{latest_release_version}-aarch64-openhcl.bin")),
-                )?;
+                    fs_err::copy(
+                        release_igvm_files.x64_bin,
+                        test_content_dir.join(format!("{latest_release_version}-x64-openhcl.bin")),
+                    )?;
+                    fs_err::copy(
+                        release_igvm_files.x64_direct_bin,
+                        test_content_dir
+                            .join(format!("{latest_release_version}-x64-direct-openhcl.bin")),
+                    )?;
+                    fs_err::copy(
+                        release_igvm_files.aarch64_bin,
+                        test_content_dir.join(format!("{latest_release_version}-aarch64-openhcl.bin")),
+                    )?;
+                }
 
                 let (arch_dir, kernel_file_name) = match openvmm_deps_arch {
                     OpenvmmDepsArch::X86_64 => ("x64", "vmlinux"),
