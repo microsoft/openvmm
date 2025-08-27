@@ -904,9 +904,9 @@ impl IntoPipeline for CheckinGatesCli {
         let cvm_x64_test_artifacts = vec![KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd];
 
         let (pub_latest_release_igvm_files, use_latest_release_igvm_files) =
-            pipeline.new_typed_artifact(format!("latest-release-igvm-files"));
+            pipeline.new_typed_artifact("latest-release-igvm-files");
 
-        let download_test_artifacts_job = pipeline.new_job(FlowPlatform::Windows, FlowArch::X86_64, format!("download vmm-tests artifacts"))
+        let download_test_artifacts_job = pipeline.new_job(FlowPlatform::Windows, FlowArch::X86_64, "download vmm-tests artifacts")
             .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
                 FlowPlatform::Windows,
             ))

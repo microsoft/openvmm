@@ -119,16 +119,14 @@ impl SimpleFlowNode for Node {
                     fs_err::copy(
                         latest_release_igvm_files
                             .bins_dir
-                            .join("openhcl-aarch64.bin".to_string()),
+                            .join("openhcl-aarch64.bin"),
                         latest_release_artifact.join(
                             latest_release_version.clone().to_string() + "-aarch64-openhcl.bin",
                         ),
                     )?;
 
                     fs_err::copy(
-                        latest_release_igvm_files
-                            .bins_dir
-                            .join("openhcl.bin".to_string()),
+                        latest_release_igvm_files.bins_dir.join("openhcl.bin"),
                         latest_release_artifact
                             .join(latest_release_version.clone().to_string() + "-x64-openhcl.bin"),
                     )?;
@@ -136,7 +134,7 @@ impl SimpleFlowNode for Node {
                     fs_err::copy(
                         latest_release_igvm_files
                             .bins_dir
-                            .join("openhcl-direct.bin".to_string()),
+                            .join("openhcl-direct.bin"),
                         latest_release_artifact.join(
                             latest_release_version.clone().to_string() + "-x64-direct-openhcl.bin",
                         ),
