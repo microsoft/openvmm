@@ -205,7 +205,6 @@ impl PetriVmConfigOpenVmm {
             };
 
         setup.load_boot_disk(&mut devices, vtl2_settings.as_mut())?;
-        let expected_boot_event = firmware.expected_boot_event();
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
@@ -465,7 +464,6 @@ impl PetriVmConfigOpenVmm {
                 firmware_event_recv,
                 shutdown_ic_send,
                 kvp_ic_send,
-                expected_boot_event,
                 ged_send,
                 pipette_listener,
                 vtl2_pipette_listener,

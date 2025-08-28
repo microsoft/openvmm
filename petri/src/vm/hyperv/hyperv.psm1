@@ -433,3 +433,19 @@ function Get-VmScreenshot
 
     return "$x,$y"
 }
+
+function Set-TurnOffOnGuestRestart
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
+        [bool] $Enable
+    )
+
+    $vssd = Get-Vssd $Vm
+    $vssd.TurnOffOnGuestRestart = $Enable
+    Set-VmSystemSettings $vssd
+}
