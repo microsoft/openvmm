@@ -760,48 +760,36 @@ async fn boot_expect_fail(
 }
 
 /// MNF guest support: capture and print recursive listing of vmbus drivers.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
-async fn mnf_guest_support(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
+async fn validate_mnf_usage_in_guest(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    // NetVSC uses MNF, StorVSC doesn't hence attach a nic to the vm.
     let (vm, agent) = config
         .with_vmbus_redirect(true)
         .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
         .modify_backend(|c| c.with_nic())
         .run()
         .await?;
-    tracing::info!("VM started with MNF enabled");
-    // Recursively list the contents of /sys/bus/vmbus/drivers in the guest and capture output.
 
     let mut sh = agent.unix_shell();
+    let netvsc_path = "/sys/bus/vmbus/drivers/hv_netvsc";
 
-    // 1) List all items recursively under /sys/bus/vmbus/drivers/hv_netvsc
+    // List directory contents for visibility.
+    let contents = cmd!(sh, "ls -la {netvsc_path}").read().await?;
+    tracing::info!("Listing all contents of {}:\n{}", netvsc_path, contents);
 
-    let listing = cmd!(sh, "ls -laR /sys/bus/vmbus/drivers/hv_netvsc")
-        .read()
-        .await?;
-    tracing::info!(
-        "Recursive listing of /sys/bus/vmbus/drivers/hv_netvsc:\n{}",
-        listing
-    );
-
-    // 2) Parse for GUID-named symlink entries and resolve targets
-    let mut current_dir = String::new();
-    let mut resolved = Vec::new();
-    let mut target_dirs = Vec::new();
-
-    let is_hex = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit());
-    let is_guid = |s: &str| {
+    // Pure helpers for parsing and path resolution.
+    fn is_hex(s: &str) -> bool {
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
+    }
+    fn is_guid(s: &str) -> bool {
         let parts: Vec<&str> = s.split('-').collect();
-        parts.len() == 5
-            && parts[0].len() == 8
-            && parts[1].len() == 4
-            && parts[2].len() == 4
-            && parts[3].len() == 4
-            && parts[4].len() == 12
-            && parts.iter().all(|p| is_hex(p))
-    };
-
-    // Resolve a possibly-relative symlink target against a base directory inside the guest.
-    let resolve_abs = |base: &str, target: &str| -> String {
+        matches!(parts.as_slice(), [a, b, c, d, e]
+            if [a.len(), b.len(), c.len(), d.len(), e.len()] == [8, 4, 4, 4, 12]
+            && parts.iter().all(|p| is_hex(p)))
+    }
+    fn resolve_abs(base: &str, target: &str) -> String {
         if target.starts_with('/') {
             return target.to_string();
         }
@@ -816,63 +804,28 @@ async fn mnf_guest_support(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
             }
         }
         format!("/{}", parts.join("/"))
-    };
-
-    for line in listing.lines() {
-        let line = line.trim_end();
-
-        // Section header like "/sys/bus/vmbus/drivers/hv_sock:"
-        if line.ends_with(':') && line.starts_with("/sys/") {
-            current_dir = line.trim_end_matches(':').to_string();
-            continue;
-        }
-
-        // Symlink line starts with 'l'
-        if line.starts_with('l') {
-            // Parse "… name -> target"
-            if let Some(idx) = line.rfind(" -> ") {
-                let (left, arrow_target) = line.split_at(idx);
-                let target_part = &arrow_target[" -> ".len()..];
-                // The file name is the last whitespace-delimited token on the left side.
-                if let Some(name) = left.split_whitespace().last() {
-                    if is_guid(name) {
-                        let link_path = format!("{}/{}", current_dir, name);
-                        // Resolve to absolute target by normalizing the relative path.
-                        let abs = resolve_abs(&current_dir, target_part);
-                        resolved.push(format!("{} -> {}", link_path, abs));
-                        target_dirs.push(abs.clone());
-
-                        // Also log the relative target shown by ls for reference.
-                        tracing::debug!("{} -> {}", link_path, target_part);
-                    }
-                }
-            }
-        }
     }
 
-    tracing::info!(
-        "Resolved GUID symlinks under /sys/bus/vmbus/drivers:\n{}",
-        resolved.join("\n")
-    );
+    // Extract absolute target dirs from GUID-named symlink entries in ls output.
+    let target_dirs: Vec<String> = contents
+        .lines()
+        .filter(|line| line.starts_with('l'))
+        .filter_map(|line| {
+            let (left, target) = line.rsplit_once(" -> ")?;
+            let name = left.split_whitespace().last()?;
+            is_guid(name).then(|| resolve_abs(netvsc_path, target))
+        })
+        .collect();
 
     tracing::info!("target dirs:\n{}", target_dirs.join("\n"));
 
+    // For each target dir, ensure at least one monitor_id file exists.
     for entry in target_dirs {
-        sh.change_dir(entry.clone());
-        let find_out = cmd!(sh, "find . -type f -name 'monitor_id'").read().await?;
-        let mut monitor_paths: Vec<String> = find_out
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|p| !p.is_empty())
-            .collect();
-
-        monitor_paths.sort();
-        monitor_paths.dedup();
-
-        tracing::info!(
-            "monitor_id files under resolved symlink targets:\n{}",
-            monitor_paths.join("\n")
-        );
+        let find_out = cmd!(sh, "find {entry} -type f -name 'monitor_id'")
+            .read()
+            .await?;
+        let has_monitor = find_out.lines().any(|s| !s.trim().is_empty());
+        assert!(has_monitor, "no monitor_id files found in {}", entry);
     }
 
     agent.power_off().await?;
