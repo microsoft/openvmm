@@ -48,7 +48,7 @@ impl PciExpressCapability {
     /// Creates a new PCI Express capability with FLR support.
     ///
     /// # Arguments
-    /// * `flr_handler` - Optional handler to be called when FLR is initiated. FLR support will be inferred if flr_handler = Some(_)
+    /// * `flr_handler` - Optional handler to be called when FLR is initiated. This emulator will report that FLR is supported if flr_handler = Some(_)
     pub fn new(flr_handler: Option<Arc<dyn FlrHandler>>) -> Self {
         Self {
             device_capabilities: pci_express::DeviceCapabilities::new()
