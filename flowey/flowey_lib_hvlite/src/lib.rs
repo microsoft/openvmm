@@ -44,6 +44,7 @@ pub mod init_openvmm_cargo_config_deny_warnings;
 pub mod init_openvmm_magicpath_linux_test_kernel;
 pub mod init_openvmm_magicpath_lxutil;
 pub mod init_openvmm_magicpath_openhcl_sysroot;
+pub mod init_openvmm_magicpath_release_openhcl_igvm;
 pub mod init_openvmm_magicpath_protoc;
 pub mod init_openvmm_magicpath_uefi_mu_msvm;
 pub mod init_vmm_tests_env;

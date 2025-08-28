@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::download_lxutil::LxutilArch;
-use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
 use crate::init_openvmm_magicpath_linux_test_kernel::OpenvmmLinuxTestKernelArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
@@ -23,10 +22,10 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_linux_test_kernel::Node>();
         ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
+        ctx.import::<crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
     }
@@ -97,53 +96,13 @@ impl SimpleFlowNode for Node {
             }
         }
 
-        let latest_release_igvm_files =
-            ctx.reqv(
-                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
-                    release_igvm_files: v,
-                    release_version: OpenhclReleaseVersion::latest(),
-                },
-            );
-
-        deps.push(ctx.emit_rust_step(
-            "copy downloaded release igvm files to artifact dir",
-            |ctx| {
-                let latest_release_igvm_files = latest_release_igvm_files.claim(ctx);
-                let latest_release_artifact = release_artifact.claim(ctx);
-
-                |rt| {
-                    let latest_release_igvm_files = rt.read(latest_release_igvm_files);
-                    let latest_release_artifact = rt.read(latest_release_artifact);
-                    let latest_release_version = OpenhclReleaseVersion::latest();
-
-                    fs_err::copy(
-                        latest_release_igvm_files
-                            .bins_dir
-                            .join("openhcl-aarch64.bin"),
-                        latest_release_artifact.join(
-                            latest_release_version.clone().to_string() + "-aarch64-openhcl.bin",
-                        ),
-                    )?;
-
-                    fs_err::copy(
-                        latest_release_igvm_files.bins_dir.join("openhcl.bin"),
-                        latest_release_artifact
-                            .join(latest_release_version.clone().to_string() + "-x64-openhcl.bin"),
-                    )?;
-
-                    fs_err::copy(
-                        latest_release_igvm_files
-                            .bins_dir
-                            .join("openhcl-direct.bin"),
-                        latest_release_artifact.join(
-                            latest_release_version.clone().to_string() + "-x64-direct-openhcl.bin",
-                        ),
-                    )?;
-
-                    Ok(())
-                }
-            },
-        ));
+        deps.push(
+            ctx.reqv(|v| crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Request {
+                release_version: crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
+                release_artifact,
+                done: v,
+            }).into_side_effect()
+        );
 
         ctx.emit_side_effect_step(deps, [done]);
 

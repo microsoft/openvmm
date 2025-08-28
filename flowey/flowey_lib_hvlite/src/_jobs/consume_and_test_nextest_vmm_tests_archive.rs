@@ -48,7 +48,6 @@ flowey_request! {
         pub fail_job_on_test_fail: bool,
         /// If provided, also publish junit.xml test results as an artifact.
         pub artifact_dir: Option<ReadVar<PathBuf>>,
-        pub release_igvm_files: Option<crate::init_vmm_tests_env::ReleaseIgvmFilesInput>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -81,7 +80,6 @@ impl SimpleFlowNode for Node {
             test_artifacts,
             fail_job_on_test_fail,
             artifact_dir,
-            release_igvm_files,
             done,
         } = request;
 
@@ -127,6 +125,11 @@ impl SimpleFlowNode for Node {
             },
         ));
 
+        let release_igvm_files = ctx.reqv(|v| crate::download_release_igvm_files_from_gh::resolve::Request {
+            release_igvm_files: v,
+            release_version: crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest()
+        });
+
         let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
@@ -145,7 +148,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
-            release_igvm_files,
+            release_igvm_files: Some(release_igvm_files),
             use_relative_paths: false,
         });
 

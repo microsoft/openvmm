@@ -685,9 +685,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,
-            release_igvm_files: Some(
-                crate::init_vmm_tests_env::ReleaseIgvmFilesInput::ReleaseOutput(release_igvm_files),
-            ),
+            release_igvm_files: Some(release_igvm_files),
             use_relative_paths: build_only,
         });
 

@@ -11,14 +11,6 @@ use crate::download_uefi_mu_msvm::MuMsvmArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
-#[derive(Serialize, Deserialize)]
-pub enum ReleaseIgvmFilesInput {
-    ReleaseOutput(ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>),
-    NugetPackageDestination(
-        ReadVar<flowey_lib_common::nuget_install_package::NugetPackageDestination>,
-    ),
-}
-
 flowey_request! {
     pub struct Request {
         /// Directory to symlink / copy test contents into. Does not need to be
@@ -61,7 +53,7 @@ flowey_request! {
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
         /// Get a map of env vars required to be set when running VMM tests
         pub get_env: WriteVar<BTreeMap<String, String>>,
-        pub release_igvm_files: Option<ReleaseIgvmFilesInput>,
+        pub release_igvm_files: Option<ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>>,
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
     }
@@ -119,12 +111,6 @@ impl SimpleFlowNode for Node {
             arch: mu_msvm_arch,
             msvm_fd: v,
         });
-
-        let release_igvm_files = release_igvm_files.unwrap();
-        let release_igvm_files = match release_igvm_files {
-            ReleaseIgvmFilesInput::ReleaseOutput(v) => Some(v.map(ctx, |v| v.bins_dir)),
-            ReleaseIgvmFilesInput::NugetPackageDestination(v) => Some(v.map(ctx, |v| v.path)),
-        };
 
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
@@ -323,13 +309,14 @@ impl SimpleFlowNode for Node {
 
                 if let Some(release_igvm_files_dir) = release_igvm_files_dir {
                     // Log all files in release_igvm_files_dir
-                    for entry in fs_err::read_dir(&release_igvm_files_dir)? {
+                    let dir = release_igvm_files_dir.bins_dir;
+                    for entry in fs_err::read_dir(&dir)? {
                         let entry = entry?;
                         log::info!("release_igvm_files_dir contains: {:?}", entry.file_name());
                     }
                     log::info!(
                         "Release IGVM files found in: {}",
-                        release_igvm_files_dir.clone().display()
+                        dir.clone().display()
                     );
                     let latest_release_version = OpenhclReleaseVersion::latest();
                     let filenames = vec![
@@ -348,7 +335,7 @@ impl SimpleFlowNode for Node {
                     ];
                     // For each entry in filenames check if the file exists in the release_igvm_files_dir
                     for (filename, new_name) in filenames {
-                        let src = release_igvm_files_dir.join(filename);
+                        let src = dir.join(filename);
                         if src.exists() {
                             fs_err::copy(src, test_content_dir.join(new_name))?;
                         }

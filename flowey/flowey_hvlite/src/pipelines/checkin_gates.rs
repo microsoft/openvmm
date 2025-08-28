@@ -903,22 +903,6 @@ impl IntoPipeline for CheckinGatesCli {
         let cvm_filter = |arch| format!("test({arch}) + (test(vbs) & test(hyperv))");
         let cvm_x64_test_artifacts = vec![KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd];
 
-        let (pub_latest_release_igvm_files, use_latest_release_igvm_files) =
-            pipeline.new_typed_artifact("latest-release-igvm-files");
-
-        let download_test_artifacts_job = pipeline.new_job(FlowPlatform::Windows, FlowArch::X86_64, "download vmm-tests artifacts")
-            .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                FlowPlatform::Windows,
-            ))
-            .dep_on(|ctx| {
-                flowey_lib_hvlite::download_release_igvm_files_from_gh::resolve::Request {
-                    release_igvm_files: ctx.publish_typed_artifact(pub_latest_release_igvm_files),
-                    release_version: flowey_lib_hvlite::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest()
-                }
-            });
-
-        all_jobs.push(download_test_artifacts_job.finish());
-
         for VmmTestJobParams {
             platform,
             arch,
@@ -1025,7 +1009,6 @@ impl IntoPipeline for CheckinGatesCli {
                         test_artifacts,
                         fail_job_on_test_fail: true,
                         artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
-                        release_igvm_files: Some(flowey_lib_hvlite::init_vmm_tests_env::ReleaseIgvmFilesInput::ReleaseOutput(ctx.use_typed_artifact(&use_latest_release_igvm_files))),
                         done: ctx.new_done_handle(),
                     }
                 });
