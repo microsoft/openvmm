@@ -626,7 +626,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         can_trust_host,
         is_confidential_debug,
         sidecar.as_ref(),
-        address_space.vtl2_pool().is_some(),
+        address_space.has_vtl2_pool(),
     )
     .unwrap();
 

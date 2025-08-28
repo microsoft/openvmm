@@ -112,18 +112,15 @@ pub struct AddressSpaceManager {
     /// Track the whole address space - this must be sorted.
     address_space: ArrayVec<AddressRange, MAX_ADDRESS_RANGES>,
 
-    /// Track the VTL2 pool privately separately, as well.
-    ///
-    /// Today, we only support a single range, but we could easily support more
-    /// ranges in the future by making this an ArrayVec instead of an Option.
-    vtl2_pool: Option<AllocatedRange>,
+    /// Track that the VTL2 GPA pool has at least one allocation.
+    vtl2_pool: bool,
 }
 
 impl AddressSpaceManager {
     pub const fn new_const() -> Self {
         Self {
             address_space: ArrayVec::new_const(),
-            vtl2_pool: None,
+            vtl2_pool: false,
         }
     }
 
@@ -322,11 +319,6 @@ impl AddressSpaceManager {
         // multiple of 4k.
         let len = len.div_ceil(PAGE_SIZE_4K) * PAGE_SIZE_4K;
 
-        // We only support a single VTL2 pool range, today.
-        if allocation_type == AllocationType::GpaPool && self.vtl2_pool.is_some() {
-            return None;
-        }
-
         fn find_index<'a>(
             mut iter: impl Iterator<Item = (usize, &'a AddressRange)>,
             preferred_vnode: Option<u32>,
@@ -353,7 +345,7 @@ impl AddressSpaceManager {
             }
         };
 
-        index.map(|index| {
+        let alloc = index.map(|index| {
             self.allocate_range(
                 index,
                 len,
@@ -367,7 +359,13 @@ impl AddressSpaceManager {
                 },
                 allocation_policy,
             )
-        })
+        });
+
+        if allocation_type == AllocationType::GpaPool && alloc.is_some() {
+            self.vtl2_pool = true;
+        }
+
+        alloc
     }
 
     /// Returns an iterator for all VTL2 ranges.
@@ -388,8 +386,8 @@ impl AddressSpaceManager {
         })
     }
 
-    /// The memory range for the VTL2 pool.
-    pub fn vtl2_pool(&self) -> Option<AllocatedRange> {
+    /// Returns true if there are VTL2 pool allocations.
+    pub fn has_vtl2_pool(&self) -> bool {
         self.vtl2_pool
     }
 }
@@ -445,6 +443,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
+        assert!(address_space.has_vtl2_pool());
 
         let range = address_space
             .allocate(
