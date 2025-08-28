@@ -306,6 +306,15 @@ impl CpuIo for IoHandler<'_> {
     async fn write_io(&self, vp: VpIndex, port: u16, data: &[u8]) {
         tracing::info!(vp = vp.index(), port, data = widen(data), "write io");
     }
+
+    #[track_caller]
+    fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
+        tracing::error!(
+            err = error.as_ref() as &dyn std::error::Error,
+            "fatal error"
+        );
+        virt::VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+    }
 }
 
 impl IoHandler<'_> {

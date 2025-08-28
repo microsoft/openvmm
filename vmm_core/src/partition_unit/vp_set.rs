@@ -149,33 +149,6 @@ where
                     registers,
                 })
             }
-            VpHaltReason::InvalidVmState(err) => {
-                tracing::error!(
-                    err = err.as_ref() as &dyn std::error::Error,
-                    "invalid VM state"
-                );
-                Err(HaltReason::InvalidVmState {
-                    vp: self.vp_index.index(),
-                })
-            }
-            VpHaltReason::EmulationFailure(err) => {
-                tracing::error!(
-                    err = err.as_ref() as &dyn std::error::Error,
-                    "emulation failure"
-                );
-                Err(HaltReason::VpError {
-                    vp: self.vp_index.index(),
-                })
-            }
-            VpHaltReason::Hypervisor(err) => {
-                tracing::error!(
-                    err = err.as_ref() as &dyn std::error::Error,
-                    "fatal vp error"
-                );
-                Err(HaltReason::VpError {
-                    vp: self.vp_index.index(),
-                })
-            }
             VpHaltReason::SingleStep => {
                 tracing::debug!("single step");
                 Err(HaltReason::SingleStep {
