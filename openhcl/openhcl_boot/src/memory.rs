@@ -386,7 +386,7 @@ impl AddressSpaceManager {
         })
     }
 
-    /// If there are vtl2 pool allocations.
+    /// Returns true if there are VTL2 pool allocations.
     pub fn has_vtl2_pool(&self) -> bool {
         self.vtl2_pool
     }
