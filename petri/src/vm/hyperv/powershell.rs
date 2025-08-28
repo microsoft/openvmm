@@ -6,6 +6,7 @@
 use super::vm::CommandError;
 use super::vm::run_cmd;
 use crate::OpenHclServicingFlags;
+use crate::VmScreenshotMeta;
 use anyhow::Context;
 use core::str;
 use guid::Guid;
@@ -728,29 +729,29 @@ pub async fn hyperv_event_logs(
     .await
 }
 
-/// boot succeeded
-pub const EVENT_ID_BOOT_SUCCESS: u32 = 18601;
-/// boot succeeded, secure boot failed
-pub const EVENT_ID_BOOT_SUCCESS_SECURE_BOOT_FAILED: u32 = 18602;
-/// boot failed
-pub const EVENT_ID_BOOT_FAILURE: u32 = 18603;
-/// boot failed due to secure boot failure
-pub const EVENT_ID_BOOT_FAILURE_SECURE_BOOT_FAILED: u32 = 18604;
-/// boot failed because there was no boot device
-pub const EVENT_ID_NO_BOOT_DEVICE: u32 = 18605;
-/// boot attempted (pcat only)
-pub const EVENT_ID_BOOT_ATTEMPT: u32 = 18606;
+/// The vm successfully booted an operating system.
+pub const MSVM_BOOT_RESULTS_SUCCESS: u32 = 18601;
+/// The vm successfully booted an operating system, but at least one boot source failed secure boot validation.
+pub const MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES: u32 = 18602;
+/// The vm failed to boot an operating system.
+pub const MSVM_BOOT_RESULTS_FAILURE: u32 = 18603;
+/// The vm failed to boot an operating system. At least one boot source failed secure boot validation.
+pub const MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES: u32 = 18604;
+/// The vm failed to boot an operating system. No bootable devices are configured.
+pub const MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES: u32 = 18605;
+/// The vm is attempting to boot an operating system. (PCAT only)
+pub const MSVM_BOOT_RESULTS_ATTEMPT: u32 = 18606;
 
 const BOOT_EVENT_IDS: [u32; 6] = [
-    EVENT_ID_BOOT_SUCCESS,
-    EVENT_ID_BOOT_SUCCESS_SECURE_BOOT_FAILED,
-    EVENT_ID_BOOT_FAILURE,
-    EVENT_ID_BOOT_FAILURE_SECURE_BOOT_FAILED,
-    EVENT_ID_NO_BOOT_DEVICE,
-    EVENT_ID_BOOT_ATTEMPT,
+    MSVM_BOOT_RESULTS_SUCCESS,
+    MSVM_BOOT_RESULTS_SUCCESS_SECURE_BOOT_FAILURES,
+    MSVM_BOOT_RESULTS_FAILURE,
+    MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES,
+    MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES,
+    MSVM_BOOT_RESULTS_ATTEMPT,
 ];
 
-/// Get Hyper-V event logs for a VM
+/// Get Hyper-V boot event logs for a VM
 pub async fn hyperv_boot_events(
     vmid: &Guid,
     start_time: &Timestamp,
@@ -761,6 +762,66 @@ pub async fn hyperv_boot_events(
         Some(start_time),
         Some(&vmid),
         &BOOT_EVENT_IDS,
+    )
+    .await
+}
+
+/// The vm was turned off.
+pub const MSVM_HOST_STOP_SUCCESS: u32 = 18502;
+/// The vm was shut down using the Shutdown Integration Component.
+pub const MSVM_HOST_SHUTDOWN_SUCCESS: u32 = 18504;
+/// The vm was shut down by the guest operating system.
+pub const MSVM_GUEST_SHUTDOWN_SUCCESS: u32 = 18508;
+/// The vm was shut down using the Shutdown Integration Component.
+pub const MSVM_HOST_RESET_SUCCESS: u32 = 18512;
+/// The vm was shut down by the guest operating system.
+pub const MSVM_GUEST_RESET_SUCCESS: u32 = 18514;
+/// The vm was shut down for a reset initiated by the guest operating system.
+pub const MSVM_STOP_FOR_GUEST_RESET_SUCCESS: u32 = 18515;
+/// The vm was turned off as it could not recover from a critical error.
+pub const MSVM_STOP_CRITICAL_SUCCESS: u32 = 18528;
+/// The vm was reset because the guest operating system requested an operation
+/// that is not supported by Hyper-V or an unrecoverable error occurred.
+/// This caused a triple fault.
+pub const MSVM_TRIPLE_FAULT_GENERAL_ERROR: u32 = 18539;
+/// The vm was reset because the guest operating system requested an operation
+/// that is not supported by Hyper-V. This request caused a triple fault.
+pub const MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR: u32 = 18540;
+/// The vm was reset because an unrecoverable error occurred while accessing a
+/// virtual processor register which caused a triple fault.
+pub const MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR: u32 = 18550;
+/// The vm was reset because an unrecoverable error occurred on a virtual
+/// processor that caused a triple fault.
+pub const MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR: u32 = 18560;
+/// The vm was hibernated successfully.
+pub const MSVM_GUEST_HIBERNATE_SUCCESS: u32 = 18608;
+
+const HALT_EVENT_IDS: [u32; 12] = [
+    MSVM_HOST_STOP_SUCCESS,
+    MSVM_HOST_SHUTDOWN_SUCCESS,
+    MSVM_GUEST_SHUTDOWN_SUCCESS,
+    MSVM_HOST_RESET_SUCCESS,
+    MSVM_GUEST_RESET_SUCCESS,
+    MSVM_STOP_FOR_GUEST_RESET_SUCCESS,
+    MSVM_STOP_CRITICAL_SUCCESS,
+    MSVM_TRIPLE_FAULT_GENERAL_ERROR,
+    MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR,
+    MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR,
+    MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR,
+    MSVM_GUEST_HIBERNATE_SUCCESS,
+];
+
+/// Get Hyper-V halt event logs for a VM
+pub async fn hyperv_halt_events(
+    vmid: &Guid,
+    start_time: &Timestamp,
+) -> anyhow::Result<Vec<WinEvent>> {
+    let vmid = vmid.to_string();
+    run_get_winevent(
+        &[HYPERV_WORKER_TABLE],
+        Some(start_time),
+        Some(&vmid),
+        &HALT_EVENT_IDS,
     )
     .await
 }
@@ -877,9 +938,11 @@ pub async fn run_remove_vm_scsi_controller(
 /// Run Get-VmScreenshot commandlet
 pub async fn run_get_vm_screenshot(
     vmid: &Guid,
+    image: &mut Vec<u8>,
     ps_mod: &Path,
-    path: &Path,
-) -> anyhow::Result<(u16, u16)> {
+    temp_bin_path: &Path,
+) -> anyhow::Result<VmScreenshotMeta> {
+    // execute wmi via powershell
     let output = run_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
@@ -889,15 +952,74 @@ pub async fn run_get_vm_screenshot(
             .arg("Id", vmid)
             .pipeline()
             .cmdlet("Get-VmScreenshot")
-            .arg("Path", path)
+            .arg("Path", temp_bin_path)
             .finish()
             .build(),
     )
     .await
     .context("get_vm_screenshot")?;
+
+    // parse output
     let (x, y) = output.split_once(',').context("invalid dimensions")?;
-    Ok((
-        x.parse().context("invalid x dimension")?,
-        y.parse().context("invalid y dimension")?,
-    ))
+    let x = x.parse().context("invalid x dimension")?;
+    let y = y.parse().context("invalid y dimension")?;
+    let (widthsize, heightsize) = (x as usize, y as usize);
+    let mut image_rgb565 = fs_err::read(temp_bin_path)?;
+
+    // calculate length and truncate
+    const IN_BYTES_PER_PIXEL: usize = 2;
+    const OUT_BYTES_PER_PIXEL: usize = 3;
+    let in_len = widthsize * heightsize * IN_BYTES_PER_PIXEL;
+    let out_len = widthsize * heightsize * OUT_BYTES_PER_PIXEL;
+    image_rgb565.truncate(in_len);
+    if image_rgb565.len() != in_len {
+        anyhow::bail!("did not get enough bytes for screenshot");
+    }
+
+    // convert from rgb565 to rgb888
+    image.resize(out_len, 0);
+    for (out_pixel, in_pixel) in image
+        .chunks_exact_mut(OUT_BYTES_PER_PIXEL)
+        .zip(image_rgb565.chunks_exact(IN_BYTES_PER_PIXEL))
+    {
+        // convert from rgb565 ( gggbbbbb rrrrrggg )
+        // to rgb888 ( rrrrrrrr gggggggg bbbbbbbb )
+
+        // red
+        out_pixel[0] = in_pixel[1] & 0b11111000;
+        // green
+        out_pixel[1] = ((in_pixel[1] & 0b00000111) << 5) + ((in_pixel[0] & 0b11100000) >> 3);
+        // blue
+        out_pixel[2] = in_pixel[0] << 3;
+    }
+
+    Ok(VmScreenshotMeta {
+        color: image::ExtendedColorType::Rgb8,
+        width: x,
+        height: y,
+    })
+}
+
+/// Run Set-TurnOffOnGuestRestart commandlet
+pub async fn run_set_turn_off_on_guest_restart(
+    vmid: &Guid,
+    ps_mod: &Path,
+    enable: bool,
+) -> anyhow::Result<()> {
+    run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-TurnOffOnGuestRestart")
+            .arg("Enable", enable)
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_turn_off_on_guest_restart")
 }
