@@ -760,11 +760,14 @@ async fn boot_expect_fail(
 }
 
 /// MNF guest support: capture and print recursive listing of vmbus drivers.
-#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
+#[openvmm_test(
+    openvmm_openhcl_linux_direct_x64,
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
 async fn validate_mnf_usage_in_guest(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
-    // NetVSC uses MNF, StorVSC doesn't hence attach a nic to the vm.
+    // So far, NetVSC uses MNF, StorVSC doesn't hence attach a nic to the vm.
     let (vm, agent) = config
         .with_vmbus_redirect(true)
         .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
@@ -772,7 +775,7 @@ async fn validate_mnf_usage_in_guest(
         .run()
         .await?;
 
-    let mut sh = agent.unix_shell();
+    let sh = agent.unix_shell();
     let netvsc_path = "/sys/bus/vmbus/drivers/hv_netvsc";
 
     // List directory contents for visibility.
@@ -807,7 +810,9 @@ async fn validate_mnf_usage_in_guest(
     }
 
     // Extract absolute target dirs from GUID-named symlink entries in ls output.
-    let target_dirs: Vec<String> = contents
+    // Each symlink entry points to a device instance within /sys/bus/vmbus/devices/
+    // The GUIDs are the instance ID.
+    let device_dirs: Vec<String> = contents
         .lines()
         .filter(|line| line.starts_with('l'))
         .filter_map(|line| {
@@ -817,15 +822,15 @@ async fn validate_mnf_usage_in_guest(
         })
         .collect();
 
-    tracing::info!("target dirs:\n{}", target_dirs.join("\n"));
+    tracing::info!("Devices:\n{}", device_dirs.join("\n"));
 
-    // For each target dir, ensure at least one monitor_id file exists.
-    for entry in target_dirs {
-        let find_out = cmd!(sh, "find {entry} -type f -name 'monitor_id'")
+    // For each device, ensure at least one monitor_id file exists.
+    for device in device_dirs {
+        let find_out = cmd!(sh, "find {device} -type f -name 'monitor_id'")
             .read()
             .await?;
         let has_monitor = find_out.lines().any(|s| !s.trim().is_empty());
-        assert!(has_monitor, "no monitor_id files found in {}", entry);
+        assert!(has_monitor, "no monitor_id files found in {}", device);
     }
 
     agent.power_off().await?;
