@@ -33,13 +33,13 @@ pub mod resolve {
             let latest_release_igvm_files =
                 ctx.reqv(|v| download_release_igvm_files_from_gh::resolve::Request {
                     release_igvm_files: v,
-                    release_version: release_version.clone(),
+                    release_version,
                 });
 
-            let rv = release_version.to_string();
-            let aarch64_name = format!("{}-aarch64-openhcl.bin", rv);
-            let x64_name = format!("{}-x64-openhcl.bin", rv);
-            let direct_name = format!("{}-x64-direct-openhcl.bin", rv);
+            let release_version = release_version.to_string();
+            let aarch64_name = format!("{}-aarch64-openhcl.bin", release_version);
+            let x64_name = format!("{}-x64-openhcl.bin", release_version);
+            let direct_name = format!("{}-x64-direct-openhcl.bin", release_version);
 
             ctx.emit_rust_step(
                 "copy downloaded release igvm files to artifact dir",
