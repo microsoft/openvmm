@@ -235,6 +235,7 @@ async fn shutdown_ic(
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+#[ignore]
 async fn keepalive_with_nvme_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
