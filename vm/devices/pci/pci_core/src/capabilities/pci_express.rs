@@ -202,6 +202,8 @@ mod save_restore {
             pub device_control: u16,
             #[mesh(2)]
             pub device_status: u16,
+            #[mesh(3)]
+            pub flr_handler: u16,
         }
     }
 
@@ -209,19 +211,11 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            let state = self.state.lock();
-            Ok(state::SavedState {
-                device_control: state.device_control.into_bits(),
-                device_status: state.device_status.into_bits(),
-            })
+            Err(SaveError::NotSupported)
         }
 
-        fn restore(&mut self, saved_state: Self::SavedState) -> Result<(), RestoreError> {
-            let mut state = self.state.lock();
-            state.device_control =
-                pci_express::DeviceControl::from_bits(saved_state.device_control);
-            state.device_status = pci_express::DeviceStatus::from_bits(saved_state.device_status);
-            Ok(())
+        fn restore(&mut self, _: Self::SavedState) -> Result<(), RestoreError> {
+            Err(RestoreError::SavedStateNotSupported)
         }
     }
 }
