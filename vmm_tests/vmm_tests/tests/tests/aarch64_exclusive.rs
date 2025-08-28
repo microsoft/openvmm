@@ -6,7 +6,6 @@
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::pipette::cmd;
-use vmm_core_defs::HaltReason;
 use vmm_test_macros::vmm_test;
 
 /// Boot Linux and verify the PMU interrupt is available.
@@ -40,7 +39,7 @@ async fn pmu_gsiv<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), a
     })?;
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }

@@ -26,7 +26,9 @@ crc32fast.workspace = true
 # exception handler. Using the force-soft feature flag enables a software
 # implementation of the hashing algorithms that does not use cpuid.
 sha2 = { workspace = true, features = ["force-soft"] }
+thiserror.workspace = true
 zerocopy.workspace = true
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 safe_intrinsics.workspace = true
 tdcall.workspace = true

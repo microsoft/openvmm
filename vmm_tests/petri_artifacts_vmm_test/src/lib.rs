@@ -225,6 +225,8 @@ pub mod artifacts {
     pub mod test_vhd {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
         use petri_artifacts_common::tags::GuestQuirks;
+        use petri_artifacts_common::tags::GuestQuirksInner;
+        use petri_artifacts_common::tags::InitialRebootCondition;
         use petri_artifacts_common::tags::IsTestVhd;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
@@ -291,6 +293,13 @@ pub mod artifacts {
         impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
             const ARCH: MachineArch = MachineArch::X86_64;
+
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    initial_reboot: Some(InitialRebootCondition::Always),
+                    ..Default::default()
+                })
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 {
@@ -309,9 +318,10 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
 
             fn quirks() -> GuestQuirks {
-                GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                }
+                    ..Default::default()
+                })
             }
         }
 
@@ -329,9 +339,12 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
             fn quirks() -> GuestQuirks {
-                GuestQuirks {
+                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                }
+                    ..Default::default()
+                });
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks
             }
         }
 
@@ -349,9 +362,12 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::Aarch64;
             fn quirks() -> GuestQuirks {
-                GuestQuirks {
+                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                }
+                    ..Default::default()
+                });
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks
             }
         }
 
@@ -368,6 +384,13 @@ pub mod artifacts {
         impl IsTestVhd for WINDOWS_11_ENTERPRISE_AARCH64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
             const ARCH: MachineArch = MachineArch::Aarch64;
+
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    initial_reboot: Some(InitialRebootCondition::Always),
+                    ..Default::default()
+                })
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for WINDOWS_11_ENTERPRISE_AARCH64 {
@@ -381,6 +404,7 @@ pub mod artifacts {
     pub mod test_iso {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
         use petri_artifacts_common::tags::GuestQuirks;
+        use petri_artifacts_common::tags::GuestQuirksInner;
         use petri_artifacts_common::tags::IsTestIso;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
@@ -396,9 +420,10 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
 
             fn quirks() -> GuestQuirks {
-                GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                }
+                    ..Default::default()
+                })
             }
         }
 
