@@ -419,7 +419,7 @@ pub mod caps {
             #[bits(3)]
             _reserved1: u32,
             pub role_based_error: bool,
-            pub err_cor_subclass_capabable: bool,
+            pub err_cor_subclass_capable: bool,
             pub rx_mps_fixed: bool,
             #[bits(8)]
             pub captured_slot_power_limit: u32,
