@@ -30,8 +30,8 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use nvme_resources::fault::FaultBehaviour;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::PciFaultBehavior;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
@@ -348,19 +348,13 @@ impl NvmeFaultController {
                 // If any fault was configured for cc.en() process it here
                 match self
                     .fault_configuration
-                    .controller_management_fault
+                    .pci_fault
                     .controller_management_fault_enable
                 {
-                    FaultBehaviour::Delay(duration) => {
+                    PciFaultBehavior::Delay(duration) => {
                         std::thread::sleep(duration);
                     }
-                    FaultBehaviour::Drop => {
-                        tracelimit::warn_ratelimited!(
-                            "Dropping enable command due to fault injection"
-                        );
-                        return;
-                    }
-                    _ => {} // Update is not yet configured for this fault. Treat that as a default action for now
+                    PciFaultBehavior::Default => {}
                 }
 
                 // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.

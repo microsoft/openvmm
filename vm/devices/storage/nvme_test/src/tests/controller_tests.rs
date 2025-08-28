@@ -17,9 +17,9 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use mesh::CellUpdater;
 use nvme_resources::fault::AdminQueueFaultConfig;
-use nvme_resources::fault::ControllerManagementFaultConfig;
-use nvme_resources::fault::FaultBehaviour;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::PciFaultConfig;
+use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use pal_async::DefaultDriver;
@@ -209,7 +209,7 @@ async fn test_basic_registers(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
         fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
-        controller_management_fault: ControllerManagementFaultConfig::new(),
+        pci_fault: PciFaultConfig::new(),
     };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
@@ -238,7 +238,7 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
         fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
-        controller_management_fault: ControllerManagementFaultConfig::new(),
+        pci_fault: PciFaultConfig::new(),
     };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
@@ -257,7 +257,7 @@ async fn test_enable_controller(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
         fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
-        controller_management_fault: ControllerManagementFaultConfig::new(),
+        pci_fault: PciFaultConfig::new(),
     };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
@@ -289,7 +289,7 @@ async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
         fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
-        controller_management_fault: ControllerManagementFaultConfig::new(),
+        pci_fault: PciFaultConfig::new(),
     };
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
@@ -364,7 +364,7 @@ async fn test_send_identify_no_fault(driver: DefaultDriver) {
     let fault_configuration = FaultConfiguration {
         fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
-        controller_management_fault: ControllerManagementFaultConfig::new(),
+        pci_fault: PciFaultConfig::new(),
     };
     let cqe = send_identify(driver, fault_configuration).await;
 
@@ -380,9 +380,9 @@ async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
         fault_active: CellUpdater::new(true).cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
             nvme_spec::AdminOpcode::IDENTIFY.0,
-            FaultBehaviour::Update(faulty_identify),
+            QueueFaultBehavior::Update(faulty_identify),
         ),
-        controller_management_fault: ControllerManagementFaultConfig::new(),
+        pci_fault: PciFaultConfig::new(),
     };
     let cqe = send_identify(driver, fault_configuration).await;
 

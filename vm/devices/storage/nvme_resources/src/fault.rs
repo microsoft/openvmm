@@ -23,25 +23,27 @@ pub enum QueueFaultBehavior<T> {
     Panic(String),
 }
 
-#[derive(MeshPayload)]
-/// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
-pub struct ControllerManagementFaultConfig {
-    /// Fault to apply to cc.en() bit during enablement
-    pub controller_management_fault_enable: FaultBehaviour<bool>,
+#[derive(Clone, MeshPayload)]
+/// Supported fault behaviour for PCI faults
+pub enum PciFaultBehavior {
+    /// Introduce a delay to the PCI operation
+    Delay(Duration),
+    /// Do nothing
+    Default,
 }
 
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
-pub struct ControllerManagementFaultConfig {
+pub struct PciFaultConfig {
     /// Fault to apply to cc.en() bit during enablement
-    pub controller_management_fault_enable: FaultBehaviour<bool>,
+    pub controller_management_fault_enable: PciFaultBehavior,
 }
 
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
-    pub admin_submission_queue_faults: Vec<(u8, FaultBehaviour<Command>)>,
+    pub admin_submission_queue_faults: Vec<(u8, QueueFaultBehavior<Command>)>,
 }
 
 #[derive(MeshPayload, Clone)]
@@ -52,22 +54,19 @@ pub struct FaultConfiguration {
     /// Fault to apply to the admin queues
     pub admin_fault: AdminQueueFaultConfig,
     /// Fault to apply to management layer of the controller
-    pub controller_management_fault: ControllerManagementFaultConfig,
+    pub pci_fault: PciFaultConfig,
 }
 
-impl ControllerManagementFaultConfig {
+impl PciFaultConfig {
     /// Create a new no-op fault configuration
     pub fn new() -> Self {
         Self {
-            controller_management_fault_enable: FaultBehaviour::Default,
+            controller_management_fault_enable: PciFaultBehavior::Default,
         }
     }
 
     /// Create a new fault configuration
-    pub fn with_controller_management_enable_fault(
-        mut self,
-        behaviour: FaultBehaviour<bool>,
-    ) -> Self {
+    pub fn with_cc_enable_fault(mut self, behaviour: PciFaultBehavior) -> Self {
         self.controller_management_fault_enable = behaviour;
         self
     }
@@ -85,7 +84,7 @@ impl AdminQueueFaultConfig {
     pub fn with_submission_queue_fault(
         mut self,
         opcode: u8,
-        behaviour: FaultBehaviour<Command>,
+        behaviour: QueueFaultBehavior<Command>,
     ) -> Self {
         if self
             .admin_submission_queue_faults

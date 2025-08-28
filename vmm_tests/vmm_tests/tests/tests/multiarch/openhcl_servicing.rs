@@ -15,8 +15,9 @@ use mesh::CellUpdater;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
-use nvme_resources::fault::FaultBehaviour;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::PciFaultConfig;
+use nvme_resources::fault::QueueFaultBehavior;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -256,8 +257,9 @@ async fn keepalive_with_nvme_fault(
         fault_active: fault_start_updater.cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
             nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
-            QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. This should never happen.".to_string()),
+            QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
         ),
+        pci_fault: PciFaultConfig::new(),
     };
 
     let (mut vm, agent) = config
