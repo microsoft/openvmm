@@ -65,7 +65,7 @@ impl PciFaultConfig {
         }
     }
 
-    /// Create a new fault configuration
+    /// Add a cc.en() fault
     pub fn with_cc_enable_fault(mut self, behaviour: PciFaultBehavior) -> Self {
         self.controller_management_fault_enable = behaviour;
         self
