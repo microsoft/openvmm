@@ -297,7 +297,7 @@ mod tests {
 
         // Test Device Capabilities Register (offset 0x04) - FLR should not be set
         let device_caps_val = cap.read_u32(0x04);
-        assert_eq!(device_caps_val & PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK, 0); // FLR bit should not be set
+        assert_eq!(device_caps_val & PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK, 0);
     }
 
     #[test]
