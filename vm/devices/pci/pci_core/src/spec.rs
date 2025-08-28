@@ -392,8 +392,8 @@ pub mod caps {
             /// Table pulled from PCI Express Base Specification Rev. 3.0
             ///
             /// | Offset    | Bits 31-24       | Bits 23-16       | Bits 15-8        | Bits 7-0         |
-            /// |-----------|------------------|------------------|------------------|------------------|
-            /// | Cap + 0x0 | PCI Express Capabilities Register | Next Pointer     | Capability ID (0x10) |
+            /// |-----------|------------------|----------------- |------------------|------------------|
+            /// | Cap + 0x0 | PCI Express Capabilities Register   | Next Pointer     | Capability ID (0x10) |
             /// | Cap + 0x4 | Device Capabilities Register                                                  |
             /// | Cap + 0x8 | Device Status    | Device Control                                            |
             pub enum PciExpressCapabilityHeader: u16 {

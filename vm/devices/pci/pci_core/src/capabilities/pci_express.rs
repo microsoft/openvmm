@@ -65,8 +65,9 @@ impl PciExpressCapability {
         let old_flr = state.device_control.initiate_function_level_reset();
         let new_flr = new_control.initiate_function_level_reset();
 
-
-        // DEVNOTE: It is "safe" to drop a new FLR request if there is still a previous FLR request in progress. The PCIe spec indicates that such behavior is undefined, so we choose to ignore the new FLR request.
+        // DEVNOTE: It is "safe" to drop a new FLR request if there is still a previous
+        // FLR request in progress. The PCIe spec indicates that such behavior is undefined,
+        // so we choose to ignore the new FLR request.
         if new_flr && !old_flr {
             if let Some(handler) = &self.flr_handler {
                 handler.initiate_flr();
