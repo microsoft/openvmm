@@ -52,24 +52,17 @@ pub mod resolve {
                         let latest_release_igvm_files = rt.read(latest_release_igvm_files);
                         let latest_release_artifact = rt.read(latest_release_artifact);
 
-                        fs_err::copy(
-                            latest_release_igvm_files
-                                .bins_dir
-                                .join("openhcl-aarch64.bin"),
-                            latest_release_artifact.join(&aarch64_name),
-                        )?;
+                        if let Some(src) = &latest_release_igvm_files.openhcl_aarch64 {
+                            fs_err::copy(src, latest_release_artifact.join(&aarch64_name))?;
+                        }
 
-                        fs_err::copy(
-                            latest_release_igvm_files.bins_dir.join("openhcl.bin"),
-                            latest_release_artifact.join(&x64_name),
-                        )?;
+                        if let Some(src) = &latest_release_igvm_files.openhcl {
+                            fs_err::copy(src, latest_release_artifact.join(&x64_name))?;
+                        }
 
-                        fs_err::copy(
-                            latest_release_igvm_files
-                                .bins_dir
-                                .join("openhcl-direct.bin"),
-                            latest_release_artifact.join(&direct_name),
-                        )?;
+                        if let Some(src) = &latest_release_igvm_files.openhcl_direct {
+                            fs_err::copy(src, latest_release_artifact.join(&direct_name))?;
+                        }
 
                         Ok(())
                     }

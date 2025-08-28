@@ -307,35 +307,22 @@ impl SimpleFlowNode for Node {
                     }
                 }
 
-                if let Some(release_igvm_files_dir) = release_igvm_files_dir {
-                    // Log all files in release_igvm_files_dir
-                    let dir = release_igvm_files_dir.bins_dir;
-                    for entry in fs_err::read_dir(&dir)? {
-                        let entry = entry?;
-                        log::info!("release_igvm_files_dir contains: {:?}", entry.file_name());
-                    }
-                    log::info!("Release IGVM files found in: {}", dir.clone().display());
+                if let Some(release_igvm_files) = release_igvm_files_dir {
                     let latest_release_version = OpenhclReleaseVersion::latest();
-                    let filenames = vec![
-                        (
-                            "openhcl.bin",
-                            format!("{latest_release_version}-x64-openhcl.bin"),
-                        ),
-                        (
-                            "openhcl-aarch64.bin",
-                            format!("{latest_release_version}-aarch64-openhcl.bin"),
-                        ),
-                        (
-                            "openhcl-direct.bin",
-                            format!("{latest_release_version}-x64-direct-openhcl.bin"),
-                        ),
-                    ];
-                    // For each entry in filenames check if the file exists in the release_igvm_files_dir
-                    for (filename, new_name) in filenames {
-                        let src = dir.join(filename);
-                        if src.exists() {
-                            fs_err::copy(src, test_content_dir.join(new_name))?;
-                        }
+
+                    if let Some(src) = &release_igvm_files.openhcl {
+                        let new_name = format!("{latest_release_version}-x64-openhcl.bin");
+                        fs_err::copy(src, test_content_dir.join(new_name))?;
+                    }
+
+                    if let Some(src) = &release_igvm_files.openhcl_aarch64 {
+                        let new_name = format!("{latest_release_version}-aarch64-openhcl.bin");
+                        fs_err::copy(src, test_content_dir.join(new_name))?;
+                    }
+
+                    if let Some(src) = &release_igvm_files.openhcl_direct {
+                        let new_name = format!("{latest_release_version}-x64-direct-openhcl.bin");
+                        fs_err::copy(src, test_content_dir.join(new_name))?;
                     }
                 }
 
