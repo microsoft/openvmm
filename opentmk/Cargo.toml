@@ -8,15 +8,15 @@ rust-version.workspace = true
 
 [features]
 default = []
-nightly = []
-
+nightly = ["x86_64-nightly"]
+x86_64-nightly = ["x86_64/nightly"]
 
 [dependencies]
 arrayvec.workspace = true
 bitfield-struct.workspace = true
 cfg-if.workspace  = true
 hvdef = {workspace = true}
-iced-x86 = { workspace = true, features = ["decoder", "nasm", "no_std"]}
+iced-x86 = { workspace = true, features = ["no_std"] }
 lazy_static = { workspace = true, features = ["spin_no_std"] }
 linked_list_allocator.workspace = true
 log.workspace = true
@@ -27,7 +27,7 @@ serde = { version = "1.0", default-features = false, features = ["derive"]}
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 thiserror.workspace = true
 uefi = { workspace = true, features = ["alloc"] }
-x86_64.workspace = true
+x86_64 = { workspace = true, features = ["instructions"] }
 x86defs.workspace = true
 zerocopy.workspace = true
 nostd_spin_channel.workspace = true
@@ -37,15 +37,3 @@ workspace = true
 
 [build-dependencies]
 minimal_rt_build.workspace = true
-
-
-[profile.release]
-opt-level = 0           # No optimizations (same as debug)
-debug = true            # Include debug symbols
-debug-assertions = true # Enable debug assertions
-overflow-checks = true  # Enable integer overflow checks
-ltso = "offz"            # Disable link-time optrimization
-codegen-units = 256    # Use more codegen units (faster compilation)
-
-[profile.release.package."*"]
-opt-level = 0
