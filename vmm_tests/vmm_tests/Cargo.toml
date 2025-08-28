@@ -23,7 +23,6 @@ tmk_tests.workspace = true
 petri_artifacts_common.workspace = true
 petri.workspace = true
 
-get_resources.workspace = true
 hvlite_defs.workspace = true
 vtl2_settings_proto.workspace = true
 disk_backend_resources.workspace = true
@@ -35,7 +34,6 @@ scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
 virtio_resources.workspace = true
 vm_resource.workspace = true
-vmm_core_defs.workspace = true
 
 guid.workspace = true
 kmsg.workspace = true

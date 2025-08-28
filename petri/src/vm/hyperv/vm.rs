@@ -7,13 +7,15 @@ use super::hvc;
 use super::hvc::VmState;
 use super::powershell;
 use crate::OpenHclServicingFlags;
+use crate::PetriHaltReason;
 use crate::PetriLogFile;
+use crate::PetriVmFramebufferAccess;
 use crate::VmScreenshotMeta;
 use anyhow::Context;
+use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use jiff::Timestamp;
-use jiff::ToSpan;
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use std::io::Write;
@@ -21,6 +23,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Weak;
 use std::time::Duration;
 use tempfile::TempDir;
 use thiserror::Error;
@@ -28,15 +32,22 @@ use tracing::Level;
 
 /// A Hyper-V VM
 pub struct HyperVVM {
-    name: String,
+    // properties
     vmid: Guid,
-    destroyed: bool,
-    temp_dir: TempDir,
-    ps_mod: PathBuf,
+    name: String,
     create_time: Timestamp,
+    is_isolated: bool,
+
+    // resources
+    temp_dir: Arc<TempDir>,
+    ps_mod: PathBuf,
+    // TODO: use a trait interface here
     log_file: PetriLogFile,
-    expected_boot_event: Option<FirmwareEvent>,
     driver: DefaultDriver,
+
+    // state
+    destroyed: bool,
+    last_start_time: Option<Timestamp>,
 }
 
 impl HyperVVM {
@@ -47,7 +58,6 @@ impl HyperVVM {
         guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
         memory: u64,
         log_file: PetriLogFile,
-        expected_boot_event: Option<FirmwareEvent>,
         driver: DefaultDriver,
     ) -> anyhow::Result<Self> {
         let create_time = Timestamp::now();
@@ -60,6 +70,15 @@ impl HyperVVM {
                 .write_all(include_bytes!("hyperv.psm1"))
                 .context("failed to write hyperv helpers powershell module")?;
         }
+
+        // Used to ignore `hvc restart` error on CVMs
+        let is_isolated = {
+            use powershell::HyperVGuestStateIsolationType as IsolationType;
+            matches!(
+                guest_state_isolation_type,
+                IsolationType::Snp | IsolationType::Tdx | IsolationType::Vbs
+            )
+        };
 
         // Delete the VM if it already exists
         let cleanup = async |vmid: &Guid| -> anyhow::Result<()> {
@@ -97,15 +116,16 @@ impl HyperVVM {
         // Instantiate this now so that its drop runs if there's a failure
         // below.
         let this = Self {
-            name,
             vmid,
-            destroyed: false,
-            temp_dir,
-            ps_mod,
+            name,
             create_time,
+            is_isolated,
+            temp_dir: Arc::new(temp_dir),
+            ps_mod,
             log_file,
-            expected_boot_event,
             driver,
+            destroyed: false,
+            last_start_time: None,
         };
 
         // Remove the default network adapter
@@ -172,27 +192,17 @@ impl HyperVVM {
     }
 
     /// Waits for an event emitted by the firmware about its boot status, and
-    /// verifies that it is the expected success value.
-    pub async fn wait_for_successful_boot_event(&self) -> anyhow::Result<()> {
-        if let Some(expected_boot_event) = self.expected_boot_event {
-            self.wait_for(Self::boot_event, Some(expected_boot_event), 240.seconds())
-                .await
-                .context("wait_for_successful_boot_event")?;
-        } else {
-            tracing::warn!("Configured firmware does not emit a boot event, skipping");
-        }
-
-        Ok(())
-    }
-
-    /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
-    pub async fn wait_for_boot_event(&self) -> anyhow::Result<FirmwareEvent> {
-        self.wait_for_some(Self::boot_event, 240.seconds()).await
+    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        self.wait_for_some(Self::boot_event).await
     }
 
     async fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
-        let events = powershell::hyperv_boot_events(&self.vmid, &self.create_time).await?;
+        let events = powershell::hyperv_boot_events(
+            &self.vmid,
+            self.last_start_time.as_ref().unwrap_or(&self.create_time),
+        )
+        .await?;
 
         if events.len() > 1 {
             anyhow::bail!("Got more than one boot event");
@@ -201,11 +211,11 @@ impl HyperVVM {
         events
             .first()
             .map(|e| match e.id {
-                powershell::EVENT_ID_BOOT_SUCCESS => Ok(FirmwareEvent::BootSuccess),
-                powershell::EVENT_ID_BOOT_FAILURE => Ok(FirmwareEvent::BootFailed),
-                powershell::EVENT_ID_NO_BOOT_DEVICE => Ok(FirmwareEvent::NoBootDevice),
-                powershell::EVENT_ID_BOOT_ATTEMPT => Ok(FirmwareEvent::BootAttempt),
-                powershell::EVENT_ID_BOOT_FAILURE_SECURE_BOOT_FAILED => {
+                powershell::MSVM_BOOT_RESULTS_SUCCESS => Ok(FirmwareEvent::BootSuccess),
+                powershell::MSVM_BOOT_RESULTS_FAILURE => Ok(FirmwareEvent::BootFailed),
+                powershell::MSVM_BOOT_RESULTS_FAILURE_NO_DEVICES => Ok(FirmwareEvent::NoBootDevice),
+                powershell::MSVM_BOOT_RESULTS_ATTEMPT => Ok(FirmwareEvent::BootAttempt),
+                powershell::MSVM_BOOT_RESULTS_FAILURE_SECURE_BOOT_FAILURES => {
                     Ok(FirmwareEvent::BootFailed)
                 }
                 id => anyhow::bail!("Unexpected event id: {id}"),
@@ -319,7 +329,19 @@ impl HyperVVM {
     pub async fn restart(&self) -> anyhow::Result<()> {
         self.check_shutdown_ic().await?;
         self.check_state(VmState::Running).await?;
-        hvc::hvc_restart(&self.vmid).await?;
+        let res = hvc::hvc_restart(&self.vmid).await;
+
+        const KNOWN_HVC_RESTART_ERROR: &str = "The VM is in the wrong state for this operation.";
+        if self.is_isolated
+            && matches!(&res, Err(CommandError::Command(code, msg))
+            if matches!(code.code(), Some(1))
+            && msg.trim() == KNOWN_HVC_RESTART_ERROR)
+        {
+            // Ignore this error when isolated, since it seems to work anyways.
+        } else {
+            res?;
+        }
+
         Ok(())
     }
 
@@ -341,25 +363,59 @@ impl HyperVVM {
     }
 
     /// Wait for the VM to stop
-    pub async fn wait_for_halt(&self) -> anyhow::Result<()> {
-        self.wait_for_state(VmState::Off).await
+    pub async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+        powershell::run_set_turn_off_on_guest_restart(&self.vmid, &self.ps_mod, !allow_reset)
+            .await?;
+        let (halt_reason, timestamp) = self.wait_for_some(Self::halt_event).await?;
+        if halt_reason == PetriHaltReason::Reset {
+            self.last_start_time = Some(timestamp.checked_add(Duration::from_millis(1))?);
+        }
+        Ok(halt_reason)
     }
 
-    async fn wait_for_state(&self, target: VmState) -> anyhow::Result<()> {
-        self.wait_for(Self::state, target, 240.seconds())
-            .await
-            .context("wait_for_state")
+    async fn halt_event(&self) -> anyhow::Result<Option<(PetriHaltReason, Timestamp)>> {
+        let events = powershell::hyperv_halt_events(
+            &self.vmid,
+            self.last_start_time.as_ref().unwrap_or(&self.create_time),
+        )
+        .await?;
+
+        if events.len() > 1 {
+            anyhow::bail!("Got more than one halt event");
+        }
+        let event = events.first();
+
+        event
+            .map(|e| {
+                Ok((
+                    match e.id {
+                        powershell::MSVM_HOST_STOP_SUCCESS
+                        | powershell::MSVM_HOST_SHUTDOWN_SUCCESS
+                        | powershell::MSVM_GUEST_SHUTDOWN_SUCCESS => PetriHaltReason::PowerOff,
+                        powershell::MSVM_HOST_RESET_SUCCESS
+                        | powershell::MSVM_GUEST_RESET_SUCCESS
+                        | powershell::MSVM_STOP_FOR_GUEST_RESET_SUCCESS => PetriHaltReason::Reset,
+                        powershell::MSVM_GUEST_HIBERNATE_SUCCESS => PetriHaltReason::Hibernate,
+                        powershell::MSVM_TRIPLE_FAULT_GENERAL_ERROR
+                        | powershell::MSVM_TRIPLE_FAULT_UNSUPPORTED_FEATURE_ERROR
+                        | powershell::MSVM_TRIPLE_FAULT_INVALID_VP_REGISTER_ERROR
+                        | powershell::MSVM_TRIPLE_FAULT_UNRECOVERABLE_EXCEPTION_ERROR => {
+                            PetriHaltReason::TripleFault
+                        }
+                        powershell::MSVM_STOP_CRITICAL_SUCCESS => PetriHaltReason::Other,
+                        id => anyhow::bail!("Unexpected event id: {id}"),
+                    },
+                    e.time_created,
+                ))
+            })
+            .transpose()
     }
 
     /// Wait for the VM shutdown ic
     pub async fn wait_for_enlightened_shutdown_ready(&self) -> anyhow::Result<()> {
-        self.wait_for(
-            Self::shutdown_ic_status,
-            powershell::VmShutdownIcStatus::Ok,
-            240.seconds(),
-        )
-        .await
-        .context("wait_for_enlightened_shutdown_ready")
+        self.wait_for(Self::shutdown_ic_status, powershell::VmShutdownIcStatus::Ok)
+            .await
+            .context("wait_for_enlightened_shutdown_ready")
     }
 
     async fn shutdown_ic_status(&self) -> anyhow::Result<powershell::VmShutdownIcStatus> {
@@ -378,16 +434,11 @@ impl HyperVVM {
         &self,
         f: impl AsyncFn(&Self) -> anyhow::Result<T>,
         target: T,
-        timeout: jiff::Span,
     ) -> anyhow::Result<()> {
-        let start = Timestamp::now();
         loop {
             let state = f(self).await?;
             if state == target {
                 break;
-            }
-            if timeout.compare(Timestamp::now() - start)? == std::cmp::Ordering::Less {
-                anyhow::bail!("timed out waiting for {target:?}. current: {state:?}");
             }
             PolledTimer::new(&self.driver)
                 .sleep(Duration::from_secs(1))
@@ -400,16 +451,11 @@ impl HyperVVM {
     async fn wait_for_some<T: std::fmt::Debug + PartialEq>(
         &self,
         f: impl AsyncFn(&Self) -> anyhow::Result<Option<T>>,
-        timeout: jiff::Span,
     ) -> anyhow::Result<T> {
-        let start = Timestamp::now();
         loop {
             let state = f(self).await?;
             if let Some(state) = state {
                 return Ok(state);
-            }
-            if timeout.compare(Timestamp::now() - start)? == std::cmp::Ordering::Less {
-                anyhow::bail!("timed out waiting for Some");
             }
             PolledTimer::new(&self.driver)
                 .sleep(Duration::from_secs(1))
@@ -455,43 +501,14 @@ impl HyperVVM {
         powershell::run_restart_openhcl(&self.vmid, &self.ps_mod, flags).await
     }
 
-    /// Take a screenshot of the VM
-    pub async fn screenshot(&self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
-        const IN_BYTES_PER_PIXEL: usize = 2;
-        const OUT_BYTES_PER_PIXEL: usize = 3;
-        let temp_bin_path = self.temp_dir.path().join("screenshot.bin");
-        let (width, height) =
-            powershell::run_get_vm_screenshot(&self.vmid, &self.ps_mod, &temp_bin_path).await?;
-        let (widthsize, heightsize) = (width as usize, height as usize);
-        let in_len = widthsize * heightsize * IN_BYTES_PER_PIXEL;
-        let out_len = widthsize * heightsize * OUT_BYTES_PER_PIXEL;
-        let mut image_rgb565 = fs_err::read(temp_bin_path)?;
-        image_rgb565.truncate(in_len);
-        if image_rgb565.len() != in_len {
-            anyhow::bail!("did not get enough bytes for screenshot");
+    /// Get the Framebuffer access
+    pub fn get_framebuffer_access(&self) -> HyperVFramebufferAccess {
+        HyperVFramebufferAccess {
+            vmid: self.vmid,
+            temp_dir: Arc::downgrade(&self.temp_dir),
+            temp_bin_path: self.temp_dir.path().join("screenshot.bin"),
+            ps_mod: self.ps_mod.clone(),
         }
-
-        image.resize(out_len, 0);
-        for (out_pixel, in_pixel) in image
-            .chunks_exact_mut(OUT_BYTES_PER_PIXEL)
-            .zip(image_rgb565.chunks_exact(IN_BYTES_PER_PIXEL))
-        {
-            // convert from rgb565 ( gggbbbbb rrrrrggg )
-            // to rgb888 ( rrrrrrrr gggggggg bbbbbbbb )
-
-            // red
-            out_pixel[0] = in_pixel[1] & 0b11111000;
-            // green
-            out_pixel[1] = ((in_pixel[1] & 0b00000111) << 5) + ((in_pixel[0] & 0b11100000) >> 3);
-            // blue
-            out_pixel[2] = in_pixel[0] << 3;
-        }
-
-        Ok(VmScreenshotMeta {
-            color: image::ExtendedColorType::Rgb8,
-            width,
-            height,
-        })
     }
 }
 
@@ -502,6 +519,39 @@ impl Drop for HyperVVM {
             .is_none_or(|v| v.is_empty() || v == "0")
         {
             let _ = futures::executor::block_on(self.remove_inner());
+        }
+    }
+}
+
+/// Interface to the Hyper-V framebuffer for taking screenshots
+pub struct HyperVFramebufferAccess {
+    vmid: Guid,
+    temp_dir: Weak<TempDir>,
+    temp_bin_path: PathBuf,
+    ps_mod: PathBuf,
+}
+
+#[async_trait]
+impl PetriVmFramebufferAccess for HyperVFramebufferAccess {
+    async fn screenshot(
+        &mut self,
+        image: &mut Vec<u8>,
+    ) -> anyhow::Result<Option<VmScreenshotMeta>> {
+        // make sure that the temp directory containing the powershell module
+        // and temp bin file still exists.
+        self.temp_dir.upgrade().context("VM no longer exists")?;
+        if hvc::hvc_state(&self.vmid).await? == VmState::Running {
+            Ok(Some(
+                powershell::run_get_vm_screenshot(
+                    &self.vmid,
+                    image,
+                    &self.ps_mod,
+                    &self.temp_bin_path,
+                )
+                .await?,
+            ))
+        } else {
+            Ok(None)
         }
     }
 }

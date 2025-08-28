@@ -19,6 +19,8 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::GuestQuirks;
+use petri_artifacts_common::tags::GuestQuirksInner;
+use petri_artifacts_common::tags::InitialRebootCondition;
 use petri_artifacts_common::tags::IsOpenhclIgvm;
 use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
@@ -33,7 +35,6 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
-use vmm_core_defs::HaltReason;
 
 /// The set of artifacts and resources needed to instantiate a
 /// [`PetriVmBuilder`].
@@ -92,6 +93,14 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     modify_vmm_config: Option<Box<dyn FnOnce(T::VmmConfig) -> T::VmmConfig + Send>>,
     /// VMM-agnostic resources
     resources: PetriVmResources,
+
+    // VMM-specific quirks for the configured firmware
+    quirks: GuestQuirksInner,
+
+    // Test-specific boot behavior expectations.
+    // Defaults to expected behavior for firmware configuration.
+    expected_boot_event: Option<FirmwareEvent>,
+    override_expect_reset: bool,
 }
 
 /// Petri VM configuration
@@ -134,6 +143,9 @@ pub trait PetriVmmBackend {
     /// supported on the VMM.
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool;
 
+    /// Given a set a guest quirks, select the relevant quirks for this backend.
+    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner;
+
     /// Resolve any artifacts needed to use this backend
     fn new(resolver: &ArtifactResolver<'_>) -> Self;
 
@@ -148,12 +160,14 @@ pub trait PetriVmmBackend {
 
 /// A constructed Petri VM
 pub struct PetriVm<T: PetriVmmBackend> {
-    arch: MachineArch,
     resources: PetriVmResources,
     runtime: T::VmRuntime,
-    quirks: GuestQuirks,
-    openhcl_diag_handler: Option<OpenHclDiagHandler>,
     watchdog_tasks: Vec<Task<()>>,
+    openhcl_diag_handler: Option<OpenHclDiagHandler>,
+
+    arch: MachineArch,
+    quirks: GuestQuirksInner,
+    expected_boot_event: Option<FirmwareEvent>,
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
@@ -163,6 +177,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         artifacts: PetriVmArtifacts<T>,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
+        let quirks = T::select_quirks(artifacts.firmware.quirks());
+        let expected_boot_event = artifacts.firmware.expected_boot_event();
+
         Ok(Self {
             backend: artifacts.backend,
             config: PetriVmConfig {
@@ -181,36 +198,37 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 output_dir: params.output_dir.to_owned(),
                 log_source: params.logger.clone(),
             },
+
+            quirks,
+            expected_boot_event,
+            override_expect_reset: false,
         })
     }
 }
 
 impl<T: PetriVmmBackend> PetriVmBuilder<T> {
-    /// Build and boot the requested VM. Does not configure and start pipette.
-    /// Should only be used for testing platforms that pipette does not support.
+    /// Build and run the VM, then wait for the VM to emit the expected boot
+    /// event (if configured). Does not configure and start pipette. Should
+    /// only be used for testing platforms that pipette does not support.
     pub async fn run_without_agent(self) -> anyhow::Result<PetriVm<T>> {
         self.run_core().await
     }
 
-    /// Run the VM, configuring pipette to automatically start, but do not wait
-    /// for it to connect. This is useful for tests where the first boot attempt
-    /// is expected to not succeed, but pipette functionality is still desired.
-    pub async fn run_with_lazy_pipette(self) -> anyhow::Result<PetriVm<T>> {
+    /// Build and run the VM, then wait for the VM to emit the expected boot
+    /// event (if configured). Launches pipette and returns a client to it.
+    pub async fn run(self) -> anyhow::Result<(PetriVm<T>, PipetteClient)> {
         assert!(self.config.agent_image.is_some());
         assert!(self.config.agent_image.as_ref().unwrap().contains_pipette());
-        self.run_core().await
-    }
 
-    /// Run the VM, launching pipette and returning a client to it.
-    pub async fn run(self) -> anyhow::Result<(PetriVm<T>, PipetteClient)> {
-        let mut vm = self.run_with_lazy_pipette().await?;
+        let mut vm = self.run_core().await?;
         let client = vm.wait_for_agent().await?;
         Ok((vm, client))
     }
 
     async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
         let arch = self.config.arch;
-        let quirks = self.config.firmware.quirks();
+        let expect_reset = self.expect_reset();
+
         let mut runtime = self
             .backend
             .run(self.config, self.modify_vmm_config, &self.resources)
@@ -218,16 +236,45 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let openhcl_diag_handler = runtime.openhcl_diag();
         let watchdog_tasks = Self::start_watchdog_tasks(&self.resources, &mut runtime)?;
 
-        let vm = PetriVm {
-            arch,
+        let mut vm = PetriVm {
             resources: self.resources,
             runtime,
-            quirks,
-            openhcl_diag_handler,
             watchdog_tasks,
+            openhcl_diag_handler,
+
+            arch,
+            quirks: self.quirks,
+            expected_boot_event: self.expected_boot_event,
         };
 
+        if expect_reset {
+            vm.wait_for_reset_core().await?;
+        }
+
+        vm.wait_for_expected_boot_event().await?;
+
         Ok(vm)
+    }
+
+    fn expect_reset(&self) -> bool {
+        // TODO: use presence of TPM here once with_tpm() backend-agnostic.
+        self.override_expect_reset
+            || matches!(
+                (
+                    self.quirks.initial_reboot,
+                    self.expected_boot_event,
+                    &self.config.firmware,
+                ),
+                (
+                    Some(InitialRebootCondition::Always),
+                    Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
+                    _,
+                ) | (
+                    Some(InitialRebootCondition::WithOpenHclUefi),
+                    Some(FirmwareEvent::BootSuccess | FirmwareEvent::BootAttempt),
+                    Firmware::OpenhclUefi { .. },
+                )
+            )
     }
 
     fn start_watchdog_tasks(
@@ -289,7 +336,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                                 width,
                                 height,
                             } = match framebuffer_access.screenshot(&mut image).await {
-                                Ok(meta) => meta,
+                                Ok(Some(meta)) => meta,
+                                Ok(None) => {
+                                    tracing::debug!("VM off, skipping screenshot.");
+                                    continue;
+                                }
                                 Err(e) => {
                                     tracing::error!(?e, "Failed to take screenshot");
                                     continue;
@@ -297,7 +348,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                             };
 
                             if image == last_image {
-                                tracing::trace!("No change in framebuffer, skipping screenshot.");
+                                tracing::debug!("No change in framebuffer, skipping screenshot.");
                                 continue;
                             }
 
@@ -357,6 +408,28 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }
 
         Ok(tasks)
+    }
+
+    /// Configure the test to expect a boot failure from the VM.
+    /// Useful for negative tests.
+    pub fn with_expect_boot_failure(mut self) -> Self {
+        self.expected_boot_event = Some(FirmwareEvent::BootFailed);
+        self
+    }
+
+    /// Configure the test to not expect any boot event.
+    /// Useful for tests that do not boot a VTL0 guest.
+    pub fn with_expect_no_boot_event(mut self) -> Self {
+        self.expected_boot_event = None;
+        self
+    }
+
+    /// Allow the VM to reset once at the beginning of the test. Should only be
+    /// used if you are using a special VM configuration that causes the guest
+    /// to reboot when it usually wouldn't.
+    pub fn with_expect_reset(mut self) -> Self {
+        self.override_expect_reset = true;
+        self
     }
 
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
@@ -560,21 +633,55 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
 impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to halt, returning the reason for the halt.
-    pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
+    pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReason> {
         tracing::info!("Waiting for VM to halt...");
-        let r = self.runtime.wait_for_halt().await;
-        tracing::info!("VM Halted");
-        r
+        let halt_reason = self.runtime.wait_for_halt(false).await?;
+        tracing::info!("VM halted: {halt_reason:?}");
+        Ok(halt_reason)
+    }
+
+    /// Wait for the VM to reset. Does not wait for pipette.
+    pub async fn wait_for_reset_no_agent(&mut self) -> anyhow::Result<()> {
+        self.wait_for_reset_core().await?;
+        self.wait_for_expected_boot_event().await?;
+        Ok(())
+    }
+
+    /// Wait for the VM to reset and pipette to connect.
+    pub async fn wait_for_reset(&mut self) -> anyhow::Result<PipetteClient> {
+        self.wait_for_reset_no_agent().await?;
+        self.wait_for_agent().await
+    }
+
+    async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
+        tracing::info!("Waiting for VM to reset...");
+        let halt_reason = self.runtime.wait_for_halt(true).await?;
+        if halt_reason != PetriHaltReason::Reset {
+            anyhow::bail!("Expected reset, got {halt_reason:?}");
+        }
+        tracing::info!("VM reset.");
+        Ok(())
     }
 
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and cleanly tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
-        let halt_reason = self.runtime.wait_for_halt().await?;
-        tracing::info!("Cancelling watchdogs");
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
+        let halt_reason = self.wait_for_halt().await?;
+        tracing::info!("Cancelling watchdogs...");
         futures::future::join_all(self.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
+        tracing::info!("Tearing down VM...");
         self.runtime.teardown().await?;
         Ok(halt_reason)
+    }
+
+    /// Wait for the VM to reset
+    pub async fn wait_for_clean_teardown(self) -> anyhow::Result<()> {
+        let halt_reason = self.wait_for_teardown().await?;
+        if halt_reason != PetriHaltReason::PowerOff {
+            anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
+        }
+        tracing::info!("VM was cleanly powered off and torn down.");
+        Ok(())
     }
 
     /// Test that we are able to inspect OpenHCL.
@@ -612,7 +719,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
     /// Wait for a connection from a pipette agent running in the guest.
     /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
-    pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
+    async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
         self.runtime.wait_for_agent(false).await
     }
 
@@ -631,14 +738,28 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
     /// * PCAT guests may not emit an event depending on the PCAT version, this
     ///   method is best effort for them.
-    pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
-        self.runtime.wait_for_successful_boot_event().await
+    async fn wait_for_expected_boot_event(&mut self) -> anyhow::Result<()> {
+        if let Some(expected_event) = self.expected_boot_event {
+            let event = self.wait_for_boot_event().await?;
+
+            anyhow::ensure!(
+                event == expected_event,
+                "Did not receive expected boot event"
+            );
+        } else {
+            tracing::warn!("Boot event not emitted for configured firmware or manually ignored.");
+        }
+
+        Ok(())
     }
 
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
-    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
-        self.runtime.wait_for_boot_event().await
+    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        tracing::info!("Waiting for boot event...");
+        let boot_event = self.runtime.wait_for_boot_event().await?;
+        tracing::info!("Got boot event: {boot_event:?}");
+        Ok(boot_event)
     }
 
     /// Wait for the Hyper-V shutdown IC to be ready and use it to instruct
@@ -732,19 +853,13 @@ pub trait PetriVmRuntime {
 
     /// Cleanly tear down the VM immediately.
     async fn teardown(self) -> anyhow::Result<()>;
-    /// Wait for the VM to halt, returning the reason for the halt.
-    async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason>;
+    /// Wait for the VM to halt, returning the reason for the halt. The VM
+    /// should automatically restart the VM on reset if `allow_reset` is true.
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason>;
     /// Wait for a connection from a pipette agent
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient>;
     /// Get an OpenHCL diagnostics handler for the VM
     fn openhcl_diag(&self) -> Option<OpenHclDiagHandler>;
-    /// Waits for an event emitted by the firmware about its boot status, and
-    /// verifies that it is the expected success value.
-    ///
-    /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
-    /// * PCAT guests may not emit an event depending on the PCAT version, this
-    ///   method is best effort for them.
-    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>;
     /// Waits for an event emitted by the firmware about its boot status, and
     /// returns that status.
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>;
@@ -765,7 +880,7 @@ pub trait PetriVmRuntime {
         None
     }
     /// If the backend supports it, take the screenshot interface
-    /// (subsequent calls will return None).
+    /// (subsequent calls may return None).
     fn take_framebuffer_access(&mut self) -> Option<Self::VmFramebufferAccess> {
         None
     }
@@ -802,14 +917,18 @@ pub struct VmScreenshotMeta {
 pub trait PetriVmFramebufferAccess: Send + 'static {
     /// Populates the provided buffer with a screenshot of the VM,
     /// returning the dimensions and color type.
-    async fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta>;
+    async fn screenshot(&mut self, image: &mut Vec<u8>)
+    -> anyhow::Result<Option<VmScreenshotMeta>>;
 }
 
 /// Use this for the associated type if not supported
 pub struct NoPetriVmFramebufferAccess;
 #[async_trait]
 impl PetriVmFramebufferAccess for NoPetriVmFramebufferAccess {
-    async fn screenshot(&mut self, _image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
+    async fn screenshot(
+        &mut self,
+        _image: &mut Vec<u8>,
+    ) -> anyhow::Result<Option<VmScreenshotMeta>> {
         unreachable!()
     }
 }
@@ -1133,18 +1252,27 @@ impl Firmware {
             | Firmware::OpenhclUefi {
                 guest: UefiGuest::Vhd(cfg),
                 ..
-            } => cfg.quirks,
+            } => cfg.quirks.clone(),
             Firmware::Pcat {
                 guest: PcatGuest::Iso(cfg),
                 ..
-            } => cfg.quirks,
+            } => cfg.quirks.clone(),
             _ => Default::default(),
         }
     }
 
     fn expected_boot_event(&self) -> Option<FirmwareEvent> {
         match self {
-            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
+            Firmware::LinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::Uefi {
+                guest: UefiGuest::GuestTestUefi(_),
+                ..
+            }
+            | Firmware::OpenhclUefi {
+                guest: UefiGuest::GuestTestUefi(_),
+                ..
+            } => None,
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => {
                 // TODO: Handle older PCAT versions that don't fire the event
                 Some(FirmwareEvent::BootAttempt)
@@ -1417,6 +1545,21 @@ fn make_vm_safe_name(name: &str) -> String {
 
         format!("{}{}", truncated, hash_suffix)
     }
+}
+
+/// The reason that the VM halted
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PetriHaltReason {
+    /// The vm powered off
+    PowerOff,
+    /// The vm reset
+    Reset,
+    /// The vm hibernated
+    Hibernate,
+    /// The vm triple faulted
+    TripleFault,
+    /// The vm halted for some other reason
+    Other,
 }
 
 fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {
