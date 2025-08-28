@@ -314,10 +314,7 @@ impl SimpleFlowNode for Node {
                         let entry = entry?;
                         log::info!("release_igvm_files_dir contains: {:?}", entry.file_name());
                     }
-                    log::info!(
-                        "Release IGVM files found in: {}",
-                        dir.clone().display()
-                    );
+                    log::info!("Release IGVM files found in: {}", dir.clone().display());
                     let latest_release_version = OpenhclReleaseVersion::latest();
                     let filenames = vec![
                         (

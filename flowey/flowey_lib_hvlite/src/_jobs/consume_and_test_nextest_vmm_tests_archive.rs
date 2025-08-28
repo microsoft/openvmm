@@ -125,10 +125,14 @@ impl SimpleFlowNode for Node {
             },
         ));
 
-        let release_igvm_files = ctx.reqv(|v| crate::download_release_igvm_files_from_gh::resolve::Request {
-            release_igvm_files: v,
-            release_version: crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest()
-        });
+        let release_igvm_files =
+            ctx.reqv(
+                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
+                    release_igvm_files: v,
+                    release_version:
+                        crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
+                },
+            );
 
         let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
 
