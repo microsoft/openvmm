@@ -13,6 +13,7 @@ test = []
 disk_backend.workspace = true
 storvsc_driver.workspace = true
 
+igvm_defs.workspace = true
 scsi_buffers.workspace = true
 scsi_defs.workspace = true
 vmbus_user_channel.workspace = true

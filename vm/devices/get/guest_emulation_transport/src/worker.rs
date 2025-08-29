@@ -25,6 +25,8 @@ impl GuestEmulationTransportWorker {
             &driver,
             vmbus_user_channel::open_uio_device(&get_protocol::GUEST_EMULATION_INTERFACE_INSTANCE)
                 .map_err(FatalError::OpenPipe)?,
+            None,
+            None,
         )
         .map_err(FatalError::OpenPipe)?;
         GuestEmulationTransportWorker::with_pipe(driver, pipe).await

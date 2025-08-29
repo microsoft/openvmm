@@ -235,7 +235,7 @@ pub const MEDIUM_NOT_PRESENT_TRAY_OPEN: u8 = 0x02;
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbInquiry {
-    pub operation_code: u8, // 0x12 - SCSIOP_INQUIRY
+    pub operation_code: ScsiOp, // 0x12 - SCSIOP_INQUIRY
     pub flags: InquiryFlags,
     pub page_code: u8,
     pub allocation_length: U16BE,
@@ -1107,8 +1107,8 @@ pub struct Cdb16Flags {
 pub struct ServiceActionIn16 {
     pub operation_code: ScsiOp,
     pub service_action: u8,
-    pub logical_block: [u8; 8],
-    pub allocation_length: [u8; 4],
+    pub logical_block: U64BE,
+    pub allocation_length: U32BE,
     pub flags: u8,
     pub control: u8,
 }

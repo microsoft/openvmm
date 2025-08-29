@@ -103,8 +103,13 @@ mod user_pipe {
             rsrc: OpenVmbusSerialGuestConfig,
             input: ResolveSerialBackendParams<'_>,
         ) -> Result<Self::Output, Self::Error> {
-            let pipe = vmbus_user_channel::message_pipe(input.driver.as_ref(), rsrc.uio_device)
-                .context("failed to open vmbus serial")?;
+            let pipe = vmbus_user_channel::message_pipe(
+                input.driver.as_ref(),
+                rsrc.uio_device,
+                None,
+                None,
+            )
+            .context("failed to open vmbus serial")?;
 
             let driver = VmbusSerialDriver::new(pipe)
                 .await

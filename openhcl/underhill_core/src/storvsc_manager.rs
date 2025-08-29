@@ -36,6 +36,9 @@ use vm_resource::kind::DiskHandleKind;
 use vmbus_user_channel::MappedRingMem;
 use vmcore::vm_task::VmTaskDriverSource;
 
+const STORVSC_IN_RING_SIZE: usize = 0x1ff000;
+const STORVSC_OUT_RING_SIZE: usize = 0x1ff000;
+
 #[derive(Debug, Error)]
 #[error("storvsc driver {instance_guid} error")]
 pub struct DriverError {
@@ -256,8 +259,13 @@ impl StorvscManagerWorker {
             hash_map::Entry::Vacant(entry) => {
                 let file = vmbus_user_channel::open_uio_device(&instance_guid)
                     .map_err(InnerError::Vmbus)?;
-                let channel = vmbus_user_channel::channel(&self.driver_source.simple(), file)
-                    .map_err(InnerError::Vmbus)?;
+                let channel = vmbus_user_channel::channel(
+                    &self.driver_source.simple(),
+                    file,
+                    Some(STORVSC_IN_RING_SIZE),
+                    Some(STORVSC_OUT_RING_SIZE),
+                )
+                .map_err(InnerError::Vmbus)?;
 
                 let dma_client = self
                     .dma_client_spawner
@@ -320,8 +328,13 @@ impl StorvscManagerWorker {
         for driver_state in &saved_state.storvsc_drivers {
             let file = vmbus_user_channel::open_uio_device(&driver_state.instance_guid)
                 .map_err(InnerError::Vmbus)?;
-            let channel = vmbus_user_channel::channel(&self.driver_source.simple(), file)
-                .map_err(InnerError::Vmbus)?;
+            let channel = vmbus_user_channel::channel(
+                &self.driver_source.simple(),
+                file,
+                Some(STORVSC_IN_RING_SIZE),
+                Some(STORVSC_OUT_RING_SIZE),
+            )
+            .map_err(InnerError::Vmbus)?;
 
             let dma_client = self
                 .dma_client_spawner

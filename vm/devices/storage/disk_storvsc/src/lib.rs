@@ -8,11 +8,11 @@
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::UnmapBehavior;
+use igvm_defs::PAGE_SIZE_4K;
 use inspect::Inspect;
 use scsi_defs::ScsiOp;
 use scsi_defs::ScsiStatus;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use storvsc_driver::StorvscDriver;
 use storvsc_driver::StorvscErrorKind;
 use vmbus_user_channel::MappedRingMem;
@@ -57,9 +57,14 @@ impl StorvscDisk {
 impl StorvscDisk {
     fn scan_metadata(&mut self) {
         // Allocate region for data in for READ_CAPACITY(16), MODE_SENSE(10), and INQUIRY (Block Limits VPD)
-        let data_in_size = size_of::<scsi_defs::ReadCapacity16Data>()
-            .max(size_of::<scsi_defs::ModeControlPage>())
-            .max(size_of::<scsi_defs::VpdBlockLimitsDescriptor>());
+        // TODO: When we can allocate continguous pages, switch to that instead of using a single page and assert.
+        assert!(
+            size_of::<scsi_defs::ReadCapacity16Data>()
+                .max(size_of::<scsi_defs::ModeParameterHeader10>())
+                .max(size_of::<scsi_defs::VpdBlockLimitsDescriptor>()) as u64
+                <= PAGE_SIZE_4K
+        );
+        let data_in_size = PAGE_SIZE_4K as usize;
         let data_in = match self.driver.allocate_dma_buffer(data_in_size) {
             Ok(buf) => buf,
             Err(err) => {
@@ -72,14 +77,16 @@ impl StorvscDisk {
         };
 
         // READ_CAPACITY(16) returns number of sectors and sector size in bytes.
-        let read_capacity16_cdb = scsi_defs::Cdb16 {
+        let read_capacity16_cdb = scsi_defs::ServiceActionIn16 {
             operation_code: ScsiOp::READ_CAPACITY16,
+            service_action: scsi_defs::SERVICE_ACTION_READ_CAPACITY16,
+            allocation_length: (data_in_size as u32).into(),
             ..FromZeros::new_zeroed()
         };
         match futures::executor::block_on(self.send_scsi_request(
             read_capacity16_cdb.as_bytes(),
-            ScsiOp::READ_CAPACITY16,
-            data_in.base() as u64,
+            read_capacity16_cdb.operation_code,
+            data_in.pfns()[0] * PAGE_SIZE_4K,
             data_in_size,
             true,
         )) {
@@ -94,6 +101,7 @@ impl StorvscDisk {
                     _ => {
                         tracing::error!(
                             scsi_status = ?resp.scsi_status,
+                            srb_status = ?resp.srb_status,
                             "READ_CAPACITY16 failed"
                         );
                         return;
@@ -108,10 +116,10 @@ impl StorvscDisk {
             }
         }
 
-        // MODE_SENSE10 to get whether read-only.
+        // MODE_SENSE10 to get whether read-only. This is in the header, so it doesn't matter which page we request.
         let mode_sense10_cdb = scsi_defs::ModeSense10 {
             operation_code: ScsiOp::MODE_SENSE10,
-            flags2: scsi_defs::ModeSenseFlags::new().with_page_code(scsi_defs::MODE_PAGE_CONTROL),
+            flags2: scsi_defs::ModeSenseFlags::new().with_page_code(scsi_defs::MODE_PAGE_ALL),
             sub_page_code: 0,
             allocation_length: (data_in_size as u16).into(),
             ..FromZeros::new_zeroed()
@@ -120,18 +128,21 @@ impl StorvscDisk {
         match futures::executor::block_on(self.send_scsi_request(
             mode_sense10_cdb.as_bytes(),
             mode_sense10_cdb.operation_code,
-            0,
-            0,
-            false,
+            data_in.pfns()[0] * PAGE_SIZE_4K,
+            data_in_size,
+            true,
         )) {
             Ok(resp) => match resp.scsi_status {
                 ScsiStatus::GOOD => {
-                    let mode_page = data_in.read_obj::<scsi_defs::ModeControlPage>(0);
-                    self.read_only = mode_page.flags3.swp();
+                    let mode_header = data_in.read_obj::<scsi_defs::ModeParameterHeader10>(0);
+                    self.read_only = mode_header.device_specific_parameter
+                        & scsi_defs::MODE_DSP_WRITE_PROTECT
+                        != 0;
                 }
                 _ => {
                     tracing::error!(
                         scsi_status = ?resp.scsi_status,
+                        srb_status = ?resp.srb_status,
                         "MODE_SENSE10 failed"
                     );
                 }
@@ -144,39 +155,87 @@ impl StorvscDisk {
             }
         }
 
-        // INQUIRY for the Block Limits VPD page returns the optimal unmap sectors.
-        let inquiry_block_limits_cdb = scsi_defs::CdbInquiry {
-            operation_code: ScsiOp::INQUIRY.0,
+        // INQUIRY for the Supported Pages VPD page to see if Block Limits VPD is supported.
+        self.optimal_unmap_sectors = 0;
+        let inquiry_supported_pages_cdb = scsi_defs::CdbInquiry {
+            operation_code: ScsiOp::INQUIRY,
             flags: scsi_defs::InquiryFlags::new().with_vpd(true),
-            page_code: scsi_defs::VPD_BLOCK_LIMITS,
+            page_code: scsi_defs::VPD_SUPPORTED_PAGES,
             allocation_length: (data_in_size as u16).into(),
             ..FromZeros::new_zeroed()
         };
 
         match futures::executor::block_on(self.send_scsi_request(
-            inquiry_block_limits_cdb.as_bytes(),
-            ScsiOp::INQUIRY,
-            data_in.base() as u64,
+            inquiry_supported_pages_cdb.as_bytes(),
+            inquiry_supported_pages_cdb.operation_code,
+            data_in.pfns()[0] * PAGE_SIZE_4K,
             data_in_size,
             true,
         )) {
             Ok(resp) => match resp.scsi_status {
                 ScsiStatus::GOOD => {
-                    let block_limits_vpd =
-                        data_in.read_obj::<scsi_defs::VpdBlockLimitsDescriptor>(0);
-                    self.optimal_unmap_sectors = block_limits_vpd.optimal_unmap_granularity.into();
+                    let mut buf_pos = 0;
+                    let vpd_header = data_in.read_obj::<scsi_defs::VpdPageHeader>(0);
+                    buf_pos += size_of::<scsi_defs::VpdPageHeader>();
+                    while buf_pos
+                        < vpd_header.page_length as usize + size_of::<scsi_defs::VpdPageHeader>()
+                    {
+                        if data_in.read_obj::<u8>(buf_pos) == scsi_defs::VPD_BLOCK_LIMITS {
+                            // INQUIRY for the Block Limits VPD page returns the optimal unmap sectors.
+                            let inquiry_block_limits_cdb = scsi_defs::CdbInquiry {
+                                operation_code: ScsiOp::INQUIRY,
+                                flags: scsi_defs::InquiryFlags::new().with_vpd(true),
+                                page_code: scsi_defs::VPD_BLOCK_LIMITS,
+                                allocation_length: (data_in_size as u16).into(),
+                                ..FromZeros::new_zeroed()
+                            };
+
+                            match futures::executor::block_on(self.send_scsi_request(
+                                inquiry_block_limits_cdb.as_bytes(),
+                                inquiry_block_limits_cdb.operation_code,
+                                data_in.pfns()[0] * PAGE_SIZE_4K,
+                                data_in_size,
+                                true,
+                            )) {
+                                Ok(resp) => match resp.scsi_status {
+                                    ScsiStatus::GOOD => {
+                                        let block_limits_vpd =
+                                            data_in
+                                                .read_obj::<scsi_defs::VpdBlockLimitsDescriptor>(0);
+                                        self.optimal_unmap_sectors =
+                                            block_limits_vpd.optimal_unmap_granularity.into();
+                                    }
+                                    _ => {
+                                        tracing::error!(
+                                            scsi_status = ?resp.scsi_status,
+                                            srb_status = ?resp.srb_status,
+                                            "INQUIRY for Block Limits VPD failed"
+                                        );
+                                    }
+                                },
+                                Err(err) => {
+                                    tracing::error!(
+                                        error = &err as &dyn std::error::Error,
+                                        "INQUIRY for Block Limits VPD failed"
+                                    );
+                                }
+                            }
+                        }
+                        buf_pos += 1;
+                    }
                 }
                 _ => {
                     tracing::error!(
                         scsi_status = ?resp.scsi_status,
-                        "INQUIRY for Block Limits VPD failed"
+                        srb_status = ?resp.srb_status,
+                        "INQUIRY for Supported Pages VPD failed"
                     );
                 }
             },
             Err(err) => {
                 tracing::error!(
                     error = &err as &dyn std::error::Error,
-                    "INQUIRY for Block Limits VPD failed"
+                    "INQUIRY for Supported Pages VPD failed"
                 );
             }
         }
@@ -184,7 +243,7 @@ impl StorvscDisk {
         // INQUIRY for the Device Identification VPD page returns the designator (disk ID).
         self.disk_id = None;
         let inquiry_device_identification_cdb = scsi_defs::CdbInquiry {
-            operation_code: ScsiOp::INQUIRY.0,
+            operation_code: ScsiOp::INQUIRY,
             flags: scsi_defs::InquiryFlags::new().with_vpd(true),
             page_code: scsi_defs::VPD_DEVICE_IDENTIFIERS,
             allocation_length: (data_in_size as u16).into(),
@@ -193,8 +252,8 @@ impl StorvscDisk {
 
         match futures::executor::block_on(self.send_scsi_request(
             inquiry_device_identification_cdb.as_bytes(),
-            ScsiOp::INQUIRY,
-            data_in.base() as u64,
+            inquiry_device_identification_cdb.operation_code,
+            data_in.pfns()[0] * PAGE_SIZE_4K,
             data_in_size,
             true,
         )) {
@@ -232,6 +291,7 @@ impl StorvscDisk {
                 _ => {
                     tracing::error!(
                         scsi_status = ?resp.scsi_status,
+                        srb_status = ?resp.srb_status,
                         "INQUIRY for Device Identification VPD failed"
                     );
                 }
@@ -243,6 +303,15 @@ impl StorvscDisk {
                 );
             }
         }
+
+        tracing::info!(
+            num_sectors = self.num_sectors,
+            sector_size = self.sector_size,
+            read_only = self.read_only,
+            optimal_unmap_sectors = self.optimal_unmap_sectors,
+            disk_id = ?self.disk_id,
+            "Read storvsc disk metadata"
+        );
     }
 
     fn generate_scsi_request(
@@ -285,8 +354,8 @@ impl StorvscDisk {
                     _ => {
                         tracing::error!(?op, scsi_status = ?resp.scsi_status, "SCSI request failed");
                         Err(DiskError::Io(std::io::Error::other(format!(
-                            "SCSI request failed, op={:?}, scsi_status={:?}",
-                            op, resp.scsi_status
+                            "SCSI request failed, op={:?}, scsi_status={:?}, srb_status={:?}",
+                            op, resp.scsi_status, resp.srb_status
                         ))))
                     }
                 },
@@ -384,7 +453,7 @@ impl DiskIo for StorvscDisk {
             cdb.operation_code,
             locked_buffers.va(),
             buffers.len(),
-            false,
+            true,
         )
         .await
         .map(|_| ())
@@ -425,7 +494,7 @@ impl DiskIo for StorvscDisk {
             cdb.operation_code,
             locked_buffers.va(),
             buffers.len(),
-            true,
+            false,
         )
         .await
         .map(|_| ())
@@ -488,8 +557,13 @@ impl DiskIo for StorvscDisk {
             ..FromZeros::new_zeroed()
         };
 
-        let data_out_size =
-            size_of::<scsi_defs::UnmapListHeader>() + size_of::<scsi_defs::UnmapBlockDescriptor>();
+        // TODO: When we can allocate continguous pages, switch to that instead of using a single page and assert.
+        assert!(
+            (size_of::<scsi_defs::UnmapListHeader>() + size_of::<scsi_defs::UnmapBlockDescriptor>())
+                as u64
+                <= PAGE_SIZE_4K
+        );
+        let data_out_size = PAGE_SIZE_4K as usize;
         let data_out = match self.driver.allocate_dma_buffer(data_out_size) {
             Ok(buf) => buf,
             Err(err) => {
@@ -509,7 +583,7 @@ impl DiskIo for StorvscDisk {
         self.send_scsi_request(
             cdb.as_bytes(),
             cdb.operation_code,
-            data_out.base() as u64,
+            data_out.pfns()[0] * PAGE_SIZE_4K,
             data_out_size,
             false,
         )
@@ -525,7 +599,7 @@ impl DiskIo for StorvscDisk {
         self.optimal_unmap_sectors
     }
 
-    async fn wait_resize(&self, sector_count: u64) -> u64 {
+    async fn wait_resize(&self, _sector_count: u64) -> u64 {
         // This is difficult because it cannot update the stored sector count
         todo!()
     }

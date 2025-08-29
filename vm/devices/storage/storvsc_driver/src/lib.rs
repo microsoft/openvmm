@@ -10,6 +10,7 @@ pub mod test_helpers;
 mod test_helpers;
 
 use crate::save_restore::StorvscDriverSavedState;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use futures::FutureExt;
 use futures::lock::Mutex;
 use futures_concurrency::future::Race;
@@ -203,7 +204,7 @@ pub(crate) enum PacketError {
     /// Unexpected status.
     #[error("Unexpected status {0:?}")]
     UnexpectedStatus(storvsp_protocol::NtStatus),
-    /// Unrecognzied operation.
+    /// Unrecognized operation.
     #[error("Unrecognized operation {0:?}")]
     UnrecognizedOperation(storvsp_protocol::Operation),
     /// Invalid packet type.
@@ -333,6 +334,13 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
         buf_gpa: u64,
         byte_len: usize,
     ) -> Result<storvsp_protocol::ScsiRequest, StorvscError> {
+        tracing::trace!(
+            CVM_CONFIDENTIAL,
+            buf_gpa,
+            byte_len,
+            length = request.length,
+            "Sending SCSI request"
+        );
         let (sender, mut receiver) = mesh_channel::channel::<StorvscCompletion>();
         let storvsc_request = StorvscRequest {
             request: *request,
@@ -658,6 +666,13 @@ impl StorvscInner {
         transaction_id: u64,
         payload: &P,
     ) -> Result<(), StorvscError> {
+        tracing::trace!(
+            CVM_CONFIDENTIAL,
+            transaction_id,
+            ?operation,
+            ?status,
+            "Sending non-GPA Direct packet"
+        );
         let payload_bytes = payload.as_bytes();
         self.send_vmbus_packet(
             &mut writer.batched(),
@@ -681,6 +696,15 @@ impl StorvscInner {
         gpa_start: u64,
         byte_len: usize,
     ) -> Result<(), StorvscError> {
+        tracing::trace!(
+            CVM_CONFIDENTIAL,
+            transaction_id,
+            ?operation,
+            ?status,
+            gpa_start,
+            byte_len,
+            "Sending GPA Direct packet"
+        );
         let payload_bytes = payload.as_bytes();
         let start_page: u64 = gpa_start / PAGE_SIZE as u64;
         let end_page: u64 = (gpa_start + (byte_len + PAGE_SIZE - 1) as u64) / PAGE_SIZE as u64;

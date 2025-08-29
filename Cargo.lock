@@ -1379,6 +1379,7 @@ version = "0.0.0"
 dependencies = [
  "disk_backend",
  "futures",
+ "igvm_defs",
  "inspect",
  "scsi_buffers",
  "scsi_defs",
@@ -6943,6 +6944,7 @@ name = "storvsc_driver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cvm_tracing",
  "futures",
  "futures-concurrency",
  "guestmem",

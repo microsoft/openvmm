@@ -29,6 +29,7 @@ user_driver.workspace = true
 vmcore.workspace = true
 
 anyhow.workspace = true
+cvm_tracing.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 slab.workspace = true
