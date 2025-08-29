@@ -19,6 +19,7 @@ use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
@@ -713,5 +714,85 @@ async fn boot_expect_fail(
 
     vm.wait_for_clean_teardown().await?;
 
+    Ok(())
+}
+
+/// MNF guest support: capture and print recursive listing of vmbus drivers.
+/// TODO: add entries for CVM guests once MNF support in CVMs is added. Tracked by  #1940
+#[openvmm_test(
+    openvmm_openhcl_linux_direct_x64,
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn validate_mnf_usage_in_guest(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    // So far, NetVSC uses MNF, StorVSC doesn't hence attach a nic to the vm.
+    let (vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_VMBUS_ENABLE_MNF=1")
+        .modify_backend(|c| c.with_nic())
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+    let netvsc_path = "/sys/bus/vmbus/drivers/hv_netvsc";
+
+    // List directory contents for visibility.
+    let contents = cmd!(sh, "ls -la {netvsc_path}").read().await?;
+    tracing::info!("Listing all contents of {}:\n{}", netvsc_path, contents);
+
+    // Pure helpers for parsing and path resolution.
+    fn is_hex(s: &str) -> bool {
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
+    }
+    fn is_guid(s: &str) -> bool {
+        let parts: Vec<&str> = s.split('-').collect();
+        matches!(parts.as_slice(), [a, b, c, d, e]
+            if [a.len(), b.len(), c.len(), d.len(), e.len()] == [8, 4, 4, 4, 12]
+            && parts.iter().all(|p| is_hex(p)))
+    }
+    fn resolve_abs(base: &str, target: &str) -> String {
+        if target.starts_with('/') {
+            return target.to_string();
+        }
+        let mut parts: Vec<&str> = base.split('/').filter(|p| !p.is_empty()).collect();
+        for seg in target.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                other => parts.push(other),
+            }
+        }
+        format!("/{}", parts.join("/"))
+    }
+
+    // Extract absolute target dirs from GUID-named symlink entries in ls output.
+    // Each symlink entry points to a device instance within /sys/bus/vmbus/devices/
+    // The GUIDs are the instance ID.
+    let device_dirs: Vec<String> = contents
+        .lines()
+        .filter(|line| line.starts_with('l'))
+        .filter_map(|line| {
+            let (left, target) = line.rsplit_once(" -> ")?;
+            let name = left.split_whitespace().last()?;
+            is_guid(name).then(|| resolve_abs(netvsc_path, target))
+        })
+        .collect();
+
+    tracing::info!("Devices:\n{}", device_dirs.join("\n"));
+
+    // For each device, ensure at least one monitor_id file exists.
+    for device in device_dirs {
+        let find_out = cmd!(sh, "find {device} -type f -name 'monitor_id'")
+            .read()
+            .await?;
+        let has_monitor = find_out.lines().any(|s| !s.trim().is_empty());
+        assert!(has_monitor, "no monitor_id files found in {}", device);
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
