@@ -7888,6 +7888,7 @@ dependencies = [
  "pal_async",
  "pal_uring",
  "parking_lot",
+ "pci_core",
  "profiler_worker",
  "safe_intrinsics",
  "scsi_buffers",
@@ -7951,6 +7952,7 @@ dependencies = [
  "vmsocket",
  "vnc_worker_defs",
  "vpci",
+ "vpci_relay",
  "watchdog_core",
  "watchdog_vmgs_format",
  "x86defs",
@@ -9489,6 +9491,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "vpci_client"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chipset_device",
+ "closeable_mutex",
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "guid",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "parking_lot",
+ "pci_core",
+ "slab",
+ "task_control",
+ "test_with_tracing",
+ "tracelimit",
+ "tracing",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_ring",
+ "vmcore",
+ "vpci",
+ "vpci_protocol",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
 name = "vpci_protocol"
 version = "0.0.0"
 dependencies = [
@@ -9496,6 +9528,34 @@ dependencies = [
  "guid",
  "open_enum",
  "zerocopy 0.8.25",
+]
+
+[[package]]
+name = "vpci_relay"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chipset_device",
+ "fs-err",
+ "futures",
+ "hcl",
+ "hvdef",
+ "inspect",
+ "memory_range",
+ "mesh",
+ "pci_core",
+ "slab",
+ "sparse_mmap",
+ "state_unit",
+ "tracelimit",
+ "tracing",
+ "user_driver",
+ "vmbus_client",
+ "vmbus_server",
+ "vmcore",
+ "vmotherboard",
+ "vpci",
+ "vpci_client",
 ]
 
 [[package]]
