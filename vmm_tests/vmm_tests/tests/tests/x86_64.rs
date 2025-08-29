@@ -8,6 +8,11 @@ mod openhcl_servicing;
 mod openhcl_uefi;
 
 use anyhow::Context;
+use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::VpciDeviceConfig;
+use net_backend_resources::mac_address::MacAddress;
+use net_backend_resources::null::NullHandle;
+use nvme_resources::NvmeControllerHandle;
 use petri::ApicMode;
 use petri::PetriVmConfig;
 use petri::ProcessorTopology;
@@ -15,6 +20,9 @@ use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
+use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::net::VirtioNetHandle;
+use vm_resource::IntoResource;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
@@ -363,6 +371,63 @@ async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow
 )]
 async fn sidecar_boot(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, 4).run().await?;
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn vpci_filter(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let nvme_guid = guid::guid!("78fc4861-29bf-408d-88b7-24199de560d1");
+    let virtio_guid = guid::guid!("382a9da7-a7d8-44a5-9644-be3785bceda6");
+
+    // Add an NVMe controller and a Virtio network controller. Only the NVMe
+    // controller should be allowed by OpenHCL.
+    let (vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
+        .with_vmbus_redirect()
+        .with_custom_config(|c| {
+            c.vpci_devices.extend([
+                VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl0,
+                    instance_id: nvme_guid,
+                    resource: NvmeControllerHandle {
+                        subsystem_id: nvme_guid,
+                        msix_count: 1,
+                        max_io_queues: 1,
+                        namespaces: Vec::new(),
+                    }
+                    .into_resource(),
+                },
+                VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl0,
+                    instance_id: virtio_guid,
+                    resource: VirtioPciDeviceHandle(
+                        VirtioNetHandle {
+                            max_queues: None,
+                            mac_address: MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]),
+                            endpoint: NullHandle.into_resource(),
+                        }
+                        .into_resource(),
+                    )
+                    .into_resource(),
+                },
+            ])
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+    let lspci_output = cmd!(sh, "lspci").read().await?;
+    let devices = lspci_output
+        .lines()
+        .map(|line| line.trim().split_once(' ').ok_or_else(|| line.trim()))
+        .collect::<Vec<_>>();
+
+    // The virtio device should not have made it through, but the NVMe
+    // controller should be there.
+    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:00a9"))]);
+
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())

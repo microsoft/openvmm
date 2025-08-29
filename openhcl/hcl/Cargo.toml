@@ -19,7 +19,7 @@ inspect.workspace = true
 user_driver.workspace = true
 
 anyhow.workspace = true
-bitvec.workspace = true
+bitvec = { workspace = true, features = ["alloc"] }
 parking_lot.workspace = true
 signal-hook.workspace = true
 thiserror.workspace = true

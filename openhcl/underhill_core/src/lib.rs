@@ -329,6 +329,7 @@ async fn launch_workers(
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
         guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        enable_vpci_relay: opt.enable_vpci_relay,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
