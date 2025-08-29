@@ -718,6 +718,7 @@ async fn boot_expect_fail(
 }
 
 /// MNF guest support: capture and print recursive listing of vmbus drivers.
+/// TODO: add entries for CVM guests once MNF support in CVMs is added. Tracked by  #1940
 #[openvmm_test(
     openvmm_openhcl_linux_direct_x64,
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
