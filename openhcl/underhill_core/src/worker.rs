@@ -2878,7 +2878,7 @@ async fn new_underhill_vm(
                     vpci_filter.take(),
                     vmbus.control().clone(),
                     dma_manager.new_client(DmaClientParameters {
-                        device_name: format!("vpci-relay"),
+                        device_name: "vpci-relay".into(),
                         lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
                         allocation_visibility: if hardware_isolated {
                             AllocationVisibility::Shared

@@ -29,6 +29,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 use std::task::ready;
+use thiserror::Error;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
@@ -486,6 +487,18 @@ impl VpciDevice {
     }
 }
 
+#[derive(Error, Debug)]
+#[error("invalid vector count: {0}")]
+struct InvalidVectorCount(u32);
+
+#[derive(Error, Debug)]
+#[error("starting vector too large: {0}")]
+struct VectorTooLarge(u32);
+
+#[derive(Error, Debug)]
+#[error("invalid processor number: {0}")]
+struct InvalidProcessor(u32);
+
 impl MapVpciInterrupt for VpciDevice {
     async fn register_interrupt(
         &self,
@@ -493,16 +506,19 @@ impl MapVpciInterrupt for VpciDevice {
         params: &vmcore::vpci_msi::VpciInterruptParameters<'_>,
     ) -> Result<MsiAddressData, RegisterInterruptError> {
         let mut interrupt = protocol::MsiResourceDescriptor2 {
+            // TODO: use MsiResourceDescriptor3 to support ARM64.
             vector: params
                 .vector
                 .try_into()
-                .expect("need to support resource 3 for ARM64"),
+                .map_err(|_| RegisterInterruptError::new(VectorTooLarge(params.vector)))?,
             delivery_mode: if params.multicast {
                 protocol::DeliveryMode::LOWEST_PRIORITY
             } else {
                 protocol::DeliveryMode::FIXED
             },
-            vector_count: vector_count.try_into().expect("BUGBUG: fail to caller"),
+            vector_count: vector_count
+                .try_into()
+                .map_err(|_| RegisterInterruptError::new(InvalidVectorCount(vector_count)))?,
             processor_count: 0,
             processor_array: [0; 32],
             reserved: 0,
@@ -512,7 +528,9 @@ impl MapVpciInterrupt for VpciDevice {
             .iter_mut()
             .zip(params.target_processors)
         {
-            *d = s.try_into().expect("BUGBUG: fail to caller");
+            *d = s
+                .try_into()
+                .map_err(|_| RegisterInterruptError::new(InvalidProcessor(s)))?;
             interrupt.processor_count += 1;
         }
         let resource = self
