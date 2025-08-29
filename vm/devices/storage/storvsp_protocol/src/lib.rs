@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 use guid::Guid;
+use inspect::Inspect;
 use open_enum::open_enum;
 use scsi_defs::ScsiStatus;
 use scsi_defs::srb::SrbStatusAndFlags;
@@ -155,7 +156,7 @@ pub struct ChannelProperties {
 pub const STORAGE_CHANNEL_SUPPORTS_MULTI_CHANNEL: u32 = 0x1;
 
 #[repr(C)]
-#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct ProtocolVersion {
     // Major (MSB) and minor (LSB) version numbers.
     pub major_minor: u16,

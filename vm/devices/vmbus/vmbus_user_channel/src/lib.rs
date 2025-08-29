@@ -181,15 +181,19 @@ pub fn open_uio_device(instance_id: &Guid) -> Result<File, Error> {
 pub fn channel(
     driver: &(impl Driver + ?Sized),
     file: File,
+    in_ring_size: Option<usize>,
+    out_ring_size: Option<usize>,
 ) -> Result<RawAsyncChannel<MappedRingMem>, Error> {
-    let total_mapping_size = CONTROL_SIZE + IN_RING_SIZE + CONTROL_SIZE + OUT_RING_SIZE;
+    let in_ring_size_len = in_ring_size.unwrap_or(IN_RING_SIZE);
+    let out_ring_size_len = out_ring_size.unwrap_or(OUT_RING_SIZE);
+    let total_mapping_size = CONTROL_SIZE + in_ring_size_len + CONTROL_SIZE + out_ring_size_len;
 
     let mapping = Arc::new(SparseMapping::new(total_mapping_size).map_err(ErrorInner::Mmap)?);
 
     // Double map the data portion of the ring buffers so that a packet spanning
     // the end of the ring buffer can be read linearly in VA space.
     let mapping_offset = 0;
-    let len = CONTROL_SIZE + OUT_RING_SIZE + CONTROL_SIZE + IN_RING_SIZE;
+    let len = CONTROL_SIZE + out_ring_size_len + CONTROL_SIZE + in_ring_size_len;
 
     mapping
         .map_file(mapping_offset, len, &file, 0_u64, true)
@@ -206,13 +210,13 @@ pub fn channel(
     let out_mem = MappedRingMem {
         mapping: mapping.clone(),
         offset: 0,
-        len: OUT_RING_SIZE,
+        len: out_ring_size_len,
     };
     let out_ring = OutgoingRing::new(out_mem).map_err(ErrorInner::Ring)?;
     let in_mem = MappedRingMem {
         mapping,
-        offset: CONTROL_SIZE + OUT_RING_SIZE,
-        len: IN_RING_SIZE,
+        offset: CONTROL_SIZE + out_ring_size_len,
+        len: in_ring_size_len,
     };
     let in_ring = IncomingRing::new(in_mem).map_err(ErrorInner::Ring)?;
 
@@ -281,8 +285,10 @@ impl SignalVmbusChannel for UioSignal {
 pub fn byte_pipe(
     driver: &(impl Driver + ?Sized),
     file: File,
+    in_ring_size: Option<usize>,
+    out_ring_size: Option<usize>,
 ) -> Result<BytePipe<MappedRingMem>, Error> {
-    let channel = channel(driver, file)?;
+    let channel = channel(driver, file, in_ring_size, out_ring_size)?;
     let pipe = BytePipe::new(channel).map_err(ErrorInner::Pipe)?;
     Ok(pipe)
 }
@@ -291,8 +297,10 @@ pub fn byte_pipe(
 pub fn message_pipe(
     driver: &(impl Driver + ?Sized),
     file: File,
+    in_ring_size: Option<usize>,
+    out_ring_size: Option<usize>,
 ) -> Result<MessagePipe<MappedRingMem>, Error> {
-    let channel = channel(driver, file)?;
+    let channel = channel(driver, file, in_ring_size, out_ring_size)?;
     let pipe = MessagePipe::new(channel).map_err(ErrorInner::Pipe)?;
     Ok(pipe)
 }

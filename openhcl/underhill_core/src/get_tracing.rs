@@ -78,7 +78,7 @@ pub fn init_tracing_backend(driver: impl 'static + SpawnDriver) -> anyhow::Resul
         legacy_openvmm_env("OPENVMM_PERF_TRACE").unwrap_or_else(|_| "off".to_owned());
 
     let pipe = vmbus_user_channel::open_uio_device(&GET_LOG_INTERFACE_GUID)
-        .and_then(|dev| vmbus_user_channel::message_pipe(&driver, dev))
+        .and_then(|dev| vmbus_user_channel::message_pipe(&driver, dev, None, None))
         .map_err(|err| {
             tracing::error!(
                 CVM_ALLOWED,

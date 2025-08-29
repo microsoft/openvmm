@@ -47,6 +47,14 @@ mod state {
         pub nvme_state: crate::nvme_manager::save_restore::NvmeManagerSavedState,
     }
 
+    #[derive(Protobuf)]
+    #[mesh(package = "underhill")]
+    pub struct StorvscSavedState {
+        /// Storvsc manager (worker) saved state.
+        #[mesh(1)]
+        pub storvsc_state: crate::storvsc_manager::save_restore::StorvscManagerSavedState,
+    }
+
     /// Servicing state needed to create the LoadedVm object.
     #[derive(Protobuf)]
     #[mesh(package = "underhill")]
@@ -84,6 +92,8 @@ mod state {
         pub dma_manager_state: Option<OpenhclDmaManagerState>,
         #[mesh(10002)]
         pub vmbus_client: Option<vmbus_client::SavedState>,
+        #[mesh(10003)]
+        pub storvsc_state: Option<StorvscSavedState>,
     }
 
     #[derive(Protobuf)]
@@ -202,6 +212,7 @@ pub mod transposed {
         pub nvme_state: Option<Option<NvmeSavedState>>,
         pub dma_manager_state: Option<Option<OpenhclDmaManagerState>>,
         pub vmbus_client: Option<Option<vmbus_client::SavedState>>,
+        pub storvsc_state: Option<Option<StorvscSavedState>>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -232,6 +243,7 @@ pub mod transposed {
                     nvme_state,
                     dma_manager_state,
                     vmbus_client,
+                    storvsc_state,
                 } = state;
 
                 OptionServicingInitState {
@@ -248,6 +260,7 @@ pub mod transposed {
                     nvme_state: Some(nvme_state),
                     dma_manager_state: Some(dma_manager_state),
                     vmbus_client: Some(vmbus_client),
+                    storvsc_state: Some(storvsc_state),
                 }
             } else {
                 OptionServicingInitState::default()

@@ -235,7 +235,7 @@ pub const MEDIUM_NOT_PRESENT_TRAY_OPEN: u8 = 0x02;
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbInquiry {
-    pub operation_code: u8, // 0x12 - SCSIOP_INQUIRY
+    pub operation_code: ScsiOp, // 0x12 - SCSIOP_INQUIRY
     pub flags: InquiryFlags,
     pub page_code: u8,
     pub allocation_length: U16BE,
@@ -771,6 +771,60 @@ pub struct ModeSenseFlags {
 
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ModeControlPage {
+    /*
+        UCHAR PageCode : 6;
+        UCHAR SPFBit : 1;
+        UCHAR PSBit : 1;
+    */
+    pub page_code: u8,
+    pub page_length: u8,
+    /*
+        UCHAR RLECBit : 1;
+        UCHAR GLTSDBit : 1;
+        UCHAR D_SENSEBit : 1;
+        UCHAR Reserved1 : 1;
+        UCHAR TMF_ONLYBit : 1;
+        UCHAR TST : 3;
+    */
+    pub flags1: u8,
+    /*
+        UCHAR Reserved2 : 1;
+        UCHAR QERR : 2;
+        UCHAR Reserved3 : 1;
+        UCHAR QueueAlgorithmModifier : 4;
+    */
+    pub flags2: u8,
+    pub flags3: ModeControlPageFlags3,
+    /*
+        UCHAR AutoloadMode : 3;
+        UCHAR Reserved5 : 3;
+        UCHAR TASBit : 1;
+        UCHAR ATOBit : 1;
+    */
+    pub flags4: u8,
+    pub reserved6: [u8; 2],
+    pub busy_timeout_period: [u8; 2],
+    pub extended_self_test_completion_time: [u8; 2],
+}
+
+#[bitfield(u8)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ModeControlPageFlags3 {
+    #[bits(3)]
+    pub reserved: u8,
+    #[bits(1)]
+    pub swp: bool,
+    #[bits(2)]
+    pub ua_intlck_ctrl: u8,
+    #[bits(1)]
+    pub rac: bool,
+    #[bits(1)]
+    pub vs: bool,
+}
+
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeReadWriteRecoveryPage {
     /*
         UCHAR PageCode : 6;
@@ -1053,8 +1107,8 @@ pub struct Cdb16Flags {
 pub struct ServiceActionIn16 {
     pub operation_code: ScsiOp,
     pub service_action: u8,
-    pub logical_block: [u8; 8],
-    pub allocation_length: [u8; 4],
+    pub logical_block: U64BE,
+    pub allocation_length: U32BE,
     pub flags: u8,
     pub control: u8,
 }

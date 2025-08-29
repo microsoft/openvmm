@@ -316,6 +316,8 @@ pub fn main() -> ! {
         let pipe = vmbus_user_channel::message_pipe(
             &driver,
             vmbus_user_channel::open_uio_device(&crash::CRASHDUMP_GUID)?,
+            None,
+            None,
         )?;
         send_dump(pipe, &mut dump_stream, &os_version, !options.no_kmsg).await?;
 
