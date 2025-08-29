@@ -1365,10 +1365,7 @@ async fn new_underhill_vm(
 
     let enable_vpci_relay = env_cfg
         .enable_vpci_relay
-        .unwrap_or(hardware_isolated && !hide_isolation);
-
-    // BUGBUG: needed because some CVM tests don't enable VPCI relay. This must be fixed.
-    let enable_vpci_relay = enable_vpci_relay && with_vmbus_relay;
+        .unwrap_or(hardware_isolated && !hide_isolation && with_vmbus_relay);
 
     if enable_vpci_relay && !with_vmbus_relay {
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
