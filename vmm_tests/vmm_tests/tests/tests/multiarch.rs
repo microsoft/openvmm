@@ -640,7 +640,6 @@ async fn file_transfer_test<T: PetriVmmBackend>(
 }
 
 /// Boot Linux and have it write the visible memory size.
-
 #[openvmm_test(linux_direct_x64, uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
 async fn five_gb(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let configured_size = 5 * SIZE_1_GB;
