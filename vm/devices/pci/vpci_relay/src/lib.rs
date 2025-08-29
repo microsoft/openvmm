@@ -10,11 +10,16 @@
 #[cfg(target_os = "linux")]
 pub mod linux_mmio;
 
+// Exported to make it easier to define filters without explicitly pulling in
+// `pci_core`.
+pub use pci_core::spec::hwid::ClassCode;
+pub use pci_core::spec::hwid::ProgrammingInterface;
+pub use pci_core::spec::hwid::Subclass;
+
 use anyhow::Context as _;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pci::PciConfigSpace;
-use futures::FutureExt as _;
 use futures::StreamExt as _;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -39,7 +44,7 @@ use vmotherboard::DynamicDeviceUnit;
 use vpci_client::MemoryAccess;
 use vpci_client::VpciClient;
 use vpci_client::VpciDevice;
-use vpci_client::VpciDeviceRemoved;
+use vpci_client::VpciDeviceEject;
 
 /// Trait for creating memory access instances.
 pub trait CreateMemoryAccess: 'static + Send + Sync {
@@ -68,7 +73,7 @@ pub struct VpciRelay {
     #[inspect(skip)]
     mmio_access: Box<dyn CreateMemoryAccess>,
     #[inspect(iter_by_index)]
-    allowed_devices: Vec<HardwareIds>,
+    allowed_devices: Vec<AllowedDevice>,
 }
 
 #[derive(Inspect)]
@@ -76,7 +81,7 @@ struct RelayedDevice {
     bus_instance_id: Guid,
     bus_client: VpciClient,
     #[inspect(skip)]
-    removed: VpciDeviceRemoved,
+    removed: VpciDeviceEject,
     #[inspect(skip)]
     bus_unit: DynamicDeviceUnit,
     #[inspect(skip)]
@@ -92,25 +97,55 @@ impl RelayedDevice {
     }
 }
 
-fn allows(a: &HardwareIds, b: &HardwareIds) -> bool {
-    let HardwareIds {
-        vendor_id,
-        device_id,
-        revision_id,
-        prog_if,
-        sub_class,
-        base_class,
-        type0_sub_vendor_id,
-        type0_sub_system_id,
-    } = *a;
-    (vendor_id == !0 || vendor_id == b.vendor_id)
-        && (device_id == !0 || device_id == b.device_id)
-        && (revision_id == !0 || revision_id == b.revision_id)
-        && (prog_if.0 == !0 || prog_if == b.prog_if)
-        && (sub_class.0 == !0 || sub_class == b.sub_class)
-        && (base_class.0 == !0 || base_class == b.base_class)
-        && (type0_sub_vendor_id == !0 || type0_sub_vendor_id == b.type0_sub_vendor_id)
-        && (type0_sub_system_id == !0 || type0_sub_system_id == b.type0_sub_system_id)
+/// An allowed device description.
+///
+/// Fields that are `Some` must match the device being evaluated to be allowed.
+#[derive(Inspect, Copy, Clone, Debug)]
+pub struct AllowedDevice {
+    /// The vendor ID of the device.
+    #[inspect(hex)]
+    pub vendor_id: Option<u16>,
+    /// The device ID of the device.
+    #[inspect(hex)]
+    pub device_id: Option<u16>,
+    /// The revision ID of the device.
+    #[inspect(hex)]
+    pub revision_id: Option<u8>,
+    /// The programming interface of the device.
+    pub prog_if: Option<ProgrammingInterface>,
+    /// The subclass of the device.
+    pub sub_class: Option<Subclass>,
+    /// The base class of the device.
+    pub base_class: Option<ClassCode>,
+    /// The sub-vendor ID.
+    #[inspect(hex)]
+    pub sub_vendor_id: Option<u16>,
+    /// The sub-system ID.
+    #[inspect(hex)]
+    pub sub_system_id: Option<u16>,
+}
+
+impl AllowedDevice {
+    fn allows(&self, hw: &HardwareIds) -> bool {
+        let Self {
+            vendor_id,
+            device_id,
+            revision_id,
+            prog_if,
+            sub_class,
+            base_class,
+            sub_vendor_id,
+            sub_system_id,
+        } = *self;
+        vendor_id.is_none_or(|x| x == hw.vendor_id)
+            && device_id.is_none_or(|x| x == hw.device_id)
+            && revision_id.is_none_or(|x| x == hw.revision_id)
+            && prog_if.is_none_or(|x| x == hw.prog_if)
+            && sub_class.is_none_or(|x| x == hw.sub_class)
+            && base_class.is_none_or(|x| x == hw.base_class)
+            && sub_vendor_id.is_none_or(|x| x == hw.type0_sub_vendor_id)
+            && sub_system_id.is_none_or(|x| x == hw.type0_sub_system_id)
+    }
 }
 
 impl VpciRelay {
@@ -140,8 +175,8 @@ impl VpciRelay {
     /// then it is treated as a wildcard.
     ///
     /// Note that if no devices are on the list, then all devices are allowed.
-    pub fn add_allowed_device(&mut self, hw_ids: HardwareIds) {
-        self.allowed_devices.push(hw_ids);
+    pub fn add_allowed_device(&mut self, dev: AllowedDevice) {
+        self.allowed_devices.push(dev);
     }
 
     /// Wait for the relay to be ready. This might never return. This call is cancellable.
@@ -151,7 +186,7 @@ impl VpciRelay {
                 return Poll::Ready(());
             }
             if self.devices.iter_mut().any(|(_, dev)| {
-                let p = dev.ready_to_remove || dev.removed.poll_unpin(cx).is_ready();
+                let p = dev.ready_to_remove || dev.removed.poll_next_unpin(cx).is_ready();
                 if p {
                     dev.ready_to_remove = true;
                 }
@@ -231,7 +266,7 @@ impl VpciRelay {
         let hw_ids = vpci_device.hw_ids();
 
         if !self.allowed_devices.is_empty()
-            && !self.allowed_devices.iter().any(|d| allows(d, hw_ids))
+            && !self.allowed_devices.iter().any(|d| d.allows(hw_ids))
         {
             tracing::warn!(%instance_id, vendor_id = hw_ids.vendor_id, device_id = hw_ids.device_id, "device not allowed on VPCI bus");
             return Ok(());

@@ -2878,7 +2878,9 @@ async fn new_underhill_vm(
             let connection = relay_filter.take();
 
             if enable_vpci_relay {
-                let mut relay = vpci_relay::VpciRelay::new(
+                use vpci_relay::*;
+
+                let mut relay = VpciRelay::new(
                     driver_source.clone(),
                     vpci_filter.take(),
                     vmbus.control().clone(),
@@ -2895,41 +2897,41 @@ async fn new_underhill_vm(
                     vpci_relay_mmio,
                     if use_mmio_hypercalls {
                         Box::new(
-                            vpci_relay::linux_mmio::HypercallMmio::new()
+                            linux_mmio::HypercallMmio::new()
                                 .context("failed to create hypercall mmio accessor")?,
                         )
                     } else {
                         Box::new(
-                            vpci_relay::linux_mmio::DirectMmio::new()
+                            linux_mmio::DirectMmio::new()
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
                 );
 
-                use pci_core::spec::hwid::*;
-
                 // Allow NVMe devices.
-                relay.add_allowed_device(HardwareIds {
-                    vendor_id: !0,
-                    device_id: !0,
-                    revision_id: !0,
-                    prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
-                    sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,
-                    base_class: ClassCode::MASS_STORAGE_CONTROLLER,
-                    type0_sub_vendor_id: !0,
-                    type0_sub_system_id: !0,
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: None,
+                    device_id: None,
+                    revision_id: None,
+                    prog_if: Some(
+                        ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
+                    ),
+                    sub_class: Some(Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY),
+                    base_class: Some(ClassCode::MASS_STORAGE_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
                 });
 
                 // Allow MANA devices.
-                relay.add_allowed_device(HardwareIds {
-                    vendor_id: 0x1414,
-                    device_id: 0x00ba,
-                    revision_id: !0,
-                    prog_if: ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA,
-                    sub_class: Subclass::NETWORK_CONTROLLER_ETHERNET,
-                    base_class: ClassCode::NETWORK_CONTROLLER,
-                    type0_sub_vendor_id: !0,
-                    type0_sub_system_id: !0,
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(0x1414),
+                    device_id: Some(0x00ba),
+                    revision_id: None,
+                    prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
+                    sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
+                    base_class: Some(ClassCode::NETWORK_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
                 });
 
                 vpci_relay = Some(relay);

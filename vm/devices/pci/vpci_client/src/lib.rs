@@ -11,6 +11,7 @@ mod tests;
 
 use anyhow::Context;
 use futures::FutureExt;
+use futures::Stream;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
 use guestmem::MemoryRead;
@@ -24,11 +25,9 @@ use parking_lot::Mutex;
 use pci_core::spec::cfg_space::Command;
 use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::hwid::HardwareIds;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
-use std::task::ready;
 use thiserror::Error;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
@@ -186,7 +185,7 @@ pub struct VpciDeviceDescription {
     #[inspect(skip)]
     req: mesh::Sender<WorkerRequest>,
     #[inspect(skip)]
-    eject: mesh::OneshotReceiver<()>,
+    eject: mesh::Receiver<VpciDeviceEjected>,
 }
 
 /// An initialized VPCI device.
@@ -264,7 +263,7 @@ impl ConfigSpaceAccessor {
 
     fn read(&mut self, id: DeviceId, offset: u16) -> u32 {
         if !self.set_slot(id) {
-            tracelimit::warn_ratelimited!(?id, "device is gone, ignoring cfg read");
+            tracelimit::warn_ratelimited!(?id, offset, "device is gone, ignoring cfg read");
             return !0;
         }
         let value = self
@@ -276,7 +275,7 @@ impl ConfigSpaceAccessor {
 
     fn write(&mut self, id: DeviceId, offset: u16, value: u32) {
         if !self.set_slot(id) {
-            tracelimit::warn_ratelimited!(?id, "device is gone, ignoring cfg write");
+            tracelimit::warn_ratelimited!(?id, offset, "device is gone, ignoring cfg write");
             return;
         }
         tracing::trace!(?id, offset, value, "host config space write");
@@ -319,7 +318,7 @@ impl VpciDeviceDescription {
     /// Initializes the device, returning a VPCI device instance that can be
     /// used to interact with it. Also returns an object to use to get notified
     /// when the device is ejected or surprise removed.
-    pub async fn init(self) -> anyhow::Result<(VpciDevice, VpciDeviceRemoved)> {
+    pub async fn init(self) -> anyhow::Result<(VpciDevice, VpciDeviceEject)> {
         let requirements = self
             .req
             .call_failable(WorkerRequest::QueryResourceRequirements, self.id)
@@ -376,14 +375,12 @@ impl VpciDeviceDescription {
             dev,
         };
 
-        Ok((device, VpciDeviceRemoved(eject)))
+        Ok((device, VpciDeviceEject(eject)))
     }
 }
 
-/// Future that resolves when the device is ejected or removed.
-///
-/// TODO: we need to know about eject and _then_ surprise removal.
-pub struct VpciDeviceRemoved(mesh::OneshotReceiver<()>);
+/// Stream that notifies that the device has been ejected or removed.
+pub struct VpciDeviceEject(mesh::Receiver<VpciDeviceEjected>);
 
 /// The kind of device removal.
 pub enum RemovalKind {
@@ -393,14 +390,20 @@ pub enum RemovalKind {
     SurpriseRemove,
 }
 
-impl Future for VpciDeviceRemoved {
-    type Output = RemovalKind;
+/// Notification that the device is being ejected.
+///
+/// The [`VpciDeviceEject`] stream will be closed when the device is actually
+/// removed.
+pub struct VpciDeviceEjected;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        match ready!(self.get_mut().0.poll_unpin(cx)) {
-            Ok(()) => Poll::Ready(RemovalKind::Eject),
-            Err(_) => Poll::Ready(RemovalKind::SurpriseRemove),
-        }
+impl Stream for VpciDeviceEject {
+    type Item = VpciDeviceEjected;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.get_mut().0.poll_next_unpin(cx)
     }
 }
 
@@ -606,8 +609,9 @@ struct SlotState {
     serial_num: u32,
     in_use: bool,
     removed: bool,
-    #[inspect(rename = "ejected", with = "|x| x.is_none()")]
-    eject: Option<mesh::OneshotSender<()>>,
+    ejected: bool,
+    #[inspect(skip)]
+    eject: mesh::Sender<VpciDeviceEjected>,
     seq: u64,
 }
 
@@ -857,12 +861,13 @@ impl WorkerState {
                     }
                     let seq = self.next_seq;
                     self.next_seq += 1;
-                    let (eject_send, eject_recv) = mesh::oneshot();
+                    let (eject_send, eject_recv) = mesh::channel();
                     self.slots[slot_index] = Some(SlotState {
                         hw_ids,
                         serial_num: device.serial_num,
                         removed: false,
-                        eject: Some(eject_send),
+                        ejected: false,
+                        eject: eject_send,
                         in_use: false,
                         seq,
                     });
@@ -904,9 +909,9 @@ impl WorkerState {
                 let Some(Some(slot)) = self.slots.get_mut(slot_index) else {
                     anyhow::bail!("eject packet for unknown slot {slot_index}");
                 };
-                if let Some(eject_send) = slot.eject.take() {
+                if !std::mem::replace(&mut slot.ejected, true) {
                     if slot.in_use {
-                        eject_send.send(());
+                        slot.eject.send(VpciDeviceEjected);
                     } else {
                         send_eject_complete(write, eject.slot).await?;
                     }
@@ -1084,7 +1089,7 @@ impl WorkerState {
                     return Ok(None);
                 };
                 slot.in_use = false;
-                if slot.eject.is_none() {
+                if slot.ejected {
                     send_eject_complete(write, id.slot).await?;
                 }
             }
