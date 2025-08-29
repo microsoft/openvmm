@@ -50,6 +50,7 @@ disk_get_vmgs.workspace = true
 disk_nvme.workspace = true
 firmware_uefi.workspace = true
 firmware_uefi_custom_vars.workspace = true
+gdma_defs.workspace = true
 hyperv_ic_guest.workspace = true
 hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true

@@ -2921,8 +2921,8 @@ async fn new_underhill_vm(
 
                 // Allow MANA devices.
                 relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(0x1414),
-                    device_id: Some(0x00ba),
+                    vendor_id: Some(gdma_defs::VENDOR_ID),
+                    device_id: Some(gdma_defs::DEVICE_ID),
                     revision_id: None,
                     prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
                     sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
