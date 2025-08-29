@@ -114,7 +114,7 @@ impl<M: RingMem> VpciConnection<M> {
         Ok(reply)
     }
 
-    async fn negotiate(self: &mut Self) -> anyhow::Result<protocol::ProtocolVersion> {
+    async fn negotiate(&mut self) -> anyhow::Result<protocol::ProtocolVersion> {
         // Try to negotiate versions in order from newest to oldest
         let versions = &[protocol::ProtocolVersion::VB];
 
@@ -934,7 +934,7 @@ impl WorkerState {
             .reader()
             .read_plain::<protocol::Status>()
             .context("failed to read tx reply")?;
-        Ok(match entry {
+        match entry {
             Tx::FdoD0Entry(send) => {
                 tracing::trace!(tx_id, ?status, "fdo d0 entry reply received");
                 let r = if status == protocol::Status::SUCCESS {
@@ -990,7 +990,8 @@ impl WorkerState {
                     ));
                 }
             }
-        })
+        }
+        Ok(())
     }
 
     async fn handle_req<M: RingMem>(
