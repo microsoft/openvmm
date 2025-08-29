@@ -41,6 +41,22 @@ pub struct PciFaultConfig {
     pub controller_management_fault_enable: PciFaultBehavior,
 }
 
+#[derive(Clone, MeshPayload)]
+/// Supported fault behaviour for PCI faults
+pub enum PciFaultBehavior {
+    /// Introduce a delay to the PCI operation
+    Delay(Duration),
+    /// Do nothing
+    Default,
+}
+
+#[derive(MeshPayload, Clone)]
+/// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
+pub struct PciFaultConfig {
+    /// Fault to apply to cc.en() bit during enablement
+    pub controller_management_fault_enable: PciFaultBehavior,
+}
+
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
