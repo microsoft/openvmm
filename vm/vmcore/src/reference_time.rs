@@ -3,6 +3,8 @@
 
 //! Types for hypervisor reference time sources.
 
+#![forbid(unsafe_code)]
+
 use inspect::Inspect;
 use std::convert::Infallible;
 use std::sync::Arc;

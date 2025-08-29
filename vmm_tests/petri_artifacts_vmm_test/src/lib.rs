@@ -145,6 +145,8 @@ pub mod artifacts {
             LATEST_LINUX_DIRECT_TEST_X64,
             /// OpenHCL IGVM (standard AARCH64)
             LATEST_STANDARD_AARCH64,
+            /// OpenHCL IGVM (standard AARCH64, with VTL2 dev kernel)
+            LATEST_STANDARD_DEV_KERNEL_AARCH64
         }
 
         impl IsLoadable for LATEST_STANDARD_X64 {
@@ -172,6 +174,11 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_AARCH64 {}
 
+        impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_AARCH64 {
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+        impl IsOpenhclIgvm for LATEST_STANDARD_DEV_KERNEL_AARCH64 {}
+
         /// OpenHCL usermode binary
         pub mod um_bin {
             use petri_artifacts_core::declare_artifacts;
@@ -197,6 +204,8 @@ pub mod artifacts {
     pub mod test_vhd {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
         use petri_artifacts_common::tags::GuestQuirks;
+        use petri_artifacts_common::tags::GuestQuirksInner;
+        use petri_artifacts_common::tags::InitialRebootCondition;
         use petri_artifacts_common::tags::IsTestVhd;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
@@ -263,6 +272,13 @@ pub mod artifacts {
         impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
             const ARCH: MachineArch = MachineArch::X86_64;
+
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    initial_reboot: Some(InitialRebootCondition::Always),
+                    ..Default::default()
+                })
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 {
@@ -281,11 +297,10 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
 
             fn quirks() -> GuestQuirks {
-                GuestQuirks {
-                    // FreeBSD will ignore shutdown requests that arrive too
-                    // early in the boot process.
-                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(15)),
-                }
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                })
             }
         }
 
@@ -302,6 +317,14 @@ pub mod artifacts {
         impl IsTestVhd for UBUNTU_2204_SERVER_X64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                });
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2204_SERVER_X64 {
@@ -317,6 +340,14 @@ pub mod artifacts {
         impl IsTestVhd for UBUNTU_2404_SERVER_AARCH64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::Aarch64;
+            fn quirks() -> GuestQuirks {
+                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                });
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_AARCH64 {
@@ -332,6 +363,13 @@ pub mod artifacts {
         impl IsTestVhd for WINDOWS_11_ENTERPRISE_AARCH64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
             const ARCH: MachineArch = MachineArch::Aarch64;
+
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    initial_reboot: Some(InitialRebootCondition::Always),
+                    ..Default::default()
+                })
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for WINDOWS_11_ENTERPRISE_AARCH64 {
@@ -345,6 +383,7 @@ pub mod artifacts {
     pub mod test_iso {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
         use petri_artifacts_common::tags::GuestQuirks;
+        use petri_artifacts_common::tags::GuestQuirksInner;
         use petri_artifacts_common::tags::IsTestIso;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
@@ -360,14 +399,10 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
 
             fn quirks() -> GuestQuirks {
-                GuestQuirks {
-                    // FreeBSD will ignore shutdown requests that arrive too
-                    // early in the boot process.
-                    //
-                    // Time is set to 5s longer than the VHD, to account for ISO
-                    // boot being slower.
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                }
+                    ..Default::default()
+                })
             }
         }
 
@@ -380,6 +415,7 @@ pub mod artifacts {
     /// Test VMGS artifacts
     pub mod test_vmgs {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
+        use petri_artifacts_common::tags::IsTestVmgs;
         use petri_artifacts_core::declare_artifacts;
 
         declare_artifacts! {
@@ -396,6 +432,8 @@ pub mod artifacts {
             const FILENAME: &'static str = "sample-vmgs.vhd";
             const SIZE: u64 = 4194816;
         }
+
+        impl IsTestVmgs for VMGS_WITH_BOOT_ENTRY {}
     }
 
     /// TMK-related artifacts

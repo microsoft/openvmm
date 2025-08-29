@@ -4,7 +4,6 @@
 //! PIIX4 - USB configuration
 
 use chipset_device::ChipsetDevice;
-use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pci::PciConfigSpace;
 use inspect::InspectMut;
@@ -63,7 +62,8 @@ impl PciConfigSpace for Piix4UsbUhciStub {
             _ if offset < 0x40 => 0, // stub-out all other standard cfg regs
             _ => {
                 tracing::debug!(?offset, "unimplemented config space read");
-                return IoResult::Err(IoError::InvalidRegister);
+                // stub-out all other registers as well, since this is just a stub device
+                0
             }
         };
 
@@ -80,7 +80,7 @@ impl PciConfigSpace for Piix4UsbUhciStub {
             HeaderType00::DEVICE_VENDOR => {}
             _ => {
                 tracing::debug!(?offset, ?value, "unimplemented config space write");
-                return IoResult::Err(IoError::InvalidRegister);
+                // stub-out all other registers as well, since this is just a stub device
             }
         }
 

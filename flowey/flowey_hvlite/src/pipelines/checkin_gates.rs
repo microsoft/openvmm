@@ -22,13 +22,15 @@ use vmm_test_images::KnownTestArtifacts;
 
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {
-    /// Run on all PRs targeting the OpenVMM github repo
+    /// Run on all PRs targeting the OpenVMM GitHub repo.
     Pr,
-    /// Run on all commits that land in OpenVMM's `main` branch.
+    /// Run on all commits that land in a branch.
     ///
     /// The key difference between the CI and PR pipelines is whether things are
     /// being built in `release` mode.
     Ci,
+    /// Release variant of the `Pr` pipeline.
+    PrRelease,
 }
 
 /// A unified pipeline defining all checkin gates required to land a commit in
@@ -56,7 +58,7 @@ impl IntoPipeline for CheckinGatesCli {
         } = self;
 
         let release = match config {
-            PipelineConfig::Ci => true,
+            PipelineConfig::Ci | PipelineConfig::PrRelease => true,
             PipelineConfig::Pr => false,
         };
 
@@ -81,6 +83,17 @@ impl IntoPipeline for CheckinGatesCli {
                             ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("[flowey] OpenVMM PR");
+                }
+                PipelineConfig::PrRelease => {
+                    // This workflow is triggered when a specific label is added to a PR.
+                    pipeline
+                        .gh_set_pr_triggers(GhPrTriggers {
+                            branches,
+                            types: vec!["labeled".into()],
+                            auto_cancel: false,
+                            exclude_branches: vec![],
+                        })
+                        .gh_set_name("[flowey] OpenVMM Release PR");
                 }
             }
         }
@@ -110,7 +123,8 @@ impl IntoPipeline for CheckinGatesCli {
         )?;
 
         pipeline.inject_all_jobs_with(move |job| {
-            job.dep_on(&cfg_common_params)
+            let mut job = job
+                .dep_on(&cfg_common_params)
                 .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
                 .dep_on(
                     |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
@@ -124,7 +138,16 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_grant_permissions::<flowey_lib_common::gh_task_azure_login::Node>([(
                     GhPermission::IdToken,
                     GhPermissionValue::Write,
-                )])
+                )]);
+
+            // For the release pipeline, only run if the "release-ci-required" label is present and PR is not draft
+            if matches!(config, PipelineConfig::PrRelease) {
+                job = job.gh_dangerous_override_if(
+                    "contains(github.event.pull_request.labels.*.name, 'release-ci-required') && github.event.pull_request.draft == false",
+                );
+            }
+
+            job
         });
 
         let openhcl_musl_target = |arch: CommonArch| -> Triple {
@@ -165,95 +188,6 @@ impl IntoPipeline for CheckinGatesCli {
         // There's more info in the following discussion:
         // <https://github.com/orgs/community/discussions/12395>
         let mut all_jobs = Vec::new();
-
-        // emit mdbook guide build job
-        let (pub_guide, use_guide) = pipeline.new_artifact("guide");
-        let job = pipeline
-            .new_job(
-                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                FlowArch::X86_64,
-                "build mdbook guide",
-            )
-            .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-            ))
-            .dep_on(
-                |ctx| flowey_lib_hvlite::_jobs::build_and_publish_guide::Params {
-                    artifact_dir: ctx.publish_artifact(pub_guide),
-                    done: ctx.new_done_handle(),
-                },
-            )
-            .finish();
-
-        all_jobs.push(job);
-
-        // emit rustdoc jobs
-        let (pub_rustdoc_linux, use_rustdoc_linux) = pipeline.new_artifact("x64-linux-rustdoc");
-        let (pub_rustdoc_win, use_rustdoc_win) = pipeline.new_artifact("x64-windows-rustdoc");
-        for (target, platform, pub_rustdoc) in [
-            (
-                CommonTriple::X86_64_WINDOWS_MSVC,
-                FlowPlatform::Windows,
-                pub_rustdoc_win,
-            ),
-            (
-                CommonTriple::X86_64_LINUX_GNU,
-                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                pub_rustdoc_linux,
-            ),
-        ] {
-            let job = pipeline
-                .new_job(
-                    platform,
-                    FlowArch::X86_64,
-                    format!("build and check docs [x64-{platform}]"),
-                )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-                    platform,
-                ))
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_rustdoc::Params {
-                        target_triple: target.as_triple(),
-                        artifact_dir: ctx.publish_artifact(pub_rustdoc),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .finish();
-
-            all_jobs.push(job);
-        }
-
-        // emit consolidated gh pages publish job
-        if matches!(config, PipelineConfig::Ci) {
-            let artifact_dir = if matches!(backend_hint, PipelineBackendHint::Local) {
-                let (publish, _use) = pipeline.new_artifact("gh-pages");
-                Some(publish)
-            } else {
-                None
-            };
-
-            let job = pipeline
-                .new_job(FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu), FlowArch::X86_64, "publish openvmm.dev")
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Params {
-                        rustdoc_linux: ctx.use_artifact(&use_rustdoc_linux),
-                        rustdoc_windows: ctx.use_artifact(&use_rustdoc_win),
-                        guide: ctx.use_artifact(&use_guide),
-                        artifact_dir: artifact_dir.map(|x| ctx.publish_artifact(x)),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .gh_grant_permissions::<flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Node>([
-                    (GhPermission::IdToken, GhPermissionValue::Write),
-                    (GhPermission::Pages, GhPermissionValue::Write),
-                ])
-                .finish();
-
-            all_jobs.push(job);
-        }
 
         // emit xtask fmt job
         {
@@ -389,7 +323,7 @@ impl IntoPipeline for CheckinGatesCli {
                             arch,
                             platform: CommonPlatform::WindowsMsvc,
                         },
-                        profile: CommonProfile::from_release(release),
+                        profile: CommonProfile::from_release(release).into(),
                     },
                     igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
                 })
@@ -400,15 +334,6 @@ impl IntoPipeline for CheckinGatesCli {
                     },
                     profile: CommonProfile::from_release(release),
                     ohcldiag_dev: ctx.publish_typed_artifact(pub_ohcldiag_dev),
-                })
-                .dep_on(|ctx| flowey_lib_hvlite::build_tmk_vmm::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    unstable_whp: true, // The ARM64 CI runner supports the unstable WHP interface
-                    profile: CommonProfile::from_release(release),
-                    tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
                 });
 
             all_jobs.push(job.finish());
@@ -450,6 +375,15 @@ impl IntoPipeline for CheckinGatesCli {
                     },
                     profile: CommonProfile::from_release(release),
                     pipette: ctx.publish_typed_artifact(pub_pipette_windows),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_tmk_vmm::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    unstable_whp: true, // The ARM64 CI runner supports the unstable WHP interface
+                    profile: CommonProfile::from_release(release),
+                    tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
                 });
 
             // Hang building the windows VMM tests off this big windows job.
@@ -575,7 +509,7 @@ impl IntoPipeline for CheckinGatesCli {
                             arch,
                             platform: CommonPlatform::LinuxGnu,
                         },
-                        profile: CommonProfile::from_release(release),
+                        profile: CommonProfile::from_release(release).into(),
                     },
                     igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
                 })
@@ -917,12 +851,18 @@ impl IntoPipeline for CheckinGatesCli {
             .clone()
             .finish()
             .map_err(|missing| {
-                anyhow::anyhow!("missing required windows-tdx vmm_tests artifact: {missing}")
+                anyhow::anyhow!("missing required windows-intel-tdx vmm_tests artifact: {missing}")
             })?;
         let vmm_tests_artifacts_windows_amd_x86 = vmm_tests_artifacts_windows_x86
+            .clone()
             .finish()
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd vmm_tests artifact: {missing}")
+            })?;
+        let vmm_tests_artifacts_windows_amd_snp_x86 = vmm_tests_artifacts_windows_x86
+            .finish()
+            .map_err(|missing| {
+                anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
             })?;
         let vmm_tests_artifacts_linux_x86 =
             vmm_tests_artifacts_linux_x86.finish().map_err(|missing| {
@@ -947,9 +887,10 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         // standard VM-based CI machines should be able to run all tests except
-        // those that require special hardware features (tdx) or need to be run
-        // on a baremetal host (hyper-v vbs doesn't seem to work nested)
-        let standard_filter = "all() & !test(tdx) & !(test(vbs) & test(hyperv))".to_string();
+        // those that require special hardware features (tdx/snp) or need to be
+        // run on a baremetal host (hyper-v vbs doesn't seem to work nested)
+        let standard_filter =
+            "all() & !test(tdx) & !test(snp) & !(test(vbs) & test(hyperv))".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
@@ -958,6 +899,9 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
             KnownTestArtifacts::VmgsWithBootEntry,
         ];
+
+        let cvm_filter = |arch| format!("test({arch}) + (test(vbs) & test(hyperv))");
+        let cvm_x64_test_artifacts = vec![KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd];
 
         for VmmTestJobParams {
             platform,
@@ -986,8 +930,8 @@ impl IntoPipeline for CheckinGatesCli {
                 label: "x64-windows-intel-tdx",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
-                nextest_filter_expr: "test(tdx) + (test(vbs) & test(hyperv))".to_string(),
-                test_artifacts: vec![KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd],
+                nextest_filter_expr: cvm_filter("tdx"),
+                test_artifacts: cvm_x64_test_artifacts.clone(),
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
@@ -998,6 +942,16 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 nextest_filter_expr: standard_filter.clone(),
                 test_artifacts: standard_x64_test_artifacts.clone(),
+            },
+            VmmTestJobParams {
+                platform: FlowPlatform::Windows,
+                arch: FlowArch::X86_64,
+                gh_pool: crate::pipelines_shared::gh_pools::windows_snp_self_hosted_baremetal(),
+                label: "x64-windows-amd-snp",
+                target: CommonTriple::X86_64_WINDOWS_MSVC,
+                resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_snp_x86,
+                nextest_filter_expr: cvm_filter("snp"),
+                test_artifacts: cvm_x64_test_artifacts,
             },
             VmmTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),

@@ -3,9 +3,11 @@
 
 //! A generic protobuf service for inspect.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 // Crates used by generated code. Reference them explicitly to ensure that
 // automated tools do not remove them.
-#![expect(missing_docs)]
 
 use mesh_rpc as _;
 use prost as _;

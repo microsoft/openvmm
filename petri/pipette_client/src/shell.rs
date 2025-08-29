@@ -27,7 +27,7 @@ use typed_path::Utf8WindowsEncoding;
 /// A stateful shell abstraction for interacting with the guest.
 ///
 /// This is modeled after `xshell::Shell`.
-pub struct Shell<'a, T: for<'enc> Utf8Encoding<'enc>> {
+pub struct Shell<'a, T: Utf8Encoding> {
     client: &'a PipetteClient,
     cwd: Utf8PathBuf<T>,
     env: HashMap<String, String>,
@@ -61,7 +61,7 @@ impl<'a> WindowsShell<'a> {
 
 impl<T> Shell<'_, T>
 where
-    for<'enc> T: Utf8Encoding<'enc>,
+    T: Utf8Encoding,
 {
     fn path(&self, path: impl AsRef<Utf8Path<T>>) -> Utf8PathBuf<T> {
         self.cwd.join(path)
@@ -99,7 +99,7 @@ where
 }
 
 /// A command builder.
-pub struct Cmd<'a, T: for<'enc> Utf8Encoding<'enc>> {
+pub struct Cmd<'a, T: Utf8Encoding> {
     shell: &'a Shell<'a, T>,
     prog: Utf8PathBuf<T>,
     args: Vec<String>,
@@ -116,7 +116,7 @@ enum EnvChange {
     Clear,
 }
 
-impl<'a, T: for<'enc> Utf8Encoding<'enc>> Cmd<'a, T> {
+impl<'a, T: Utf8Encoding> Cmd<'a, T> {
     /// Adds an argument to the command.
     pub fn arg<P: AsRef<str>>(mut self, arg: P) -> Self {
         self.args.push(arg.as_ref().to_owned());

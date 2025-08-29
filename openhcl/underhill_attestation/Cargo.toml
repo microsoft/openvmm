@@ -15,6 +15,7 @@ openssl-vendored = ["openssl/vendored"]
 guest_emulation_transport.workspace = true
 openhcl_attestation_protocol.workspace = true
 vmgs = { workspace = true, features = ["encryption_ossl"] }
+get_protocol.workspace = true
 guid.workspace = true
 mesh.workspace = true
 openssl_kdf.workspace = true
@@ -37,7 +38,6 @@ zerocopy.workspace = true
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 disklayer_ram.workspace = true
 disk_backend.workspace = true
-get_protocol.workspace = true
 vmgs_format.workspace = true
 
 [lints]

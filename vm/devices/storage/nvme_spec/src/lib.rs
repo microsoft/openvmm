@@ -7,12 +7,14 @@
 //! PCIe transport 1.0c: <https://nvmexpress.org/wp-content/uploads/NVM-Express-PCIe-Transport-Specification-1.0c-2022.10.03-Ratified.pdf>
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 pub mod nvm;
 
 use bitfield_struct::bitfield;
 use inspect::Inspect;
+use mesh::MeshPayload;
 use open_enum::open_enum;
 use storage_string::AsciiString;
 use zerocopy::FromBytes;
@@ -128,7 +130,9 @@ pub struct Aqa {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+#[derive(
+    Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect, MeshPayload,
+)]
 pub struct Command {
     pub cdw0: Cdw0,
     pub nsid: u32,
@@ -147,7 +151,7 @@ pub struct Command {
 
 #[derive(Inspect)]
 #[bitfield(u32)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
 pub struct Cdw0 {
     pub opcode: u8,
     #[bits(2)]
@@ -208,7 +212,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Completion {
     pub dw0: u32,
     pub dw1: u32,

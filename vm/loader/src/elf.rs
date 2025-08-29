@@ -250,9 +250,11 @@ where
         let page_base = mem_offset / HV_PAGE_SIZE;
         let page_count =
             ((mem_offset & page_mask) + phdr.p_memsz.get(LE) + page_mask) / HV_PAGE_SIZE;
-        importer
-            .import_pages(page_base, page_count, tag, acceptance, &v)
-            .map_err(Error::ImportPages)?;
+        if page_count > 0 {
+            importer
+                .import_pages(page_base, page_count, tag, acceptance, &v)
+                .map_err(Error::ImportPages)?;
+        }
     }
 
     Ok(LoadInfo {

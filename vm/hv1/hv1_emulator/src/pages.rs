@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use guestmem::GuestMemory;
+use crate::VtlProtectAccess;
 use guestmem::LockedPages;
 use guestmem::Page;
+use hvdef::HvMapGpaFlags;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;
 use std::ops::Deref;
@@ -11,23 +12,13 @@ use std::sync::atomic::AtomicU8;
 
 pub(crate) struct LockedPage {
     page: LockedPages,
+    pub gpn: u64,
 }
 
 impl LockedPage {
-    pub fn new(guest_memory: &GuestMemory, gpn: u64) -> Result<Self, guestmem::GuestMemoryError> {
-        let page = match guest_memory.lock_gpns(false, &[gpn]) {
-            Ok(it) => it,
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    gpn,
-                    err = &err as &dyn std::error::Error,
-                    "Failed to lock page"
-                );
-                return Err(err);
-            }
-        };
+    pub fn new(gpn: u64, page: LockedPages) -> Self {
         assert!(page.pages().len() == 1);
-        Ok(Self { page })
+        Self { page, gpn }
     }
 }
 
@@ -51,19 +42,36 @@ pub(crate) enum OverlayPage {
 impl OverlayPage {
     pub fn remap(
         &mut self,
-        guest_memory: &GuestMemory,
-        gpn: u64,
-    ) -> Result<(), guestmem::GuestMemoryError> {
-        let new_page = LockedPage::new(guest_memory, gpn)?;
+        new_gpn: u64,
+        prot_access: &mut dyn VtlProtectAccess,
+    ) -> Result<(), hvdef::HvError> {
+        let new_page = prot_access.check_modify_and_lock_overlay_page(
+            new_gpn,
+            HvMapGpaFlags::new().with_readable(true).with_writable(true),
+            None,
+        )?;
+        let new_page = LockedPage::new(new_gpn, new_page);
         new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; 4096]>());
+
+        self.unlock_prev_gpn(prot_access);
+
         *self = OverlayPage::Mapped(new_page);
         Ok(())
     }
 
-    pub fn unmap(&mut self) {
+    pub fn unmap(&mut self, prot_access: &mut dyn VtlProtectAccess) {
         let new_page = Box::new(std::array::from_fn(|_| AtomicU8::new(0)));
         new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; 4096]>());
+
+        self.unlock_prev_gpn(prot_access);
+
         *self = OverlayPage::Local(new_page);
+    }
+
+    fn unlock_prev_gpn(&mut self, prot_access: &mut dyn VtlProtectAccess) {
+        if let Self::Mapped(page) = self {
+            prot_access.unlock_overlay_page(page.gpn).unwrap();
+        }
     }
 }
 

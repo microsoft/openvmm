@@ -9,6 +9,7 @@ use crate::storage::VmgsStorage;
 use anyhow::Context;
 #[cfg(with_encryption)]
 use anyhow::anyhow;
+use cvm_tracing::CVM_ALLOWED;
 use disk_backend::Disk;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
@@ -44,6 +45,8 @@ pub struct VmgsFileInfo {
     pub allocated_bytes: u64,
     /// Number of valid bytes in the file.
     pub valid_bytes: u64,
+    /// Whether this file is encrypted.
+    pub encrypted: bool,
 }
 
 // Aggregates fully validated data from the FILE_TABLE and EXTENDED_FILE_TABLE
@@ -138,13 +141,47 @@ mod vmgs_inspect {
 }
 
 impl Vmgs {
+    /// Attempt to open the VMGS file, optionally formatting if it is
+    /// empty or corrupted.
+    pub async fn try_open(
+        disk: Disk,
+        logger: Option<Arc<dyn VmgsLogger>>,
+        format_on_empty: bool,
+        format_on_failure: bool,
+    ) -> Result<Self, Error> {
+        match Vmgs::open(disk.clone(), logger.clone()).await {
+            Ok(vmgs) => Ok(vmgs),
+            Err(Error::EmptyFile) if format_on_empty => {
+                tracing::info!(CVM_ALLOWED, "empty vmgs file, formatting");
+                Vmgs::format_new(disk, logger).await
+            }
+            Err(err) if format_on_failure => {
+                tracing::warn!(CVM_ALLOWED, ?err, "vmgs initialization error, reformatting");
+                Vmgs::format_new(disk, logger).await
+            }
+            Err(err) => {
+                let event_log_id = match err {
+                    // The data store format is invalid or not supported.
+                    Error::InvalidFormat(_) => VmgsLogEvent::InvalidFormat,
+                    // The data store is corrupted.
+                    Error::CorruptFormat(_) => VmgsLogEvent::CorruptFormat,
+                    // All other errors
+                    _ => VmgsLogEvent::InitFailed,
+                };
+
+                logger.log_event_fatal(event_log_id).await;
+                Err(err)
+            }
+        }
+    }
+
     /// Format and open a new VMGS file.
     pub async fn format_new(
         disk: Disk,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
         let mut storage = VmgsStorage::new(disk);
-        tracing::debug!("formatting and initializing VMGS datastore");
+        tracing::debug!(CVM_ALLOWED, "formatting and initializing VMGS datastore");
         // Errors from validate_file are fatal, as they involve invalid device metadata
         Vmgs::validate_file(&storage)?;
 
@@ -155,7 +192,7 @@ impl Vmgs {
 
     /// Open the VMGS file.
     pub async fn open(disk: Disk, logger: Option<Arc<dyn VmgsLogger>>) -> Result<Self, Error> {
-        tracing::debug!("opening VMGS datastore");
+        tracing::debug!(CVM_ALLOWED, "opening VMGS datastore");
         let mut storage = VmgsStorage::new(disk);
         // Errors from validate_file are fatal, as they involve invalid device metadata
         Vmgs::validate_file(&storage)?;
@@ -269,7 +306,7 @@ impl Vmgs {
 
     /// Formats the backing store with initial metadata, and sets active header.
     async fn format(storage: &mut VmgsStorage, version: u32) -> Result<VmgsHeader, Error> {
-        tracing::info!("Formatting new VMGS file.");
+        tracing::info!(CVM_ALLOWED, "Formatting new VMGS file.");
         let aligned_header_size = round_up_count(size_of::<VmgsHeader>(), storage.sector_size());
 
         // The second header is initialized as invalid (all zeros).
@@ -377,6 +414,7 @@ impl Vmgs {
         Ok(VmgsFileInfo {
             allocated_bytes: block_count_to_byte_count(fcb.allocated_blocks.get()),
             valid_bytes: fcb.valid_bytes,
+            encrypted: fcb.attributes.encrypted() || fcb.attributes.authenticated(),
         })
     }
 
@@ -771,7 +809,10 @@ impl Vmgs {
             .unwrap_or(false)
         {
             if overwrite_encrypted {
-                tracing::warn!("overwriting encrypted file with plaintext data!")
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    "overwriting encrypted file with plaintext data!"
+                )
             } else {
                 return Err(Error::OverwriteEncrypted);
             }
@@ -925,7 +966,10 @@ impl Vmgs {
             return Err(Error::WriteFileBlocks);
         }
         if self.encryption_algorithm == EncryptionAlgorithm::NONE {
-            tracing::trace!("VMGS file not encrypted, performing plaintext write");
+            tracing::trace!(
+                CVM_ALLOWED,
+                "VMGS file not encrypted, performing plaintext write"
+            );
             return self.write_file(file_id, buf).await;
         }
 
@@ -1080,10 +1124,12 @@ impl Vmgs {
             Some(idx) => idx,
             None => {
                 tracing::error!(
+                    CVM_ALLOWED,
                     error = &errs[0].take().unwrap() as &dyn std::error::Error,
                     "first index failed to decrypt",
                 );
                 tracing::error!(
+                    CVM_ALLOWED,
                     error = &errs[1].take().unwrap() as &dyn std::error::Error,
                     "second index failed to decrypt",
                 );
@@ -1633,8 +1679,9 @@ fn encrypt_metadata_key(
 
         if encrypted_metadata_key.len() != metadata_key.len() {
             return Err(Error::Other(anyhow!(format!(
-                "encrypted metadata key length ({:?}) doesn't match metadata key length ({:?})",
-                encrypted_metadata_key, metadata_key
+                "encrypted metadata key length ({}) doesn't match metadata key length ({})",
+                encrypted_metadata_key.len(),
+                metadata_key.len()
             ))));
         }
         Ok(encrypted_metadata_key)
@@ -1657,8 +1704,9 @@ fn decrypt_metadata_key(
             crate::encrypt::vmgs_decrypt(datastore_key, nonce, metadata_key, authentication_tag)?;
         if decrypted_metadata_key.len() != metadata_key.len() {
             return Err(Error::Other(anyhow!(format!(
-                "decrypted metadata key length ({:?}) doesn't match metadata key length ({:?})",
-                decrypted_metadata_key, metadata_key
+                "decrypted metadata key length ({}) doesn't match metadata key length ({})",
+                decrypted_metadata_key.len(),
+                metadata_key.len()
             ))));
         }
 
@@ -2569,7 +2617,7 @@ mod tests {
         let fcb = vmgs.fcbs.get_mut(&FileId::BIOS_NVRAM).unwrap();
 
         // Manipulate the nonce and expect the read to fail.
-        fcb.nonce[0] += 1;
+        fcb.nonce[0] ^= 1;
 
         // read and expect to fail
         let result = vmgs.read_file(FileId::BIOS_NVRAM).await;

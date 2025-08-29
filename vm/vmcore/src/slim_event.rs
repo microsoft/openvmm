@@ -3,6 +3,8 @@
 
 //! Event support.
 
+#![forbid(unsafe_code)]
+
 use futures::Stream;
 use parking_lot::Mutex;
 use std::future::Future;

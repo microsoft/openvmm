@@ -30,6 +30,7 @@ use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::sync::Arc;
+use tracing::Instrument;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
@@ -77,7 +78,9 @@ impl<T: DeviceBacking> ManaDevice<T> {
         num_vps: u32,
         max_queues_per_vport: u16,
     ) -> anyhow::Result<Self> {
-        let mut gdma = GdmaDriver::new(driver, device, num_vps).await?;
+        let mut gdma = GdmaDriver::new(driver, device, num_vps)
+            .instrument(tracing::info_span!("new_gdma_driver"))
+            .await?;
         gdma.test_eq().await?;
 
         gdma.verify_vf_driver_version().await?;
@@ -276,8 +279,7 @@ impl VportState {
 
     /// Get current filter setting if known.
     pub fn get_direction_to_vtl0(&self) -> Option<bool> {
-        let direction_to_vtl0 = *self.direction_to_vtl0.lock();
-        direction_to_vtl0
+        *self.direction_to_vtl0.lock()
     }
 }
 

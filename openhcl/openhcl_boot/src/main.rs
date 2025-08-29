@@ -15,6 +15,7 @@ mod cmdline;
 mod dt;
 mod host_params;
 mod hypercall;
+mod memory;
 mod rt;
 mod sidecar;
 mod single_threaded;
@@ -27,10 +28,12 @@ use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
+use crate::memory::AddressSpaceManager;
+use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
-use boot_logger::LoggerType;
+use cmdline::BootCommandLineOptions;
 use core::fmt::Write;
 use dt::BootTimes;
 use dt::write_dt;
@@ -42,15 +45,12 @@ use hvdef::Vtl;
 use loader_defs::linux::SETUP_DTB;
 use loader_defs::linux::setup_data;
 use loader_defs::shim::ShimParamsRaw;
-use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
-use memory_range::merge_adjacent_ranges;
 use memory_range::walk_ranges;
 use minimal_rt::enlightened_panic::enable_enlightened_panic;
 use sidecar::SidecarConfig;
 use sidecar_defs::SidecarOutput;
 use sidecar_defs::SidecarParams;
-use single_threaded::OffStackRef;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -72,7 +72,9 @@ fn build_kernel_command_line(
     cmdline: &mut ArrayString<COMMAND_LINE_SIZE>,
     partition_info: &PartitionInfo,
     can_trust_host: bool,
+    is_confidential_debug: bool,
     sidecar: Option<&SidecarConfig<'_>>,
+    vtl2_pool_supported: bool,
 ) -> Result<(), CommandLineTooLong> {
     // For reference:
     // https://www.kernel.org/doc/html/v5.15/admin-guide/kernel-parameters.html
@@ -253,9 +255,17 @@ fn build_kernel_command_line(
         )?;
     }
 
+    if is_confidential_debug {
+        write!(
+            cmdline,
+            "{}=1 ",
+            underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
+        )?;
+    }
+
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive && !partition_info.vtl2_pool_memory.is_empty() {
+    if partition_info.nvme_keepalive && vtl2_pool_supported {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 
@@ -263,25 +273,20 @@ fn build_kernel_command_line(
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
     }
 
+    // HACK: Set the vmbus connection id via kernel commandline.
+    //
+    // This code will be removed when the kernel supports setting connection id
+    // via device tree.
+    write!(
+        cmdline,
+        "hv_vmbus.message_connection_id=0x{:x} ",
+        partition_info.vmbus_vtl2.connection_id
+    )?;
+
     // If we're isolated we can't trust the host-provided cmdline
     if can_trust_host {
-        let old_cmdline = &partition_info.cmdline;
-
-        // HACK: See if we should set the vmbus connection id via kernel
-        // commandline. It may already be set, and we don't want to set it again.
-        //
-        // This code will be removed when the kernel supports setting connection id
-        // via device tree.
-        if !old_cmdline.contains("hv_vmbus.message_connection_id=") {
-            write!(
-                cmdline,
-                "hv_vmbus.message_connection_id=0x{:x} ",
-                partition_info.vmbus_vtl2.connection_id
-            )?;
-        }
-
         // Prepend the computed parameters to the original command line.
-        cmdline.write_str(old_cmdline)?;
+        cmdline.write_str(&partition_info.cmdline)?;
     }
 
     Ok(())
@@ -322,86 +327,10 @@ fn shim_parameters(shim_params_raw_offset: isize) -> ShimParams {
     ShimParams::new(shim_base as u64, raw_shim_params)
 }
 
-/// The maximum number of reserved memory ranges that we might use.
-/// See ReservedMemoryType definition for details.
-pub const MAX_RESERVED_MEM_RANGES: usize = 5 + sidecar_defs::MAX_NODES;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReservedMemoryType {
-    /// VTL2 parameter regions (could be up to 2).
-    Vtl2Config,
-    /// Reserved memory that should not be used by the kernel or usermode. There
-    /// should only be one.
-    Vtl2Reserved,
-    /// Sidecar image. There should only be one.
-    SidecarImage,
-    /// A reserved range per sidecar node.
-    SidecarNode,
-    /// Persistent VTL2 memory used for page allocations in usermode. This
-    /// memory is persisted, both location and contents, across servicing.
-    /// Today, we only support a single range.
-    Vtl2GpaPool,
-}
-
-/// Construct a slice representing the reserved memory ranges to be reported to
-/// VTL2.
-fn reserved_memory_regions(
-    partition_info: &PartitionInfo,
-    sidecar: Option<&SidecarConfig<'_>>,
-) -> OffStackRef<'static, impl AsRef<[(MemoryRange, ReservedMemoryType)]> + use<>> {
-    let mut reserved = off_stack!(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_MEM_RANGES>, ArrayVec::new_const());
-    reserved.clear();
-    reserved.extend(
-        partition_info
-            .vtl2_config_regions()
-            .map(|r| (r, ReservedMemoryType::Vtl2Config)),
-    );
-    if let Some(sidecar) = sidecar {
-        reserved.push((sidecar.image, ReservedMemoryType::SidecarImage));
-        reserved.extend(sidecar.node_params.iter().map(|x| {
-            (
-                MemoryRange::new(x.memory_base..x.memory_base + x.memory_size),
-                ReservedMemoryType::SidecarNode,
-            )
-        }));
-    }
-
-    // Add the VTL2 reserved region, if it exists.
-    if !partition_info.vtl2_reserved_region.is_empty() {
-        reserved.push((
-            partition_info.vtl2_reserved_region,
-            ReservedMemoryType::Vtl2Reserved,
-        ));
-    }
-
-    // Add any VTL2 private pool.
-    if partition_info.vtl2_pool_memory != MemoryRange::EMPTY {
-        reserved.push((
-            partition_info.vtl2_pool_memory,
-            ReservedMemoryType::Vtl2GpaPool,
-        ));
-    }
-
-    reserved
-        .as_mut()
-        .sort_unstable_by_key(|(r, _typ)| r.start());
-
-    // Now flatten the ranges to avoid having more reserved ranges than
-    // necessary.
-    //
-    // You can also imagine doing this with `dedup_by`, but `ArrayVec` doesn't
-    // implement that.
-    let mut flattened = off_stack!(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_MEM_RANGES>, ArrayVec::new_const());
-    flattened.clear();
-    flattened.extend(merge_adjacent_ranges(reserved.iter().copied()));
-    flattened
-}
-
 #[cfg_attr(not(target_arch = "x86_64"), expect(dead_code))]
 mod x86_boot {
     use crate::PageAlign;
-    use crate::ReservedMemoryType;
-    use crate::host_params::PartitionInfo;
+    use crate::memory::AddressSpaceManager;
     use crate::single_threaded::OffStackRef;
     use crate::single_threaded::off_stack;
     use crate::zeroed;
@@ -414,9 +343,8 @@ mod x86_boot {
     use loader_defs::linux::boot_params;
     use loader_defs::linux::e820entry;
     use loader_defs::linux::setup_data;
+    use loader_defs::shim::MemoryVtlType;
     use memory_range::MemoryRange;
-    use memory_range::RangeWalkResult;
-    use memory_range::walk_ranges;
     use zerocopy::FromZeros;
     use zerocopy::Immutable;
     use zerocopy::KnownLayout;
@@ -443,8 +371,6 @@ mod x86_boot {
 
     #[derive(Debug)]
     pub enum BuildE820MapError {
-        /// Parameter region not fully covered by VTL2 ram.
-        ReservedRegionNotCovered,
         /// Out of e820 entries.
         OutOfE820Entries,
     }
@@ -453,8 +379,7 @@ mod x86_boot {
     pub fn build_e820_map(
         boot_params: &mut boot_params,
         ext: &mut E820Ext,
-        partition_info: &PartitionInfo,
-        reserved: &[(MemoryRange, ReservedMemoryType)],
+        address_space: &AddressSpaceManager,
     ) -> Result<bool, BuildE820MapError> {
         boot_params.e820_entries = 0;
         let mut entries = boot_params
@@ -463,28 +388,31 @@ mod x86_boot {
             .chain(ext.entries.iter_mut());
 
         let mut n = 0;
-        for (range, r) in walk_ranges(
-            partition_info.vtl2_ram.iter().map(|e| (e.range, ())),
-            reserved.iter().map(|&(r, _)| (r, ())),
-        ) {
-            match r {
-                RangeWalkResult::Neither => {}
-                RangeWalkResult::Left(_) => {
+        for (range, typ) in address_space.vtl2_ranges() {
+            match typ {
+                MemoryVtlType::VTL2_RAM => {
                     add_e820_entry(entries.next(), range, E820_RAM)?;
                     n += 1;
                 }
-                RangeWalkResult::Right(_) => {
-                    return Err(BuildE820MapError::ReservedRegionNotCovered);
-                }
-                RangeWalkResult::Both(_, _) => {
+                MemoryVtlType::VTL2_CONFIG
+                | MemoryVtlType::VTL2_SIDECAR_IMAGE
+                | MemoryVtlType::VTL2_SIDECAR_NODE
+                | MemoryVtlType::VTL2_RESERVED
+                | MemoryVtlType::VTL2_GPA_POOL
+                | MemoryVtlType::VTL2_TDX_PAGE_TABLES => {
                     add_e820_entry(entries.next(), range, E820_RESERVED)?;
                     n += 1;
+                }
+
+                _ => {
+                    panic!("unexpected vtl2 ram type {typ:?} for range {range:#?}");
                 }
             }
         }
 
         let base = n.min(boot_params.e820_map.len());
         boot_params.e820_entries = base as u8;
+
         if base < n {
             ext.header.len = ((n - base) * size_of::<e820entry>()) as u32;
             Ok(true)
@@ -494,8 +422,7 @@ mod x86_boot {
     }
 
     pub fn build_boot_params(
-        partition_info: &PartitionInfo,
-        reserved_memory: &[(MemoryRange, ReservedMemoryType)],
+        address_space: &AddressSpaceManager,
         initrd: Range<u64>,
         cmdline: &str,
         setup_data_head: *const setup_data,
@@ -524,7 +451,7 @@ mod x86_boot {
 
         let e820_ext = OffStackRef::leak(off_stack!(E820Ext, zeroed()));
 
-        let used_ext = build_e820_map(boot_params, e820_ext, partition_info, reserved_memory)
+        let used_ext = build_e820_map(boot_params, e820_ext, address_space)
             .expect("building e820 map must succeed");
 
         if used_ext {
@@ -538,6 +465,7 @@ mod x86_boot {
         boot_params.ext_cmd_line_ptr = (cmd_line_addr >> 32) as u32;
 
         boot_params.hdr.setup_data = (setup_data_head as u64).into();
+
         boot_params_storage
     }
 }
@@ -582,6 +510,11 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
 
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
+    if p.isolation_type == IsolationType::None {
+        enable_enlightened_panic();
+    }
+
+    let boot_reftime = get_ref_time(p.isolation_type);
 
     // The support code for the fast hypercalls does not set
     // the Guest ID if it is not set yet as opposed to the slow
@@ -589,40 +522,44 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Thus the fast hypercalls will fail as the the Guest ID has
     // to be set first hence initialize hypercall support
     // explicitly.
-    //
-    // In the hardware-isolated case, the hypervisor cannot
-    // access the guest registers so the fast hypercalls and
-    // any other methods of passing data to/from the hypervisor
-    // via the CPU registers (e.g. CPUID, hypercall call code or
-    // status) do not work, and the `hvcall()` doesn't have
-    // provisions for the hardware-isolated case.
     if !p.isolation_type.is_hardware_isolated() {
         hvcall().initialize();
-        if p.isolation_type == IsolationType::None {
-            enable_enlightened_panic();
-        }
     }
 
-    // Enable early log output if requested in the static command line.
-    // Also check for confidential debug mode if we're isolated.
-    let static_options =
-        cmdline::parse_boot_command_line(p.command_line().command_line().unwrap_or(""));
-    if let Some(typ) = static_options.logger {
-        boot_logger_init(p.isolation_type, typ);
-        log!("openhcl_boot: early debugging enabled");
+    let mut static_options = BootCommandLineOptions::new();
+    if let Some(cmdline) = p.command_line().command_line() {
+        static_options.parse(cmdline);
     }
 
-    let can_trust_host =
-        p.isolation_type == IsolationType::None || static_options.confidential_debug;
-
-    let boot_reftime = get_ref_time(p.isolation_type);
+    let static_confidential_debug = static_options.confidential_debug;
+    let can_trust_host = p.isolation_type == IsolationType::None || static_confidential_debug;
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
-    let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
-        Ok(Some(val)) => val,
-        Ok(None) => panic!("host did not provide a device tree"),
+    let address_space = OffStackRef::leak(off_stack!(
+        AddressSpaceManager,
+        AddressSpaceManager::new_const()
+    ));
+    let partition_info = match PartitionInfo::read_from_dt(
+        &p,
+        &mut dt_storage,
+        address_space,
+        static_options,
+        can_trust_host,
+    ) {
+        Ok(val) => val,
         Err(e) => panic!("unable to read device tree params {}", e),
     };
+
+    // Enable logging ASAP. This is fine even when isolated, as we don't have
+    // any access to secrets in the boot shim.
+    boot_logger_init(p.isolation_type, partition_info.com3_serial_available);
+    log!("openhcl_boot: logging enabled");
+
+    // Confidential debug will show up in boot_options only if included in the
+    // static command line, or if can_trust_host is true (so the dynamic command
+    // line has been parsed).
+    let is_confidential_debug =
+        static_confidential_debug || partition_info.boot_options.confidential_debug;
 
     // Fill out the non-devicetree derived parts of PartitionInfo.
     if !p.isolation_type.is_hardware_isolated()
@@ -654,20 +591,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         partition_info.vtl0_alias_map = None;
     }
 
-    if can_trust_host {
-        // Enable late log output if requested in the dynamic command line.
-        // Confidential debug is only allowed in the static command line.
-        let dynamic_options = cmdline::parse_boot_command_line(&partition_info.cmdline);
-        if let Some(typ) = dynamic_options.logger {
-            boot_logger_init(p.isolation_type, typ);
-        } else if partition_info.com3_serial_available && cfg!(target_arch = "x86_64") {
-            // If COM3 is available and we can trust the host, enable log output even
-            // if it wasn't otherwise requested.
-            boot_logger_init(p.isolation_type, LoggerType::Serial);
-        }
-    }
-
-    log!("openhcl_boot: entered shim_main");
+    // Rebind partition_info as no longer mutable.
+    let partition_info: &PartitionInfo = partition_info;
 
     if partition_info.cpus.is_empty() {
         panic!("no cpus");
@@ -675,8 +600,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_vp(partition_info);
     setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_vp(partition_info);
+
     verify_imported_regions_hash(&p);
 
     let mut sidecar_params = off_stack!(PageAlign<SidecarParams>, zeroed());
@@ -684,9 +610,13 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let sidecar = sidecar::start_sidecar(
         &p,
         partition_info,
+        address_space,
         &mut sidecar_params.0,
         &mut sidecar_output.0,
     );
+
+    // Rebind address_space as no longer mutable.
+    let address_space: &AddressSpaceManager = address_space;
 
     let mut cmdline = off_stack!(ArrayString<COMMAND_LINE_SIZE>, ArrayString::new_const());
     build_kernel_command_line(
@@ -694,7 +624,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &mut cmdline,
         partition_info,
         can_trust_host,
+        is_confidential_debug,
         sidecar.as_ref(),
+        address_space.has_vtl2_pool(),
     )
     .unwrap();
 
@@ -722,7 +654,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         setup_data_tail = &mut cc_data.header;
     }
 
-    let reserved_memory = reserved_memory_regions(partition_info, sidecar.as_ref());
     let initrd = p.initrd_base..p.initrd_base + p.initrd_size;
 
     // Validate the initrd crc matches what was put at file generation time.
@@ -734,8 +665,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     #[cfg(target_arch = "x86_64")]
     let boot_params = x86_boot::build_boot_params(
-        partition_info,
-        reserved_memory.as_ref(),
+        address_space,
         initrd.clone(),
         &cmdline,
         setup_data_head,
@@ -773,7 +703,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     write_dt(
         &mut fdt.data,
         partition_info,
-        reserved_memory.as_ref(),
+        address_space,
         p.imported_regions().map(|r| {
             // Discard if the range was previously pending - the bootloader has
             // accepted all pending ranges.
@@ -787,6 +717,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         sidecar.as_ref(),
         boot_times,
+        p.isolation_type,
     )
     .unwrap();
 
@@ -890,12 +821,12 @@ fn main() {
 mod test {
     use super::x86_boot::E820Ext;
     use super::x86_boot::build_e820_map;
-    use crate::ReservedMemoryType;
+    use crate::cmdline::BootCommandLineOptions;
     use crate::dt::write_dt;
     use crate::host_params::MAX_CPU_COUNT;
     use crate::host_params::PartitionInfo;
     use crate::host_params::shim_params::IsolationType;
-    use crate::reserved_memory_regions;
+    use crate::memory::AddressSpaceManager;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
@@ -908,8 +839,7 @@ mod test {
     use loader_defs::linux::boot_params;
     use loader_defs::linux::e820entry;
     use memory_range::MemoryRange;
-    use memory_range::RangeWalkResult;
-    use memory_range::walk_ranges;
+    use memory_range::subtract_ranges;
     use zerocopy::FromZeros;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB
@@ -932,11 +862,6 @@ mod test {
 
         PartitionInfo {
             vtl2_ram: ArrayVec::new(),
-            vtl2_full_config_region: MemoryRange::EMPTY,
-            vtl2_config_region_reclaim: MemoryRange::EMPTY,
-            vtl2_reserved_region: MemoryRange::EMPTY,
-            vtl2_pool_memory: MemoryRange::EMPTY,
-            vtl2_used_ranges: ArrayVec::new(),
             partition_ram: ArrayVec::new(),
             isolation: IsolationType::None,
             bsp_reg: cpus[0].reg as u32,
@@ -952,10 +877,12 @@ mod test {
             },
             com3_serial_available: false,
             gic: None,
+            pmu_gsiv: None,
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            boot_options: BootCommandLineOptions::new(),
         }
     }
 
@@ -972,12 +899,13 @@ mod test {
         write_dt(
             &mut buf,
             &new_partition_info(MAX_CPUS),
-            &[],
+            &AddressSpaceManager::new_const(),
             [],
             0..0,
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
     }
@@ -1045,12 +973,13 @@ mod test {
         write_dt(
             &mut buf,
             &new_partition_info(MAX_CPUS),
-            &[],
+            &AddressSpaceManager::new_const(),
             [],
             0..0,
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
@@ -1073,12 +1002,13 @@ mod test {
         write_dt(
             &mut buf,
             &new_partition_info(MAX_CPUS),
-            &[],
+            &AddressSpaceManager::new_const(),
             [],
             0..0,
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
@@ -1093,29 +1023,33 @@ mod test {
         assert!(success);
     }
 
-    fn partition_info_ram_ranges(
-        ram: &[Range<u64>],
+    fn new_address_space_manager(
+        ram: &[MemoryRange],
+        bootshim_used: MemoryRange,
         parameter_range: MemoryRange,
-        reclaim: Option<Range<u64>>,
-    ) -> PartitionInfo {
-        let mut info = PartitionInfo::new();
-
-        info.vtl2_ram = ram
+        reclaim: Option<MemoryRange>,
+    ) -> AddressSpaceManager {
+        let ram = ram
             .iter()
-            .map(|r| MemoryEntry {
-                range: MemoryRange::try_new(r.clone()).unwrap(),
+            .cloned()
+            .map(|range| MemoryEntry {
+                range,
                 mem_type: MemoryMapEntryType::VTL2_PROTECTABLE,
                 vnode: 0,
             })
-            .collect();
-
-        info.vtl2_full_config_region = parameter_range;
-
-        info.vtl2_config_region_reclaim = reclaim
-            .map(|r| MemoryRange::try_new(r).unwrap())
-            .unwrap_or(MemoryRange::EMPTY);
-
-        info
+            .collect::<Vec<_>>();
+        let mut address_space = AddressSpaceManager::new_const();
+        address_space
+            .init(
+                &ram,
+                bootshim_used,
+                subtract_ranges([parameter_range], reclaim),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        address_space
     }
 
     fn check_e820(boot_params: &boot_params, ext: &E820Ext, expected: &[(Range<u64>, u32)]) {
@@ -1146,19 +1080,16 @@ mod test {
         // memmap with no param reclaim
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
+        let bootshim_used = MemoryRange::try_new(ONE_MB..3 * ONE_MB).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..3 * ONE_MB).unwrap();
-        let partition_info =
-            partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
-
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_ok()
+        let address_space = new_address_space_manager(
+            &[MemoryRange::new(ONE_MB..4 * ONE_MB)],
+            bootshim_used,
+            parameter_range,
+            None,
         );
+
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
 
         check_e820(
             &boot_params,
@@ -1173,22 +1104,17 @@ mod test {
         // memmap with reclaim
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
+        let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
-        let partition_info = partition_info_ram_ranges(
-            &[ONE_MB..6 * ONE_MB],
+        let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
+        let address_space = new_address_space_manager(
+            &[MemoryRange::new(ONE_MB..6 * ONE_MB)],
+            bootshim_used,
             parameter_range,
-            Some(3 * ONE_MB..4 * ONE_MB),
+            Some(reclaim),
         );
 
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_ok()
-        );
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
 
         check_e820(
             &boot_params,
@@ -1205,22 +1131,20 @@ mod test {
         // two mem ranges
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
+        let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
-        let partition_info = partition_info_ram_ranges(
-            &[ONE_MB..4 * ONE_MB, 4 * ONE_MB..10 * ONE_MB],
+        let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
+        let address_space = new_address_space_manager(
+            &[
+                MemoryRange::new(ONE_MB..4 * ONE_MB),
+                MemoryRange::new(4 * ONE_MB..10 * ONE_MB),
+            ],
+            bootshim_used,
             parameter_range,
-            Some(3 * ONE_MB..4 * ONE_MB),
+            Some(reclaim),
         );
 
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_ok()
-        );
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
 
         check_e820(
             &boot_params,
@@ -1237,30 +1161,25 @@ mod test {
         // memmap in 1 mb chunks
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
+        let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
-        let partition_info = partition_info_ram_ranges(
+        let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
+        let address_space = new_address_space_manager(
             &[
-                ONE_MB..2 * ONE_MB,
-                2 * ONE_MB..3 * ONE_MB,
-                3 * ONE_MB..4 * ONE_MB,
-                4 * ONE_MB..5 * ONE_MB,
-                5 * ONE_MB..6 * ONE_MB,
-                6 * ONE_MB..7 * ONE_MB,
-                7 * ONE_MB..8 * ONE_MB,
+                MemoryRange::new(ONE_MB..2 * ONE_MB),
+                MemoryRange::new(2 * ONE_MB..3 * ONE_MB),
+                MemoryRange::new(3 * ONE_MB..4 * ONE_MB),
+                MemoryRange::new(4 * ONE_MB..5 * ONE_MB),
+                MemoryRange::new(5 * ONE_MB..6 * ONE_MB),
+                MemoryRange::new(6 * ONE_MB..7 * ONE_MB),
+                MemoryRange::new(7 * ONE_MB..8 * ONE_MB),
             ],
+            bootshim_used,
             parameter_range,
-            Some(3 * ONE_MB..4 * ONE_MB),
+            Some(reclaim),
         );
 
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_ok()
-        );
+        assert!(build_e820_map(&mut boot_params, &mut ext, &address_space).is_ok());
 
         check_e820(
             &boot_params,
@@ -1270,133 +1189,94 @@ mod test {
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
                 (4 * ONE_MB..5 * ONE_MB, E820_RESERVED),
-                (5 * ONE_MB..6 * ONE_MB, E820_RAM),
-                (6 * ONE_MB..7 * ONE_MB, E820_RAM),
-                (7 * ONE_MB..8 * ONE_MB, E820_RAM),
+                (5 * ONE_MB..8 * ONE_MB, E820_RAM),
             ],
         );
     }
 
-    #[test]
-    fn test_e820_param_not_covered() {
-        // parameter range not covered by ram at all
-        let mut boot_params: boot_params = FromZeros::new_zeroed();
-        let mut ext = FromZeros::new_zeroed();
-        let parameter_range = MemoryRange::try_new(5 * ONE_MB..6 * ONE_MB).unwrap();
-        let partition_info =
-            partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
-
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_err()
-        );
-
-        // parameter range start partial coverage
-        let mut boot_params: boot_params = FromZeros::new_zeroed();
-        let mut ext = FromZeros::new_zeroed();
-        let parameter_range = MemoryRange::try_new(3 * ONE_MB..6 * ONE_MB).unwrap();
-        let partition_info =
-            partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
-
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_err()
-        );
-
-        // parameter range end partial coverage
-        let mut boot_params: boot_params = FromZeros::new_zeroed();
-        let mut ext = FromZeros::new_zeroed();
-        let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
-        let partition_info =
-            partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
-
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_err()
-        );
-
-        // parameter range larger than ram
-        let mut boot_params: boot_params = FromZeros::new_zeroed();
-        let mut ext = FromZeros::new_zeroed();
-        let parameter_range = MemoryRange::try_new(2 * ONE_MB..8 * ONE_MB).unwrap();
-        let partition_info =
-            partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
-
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_err()
-        );
-
-        // ram has gap inside param range
-        let mut boot_params: boot_params = FromZeros::new_zeroed();
-        let mut ext = FromZeros::new_zeroed();
-        let parameter_range = MemoryRange::try_new(2 * ONE_MB..8 * ONE_MB).unwrap();
-        let partition_info = partition_info_ram_ranges(
-            &[ONE_MB..6 * ONE_MB, 7 * ONE_MB..10 * ONE_MB],
-            parameter_range,
-            None,
-        );
-
-        assert!(
-            build_e820_map(
-                &mut boot_params,
-                &mut ext,
-                &partition_info,
-                reserved_memory_regions(&partition_info, None).as_ref(),
-            )
-            .is_err()
-        );
-    }
-
+    // test e820 with spillover into ext
     #[test]
     fn test_e820_huge() {
-        // memmap with no param reclaim
+        use crate::memory::AllocationPolicy;
+        use crate::memory::AllocationType;
+
+        // Create 64 RAM ranges, then allocate 256 ranges to test spillover
+        // boot_params.e820_map has E820_MAX_ENTRIES_ZEROPAGE (128) entries
+        const E820_MAX_ENTRIES_ZEROPAGE: usize = 128;
+        const RAM_RANGES: usize = 64;
+        const TOTAL_ALLOCATIONS: usize = 256;
+
+        // Create 64 large RAM ranges (64MB each = 64 * 1MB pages per range)
+        let mut ranges = Vec::new();
+        for i in 0..RAM_RANGES {
+            let start = (i as u64) * 64 * ONE_MB;
+            let end = start + 64 * ONE_MB;
+            ranges.push(MemoryRange::new(start..end));
+        }
+
+        let bootshim_used = MemoryRange::try_new(0..ONE_MB).unwrap();
+        let parameter_range = MemoryRange::try_new(0..ONE_MB).unwrap();
+
+        let mut address_space = {
+            let ram = ranges
+                .iter()
+                .cloned()
+                .map(|range| MemoryEntry {
+                    range,
+                    mem_type: MemoryMapEntryType::VTL2_PROTECTABLE,
+                    vnode: 0,
+                })
+                .collect::<Vec<_>>();
+            let mut address_space = AddressSpaceManager::new_const();
+            address_space
+                .init(
+                    &ram,
+                    bootshim_used,
+                    subtract_ranges([parameter_range], None),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            address_space
+        };
+
+        for i in 0..TOTAL_ALLOCATIONS {
+            // Intersperse sidecar node allocations with gpa pool allocations,
+            // as otherwise the address space manager will collapse adjacent
+            // ranges of the same type.
+            let _allocated = address_space
+                .allocate(
+                    None,
+                    ONE_MB,
+                    if i % 2 == 0 {
+                        AllocationType::GpaPool
+                    } else {
+                        AllocationType::SidecarNode
+                    },
+                    AllocationPolicy::LowMemory,
+                )
+                .expect("should be able to allocate sidecar node");
+        }
+
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
-        let ram = MemoryRange::new(0..32 * ONE_MB);
-        let partition_info = partition_info_ram_ranges(&[ram.into()], MemoryRange::EMPTY, None);
-        let reserved = (0..256)
-            .map(|i| {
-                (
-                    MemoryRange::from_4k_gpn_range(i * 8 + 1..i * 8 + 3),
-                    ReservedMemoryType::Vtl2Config,
-                )
-            })
-            .collect::<Vec<_>>();
+        let total_ranges = address_space.vtl2_ranges().count();
 
-        build_e820_map(&mut boot_params, &mut ext, &partition_info, &reserved).unwrap();
+        let used_ext = build_e820_map(&mut boot_params, &mut ext, &address_space).unwrap();
 
-        assert!(ext.header.len > 0);
+        // Verify that we used the extension
+        assert!(used_ext, "should use extension when there are many ranges");
 
-        let expected = walk_ranges([(ram, ())], reserved.iter().map(|&(r, _)| (r, ())))
-            .flat_map(|(range, r)| match r {
-                RangeWalkResult::Neither => None,
-                RangeWalkResult::Left(_) => Some((range.into(), E820_RAM)),
-                RangeWalkResult::Right(_) => unreachable!(),
-                RangeWalkResult::Both(_, _) => Some((range.into(), E820_RESERVED)),
-            })
-            .collect::<Vec<_>>();
+        // Verify the standard e820_map is full
+        assert_eq!(boot_params.e820_entries, E820_MAX_ENTRIES_ZEROPAGE as u8);
 
-        check_e820(&boot_params, &ext, &expected);
+        // Verify the extension has the overflow entries
+        let ext_entries = (ext.header.len as usize) / size_of::<e820entry>();
+        assert_eq!(ext_entries, total_ranges - E820_MAX_ENTRIES_ZEROPAGE);
+
+        // Verify we have the expected number of total ranges
+        let total_e820_entries = boot_params.e820_entries as usize + ext_entries;
+        assert_eq!(total_e820_entries, total_ranges);
     }
 }

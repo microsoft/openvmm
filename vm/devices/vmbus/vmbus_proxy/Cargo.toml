@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 guestmem.workspace = true
+guid.workspace = true
 vmbus_core.workspace = true
 mesh.workspace = true
 pal.workspace = true
@@ -26,5 +27,6 @@ windows = { workspace = true, features = [
     "Win32_System_Ioctl"
 ] }
 zerocopy.workspace = true
+
 [lints]
 workspace = true

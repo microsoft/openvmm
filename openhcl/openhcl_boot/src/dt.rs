@@ -4,11 +4,11 @@
 //! Module used to write the device tree used by the OpenHCL kernel and
 //! usermode.
 
-use crate::MAX_RESERVED_MEM_RANGES;
-use crate::ReservedMemoryType;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
+use crate::memory::AddressSpaceManager;
+use crate::memory::MAX_RESERVED_MEM_RANGES;
 use crate::sidecar::SidecarConfig;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
@@ -26,6 +26,8 @@ use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
 use memory_range::walk_ranges;
+#[cfg(target_arch = "x86_64")]
+use x86defs::tdx::RESET_VECTOR_PAGE;
 
 /// AArch64 defines
 mod aarch64 {
@@ -44,10 +46,15 @@ mod aarch64 {
     pub const VMBUS_INTID: u32 = 2; // Note: the hardware INTID will be 16 + 2
     pub const TIMER_INTID: u32 = 4; // Note: the hardware INTID will be 16 + 4
 
+    /// The Hyper-V default PMU_GSIV value.
+    pub const PMU_GSIV: u32 = 0x17;
+    pub const PMU_GSIV_INT_INDEX: u32 = PMU_GSIV - 16;
+
     pub const GIC_PHANDLE: u32 = 1;
     pub const GIC_PPI: u32 = 1;
     pub const IRQ_TYPE_EDGE_FALLING: u32 = 2;
     pub const IRQ_TYPE_LEVEL_LOW: u32 = 8;
+    pub const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
 }
 
 #[derive(Debug)]
@@ -152,12 +159,15 @@ fn write_vmbus<'a, T>(
 pub fn write_dt(
     buffer: &mut [u8],
     partition_info: &PartitionInfo,
-    reserved_memory: &[(MemoryRange, ReservedMemoryType)],
+    address_space: &AddressSpaceManager,
     accepted_ranges: impl IntoIterator<Item = MemoryRange>,
     initrd: Range<u64>,
     cmdline: &ArrayString<COMMAND_LINE_SIZE>,
     sidecar: Option<&SidecarConfig<'_>>,
     boot_times: Option<BootTimes>,
+    #[cfg_attr(target_arch = "aarch64", expect(unused_variables))]
+    // isolation_type is unused on aarch64
+    isolation_type: IsolationType,
 ) -> Result<(), DtError> {
     // First, the reservation map is built. That keyes off of the x86 E820 memory map.
     // The `/memreserve/` is used to tell the kernel that the reserved memory is RAM
@@ -167,9 +177,11 @@ pub fn write_dt(
     let mut memory_reservations =
         off_stack!(ArrayVec<fdt::ReserveEntry, MAX_RESERVED_MEM_RANGES>, ArrayVec::new_const());
 
-    memory_reservations.extend(reserved_memory.iter().map(|(r, _)| fdt::ReserveEntry {
-        address: r.start().into(),
-        size: r.len().into(),
+    memory_reservations.extend(address_space.reserved_vtl2_ranges().map(|(r, _)| {
+        fdt::ReserveEntry {
+            address: r.start().into(),
+            size: r.len().into(),
+        }
     }));
 
     // Build the actual device tree.
@@ -235,6 +247,25 @@ pub fn write_dt(
         .start_node("hypervisor")?
         .add_str(p_compatible, "microsoft,hyperv")?;
     root_builder = hypervisor_builder.end_node()?;
+
+    #[cfg(target_arch = "x86_64")]
+    if isolation_type == IsolationType::Tdx {
+        let mut mailbox_builder = root_builder
+            .start_node("reserved-memory")?
+            .add_u32(p_address_cells, 2)?
+            .add_u32(p_size_cells, 1)?
+            .add_null(p_ranges)?;
+
+        let name = format_fixed!(32, "wakeup_table@{:x}", RESET_VECTOR_PAGE);
+        let mailbox_addr_builder = mailbox_builder
+            .start_node(name.as_ref())?
+            .add_str(p_compatible, "intel,wakeup-mailbox")?
+            .add_u32_array(p_reg, &[0x0, RESET_VECTOR_PAGE.try_into().unwrap(), 0x1000])?;
+
+        mailbox_builder = mailbox_addr_builder.end_node()?;
+
+        root_builder = mailbox_builder.end_node()?;
+    }
 
     // For ARM v8, always specify two register cells, which can accommodate
     // higher number of VPs.
@@ -371,6 +402,39 @@ pub fn write_dt(
             )?
             .add_null(p_always_on)?;
         root_builder = timer.end_node()?;
+
+        // Add PMU.
+        //
+        // TODO: This may be insufficient to get perf to work as the kernel
+        // prints:
+        // `armv8-pmu pmu: hw perfevents: no irqs for PMU, sampling events not supported`
+        //
+        // Tracked by issue 1808.
+        //
+        // NOTE: The host may not provide this value in device tree, so use the
+        // Hyper-V platform default if not provided.
+        let pmu_gsiv_index = partition_info
+            .pmu_gsiv
+            .map(|gsiv| {
+                assert!(
+                    (16..32).contains(&gsiv),
+                    "PMU GSIV must be a PPI in [16, 32) range"
+                );
+                gsiv - 16
+            })
+            .unwrap_or(aarch64::PMU_GSIV_INT_INDEX);
+        let pmu = root_builder
+            .start_node("pmu")?
+            .add_str(p_compatible, "arm,armv8-pmuv3")?
+            .add_u32_array(
+                p_interrupts,
+                &[
+                    aarch64::GIC_PPI,
+                    pmu_gsiv_index,
+                    aarch64::IRQ_TYPE_LEVEL_HIGH,
+                ],
+            )?;
+        root_builder = pmu.end_node()?;
     }
 
     // Linux requires vmbus to be under a simple-bus node.
@@ -448,9 +512,7 @@ pub fn write_dt(
     let isolation_type = match partition_info.isolation {
         IsolationType::None => "none",
         IsolationType::Vbs => "vbs",
-        #[cfg(target_arch = "x86_64")]
         IsolationType::Snp => "snp",
-        #[cfg(target_arch = "x86_64")]
         IsolationType::Tdx => "tdx",
     };
     openhcl_builder = openhcl_builder.add_str(p_isolation_type, isolation_type)?;
@@ -483,53 +545,7 @@ pub fn write_dt(
         openhcl_builder = openhcl_builder.add_u64(p_vtl0_alias_map, data)?;
     }
 
-    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    struct Vtl2MemoryEntry {
-        range: MemoryRange,
-        memory_type: MemoryVtlType,
-    }
-
-    // First, construct the unified VTL2 memory map.
-    let mut vtl2_memory_map = off_stack!(ArrayVec::<Vtl2MemoryEntry, 512>, ArrayVec::new_const());
-    for (range, result) in walk_ranges(
-        partition_info
-            .vtl2_ram
-            .iter()
-            .map(|r| (r.range, MemoryVtlType::VTL2_RAM)),
-        reserved_memory.iter().map(|&(r, typ)| {
-            (
-                r,
-                match typ {
-                    ReservedMemoryType::Vtl2Config => MemoryVtlType::VTL2_CONFIG,
-                    ReservedMemoryType::SidecarImage => MemoryVtlType::VTL2_SIDECAR_IMAGE,
-                    ReservedMemoryType::SidecarNode => MemoryVtlType::VTL2_SIDECAR_NODE,
-                    ReservedMemoryType::Vtl2Reserved => MemoryVtlType::VTL2_RESERVED,
-                    ReservedMemoryType::Vtl2GpaPool => MemoryVtlType::VTL2_GPA_POOL,
-                },
-            )
-        }),
-    ) {
-        match result {
-            RangeWalkResult::Left(typ) | RangeWalkResult::Both(_, typ) => {
-                // This range is for VTL2. If only in Left, it's ram, but if in
-                // Both, it's the reserve type indicated in right.
-                vtl2_memory_map.push(Vtl2MemoryEntry {
-                    range,
-                    memory_type: typ,
-                });
-            }
-            RangeWalkResult::Right(typ) => {
-                panic!(
-                    "reserved vtl2 range {:?} with type {:?} not contained in vtl2 ram",
-                    range, typ
-                );
-            }
-            // Ignore ranges not in both.
-            RangeWalkResult::Neither => {}
-        }
-    }
-
-    // Now, report the unified memory map to usermode describing which memory is
+    // Report the unified memory map to usermode describing which memory is
     // used by what.
     //
     // NOTE: Use a different device type for memory ranges, as the Linux kernel
@@ -538,7 +554,7 @@ pub fn write_dt(
     let memory_openhcl_type = "memory-openhcl";
     for (range, result) in walk_ranges(
         partition_info.partition_ram.iter().map(|r| (r.range, r)),
-        vtl2_memory_map.iter().map(|r| (r.range, r)),
+        address_space.vtl2_ranges(),
     ) {
         match result {
             RangeWalkResult::Left(entry) => {
@@ -553,7 +569,7 @@ pub fn write_dt(
                     .add_u32(p_openhcl_memory, MemoryVtlType::VTL0.0)?
                     .end_node()?;
             }
-            RangeWalkResult::Both(partition_entry, vtl2_entry) => {
+            RangeWalkResult::Both(partition_entry, vtl2_type) => {
                 // This range is in use by VTL2. Indicate that.
                 let name = format_fixed!(64, "memory@{:x}", range.start());
                 openhcl_builder = openhcl_builder
@@ -562,7 +578,7 @@ pub fn write_dt(
                     .add_u64_array(p_reg, &[range.start(), range.len()])?
                     .add_u32(p_numa_node_id, partition_entry.vnode)?
                     .add_u32(p_igvm_type, partition_entry.mem_type.0.into())?
-                    .add_u32(p_openhcl_memory, vtl2_entry.memory_type.0)?
+                    .add_u32(p_openhcl_memory, vtl2_type.0)?
                     .end_node()?;
             }
             RangeWalkResult::Right(..) => {

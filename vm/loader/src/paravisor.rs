@@ -360,10 +360,31 @@ where
         _ => None,
     };
 
+    // HACK: On TDX, the kernel uses the ACPI AP Mailbox protocol to start APs.
+    // However, the kernel assumes that all kernel ram is identity mapped, as
+    // the kernel will jump to a startup routine in any arbitrary kernel ram
+    // range.
+    //
+    // For now, describe 3GB of memory identity mapped in the page table used by
+    // the mailbox assembly stub, so the kernel can start APs regardless of how
+    // large the initial memory size was. An upcoming change will instead have
+    // the bootshim modify the pagetable at runtime to guarantee all ranges
+    // reported in the E820 map to kernel as ram are mapped.
+    //
+    // FUTURE: A future kernel change could remove this requirement entirely by
+    // making the kernel spec compliant, and only require that the reset vector
+    // page is identity mapped.
+
+    let page_table_mapping_size = if isolation_type == IsolationType::Tdx {
+        3 * 1024 * 1024 * 1024
+    } else {
+        memory_size
+    };
+
     let page_table_base_page_count = 5;
     let page_table_dynamic_page_count = {
         // Double the count to allow for simpler reconstruction.
-        calculate_pde_table_count(memory_start_address, memory_size) * 2
+        calculate_pde_table_count(memory_start_address, page_table_mapping_size) * 2
             + local_map.map_or(0, |v| calculate_pde_table_count(v.0, v.1))
     };
     let page_table_isolation_page_count = match isolation_type {
@@ -384,7 +405,7 @@ where
     tracing::debug!(page_table_region_start, page_table_region_size);
 
     let mut page_table_builder = PageTableBuilder::new(page_table_region_start)
-        .with_mapped_region(memory_start_address, memory_size);
+        .with_mapped_region(memory_start_address, page_table_mapping_size);
 
     if let Some((local_map_start, size)) = local_map {
         page_table_builder = page_table_builder.with_local_map(local_map_start, size);
@@ -468,6 +489,8 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
+        page_tables_start: calculate_shim_offset(page_table_region_start),
+        page_tables_size: page_table_region_size,
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -1058,6 +1081,8 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
+        page_tables_start: 0,
+        page_tables_size: 0,
     };
 
     importer

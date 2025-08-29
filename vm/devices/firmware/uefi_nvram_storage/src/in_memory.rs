@@ -185,6 +185,86 @@ impl NvramStorage for InMemoryNvram {
     }
 }
 
+#[cfg(feature = "save_restore")]
+mod save_restore {
+    use super::*;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+
+    mod state {
+        use guid::Guid;
+        use uefi_specs::uefi::time::EFI_TIME;
+        use vmcore::save_restore::SavedStateRoot;
+
+        #[derive(mesh_protobuf::Protobuf)]
+        #[mesh(package = "nvram_entry")]
+        pub struct NvramEntry {
+            #[mesh(1)]
+            pub vendor: Guid,
+            #[mesh(2)]
+            pub name: Vec<u8>,
+            #[mesh(3)]
+            pub data: Vec<u8>,
+            #[mesh(4, encoding = "mesh_protobuf::encoding::ZeroCopyEncoding")]
+            pub timestamp: EFI_TIME,
+            #[mesh(5)]
+            pub attr: u32,
+        }
+
+        #[derive(mesh_protobuf::Protobuf, SavedStateRoot)]
+        #[mesh(package = "firmware.in_memory_nvram")]
+        pub struct SavedState {
+            #[mesh(1)]
+            pub nvram: Option<Vec<NvramEntry>>,
+        }
+    }
+
+    impl SaveRestore for InMemoryNvram {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            Ok(state::SavedState {
+                nvram: Some(
+                    self.nvram
+                        .iter()
+                        .map(|(k, v)| state::NvramEntry {
+                            vendor: k.vendor,
+                            name: k.name.clone().into_inner(),
+                            data: v.data.clone(),
+                            timestamp: v.timestamp,
+                            attr: v.attr,
+                        })
+                        .collect(),
+                ),
+            })
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            if let state::SavedState { nvram: Some(nvram) } = state {
+                self.nvram = nvram
+                    .into_iter()
+                    .map::<Result<(VariableKey, Variable), RestoreError>, _>(|e| {
+                        Ok((
+                            VariableKey {
+                                vendor: e.vendor,
+                                name: Ucs2LeVec::from_vec_with_nul(e.name)
+                                    .map_err(|e| RestoreError::InvalidSavedState(e.into()))?,
+                            },
+                            Variable {
+                                data: e.data,
+                                timestamp: e.timestamp,
+                                attr: e.attr,
+                            },
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// A collection of test-implementation helpers that operate on a generic
 /// implementation of [`NvramStorage`]
 pub mod impl_agnostic_tests {

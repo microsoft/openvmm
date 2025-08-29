@@ -10,12 +10,15 @@ rust-version.workspace = true
 default = []
 
 inspect = ["dep:inspect", "uefi_specs/inspect"]
+save_restore = ["inspect", "dep:mesh_protobuf", "dep:vmcore"]
 
 [dependencies]
 guid.workspace = true
 inspect = { workspace = true, optional = true }
+mesh_protobuf = { workspace = true, optional = true }
 ucs2.workspace = true
 uefi_specs.workspace = true
+vmcore = { workspace = true, optional = true }
 
 async-trait.workspace = true
 thiserror.workspace = true

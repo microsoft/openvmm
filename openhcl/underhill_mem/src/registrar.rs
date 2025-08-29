@@ -19,6 +19,7 @@
 //! initial registration for a chunk small. We track whether a given chunk has
 //! been registered via a small bitmap.
 
+use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use memory_range::overlapping_ranges;
@@ -167,9 +168,9 @@ impl<T: RegisterMemory> MemoryRegistrar<T> {
                     self.registration_offset + range.start()
                         ..self.registration_offset + range.end(),
                 );
-                tracing::info!(%range, "registering memory");
+                tracing::info!(CVM_ALLOWED, %range, "registering memory");
                 if let Err(err) = self.register.register_range(range) {
-                    tracing::error!(
+                    tracing::error!(CVM_ALLOWED,
                         %range,
                         registration_offset = self.registration_offset,
                         error = &err as &dyn std::error::Error,

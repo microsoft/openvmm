@@ -8,6 +8,7 @@ use serde::Serialize;
 use serde::Serializer;
 use serde::ser::SerializeMap;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 /// Valid names may only contain alphanumeric characters and '_' and may not
 /// start with a number.
@@ -264,8 +265,8 @@ pub struct Job {
     pub runs_on: Option<Runner>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub permissions: BTreeMap<Permissions, PermissionValue>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub needs: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub needs: BTreeSet<String>,
     #[serde(rename = "if", skip_serializing_if = "Option::is_none")]
     pub r#if: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

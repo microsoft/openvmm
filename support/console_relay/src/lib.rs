@@ -3,6 +3,8 @@
 
 //! Code to launch a terminal emulator for relaying input/output.
 
+#![forbid(unsafe_code)]
+
 mod unix;
 mod windows;
 

@@ -298,9 +298,7 @@ impl Stream for VirtioQueue {
             return Poll::Ready(None);
         };
 
-        Poll::Ready(Some(
-            r.map_err(|err| Error::new(std::io::ErrorKind::Other, err)),
-        ))
+        Poll::Ready(Some(r.map_err(Error::other)))
     }
 }
 

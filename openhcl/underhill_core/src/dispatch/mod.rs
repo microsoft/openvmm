@@ -10,7 +10,7 @@ use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::netvsp::RuntimeSavedState;
-use crate::nvme_manager::NvmeManager;
+use crate::nvme_manager::manager::NvmeManager;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -21,6 +21,7 @@ use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
 use anyhow::Context;
 use async_trait::async_trait;
+use cvm_tracing::CVM_ALLOWED;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Join;
@@ -37,6 +38,7 @@ use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
+use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerRpc;
@@ -85,10 +87,11 @@ pub enum UhVmRpc {
 pub trait LoadedVmNetworkSettings: Inspect {
     /// Callback to prepare for guest hibernation. This should remove any
     /// directly assigned devices before the guest saves state.
-    ///
-    /// When rollback is 'true' it means the hibernate request was vetoed, so
-    /// any changes can be undone.
-    async fn prepare_for_hibernate(&self, rollback: bool);
+    async fn prepare_for_hibernate(&self);
+
+    /// Callback to cancel preparation for guest hibernation. This should
+    /// restore any state updated via prepare_for_hibernate().
+    async fn cancel_prepare_for_hibernate(&self);
 
     /// Callback when network settings are modified externally.
     async fn modify_network_settings(
@@ -163,9 +166,11 @@ pub(crate) struct LoadedVm {
         mesh::Sender<ShutdownRpc>,
     )>,
 
-    pub vmgs_thin_client: vmgs_broker::VmgsThinClient,
-    pub vmgs_disk_metadata: disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
-    pub _vmgs_handle: Task<()>,
+    pub vmgs: Option<(
+        vmgs_broker::VmgsThinClient,
+        disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
+        Task<()>,
+    )>,
 
     // dependencies of the vtl2 settings service
     pub get_client: guest_emulation_transport::GuestEmulationTransportClient,
@@ -235,6 +240,14 @@ impl LoadedVm {
             .await
             .expect("no failure");
 
+        struct PendingShutdown {
+            guest_response: PendingRpc<ShutdownResult>,
+            send_result: Rpc<(), ShutdownResult>,
+            is_hibernate: bool,
+        }
+
+        let mut pending_shutdown_response: Option<PendingShutdown> = None;
+
         let state = loop {
             enum Event<T> {
                 WorkerRpc(WorkerRpc<T>),
@@ -244,6 +257,7 @@ impl LoadedVm {
                 VtlCrash(VtlCrash),
                 ServicingRequest(GuestSaveRequest),
                 ShutdownRequest(Rpc<ShutdownParams, ShutdownResult>),
+                ShutdownResponse(<PendingRpc<ShutdownResult> as Future>::Output),
             }
 
             let event: Event<T> = futures::select! { // merge semantics
@@ -259,6 +273,13 @@ impl LoadedVm {
                     let (recv, _) = self.shutdown_relay.as_mut().unwrap();
                     recv.select_next_some().await
                 }.fuse() => Event::ShutdownRequest(message),
+                message = async {
+                    if let Some(PendingShutdown{guest_response, ..}) = &mut pending_shutdown_response {
+                        guest_response.await
+                    } else {
+                        std::future::pending().await
+                    }
+                }.fuse() => Event::ShutdownResponse(message),
             };
 
             match event {
@@ -279,7 +300,7 @@ impl LoadedVm {
                                 }
                             }
                         }
-                        .instrument(tracing::info_span!("restart"))
+                        .instrument(tracing::info_span!("restart", CVM_ALLOWED))
                         .await;
 
                         if let Some((rpc, servicing_state)) = state {
@@ -299,7 +320,7 @@ impl LoadedVm {
                         });
                         resp.field("runtime_params", &self.runtime_params);
                         resp.field("get", &self.get_client);
-                        resp.field("vmgs", &self.vmgs_thin_client);
+                        resp.field("vmgs", self.vmgs.as_ref().map(|x| &x.0));
                         resp.field("network", &self.network_settings);
                         resp.field("nvme", &self.nvme_manager);
                         resp.field("resolver", &self.resolver);
@@ -373,6 +394,7 @@ impl LoadedVm {
                         }
                         Err(err) => {
                             tracing::error!(
+                                CVM_ALLOWED,
                                 error = err.as_ref() as &dyn std::error::Error,
                                 "failed to notify host of servicing result"
                             );
@@ -382,30 +404,50 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    rpc.handle(async |msg| {
-                        if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
-                            self.handle_hibernate_request(false).await;
+                    if pending_shutdown_response.is_some() {
+                        rpc.complete(ShutdownResult::AlreadyInProgress);
+                        continue;
+                    }
+                    let (msg, send_result) = rpc.split();
+                    let is_hibernate = matches!(msg.shutdown_type, ShutdownType::Hibernate);
+                    if is_hibernate {
+                        self.handle_hibernate_request().await;
+                    }
+                    let (_, send_guest) =
+                        self.shutdown_relay.as_mut().expect("active shutdown_relay");
+                    tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
+                    pending_shutdown_response = Some(PendingShutdown {
+                        guest_response: send_guest.call(ShutdownRpc::Shutdown, msg),
+                        send_result,
+                        is_hibernate,
+                    });
+                }
+                Event::ShutdownResponse(result) => {
+                    let response = match result {
+                        Ok(result) => result,
+                        Err(err) => {
+                            tracing::error!(
+                                CVM_ALLOWED,
+                                error = &err as &dyn std::error::Error,
+                                "Failed to relay shutdown notification to guest"
+                            );
+                            ShutdownResult::Failed(0x80004005)
                         }
-                        let (_, send_guest) =
-                            self.shutdown_relay.as_mut().expect("active shutdown_relay");
-                        tracing::info!(params = ?msg, "Relaying shutdown message");
-                        let result = match send_guest.call(ShutdownRpc::Shutdown, msg).await {
-                            Ok(result) => result,
-                            Err(err) => {
-                                tracing::error!(
-                                    error = &err as &dyn std::error::Error,
-                                    "Failed to relay shutdown notification to guest"
-                                );
-                                ShutdownResult::Failed(0x80000001)
-                            }
-                        };
-                        if !matches!(result, ShutdownResult::Ok) {
-                            tracing::warn!(?result, "Shutdown request failed");
-                            self.handle_hibernate_request(true).await;
+                    };
+                    let PendingShutdown {
+                        send_result,
+                        is_hibernate,
+                        ..
+                    } = pending_shutdown_response
+                        .take()
+                        .expect("no pending shutdown response");
+                    if !matches!(response, ShutdownResult::Ok) {
+                        tracing::warn!(CVM_ALLOWED, ?response, "Shutdown request failed");
+                        if is_hibernate {
+                            self.cancel_hibernate_request().await;
                         }
-                        result
-                    })
-                    .await
+                    }
+                    send_result.complete(response);
                 }
                 Event::VtlCrash(vtl_crash) => self.notify_of_vtl_crash(vtl_crash),
             }
@@ -464,6 +506,7 @@ impl LoadedVm {
             }
             Err(err) => {
                 tracing::error!(
+                    CVM_ALLOWED,
                     error = err.as_ref() as &dyn std::error::Error,
                     "error while handling servicing"
                 );
@@ -517,7 +560,7 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana"))
+                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id))
                         .await;
                 }
             };
@@ -527,7 +570,7 @@ impl LoadedVm {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
                         .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id, %nvme_keepalive))
+                        .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive))
                         .await;
                 }
             };
@@ -536,7 +579,7 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices"))
+                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id))
                     .await
             };
 
@@ -545,7 +588,7 @@ impl LoadedVm {
 
             Ok(state)
         }
-        .instrument(tracing::info_span!("servicing_save_vtl2", %correlation_id))
+        .instrument(tracing::info_span!("servicing_save_vtl2", CVM_ALLOWED, %correlation_id))
         .await;
 
         let mut state = match r {
@@ -559,10 +602,10 @@ impl LoadedVm {
         // Tell the initial process to flush all logs. Any logs
         // emitted after this point may be lost.
         state.init_state.flush_logs_result = Some({
-            // Only wait up to a second (which is still
+            // Only wait up to a half second (which is still
             // a long time!) to prevent delays from
             // introducing longer blackouts.
-            let ctx = CancelContext::new().with_timeout(Duration::from_secs(1));
+            let ctx = CancelContext::new().with_timeout(Duration::from_millis(500));
 
             let now = std::time::Instant::now();
             let call = self
@@ -588,19 +631,27 @@ impl LoadedVm {
         Ok(state)
     }
 
-    async fn handle_hibernate_request(&self, rollback: bool) {
+    async fn handle_hibernate_request(&self) {
         if let Some(network_settings) = &self.network_settings {
-            if !rollback {
-                network_settings
-                    .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!("prepare_for_guest_hibernate"))
-                    .await;
-            } else {
-                network_settings
-                    .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!("rollback_prepare_for_guest_hibernate"))
-                    .await;
-            };
+            network_settings
+                .prepare_for_hibernate()
+                .instrument(tracing::info_span!(
+                    "prepare_for_guest_hibernate",
+                    CVM_ALLOWED
+                ))
+                .await;
+        }
+    }
+
+    async fn cancel_hibernate_request(&self) {
+        if let Some(network_settings) = &self.network_settings {
+            network_settings
+                .cancel_prepare_for_hibernate()
+                .instrument(tracing::info_span!(
+                    "rollback_prepare_for_guest_hibernate",
+                    CVM_ALLOWED
+                ))
+                .await;
         }
     }
 
@@ -611,7 +662,7 @@ impl LoadedVm {
         let reference_time = ReferenceTime::new(self.partition.reference_time());
         if let Some(stopped) = self.last_state_unit_stop {
             let blackout_time = reference_time.since(stopped);
-            tracing::info!(
+            tracing::info!(CVM_ALLOWED,
                 correlation_id = %correlation_id.unwrap_or(Guid::ZERO),
                 blackout_time_ms = blackout_time.map(|t| t.as_millis() as u64),
                 blackout_time = blackout_time
@@ -623,6 +674,7 @@ impl LoadedVm {
             // Assume we started at reference time 0.
             let boot_time = reference_time.since(ReferenceTime::new(0));
             tracing::info!(
+                CVM_ALLOWED,
                 boot_time_ms = boot_time.map(|t| t.as_millis() as u64),
                 boot_time = boot_time
                     .map_or_else(|| "unknown".to_string(), |t| format!("{:?}", t))
@@ -636,7 +688,7 @@ impl LoadedVm {
     async fn stop(&mut self) -> bool {
         if self.state_units.is_running() {
             self.last_state_unit_stop = Some(ReferenceTime::new(self.partition.reference_time()));
-            tracing::info!("stopping VM");
+            tracing::info!(CVM_ALLOWED, "stopping VM");
             self.state_units.stop().await;
             true
         } else {
@@ -672,7 +724,7 @@ impl LoadedVm {
         // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
             n.save(vf_keepalive_flag)
-                .instrument(tracing::info_span!("nvme_manager_save"))
+                .instrument(tracing::info_span!("nvme_manager_save", CVM_ALLOWED))
                 .await
                 .map(|s| NvmeSavedState { nvme_state: s })
         } else {
@@ -680,11 +732,14 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
-        let vmgs = self
-            .vmgs_thin_client
-            .save()
-            .await
-            .context("vmgs save failed")?;
+        let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
+            Some((
+                vmgs_thin_client.save().await.context("vmgs save failed")?,
+                vmgs_disk_metadata.clone(),
+            ))
+        } else {
+            None
+        };
 
         // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
@@ -710,7 +765,7 @@ impl LoadedVm {
                 correlation_id: None,
                 emuplat,
                 flush_logs_result: None,
-                vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
+                vmgs,
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
                 dma_manager_state,
@@ -725,19 +780,19 @@ impl LoadedVm {
         Ok(state)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(CVM_ALLOWED))]
     async fn save_units(&mut self) -> anyhow::Result<Vec<SavedStateUnit>> {
         Ok(self.state_units.save().await?)
     }
 
-    #[instrument(skip(self, saved_state))]
+    #[instrument(skip(self, saved_state), fields(CVM_ALLOWED))]
     pub async fn restore_units(&mut self, saved_state: Vec<SavedStateUnit>) -> anyhow::Result<()> {
         self.state_units.restore(saved_state).await?;
         Ok(())
     }
 
     fn notify_of_vtl_crash(&self, vtl_crash: VtlCrash) {
-        tracing::info!("Notifying the host of the guest system crash {vtl_crash:x?}");
+        tracelimit::info_ratelimited!(CVM_ALLOWED, "Notifying the host of the guest system crash");
 
         let VtlCrash {
             vp_index,
@@ -824,11 +879,11 @@ mod inspect_helpers {
         // TODO: inspect::AsDebug would work here once
         // https://github.com/kupiakos/open-enum/pull/15 is merged.
         inspect::adhoc(|req| match *typ {
-            MemoryMapEntryType::MEMORY => req.value("MEMORY".into()),
-            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT".into()),
-            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED".into()),
-            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE".into()),
-            _ => req.value(typ.0.into()),
+            MemoryMapEntryType::MEMORY => req.value("MEMORY"),
+            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT"),
+            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED"),
+            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE"),
+            _ => req.value(typ.0),
         })
     }
 
@@ -840,7 +895,7 @@ mod inspect_helpers {
                 entry.range,
                 inspect::adhoc(|req| {
                     req.respond()
-                        .field("length", inspect::AsHex(entry.range.len()))
+                        .hex("length", entry.range.len())
                         .field("type", inspect_memory_map_entry_type(typ))
                         .field("vnode", entry.vnode);
                 }),

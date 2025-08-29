@@ -97,16 +97,7 @@ impl FlowNode for Node {
 
                 assert!(protoc_bin.exists());
 
-                // Make sure protoc is executable
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let old_mode = protoc_bin.metadata()?.permissions().mode();
-                    fs_err::set_permissions(
-                        &protoc_bin,
-                        std::fs::Permissions::from_mode(old_mode | 0o111),
-                    )?;
-                }
+                protoc_bin.make_executable()?;
 
                 let protoc_includes = extract_dir.join("include").absolute()?;
                 assert!(protoc_includes.exists());

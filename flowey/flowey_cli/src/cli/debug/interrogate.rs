@@ -5,8 +5,10 @@ use crate::cli::FlowBackendCli;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
-use flowey_core::node::GhVarState;
+use flowey_core::node::GhOutput;
+use flowey_core::node::GhToRust;
 use flowey_core::node::NodeHandle;
+use flowey_core::node::RustToGh;
 use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::user_facing::ClaimedGhParam;
 use flowey_core::node::user_facing::GhPermission;
@@ -170,10 +172,10 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
         _uses: &str,
         _with: BTreeMap<String, ClaimedGhParam>,
         _condvar: Option<String>,
-        _outputs: BTreeMap<String, Vec<GhVarState>>,
+        _outputs: BTreeMap<String, Vec<GhOutput>>,
         _permissions: BTreeMap<GhPermission, GhPermissionValue>,
-        _gh_to_rust: Vec<GhVarState>,
-        _rust_to_gh: Vec<GhVarState>,
+        _gh_to_rust: Vec<GhToRust>,
+        _rust_to_gh: Vec<RustToGh>,
     ) {
         println!("[step][yaml]    # {}", label);
         self.idx_tracker += 1;

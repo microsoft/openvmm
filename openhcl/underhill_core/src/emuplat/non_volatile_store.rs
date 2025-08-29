@@ -8,7 +8,7 @@ use vmgs_broker::non_volatile_store::EncryptionNotSupported;
 use vmgs_broker::non_volatile_store::VmgsNonVolatileStore;
 
 /// An API for interacting with VMGS as an opaque [`NonVolatileStore`]
-pub trait VmbsBrokerNonVolatileStore {
+pub trait VmgsBrokerNonVolatileStore {
     /// Return a new [`NonVolatileStore`] object backed by a particular VMGS
     /// file-id.
     fn as_non_volatile_store(
@@ -18,7 +18,7 @@ pub trait VmbsBrokerNonVolatileStore {
     ) -> Result<Box<dyn NonVolatileStore>, EncryptionNotSupported>;
 }
 
-impl VmbsBrokerNonVolatileStore for vmgs_broker::VmgsClient {
+impl VmgsBrokerNonVolatileStore for vmgs_broker::VmgsClient {
     fn as_non_volatile_store(
         &self,
         file_id: vmgs::FileId,

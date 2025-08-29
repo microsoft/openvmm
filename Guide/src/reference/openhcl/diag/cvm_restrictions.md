@@ -22,14 +22,14 @@ behave as if it is running in a CVM for the purpose of diagnostics.
 ## Tracing
 
 Tracing statements and spans will still be sent to the host, and therefore will still show up in
-ETW traces and Kusto. However, individual statements must opt in to being logged inside a CVM, as a
-way of affirming that they do not leak any guest secrets.
+ETW traces and Kusto. However, individual statements may opt out of being logged inside a CVM, as a
+way of protecting guest secrets.
 
 ### For Developers:
 
-This is done by using the `CVM_ALLOWED`
-constant provided by the `cvm_tracing` crate. `cvm_tracing` also provides a `CVM_CONFIDENTIAL`
-constant, to mark statements that could contain secrets and should not be logged in a CVM.
+This is done by using the `CVM_CONFIDENTIAL` constant provided by the
+`cvm_tracing` crate. `cvm_tracing` also provides a `CVM_ALLOWED` constant, to
+mark statements that do not contain secrets and can be logged in a CVM.
 
 Examples:
 
@@ -37,26 +37,26 @@ Examples:
 use cvm_tracing::{CVM_ALLOWED, CVM_CONFIDENTIAL};
 
 tracing::info!(CVM_ALLOWED, foo, ?bar, "This statement will be logged in a CVM");
-tracing::info!(baz, "This statement will not be logged in a CVM");
-tracing::info!(CVM_CONFIDENTIAL, super_secret, "This statement will also not be logged in a CVM");
+tracing::info!(baz, "This statement will also be logged in a CVM");
+tracing::info!(CVM_CONFIDENTIAL, super_secret, "This statement will not be logged in a CVM");
 
 // This also works with spans.
-let span = tracing::info_span!("a span", CVM_ALLOWED);
+let span = tracing::info_span!("a span", CVM_CONFIDENTIAL);
 my_func.instrument(span).await;
 
 // And the #[instrument] macro.
-#[instrument(name = "foo", fields(CVM_ALLOWED))]
+#[instrument(name = "foo", fields(CVM_CONFIDENTIAL))]
 fn my_func() {
     // ...
 }
 ```
 
 ```admonish tip
-Some of the tracing macros will not accept `cvm_tracing::CVM_ALLOWED` as an
+Some of the tracing macros will not accept `cvm_tracing::CVM_CONFIDENTIAL` as an
 argument.
 
-Instead, you will need to `use cvm_tracing::CVM_ALLOWED`, and then use just
-`CVM_ALLOWED`.
+Instead, you will need to `use cvm_tracing::CVM_CONFIDENTIAL`, and then use just
+`CVM_CONFIDENTIAL`.
 ```
 
 ## ohcldiag-dev

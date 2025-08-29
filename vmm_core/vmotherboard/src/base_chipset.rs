@@ -17,6 +17,7 @@ use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
+use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferDevice;
@@ -320,8 +321,9 @@ impl<'a> BaseChipsetBuilder<'a> {
                 Box::new(move || power.on_power_event(PowerEvent::Reset))
             };
 
-            let set_a20_signal =
-                Box::new(move |active| tracing::info!(?active, "setting stubbed A20 signal"));
+            let set_a20_signal = Box::new(move |active| {
+                tracing::info!(CVM_ALLOWED, active, "setting stubbed A20 signal")
+            });
 
             builder
                 .arc_mutex_device("piix4-pci-isa-bridge")
@@ -516,7 +518,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         let pm_action = || {
             let power = foundation.power_event_handler.clone();
             move |action: pm::PowerAction| {
-                tracing::info!(?action, "guest initiated");
+                tracing::info!(CVM_ALLOWED, ?action, "guest initiated");
                 let req = match action {
                     pm::PowerAction::PowerOff => PowerEvent::PowerOff,
                     pm::PowerAction::Hibernate => PowerEvent::Hibernate,
@@ -603,6 +605,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             nvram_storage,
             generation_id_recv,
             watchdog_platform,
+            watchdog_recv,
             vsm_config,
             time_source,
         }) = deps_hyperv_firmware_uefi
@@ -626,6 +629,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                         logger,
                         vmtime,
                         watchdog_platform,
+                        watchdog_recv,
                         generation_id_deps: generation_id::GenerationIdRuntimeDeps {
                             generation_id_recv,
                             gm,
@@ -1316,12 +1320,14 @@ pub mod options {
             /// Interface to log UEFI BIOS events
             pub logger: Box<dyn firmware_uefi::platform::logger::UefiLogger>,
             /// Interface for storing/retrieving UEFI NVRAM variables
-            pub nvram_storage: Box<dyn uefi_nvram_storage::InspectableNvramStorage>,
+            pub nvram_storage: Box<dyn uefi_nvram_storage::VmmNvramStorage>,
             /// Channel to receive updated generation ID values
             pub generation_id_recv: mesh::Receiver<[u8; 16]>,
             /// Device-specific functions the platform must provide in order
             /// to use the UEFI watchdog device.
             pub watchdog_platform: Box<dyn watchdog_core::platform::WatchdogPlatform>,
+            /// Channel receiver for watchdog timeout notifications.
+            pub watchdog_recv: mesh::Receiver<()>,
             /// Interface to revoke VSM on `ExitBootServices()` if requested
             /// by the guest.
             pub vsm_config: Option<Box<dyn firmware_uefi::platform::nvram::VsmConfig>>,

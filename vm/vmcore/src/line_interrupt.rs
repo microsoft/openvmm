@@ -3,7 +3,7 @@
 
 //! Infrastructure to support line interrupts.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 use inspect::Inspect;
 use parking_lot::Mutex;

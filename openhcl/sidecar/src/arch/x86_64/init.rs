@@ -307,7 +307,7 @@ fn init(
                 response_cpu,
                 response_vector,
                 needs_attention,
-                reserved: _,
+                reserved,
                 cpu_status,
             } = &mut *control;
             *index = (node_index as u32).into();
@@ -317,6 +317,7 @@ fn init(
             *response_cpu = 0.into();
             *response_vector = 0.into();
             *needs_attention = 0.into();
+            reserved.fill(0);
             cpu_status[0] = CpuStatus::REMOVED.0.into();
             cpu_status[1..vp_count as usize].fill_with(|| CpuStatus::RUN.0.into());
             cpu_status[vp_count as usize..].fill_with(|| CpuStatus::REMOVED.0.into());
@@ -471,6 +472,7 @@ impl NodeDefinition {
                 pt_pa,
                 self.control_page_pa,
                 command_page_pa,
+                reg_page_pa,
                 &mut memory,
             )
         };
@@ -481,7 +483,6 @@ impl NodeDefinition {
             globals.write(VpGlobals {
                 hv_vp_index,
                 node_cpu_index,
-                reg_page_pa,
                 overlays_mapped: false,
                 register_page_mapped: false,
             });

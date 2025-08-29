@@ -3,6 +3,8 @@
 
 //! Types for supporting hypervisor monitor pages.
 
+#![forbid(unsafe_code)]
+
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvMonitorPage;
 use hvdef::HvMonitorPageSmall;
@@ -98,7 +100,7 @@ impl MonitorPage {
 
     /// Sets the GPA of the monitor page currently in use.
     pub fn set_gpa(&self, gpa: Option<u64>) -> Option<u64> {
-        assert!(gpa.is_none() || gpa.unwrap() % HV_PAGE_SIZE == 0);
+        assert!(gpa.is_none_or(|gpa| gpa % HV_PAGE_SIZE == 0));
         let old = self
             .gpa
             .swap(gpa.unwrap_or(INVALID_MONITOR_GPA), Ordering::Relaxed);

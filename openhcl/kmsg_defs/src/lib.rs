@@ -3,6 +3,8 @@
 
 //! Kmsg-related definitions shared by underhill_core and underhill_init.
 
+#![forbid(unsafe_code)]
+
 /// system is unusable
 pub const LOGLEVEL_EMERG: u8 = 0;
 /// action must be taken immediately
@@ -19,6 +21,12 @@ pub const LOGLEVEL_NOTICE: u8 = 5;
 pub const LOGLEVEL_INFO: u8 = 6;
 /// debug-level messages
 pub const LOGLEVEL_DEBUG: u8 = 7;
+
+/// The facility for kernel messages.
+pub const KERNEL_FACILITY: u8 = 0;
+
+/// The message prefix for ttyprintk messages.
+pub const TTYPRINK_PREFIX: &str = "[U] ";
 
 /// underhill_init user-mode log facility
 pub const UNDERHILL_INIT_KMSG_FACILITY: u8 = 2;

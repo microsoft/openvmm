@@ -3,4 +3,3 @@
 
 pub mod firmware;
 pub mod i440bx_host_pci_bridge;
-pub mod watchdog;

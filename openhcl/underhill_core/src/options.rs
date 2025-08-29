@@ -33,6 +33,28 @@ impl std::str::FromStr for TestScenarioConfig {
     }
 }
 
+#[derive(Clone, Debug, MeshPayload)]
+pub enum GuestStateEncryptionPolicyCli {
+    Auto,
+    None,
+    GspById,
+    GspKey,
+}
+
+impl std::str::FromStr for GuestStateEncryptionPolicyCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<GuestStateEncryptionPolicyCli, anyhow::Error> {
+        match s {
+            "AUTO" | "0" => Ok(GuestStateEncryptionPolicyCli::Auto),
+            "NONE" | "1" => Ok(GuestStateEncryptionPolicyCli::None),
+            "GSP_BY_ID" | "2" => Ok(GuestStateEncryptionPolicyCli::GspById),
+            "GSP_KEY" | "3" => Ok(GuestStateEncryptionPolicyCli::GspKey),
+            _ => Err(anyhow::anyhow!("Invalid encryption policy: {}", s)),
+        }
+    }
+}
+
 // We've made our own parser here instead of using something like clap in order
 // to save on compiled file size. We don't need all the features a crate can provide.
 /// underhill core command-line and environment variable options.
@@ -69,6 +91,11 @@ pub struct Options {
     ///
     /// N.B.: Not all vmbus devices support this feature, so enabling it may cause failures.
     pub vmbus_force_confidential_external_memory: bool,
+
+    /// (OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS=\<number\>) (default: 100)
+    /// Delay before unsticking a vmbus channel after it has been opened, in milliseconds. Set to
+    /// zero to disable unsticking.
+    pub vmbus_channel_unstick_delay_ms: u64,
 
     /// (OPENHCL_CMDLINE_APPEND=\<string\>)
     /// Command line to append to VTL0, only used with direct boot.
@@ -121,10 +148,6 @@ pub struct Options {
     /// hardware isolated platforms, but can be enabled for testing.
     pub enable_shared_visibility_pool: bool,
 
-    /// (OPENHCL_CVM_GUEST_VSM=1)
-    /// Enable support for guest vsm in CVMs. This is disabled by default.
-    pub cvm_guest_vsm: bool,
-
     /// (OPENHCL_HIDE_ISOLATION=1)
     /// Hide the isolation mode from the guest.
     pub hide_isolation: bool,
@@ -142,6 +165,11 @@ pub struct Options {
     /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
     pub nvme_keep_alive: bool,
 
+    /// (OPENHCL_NVME_ALWAYS_FLR=1)
+    /// Always use the FLR (Function Level Reset) path for NVMe devices,
+    /// even if we would otherwise attempt to use VFIO's NoReset support.
+    pub nvme_always_flr: bool,
+
     /// (OPENHCL_TEST_CONFIG=\<TestScenarioConfig\>)
     /// Test configurations are designed to replicate specific behaviors and
     /// conditions in order to simulate various test scenarios.
@@ -151,6 +179,14 @@ pub struct Options {
     /// will result in UEFI terminating, shutting down the guest instead of
     /// showing the frontpage.
     pub disable_uefi_frontpage: bool,
+
+    /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
+    /// Specify which guest state encryption policy to use.
+    pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_ATTEMPT_AK_CERT_CALLBACK=1) Attempt to renew the AK cert.
+    /// If not specified, use the configuration in DPSv2 ManagementVtlFeatures.
+    pub attempt_ak_cert_callback: Option<bool>,
 }
 
 impl Options {
@@ -185,24 +221,44 @@ impl Options {
         let parse_env_string =
             |name: &str| -> Option<&OsString> { env.get::<OsStr>(name.as_ref()) };
 
-        fn parse_bool(value: Option<&OsString>) -> bool {
+        fn parse_bool_opt(value: Option<&OsString>) -> anyhow::Result<Option<bool>> {
             value
-                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-                .unwrap_or_default()
+                .map(|v| {
+                    if v.eq_ignore_ascii_case("true") || v == "1" {
+                        Ok(true)
+                    } else if v.eq_ignore_ascii_case("false") || v == "0" {
+                        Ok(false)
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "invalid boolean environment variable: {}",
+                            v.to_string_lossy()
+                        ))
+                    }
+                })
+                .transpose()
+        }
+
+        fn parse_bool(value: Option<&OsString>) -> bool {
+            parse_bool_opt(value).ok().flatten().unwrap_or_default()
         }
 
         let parse_legacy_env_bool = |name| parse_bool(legacy_openhcl_env(name));
-        let parse_env_bool = |name: &str| parse_bool(env.get::<OsStr>(name.as_ref()));
+        let parse_env_bool = |name: &str| parse_bool(parse_env_string(name));
+        let parse_env_bool_opt = |name: &str| parse_bool_opt(parse_env_string(name));
 
-        let parse_legacy_env_number = |name| {
-            legacy_openhcl_env(name)
+        fn parse_number(value: Option<&OsString>) -> anyhow::Result<Option<u64>> {
+            value
                 .map(|v| {
-                    v.to_string_lossy().parse().context(format!(
-                        "Error parsing numeric environment variable {} {:?}",
-                        name, v
-                    ))
+                    let v = v.to_string_lossy();
+                    v.parse()
+                        .context(format!("invalid numeric environment variable: {v}"))
                 })
                 .transpose()
+        }
+
+        let parse_legacy_env_number = |name| {
+            parse_number(legacy_openhcl_env(name))
+                .context(format!("parsing legacy env number: {name}"))
         };
 
         let mut wait_for_start = parse_legacy_env_bool("OPENHCL_WAIT_FOR_START");
@@ -219,6 +275,8 @@ impl Options {
             legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
         let vmbus_force_confidential_external_memory =
             parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
+        let vmbus_channel_unstick_delay_ms =
+            parse_legacy_env_number("OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS")?;
         let cmdline_append =
             legacy_openhcl_env("OPENHCL_CMDLINE_APPEND").map(|x| x.to_string_lossy().into_owned());
         let force_load_vtl0_image = legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")
@@ -231,13 +289,13 @@ impl Options {
         let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
         let enable_shared_visibility_pool =
             parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
-        let cvm_guest_vsm = parse_legacy_env_bool("OPENHCL_CVM_GUEST_VSM");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
         let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
+        let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
         let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
@@ -251,6 +309,19 @@ impl Options {
         });
         let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
         let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
+        let guest_state_encryption_policy = parse_env_string("HCL_GUEST_STATE_ENCRYPTION_POLICY")
+            .and_then(|x| {
+                x.to_string_lossy()
+                    .parse::<GuestStateEncryptionPolicyCli>()
+                    .map_err(|e| {
+                        tracing::warn!("failed to parse HCL_GUEST_STATE_ENCRYPTION_POLICY: {:#}", e)
+                    })
+                    .ok()
+            });
+        let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK")
+            .map_err(|e| tracing::warn!("failed to parse HCL_ATTEMPT_AK_CERT_CALLBACK: {:#}", e))
+            .ok()
+            .flatten();
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -289,6 +360,7 @@ impl Options {
             vmbus_max_version,
             vmbus_enable_mnf,
             vmbus_force_confidential_external_memory,
+            vmbus_channel_unstick_delay_ms: vmbus_channel_unstick_delay_ms.unwrap_or(100),
             cmdline_append,
             vnc_port: vnc_port.unwrap_or(3),
             framebuffer_gpa_base,
@@ -300,13 +372,15 @@ impl Options {
             nvme_vfio,
             mcr,
             enable_shared_visibility_pool,
-            cvm_guest_vsm,
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,
             nvme_keep_alive,
+            nvme_always_flr,
             test_configuration,
             disable_uefi_frontpage,
+            guest_state_encryption_policy,
+            attempt_ak_cert_callback,
         })
     }
 

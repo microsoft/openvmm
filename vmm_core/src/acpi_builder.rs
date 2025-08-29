@@ -93,6 +93,9 @@ impl AcpiTopology for X86Topology {
     }
 
     fn extend_madt(topology: &ProcessorTopology<Self>, madt: &mut Vec<u8>) {
+        // Add LINT1 as the local NMI source
+        madt.extend_from_slice(acpi_spec::madt::MadtLocalNmiSource::new().as_bytes());
+
         for vp in topology.vps_arch() {
             let uid = vp.base.vp_index.index() + 1;
             if vp.apic_id <= MAX_LEGACY_APIC_ID && uid <= u8::MAX.into() {
@@ -142,7 +145,10 @@ impl AcpiTopology for Aarch64Topology {
             let mpidr = u64::from(vp.mpidr) & u64::from(aarch64defs::MpidrEl1::AFFINITY_MASK);
             let gicr = topology.gic_redistributors_base()
                 + vp.base.vp_index.index() as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE;
-            madt.extend_from_slice(acpi_spec::madt::MadtGicc::new(uid, mpidr, gicr).as_bytes());
+            let pmu_gsiv = topology.pmu_gsiv();
+            madt.extend_from_slice(
+                acpi_spec::madt::MadtGicc::new(uid, mpidr, gicr, pmu_gsiv).as_bytes(),
+            );
         }
     }
 }

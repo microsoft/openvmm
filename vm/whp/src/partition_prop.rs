@@ -4,6 +4,7 @@
 //! Module defining associations between partition properties and types.
 
 use crate::abi;
+use winapi::shared::minwindef::BOOL;
 
 pub trait AssociatedType {
     type Type: ?Sized;
@@ -33,7 +34,7 @@ pp! {
     (ExtendedVmExits, WHvPartitionPropertyCodeExtendedVmExits, abi::WHV_EXTENDED_VM_EXITS),
     #[cfg(target_arch = "x86_64")]
     (ExceptionExitBitmap, WHvPartitionPropertyCodeExceptionExitBitmap, u64),
-    (SeparateSecurityDomain, WHvPartitionPropertyCodeSeparateSecurityDomain, bool),
+    (SeparateSecurityDomain, WHvPartitionPropertyCodeSeparateSecurityDomain, BOOL),
     #[cfg(target_arch = "x86_64")]
     (X64MsrExitBitmap, WHvPartitionPropertyCodeX64MsrExitBitmap, abi::WHV_X64_MSR_EXIT_BITMAP),
     (PrimaryNumaNode, WHvPartitionPropertyCodePrimaryNumaNode, u16),
@@ -42,8 +43,8 @@ pp! {
     (CpuWeight, WHvPartitionPropertyCodeCpuWeight, u32),
     (CpuGroupId, WHvPartitionPropertyCodeCpuGroupId, u64),
     (ProcessorFrequencyCap, WHvPartitionPropertyCodeProcessorFrequencyCap, u32),
-    (AllowDeviceAssignment, WHvPartitionPropertyCodeAllowDeviceAssignment, bool),
-    (DisableSmt, WHvPartitionPropertyCodeDisableSmt, bool),
+    (AllowDeviceAssignment, WHvPartitionPropertyCodeAllowDeviceAssignment, BOOL),
+    (DisableSmt, WHvPartitionPropertyCodeDisableSmt, BOOL),
 
     (ProcessorFeatures, WHvPartitionPropertyCodeProcessorFeatures, abi::WHV_PROCESSOR_FEATURES),
     (ProcessorClFlushSize, WHvPartitionPropertyCodeProcessorClFlushSize, u8),
@@ -59,7 +60,7 @@ pp! {
     #[cfg(target_arch = "x86_64")]
     (InterruptClockFrequency, WHvPartitionPropertyCodeInterruptClockFrequency, u64),
     #[cfg(target_arch = "x86_64")]
-    (ApicRemoteReadSupport, WHvPartitionPropertyCodeApicRemoteReadSupport, bool),
+    (ApicRemoteReadSupport, WHvPartitionPropertyCodeApicRemoteReadSupport, BOOL),
     (ProcessorFeaturesBanks, WHvPartitionPropertyCodeProcessorFeaturesBanks, abi::WHV_PROCESSOR_FEATURES_BANKS),
     (ReferenceTime, WHvPartitionPropertyCodeReferenceTime, u64),
     (SyntheticProcessorFeaturesBanks, WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks, abi::WHV_SYNTHETIC_PROCESSOR_FEATURES_BANKS),

@@ -14,7 +14,6 @@ use crate::WhpPartitionInner;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
 use crate::WhpVpRef;
-use crate::vp::WhpRunVpError;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64PendingEventReg0;
 use hvdef::HvX64PendingInterruptionRegister;
@@ -379,7 +378,7 @@ impl WhpProcessor<'_> {
     }
 
     /// Flush pending APIC inputs to processor state.
-    pub(crate) fn flush_apic(&mut self, vtl: Vtl) -> Result<(), WhpRunVpError> {
+    pub(crate) fn flush_apic(&mut self, vtl: Vtl) {
         if let Some(lapic) = self.state.vtls.lapic(vtl) {
             let work = lapic.apic.flush();
             lapic.nmi_pending |= work.nmi;
@@ -387,34 +386,27 @@ impl WhpProcessor<'_> {
             assert!(work.interrupt.is_none());
 
             let previous_vtl = self.state.active_vtl;
-            self.handle_non_interrupt_work(vtl, &work)?;
+            self.handle_non_interrupt_work(vtl, &work);
             self.switch_vtl(previous_vtl);
         }
-        Ok(())
     }
 
-    fn handle_non_interrupt_work(
-        &mut self,
-        vtl: Vtl,
-        work: &ApicWork,
-    ) -> Result<(), WhpRunVpError> {
+    fn handle_non_interrupt_work(&mut self, vtl: Vtl, work: &ApicWork) {
         if work.init {
-            self.inject_init(vtl)?;
+            self.inject_init(vtl);
         }
 
         if let Some(vector) = work.sipi {
-            self.inject_sipi(vtl, vector)?;
+            self.inject_sipi(vtl, vector);
         }
 
         if work.extint {
             self.vplc(vtl).extint_pending.store(true, Ordering::Relaxed);
         }
-
-        Ok(())
     }
 
     /// Returns whether the VP should be run.
-    pub(crate) fn process_apic(&mut self, dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
+    pub(crate) fn process_apic(&mut self, dev: &impl CpuIo) -> bool {
         // Scan each enabled VTL, stopping at the highest runnable VTL.
         for vtl in self.state.enabled_vtls.clone().iter_highest_first() {
             if self.state.runnable_vtls.is_higher_vtl_set_than(vtl) {
@@ -429,17 +421,17 @@ impl WhpProcessor<'_> {
                 );
                 lapic.nmi_pending |= work.nmi;
                 if lapic.nmi_pending {
-                    self.inject_nmi(vtl)?;
+                    self.inject_nmi(vtl);
                 }
 
-                self.handle_non_interrupt_work(vtl, &work)?;
+                self.handle_non_interrupt_work(vtl, &work);
                 if let Some(vector) = work.interrupt {
-                    self.inject_interrupt(vtl, vector)?;
+                    self.inject_interrupt(vtl, vector);
                 }
             }
 
             if self.vplc(vtl).extint_pending.load(Ordering::Relaxed) {
-                self.inject_extint(vtl, dev)?;
+                self.inject_extint(vtl, dev);
             }
         }
 
@@ -451,7 +443,7 @@ impl WhpProcessor<'_> {
             .as_ref()
             .is_some_and(|lapic| self.state.halted || lapic.startup_suspend);
 
-        Ok(!halted)
+        !halted
     }
 
     #[must_use]
@@ -482,19 +474,18 @@ impl WhpProcessor<'_> {
         }
     }
 
-    fn inject_init(&mut self, vtl: Vtl) -> Result<(), WhpRunVpError> {
+    fn inject_init(&mut self, vtl: Vtl) {
         // Synchronize the register state.
         self.switch_vtl(vtl);
 
         let vp_info = self.inner.vp_info;
         let mut access = self.access_state(vtl);
 
-        vp::x86_init(&mut access, &vp_info).map_err(WhpRunVpError::State)?;
+        vp::x86_init(&mut access, &vp_info).unwrap();
         self.set_vtl_runnable(vtl, HvVtlEntryReason::INTERRUPT);
-        Ok(())
     }
 
-    fn inject_sipi(&mut self, vtl: Vtl, vector: u8) -> Result<(), WhpRunVpError> {
+    fn inject_sipi(&mut self, vtl: Vtl, vector: u8) {
         // Synchronize the register state.
         self.switch_vtl(vtl);
 
@@ -512,16 +503,14 @@ impl WhpProcessor<'_> {
                 whp,
                 [(whp::RegisterSegment::Cs, cs), (whp::Register64::Rip, 0)]
             )
-            .map_err(WhpRunVpError::EmulationState)?;
+            .unwrap();
             lapic.startup_suspend = false;
             self.state.halted = false;
             self.set_vtl_runnable(vtl, HvVtlEntryReason::INTERRUPT)
         }
-
-        Ok(())
     }
 
-    fn inject_extint(&mut self, vtl: Vtl, dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
+    fn inject_extint(&mut self, vtl: Vtl, dev: &impl CpuIo) -> bool {
         self.set_vtl_runnable(vtl, HvVtlEntryReason::INTERRUPT);
 
         let whp = self.vp.whp(vtl);
@@ -534,7 +523,7 @@ impl WhpProcessor<'_> {
                 whp::Register128::PendingEvent,
             ]
         )
-        .map_err(WhpRunVpError::EmulationState)?;
+        .unwrap();
 
         let pending_interruption = HvX64PendingInterruptionRegister::from(pending_interruption);
         let interrupt_state = hvdef::HvX64InterruptStateRegister::from(interrupt_state);
@@ -559,7 +548,7 @@ impl WhpProcessor<'_> {
             }
 
             self.state.halted = false;
-            return Ok(false);
+            return false;
         }
 
         // Clear the pending bit before getting the vector from the PIC.
@@ -570,7 +559,7 @@ impl WhpProcessor<'_> {
 
         // Get the vector.
         let Some(vector) = dev.acknowledge_pic_interrupt() else {
-            return Ok(true);
+            return true;
         };
 
         if self.state.vtls.lapic(vtl).is_some() {
@@ -583,7 +572,7 @@ impl WhpProcessor<'_> {
                 .with_interruption_pending(true);
 
             whp.set_register(whp::Register64::PendingInterruption, event.into())
-                .map_err(WhpRunVpError::Interruption)?;
+                .unwrap();
 
             self.state.halted = false;
             tracing::trace!(vector, "extint interrupted");
@@ -605,13 +594,13 @@ impl WhpProcessor<'_> {
                     (whp::Register64::InternalActivityState, 0)
                 ]
             )
-            .map_err(WhpRunVpError::Event)?;
+            .unwrap();
         }
 
-        Ok(true)
+        true
     }
 
-    fn inject_nmi(&mut self, vtl: Vtl) -> Result<(), WhpRunVpError> {
+    fn inject_nmi(&mut self, vtl: Vtl) {
         self.set_vtl_runnable(vtl, HvVtlEntryReason::INTERRUPT);
 
         let whp = self.vp.whp(vtl);
@@ -623,7 +612,7 @@ impl WhpProcessor<'_> {
                 whp::Register128::PendingEvent,
             ]
         )
-        .map_err(WhpRunVpError::EmulationState)?;
+        .unwrap();
 
         let interrupt_state = hvdef::HvX64InterruptStateRegister::from(interrupt_state);
         let pending_event = HvX64PendingEventReg0::from(pending_event);
@@ -644,7 +633,7 @@ impl WhpProcessor<'_> {
             }
 
             self.state.halted = false;
-            return Ok(());
+            return;
         }
 
         // Inject the interrupt as expected by the minapic.
@@ -654,17 +643,15 @@ impl WhpProcessor<'_> {
             .with_interruption_pending(true);
 
         whp.set_register(whp::Register64::PendingInterruption, event.into())
-            .map_err(WhpRunVpError::Interruption)?;
+            .unwrap();
 
         self.state.halted = false;
         self.state.vtls.lapic(vtl).unwrap().nmi_pending = false;
 
         tracing::trace!("nmi interrupted");
-
-        Ok(())
     }
 
-    fn inject_interrupt(&mut self, vtl: Vtl, vector: u8) -> Result<(), WhpRunVpError> {
+    fn inject_interrupt(&mut self, vtl: Vtl, vector: u8) {
         self.set_vtl_runnable(vtl, HvVtlEntryReason::INTERRUPT);
 
         let whp = self.vp.whp(vtl);
@@ -678,7 +665,7 @@ impl WhpProcessor<'_> {
                 whp::Register128::PendingEvent,
             ]
         )
-        .map_err(WhpRunVpError::EmulationState)?;
+        .unwrap();
 
         let priority = vector >> 4;
 
@@ -705,7 +692,7 @@ impl WhpProcessor<'_> {
                 );
             }
 
-            return Ok(());
+            return;
         }
 
         let interruption = HvX64PendingInterruptionRegister::new()
@@ -714,7 +701,7 @@ impl WhpProcessor<'_> {
             .with_interruption_pending(true);
 
         whp.set_register(whp::Register64::PendingInterruption, interruption.into())
-            .map_err(WhpRunVpError::Interruption)?;
+            .unwrap();
 
         self.state.halted = false;
 
@@ -725,8 +712,6 @@ impl WhpProcessor<'_> {
             .unwrap()
             .apic
             .acknowledge_interrupt(vector);
-
-        Ok(())
     }
 }
 
