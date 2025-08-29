@@ -1127,8 +1127,15 @@ fn can_use_ring_opt<T: RingMem>(queue: &mut Queue<T>, guest_os_id: Option<HvGues
     match HvGuestOsOpenSourceType(open_source_os.os_type()) {
         // Although FreeBSD indicates support for `pending send size`, it doesn't
         // implement it correctly. This was fixed in FreeBSD version `1400097`.
-        // No known issues with other open source OS.
         HvGuestOsOpenSourceType::FREEBSD => open_source_os.version() >= 1400097,
+        // Linux kernels prior to 3.11 have issues with pending send size optimization
+        // which can affect certain Asynchronous I/O (AIO) network operations.
+        // Disable ring size optimization for these older kernels to avoid flow control issues.
+        HvGuestOsOpenSourceType::LINUX => {
+            // Linux version is encoded as: ((major << 16) | (minor << 8) | patch)
+            // Linux 3.11.0 = (3 << 16) | (11 << 8) | 0 = 199424
+            open_source_os.version() >= 199424
+        }
         _ => true,
     }
 }
