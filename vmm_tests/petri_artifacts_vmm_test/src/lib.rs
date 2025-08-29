@@ -333,6 +333,29 @@ pub mod artifacts {
         }
 
         declare_artifacts! {
+            /// Ubuntu 24.04 Server X64
+            UBUNTU_2404_SERVER_X64
+        }
+
+        impl IsTestVhd for UBUNTU_2404_SERVER_X64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                });
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_X64 {
+            const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-amd64.vhd";
+            const SIZE: u64 = 3758211584;
+        }
+
+        declare_artifacts! {
             /// Ubuntu 24.04 Server Aarch64
             UBUNTU_2404_SERVER_AARCH64
         }
