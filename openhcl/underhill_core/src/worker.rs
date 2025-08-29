@@ -1351,7 +1351,28 @@ async fn new_underhill_vm(
         })
         .collect::<Vec<_>>();
 
-    let enable_vpci_relay = env_cfg.enable_vpci_relay.unwrap_or(hardware_isolated);
+    let hide_isolation = isolation.is_isolated() && env_cfg.hide_isolation;
+
+    let mut with_vmbus: bool = false;
+    let mut with_vmbus_relay = false;
+    if dps.general.vmbus_redirection_enabled {
+        with_vmbus = true;
+        // If the guest is isolated but we are hiding this fact, then don't
+        // start the relay--the guest will not be able to use relayed channels
+        // since it will not be able to put their ring buffers in shared memory.
+        with_vmbus_relay = !hide_isolation;
+    }
+
+    let enable_vpci_relay = env_cfg
+        .enable_vpci_relay
+        .unwrap_or(hardware_isolated && !hide_isolation);
+
+    // BUGBUG: needed because some CVM tests don't enable VPCI relay. This must be fixed.
+    let enable_vpci_relay = enable_vpci_relay && with_vmbus_relay;
+
+    if enable_vpci_relay && !with_vmbus_relay {
+        anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
+    }
 
     let mut vtl0_mmio;
     let (vtl0_mmio, vpci_relay_mmio) = if enable_vpci_relay {
@@ -1375,8 +1396,6 @@ async fn new_underhill_vm(
         shared_pool,
         complete_memory_layout,
     } = build_vtl0_memory_layout(vtl0_memory_map, vtl0_mmio, shared_pool_size)?;
-
-    let hide_isolation = isolation.is_isolated() && env_cfg.hide_isolation;
 
     // Determine if x2apic is supported so that the topology matches
     // reality.
@@ -1423,20 +1442,6 @@ async fn new_underhill_vm(
         )
         .context("failed to construct the processor topology")?
     };
-
-    let mut with_vmbus: bool = false;
-    let mut with_vmbus_relay = false;
-    if dps.general.vmbus_redirection_enabled {
-        with_vmbus = true;
-        // If the guest is isolated but we are hiding this fact, then don't
-        // start the relay--the guest will not be able to use relayed channels
-        // since it will not be able to put their ring buffers in shared memory.
-        with_vmbus_relay = !hide_isolation;
-    }
-
-    if enable_vpci_relay && !with_vmbus_relay && !hide_isolation {
-        anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
-    }
 
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
