@@ -344,7 +344,7 @@ impl VpciDeviceDescription {
         // responsible notifying the worker when the device is no longer in use.
         let dev = InUseDevice { req, id };
 
-        dev.req.call_failable(WorkerRequest::Init, self.id).await?;
+        dev.req.call_failable(WorkerRequest::Init, id).await?;
 
         let mut high64 = false;
         let mut bar_rao = [0; 6];
