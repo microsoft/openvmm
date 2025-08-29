@@ -22,8 +22,6 @@ use tdcall::tdcall_map_gpa;
 use tdcall::tdcall_wrmsr;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::RESET_VECTOR_PAGE;
-use x86defs::tdx::TdCallResult;
-use x86defs::tdx::TdReport;
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {
@@ -212,9 +210,4 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
             .tdx_start_vp(cpu as u32)
             .expect("start vp should not fail");
     }
-}
-
-/// Gets the TdReport.
-pub fn get_tdreport(report: &mut TdReport) -> Result<(), TdCallResult> {
-    tdcall::tdcall_mr_report(&mut TdcallInstruction, report)
 }

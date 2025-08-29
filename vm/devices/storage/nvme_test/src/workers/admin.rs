@@ -8,12 +8,10 @@ use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
 use crate::DOORBELL_STRIDE_BITS;
-use crate::FaultConfiguration;
 use crate::MAX_QES;
 use crate::NVME_VERSION;
 use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
-use crate::QueueFaultBehavior;
 use crate::VENDOR_ID;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
@@ -33,8 +31,11 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::collections::btree_map;
@@ -85,6 +86,8 @@ pub struct AdminHandler {
     config: AdminConfig,
     #[inspect(iter_by_key)]
     namespaces: BTreeMap<u32, Arc<Namespace>>,
+    #[inspect(skip)]
+    timer: PolledTimer,
 }
 
 #[derive(Inspect)]
@@ -360,9 +363,10 @@ pub struct NsidConflict(u32);
 impl AdminHandler {
     pub fn new(driver: VmTaskDriver, config: AdminConfig) -> Self {
         Self {
-            driver,
+            driver: driver.clone(),
             config,
             namespaces: Default::default(),
+            timer: PolledTimer::new(&driver),
         }
     }
 
@@ -464,8 +468,17 @@ impl AdminHandler {
                 let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
-                if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
-                    let fault = admin_fault.fault_submission_queue(command).await;
+                if self.config.fault_configuration.fault_active.get() {
+                    // Get a configured fault. Default if nothing was configured
+                    let fault = self
+                        .config
+                        .fault_configuration
+                        .admin_fault
+                        .admin_submission_queue_faults
+                        .iter()
+                        .find(|(op, _)| *op == opcode.0)
+                        .map(|(_, behavior)| behavior.clone())
+                        .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {
                         QueueFaultBehavior::Update(command_updated) => {
@@ -482,6 +495,15 @@ impl AdminHandler {
                                 &command
                             );
                             return Ok(());
+                        }
+                        QueueFaultBehavior::Delay(duration) => {
+                            self.timer.sleep(duration).await;
+                        }
+                        QueueFaultBehavior::Panic(message) => {
+                            panic!(
+                                "configured fault: admin command panic with command: {:?} and message: {}",
+                                &command, &message
+                            );
                         }
                         QueueFaultBehavior::Default => {}
                     }
@@ -565,7 +587,7 @@ impl AdminHandler {
 
         let status = spec::CompletionStatus::new().with_status(result.status.0);
 
-        let mut completion = spec::Completion {
+        let completion = spec::Completion {
             dw0: result.dw[0],
             dw1: result.dw[1],
             sqid: 0,
@@ -573,29 +595,6 @@ impl AdminHandler {
             status,
             cid,
         };
-
-        if let Some(admin_fault) = &self.config.fault_configuration.admin_fault {
-            let fault = admin_fault.fault_completion_queue(completion.clone()).await;
-
-            match fault {
-                QueueFaultBehavior::Update(completion_new) => {
-                    tracelimit::warn_ratelimited!(
-                        "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
-                        &completion,
-                        &completion_new
-                    );
-                    completion = completion_new;
-                }
-                QueueFaultBehavior::Drop => {
-                    tracelimit::warn_ratelimited!(
-                        "configured fault: admin completion dropped from cq {:?}",
-                        &completion
-                    );
-                    return Ok(());
-                }
-                QueueFaultBehavior::Default => {}
-            }
-        }
 
         state.admin_cq.write(&self.config.mem, completion)?;
         // Again, for simplicity, update EVT_IDX here.

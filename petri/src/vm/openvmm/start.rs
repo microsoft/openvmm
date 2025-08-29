@@ -214,10 +214,11 @@ impl PetriVmConfigOpenVmm {
         let (stderr_read, stderr_write) = pal::pipe_pair()?;
         let task = resources.driver.spawn(
             "serial log",
-            crate::log_stream(
+            crate::log_task(
                 log_file,
                 PolledPipe::new(&resources.driver, stderr_read)
                     .context("failed to create polled pipe")?,
+                "openvmm stderr",
             ),
         );
         resources.log_stream_tasks.push(task);

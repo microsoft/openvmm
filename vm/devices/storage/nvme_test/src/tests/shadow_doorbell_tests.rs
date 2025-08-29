@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::DOORBELL_STRIDE_BITS;
-use crate::FaultConfiguration;
 use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::queue::ShadowDoorbell;
@@ -13,6 +12,9 @@ use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
 use guestmem::GuestMemory;
+use mesh::CellUpdater;
+use nvme_resources::fault::AdminQueueFaultConfig;
+use nvme_resources::fault::FaultConfiguration;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::test_helpers::TestPciInterruptController;
@@ -37,8 +39,10 @@ async fn setup_shadow_doorbells(
     int_controller: &TestPciInterruptController,
     dq_bases: Option<(u64, u64)>,
 ) -> crate::NvmeFaultController {
-    let fault_configuration = FaultConfiguration { admin_fault: None };
-    // Build a controller with 64 entries in the admin queue (just so that the ASQ fits in one page).
+    let fault_configuration = FaultConfiguration {
+        fault_active: CellUpdater::new(false).cell(),
+        admin_fault: AdminQueueFaultConfig::new(),
+    }; // Build a controller with 64 entries in the admin queue (just so that the ASQ fits in one page).
     let mut nvmec = instantiate_and_build_admin_queue(
         cq_buf,
         64,

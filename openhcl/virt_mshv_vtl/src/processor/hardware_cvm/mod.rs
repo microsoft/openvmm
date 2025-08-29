@@ -8,7 +8,6 @@ pub mod tlb_lock;
 
 use super::UhEmulationState;
 use super::UhProcessor;
-use super::UhRunVpError;
 use crate::CvmVtl1State;
 use crate::GuestVsmState;
 use crate::GuestVtl;
@@ -33,6 +32,7 @@ use hvdef::HvInterruptType;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
+use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmVpSecureVtlConfig;
 use hvdef::HvResult;
@@ -50,7 +50,6 @@ use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::TranslateGvaResultCode;
 use std::iter::zip;
 use virt::Processor;
-use virt::VpHaltReason;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::vp::AccessVpState;
@@ -174,7 +173,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         &mut self,
         vtl: GuestVtl,
         name: hvdef::HvRegisterName,
-    ) -> HvResult<hvdef::HvRegisterValue> {
+    ) -> HvResult<HvRegisterValue> {
         self.validate_register_access(vtl, name)?;
         // TODO: when get vp register i.e. in access vp state gets refactored,
         // clean this up.
@@ -918,7 +917,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters
         vp_index: u32,
         vtl: Option<Vtl>,
         registers: &[hvdef::HvRegisterName],
-        output: &mut [hvdef::HvRegisterValue],
+        output: &mut [HvRegisterValue],
     ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
@@ -1806,12 +1805,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
     /// VINA when appropriate. Returns true if interrupt reprocessing is required.
-    fn cvm_handle_cross_vtl_interrupts(&mut self, dev: &impl CpuIo) -> Result<bool, UhRunVpError> {
+    fn cvm_handle_cross_vtl_interrupts(&mut self, dev: &impl CpuIo) -> bool {
         let cvm_state = self.backing.cvm_state();
 
         // If VTL1 is not yet enabled, there is nothing to do.
         if cvm_state.vtl1.is_none() {
-            return Ok(false);
+            return false;
         }
 
         // Check for VTL preemption - which ignores RFLAGS.IF
@@ -1839,13 +1838,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
 
-        Ok(reprocessing_required)
+        reprocessing_required
     }
 
-    pub(crate) fn hcvm_handle_vp_start_enable_vtl(
-        &mut self,
-        vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
+    pub(crate) fn hcvm_handle_vp_start_enable_vtl(&mut self, vtl: GuestVtl) {
         let context = {
             self.cvm_vp_inner().hv_start_enable_vtl_vp[vtl]
                 .lock()
@@ -1866,63 +1862,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 "setting up vp with initial registers"
             );
 
-            if vtl == GuestVtl::Vtl0 {
-                let is_protected_register = |reg, value| -> Result<(), UhRunVpError> {
-                    if self.cvm_is_protected_register_write(vtl, reg, value) {
-                        // In this case, it doesn't matter what VTL the calling
-                        // VP was in, just fail the startup. No need to send an
-                        // intercept message.
-                        return Err(UhRunVpError::StateAccessDenied);
-                    }
-                    Ok(())
-                };
-
-                let hvdef::hypercall::InitialVpContextX64 {
-                    rip: _,
-                    rsp: _,
-                    rflags: _,
-                    cs: _,
-                    ds: _,
-                    es: _,
-                    fs: _,
-                    gs: _,
-                    ss: _,
-                    tr,
-                    ldtr,
-                    idtr,
-                    gdtr,
-                    efer: _,
-                    cr0,
-                    cr3: _,
-                    cr4,
-                    msr_cr_pat: _,
-                } = start_enable_vtl_state.context;
-
-                is_protected_register(HvX64RegisterName::Cr0, cr0)?;
-                is_protected_register(HvX64RegisterName::Cr4, cr4)?;
-                is_protected_register(
-                    HvX64RegisterName::Gdtr,
-                    hvdef::HvRegisterValue::from(gdtr).as_u64(),
-                )?;
-                is_protected_register(
-                    HvX64RegisterName::Idtr,
-                    hvdef::HvRegisterValue::from(idtr).as_u64(),
-                )?;
-                is_protected_register(
-                    HvX64RegisterName::Ldtr,
-                    hvdef::HvRegisterValue::from(ldtr).as_u64(),
-                )?;
-                is_protected_register(
-                    HvX64RegisterName::Tr,
-                    hvdef::HvRegisterValue::from(tr).as_u64(),
-                )?;
-            }
-
             hv1_emulator::hypercall::set_x86_vp_context(
                 &mut self.access_state(vtl.into()),
                 &(start_enable_vtl_state.context),
             )
-            .map_err(UhRunVpError::State)?;
+            .unwrap();
 
             if let InitialVpContextOperation::StartVp = start_enable_vtl_state.operation {
                 match vtl {
@@ -1953,8 +1897,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 }
             }
         }
-
-        Ok(())
     }
 
     fn cvm_handle_exit_activity(&mut self) {
@@ -2372,7 +2314,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         scan_irr: VtlArray<bool, 2>,
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+    ) -> bool {
         self.cvm_handle_exit_activity();
 
         if self.backing.untrusted_synic_mut().is_some() {
@@ -2383,13 +2325,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // Process interrupts.
             self.update_synic(vtl, false);
 
-            B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr)
-                .map_err(VpHaltReason::Hypervisor)?;
+            B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr);
         }
         *first_scan_irr = false;
 
         self.cvm_handle_cross_vtl_interrupts(dev)
-            .map_err(VpHaltReason::InvalidVmState)
     }
 
     fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
@@ -2659,8 +2599,6 @@ pub(crate) fn validate_xsetbv_exit(input: XsetbvExitInput) -> Option<u64> {
 }
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationState<'_, '_, T, B> {
-    type Error = UhRunVpError;
-
     fn guest_memory(&self) -> &GuestMemory {
         &self.vp.partition.gm[self.vtl]
     }
@@ -2669,8 +2607,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
         self.vp.set_tlb_lock(Vtl::Vtl2, self.vtl)
     }
 
-    fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
-        Ok(self.vp.backing.translation_registers(self.vp, self.vtl))
+    fn registers(&mut self) -> TranslationRegisters {
+        self.vp.backing.translation_registers(self.vp, self.vtl)
     }
 }
 

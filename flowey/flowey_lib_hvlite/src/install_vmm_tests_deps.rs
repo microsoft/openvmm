@@ -155,7 +155,10 @@ Otherwise, press `ctrl-c` to cancel the run.
                         // Select required reg keys
                         let mut reg_keys_to_set = BTreeSet::new();
                         if hyperv {
+                            // Allow loading IGVM from file (to run custom OpenHCL firmware)
                             reg_keys_to_set.insert("AllowFirmwareLoadFromFile");
+                            // Enable COM3 and COM4 for Hyper-V VMs so we can get the OpenHCL KMSG logs over serial
+                            reg_keys_to_set.insert("EnableAdditionalComPorts");
 
                             if hardware_isolation {
                                 reg_keys_to_set.insert("EnableHardwareIsolation");

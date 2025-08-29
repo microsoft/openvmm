@@ -105,6 +105,9 @@ open_enum! {
         /// This memory is part of VTL2's address space, not VTL0's. It is
         /// marked as reserved to the kernel.
         VTL2_GPA_POOL = 8,
+        /// This memory is used by VTL2 for TDX AP startup page tables, and is
+        /// marked as reserved to the kernel.
+        VTL2_TDX_PAGE_TABLES = 9,
     }
 }
 
@@ -120,6 +123,7 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_SIDECAR_NODE
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
+                | MemoryVtlType::VTL2_TDX_PAGE_TABLES
         )
     }
 }

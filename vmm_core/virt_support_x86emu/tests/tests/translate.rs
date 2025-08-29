@@ -159,8 +159,6 @@ impl MockSupport {
 }
 
 impl EmulatorSupport for MockSupport {
-    type Error = std::convert::Infallible;
-
     fn vp_index(&self) -> VpIndex {
         VpIndex::BSP
     }
@@ -169,9 +167,7 @@ impl EmulatorSupport for MockSupport {
         Vendor::INTEL
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    fn flush(&mut self) {}
 
     fn gp(&mut self, reg: Gp) -> u64 {
         self.state.gps[reg as usize]
@@ -205,7 +201,7 @@ impl EmulatorSupport for MockSupport {
     fn xmm(&mut self, _reg: usize) -> u128 {
         todo!()
     }
-    fn set_xmm(&mut self, _reg: usize, _v: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, _reg: usize, _v: u128) {
         todo!()
     }
 
@@ -217,7 +213,7 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
-    ) -> Result<(), EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), EmuCheckVtlAccessError> {
         Ok(())
     }
 
@@ -225,7 +221,7 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         gva: u64,
         mode: TranslateMode,
-    ) -> Result<Result<EmuTranslateResult, EmuTranslateError>, Self::Error> {
+    ) -> Result<EmuTranslateResult, EmuTranslateError> {
         println!("translating for {:?} access", mode);
 
         if mode == TranslateMode::Execute {
@@ -234,10 +230,10 @@ impl EmulatorSupport for MockSupport {
 
         match self.mode {
             MockSupportMode::Code(c) => match c {
-                TranslateGvaResultCode::INTERCEPT => Ok(Err(EmuTranslateError {
+                TranslateGvaResultCode::INTERCEPT => Err(EmuTranslateError {
                     code: c,
                     event_info: Some(Self::intercept_event()),
-                })),
+                }),
                 TranslateGvaResultCode::SUCCESS => {
                     let MockSupportTranslation {
                         access_gva: test_gva,
@@ -261,20 +257,20 @@ impl EmulatorSupport for MockSupport {
 
                     println!("translated gva {:x} to {:x}", gva, gpa);
 
-                    Ok(Ok(EmuTranslateResult {
+                    Ok(EmuTranslateResult {
                         gpa,
                         overlay_page: Some(false),
-                    }))
+                    })
                 }
-                _ => Ok(Err(EmuTranslateError {
+                _ => Err(EmuTranslateError {
                     code: c,
                     event_info: None,
-                })),
+                }),
             },
-            MockSupportMode::TestOverlay => Ok(Ok(EmuTranslateResult {
+            MockSupportMode::TestOverlay => Ok(EmuTranslateResult {
                 gpa: gva,
                 overlay_page: Some(true),
-            })),
+            }),
         }
     }
 

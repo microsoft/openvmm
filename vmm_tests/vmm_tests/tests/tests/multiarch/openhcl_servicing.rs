@@ -8,7 +8,15 @@
 
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::VpciDeviceConfig;
+use mesh::CellUpdater;
+use nvme_resources::NamespaceDefinition;
+use nvme_resources::NvmeFaultControllerHandle;
+use nvme_resources::fault::AdminQueueFaultConfig;
+use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::QueueFaultBehavior;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
@@ -26,7 +34,6 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
-use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
@@ -95,7 +102,7 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
     }
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -172,7 +179,7 @@ async fn shutdown_ic(
                 c.vmbus_devices.push((
                     DeviceVtl::Vtl0,
                     ScsiControllerHandle {
-                        instance_id: guid::Guid::new_random(),
+                        instance_id: Guid::new_random(),
                         max_sub_channel_count: 1,
                         devices: vec![ScsiDeviceAndPath {
                             path: ScsiPath {
@@ -218,9 +225,121 @@ async fn shutdown_ic(
 
     vm.send_enlightened_shutdown(petri::ShutdownKind::Shutdown)
         .await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
 // TODO: add tests with guest workloads while doing servicing.
 // TODO: add tests from previous release branch to current.
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn keepalive_with_nvme_fault(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    let vtl0_nvme_lun = 1;
+    let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
+    let scsi_instance = Guid::new_random();
+
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration {
+        fault_active: fault_start_updater.cell(),
+        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+            nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
+            QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. This should never happen.".to_string()),
+        ),
+    };
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off") // disable sidecar until #1345 is fixed
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                // Add a fault controller to test the nvme controller functionality
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: NVME_INSTANCE,
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count: 10,
+                        max_io_queues: 10,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: vtl2_nsid,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(256 * 1024),
+                            })
+                            .into_resource(),
+                        }],
+                        fault_config: fault_configuration,
+                    }
+                    .into_resource(),
+                })
+            })
+            // Assign the fault controller to VTL2
+            .with_custom_vtl2_settings(|v| {
+                v.dynamic.as_mut().unwrap().storage_controllers.push(
+                    vtl2_settings_proto::StorageController {
+                        instance_id: scsi_instance.to_string(),
+                        protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
+                            .into(),
+                        luns: vec![vtl2_settings_proto::Lun {
+                            location: vtl0_nvme_lun,
+                            device_id: Guid::new_random().to_string(),
+                            vendor_id: "OpenVMM".to_string(),
+                            product_id: "Disk".to_string(),
+                            product_revision_level: "1.0".to_string(),
+                            serial_number: "0".to_string(),
+                            model_number: "1".to_string(),
+                            physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
+                                r#type: vtl2_settings_proto::physical_devices::BackingType::Single
+                                    .into(),
+                                device: Some(vtl2_settings_proto::PhysicalDevice {
+                                    device_type:
+                                        vtl2_settings_proto::physical_device::DeviceType::Nvme
+                                            .into(),
+                                    device_path: NVME_INSTANCE.to_string(),
+                                    sub_device_path: vtl2_nsid,
+                                }),
+                                devices: Vec::new(),
+                            }),
+                            ..Default::default()
+                        }],
+                        io_queue_depth: None,
+                    },
+                )
+            })
+        })
+        .run()
+        .await?;
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    // CREATE_IO_COMPLETION_QUEUE is blocked. This will time out without keepalive enabled.
+    fault_start_updater.set(true).await;
+    vm.restart_openhcl(
+        igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}

@@ -925,9 +925,13 @@ impl InitializedVm {
 
         // Add in Hyper-V VMM CPUID leaves.
         if cfg.hypervisor.with_hv {
+            let confidential_vmbus = false;
             // Only advertise extended IOAPIC on non-PCAT systems.
             let extended_ioapic_rte = !matches!(cfg.load_mode, LoadMode::Pcat { .. });
-            cpuid.extend(vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte));
+            cpuid.extend(vmm_core::cpuid::hyperv_cpuid_leaves(
+                extended_ioapic_rte,
+                confidential_vmbus,
+            ));
         }
 
         // Add in topology CPUID leaves.
