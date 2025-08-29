@@ -10,6 +10,7 @@ mod io;
 pub use admin::NsidConflict;
 pub use coordinator::NvmeFaultControllerClient;
 pub use coordinator::NvmeWorkers;
+pub use coordinator::NvmeWorkersContext;
 
 use crate::PAGE_SIZE;
 use inspect::Inspect;

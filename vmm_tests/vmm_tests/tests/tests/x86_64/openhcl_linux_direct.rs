@@ -33,7 +33,6 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
-use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
@@ -66,7 +65,7 @@ async fn mana_nic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), any
     validate_mana_nic(&agent).await?;
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -88,7 +87,7 @@ async fn mana_nic_shared_pool(
     validate_mana_nic(&agent).await?;
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -121,7 +120,7 @@ async fn mana_nic_servicing(
     validate_mana_nic(&agent).await?;
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -161,6 +160,11 @@ async fn many_nvme_devices_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     const NUM_NVME_DEVICES: usize = 8;
     const SIZE: u64 = 0x1000;
     // Zeros make it easy to see what's going on when inspecting logs. Each device must be
@@ -261,7 +265,7 @@ async fn many_nvme_devices_servicing(
     }
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -402,7 +406,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     assert_eq!(reported_sizes.len(), 3);
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -545,7 +549,7 @@ async fn openhcl_linux_storvsp_dvd(
 
     agent.power_off().await?;
     drop(hot_plug_send);
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -639,7 +643,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(
     assert_eq!(b[..], bytes[..], "content mismatch");
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -738,7 +742,7 @@ async fn openhcl_linux_stripe_storvsp(
     );
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -843,7 +847,7 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
     );
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }

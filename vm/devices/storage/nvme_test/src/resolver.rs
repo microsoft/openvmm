@@ -3,7 +3,6 @@
 
 //! Resource resolver for the nvme controller.
 
-use crate::FaultConfiguration;
 use crate::NsidConflict;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
@@ -65,7 +64,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
             },
-            FaultConfiguration { admin_fault: None },
+            resource.fault_config,
         );
         for NamespaceDefinition {
             nsid,
