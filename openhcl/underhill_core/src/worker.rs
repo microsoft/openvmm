@@ -109,7 +109,6 @@ use pal_async::DefaultPool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
-use pci_core::spec::hwid::HardwareIds;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
 use socket2::Socket;
