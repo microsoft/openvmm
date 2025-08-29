@@ -15,6 +15,7 @@ use guestmem::GuestMemory;
 use mesh::CellUpdater;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::PciFaultConfig;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::test_helpers::TestPciInterruptController;
@@ -42,6 +43,7 @@ async fn setup_shadow_doorbells(
     let fault_configuration = FaultConfiguration {
         fault_active: CellUpdater::new(false).cell(),
         admin_fault: AdminQueueFaultConfig::new(),
+        pci_fault: PciFaultConfig::new(),
     }; // Build a controller with 64 entries in the admin queue (just so that the ASQ fits in one page).
     let mut nvmec = instantiate_and_build_admin_queue(
         cq_buf,

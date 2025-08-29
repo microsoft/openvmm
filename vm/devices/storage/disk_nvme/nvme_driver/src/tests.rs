@@ -12,6 +12,7 @@ use mesh::CellUpdater;
 use nvme::NvmeControllerCaps;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::PciFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
@@ -50,6 +51,7 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
                 AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
                 QueueFaultBehavior::Update(output_cmd),
             ),
+            pci_fault: PciFaultConfig::new(),
         },
     )
     .await;

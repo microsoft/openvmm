@@ -23,6 +23,22 @@ pub enum QueueFaultBehavior<T> {
     Panic(String),
 }
 
+#[derive(Clone, MeshPayload)]
+/// Supported fault behaviour for PCI faults
+pub enum PciFaultBehavior {
+    /// Introduce a delay to the PCI operation
+    Delay(Duration),
+    /// Do nothing
+    Default,
+}
+
+#[derive(MeshPayload, Clone)]
+/// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
+pub struct PciFaultConfig {
+    /// Fault to apply to cc.en() bit during enablement
+    pub controller_management_fault_enable: PciFaultBehavior,
+}
+
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
@@ -37,6 +53,23 @@ pub struct FaultConfiguration {
     pub fault_active: Cell<bool>,
     /// Fault to apply to the admin queues
     pub admin_fault: AdminQueueFaultConfig,
+    /// Fault to apply to management layer of the controller
+    pub pci_fault: PciFaultConfig,
+}
+
+impl PciFaultConfig {
+    /// Create a new no-op fault configuration
+    pub fn new() -> Self {
+        Self {
+            controller_management_fault_enable: PciFaultBehavior::Default,
+        }
+    }
+
+    /// Add a cc.en() fault
+    pub fn with_cc_enable_fault(mut self, behaviour: PciFaultBehavior) -> Self {
+        self.controller_management_fault_enable = behaviour;
+        self
+    }
 }
 
 impl AdminQueueFaultConfig {

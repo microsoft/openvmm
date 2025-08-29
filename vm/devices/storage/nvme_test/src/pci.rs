@@ -31,6 +31,7 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::PciFaultBehavior;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
@@ -59,6 +60,8 @@ pub struct NvmeFaultController {
     qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
+    #[inspect(skip)]
+    fault_configuration: FaultConfiguration,
 }
 
 #[derive(Inspect)]
@@ -155,7 +158,7 @@ impl NvmeFaultController {
             max_cqs: caps.max_io_queues,
             qe_sizes: Arc::clone(&qe_sizes),
             subsystem_id: caps.subsystem_id,
-            fault_configuration,
+            fault_configuration: fault_configuration.clone(),
         });
 
         Self {
@@ -164,6 +167,7 @@ impl NvmeFaultController {
             registers: RegState::new(),
             workers: admin,
             qe_sizes,
+            fault_configuration,
         }
     }
 
@@ -341,6 +345,18 @@ impl NvmeFaultController {
 
         if cc.en() != self.registers.cc.en() {
             if cc.en() {
+                // If any fault was configured for cc.en() process it here
+                match self
+                    .fault_configuration
+                    .pci_fault
+                    .controller_management_fault_enable
+                {
+                    PciFaultBehavior::Delay(duration) => {
+                        std::thread::sleep(duration);
+                    }
+                    PciFaultBehavior::Default => {}
+                }
+
                 // Some drivers will write zeros to IOSQES and IOCQES, assuming that the defaults will work.
                 if cc.iocqes() == 0 {
                     cc.set_iocqes(IOCQES);
@@ -430,6 +446,7 @@ impl ChangeDeviceState for NvmeFaultController {
             registers,
             qe_sizes,
             workers,
+            fault_configuration: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
