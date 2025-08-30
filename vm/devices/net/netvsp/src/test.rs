@@ -3662,13 +3662,11 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(50))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
@@ -3696,19 +3694,17 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(250))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
 
     // Sending the same state as the current is considered a toggle.
-    // For example, if the link is up, sending a up is a toggle up->down->up and vice versa.
+    // For example, if the link is up, sending an up is a toggle up->down->up and vice versa.
     // And, there is a time delay in between the transition.
     TestNicEndpointState::update_link_status(&endpoint_state, [true].as_slice());
     let link_status_msg: rndisprot::IndicateStatus = channel
@@ -3716,13 +3712,11 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(50))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
@@ -3779,7 +3773,7 @@ async fn link_status_update(driver: DefaultDriver) {
     let link_status_msg: Option<rndisprot::IndicateStatus> = channel
         .read_rndis_control_message_with_timeout(
             rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
-            Duration::from_millis(10),
+            LINK_DELAY_DURATION / 10,
         )
         .await;
     assert!(link_status_msg.is_none());
