@@ -14,6 +14,7 @@ use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
+use mesh::CancelContext;
 use pal_async::DefaultDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -95,7 +96,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     resources: PetriVmResources,
 
     // VMM-specific quirks for the configured firmware
-    quirks: GuestQuirksInner,
+    guest_quirks: GuestQuirksInner,
+    vmm_quirks: VmmQuirks,
 
     // Test-specific boot behavior expectations.
     // Defaults to expected behavior for firmware configuration.
@@ -143,8 +145,8 @@ pub trait PetriVmmBackend {
     /// supported on the VMM.
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool;
 
-    /// Given a set a guest quirks, select the relevant quirks for this backend.
-    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner;
+    /// Select backend specific quirks guest and vmm quirks.
+    fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks);
 
     /// Resolve any artifacts needed to use this backend
     fn new(resolver: &ArtifactResolver<'_>) -> Self;
@@ -166,7 +168,8 @@ pub struct PetriVm<T: PetriVmmBackend> {
     openhcl_diag_handler: Option<OpenHclDiagHandler>,
 
     arch: MachineArch,
-    quirks: GuestQuirksInner,
+    guest_quirks: GuestQuirksInner,
+    vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
 }
 
@@ -177,7 +180,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         artifacts: PetriVmArtifacts<T>,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
-        let quirks = T::select_quirks(artifacts.firmware.quirks());
+        let (guest_quirks, vmm_quirks) = T::quirks(&artifacts.firmware);
         let expected_boot_event = artifacts.firmware.expected_boot_event();
 
         Ok(Self {
@@ -199,7 +202,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 log_source: params.logger.clone(),
             },
 
-            quirks,
+            guest_quirks,
+            vmm_quirks,
             expected_boot_event,
             override_expect_reset: false,
         })
@@ -243,7 +247,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             openhcl_diag_handler,
 
             arch,
-            quirks: self.quirks,
+            guest_quirks: self.guest_quirks,
+            vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
         };
 
@@ -261,7 +266,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self.override_expect_reset
             || matches!(
                 (
-                    self.quirks.initial_reboot,
+                    self.guest_quirks.initial_reboot,
                     self.expected_boot_event,
                     &self.config.firmware,
                 ),
@@ -757,7 +762,44 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// returns that status.
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
         tracing::info!("Waiting for boot event...");
-        let boot_event = self.runtime.wait_for_boot_event().await?;
+        let boot_event = if let Some(timeout) = self.vmm_quirks.flaky_boot {
+            let inspector = self.runtime.inspector();
+            loop {
+                match CancelContext::new()
+                    .with_timeout(timeout)
+                    .until_cancelled(self.runtime.wait_for_boot_event())
+                    .await
+                {
+                    Ok(res) => break res?,
+                    Err(_) => {
+                        tracing::error!(
+                            "Did not get boot event in required time, saving inspect and resetting..."
+                        );
+                        if let Some(inspector) = &inspector {
+                            match inspector.inspect().await {
+                                Err(e) => {
+                                    tracing::error!(?e, "Failed to get inspect contents");
+                                }
+                                Ok(info) => {
+                                    if let Err(e) = self
+                                        .resources
+                                        .log_source
+                                        .write_attachment("timeout_inspect.log", info)
+                                    {
+                                        tracing::error!(?e, "Failed to save inspect log");
+                                    }
+                                }
+                            };
+                        }
+
+                        self.runtime.reset().await?;
+                        continue;
+                    }
+                }
+            }
+        } else {
+            self.runtime.wait_for_boot_event().await?
+        };
         tracing::info!("Got boot event: {boot_event:?}");
         Ok(boot_event)
     }
@@ -776,7 +818,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         let mut wait_time = Duration::from_secs(5);
 
         // some guests need even more time
-        if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
+        if let Some(duration) = self.guest_quirks.hyperv_shutdown_ic_sleep {
             wait_time += duration;
         }
 
@@ -884,6 +926,8 @@ pub trait PetriVmRuntime {
     fn take_framebuffer_access(&mut self) -> Option<Self::VmFramebufferAccess> {
         None
     }
+    /// Issue a hard reset to the VM
+    async fn reset(&mut self) -> anyhow::Result<()>;
 }
 
 /// Interface for getting information about the state of the VM
@@ -1510,6 +1554,15 @@ pub enum SecureBootTemplate {
     MicrosoftWindows,
     /// The Microsoft UEFI certificate authority template.
     MicrosoftUefiCertificateAuthority,
+}
+
+/// Quirks to workaround certain bugs that only manifest when using a
+/// particular VMM, and do not depend on which guest is running.
+#[derive(Default, Debug, Clone)]
+pub struct VmmQuirks {
+    /// Automatically reset the VM if we did not recieve a boot event in the
+    /// specified amount of time.
+    pub flaky_boot: Option<Duration>,
 }
 
 /// Creates a VM-safe name that respects platform limitations.

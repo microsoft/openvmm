@@ -21,6 +21,7 @@ use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
 use crate::UefiConfig;
+use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
@@ -37,7 +38,6 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
@@ -75,8 +75,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
     }
 
-    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner {
-        quirks.hyperv
+    fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
+        (firmware.quirks().hyperv, VmmQuirks::default())
     }
 
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
@@ -526,6 +526,10 @@ impl PetriVmRuntime for HyperVPetriRuntime {
 
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
         (!self.is_isolated).then(|| self.vm.get_framebuffer_access())
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        self.vm.reset().await
     }
 }
 
