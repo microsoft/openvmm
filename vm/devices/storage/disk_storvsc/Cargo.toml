@@ -12,15 +12,17 @@ test = []
 [dependencies]
 disk_backend.workspace = true
 storvsc_driver.workspace = true
+storvsp_protocol.workspace = true
 
 igvm_defs.workspace = true
 scsi_buffers.workspace = true
 scsi_defs.workspace = true
 vmbus_user_channel.workspace = true
 
-storvsp_protocol.workspace = true
+event-listener.workspace = true
 inspect.workspace = true
 futures.workspace = true
+static_assertions.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 

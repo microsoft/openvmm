@@ -1378,11 +1378,13 @@ name = "disk_storvsc"
 version = "0.0.0"
 dependencies = [
  "disk_backend",
+ "event-listener",
  "futures",
  "igvm_defs",
  "inspect",
  "scsi_buffers",
  "scsi_defs",
+ "static_assertions",
  "storvsc_driver",
  "storvsp_protocol",
  "tracing",
@@ -6945,6 +6947,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "cvm_tracing",
+ "event-listener",
  "futures",
  "futures-concurrency",
  "guestmem",

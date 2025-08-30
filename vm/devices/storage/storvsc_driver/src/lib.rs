@@ -22,6 +22,7 @@ use mesh_channel::Receiver;
 use mesh_channel::RecvError;
 use mesh_channel::Sender;
 use slab::Slab;
+use std::collections::HashMap;
 use std::sync::Arc;
 use task_control::AsyncRun;
 use task_control::InspectTask;
@@ -57,6 +58,8 @@ pub struct StorvscDriver<T: Send + Sync + RingMem> {
     #[inspect(skip)]
     new_request_sender: Option<Sender<StorvscRequest>>,
     #[inspect(skip)]
+    add_resize_listener_sender: Option<Sender<StorvscAddResizeListenerRequest>>,
+    #[inspect(skip)]
     dma_client: Arc<dyn DmaClient>,
 }
 
@@ -71,7 +74,9 @@ struct Storvsc<T: Send + Sync + RingMem> {
 
 struct StorvscInner {
     new_request_receiver: Receiver<StorvscRequest>,
+    add_resize_listener_receiver: Receiver<StorvscAddResizeListenerRequest>,
     transactions: Slab<PendingOperation>,
+    resize_listeners: HashMap<u8, Arc<event_listener::Event>>,
 }
 
 struct StorvscRequest {
@@ -79,6 +84,11 @@ struct StorvscRequest {
     buf_gpa: u64,
     byte_len: usize,
     completion_sender: Sender<StorvscCompletion>,
+}
+
+struct StorvscAddResizeListenerRequest {
+    lun: u8,
+    event: Arc<event_listener::Event>,
 }
 
 /// Indicates the reason a storvsc operation was completed.
@@ -90,6 +100,8 @@ pub enum StorvscCompleteReason {
     Shutdown,
     /// Cancelled due to save/restore.
     SaveRestore,
+    /// Cancelled due to UNIT ATTENTION sense key.
+    UnitAttention,
 }
 
 /// Result of a Storvsc operation. If None, then operation was cancelled.
@@ -227,6 +239,7 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
         Self {
             storvsc: Mutex::new(TaskControl::new(StorvscState)),
             new_request_sender: None,
+            add_resize_listener_sender: None,
             dma_client,
         }
     }
@@ -245,9 +258,17 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             .run_on_target(true)
             .build("storvsc");
         let (new_request_sender, new_request_receiver) = mesh_channel::channel::<StorvscRequest>();
-        let mut storvsc = Storvsc::new(channel, version, new_request_receiver)?;
+        let (add_resize_listener_sender, add_resize_listener_receiver) =
+            mesh_channel::channel::<StorvscAddResizeListenerRequest>();
+        let mut storvsc = Storvsc::new(
+            channel,
+            version,
+            new_request_receiver,
+            add_resize_listener_receiver,
+        )?;
         storvsc.negotiate().await.unwrap();
         self.new_request_sender = Some(new_request_sender);
+        self.add_resize_listener_sender = Some(add_resize_listener_sender);
 
         {
             let mut s = self.storvsc.lock().await;
@@ -304,6 +325,8 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             .run_on_target(true)
             .build("storvsc");
         let (new_request_sender, new_request_receiver) = mesh_channel::channel::<StorvscRequest>();
+        let (add_resize_listener_sender, add_resize_listener_receiver) =
+            mesh_channel::channel::<StorvscAddResizeListenerRequest>();
         let storvsc = Storvsc::new(
             channel,
             storvsp_protocol::ProtocolVersion {
@@ -311,10 +334,12 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
                 reserved: 0,
             },
             new_request_receiver,
+            add_resize_listener_receiver,
         )?;
         let storvsc_driver = Self {
             storvsc: Mutex::new(TaskControl::new(StorvscState)),
             new_request_sender: Some(new_request_sender),
+            add_resize_listener_sender: Some(add_resize_listener_sender),
             dma_client,
         };
 
@@ -370,12 +395,31 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             StorvscCompleteReason::SaveRestore => {
                 Err(StorvscError(StorvscErrorInner::CancelledRetry))
             }
+            StorvscCompleteReason::UnitAttention => {
+                Err(StorvscError(StorvscErrorInner::CancelledRetry))
+            }
         }
     }
 
     /// Allocates a DMA buffer for use by clients to this driver.
     pub fn allocate_dma_buffer(&self, size: usize) -> Result<MemoryBlock, anyhow::Error> {
         self.dma_client.allocate_dma_buffer(size)
+    }
+
+    /// Registers a resize listener for a disk.
+    pub fn add_resize_listener(
+        &self,
+        lun: u8,
+        event: Arc<event_listener::Event>,
+    ) -> Result<(), StorvscError> {
+        tracing::info!(lun, "Adding resize listener");
+        match &self.add_resize_listener_sender {
+            Some(request_sender) => {
+                request_sender.send(StorvscAddResizeListenerRequest { lun, event });
+                Ok(())
+            }
+            None => Err(StorvscError(StorvscErrorInner::Uninitialized)),
+        }
     }
 }
 
@@ -416,6 +460,7 @@ impl<T: 'static + Send + Sync + RingMem> Storvsc<T> {
         channel: RawAsyncChannel<T>,
         version: storvsp_protocol::ProtocolVersion,
         new_request_receiver: Receiver<StorvscRequest>,
+        add_resize_listener_receiver: Receiver<StorvscAddResizeListenerRequest>,
     ) -> Result<Self, StorvscError> {
         let queue =
             Queue::new(channel).map_err(|err| StorvscError(StorvscErrorInner::Queue(err)))?;
@@ -423,7 +468,9 @@ impl<T: 'static + Send + Sync + RingMem> Storvsc<T> {
         Ok(Self {
             inner: StorvscInner {
                 new_request_receiver,
+                add_resize_listener_receiver,
                 transactions: Slab::new(),
+                resize_listeners: HashMap::new(),
             },
             version,
             queue,
@@ -526,20 +573,22 @@ impl StorvscInner {
     async fn process_main<M: RingMem>(&mut self, queue: &mut Queue<M>) -> Result<(), StorvscError> {
         loop {
             enum Event<'a, M: RingMem> {
-                NewRequestReceived(Result<StorvscRequest, RecvError>),
-                VmbusPacketReceived(Result<PacketRef<'a, M>, queue::Error>),
+                NewRequest(Result<StorvscRequest, RecvError>),
+                ReceivedVmbusPacket(Result<PacketRef<'a, M>, queue::Error>),
+                AddResizeListener(Result<StorvscAddResizeListenerRequest, RecvError>),
             }
             let (mut reader, mut writer) = queue.split();
             match (
-                self.new_request_receiver
+                self.new_request_receiver.recv().map(Event::NewRequest),
+                reader.read().map(Event::ReceivedVmbusPacket),
+                self.add_resize_listener_receiver
                     .recv()
-                    .map(Event::NewRequestReceived),
-                reader.read().map(Event::VmbusPacketReceived),
+                    .map(Event::AddResizeListener),
             )
                 .race()
                 .await
             {
-                Event::NewRequestReceived(result) => match result {
+                Event::NewRequest(result) => match result {
                     Ok(request) => {
                         match self.send_request(
                             &request.request,
@@ -563,11 +612,25 @@ impl StorvscInner {
                         Err(StorvscError(StorvscErrorInner::RequestError))
                     }
                 },
-                Event::VmbusPacketReceived(result) => match result {
+                Event::ReceivedVmbusPacket(result) => match result {
                     Ok(packet_ref) => self.handle_packet(packet_ref.as_ref()),
                     Err(err) => {
                         tracing::error!("Error receiving VMBus packet, err={:?}", err);
                         Err(StorvscError(StorvscErrorInner::Queue(err)))
+                    }
+                },
+                Event::AddResizeListener(result) => match result {
+                    Ok(request) => {
+                        // Replace listener if one already present for lun
+                        self.resize_listeners.insert(request.lun, request.event);
+                        Ok(())
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Unable to receive add resize listener request, err={:?}",
+                            err
+                        );
+                        Err(StorvscError(StorvscErrorInner::RequestError))
                     }
                 },
             }?;
@@ -628,17 +691,44 @@ impl StorvscInner {
                         .map_err(|_err| StorvscError(StorvscErrorInner::DecodeError))?
                         .to_owned();
 
-                // Match completion against pending transactions
-                match self
-                    .transactions
-                    .get_mut(completion.transaction_id as usize)
+                // If CHECK CONDITION with sense UNIT ATTENTION, then notify any resize listeners and
+                // resend this request
+                if result.scsi_status == scsi_defs::ScsiStatus::CHECK_CONDITION
+                    && result.srb_status.autosense_valid()
+                    && scsi_defs::SenseData::ref_from_bytes(result.payload.as_slice())
+                        .map_err(|_err| StorvscError(StorvscErrorInner::DecodeError))?
+                        .header
+                        .sense_key
+                        == scsi_defs::SenseKey::UNIT_ATTENTION
                 {
-                    Some(t) => Ok(t),
-                    None => Err(StorvscError(StorvscErrorInner::PacketError(
-                        PacketError::UnexpectedTransaction(completion.transaction_id),
-                    ))),
-                }?
-                .complete(result);
+                    if let Some(listener) = self.resize_listeners.get(&result.lun) {
+                        listener.notify(usize::MAX);
+                    }
+
+                    // Match completion against pending transactions
+                    match self
+                        .transactions
+                        .get_mut(completion.transaction_id as usize)
+                    {
+                        Some(t) => Ok(t),
+                        None => Err(StorvscError(StorvscErrorInner::PacketError(
+                            PacketError::UnexpectedTransaction(completion.transaction_id),
+                        ))),
+                    }?
+                    .cancel(StorvscCompleteReason::UnitAttention);
+                } else {
+                    // Match completion against pending transactions
+                    match self
+                        .transactions
+                        .get_mut(completion.transaction_id as usize)
+                    {
+                        Some(t) => Ok(t),
+                        None => Err(StorvscError(StorvscErrorInner::PacketError(
+                            PacketError::UnexpectedTransaction(completion.transaction_id),
+                        ))),
+                    }?
+                    .complete(result);
+                }
 
                 Ok(())
             }
