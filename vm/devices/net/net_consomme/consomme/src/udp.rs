@@ -3,11 +3,11 @@
 
 use super::Access;
 use super::Client;
-use super::ConsommeState;
 use super::DropReason;
 use super::SocketAddress;
 use super::dhcp::DHCP_SERVER;
 use crate::ChecksumState;
+use crate::ConsommeState;
 use crate::Ipv4Addresses;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -116,7 +116,7 @@ impl UdpConnection {
                         unreachable!()
                     };
                     eth.set_ethertype(EthernetProtocol::Ipv4);
-                    eth.set_src_addr(state.gateway_mac);
+                    eth.set_src_addr(state.params.gateway_mac);
                     eth.set_dst_addr(self.guest_mac);
                     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
                     Ipv4Repr {
@@ -187,7 +187,9 @@ impl<T: Client> Access<'_, T> {
             &checksum.caps(),
         )?;
 
-        if addresses.dst_addr == self.inner.state.gateway_ip || addresses.dst_addr.is_broadcast() {
+        if addresses.dst_addr == self.inner.state.params.gateway_ip
+            || addresses.dst_addr.is_broadcast()
+        {
             if self.handle_gateway_udp(&udp_packet)? {
                 return Ok(());
             }
@@ -234,7 +236,7 @@ impl<T: Client> Access<'_, T> {
                     PolledSocket::new(self.client.driver(), socket).map_err(DropReason::Io)?;
                 let conn = UdpConnection {
                     socket: Some(socket),
-                    guest_mac: guest_mac.unwrap_or(self.inner.state.client_mac),
+                    guest_mac: guest_mac.unwrap_or(self.inner.state.params.client_mac),
                     stats: Default::default(),
                     recycle: false,
                 };

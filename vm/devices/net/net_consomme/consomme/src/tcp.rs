@@ -5,11 +5,11 @@ mod ring;
 
 use super::Access;
 use super::Client;
-use super::ConsommeState;
 use super::DropReason;
 use super::FourTuple;
 use super::SocketAddress;
 use crate::ChecksumState;
+use crate::ConsommeState;
 use crate::Ipv4Addresses;
 use futures::AsyncRead;
 use futures::AsyncWrite;
@@ -222,7 +222,7 @@ impl<T: Client> Access<'_, T> {
                         }
 
                         let ft = FourTuple { dst: other_addr, src: SocketAddress {
-                            ip: self.inner.state.client_ip,
+                            ip: self.inner.state.params.client_ip,
                             port: *port,
                         } };
 
@@ -408,8 +408,8 @@ impl<T: Client> Sender<'_, T> {
         let buffer = &mut self.state.buffer;
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
         eth_packet.set_ethertype(EthernetProtocol::Ipv4);
-        eth_packet.set_dst_addr(self.state.client_mac);
-        eth_packet.set_src_addr(self.state.gateway_mac);
+        eth_packet.set_dst_addr(self.state.params.client_mac);
+        eth_packet.set_src_addr(self.state.params.gateway_mac);
         let mut ipv4_packet = Ipv4Packet::new_unchecked(eth_packet.payload_mut());
         let ipv4 = Ipv4Repr {
             src_addr: self.ft.dst.ip,

@@ -41,22 +41,22 @@ use std::task::Context;
 use thiserror::Error;
 
 /// A consomme instance.
+#[derive(InspectMut)]
 pub struct Consomme {
+    #[inspect(skip)]
     state: ConsommeState,
     tcp: tcp::Tcp,
+    #[inspect(mut)]
     udp: udp::Udp,
 }
 
-impl InspectMut for Consomme {
-    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        req.respond()
-            .field("tcp", &self.tcp)
-            .field_mut("udp", &mut self.udp);
-    }
+struct ConsommeState {
+    params: ConsommeParams,
+    buffer: Box<[u8]>,
 }
 
 /// Dynamic networking properties of a consomme endpoint.
-pub struct ConsommeState {
+pub struct ConsommeParams {
     /// Current IPv4 network mask.
     pub net_mask: Ipv4Address,
     /// Current Ipv4 gateway address.
@@ -69,8 +69,6 @@ pub struct ConsommeState {
     pub client_mac: EthernetAddress,
     /// Current list of DNS resolvers.
     pub nameservers: Vec<Ipv4Address>,
-    /// Buffer for packet processing
-    buffer: Box<[u8]>,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -78,7 +76,7 @@ pub struct ConsommeState {
 #[error("invalid CIDR")]
 pub struct InvalidCidr;
 
-impl ConsommeState {
+impl ConsommeParams {
     /// Create default dynamic network state. The default state is
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
@@ -92,7 +90,6 @@ impl ConsommeState {
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
-            buffer: Box::new([0; 65535]),
         })
     }
 
@@ -288,9 +285,12 @@ struct Ipv4Addresses {
 
 impl Consomme {
     /// Creates a new consomme instance with specified state.
-    pub fn new(state: ConsommeState) -> Self {
+    pub fn new(params: ConsommeParams) -> Self {
         Self {
-            state,
+            state: ConsommeState {
+                params,
+                buffer: Box::new([0; 65536]),
+            },
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(),
         }
@@ -300,8 +300,8 @@ impl Consomme {
     ///
     /// FUTURE: add support for updating only the parameters that can be safely
     /// changed at runtime.
-    pub fn params_mut(&mut self) -> &mut ConsommeState {
-        &mut self.state
+    pub fn params_mut(&mut self) -> &mut ConsommeParams {
+        &mut self.state.params
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.

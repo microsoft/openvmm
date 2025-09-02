@@ -9,7 +9,7 @@ pub mod resolver;
 use async_trait::async_trait;
 use consomme::ChecksumState;
 use consomme::Consomme;
-use consomme::ConsommeState;
+use consomme::ConsommeParams;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -47,7 +47,7 @@ struct EndpointState {
 }
 
 impl ConsommeEndpoint {
-    pub fn new(state: ConsommeState) -> Self {
+    pub fn new(state: ConsommeParams) -> Self {
         Self {
             endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                 consomme: Consomme::new(state),
@@ -56,7 +56,7 @@ impl ConsommeEndpoint {
         }
     }
 
-    pub fn new_dynamic(state: ConsommeState) -> (Self, ConsommeControl) {
+    pub fn new_dynamic(state: ConsommeParams) -> (Self, ConsommeControl) {
         let consomme = Consomme::new(state);
         let (send, recv) = mesh::channel();
         (
@@ -96,7 +96,7 @@ pub enum ConsommeMessageError {
 }
 
 /// Callback to modify network state dynamically.
-pub type ConsommeStateUpdateFn = Box<dyn Fn(&mut ConsommeState) + Send>;
+pub type ConsommeParamsUpdateFn = Box<dyn Fn(&mut ConsommeParams) + Send>;
 
 pub enum IpProtocol {
     Tcp,
@@ -112,7 +112,7 @@ struct MessageBindPort {
 enum ConsommeMessage {
     BindPort(Rpc<MessageBindPort, Result<(), consomme::DropReason>>),
     UnbindPort(Rpc<MessageBindPort, Result<(), consomme::DropReason>>),
-    UpdateState(Rpc<ConsommeStateUpdateFn, ()>),
+    UpdateState(Rpc<ConsommeParamsUpdateFn, ()>),
 }
 
 impl ConsommeControl {
@@ -158,7 +158,10 @@ impl ConsommeControl {
     }
 
     /// Updates dynamic network state
-    pub async fn update_state(&self, f: ConsommeStateUpdateFn) -> Result<(), ConsommeMessageError> {
+    pub async fn update_state(
+        &self,
+        f: ConsommeParamsUpdateFn,
+    ) -> Result<(), ConsommeMessageError> {
         self.send
             .call(ConsommeMessage::UpdateState, f)
             .await
