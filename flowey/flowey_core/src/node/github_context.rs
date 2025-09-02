@@ -121,6 +121,21 @@ impl GhContextVarReader<'_, state::Global> {
     pub fn token(self) -> ReadVar<String> {
         self.read_var("github.token", true, false)
     }
+
+    /// `github.sha`
+    pub fn sha(self) -> ReadVar<String> {
+        self.read_var("github.sha", false, false)
+    }
+
+    /// `github.run_id`
+    pub fn run_id(self) -> ReadVar<String> {
+        self.read_var("github.run_id", false, false)
+    }
+
+    /// `github.ref_name`
+    pub fn ref_name(self) -> ReadVar<String> {
+        self.read_var("github.ref_name", false, false)
+    }
 }
 
 impl GhContextVarReader<'_, state::Event> {

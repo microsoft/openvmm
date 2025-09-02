@@ -176,11 +176,13 @@ impl IntoPipeline for CheckinGatesCli {
         // are used to "skim off" various artifacts that the VMM test jobs
         // require.
         let mut vmm_tests_artifacts_linux_x86 =
-            vmm_tests_artifact_builders::VmmTestsArtifactsBuilderLinuxX86::default();
+            artifact_builders::VmmTestsArtifactsBuilderLinuxX86::default();
         let mut vmm_tests_artifacts_windows_x86 =
-            vmm_tests_artifact_builders::VmmTestsArtifactsBuilderWindowsX86::default();
+            artifact_builders::VmmTestsArtifactsBuilderWindowsX86::default();
         let mut vmm_tests_artifacts_windows_aarch64 =
-            vmm_tests_artifact_builders::VmmTestsArtifactsBuilderWindowsAarch64::default();
+            artifact_builders::VmmTestsArtifactsBuilderWindowsAarch64::default();
+
+        let mut gh_release_artifacts = artifact_builders::GhReleaseArtifactsBuilder::default();
 
         // We need to maintain a list of all jobs, so we can hang the "all good"
         // job off of them. This is requires because github status checks only allow
@@ -261,12 +263,14 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_x86.use_pipette_windows =
                         Some(use_pipette_windows.clone());
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
+                    gh_release_artifacts.use_openvmm_windows_x64 = Some(use_openvmm.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openvmm = Some(use_openvmm.clone());
                     vmm_tests_artifacts_windows_aarch64.use_pipette_windows =
                         Some(use_pipette_windows.clone());
                     vmm_tests_artifacts_windows_aarch64.use_tmk_vmm = Some(use_tmk_vmm.clone());
+                    gh_release_artifacts.use_openvmm_windows_aarch64 = Some(use_openvmm.clone());
                 }
             }
             // emit a job for artifacts which _are not_ in the VMM tests "hot
@@ -454,6 +458,7 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_guest_test_uefi.clone());
                     vmm_tests_artifacts_windows_x86.use_tmks = Some(use_tmks.clone());
                     vmm_tests_artifacts_linux_x86.use_tmks = Some(use_tmks.clone());
+                    gh_release_artifacts.use_openvmm_linux_x64 = Some(use_openvmm.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_guest_test_uefi =
@@ -598,6 +603,7 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_linux_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm_linux_musl =
                         Some(use_tmk_vmm.clone());
+                    gh_release_artifacts.use_openhcl_igvm_files_x64 = Some(use_openhcl_igvm);
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openhcl_igvm_files =
@@ -606,6 +612,7 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_pipette_linux_musl.clone());
                     vmm_tests_artifacts_windows_aarch64.use_tmk_vmm_linux_musl =
                         Some(use_tmk_vmm.clone());
+                    gh_release_artifacts.use_openhcl_igvm_files_aarch64 = Some(use_openhcl_igvm);
                 }
             }
             let igvm_recipes = match arch {
@@ -881,7 +888,7 @@ impl IntoPipeline for CheckinGatesCli {
             gh_pool: GhRunner,
             label: &'a str,
             target: CommonTriple,
-            resolve_vmm_tests_artifacts: vmm_tests_artifact_builders::ResolveVmmTestsDepArtifacts,
+            resolve_vmm_tests_artifacts: artifact_builders::ResolveVmmTestsDepArtifacts,
             nextest_filter_expr: String,
             test_artifacts: Vec<KnownTestArtifacts>,
         }
@@ -1045,37 +1052,67 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job);
         }
 
-        if matches!(config, PipelineConfig::Pr) {
-            // Add a job that depends on all others as a workaround for
-            // https://github.com/orgs/community/discussions/12395.
-            //
-            // This workaround then itself requires _another_ workaround, requiring
-            // the use of `gh_dangerous_override_if`, and some additional custom job
-            // logic, to deal with https://github.com/actions/runner/issues/2566.
-            //
-            // TODO: Add a way for this job to skip flowey setup and become a true
-            // no-op.
-            let all_good_job = pipeline
-                .new_job(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                    FlowArch::X86_64,
-                    "openvmm checkin gates",
-                )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
-                // always run this job, regardless whether or not any previous jobs failed
-                .gh_dangerous_override_if("always() && github.event.pull_request.draft == false")
-                .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
-                .dep_on(|ctx| flowey_lib_hvlite::_jobs::all_good_job::Params {
-                    did_fail_env_var: "ANY_JOBS_FAILED".into(),
-                    done: ctx.new_done_handle(),
-                })
-                .finish();
+        match config {
+            PipelineConfig::Pr => {
+                // Add a job that depends on all others as a workaround for
+                // https://github.com/orgs/community/discussions/12395.
+                //
+                // This workaround then itself requires _another_ workaround, requiring
+                // the use of `gh_dangerous_override_if`, and some additional custom job
+                // logic, to deal with https://github.com/actions/runner/issues/2566.
+                //
+                // TODO: Add a way for this job to skip flowey setup and become a true
+                // no-op.
+                let all_good_job = pipeline
+                        .new_job(
+                            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                            FlowArch::X86_64,
+                            "openvmm checkin gates",
+                        )
+                        .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
+                            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                        ))
+                        // always run this job, regardless whether or not any previous jobs failed
+                        .gh_dangerous_override_if("always() && github.event.pull_request.draft == false")
+                        .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
+                        .dep_on(|ctx| flowey_lib_hvlite::_jobs::all_good_job::Params {
+                            did_fail_env_var: "ANY_JOBS_FAILED".into(),
+                            done: ctx.new_done_handle(),
+                        })
+                        .finish();
 
-            for job in all_jobs.iter() {
-                pipeline.non_artifact_dep(&all_good_job, job);
+                for job in all_jobs.iter() {
+                    pipeline.non_artifact_dep(&all_good_job, job);
+                }
             }
+            PipelineConfig::Ci => {
+                let resolve_gh_release_artifacts =
+                    gh_release_artifacts.finish().map_err(|missing| {
+                        anyhow::anyhow!("missing required gh release artifact: {missing}")
+                    })?;
+
+                let publish_job = pipeline
+                    .new_job(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                        FlowArch::X86_64,
+                        "publish openvmm gh release",
+                    )
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    ))
+                    .dep_on(
+                        |ctx| flowey_lib_hvlite::_jobs::publish_openvmm_gh_release::Request {
+                            artifacts: resolve_gh_release_artifacts(ctx),
+                            done: ctx.new_done_handle(),
+                        },
+                    )
+                    .finish();
+
+                for job in all_jobs.iter() {
+                    pipeline.non_artifact_dep(&publish_job, job);
+                }
+            }
+            PipelineConfig::PrRelease => {}
         }
 
         Ok(pipeline)
@@ -1083,13 +1120,14 @@ impl IntoPipeline for CheckinGatesCli {
 }
 
 /// Utility builders which make it easy to "skim off" artifacts required by VMM
-/// test execution from other pipeline jobs.
+/// test execution or release publishing from other pipeline jobs.
 //
 // FUTURE: if we end up having a _lot_ of VMM test jobs, this would be the sort
 // of thing that would really benefit from a derive macro.
-mod vmm_tests_artifact_builders {
+mod artifact_builders {
     use flowey::pipeline::prelude::*;
     use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::VmmTestsDepArtifacts;
+    use flowey_lib_hvlite::_jobs::publish_openvmm_gh_release::OpenvmmGhReleaseArtifacts;
     use flowey_lib_hvlite::build_guest_test_uefi::GuestTestUefiOutput;
     use flowey_lib_hvlite::build_openvmm::OpenvmmOutput;
     use flowey_lib_hvlite::build_pipette::PipetteOutput;
@@ -1240,6 +1278,47 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm: Some(ctx.use_typed_artifact(&use_tmk_vmm)),
                 tmk_vmm_linux_musl: Some(ctx.use_typed_artifact(&use_tmk_vmm_linux_musl)),
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
+            }))
+        }
+    }
+
+    pub type ResolveOpenvmmGhReleaseArtifacts =
+        Box<dyn Fn(&mut PipelineJobCtx<'_>) -> OpenvmmGhReleaseArtifacts>;
+
+    #[derive(Default, Clone)]
+    pub struct GhReleaseArtifactsBuilder {
+        pub use_openvmm_windows_x64: Option<UseTypedArtifact<OpenvmmOutput>>,
+        pub use_openvmm_windows_aarch64: Option<UseTypedArtifact<OpenvmmOutput>>,
+        pub use_openvmm_linux_x64: Option<UseTypedArtifact<OpenvmmOutput>>,
+        pub use_openhcl_igvm_files_x64: Option<UseArtifact>,
+        pub use_openhcl_igvm_files_aarch64: Option<UseArtifact>,
+    }
+
+    impl GhReleaseArtifactsBuilder {
+        pub fn finish(self) -> Result<ResolveOpenvmmGhReleaseArtifacts, &'static str> {
+            let GhReleaseArtifactsBuilder {
+                use_openvmm_windows_x64,
+                use_openvmm_windows_aarch64,
+                use_openvmm_linux_x64,
+                use_openhcl_igvm_files_x64,
+                use_openhcl_igvm_files_aarch64,
+            } = self;
+
+            let use_openvmm_windows_x64 = use_openvmm_windows_x64.ok_or("openvmm_windows_x64")?;
+            let use_openvmm_windows_aarch64 =
+                use_openvmm_windows_aarch64.ok_or("openvmm_windows_aarch64")?;
+            let use_openvmm_linux_x64 = use_openvmm_linux_x64.ok_or("openvmm_linux_x64")?;
+            let use_openhcl_igvm_files_x64 =
+                use_openhcl_igvm_files_x64.ok_or("openhcl_igvm_files")?;
+            let use_openhcl_igvm_files_aarch64 =
+                use_openhcl_igvm_files_aarch64.ok_or("openhcl_igvm_files")?;
+
+            Ok(Box::new(move |ctx| OpenvmmGhReleaseArtifacts {
+                openvmm_windows_x64: ctx.use_typed_artifact(&use_openvmm_windows_x64),
+                openvmm_windows_aarch64: ctx.use_typed_artifact(&use_openvmm_windows_aarch64),
+                openvmm_linux_x64: ctx.use_typed_artifact(&use_openvmm_linux_x64),
+                openhcl_igvm_files_x64: ctx.use_artifact(&use_openhcl_igvm_files_x64),
+                openhcl_igvm_files_aarch64: ctx.use_artifact(&use_openhcl_igvm_files_aarch64),
             }))
         }
     }

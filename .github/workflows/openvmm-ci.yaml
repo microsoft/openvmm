@@ -3214,6 +3214,123 @@ jobs:
     - name: test cargo xflowey build-igvm x64 --install-missing-deps
       run: flowey e 20 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 1
       shell: bash
+  job21:
+    name: publish openvmm gh release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+    - job0
+    - job1
+    - job10
+    - job11
+    - job12
+    - job13
+    - job14
+    - job15
+    - job16
+    - job17
+    - job18
+    - job19
+    - job2
+    - job20
+    - job3
+    - job4
+    - job5
+    - job6
+    - job7
+    - job8
+    - job9
+    if: github.event.pull_request.draft == false
+    steps:
+    - name: 🌼📦 Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-6,aarch64-openhcl-igvm,aarch64-windows-openvmm,x64-linux-openvmm,x64-openhcl-igvm,x64-windows-openvmm}'
+        path: ${{ runner.temp }}/used_artifacts/
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-6" >> $GITHUB_PATH
+      shell: bash
+      name: 🌼📦 Add flowey to PATH
+    - name: 🌼🛫 Initialize job
+      run: |
+        AgentTempDirNormal="${{ runner.temp }}"
+        AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
+
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-6/flowey
+
+        echo '"debug"' | flowey v 21 'FLOWEY_LOG' update
+        echo "${{ runner.temp }}/work" | flowey v 21 '_internal_WORKING_DIR' --is-raw-string update
+
+        cat <<'EOF' | flowey v 21 'verbose' update
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        EOF
+        echo "$AgentTempDirNormal/used_artifacts/aarch64-openhcl-igvm" | flowey v 21 'artifact_use_from_aarch64-openhcl-igvm' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/aarch64-windows-openvmm" | flowey v 21 'artifact_use_from_aarch64-windows-openvmm' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-linux-openvmm" | flowey v 21 'artifact_use_from_x64-linux-openvmm' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-openhcl-igvm" | flowey v 21 'artifact_use_from_x64-openhcl-igvm' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-windows-openvmm" | flowey v 21 'artifact_use_from_x64-windows-openvmm' --is-raw-string update
+      shell: bash
+    - name: create gh cache dir
+      run: flowey e 21 flowey_lib_common::download_gh_cli 0
+      shell: bash
+    - name: Pre-processing cache vars
+      run: |-
+        flowey e 21 flowey_lib_common::cache 0
+        flowey v 21 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar1
+        flowey v 21 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar2
+      shell: bash
+    - id: flowey_lib_common__cache__1
+      uses: actions/cache@v4
+      with:
+        key: ${{ env.floweyvar1 }}
+        path: ${{ env.floweyvar2 }}
+      name: 'Restore cache: gh-cli'
+    - name: installing gh
+      run: |-
+        flowey v 21 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:462:70' --is-raw-string update --env-source steps.flowey_lib_common__cache__1.outputs.cache-hit <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
+        flowey e 21 flowey_lib_common::cache 2
+        flowey e 21 flowey_lib_common::download_gh_cli 1
+        flowey v 21 'flowey_lib_hvlite::_jobs::publish_openvmm_gh_release:20:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --is-secret --env-source github.token <<EOF
+        ${{ github.token }}
+        EOF
+      shell: bash
+    - name: setup gh cli
+      run: |-
+        flowey e 21 flowey_lib_common::use_gh_cli 0
+        flowey v 21 'flowey_lib_hvlite::_jobs::publish_openvmm_gh_release:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.repository <<EOF
+        ${{ github.repository }}
+        EOF
+        flowey e 21 flowey_core::pipeline::artifact::resolve 2
+        flowey e 21 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 7
+        flowey e 21 flowey_core::pipeline::artifact::resolve 0
+        flowey e 21 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 8
+        flowey e 21 flowey_core::pipeline::artifact::resolve 1
+        flowey e 21 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 9
+        flowey e 21 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 10
+        flowey e 21 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 11
+        flowey v 21 'flowey_lib_hvlite::_jobs::publish_openvmm_gh_release:1:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.ref_name <<EOF
+        ${{ github.ref_name }}
+        EOF
+        flowey v 21 'flowey_lib_hvlite::_jobs::publish_openvmm_gh_release:2:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.run_id <<EOF
+        ${{ github.run_id }}
+        EOF
+        flowey e 21 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 3
+        flowey e 21 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 4
+        flowey e 21 flowey_lib_hvlite::_jobs::publish_openvmm_gh_release 5
+        flowey v 21 'flowey_lib_hvlite::_jobs::publish_openvmm_gh_release:9:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.sha <<EOF
+        ${{ github.sha }}
+        EOF
+      shell: bash
+    - name: publish github releases
+      run: flowey e 21 flowey_lib_common::publish_gh_release 0
+      shell: bash
+    - name: 'validate cache entry: gh-cli'
+      run: flowey e 21 flowey_lib_common::cache 3
+      shell: bash
   job3:
     name: build artifacts (for VMM tests) [aarch64-windows]
     runs-on: windows-latest
