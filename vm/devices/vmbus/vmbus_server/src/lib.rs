@@ -1919,6 +1919,10 @@ impl ServerTaskInner {
                             // Utilize the server-allocated pages.
                             mnf_info.allocated_pages_in_use = true;
                             monitor_page = mnf_info.gpas();
+                            tracelimit::info_ratelimited!(
+                                ?monitor_page,
+                                "using server-allocated monitor pages"
+                            );
                         }
                     }
                 }

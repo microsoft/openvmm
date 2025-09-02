@@ -458,14 +458,14 @@ impl HardwareIsolatedMemoryProtector {
         vtl: GuestVtl,
         gpn: u64,
     ) -> Result<HvMapGpaFlags, HvError> {
-        if !self
-            .layout
-            .ram()
-            .iter()
-            .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
-        {
-            return Err(HvError::OperationDenied);
-        }
+        // if !self
+        //     .layout
+        //     .ram()
+        //     .iter()
+        //     .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
+        // {
+        //     return Err(HvError::OperationDenied);
+        // }
 
         let res = match vtl {
             GuestVtl::Vtl0 => self
@@ -936,6 +936,11 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             return Ok(());
         }
 
+        let is_guest_mem = self
+            .layout
+            .ram()
+            .iter()
+            .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE));
         // Check that the required permissions are present.
         let current_perms = self.query_lower_vtl_permissions(vtl, gpn)?;
         if current_perms.into_bits() | check_perms.into_bits() != current_perms.into_bits() {
@@ -952,7 +957,14 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         // Everything's validated, change the permissions.
         if let Some(new_perms) = new_perms {
-            self.apply_protections(MemoryRange::from_4k_gpn_range(gpn..gpn + 1), vtl, new_perms)
+            let range = MemoryRange::from_4k_gpn_range(gpn..gpn + 1);
+
+            if vtl == GuestVtl::Vtl0 && is_guest_mem {
+                // Only permissions imposed on VTL 0 are explicitly tracked
+                self.vtl0.update_permission_bitmaps(range, new_perms);
+            }
+            self.acceptor
+                .apply_protections(range, vtl, new_perms)
                 .map_err(|_| HvError::OperationDenied)?;
         }
 

@@ -40,6 +40,8 @@ mod processor;
 pub use processor::Backing;
 pub use processor::UhProcessor;
 
+#[cfg(guest_arch = "x86_64")]
+use crate::processor::HardwareIsolatedBacking;
 use anyhow::Context as AnyhowContext;
 use bitfield_struct::bitfield;
 use bitvec::boxed::BitBox;
@@ -56,6 +58,7 @@ use hv1_emulator::synic::GlobalSynic;
 use hv1_emulator::synic::SintProxied;
 use hv1_structs::VtlArray;
 use hvdef::GuestCrashCtl;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -1011,43 +1014,35 @@ impl virt::Synic for UhPartition {
 }
 
 impl virt::SynicMonitor for UhPartition {
-    fn set_monitor_page(&self, _vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+        let vtl = GuestVtl::try_from(vtl).unwrap();
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
-        if matches!(self.inner.backing_shared, BackingShared::Hypervisor(_)) {
-            if let Some(old_gpa) = old_gpa {
-                self.inner
-                    .hcl
-                    .modify_vtl_protection_mask(
-                        MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
-                        hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-                        HvInputVtl::CURRENT_VTL,
-                    )
-                    .context("failed to unregister old monitor page")?;
-
-                tracing::debug!(old_gpa, "unregistered monitor page");
-            }
-
-            if let Some(gpa) = gpa {
-                // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
-                // permissions must be enabled or this doesn't work correctly.
-                let result = self
-                    .inner
-                    .hcl
-                    .modify_vtl_protection_mask(
-                        MemoryRange::new(gpa..gpa + HV_PAGE_SIZE),
-                        HvMapGpaFlags::new().with_readable(true),
-                        HvInputVtl::CURRENT_VTL,
-                    )
-                    .context("failed to register monitor page");
-
-                if result.is_err() {
-                    // Unset the page so trying to remove it later won't fail too.
+        if let Some(old_gpa) = old_gpa {
+            self.revert_monitor_page_protection(vtl, old_gpa >> HV_PAGE_SHIFT)
+                .context("failed to unregister old monitor page")
+                .inspect_err(|_| {
+                    // Leave the page unset if returning a failure.
                     self.inner.monitor_page.set_gpa(None);
-                    return result;
-                }
+                })?;
 
-                tracing::debug!(gpa, "registered monitor page");
-            }
+            tracing::debug!(old_gpa, "unregistered monitor page");
+        }
+
+        if let Some(gpa) = gpa {
+            // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
+            // permissions must be enabled or this doesn't work correctly.
+            self.set_monitor_page_protection(
+                vtl,
+                gpa >> HV_PAGE_SHIFT,
+                HvMapGpaFlags::new().with_readable(true),
+            )
+            .context("failed to register monitor page")
+            .inspect_err(|_| {
+                // Leave the page unset if returning a failure.
+                self.inner.monitor_page.set_gpa(None);
+            })?;
+
+            tracing::debug!(gpa, "registered monitor page");
         }
 
         Ok(())
@@ -1851,6 +1846,100 @@ impl UhPartition {
     /// Enables or disables the PM timer assist.
     pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), HvError> {
         self.inner.hcl.set_pm_timer_assist(port)
+    }
+
+    fn revert_monitor_page_protection(&self, _vtl: GuestVtl, gpn: u64) -> anyhow::Result<()> {
+        match &self.inner.backing_shared {
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .unregister_overlay_page(
+                    _vtl,
+                    gpn,
+                    &mut SnpBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        snp_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .unregister_overlay_page(
+                    _vtl,
+                    gpn,
+                    &mut TdxBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        tdx_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            BackingShared::Hypervisor(_) => self
+                .inner
+                .hcl
+                .modify_vtl_protection_mask(
+                    MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
+                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+                    HvInputVtl::CURRENT_VTL,
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
+    fn set_monitor_page_protection(
+        &self,
+        _vtl: GuestVtl,
+        gpn: u64,
+        new_perms: HvMapGpaFlags,
+    ) -> anyhow::Result<()> {
+        let _check_perms = HvMapGpaFlags::new();
+        match &self.inner.backing_shared {
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .register_overlay_page(
+                    _vtl,
+                    gpn,
+                    _check_perms,
+                    Some(new_perms),
+                    &mut SnpBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        snp_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .register_overlay_page(
+                    _vtl,
+                    gpn,
+                    _check_perms,
+                    Some(new_perms),
+                    &mut TdxBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        tdx_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            BackingShared::Hypervisor(_) => self
+                .inner
+                .hcl
+                .modify_vtl_protection_mask(
+                    MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
+                    new_perms,
+                    HvInputVtl::CURRENT_VTL,
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
     }
 }
 
