@@ -23,6 +23,7 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
+use std::str::FromStr;
 use std::time::Duration;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
@@ -734,38 +735,17 @@ async fn validate_mnf_usage_in_guest(
         .run()
         .await?;
 
-    let sh = agent.unix_shell();
     let netvsc_path = "/sys/bus/vmbus/drivers/hv_netvsc";
+    let mut sh = agent.unix_shell();
+    sh.change_dir(netvsc_path);
 
     // List directory contents for visibility.
     let contents = cmd!(sh, "ls -la {netvsc_path}").read().await?;
     tracing::info!("Listing all contents of {}:\n{}", netvsc_path, contents);
 
     // Pure helpers for parsing and path resolution.
-    fn is_hex(s: &str) -> bool {
-        !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
-    }
     fn is_guid(s: &str) -> bool {
-        let parts: Vec<&str> = s.split('-').collect();
-        matches!(parts.as_slice(), [a, b, c, d, e]
-            if [a.len(), b.len(), c.len(), d.len(), e.len()] == [8, 4, 4, 4, 12]
-            && parts.iter().all(|p| is_hex(p)))
-    }
-    fn resolve_abs(base: &str, target: &str) -> String {
-        if target.starts_with('/') {
-            return target.to_string();
-        }
-        let mut parts: Vec<&str> = base.split('/').filter(|p| !p.is_empty()).collect();
-        for seg in target.split('/') {
-            match seg {
-                "" | "." => {}
-                ".." => {
-                    parts.pop();
-                }
-                other => parts.push(other),
-            }
-        }
-        format!("/{}", parts.join("/"))
+        guid::Guid::from_str(s).is_ok()
     }
 
     // Extract absolute target dirs from GUID-named symlink entries in ls output.
@@ -777,7 +757,7 @@ async fn validate_mnf_usage_in_guest(
         .filter_map(|line| {
             let (left, target) = line.rsplit_once(" -> ")?;
             let name = left.split_whitespace().last()?;
-            is_guid(name).then(|| resolve_abs(netvsc_path, target))
+            is_guid(name).then(|| target.to_string())
         })
         .collect();
 
@@ -785,11 +765,11 @@ async fn validate_mnf_usage_in_guest(
 
     // For each device, ensure at least one monitor_id file exists.
     for device in device_dirs {
-        let find_out = cmd!(sh, "find {device} -type f -name 'monitor_id'")
-            .read()
-            .await?;
+        sh.change_dir(&device);
+        let find_out = cmd!(sh, "find . -type f -name 'monitor_id'").read().await?;
         let has_monitor = find_out.lines().any(|s| !s.trim().is_empty());
         assert!(has_monitor, "no monitor_id files found in {}", device);
+        sh.change_dir(netvsc_path);
     }
 
     agent.power_off().await?;
