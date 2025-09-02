@@ -16,7 +16,7 @@ fn violate_reg_rule() {
     unsafe {
         asm!(
             "mov ecx, 0x1B",
-            "rdmsr",
+            "wrmsr",
             out("eax") _,
             out("edx") _,
             out("ecx") _,
@@ -52,9 +52,6 @@ where
     let r = ctx.setup_partition_vtl(Vtl::Vtl1);
     tmk_assert!(r.is_ok(), "setup_partition_vtl should succeed");
 
-    let value = ctx.get_register(hvdef::HvX64RegisterName::Rsp.0).unwrap();
-    log::info!("Current RSP value: 0x{:x}", value);
-
     let r = ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
         let r = ctx.setup_secure_intercept(0x30);
@@ -67,14 +64,14 @@ where
         });
         tmk_assert!(r.is_ok(), "set_interrupt_idx should succeed");
 
-        let r = ctx.set_register(0x000E0000, 0x0000000000000800);
+        let r = ctx.set_register(0x000E0000, 0x0000000000001000);
         tmk_assert!(r.is_ok(), "set_register should succeed to write Control register");
 
         let r = ctx.get_register(0x000E0000);
         tmk_assert!(r.is_ok(), "get_register should succeed to read Control register");
 
         let reg_values = r.unwrap();
-        tmk_assert!(reg_values == 0x0000000000000800, format!("register value should be 0x0000000000000800, got {:x}", reg_values));
+        tmk_assert!(reg_values == 0x0000000000001000, format!("register value should be 0x0000000000000800, got {:x}", reg_values));
 
         log::info!("Switching to VTL0: attempting to read a protected register to verify security enforcement and intercept handling.");
 
