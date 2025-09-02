@@ -24,9 +24,6 @@ mod udp;
 mod windows;
 
 use inspect::InspectMut;
-use mesh::rpc::Rpc;
-use mesh::rpc::RpcError;
-use mesh::rpc::RpcSend;
 use pal_async::driver::Driver;
 use smoltcp::phy::Checksum;
 use smoltcp::phy::ChecksumCapabilities;
@@ -39,98 +36,13 @@ use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
-use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
 use std::task::Context;
-use std::task::Poll;
 use thiserror::Error;
-
-/// Error type returned from some dynamic update functions like bind_port.
-#[derive(Debug, Error)]
-pub enum ConsommeMessageError {
-    /// Communication error with running instance.
-    #[error("communication error")]
-    Mesh(RpcError),
-    /// Error executing request on current network instance.
-    #[error("network err")]
-    Network(DropReason),
-}
-
-/// Callback to modify network state dynamically.
-pub type ConsommeStateUpdateFn = Box<dyn Fn(&mut ConsommeState) + Send>;
-
-struct MessageBindPort {
-    protocol: IpProtocol,
-    address: Option<Ipv4Addr>,
-    port: u16,
-}
-
-enum ConsommeMessage {
-    BindPort(Rpc<MessageBindPort, Result<(), DropReason>>),
-    UnbindPort(Rpc<MessageBindPort, Result<(), DropReason>>),
-    UpdateState(Rpc<ConsommeStateUpdateFn, ()>),
-}
-
-/// Provide dynamic updates during runtime.
-pub struct ConsommeControl {
-    send: mesh::Sender<ConsommeMessage>,
-}
-
-impl ConsommeControl {
-    /// Binds a port to receive incoming packets.
-    pub async fn bind_port(
-        &self,
-        protocol: IpProtocol,
-        ip_addr: Option<Ipv4Addr>,
-        port: u16,
-    ) -> Result<(), ConsommeMessageError> {
-        self.send
-            .call(
-                ConsommeMessage::BindPort,
-                MessageBindPort {
-                    protocol,
-                    address: ip_addr,
-                    port,
-                },
-            )
-            .await
-            .map_err(ConsommeMessageError::Mesh)?
-            .map_err(ConsommeMessageError::Network)
-    }
-
-    /// Unbinds a port previously reserved with bind_port()
-    pub async fn unbind_port(
-        &self,
-        protocol: IpProtocol,
-        port: u16,
-    ) -> Result<(), ConsommeMessageError> {
-        self.send
-            .call(
-                ConsommeMessage::UnbindPort,
-                MessageBindPort {
-                    protocol,
-                    address: None,
-                    port,
-                },
-            )
-            .await
-            .map_err(ConsommeMessageError::Mesh)?
-            .map_err(ConsommeMessageError::Network)
-    }
-
-    /// Updates dynamic network state
-    pub async fn update_state(&self, f: ConsommeStateUpdateFn) -> Result<(), ConsommeMessageError> {
-        self.send
-            .call(ConsommeMessage::UpdateState, f)
-            .await
-            .map_err(ConsommeMessageError::Mesh)
-    }
-}
 
 /// A consomme instance.
 pub struct Consomme {
     state: ConsommeState,
-    recv: Option<mesh::Receiver<ConsommeMessage>>,
     tcp: tcp::Tcp,
     udp: udp::Udp,
 }
@@ -375,33 +287,21 @@ struct Ipv4Addresses {
 }
 
 impl Consomme {
-    /// Creates a new consomme instance.
-    pub fn new() -> Result<Self, Error> {
-        let state = ConsommeState::new()?;
-        Ok(Self::new_with_state(state))
-    }
-
     /// Creates a new consomme instance with specified state.
-    pub fn new_with_state(state: ConsommeState) -> Self {
+    pub fn new(state: ConsommeState) -> Self {
         Self {
             state,
-            recv: None,
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(),
         }
     }
 
-    /// Creates a new consomme instance with dynamic state.
-    pub fn new_dynamic(state: ConsommeState) -> (Self, ConsommeControl) {
-        let (send, recv) = mesh::channel();
-        let this = Self {
-            state,
-            recv: Some(recv),
-            tcp: tcp::Tcp::new(),
-            udp: udp::Udp::new(),
-        };
-        let control = ConsommeControl { send };
-        (this, control)
+    /// Get access to the parameters to be updated.
+    ///
+    /// FUTURE: add support for updating only the parameters that can be safely
+    /// changed at runtime.
+    pub fn params_mut(&mut self) -> &mut ConsommeState {
+        &mut self.state
     }
 
     /// Pairs the client with this instance to operate on the consomme instance.
@@ -414,51 +314,20 @@ impl Consomme {
 }
 
 impl<T: Client> Access<'_, T> {
-    fn process_message(&mut self, message: ConsommeMessage) {
-        match message {
-            ConsommeMessage::BindPort(rpc) => {
-                rpc.handle_sync(|bind_message| match bind_message.protocol {
-                    IpProtocol::Tcp => self.bind_tcp_port(bind_message.address, bind_message.port),
-                    IpProtocol::Udp => self.bind_udp_port(bind_message.address, bind_message.port),
-                    p => unimplemented!("Listen not supported for protocol {}", p),
-                });
-            }
-            ConsommeMessage::UnbindPort(rpc) => {
-                rpc.handle_sync(|bind_message| match bind_message.protocol {
-                    IpProtocol::Tcp => self.unbind_tcp_port(bind_message.port),
-                    IpProtocol::Udp => self.unbind_udp_port(bind_message.port),
-                    p => unimplemented!("Listen not supported for protocol {}", p),
-                });
-            }
-            ConsommeMessage::UpdateState(rpc) => {
-                rpc.handle_sync(|f| f(&mut self.inner.state));
-            }
-        }
+    /// Gets the inner consomme object.
+    pub fn get(&self) -> &Consomme {
+        self.inner
     }
 
-    fn poll_message(&mut self, cx: &mut Context<'_>) {
-        // process all pending messages
-        while let Some(recv) = self.inner.recv.as_mut() {
-            match recv.poll_recv(cx) {
-                Poll::Ready(Err(err)) => {
-                    tracing::warn!(
-                        err = &err as &dyn std::error::Error,
-                        "Consomme dynamic update channel failure"
-                    );
-                    self.inner.recv = None;
-                    return;
-                }
-                Poll::Ready(Ok(message)) => self.process_message(message),
-                Poll::Pending => return,
-            }
-        }
+    /// Gets the inner consomme object.
+    pub fn get_mut(&mut self) -> &mut Consomme {
+        self.inner
     }
 
     /// Polls for work, transmitting any ready packets to the client.
     pub fn poll(&mut self, cx: &mut Context<'_>) {
         self.poll_udp(cx);
         self.poll_tcp(cx);
-        self.poll_message(cx);
     }
 
     /// Update all sockets to use the new client's IO driver. This must be

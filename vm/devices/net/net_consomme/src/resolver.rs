@@ -42,7 +42,7 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
                 .set_cidr(cidr)
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
-        let endpoint = ConsommeEndpoint::new_with_state(state);
+        let endpoint = ConsommeEndpoint::new(state);
         Ok(endpoint.into())
     }
 }

@@ -254,7 +254,9 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
-    pub(crate) fn bind_udp_port(
+    /// Binds to the specified host IP and port for forwarding inbound UDP
+    /// packets to the guest.
+    pub fn bind_udp_port(
         &mut self,
         ip_addr: Option<Ipv4Addr>,
         port: u16,
@@ -267,7 +269,8 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    pub(crate) fn unbind_udp_port(&mut self, port: u16) -> Result<(), DropReason> {
+    /// Unbinds from the specified host port.
+    pub fn unbind_udp_port(&mut self, port: u16) -> Result<(), DropReason> {
         let guest_addr = SocketAddress {
             ip: Ipv4Addr::UNSPECIFIED.into(),
             port,

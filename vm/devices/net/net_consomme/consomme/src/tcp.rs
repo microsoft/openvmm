@@ -350,7 +350,9 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    pub(crate) fn bind_tcp_port(
+    /// Binds to the specified host IP and port for listening for incoming
+    /// connections.
+    pub fn bind_tcp_port(
         &mut self,
         ip_addr: Option<Ipv4Addr>,
         port: u16,
@@ -383,7 +385,8 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    pub(crate) fn unbind_tcp_port(&mut self, port: u16) -> Result<(), DropReason> {
+    /// Unbinds from the specified host port.
+    pub fn unbind_tcp_port(&mut self, port: u16) -> Result<(), DropReason> {
         match self.inner.tcp.listeners.entry(port) {
             hash_map::Entry::Occupied(e) => {
                 e.remove();
