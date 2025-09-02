@@ -41,3 +41,38 @@ macro_rules! create_function_with_restore {
         }
     };
 }
+
+#[cfg(target_arch = "x86_64")]
+pub fn get_first_ip_len(target: u64) -> usize {
+    // SAFETY:  if an invalid address is passed we dont return the len
+    unsafe {
+        use alloc::string::String;
+        use iced_x86::{DecoderOptions, NasmFormatter};
+
+        let target_ptr = target as *const u8;
+        let code_bytes = core::slice::from_raw_parts(target_ptr, 0x100);
+        let mut decoder = iced_x86::Decoder::with_ip(
+            64, 
+            code_bytes,
+            target,
+            DecoderOptions::NONE);
+
+        let mut formatter = NasmFormatter::new();
+        let mut output = String::new();
+        let mut first_ip_len = 0;
+        let mut set = false;
+        while decoder.can_decode() {
+            use iced_x86::Formatter;
+
+            let instr = decoder.decode();
+            if !set {
+                first_ip_len = instr.len();
+                set = true;
+            }
+            formatter.format(&instr, &mut output);
+            log::debug!("READ 0x{:x}:{}", instr.ip(), output);
+            output.clear();
+        }
+        first_ip_len
+    }
+}

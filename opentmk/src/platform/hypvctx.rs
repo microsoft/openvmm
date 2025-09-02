@@ -6,6 +6,7 @@ use alloc::collections::btree_set::BTreeSet;
 use alloc::collections::linked_list::LinkedList;
 #[cfg(target_arch = "aarch64")]
 use hvdef::hypercall::InitialVpContextArm64;
+use hvdef::HvRegisterValue;
 use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::Display;
@@ -47,12 +48,12 @@ fn cmdt() -> &'static Mutex<CommandTable> {
 }
 
 fn register_command_queue(vp_index: u32) {
-    log::debug!("registering command queue for vp: {}", vp_index);
+    log::trace!("registering command queue for vp: {}", vp_index);
     if cmdt().lock().get(&vp_index).is_none() {
         cmdt().lock().insert(vp_index, LinkedList::new());
-        log::debug!("registered command queue for vp: {}", vp_index);
+        log::trace!("registered command queue for vp: {}", vp_index);
     } else {
-        log::debug!("command queue already registered for vp: {}", vp_index);
+        log::trace!("command queue already registered for vp: {}", vp_index);
     }
 }
 
@@ -171,6 +172,32 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         }
     }
 
+    /// Set the architecture specific register identified by `reg`.
+    fn set_register(&mut self, reg: u32, val: u128) -> TmkResult<()> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            use hvdef::HvX64RegisterName;
+            let reg = HvX64RegisterName(reg);
+            let value = HvRegisterValue::from(val);
+            self.hvcall.set_register(reg.into(), value, None)?;
+
+            Ok(())
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let reg = hvdef::HvArm64RegisterName(reg);
+            let value = HvRegisterValue::from(val);
+            self.hvcall.set_register(reg.into(), value, None)?;
+            Ok(())
+        }
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            Err(TmkError(TmkError::NotImplemented))
+        }
+    }
+
     /// Return the number of logical processors present in the machine
     /// by issuing the `cpuid` leaf 1 call on x86-64.
     fn get_vp_count(&self) -> TmkResult<u32> {
@@ -229,9 +256,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                     }),
                     Vtl::Vtl1,
                 ));
-                log::info!("self addr: {:p}", self as *const _);
                 self.switch_to_high_vtl();
-                log::info!("self addr after switch: {:p}", self as *const _);
                 self.vp_running.insert(vp_index);
             } else {
                 let (tx, rx) = nostd_spin_channel::Channel::<TmkResult<()>>::new().split();
@@ -301,6 +326,54 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     /// Return the index of the VP that is currently executing this code.
     fn get_current_vp(&self) -> TmkResult<u32> {
         Ok(self.my_vp_idx)
+    }
+    
+    fn set_register_vtl(&mut self, reg: u32, value: u128, vtl: Vtl) -> TmkResult<()> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            use hvdef::HvRegisterValue;
+            use hvdef::HvX64RegisterName;
+            let reg = HvX64RegisterName(reg);
+            let value = HvRegisterValue::from(value);
+            self.hvcall.set_register(reg.into(), value, Some(vtl_transform(vtl)))?;
+
+            Ok(())
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let reg = hvdef::HvArm64RegisterName(reg);
+            let value = HvRegisterValue::from(value);
+            self.hvcall.set_register(reg.into(), value, Some(vtl_transform(vtl)))?;
+            Ok(())
+        }
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            Err(TmkError(TmkError::NotImplemented))
+        }
+    }
+    
+    fn get_register_vtl(&mut self, reg: u32, vtl: Vtl) -> TmkResult<u128> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            use hvdef::HvX64RegisterName;
+            let reg = HvX64RegisterName(reg);
+            let val = self.hvcall.get_register(reg.into(), Some(vtl_transform(vtl)))?.as_u128();
+            Ok(val)
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let reg = hvdef::HvArm64RegisterName(reg);
+            let val = self.hvcall.get_register(reg.into(), Some(vtl_transform(vtl)))?.as_u128();
+            Ok(val)
+        }
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            Err(TmkError(TmkError::NotImplemented))
+        }
     }
 }
 
@@ -492,7 +565,7 @@ impl VtlPlatformTrait for HvTestCtx {
     ) -> TmkResult<()> {
         let vtl = vtl_transform(vtl);
         let value = AlignedU128::from(value);
-        let reg_value = hvdef::HvRegisterValue(value);
+        let reg_value = HvRegisterValue(value);
         self.hvcall
             .set_register(hvdef::HvRegisterName(register_index), reg_value, Some(vtl))
             .map_err(|e| e.into())

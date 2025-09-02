@@ -8,4 +8,6 @@ pub mod hv_processor;
 pub mod hv_tpm_read_cvm;
 #[cfg(feature = "nightly")]
 pub mod hv_tpm_write_cvm;
+#[cfg(feature = "nightly")]
+pub mod hv_register_intercept;
 pub mod test_helpers;

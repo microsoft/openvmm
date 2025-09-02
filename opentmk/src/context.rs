@@ -52,8 +52,17 @@ where
     /// code.
     fn get_current_vp(&self) -> TmkResult<u32>;
 
+    /// Sets the architecture specific register identified by `reg`.
+    fn set_register(&mut self, reg: u32, value: u128) -> TmkResult<()>;
+
     /// Reads the architecture specific register identified by `reg`.
     fn get_register(&mut self, reg: u32) -> TmkResult<u128>;
+
+    /// Sets the architecture specific register identified by `reg` for VTL
+    fn set_register_vtl(&mut self, reg: u32, value: u128, vtl: Vtl) -> TmkResult<()>;
+
+    /// Reads the architecture specific register identified by `reg` for a VTL
+    fn get_register_vtl(&mut self, reg: u32, vtl: Vtl) -> TmkResult<u128>;
 
     /// Total number of online VPs in the partition.
     fn get_vp_count(&self) -> TmkResult<u32>;
