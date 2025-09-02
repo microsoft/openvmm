@@ -218,7 +218,6 @@ pub enum SerialPort {
     COM4,
 }
 
-
 impl Serial {
     /// Initializes the serial port.
     pub fn init() -> Serial {

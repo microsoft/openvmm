@@ -2,7 +2,6 @@ use core::fmt::Display;
 
 use thiserror::Error;
 
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Error)]
 pub enum TmkError {
     AllocationFailed,

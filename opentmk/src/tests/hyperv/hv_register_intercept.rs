@@ -23,7 +23,7 @@ fn violate_reg_rule() {
         );
     }
 }
-// The macro `create_function_with_restore!` generates a wrapper function (`f_violate_reg_rule`) 
+// The macro `create_function_with_restore!` generates a wrapper function (`f_violate_reg_rule`)
 // that calls `violate_reg_rule` and restores the processor state as needed for virtualization tests.
 // Usage: create_function_with_restore!(wrapper_fn_name, target_fn_name);
 create_function_with_restore!(f_violate_reg_rule, violate_reg_rule);
@@ -69,7 +69,7 @@ where
 
         let r = ctx.set_register(0x000E0000, 0x0000000000000800);
         tmk_assert!(r.is_ok(), "set_register should succeed to write Control register");
-        
+
         let r = ctx.get_register(0x000E0000);
         tmk_assert!(r.is_ok(), "get_register should succeed to read Control register");
 

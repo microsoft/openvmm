@@ -1,12 +1,12 @@
 #![no_std]
 #![allow(unsafe_code)]
 extern crate alloc;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use alloc::collections::VecDeque;
 use thiserror::Error;
 
 /// An unbounded channel implementation with priority send capability.
@@ -20,10 +20,10 @@ pub struct Channel<T> {
 struct ChannelInner<T> {
     /// The internal buffer using a VecDeque protected by its own mutex
     buffer: Mutex<VecDeque<T>>,
-    
+
     /// Number of active senders
     senders: AtomicUsize,
-    
+
     /// Number of active receivers
     receivers: AtomicUsize,
 }
@@ -85,31 +85,29 @@ impl<T> Channel<T> {
     pub fn new() -> Self {
         let inner = Arc::new(ChannelInner {
             buffer: Mutex::new(VecDeque::new()),
-            senders: AtomicUsize::new(1),    // Start with one sender
-            receivers: AtomicUsize::new(1),  // Start with one receiver
+            senders: AtomicUsize::new(1),   // Start with one sender
+            receivers: AtomicUsize::new(1), // Start with one receiver
         });
-        
+
         Self { inner }
     }
-    
+
     /// Splits the channel into a sender and receiver pair
     pub fn split(self) -> (Sender<T>, Receiver<T>) {
         let sender = Sender {
             inner: self.inner.clone(),
         };
-        
-        let receiver = Receiver {
-            inner: self.inner,
-        };
-        
+
+        let receiver = Receiver { inner: self.inner };
+
         (sender, receiver)
     }
-    
+
     /// Returns the current number of elements in the channel
     pub fn len(&self) -> usize {
         self.inner.buffer.lock().len()
     }
-    
+
     /// Returns true if the channel is empty
     pub fn is_empty(&self) -> bool {
         self.inner.buffer.lock().is_empty()
@@ -124,21 +122,21 @@ impl<T> Sender<T> {
         if self.inner.receivers.load(Ordering::SeqCst) == 0 {
             return Err(SendError::Disconnected(value));
         }
-        
+
         // Lock the buffer - only locked during the actual send operation
         let mut buffer = self.inner.buffer.lock();
-        
+
         // Check again after locking
         if self.inner.receivers.load(Ordering::SeqCst) == 0 {
             return Err(SendError::Disconnected(value));
         }
-        
+
         // Push to the back of the queue - can't fail since we're unbounded
         buffer.push_back(value);
-        
+
         Ok(())
     }
-    
+
     /// Sends an element to the front of the queue (highest priority)
     /// Returns Ok(()) if successful, Err(SendError) if all receivers have been dropped
     pub fn send_priority(&self, value: T) -> Result<(), SendError<T>> {
@@ -146,24 +144,24 @@ impl<T> Sender<T> {
         if self.inner.receivers.load(Ordering::SeqCst) == 0 {
             return Err(SendError::Disconnected(value));
         }
-        
+
         // Lock the buffer - only locked during the actual send operation
         let mut buffer = self.inner.buffer.lock();
-        
+
         // Check again after locking
         if self.inner.receivers.load(Ordering::SeqCst) == 0 {
             return Err(SendError::Disconnected(value));
         }
-        
+
         // Push to the front of the queue - can't fail since we're unbounded
         buffer.push_front(value);
-        
+
         Ok(())
     }
-    
+
     /// Send a batch of elements at once
     /// Returns the number of elements successfully sent (all of them, unless disconnected)
-    pub fn send_batch<I>(&self, items: I) -> usize 
+    pub fn send_batch<I>(&self, items: I) -> usize
     where
         I: IntoIterator<Item = T>,
     {
@@ -171,31 +169,31 @@ impl<T> Sender<T> {
         if self.inner.receivers.load(Ordering::SeqCst) == 0 {
             return 0;
         }
-        
+
         // Lock the buffer once for the entire batch
         let mut buffer = self.inner.buffer.lock();
-        
+
         // Check again after locking
         if self.inner.receivers.load(Ordering::SeqCst) == 0 {
             return 0;
         }
-        
+
         let mut count = 0;
-        
+
         // Push each item to the back of the queue
         for item in items {
             buffer.push_back(item);
             count += 1;
         }
-        
+
         count
     }
-    
+
     /// Returns the current number of elements in the channel
     pub fn len(&self) -> usize {
         self.inner.buffer.lock().len()
     }
-    
+
     /// Returns true if the channel is empty
     pub fn is_empty(&self) -> bool {
         self.inner.buffer.lock().is_empty()
@@ -211,7 +209,7 @@ impl<T> Receiver<T> {
                 Ok(value) => return Ok(value),
                 Err(RecvError::Empty) => {
                     // Yield to the scheduler and try again
-                },
+                }
                 Err(err) => return Err(err),
             }
         }
@@ -225,7 +223,7 @@ impl<T> Receiver<T> {
             let mut buffer = self.inner.buffer.lock();
             buffer.pop_front()
         };
-        
+
         match result {
             Some(val) => Ok(val),
             None => {
@@ -238,11 +236,10 @@ impl<T> Receiver<T> {
             }
         }
     }
-    
-    
+
     /// Tries to receive multiple elements at once, up to the specified limit
     /// Returns a vector of received elements
-    pub fn recv_batch(&self, max_items: usize) -> Vec<T> 
+    pub fn recv_batch(&self, max_items: usize) -> Vec<T>
     where
         T: Send,
     {
@@ -250,18 +247,18 @@ impl<T> Receiver<T> {
         if max_items == 0 {
             return Vec::new();
         }
-        
+
         let mut items = Vec::new();
-        
+
         // Lock the buffer once for the entire batch
         let mut buffer = self.inner.buffer.lock();
-        
+
         // Calculate how many items to take
         let count = max_items.min(buffer.len());
-        
+
         // Reserve capacity for efficiency
         items.reserve(count);
-        
+
         // Take items from the front of the queue
         for _ in 0..count {
             if let Some(item) = buffer.pop_front() {
@@ -271,24 +268,24 @@ impl<T> Receiver<T> {
                 break;
             }
         }
-        
+
         items
     }
-    
+
     /// Peeks at the next element without removing it
-    pub fn peek(&self) -> Option<T> 
-    where 
+    pub fn peek(&self) -> Option<T>
+    where
         T: Clone,
     {
         let buffer = self.inner.buffer.lock();
         buffer.front().cloned()
     }
-    
+
     /// Returns the current number of elements in the channel
     pub fn len(&self) -> usize {
         self.inner.buffer.lock().len()
     }
-    
+
     /// Returns true if the channel is empty
     pub fn is_empty(&self) -> bool {
         self.inner.buffer.lock().is_empty()

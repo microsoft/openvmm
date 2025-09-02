@@ -1,5 +1,4 @@
 use alloc::alloc::alloc;
-use spin::Mutex;
 use core::alloc::Layout;
 use core::arch::asm;
 use core::cell::RefCell;
@@ -7,6 +6,7 @@ use core::ops::Range;
 
 use hvdef::Vtl;
 use nostd_spin_channel::Channel;
+use spin::Mutex;
 
 use crate::context::InterruptPlatformTrait;
 use crate::context::SecureInterceptPlatformTrait;
@@ -28,7 +28,6 @@ fn violate_heap() {
     }
 }
 create_function_with_restore!(f_violate_heap, violate_heap);
-
 
 pub fn exec<T>(ctx: &mut T)
 where
@@ -105,21 +104,18 @@ where
     }));
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
-    let r = ctx.start_on_vp(
-        VpExecutor::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| {
-            log::info!("successfully started running VTL0 on vp2.");
+    let r = ctx.start_on_vp(VpExecutor::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| {
+        log::info!("successfully started running VTL0 on vp2.");
 
-            let r =
-                ctx.queue_command_vp(VpExecutor::new(2, Vtl::Vtl1).command(move |ctx: &mut T| {
-                    log::info!("after intercept successfully started running VTL1 on vp2.");
-                    ctx.switch_to_low_vtl();
-                }));
-            tmk_assert!(r.is_ok(), "queue_command_vp should succeed");
+        let r = ctx.queue_command_vp(VpExecutor::new(2, Vtl::Vtl1).command(move |ctx: &mut T| {
+            log::info!("after intercept successfully started running VTL1 on vp2.");
+            ctx.switch_to_low_vtl();
+        }));
+        tmk_assert!(r.is_ok(), "queue_command_vp should succeed");
 
-            f_violate_heap();
-            _ = tx.send(());
-        }),
-    );
+        f_violate_heap();
+        _ = tx.send(());
+    }));
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
     _ = rx.recv();

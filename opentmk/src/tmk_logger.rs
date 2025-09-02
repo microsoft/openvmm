@@ -100,9 +100,8 @@ pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
     TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
 
 #[cfg(target_arch = "aarch64")]
-pub static LOGGER: TmkLogger<Mutex<Serial>> =
-    TmkLogger::new(Serial{});
+pub static LOGGER: TmkLogger<Mutex<Serial>> = TmkLogger::new(Serial {});
 
-pub fn init() -> Result<(), SetLoggerError> { 
+pub fn init() -> Result<(), SetLoggerError> {
     log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Debug))
 }

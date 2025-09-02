@@ -47,15 +47,13 @@ pub fn get_first_ip_len(target: u64) -> usize {
     // SAFETY:  if an invalid address is passed we dont return the len
     unsafe {
         use alloc::string::String;
-        use iced_x86::{DecoderOptions, NasmFormatter};
+
+        use iced_x86::DecoderOptions;
+        use iced_x86::NasmFormatter;
 
         let target_ptr = target as *const u8;
         let code_bytes = core::slice::from_raw_parts(target_ptr, 0x100);
-        let mut decoder = iced_x86::Decoder::with_ip(
-            64, 
-            code_bytes,
-            target,
-            DecoderOptions::NONE);
+        let mut decoder = iced_x86::Decoder::with_ip(64, code_bytes, target, DecoderOptions::NONE);
 
         let mut formatter = NasmFormatter::new();
         let mut output = String::new();

@@ -5,9 +5,9 @@ pub mod hv_memory_protect_read;
 pub mod hv_memory_protect_write;
 pub mod hv_processor;
 #[cfg(feature = "nightly")]
+pub mod hv_register_intercept;
+#[cfg(feature = "nightly")]
 pub mod hv_tpm_read_cvm;
 #[cfg(feature = "nightly")]
 pub mod hv_tpm_write_cvm;
-#[cfg(feature = "nightly")]
-pub mod hv_register_intercept;
 pub mod test_helpers;

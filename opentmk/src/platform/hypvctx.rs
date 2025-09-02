@@ -4,18 +4,18 @@ use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::collections::linked_list::LinkedList;
-#[cfg(target_arch = "aarch64")]
-use hvdef::hypercall::InitialVpContextArm64;
-use hvdef::HvRegisterValue;
 use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::Display;
 use core::ops::Range;
 
 use hvdef::hypercall::HvInputVtl;
+#[cfg(target_arch = "aarch64")]
+use hvdef::hypercall::InitialVpContextArm64;
 #[cfg(target_arch = "x86_64")]
 use hvdef::hypercall::InitialVpContextX64;
 use hvdef::AlignedU128;
+use hvdef::HvRegisterValue;
 use hvdef::Vtl;
 use memory_range::MemoryRange;
 #[cfg(target_arch = "x86_64")]
@@ -83,8 +83,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     /// hypervisor side notifications back to the guest.  
     /// Returns [`TmkError`] if the allocation of the SIMP buffer fails.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
-        let layout = Layout::from_size_align(4096, 4096)
-            .map_err(|_| TmkError::AllocationFailed)?;
+        let layout = Layout::from_size_align(4096, 4096).map_err(|_| TmkError::AllocationFailed)?;
 
         let ptr = unsafe { alloc(layout) };
         let gpn = (ptr as u64) >> 12;
@@ -327,7 +326,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     fn get_current_vp(&self) -> TmkResult<u32> {
         Ok(self.my_vp_idx)
     }
-    
+
     fn set_register_vtl(&mut self, reg: u32, value: u128, vtl: Vtl) -> TmkResult<()> {
         #[cfg(target_arch = "x86_64")]
         {
@@ -335,7 +334,8 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
             use hvdef::HvX64RegisterName;
             let reg = HvX64RegisterName(reg);
             let value = HvRegisterValue::from(value);
-            self.hvcall.set_register(reg.into(), value, Some(vtl_transform(vtl)))?;
+            self.hvcall
+                .set_register(reg.into(), value, Some(vtl_transform(vtl)))?;
 
             Ok(())
         }
@@ -344,7 +344,8 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         {
             let reg = hvdef::HvArm64RegisterName(reg);
             let value = HvRegisterValue::from(value);
-            self.hvcall.set_register(reg.into(), value, Some(vtl_transform(vtl)))?;
+            self.hvcall
+                .set_register(reg.into(), value, Some(vtl_transform(vtl)))?;
             Ok(())
         }
 
@@ -353,20 +354,26 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
             Err(TmkError(TmkError::NotImplemented))
         }
     }
-    
+
     fn get_register_vtl(&mut self, reg: u32, vtl: Vtl) -> TmkResult<u128> {
         #[cfg(target_arch = "x86_64")]
         {
             use hvdef::HvX64RegisterName;
             let reg = HvX64RegisterName(reg);
-            let val = self.hvcall.get_register(reg.into(), Some(vtl_transform(vtl)))?.as_u128();
+            let val = self
+                .hvcall
+                .get_register(reg.into(), Some(vtl_transform(vtl)))?
+                .as_u128();
             Ok(val)
         }
 
         #[cfg(target_arch = "aarch64")]
         {
             let reg = hvdef::HvArm64RegisterName(reg);
-            let val = self.hvcall.get_register(reg.into(), Some(vtl_transform(vtl)))?.as_u128();
+            let val = self
+                .hvcall
+                .get_register(reg.into(), Some(vtl_transform(vtl)))?
+                .as_u128();
             Ok(val)
         }
 
@@ -799,18 +806,14 @@ impl From<hvdef::HvError> for TmkError {
             hvdef::HvError::NoResources => TmkError::NoResources,
             hvdef::HvError::FeatureUnavailable => TmkError::FeatureUnavailable,
             hvdef::HvError::PartialPacket => TmkError::PartialPacket,
-            hvdef::HvError::ProcessorFeatureNotSupported => {
-                TmkError::ProcessorFeatureNotSupported
-            }
+            hvdef::HvError::ProcessorFeatureNotSupported => TmkError::ProcessorFeatureNotSupported,
             hvdef::HvError::ProcessorCacheLineFlushSizeIncompatible => {
                 TmkError::ProcessorCacheLineFlushSizeIncompatible
             }
             hvdef::HvError::InsufficientBuffer => TmkError::InsufficientBuffer,
             hvdef::HvError::IncompatibleProcessor => TmkError::IncompatibleProcessor,
             hvdef::HvError::InsufficientDeviceDomains => TmkError::InsufficientDeviceDomains,
-            hvdef::HvError::CpuidFeatureValidationError => {
-                TmkError::CpuidFeatureValidationError
-            }
+            hvdef::HvError::CpuidFeatureValidationError => TmkError::CpuidFeatureValidationError,
             hvdef::HvError::CpuidXsaveFeatureValidationError => {
                 TmkError::CpuidXsaveFeatureValidationError
             }

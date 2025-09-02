@@ -30,7 +30,6 @@ fn violate_heap() {
 }
 create_function_with_restore!(f_violate_heap, violate_heap);
 
-
 pub fn exec<T>(ctx: &mut T)
 where
     T: InterruptPlatformTrait

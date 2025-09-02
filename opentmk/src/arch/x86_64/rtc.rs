@@ -45,35 +45,34 @@ impl core::fmt::Display for DateTime {
 impl DateTime {
     pub fn to_unix_epoch_sec(&self) -> u64 {
         // Check if a year is a leap year
-        let is_leap_year = |year: u64| -> bool {
-            (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-        };
-        
+        let is_leap_year =
+            |year: u64| -> bool { (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 };
+
         // Define days in each month (0-indexed array)
         let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        
+
         // Calculate days since Unix epoch (1970-01-01)
         let year = 2000 + self.year as u64;
         let month = self.month as u64;
         let day = self.day as u64;
-        
+
         // Days from years
         let mut days = 0u64;
         for y in 1970..year {
             days += 365 + if is_leap_year(y) { 1 } else { 0 };
         }
-        
+
         // Add days from months in current year
         for m in 1..month {
             days += days_in_month[m as usize - 1] as u64;
             // Add leap day if February and leap year
             if m == 2 && is_leap_year(year) {
-            days += 1;
+                days += 1;
             }
         }
-        
+
         // Add days of current month
-        days += day - 1;  // -1 because we want elapsed days
+        days += day - 1; // -1 because we want elapsed days
         let hours = self.hours as u64;
         let minutes = self.minutes as u64;
         let seconds = self.seconds as u64;

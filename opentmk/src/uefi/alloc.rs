@@ -80,7 +80,6 @@ impl MemoryAllocator {
         mem.unwrap().as_ptr()
     }
 
-
     fn get_allocator(&self) -> &dyn GlobalAlloc {
         if *self.use_locked_heap.lock().borrow() {
             &self.locked_heap
@@ -88,5 +87,4 @@ impl MemoryAllocator {
             &self.uefi_allocator
         }
     }
-
 }
