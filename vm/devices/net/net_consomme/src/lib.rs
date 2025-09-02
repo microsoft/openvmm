@@ -38,7 +38,7 @@ use std::task::Poll;
 use thiserror::Error;
 
 pub struct ConsommeEndpoint {
-    consomme: Arc<Mutex<Option<EndpointState>>>,
+    endpoint_state: Arc<Mutex<Option<EndpointState>>>,
 }
 
 struct EndpointState {
@@ -49,7 +49,7 @@ struct EndpointState {
 impl ConsommeEndpoint {
     pub fn new(state: ConsommeState) -> Self {
         Self {
-            consomme: Arc::new(Mutex::new(Some(EndpointState {
+            endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                 consomme: Consomme::new(state),
                 recv: None,
             }))),
@@ -61,7 +61,7 @@ impl ConsommeEndpoint {
         let (send, recv) = mesh::channel();
         (
             Self {
-                consomme: Arc::new(Mutex::new(Some(EndpointState {
+                endpoint_state: Arc::new(Mutex::new(Some(EndpointState {
                     consomme,
                     recv: Some(recv),
                 }))),
@@ -73,7 +73,7 @@ impl ConsommeEndpoint {
 
 impl InspectMut for ConsommeEndpoint {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        if let Some(consomme) = &mut *self.consomme.lock() {
+        if let Some(consomme) = &mut *self.endpoint_state.lock() {
             consomme.consomme.inspect_mut(req);
         }
     }
@@ -181,8 +181,8 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         assert_eq!(config.len(), 1);
         let config = config.into_iter().next().unwrap();
         let mut queue = Box::new(ConsommeQueue {
-            slot: self.consomme.clone(),
-            endpoint_state: self.consomme.lock().take(),
+            slot: self.endpoint_state.clone(),
+            endpoint_state: self.endpoint_state.lock().take(),
             state: QueueState {
                 pool: config.pool,
                 rx_avail: config.initial_rx.iter().copied().collect(),
@@ -199,7 +199,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     }
 
     async fn stop(&mut self) {
-        assert!(self.consomme.lock().is_some());
+        assert!(self.endpoint_state.lock().is_some());
     }
 
     fn is_ordered(&self) -> bool {
