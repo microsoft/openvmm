@@ -55,11 +55,9 @@ pub trait EmulatorSupport: AccessCpuState {
     /// Generates an event (exception, guest nested page fault, etc.) in the guest.
     fn inject_pending_event(&mut self, event_info: HvAarch64PendingEvent);
 
-    /// Check if the specified write is wholly inside the monitor page, and signal the associated
-    /// connected ID if it is.
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        let _ = (gpa, bytes);
-        false
+    /// Get access to monitor support for the emulator, if it supports it.
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        None
     }
 
     /// Returns true if `gpa` is mapped for the specified permissions.
@@ -70,6 +68,17 @@ pub trait EmulatorSupport: AccessCpuState {
     /// If false, then the emulator will use [`CpuIo`] to access the GPA as
     /// MMIO.
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool;
+}
+
+/// MNF support routines for the emulator
+pub trait EmulatorMonitorSupport {
+    /// Check if the specified write is inside the monitor page, and signal the associated
+    /// connection ID if it is.
+    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool;
+
+    /// Check if the specified read is inside the monitor page, and fill the provided buffer
+    /// if it is.
+    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool;
 }
 
 pub trait TranslateGvaSupport {
@@ -428,6 +437,22 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                 },
             })
     }
+
+    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+        if let Some(monitor_support) = self.support.monitor_support() {
+            monitor_support.check_write(gpa, bytes)
+        } else {
+            false
+        }
+    }
+
+    fn check_monitor_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        if let Some(monitor_support) = self.support.monitor_support() {
+            monitor_support.check_read(gpa, bytes)
+        } else {
+            false
+        }
+    }
 }
 
 impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
@@ -456,12 +481,14 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
     ) -> Result<(), Self::Error> {
         self.check_vtl_access(gpa, TranslateMode::Read)?;
 
-        if self.support.is_gpa_mapped(gpa, false) {
-            self.gm.read_at(gpa, bytes).map_err(Self::Error::Memory)?;
-        } else {
-            self.dev
-                .read_mmio(self.support.vp_index(), gpa, bytes)
-                .await;
+        if !self.check_monitor_read(gpa, bytes) {
+            if self.support.is_gpa_mapped(gpa, false) {
+                self.gm.read_at(gpa, bytes).map_err(Self::Error::Memory)?;
+            } else {
+                self.dev
+                    .read_mmio(self.support.vp_index(), gpa, bytes)
+                    .await;
+            }
         }
         Ok(())
     }
@@ -501,7 +528,7 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
 
         self.check_vtl_access(gpa, TranslateMode::Write)?;
 
-        if self.support.check_monitor_write(gpa, new) {
+        if self.check_monitor_write(gpa, new) {
             *success = true;
             Ok(())
         } else if self.support.is_gpa_mapped(gpa, true) {

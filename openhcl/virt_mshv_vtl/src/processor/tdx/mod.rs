@@ -71,6 +71,7 @@ use virt::x86::TableRegister;
 use virt_support_apic::ApicClient;
 use virt_support_apic::OffloadNotSupported;
 use virt_support_x86emu::emulate::EmulatedMemoryOperation;
+use virt_support_x86emu::emulate::EmulatorMonitorSupport;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::emulate::emulate_insn_memory_op;
@@ -2978,7 +2979,13 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             .mmio_write(address, data);
     }
 
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
+    }
+}
+
+impl<T: CpuIo> EmulatorMonitorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
+    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp
             .partition
             .monitor_page
@@ -2992,6 +2999,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                     );
                 }
             })
+    }
+
+    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        self.vp.partition.monitor_page.check_read(gpa, bytes)
     }
 }
 

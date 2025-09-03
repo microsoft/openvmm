@@ -2526,28 +2526,53 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 false
             }
             None => {
-                if !self.cvm_partition().hide_isolation {
-                    // TODO: Addresses outside of ram and mmio probably should
-                    // not be accessed by the guest, if it has been told about
-                    // isolation. While it's okay as we will return FFs or
-                    // discard writes for addresses that are not mmio, we should
-                    // consider if instead we should also inject a machine check
-                    // for such accesses. The guest should not access any
-                    // addresses not described to it.
-                    //
-                    // For now, log that the guest did this.
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        ?vtl,
-                        is_shared,
-                        ?extra_info,
-                        "guest accessed gpa not described in memory layout, emulating anyways"
-                    );
-                }
+                if self.partition.monitor_page.gpa() == Some(gpa & !(hvdef::HV_PAGE_SIZE - 1)) {
+                    if !is_write {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "guest read monitor page, continuing"
+                        );
+                    } else {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "guest wrote to monitor page, emulating"
+                        );
+                    }
 
-                // Emulate the access.
-                true
+                    // Emulate writes but not reads.
+                    is_write
+                } else {
+                    if !self.cvm_partition().hide_isolation {
+                        // TODO: Addresses outside of ram and mmio probably should
+                        // not be accessed by the guest, if it has been told about
+                        // isolation. While it's okay as we will return FFs or
+                        // discard writes for addresses that are not mmio, we should
+                        // consider if instead we should also inject a machine check
+                        // for such accesses. The guest should not access any
+                        // addresses not described to it.
+                        //
+                        // For now, log that the guest did this.
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "guest accessed gpa not described in memory layout, emulating anyways"
+                        );
+                    }
+
+                    // Emulate the access.
+                    true
+                }
             }
         }
     }

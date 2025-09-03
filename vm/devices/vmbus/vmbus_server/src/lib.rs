@@ -1912,8 +1912,9 @@ impl ServerTaskInner {
                             // If we haven't allocated monitor pages yet, do so now. They may have
                             // been allocated already for a previous connection.
                             if mnf_info.allocated_monitor_pages.is_none() {
-                                mnf_info.allocated_monitor_pages =
-                                    Some(dma_client.allocate_dma_buffer(PAGE_SIZE * 2)?);
+                                let block = dma_client.allocate_dma_buffer(PAGE_SIZE * 2)?;
+                                block.write_at(0, &[0u8; PAGE_SIZE * 2]);
+                                mnf_info.allocated_monitor_pages = Some(block);
                             }
 
                             // Utilize the server-allocated pages.

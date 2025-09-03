@@ -54,6 +54,7 @@ use virt_support_aarch64emu::emulate;
 use virt_support_aarch64emu::emulate::EmuCheckVtlAccessError;
 use virt_support_aarch64emu::emulate::EmuTranslateError;
 use virt_support_aarch64emu::emulate::EmuTranslateResult;
+use virt_support_aarch64emu::emulate::EmulatorMonitorSupport;
 use virt_support_aarch64emu::emulate::EmulatorSupport;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -757,7 +758,17 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
+    }
+
+    fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
+        self.vp.partition.is_gpa_mapped(gpa, write)
+    }
+}
+
+impl<T: CpuIo> EmulatorMonitorSupport for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
+    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp
             .partition
             .monitor_page
@@ -766,8 +777,8 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             })
     }
 
-    fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
-        self.vp.partition.is_gpa_mapped(gpa, write)
+    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        self.vp.partition.monitor_page.check_read(gpa, bytes)
     }
 }
 
