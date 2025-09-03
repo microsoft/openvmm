@@ -158,8 +158,9 @@ pub struct Command {
     pub cdw15: u32,
 }
 
+#[derive(Inspect)]
 #[bitfield(u32)]
-#[derive(Inspect, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
+#[derive(PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
 pub struct Cdw0 {
     pub opcode: u8,
     #[bits(2)]

@@ -10,11 +10,11 @@ use zerocopy::IntoBytes;
 
 /// A builder that can be used to generate `CommandMatch` patterns.
 /// Usage:
-/// Match to any admin command with cid == 0
+/// Match to any admin command with cid == 10
 /// ```
 /// CommandMatchBuilder::new().match_cdw0(
-///     Cdw0::new().with_cid(0),
-///     Cdw0::new().with_cid(u16::MAX),
+///     Cdw0::new().with_cid(10),
+///     Cdw0::new().with_cid(u16::MAX),  // Mask all the cid bits for an exact match on cid(10)
 /// )
 /// .build();
 /// ```
