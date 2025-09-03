@@ -43,12 +43,19 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
     let mut output_cmd = Command::new_zeroed();
     output_cmd.cdw0.set_cid(0);
 
+    let mut compare = Command::new_zeroed();
+    compare.cdw0.set_cid(0);
+
+    let mut mask = Command::new_zeroed();
+    mask.cdw0.set_cid(0xFF);
+
     test_nvme_fault_injection(
         driver,
         FaultConfiguration {
             fault_active: CellUpdater::new(true).cell(),
             admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-                AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
+                compare,
+                mask,
                 QueueFaultBehavior::Update(output_cmd),
             ),
             pci_fault: PciFaultConfig::new(),

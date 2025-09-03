@@ -8,7 +8,6 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-#![no_std]
 
 pub mod nvm;
 
@@ -159,9 +158,8 @@ pub struct Command {
     pub cdw15: u32,
 }
 
-#[derive(Inspect, PartialEq)]
 #[bitfield(u32)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
+#[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload, PartialEq)]
 pub struct Cdw0 {
     pub opcode: u8,
     #[bits(2)]

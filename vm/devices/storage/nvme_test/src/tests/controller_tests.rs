@@ -376,10 +376,20 @@ async fn test_send_identify_no_fault(driver: DefaultDriver) {
 async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
     let mut faulty_identify = Command::new_zeroed();
     faulty_identify.cdw0.set_cid(10);
+
+    let mut compare = Command::new_zeroed();
+    compare.cdw0.set_opcode(spec::AdminOpcode::IDENTIFY.0);
+    compare.cdw10 = u32::from(spec::Cdw10Identify::new().with_cns(spec::Cns::CONTROLLER.0));
+
+    let mut mask = Command::new_zeroed();
+    mask.cdw10 = u32::from(spec::Cdw10Identify::new().with_cns(0x1f));
+    mask.cdw0.set_opcode(0xFF);
+
     let fault_configuration = FaultConfiguration {
         fault_active: CellUpdater::new(true).cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-            nvme_spec::AdminOpcode::IDENTIFY.0,
+            compare,
+            mask,
             QueueFaultBehavior::Update(faulty_identify),
         ),
         pci_fault: PciFaultConfig::new(),

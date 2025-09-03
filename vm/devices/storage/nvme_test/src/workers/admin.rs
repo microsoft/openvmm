@@ -476,8 +476,10 @@ impl AdminHandler {
                         .admin_fault
                         .admin_submission_queue_faults
                         .iter()
-                        .find(|(op, _)| *op == opcode.0)
-                        .map(|(_, behavior)| behavior.clone())
+                        .find(|(compare, mask, _)| {
+                            ((*compare ^ command) & *mask) == nvme_spec::Command::new_zeroed()
+                        }) // TODO: Does this matching work properly?
+                        .map(|(_, _, behavior)| behavior.clone())
                         .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {

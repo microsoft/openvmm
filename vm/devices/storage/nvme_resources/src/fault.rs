@@ -7,7 +7,6 @@ use mesh::Cell;
 use mesh::MeshPayload;
 use nvme_spec::Command;
 use std::time::Duration;
-use zerocopy::IntoBytes;
 
 /// Supported fault behaviour for NVMe queues
 #[derive(Debug, Clone, MeshPayload)]
