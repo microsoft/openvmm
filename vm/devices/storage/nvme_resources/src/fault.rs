@@ -7,6 +7,7 @@ use mesh::Cell;
 use mesh::MeshPayload;
 use nvme_spec::Command;
 use std::time::Duration;
+use zerocopy::IntoBytes;
 
 /// Supported fault behaviour for NVMe queues
 #[derive(Debug, Clone, MeshPayload)]
@@ -43,7 +44,7 @@ pub struct PciFaultConfig {
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
-    pub admin_submission_queue_faults: Vec<(u8, QueueFaultBehavior<Command>)>,
+    pub admin_submission_queue_faults: Vec<(Command, Command, QueueFaultBehavior<Command>)>,
 }
 
 #[derive(MeshPayload, Clone)]
@@ -83,19 +84,23 @@ impl AdminQueueFaultConfig {
     /// Add an opcode -> FaultBehavior mapping. Cannot configure an opcode more than once
     pub fn with_submission_queue_fault(
         mut self,
-        opcode: u8,
+        compare: Command,
+        mask: Command,
         behaviour: QueueFaultBehavior<Command>,
     ) -> Self {
         if self
             .admin_submission_queue_faults
             .iter()
-            .map(|(op, _)| op)
-            .any(|&op| op == opcode)
+            .any(|(c, m, _)| (compare == *c) && (mask == *m))
         {
-            panic!("Duplicate submission queue fault for opcode {}", opcode);
+            panic!(
+                "Duplicate submission queue fault for Compare {:?} and Mask {:?}",
+                compare, mask
+            );
         }
 
-        self.admin_submission_queue_faults.push((opcode, behaviour));
+        self.admin_submission_queue_faults
+            .push((compare, mask, behaviour));
         self
     }
 }

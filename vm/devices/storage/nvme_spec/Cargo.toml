@@ -11,6 +11,7 @@ storage_string.workspace = true
 
 inspect.workspace = true
 mesh.workspace = true
+std.workspace = true
 
 bitfield-struct.workspace = true
 open_enum.workspace = true
