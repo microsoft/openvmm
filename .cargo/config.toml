@@ -93,6 +93,8 @@ rustflags = [
   "-Ctarget-feature=+crt-static",
   # Use RELR relocation format, which is considerably smaller.
   "-Clink-arg=-Wl,-z,pack-relative-relocs",
+  # Use linker plugin LTO to enable cross language LTO.
+  "-Clinker-plugin-lto",
 ]
 
 [target.'cfg(all(target_arch = "aarch64", target_env = "musl"))']
