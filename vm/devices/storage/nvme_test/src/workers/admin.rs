@@ -15,6 +15,7 @@ use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
+use crate::matcher::CommandMatchBuilder;
 use crate::namespace::Namespace;
 use crate::prp::PrpRange;
 use crate::queue::CompletionQueue;
@@ -476,10 +477,8 @@ impl AdminHandler {
                         .admin_fault
                         .admin_submission_queue_faults
                         .iter()
-                        .find(|(compare, mask, _)| {
-                            ((*compare ^ command) & *mask) == nvme_spec::Command::new_zeroed()
-                        }) // TODO: Does this matching work properly?
-                        .map(|(_, _, behavior)| behavior.clone())
+                        .find(|(compare, _)| CommandMatchBuilder::compare(compare, &command)) // TODO: Does this matching work properly?
+                        .map(|(_, behavior)| behavior.clone())
                         .unwrap_or_else(|| QueueFaultBehavior::Default);
 
                     match fault {

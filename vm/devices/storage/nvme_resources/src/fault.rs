@@ -43,7 +43,13 @@ pub struct PciFaultConfig {
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
     /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
-    pub admin_submission_queue_faults: Vec<(Command, Command, QueueFaultBehavior<Command>)>,
+    pub admin_submission_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Command>)>,
+}
+
+#[derive(Clone, MeshPayload, PartialEq)]
+pub struct CommandMatch {
+    pub command: Command,
+    pub mask: [u8; 64],
 }
 
 #[derive(MeshPayload, Clone)]
@@ -80,26 +86,24 @@ impl AdminQueueFaultConfig {
         }
     }
 
-    /// Add an opcode -> FaultBehavior mapping. Cannot configure an opcode more than once
+    /// Add a FaultRange -> FaultBehavior mapping. Cannot configure a FaultRange more than once
     pub fn with_submission_queue_fault(
         mut self,
-        compare: Command,
-        mask: Command,
+        fault: CommandMatch,
         behaviour: QueueFaultBehavior<Command>,
     ) -> Self {
         if self
             .admin_submission_queue_faults
             .iter()
-            .any(|(c, m, _)| (compare == *c) && (mask == *m))
+            .any(|(c, _)| (fault == *c))
         {
             panic!(
                 "Duplicate submission queue fault for Compare {:?} and Mask {:?}",
-                compare, mask
+                fault.command, fault.mask
             );
         }
 
-        self.admin_submission_queue_faults
-            .push((compare, mask, behaviour));
+        self.admin_submission_queue_faults.push((fault, behaviour));
         self
     }
 }

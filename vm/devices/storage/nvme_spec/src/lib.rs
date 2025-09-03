@@ -8,6 +8,7 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
+#![no_std]
 
 pub mod nvm;
 
@@ -15,7 +16,6 @@ use bitfield_struct::bitfield;
 use inspect::Inspect;
 use mesh::MeshPayload;
 use open_enum::open_enum;
-use std::ops::{BitAnd, BitXor};
 use storage_string::AsciiString;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -134,13 +134,13 @@ pub struct Aqa {
     Copy,
     Clone,
     Debug,
-    PartialEq,
     IntoBytes,
     Immutable,
     KnownLayout,
     FromBytes,
     Inspect,
     MeshPayload,
+    PartialEq,
 )]
 pub struct Command {
     pub cdw0: Cdw0,
@@ -159,7 +159,7 @@ pub struct Command {
 }
 
 #[bitfield(u32)]
-#[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload, PartialEq)]
+#[derive(Inspect, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
 pub struct Cdw0 {
     pub opcode: u8,
     #[bits(2)]
@@ -169,54 +169,6 @@ pub struct Cdw0 {
     #[bits(2)]
     pub psdt: u8,
     pub cid: u16,
-}
-
-impl BitAnd for Cdw0 {
-    type Output = Self;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        Self::from(u32::from(self) & u32::from(rhs))
-    }
-}
-
-impl BitXor for Cdw0 {
-    type Output = Self;
-
-    fn bitxor(self, rhs: Self) -> Self::Output {
-        Self::from(u32::from(self) ^ u32::from(rhs))
-    }
-}
-
-impl BitAnd for Command {
-    type Output = Self;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        let self_bytes = self.as_bytes();
-        let rhs_bytes = rhs.as_bytes();
-        let mut result_bytes = [0u8; size_of::<Command>()];
-
-        for i in 0..size_of::<Command>() {
-            result_bytes[i] = self_bytes[i] & rhs_bytes[i];
-        }
-
-        Command::read_from_bytes(&result_bytes).unwrap()
-    }
-}
-
-impl BitXor for Command {
-    type Output = Self;
-
-    fn bitxor(self, rhs: Self) -> Self::Output {
-        let self_bytes = self.as_bytes();
-        let rhs_bytes = rhs.as_bytes();
-        let mut result_bytes = [0u8; size_of::<Command>()];
-
-        for i in 0..size_of::<Command>() {
-            result_bytes[i] = self_bytes[i] ^ rhs_bytes[i];
-        }
-
-        Command::read_from_bytes(&result_bytes).unwrap()
-    }
 }
 
 #[repr(C)]

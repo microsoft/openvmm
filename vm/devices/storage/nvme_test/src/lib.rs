@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+pub mod matcher;
 mod namespace;
 mod pci;
 mod prp;
