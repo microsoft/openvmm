@@ -9322,6 +9322,7 @@ dependencies = [
  "net_backend_resources",
  "nvme_resources",
  "nvme_spec",
+ "nvme_test",
  "pal",
  "pal_async",
  "petri",
