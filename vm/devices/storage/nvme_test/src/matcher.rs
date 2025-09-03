@@ -1,6 +1,10 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! A command match builder
+
 use nvme_resources::fault::CommandMatch;
 use nvme_spec::Command;
-use std::u8;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 

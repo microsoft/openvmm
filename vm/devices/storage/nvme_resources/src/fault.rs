@@ -47,8 +47,11 @@ pub struct AdminQueueFaultConfig {
 }
 
 #[derive(Clone, MeshPayload, PartialEq)]
+/// A command match pattern.
 pub struct CommandMatch {
+    /// Command to match against
     pub command: Command,
+    /// A bitmask that defines the bits to match against
     pub mask: [u8; 64],
 }
 

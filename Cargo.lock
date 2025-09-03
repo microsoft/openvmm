@@ -4843,7 +4843,6 @@ dependencies = [
  "mesh",
  "nvme_spec",
  "vm_resource",
- "zerocopy 0.8.25",
 ]
 
 [[package]]
