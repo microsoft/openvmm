@@ -25,7 +25,7 @@ impl CommandMatchBuilder {
 
     /// Configure the matcher to a specific opcode. Multiple calls overwrite functionality.
     /// If you need to match against multiple patterns, consider using multiple CommandMatcher instances.
-    pub fn with_cdw0_opcode(&mut self, opcode: u8) -> &Self {
+    pub fn with_cdw0_opcode(&mut self, opcode: u8) -> &mut Self {
         self.command.cdw0 = self.command.cdw0.with_opcode(opcode);
         self.mask.cdw0 = self.mask.cdw0.with_opcode(u8::MAX);
         self
@@ -33,7 +33,7 @@ impl CommandMatchBuilder {
 
     /// Configure the matcher to a specific cdw0 pattern. Multiple calls overwrite functionality.
     /// Mask bits == 1 are required to be an exact match and == 0 are treated as a wildcard.
-    pub fn with_cdw0(&mut self, cdw0: u32, mask: u32) -> &Self {
+    pub fn with_cdw0(&mut self, cdw0: u32, mask: u32) -> &mut Self {
         self.command.cdw0 = cdw0.into();
         self.mask.cdw0 = mask.into();
         self
@@ -41,7 +41,7 @@ impl CommandMatchBuilder {
 
     /// Configure the matcher to a specific cdw10 pattern. Multiple calls overwrite functionality.
     /// Mask bits == 1 are required to be an exact match and == 0 are treated as a wildcard.
-    pub fn with_cdw10(&mut self, cdw10: u32, mask: u32) -> &Self {
+    pub fn with_cdw10(&mut self, cdw10: u32, mask: u32) -> &mut Self {
         self.command.cdw10 = cdw10;
         self.mask.cdw10 = mask;
         self
