@@ -61,6 +61,12 @@ pub enum Error {
     /// Cannot read encrypted file - VMGS is locked.
     #[error("cannot read encrypted file - VMGS is locked")]
     ReadEncrypted,
+    /// Tried to add a new encryption key, but there are already two keys.
+    #[error("no space to add new encryption key")]
+    DatastoreKeysFull,
+    /// Datastore keys full, but there is no active key.
+    #[error("unable to determine inactive key for removal")]
+    NoActiveDatastoreKey,
 
     /// OpenSSL errors.
     #[cfg(feature = "encryption_ossl")]

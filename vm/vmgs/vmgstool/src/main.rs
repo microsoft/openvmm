@@ -472,13 +472,9 @@ async fn vmgs_update_key(
     #[cfg(with_encryption)]
     {
         eprintln!("Updating encryption key");
-        let old_key_index = vmgs.get_active_datastore_key_index();
-        vmgs.add_new_encryption_key(new_encryption_key, encryption_alg)
+        vmgs.update_encryption_key(new_encryption_key, encryption_alg)
             .await
             .map_err(Error::EncryptionKey)?;
-        if let Some(key_index) = old_key_index {
-            vmgs.remove_encryption_key(key_index).await?;
-        }
 
         Ok(())
     }
@@ -574,8 +570,7 @@ async fn vmgs_create(
     if let Some((algorithm, encryption_key)) = encryption_alg_key {
         eprintln!("Adding encryption key");
         #[cfg(with_encryption)]
-        let _key_index = vmgs
-            .add_new_encryption_key(encryption_key, algorithm)
+        vmgs.update_encryption_key(encryption_key, algorithm)
             .await
             .map_err(Error::EncryptionKey)?;
         #[cfg(not(with_encryption))]

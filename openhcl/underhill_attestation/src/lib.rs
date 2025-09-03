@@ -143,12 +143,8 @@ enum UnlockVmgsDataStoreError {
     WriteKeyProtector(#[source] vmgs::WriteToVmgsError),
     #[error("failed to read key protector by id to vmgs")]
     WriteKeyProtectorById(#[source] vmgs::WriteToVmgsError),
-    #[error("failed to remove the old vmgs encryption key")]
-    RemoveOldVmgsEncryptionKey(#[source] ::vmgs::Error),
-    #[error("failed to add a new vmgs encryption key after removing the old key")]
-    AddNewVmgsEncryptionKeyAfterRemoval(#[source] ::vmgs::Error),
-    #[error("failed to add a new vmgs encryption key")]
-    AddNewVmgsEncryptionKey(#[source] ::vmgs::Error),
+    #[error("failed to update the vmgs encryption key")]
+    UpdateVmgsEncryptionKey(#[source] ::vmgs::Error),
     #[error("failed to persist all key protectors")]
     PersistAllKeyProtectors(#[source] PersistAllKeyProtectorsError),
 }
@@ -455,26 +451,21 @@ async fn unlock_vmgs_data_store(
     }
 
     // Call unlock_with_encryption_key using ingress_key if datastore is encrypted
-    let mut old_index = 2;
     let mut provision = false;
     if vmgs_encrypted {
         tracing::info!(CVM_ALLOWED, "Decrypting vmgs file...");
-        match vmgs.unlock_with_encryption_key(&new_ingress_key).await {
-            Ok(index) => old_index = index,
-            Err(e) => {
-                if let Some(key) = old_egress_key {
-                    // Key rolling did not complete successfully last time and there's an old
-                    // egress key in the VMGS. It may be needed for decryption.
-                    tracing::trace!(CVM_ALLOWED, "Old EgressKey found");
-                    old_index = vmgs
-                        .unlock_with_encryption_key(&key)
-                        .await
-                        .map_err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingEgressKey)?;
-                } else {
-                    Err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingIngressKey(
-                        e,
-                    ))?
-                }
+        if let Err(e) = vmgs.unlock_with_encryption_key(&new_ingress_key).await {
+            if let Some(key) = old_egress_key {
+                // Key rolling did not complete successfully last time and there's an old
+                // egress key in the VMGS. It may be needed for decryption.
+                tracing::trace!(CVM_ALLOWED, "Old EgressKey found");
+                vmgs.unlock_with_encryption_key(&key)
+                    .await
+                    .map_err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingEgressKey)?;
+            } else {
+                Err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingIngressKey(
+                    e,
+                ))?
             }
         }
     } else {
@@ -499,37 +490,13 @@ async fn unlock_vmgs_data_store(
         }
     }
 
-    // Call add_new_encryption_key adding egress_key if different with ingress_key or during provision
     if provision || new_key {
-        let result = vmgs
-            .add_new_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
-            .await;
-
-        match result {
-            Ok(_new_index) => (),
-            Err(_) if old_index != 2 => {
-                // If last time we failed to remove old key then we'll come here.
-                // We have to remove old key before adding egress_key.
-                let key_index = if old_index == 0 { 1 } else { 0 };
-                tracing::trace!(CVM_ALLOWED, key_index = key_index, "Remove old key...");
-                vmgs.remove_encryption_key(key_index)
-                    .await
-                    .map_err(UnlockVmgsDataStoreError::RemoveOldVmgsEncryptionKey)?;
-
-                tracing::trace!(CVM_ALLOWED, "Add egress_key again...");
-                vmgs.add_new_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
-                    .await
-                    .map_err(UnlockVmgsDataStoreError::AddNewVmgsEncryptionKeyAfterRemoval)?;
-            }
-            Err(e) => Err(UnlockVmgsDataStoreError::AddNewVmgsEncryptionKey(e))?,
-        }
-    }
-
-    // Remove ingress_key if different with egress_key
-    if !provision && new_key {
-        vmgs.remove_encryption_key(old_index)
+        // Add the new egress key. If we are not provisioning, then this will
+        // also remove the old key. This will also remove the inactive key if
+        // last time we failed to remove it.
+        vmgs.update_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
             .await
-            .map_err(UnlockVmgsDataStoreError::RemoveOldVmgsEncryptionKey)?;
+            .map_err(UnlockVmgsDataStoreError::UpdateVmgsEncryptionKey)?;
     }
 
     // Persist KP to VMGS
@@ -1477,7 +1444,7 @@ mod tests {
             encrypt_egress: egress,
         };
 
-        vmgs.add_new_encryption_key(&ingress, EncryptionAlgorithm::AES_GCM)
+        vmgs.update_encryption_key(&ingress, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
 

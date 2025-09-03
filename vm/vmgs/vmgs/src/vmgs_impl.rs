@@ -1244,7 +1244,47 @@ impl Vmgs {
         }
     }
 
+    /// Associates a new root key with the data store and removes the old
+    /// encryption key, if it exists. If two keys already exist, the
+    /// inactive key is removed first. Returns the index of the newly
+    /// associated key.
+    #[cfg(with_encryption)]
+    pub async fn update_encryption_key(
+        &mut self,
+        encryption_key: &[u8],
+        encryption_algorithm: EncryptionAlgorithm,
+    ) -> Result<(), Error> {
+        let old_index = self.active_datastore_key_index;
+
+        match self
+            .add_new_encryption_key(encryption_key, encryption_algorithm)
+            .await
+        {
+            Ok(_) => {}
+            Err(Error::DatastoreKeysFull) => {
+                if let Some(old_index) = old_index {
+                    let inactive_index = if old_index == 0 { 1 } else { 0 };
+                    tracing::warn!(CVM_ALLOWED, inactive_index, "removing inactive key");
+                    self.remove_encryption_key(inactive_index).await?;
+                    tracing::trace!(CVM_ALLOWED, "attempting to add the key again");
+                    self.add_new_encryption_key(encryption_key, encryption_algorithm)
+                        .await?;
+                } else {
+                    return Err(Error::NoActiveDatastoreKey);
+                }
+            }
+            Err(e) => return Err(e),
+        };
+
+        if let Some(old_index) = old_index {
+            self.remove_encryption_key(old_index).await?;
+        }
+
+        Ok(())
+    }
+
     /// Associates a new root key with the data store. Returns the index of the newly associated key.
+    // TODO: make this function private
     #[cfg(with_encryption)]
     pub async fn add_new_encryption_key(
         &mut self,
@@ -1264,9 +1304,7 @@ impl Vmgs {
             )));
         }
         if self.datastore_key_count == self.datastore_keys.len() as u8 {
-            return Err(Error::Other(anyhow!(
-                "add_new_encryption_key() no space to add new encryption key"
-            )));
+            return Err(Error::DatastoreKeysFull);
         }
         if is_empty_key(encryption_key) {
             return Err(Error::Other(anyhow!("Trying to add empty encryption key")));
@@ -1373,7 +1411,7 @@ impl Vmgs {
 
     /// Disassociates the root key at the specified index from the data store.
     #[cfg(with_encryption)]
-    pub async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
+    async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
         if self.version < VMGS_VERSION_3_0 {
             return Err(Error::Other(anyhow!(
                 "remove_encryption_key() not supported with VMGS version."
@@ -1443,11 +1481,6 @@ impl Vmgs {
     /// Whether the VMGS file is encrypted
     pub fn is_encrypted(&self) -> bool {
         self.encryption_algorithm != EncryptionAlgorithm::NONE
-    }
-
-    /// Get the active datastore key index
-    pub fn get_active_datastore_key_index(&self) -> Option<usize> {
-        self.active_datastore_key_index
     }
 
     fn prepare_new_header(&self, file_table_fcb: &ResolvedFileControlBlock) -> VmgsHeader {

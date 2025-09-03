@@ -326,7 +326,7 @@ async fn do_create(
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
     if let Some(encryption_key) = key {
-        vmgs.add_new_encryption_key(encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.update_encryption_key(encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .map_err(|_| VmgsError::EncryptionFailed)?;
     }
