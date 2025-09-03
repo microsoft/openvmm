@@ -333,8 +333,10 @@ impl NetQueue for TestNicQueue {
         if self.rx_ids.is_empty() {
             return Poll::Pending;
         }
-        let recv = std::pin::pin!(self.rx.recv());
-        self.next_rx_packet = Some(std::task::ready!(recv.poll(cx)).unwrap());
+        if self.next_rx_packet.is_none() {
+            let recv = std::pin::pin!(self.rx.recv());
+            self.next_rx_packet = Some(std::task::ready!(recv.poll(cx)).unwrap());
+        }
         Poll::Ready(())
     }
 

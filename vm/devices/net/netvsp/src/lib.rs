@@ -451,6 +451,7 @@ struct ActiveState {
 struct QueueStats {
     tx_stalled: Counter,
     rx_dropped_ring_full: Counter,
+    rx_dropped_filtered: Counter,
     spurious_wakes: Counter,
     rx_packets: Counter,
     tx_packets: Counter,
@@ -5028,17 +5029,22 @@ impl<T: 'static + RingMem> NetChannel<T> {
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
     ) -> Result<bool, WorkerError> {
-        if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
-            tracing::trace!(
-                packet_filter = self.packet_filter,
-                "rx packet not processed"
-            );
-            return Ok(false);
-        }
         let n = epqueue
             .rx_poll(&mut data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
         if n == 0 {
+            return Ok(false);
+        }
+
+        state.stats.rx_packets_per_wake.add_sample(n as u64);
+
+        if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
+            tracing::trace!(
+                packet_filter = self.packet_filter,
+                "rx packets dropped due to packet filter"
+            );
+            epqueue.rx_avail(&data.rx_ready[..n]);
+            state.stats.rx_dropped_filtered.add(n as u64);
             return Ok(false);
         }
 
@@ -5074,7 +5080,6 @@ impl<T: 'static + RingMem> NetChannel<T> {
             }
         }
 
-        state.stats.rx_packets_per_wake.add_sample(n as u64);
         Ok(true)
     }
 
