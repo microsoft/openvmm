@@ -52,10 +52,6 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
             admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new()
                     .match_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
-                    .match_cdw0(
-                        Cdw0::new().with_cid(0).into(),
-                        Cdw0::new().with_cid(u16::MAX).into(),
-                    )
                     .build(),
                 QueueFaultBehavior::Update(output_cmd),
             ),

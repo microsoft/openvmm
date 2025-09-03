@@ -1,14 +1,28 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A command match builder
+//! A `CommandMatch` builder
 
 use nvme_resources::fault::CommandMatch;
 use nvme_spec::Command;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
-/// A command matcher that can be used to generate and match command match patterns for nvme commands
+/// A builder that can be used to generate `CommandMatch` patterns.
+/// Usage:
+/// Match to any admin command with cid == 0
+/// ```
+/// CommandMatchBuilder::new().match_cdw0(
+///     Cdw0::new().with_cid(0),
+///     Cdw0::new().with_cid(u16::MAX),
+/// )
+/// .build();
+/// ```
+///
+/// Match to any admin command with opcode == 0x01
+/// ```
+/// CommandMatchBuilder::new().match_cdw0_opcode(0x01).build();
+/// ```
 pub struct CommandMatchBuilder {
     command: Command,
     mask: Command,
@@ -23,7 +37,7 @@ impl CommandMatchBuilder {
         }
     }
 
-    /// Configure to match to an opcode.
+    /// Configure to match to an opcode. See struct docs for usage
     pub fn match_cdw0_opcode(&mut self, opcode: u8) -> &mut Self {
         self.command.cdw0 = self.command.cdw0.with_opcode(opcode);
         self.mask.cdw0 = self.mask.cdw0.with_opcode(u8::MAX);
@@ -31,14 +45,7 @@ impl CommandMatchBuilder {
     }
 
     /// Configure to match a cdw0 pattern. Mask specifies which bits to match on.
-    /// Usage:
-    /// Match the cid field of cdw0
-    /// ```
-    /// CommandMatchBuilder::new().match_cdw0(
-    ///     Cdw0::new().with_cid(0),
-    ///     Cdw0::new().with_cid(u16::MAX),
-    /// );
-    /// ```
+    /// See struct docs for usage
     pub fn match_cdw0(&mut self, cdw0: u32, mask: u32) -> &mut Self {
         self.command.cdw0 = cdw0.into();
         self.mask.cdw0 = mask.into();
@@ -46,7 +53,7 @@ impl CommandMatchBuilder {
     }
 
     /// Configure to match a cdw10 pattern. Mask specifies which bits to match on.
-    /// Refer to ```match_cdw0()``` for usage.
+    /// See struct docs for usage
     pub fn match_cdw10(&mut self, cdw10: u32, mask: u32) -> &mut Self {
         self.command.cdw10 = cdw10;
         self.mask.cdw10 = mask;

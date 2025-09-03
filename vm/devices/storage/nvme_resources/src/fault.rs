@@ -47,11 +47,11 @@ pub struct AdminQueueFaultConfig {
 }
 
 #[derive(Clone, MeshPayload, PartialEq)]
-/// A command match pattern.
+/// A definition of a command matching pattern.
 pub struct CommandMatch {
     /// Command to match against
     pub command: Command,
-    /// A bitmask that defines the bits to match against
+    /// Bitmask that defines the bits to match against
     pub mask: [u8; 64],
 }
 
@@ -89,24 +89,25 @@ impl AdminQueueFaultConfig {
         }
     }
 
-    /// Add a FaultRange -> FaultBehavior mapping. Cannot configure a FaultRange more than once
+    /// Add a CommandMatch -> FaultBehavior mapping. Cannot configure a CommandMatch more than once
     pub fn with_submission_queue_fault(
         mut self,
-        fault: CommandMatch,
+        pattern: CommandMatch,
         behaviour: QueueFaultBehavior<Command>,
     ) -> Self {
         if self
             .admin_submission_queue_faults
             .iter()
-            .any(|(c, _)| (fault == *c))
+            .any(|(c, _)| (pattern == *c))
         {
             panic!(
                 "Duplicate submission queue fault for Compare {:?} and Mask {:?}",
-                fault.command, fault.mask
+                pattern.command, pattern.mask
             );
         }
 
-        self.admin_submission_queue_faults.push((fault, behaviour));
+        self.admin_submission_queue_faults
+            .push((pattern, behaviour));
         self
     }
 }
