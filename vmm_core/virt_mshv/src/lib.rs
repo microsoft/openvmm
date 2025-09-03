@@ -16,6 +16,7 @@ use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::X64RegisterIo;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -1175,10 +1176,9 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         if exec {
             flags |= set_bits!(u8, MSHV_SET_MEM_BIT_EXECUTABLE);
         }
-
         let mem_region = mshv_user_mem_region {
             size: size as u64,
-            guest_pfn: addr,
+            guest_pfn: addr >> HV_PAGE_SHIFT,
             userspace_addr: data as u64,
             flags,
             rsvd: [0; 7],
