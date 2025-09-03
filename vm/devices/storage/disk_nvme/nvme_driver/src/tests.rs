@@ -16,7 +16,6 @@ use nvme_resources::fault::PciFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
-use nvme_spec::Cdw0;
 use nvme_spec::Command;
 use nvme_spec::nvm::DsmRange;
 use nvme_test::command_match::CommandMatchBuilder;
