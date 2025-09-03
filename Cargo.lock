@@ -9333,6 +9333,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "build_rs_guest_arch",
  "clap",
  "disk_backend",
  "disk_vhd1",
@@ -9341,6 +9342,7 @@ dependencies = [
  "guid",
  "hcl_compat_uefi_nvram_storage",
  "hex",
+ "openvmm_pcat_locator",
  "pal_async",
  "serde",
  "serde_json",

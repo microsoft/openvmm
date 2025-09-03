@@ -33,6 +33,17 @@ fn system32_path() -> String {
     format!("{windows_dir}\\System32")
 }
 
+/// expose function for parsing a dll resource
+pub fn try_find_resource_from_dll(
+    file: &fs_err::File,
+    resource_type: &[u8; 4],
+    resource_code: u32,
+) -> anyhow::Result<Option<(u64, usize)>> {
+    // Create a descriptor for the VMFW resource with the given ID
+    let descriptor = DllResourceDescriptor::new(resource_type, resource_code);
+    resource_dll_parser::try_find_resource_from_dll(file, &descriptor)
+}
+
 /// Attempt to automatically find and open the PCAT BIOS. Will always prefer
 /// the more recently updated vmfirmwarepcat.dll over vmfirmware.dll.
 pub fn find_pcat_bios(command_line_path: Option<&Path>) -> anyhow::Result<RomFileLocation> {

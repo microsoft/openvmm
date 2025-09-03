@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-#![forbid(unsafe_code)]
 
 mod storage_backend;
 #[cfg(feature = "test_helpers")]
@@ -94,6 +93,9 @@ enum Error {
     GspUnknown,
     #[error("VMGS file is using an unknown encryption algorithm")]
     EncryptionUnknown,
+    #[cfg(all(windows, guest_arch = "x86_64"))]
+    #[error("Unable to read IGVM file with Error: {0}")]
+    UnableToReadIgvmFile(String),
 }
 
 impl From<vmgs::Error> for Error {
@@ -125,6 +127,17 @@ enum ExitCode {
     ErrorGspUnknown = 7,
 }
 
+#[derive(Debug, Clone, Copy)]
+#[repr(i32)]
+#[cfg(all(windows, guest_arch = "x86_64"))]
+enum ResourceCode {
+    NonConfidential = 13510,
+    Snp = 13515,
+    SnpNoHcl = 13516,
+    Tdx = 13520,
+    TdxNoHcl = 13521,
+}
+
 #[derive(Args)]
 struct FilePathArg {
     /// VMGS file path
@@ -154,6 +167,7 @@ enum Options {
     /// `keypath` and `encryptionalgorithm` must both be specified if encrypted
     /// guest state is required.
     Create {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// VMGS file size, default = 4194816 (~4MB)
@@ -183,6 +197,7 @@ enum Options {
     ///
     /// The proper key file must be specified to write encrypted data.
     Write {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Data file path to read
@@ -202,6 +217,7 @@ enum Options {
     /// is encrypted and no key is specified, the data will be dumped without
     /// decrypting.
     Dump {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Data file path to write
@@ -217,11 +233,13 @@ enum Options {
     },
     /// Dump headers of the VMGS file at `filepath` to the console.
     DumpHeaders {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
     },
     /// Get the size of the specified `fileid` within the VMGS file
     QuerySize {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         #[command(flatten)]
@@ -231,6 +249,7 @@ enum Options {
     ///
     /// Both key files must contain a key that is 32 bytes long.
     UpdateKey {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Current encryption key file path.
@@ -245,6 +264,7 @@ enum Options {
     },
     /// Encrypt an existing VMGS file
     Encrypt {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Encryption key file path. The file must contain a key that is 32 bytes long.
@@ -256,6 +276,7 @@ enum Options {
     },
     /// Query whether a VMGS file is encrypted
     QueryEncryption {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
     },
@@ -269,6 +290,26 @@ enum Options {
     Test {
         #[clap(subcommand)]
         operation: TestOperation,
+    },
+    /// Copy the IGVM file from a dll into file ID 8 of the VMGS file.
+    ///
+    /// The proper key file must be specified to write encrypted data.
+    #[cfg(all(windows, guest_arch = "x86_64"))]
+    CopyIgvmfile {
+        /// VMGS file path
+        #[command(flatten)]
+        file_path: FilePathArg,
+        /// DLL file path to read
+        #[clap(short = 'd', long, alias = "datapath")]
+        data_path: PathBuf,
+        #[command(flatten)]
+        key_path: KeyPathArg,
+        /// Overwrite the VMGS data at `fileid 8`, even if it already exists with nonzero size
+        #[clap(long, alias = "allowoverwrite")]
+        allow_overwrite: bool,
+        /// Resource code. Supported values: nonconfidential, snp, tdx, snp_no_hcl, and tdx_no_hcl
+        #[clap(short = 'r', long, alias = "resourcecode", value_parser = parse_resource_code)]
+        resource_code: ResourceCode,
     },
 }
 
@@ -296,6 +337,18 @@ fn parse_encryption_algorithm(algorithm: &str) -> Result<EncryptionAlgorithm, &'
     match algorithm {
         "AES_GCM" => Ok(EncryptionAlgorithm::AES_GCM),
         _ => Err("Encryption algorithm not supported"),
+    }
+}
+
+#[cfg(all(windows, guest_arch = "x86_64"))]
+fn parse_resource_code(resource_code: &str) -> Result<ResourceCode, &'static str> {
+    match resource_code {
+        "nonconfidential" => Ok(ResourceCode::NonConfidential),
+        "snp" => Ok(ResourceCode::Snp),
+        "snp_no_hcl" => Ok(ResourceCode::SnpNoHcl),
+        "tdx" => Ok(ResourceCode::Tdx),
+        "tdx_no_hcl" => Ok(ResourceCode::TdxNoHcl),
+        _ => Err("Resource code not supported"),
     }
 }
 
@@ -467,6 +520,23 @@ async fn do_main() -> Result<(), Error> {
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
         #[cfg(feature = "test_helpers")]
         Options::Test { operation } => test::do_command(operation).await,
+        #[cfg(all(windows, guest_arch = "x86_64"))]
+        Options::CopyIgvmfile {
+            file_path,
+            data_path,
+            key_path,
+            allow_overwrite,
+            resource_code,
+        } => {
+            vmgs_file_copy_igvmfile(
+                file_path.file_path,
+                data_path,
+                key_path.key_path,
+                allow_overwrite,
+                resource_code,
+            )
+            .await
+        }
     }
 }
 
@@ -1100,6 +1170,100 @@ fn vhdfiledisk_open(file: File, open_mode: OpenMode) -> Result<Disk, Error> {
     Ok(disk)
 }
 
+#[cfg(all(windows, guest_arch = "x86_64"))]
+async fn vmgs_file_copy_igvmfile(
+    file_path: impl AsRef<Path>,
+    data_path: impl AsRef<Path>,
+    key_path: Option<impl AsRef<Path>>,
+    allow_overwrite: bool,
+    resource_code: ResourceCode,
+) -> Result<(), Error> {
+    eprintln!("Writing IGVMfile to VMGS");
+
+    let encrypt = key_path.is_some();
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite).await?;
+    eprintln!("Reading IGVMfile from DLL");
+    write_igvmfile(
+        &mut vmgs,
+        encrypt,
+        allow_overwrite,
+        data_path,
+        resource_code,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[cfg(all(windows, guest_arch = "x86_64"))]
+async fn write_igvmfile(
+    vmgs: &mut Vmgs,
+    encrypt: bool,
+    allow_overwrite: bool,
+    data_path: impl AsRef<Path>,
+    resource_code: ResourceCode,
+) -> Result<(), Error> {
+    use std::os::windows::ffi::OsStrExt;
+    eprintln!("Reading IGVMfile from: {}", data_path.as_ref().display());
+
+    // Convert the path to a wide string (UTF-16) for Windows API
+    let dll_path = data_path
+        .as_ref()
+        .as_os_str()
+        .encode_wide()
+        .collect::<Vec<u16>>();
+
+    let bytes = read_igvmfile(dll_path, resource_code).await?;
+
+    vmgs_write(
+        vmgs,
+        FileId::GUEST_FIRMWARE,
+        &bytes,
+        encrypt,
+        allow_overwrite,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[cfg(all(windows, guest_arch = "x86_64"))]
+async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
+    use std::ffi::OsString;
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::windows::ffi::OsStringExt;
+
+    eprintln!("Reading IGVMfile from DLL");
+    // Convert the wide string back to a PathBuf
+    let path = PathBuf::from(OsString::from_wide(&dll_path));
+
+    let file = File::open(&path)
+        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e)))?;
+
+    // Try to find the resource in the DLL
+    let (start, len) =
+        openvmm_pcat_locator::try_find_resource_from_dll(&file, b"VMFW", resource_code as u32)
+            .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
+            .ok_or_else(|| {
+                Error::UnableToReadIgvmFile(
+                    "File is not a valid PE DLL or resource not found".to_string(),
+                )
+            })?;
+    // Read the resource data
+    let mut file = file;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to seek to resource: {}", e)))?;
+
+    let mut bytes = vec![0u8; len];
+    file.read_exact(&mut bytes)
+        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to read resource data: {}", e)))?;
+
+    eprintln!("Successfully loaded IGVMfile from DLL");
+    eprintln!("Read {} bytes", bytes.len());
+
+    Ok(bytes)
+}
+
 fn validate_size(file_size: u64) -> Result<(), Error> {
     const MAX_VMGS_FILE_SIZE: u64 = 4 * ONE_GIGA_BYTE;
 
@@ -1277,6 +1441,35 @@ mod tests {
         assert_eq!(buf_3, read_buf_3);
     }
 
+    #[cfg(all(windows, guest_arch = "x86_64"))]
+    #[async_test]
+    async fn read_write_igvmfile() {
+        use std::os::windows::ffi::OsStrExt;
+        let (_dir, path) = new_path();
+        let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
+        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
+
+        test_vmgs_create(&path, Some(ONE_MEGA_BYTE * 8), false, None)
+            .await
+            .unwrap();
+
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, None)
+            .await
+            .unwrap();
+
+        let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
+
+        write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
+            .await
+            .unwrap();
+
+        let read_buf = vmgs_read(&mut vmgs, FileId::GUEST_FIRMWARE, false)
+            .await
+            .unwrap();
+
+        assert_eq!(buf, read_buf);
+    }
+
     #[cfg(with_encryption)]
     #[async_test]
     async fn read_write_encrypted_file() {
@@ -1360,6 +1553,47 @@ mod tests {
             .unwrap();
 
         assert!(read_buf == buf_1);
+    }
+
+    #[cfg(all(windows, with_encryption))]
+    #[async_test]
+    async fn read_write_igvmfile_encrypted() {
+        use std::os::windows::ffi::OsStrExt;
+        // Should be able to read and write IGVMfile to an encrypted VMGS
+        let (_dir, path) = new_path();
+        let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
+        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
+        let encryption_key = vec![5; 32];
+
+        test_vmgs_create(
+            &path,
+            Some(ONE_MEGA_BYTE * 8),
+            false,
+            Some((EncryptionAlgorithm::AES_GCM, &encryption_key)),
+        )
+        .await
+        .unwrap();
+
+        let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, Some(&encryption_key))
+            .await
+            .unwrap();
+
+        let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
+
+        write_igvmfile(&mut vmgs, true, false, data_path, ResourceCode::Snp)
+            .await
+            .unwrap();
+
+        let read_buf = vmgs_read(&mut vmgs, FileId::GUEST_FIRMWARE, true)
+            .await
+            .unwrap();
+
+        assert_eq!(buf, read_buf);
+
+        // try normal write IGVMfile to encrypted VMGS
+        write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
+            .await
+            .unwrap();
     }
 
     #[async_test]
