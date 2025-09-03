@@ -31,7 +31,7 @@ impl CommandMatchBuilder {
         self
     }
 
-    /// Configure the matcher to a specific cdw10 pattern. Multiple calls overwrite functionality.
+    /// Configure the matcher to a specific cdw0 pattern. Multiple calls overwrite functionality.
     /// Mask bits == 1 are required to be an exact match and == 0 are treated as a wildcard.
     pub fn with_cdw0(&mut self, cdw0: u32, mask: u32) -> &Self {
         self.command.cdw0 = cdw0.into();
