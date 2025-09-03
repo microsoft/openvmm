@@ -477,7 +477,7 @@ impl AdminHandler {
                         .admin_fault
                         .admin_submission_queue_faults
                         .iter()
-                        .find(|(pattern, _)| match_command_pattern(pattern, &command)) // TODO: Does this matching work properly?
+                        .find(|(pattern, _)| match_command_pattern(pattern, &command))
                         .map(|(_, behavior)| behavior.clone())
                         .unwrap_or_else(|| QueueFaultBehavior::Default);
 
