@@ -521,7 +521,7 @@ time = "0.3"
 toml_edit = "0.22"
 tracing = "0.1"
 tracing-core = "=0.1.30" # Pin to avoid binary size increase https://github.com/tokio-rs/tracing/issues/3182
-tracing-subscriber = "0.3.16"
+tracing-subscriber = "0.3.20"
 typed-path = "0.10"
 uefi = "0.34.1"
 unicycle = "0.10.2"
