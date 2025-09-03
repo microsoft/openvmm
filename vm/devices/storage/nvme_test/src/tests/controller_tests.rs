@@ -6,7 +6,7 @@ use crate::BAR0_LEN;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
 use crate::PAGE_SIZE64;
-use crate::matcher::CommandMatchBuilder;
+use crate::command_match::CommandMatchBuilder;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::tests::test_helpers::read_completion_from_queue;
@@ -382,7 +382,7 @@ async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
         fault_active: CellUpdater::new(true).cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
             CommandMatchBuilder::new()
-                .with_cdw0_opcode(spec::AdminOpcode::IDENTIFY.0)
+                .match_cdw0_opcode(spec::AdminOpcode::IDENTIFY.0)
                 .build(),
             QueueFaultBehavior::Update(faulty_identify),
         ),

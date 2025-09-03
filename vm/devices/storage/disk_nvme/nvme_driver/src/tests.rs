@@ -19,7 +19,7 @@ use nvme_spec::Cap;
 use nvme_spec::Cdw0;
 use nvme_spec::Command;
 use nvme_spec::nvm::DsmRange;
-use nvme_test::matcher::CommandMatchBuilder;
+use nvme_test::command_match::CommandMatchBuilder;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
@@ -51,7 +51,11 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
             fault_active: CellUpdater::new(true).cell(),
             admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new()
-                    .with_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
+                    .match_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
+                    .match_cdw0(
+                        Cdw0::new().with_cid(0).into(),
+                        Cdw0::new().with_cid(u16::MAX).into(),
+                    )
                     .build(),
                 QueueFaultBehavior::Update(output_cmd),
             ),
