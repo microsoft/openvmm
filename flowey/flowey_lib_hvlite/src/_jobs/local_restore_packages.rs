@@ -94,19 +94,20 @@ impl SimpleFlowNode for Node {
                     ]);
                 }
             }
-        }
 
-        deps.push(
-            ctx.reqv(
-                |v| crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Request {
-                    release_version:
-                        crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
-                    release_artifact,
-                    done: v,
-                },
-            )
-            .into_side_effect(),
-        );
+            deps.push(
+                ctx.reqv(
+                    |v| crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Request {
+                        arch,
+                        release_version:
+                            crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
+                        release_artifact:release_artifact.clone(),
+                        done: v,
+                    },
+                )
+                .into_side_effect(),
+            );
+        }
 
         ctx.emit_side_effect_step(deps, [done]);
 

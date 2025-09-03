@@ -3,6 +3,7 @@
 
 pub mod resolve {
     use crate::download_release_igvm_files_from_gh;
+    use crate::run_cargo_build::common::CommonArch;
     use flowey::node::prelude::new_simple_flow_node;
     use flowey::node::prelude::*;
 
@@ -10,9 +11,10 @@ pub mod resolve {
 
     flowey_request! {
         pub struct Request{
-            pub release_version: download_release_igvm_files_from_gh::OpenhclReleaseVersion,
-            pub release_artifact: ReadVar<PathBuf>,
+            pub arch: CommonArch,
             pub done: WriteVar<SideEffect>,
+            pub release_artifact: ReadVar<PathBuf>,
+            pub release_version: download_release_igvm_files_from_gh::OpenhclReleaseVersion
         }
     }
 
@@ -25,6 +27,7 @@ pub mod resolve {
 
         fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
             let Request {
+                arch,
                 release_version,
                 release_artifact,
                 done,
@@ -32,14 +35,12 @@ pub mod resolve {
 
             let latest_release_igvm_files =
                 ctx.reqv(|v| download_release_igvm_files_from_gh::resolve::Request {
+                    arch,
                     release_igvm_files: v,
                     release_version,
                 });
 
-            let release_version = release_version.to_string();
-            let aarch64_name = format!("{}-aarch64-openhcl.bin", release_version);
-            let x64_name = format!("{}-x64-openhcl.bin", release_version);
-            let direct_name = format!("{}-x64-direct-openhcl.bin", release_version);
+            let release_version_str = release_version.to_string();
 
             ctx.emit_rust_step(
                 "copy downloaded release igvm files to artifact dir",
@@ -52,16 +53,25 @@ pub mod resolve {
                         let latest_release_igvm_files = rt.read(latest_release_igvm_files);
                         let latest_release_artifact = rt.read(latest_release_artifact);
 
-                        if let Some(src) = &latest_release_igvm_files.openhcl_aarch64 {
-                            fs_err::copy(src, latest_release_artifact.join(&aarch64_name))?;
-                        }
-
-                        if let Some(src) = &latest_release_igvm_files.openhcl {
-                            fs_err::copy(src, latest_release_artifact.join(&x64_name))?;
-                        }
-
-                        if let Some(src) = &latest_release_igvm_files.openhcl_direct {
-                            fs_err::copy(src, latest_release_artifact.join(&direct_name))?;
+                        match arch {
+                            CommonArch::Aarch64 => {
+                                let aarch64_name =
+                                    format!("{}-aarch64-openhcl.bin", release_version_str);
+                                if let Some(src) = &latest_release_igvm_files.openhcl_aarch64 {
+                                    fs_err::copy(src, latest_release_artifact.join(&aarch64_name))?;
+                                }
+                            }
+                            CommonArch::X86_64 => {
+                                let x64_name = format!("{}-x64-openhcl.bin", release_version_str);
+                                let direct_name =
+                                    format!("{}-x64-direct-openhcl.bin", release_version_str);
+                                if let Some(src) = &latest_release_igvm_files.openhcl {
+                                    fs_err::copy(src, latest_release_artifact.join(&x64_name))?;
+                                }
+                                if let Some(src) = &latest_release_igvm_files.openhcl_direct {
+                                    fs_err::copy(src, latest_release_artifact.join(&direct_name))?;
+                                }
+                            }
                         }
 
                         Ok(())

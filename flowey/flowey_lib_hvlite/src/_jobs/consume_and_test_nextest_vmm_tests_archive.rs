@@ -125,9 +125,19 @@ impl SimpleFlowNode for Node {
             },
         ));
 
+        let arch = match target.architecture {
+            target_lexicon::Architecture::X86_64 => {
+                crate::run_cargo_build::common::CommonArch::X86_64
+            }
+            target_lexicon::Architecture::Aarch64(_) => {
+                crate::run_cargo_build::common::CommonArch::Aarch64
+            }
+            a => anyhow::bail!("unsupported target architecture: {a}"),
+        };
         let release_igvm_files =
             ctx.reqv(
                 |v| crate::download_release_igvm_files_from_gh::resolve::Request {
+                    arch,
                     release_igvm_files: v,
                     release_version:
                         crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),

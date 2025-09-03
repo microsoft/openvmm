@@ -57,6 +57,7 @@ pub mod resolve {
         pub struct Request {
             pub release_igvm_files: WriteVar<ReleaseOutput>,
             pub release_version: OpenhclReleaseVersion,
+            pub arch: CommonArch,
         }
     }
 
@@ -85,44 +86,43 @@ pub mod resolve {
                 );
             let output = request.release_igvm_files;
 
-            let mut downloaded_aarch64 = None;
-            let mut downloaded_x64 = None;
-            let arches = vec![CommonArch::X86_64, CommonArch::Aarch64];
-            for arch in arches.clone() {
-                let arch_str = match arch {
-                    CommonArch::X86_64 => "x64",
-                    CommonArch::Aarch64 => "aarch64",
-                };
+            let arch_str = match request.arch {
+                CommonArch::X86_64 => "x64",
+                CommonArch::Aarch64 => "aarch64",
+            };
 
-                let downloaded = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
+            let downloaded_artifact =
+                ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
                     repo_owner: "microsoft".into(),
                     repo_name: "openvmm".into(),
                     file_name: format!("{arch_str}-openhcl-igvm"),
                     path: v,
                     run_id: run_id.clone(),
                 });
-
-                if arch == CommonArch::X86_64 {
-                    downloaded_x64 = Some(downloaded);
-                } else {
-                    downloaded_aarch64 = Some(downloaded);
-                }
-            }
+            let arch = request.arch;
 
             ctx.emit_rust_step("write to directory variables", |ctx| {
-                let downloaded_x64 = downloaded_x64.unwrap().claim(ctx);
-                let downloaded_aarch64 = downloaded_aarch64.unwrap().claim(ctx);
-
+                let downloaded_artifact = downloaded_artifact.claim(ctx);
                 let write_release_output = output.claim(ctx);
 
-                |rt| {
-                    let downloaded_x64 = rt.read(downloaded_x64).join("x64-openhcl-igvm");
-                    let downloaded_aarch64 =
-                        rt.read(downloaded_aarch64).join("aarch64-openhcl-igvm");
+                move |rt| {
+                    let mut openhcl_direct = None;
+                    let mut openhcl = None;
+                    let mut openhcl_aarch64 = None;
 
-                    let openhcl_direct = Some(downloaded_x64.join("openhcl-direct.bin"));
-                    let openhcl = Some(downloaded_x64.join("openhcl.bin"));
-                    let openhcl_aarch64 = Some(downloaded_aarch64.join("openhcl-aarch64.bin"));
+                    match arch {
+                        CommonArch::X86_64 => {
+                            // x64 build contains both openhcl.bin and openhcl-direct.bin
+                            let x64_dir = rt.read(downloaded_artifact).join("x64-openhcl-igvm");
+                            openhcl_direct = Some(x64_dir.join("openhcl-direct.bin"));
+                            openhcl = Some(x64_dir.join("openhcl.bin"));
+                        }
+                        CommonArch::Aarch64 => {
+                            let aarch64_dir =
+                                rt.read(downloaded_artifact).join("aarch64-openhcl-igvm");
+                            openhcl_aarch64 = Some(aarch64_dir.join("openhcl-aarch64.bin"));
+                        }
+                    }
 
                     rt.write_not_secret(
                         write_release_output,
