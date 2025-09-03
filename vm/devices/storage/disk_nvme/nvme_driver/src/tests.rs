@@ -43,7 +43,7 @@ use zerocopy::IntoBytes;
 #[should_panic(expected = "assertion `left == right` failed: cid sequence number mismatch:")]
 async fn test_nvme_command_fault(driver: DefaultDriver) {
     let mut output_cmd = Command::new_zeroed();
-    output_cmd.cdw0.set_cid(10);
+    output_cmd.cdw0.set_cid(0);
 
     test_nvme_fault_injection(
         driver,
@@ -51,10 +51,7 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
             fault_active: CellUpdater::new(true).cell(),
             admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new()
-                    .with_cdw0(
-                        Cdw0::new().with_cid(0).into(),
-                        Cdw0::new().with_cid(u16::MAX).into(),
-                    )
+                    .with_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
                     .build(),
                 QueueFaultBehavior::Update(output_cmd),
             ),
