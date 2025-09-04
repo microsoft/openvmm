@@ -6,6 +6,7 @@ use crate::BAR0_LEN;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
 use crate::PAGE_SIZE64;
+use crate::command_match::CommandMatchBuilder;
 use crate::prp::PrpRange;
 use crate::spec;
 use crate::tests::test_helpers::read_completion_from_queue;
@@ -376,10 +377,13 @@ async fn test_send_identify_no_fault(driver: DefaultDriver) {
 async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
     let mut faulty_identify = Command::new_zeroed();
     faulty_identify.cdw0.set_cid(10);
+
     let fault_configuration = FaultConfiguration {
         fault_active: CellUpdater::new(true).cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-            nvme_spec::AdminOpcode::IDENTIFY.0,
+            CommandMatchBuilder::new()
+                .match_cdw0_opcode(spec::AdminOpcode::IDENTIFY.0)
+                .build(),
             QueueFaultBehavior::Update(faulty_identify),
         ),
         pci_fault: PciFaultConfig::new(),

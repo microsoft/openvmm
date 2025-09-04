@@ -18,6 +18,7 @@ use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
 use nvme_spec::Command;
 use nvme_spec::nvm::DsmRange;
+use nvme_test::command_match::CommandMatchBuilder;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
@@ -48,7 +49,9 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
         FaultConfiguration {
             fault_active: CellUpdater::new(true).cell(),
             admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-                AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
+                    .build(),
                 QueueFaultBehavior::Update(output_cmd),
             ),
             pci_fault: PciFaultConfig::new(),
