@@ -6,6 +6,7 @@ use crate::GedChannel;
 use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
+use crate::IgvmAgentScriptPlan;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
@@ -32,7 +33,6 @@ use vmbus_ring::RingMem;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
-use crate::IgvmAgentScriptPlan;
 
 #[derive(Debug, Clone)]
 pub enum Event {

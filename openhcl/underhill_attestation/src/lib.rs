@@ -1451,9 +1451,13 @@ mod tests {
         plan: Option<IgvmAgentScriptPlan>,
     ) -> TestGet {
         if enable_igvm_attest {
+            const TEST_DEVICE_MEMORY_SIZE: u64 = 64;
             // Use `DeviceTestMemory` to set up shared memory required by the IGVM_ATTEST GET calls.
-            let dev_test_mem =
-                user_driver_emulated_mock::DeviceTestMemory::new(64, true, "test-attest");
+            let dev_test_mem = user_driver_emulated_mock::DeviceTestMemory::new(
+                TEST_DEVICE_MEMORY_SIZE,
+                true,
+                "test-attest",
+            );
 
             let mut test_get = guest_emulation_transport::test_utilities::new_transport_pair(
                 spawn,

@@ -31,7 +31,8 @@ use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -149,6 +150,18 @@ impl TestIgvmAgent {
         self.plan = Some(Arc::new(Mutex::new(plan)));
     }
 
+    /// Take the next scripted action for the given request type, if any.
+    pub(crate) fn take_next_action(
+        &self,
+        request_type: IgvmAttestRequestType,
+    ) -> Option<AgentAction> {
+        // Fast path: no plan installed.
+        let plan = self.plan.as_ref()?;
+        // If the mutex is poisoned just skip (mirrors old `.ok()` behavior).
+        let mut guard = plan.lock().ok()?;
+        guard.get_mut(&request_type)?.pop_front()
+    }
+
     pub(crate) fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
         let request = IgvmAttestRequest::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
@@ -171,17 +184,7 @@ impl TestIgvmAgent {
 
         // If a plan is provided and has a queued action for this request type,
         // execute it. This allows tests to force success/no-response, etc.
-        // Take next scripted action, if any, in a separate scope to avoid holding the lock
-        // across calls that may mutably borrow self.
-        if let Some(action) = (|| {
-            self.plan
-                .as_ref()
-                .and_then(|plan| plan.lock().ok())
-                .and_then(|mut map| {
-                    map.get_mut(&request.header.request_type)
-                        .and_then(|q| q.pop_front())
-                })
-        })() {
+        if let Some(action) = self.take_next_action(request.header.request_type) {
             match action {
                 AgentAction::NoResponse => {
                     tracing::info!(?request.header.request_type, "Test plan: NoResponse");

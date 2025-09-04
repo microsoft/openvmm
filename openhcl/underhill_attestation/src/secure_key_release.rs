@@ -63,7 +63,7 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
 
 /// The return values of [`make_igvm_attest_requests`].
 struct WrappedKeyVmgsEncryptionKeys {
-    /// RSA-AES-wrapped key blob.
+    /// RSA-AES-wrapped key blob. This field is always present (required).
     rsa_aes_wrapped_key: Vec<u8>,
     /// Optional wrapped DiskEncryptionSettings key blob.
     wrapped_des_key: Option<Vec<u8>>,
