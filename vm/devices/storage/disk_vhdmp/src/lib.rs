@@ -36,6 +36,9 @@ mod virtdisk {
     use std::os::windows::prelude::*;
     use winapi::shared::guiddef::GUID;
     use winapi::shared::minwindef::BOOL;
+    use winapi::shared::ntdef::PCWSTR;
+    use winapi::shared::ntdef::ULONG;
+    use winapi::shared::ntdef::ULONGLONG;
     use winapi::um::minwinbase::OVERLAPPED;
     use winapi::um::winnt::SECURITY_DESCRIPTOR;
 
@@ -115,6 +118,144 @@ mod virtdisk {
         pub ReadOnly: BOOL,
         pub ResiliencyGuid: GUID,
         pub SnapshotId: GUID,
+    }
+
+    // Pre-allocate all physical space necessary for the virtual
+    // size of the disk (e.g. a fixed VHD).
+    pub const CREATE_VIRTUAL_DISK_FLAG_FULL_PHYSICAL_ALLOCATION: u32 = 0x1;
+
+    // Take ownership of the source disk during create from source disk, to
+    // insure the source disk does not change during the create operation.  The
+    // source disk must also already be offline or read-only (or both).
+    // Ownership is released when create is done.  This also has a side-effect
+    // of disallowing concurrent create from same source disk.  Create will fail
+    // if ownership cannot be obtained or if the source disk is not already
+    // offline or read-only.  This flag is optional, but highly recommended for
+    // creates from source disk.  No effect for other types of create (no effect
+    // for create from source VHD; no effect for create without SourcePath).
+    pub const CREATE_VIRTUAL_DISK_FLAG_PREVENT_WRITES_TO_SOURCE_DISK: u32 = 0x2;
+
+    // Do not copy initial virtual disk metadata or block states from the
+    // parent VHD; this is useful if the parent VHD is a stand-in file and the
+    // real parent will be explicitly set later.
+    pub const CREATE_VIRTUAL_DISK_FLAG_DO_NOT_COPY_METADATA_FROM_PARENT: u32 = 0x4;
+
+    // Create the backing storage disk.
+    pub const CREATE_VIRTUAL_DISK_FLAG_CREATE_BACKING_STORAGE: u32 = 0x8;
+
+    // If set, the SourceLimitPath is an change tracking ID, and all data that has changed
+    // since that change tracking ID will be copied from the source. If clear, the
+    // SourceLimitPath is a VHD file path in the source VHD's chain, and
+    // all data that is present in the children of that VHD in the chain
+    // will be copied from the source.
+    pub const CREATE_VIRTUAL_DISK_FLAG_USE_CHANGE_TRACKING_SOURCE_LIMIT: u32 = 0x10;
+
+    // If set and the parent VHD has change tracking enabled, the child will
+    // have change tracking enabled and will recognize all change tracking
+    // IDs that currently exist in the parent. If clear or if the parent VHD
+    // does not have change tracking available, then change tracking will
+    // not be enabled in the new VHD.
+    pub const CREATE_VIRTUAL_DISK_FLAG_PRESERVE_PARENT_CHANGE_TRACKING_STATE: u32 = 0x20;
+
+    // When creating a VHD Set from source, don't copy the data in the original
+    // backing store, but intsead use the file as is. If this flag is not specified
+    // and a source file is passed to CreateVirtualDisk for a VHDSet file, the data
+    // in the source file is copied. If this flag is set the data is moved. The
+    // name of the file may change.
+    pub const CREATE_VIRTUAL_DISK_FLAG_VHD_SET_USE_ORIGINAL_BACKING_STORAGE: u32 = 0x40;
+
+    // When creating a fixed virtual disk, take advantage of an underlying sparse file.
+    // Only supported on file systems that support sparse VDLs.
+    pub const CREATE_VIRTUAL_DISK_FLAG_SPARSE_FILE: u32 = 0x80;
+
+    // Creates a VHD suitable as the backing store for a virtual persistent memory device.
+    pub const CREATE_VIRTUAL_DISK_FLAG_PMEM_COMPATIBLE: u32 = 0x100;
+
+    // Allow a VHD to be created on a compressed volume.
+    pub const CREATE_VIRTUAL_DISK_FLAG_SUPPORT_COMPRESSED_VOLUMES: u32 = 0x200;
+
+    // Allow a VHD to be created when it may be marked as a sparse file. This flag is a companion
+    // to CREATE_VIRTUAL_DISK_FLAG_SPARSE_FILE, and overrides the behavior that only
+    // allows sparse files on file systems that support sparse VDLs.
+    pub const CREATE_VIRTUAL_DISK_FLAG_SUPPORT_SPARSE_FILES_ANY_FS: u32 = 0x400;
+
+    #[repr(C)]
+    pub struct CREATE_VIRTUAL_DISK_PARAMETERS {
+        pub Version: u32,
+        pub u: CREATE_VIRTUAL_DISK_PARAMETERS_u,
+    }
+
+    #[repr(C)]
+    pub union CREATE_VIRTUAL_DISK_PARAMETERS_u {
+        pub Version1: CREATE_VIRTUAL_DISK_PARAMETERS_1,
+        pub Version2: CREATE_VIRTUAL_DISK_PARAMETERS_2,
+        pub Version3: CREATE_VIRTUAL_DISK_PARAMETERS_3,
+        pub Version4: CREATE_VIRTUAL_DISK_PARAMETERS_4,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct CREATE_VIRTUAL_DISK_PARAMETERS_1 {
+        pub UniqueId: GUID,
+        pub MaximumSize: ULONGLONG,
+        pub BlockSizeInBytes: ULONG,
+        pub SectorSizeInBytes: ULONG,
+        pub ParentPath: PCWSTR,
+        pub SourcePath: PCWSTR,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct CREATE_VIRTUAL_DISK_PARAMETERS_2 {
+        pub UniqueId: GUID,
+        pub MaximumSize: ULONGLONG,
+        pub BlockSizeInBytes: ULONG,
+        pub SectorSizeInBytes: ULONG,
+        pub PhysicalSectorSizeInBytes: ULONG,
+        pub ParentPath: PCWSTR,
+        pub SourcePath: PCWSTR,
+        pub OpenFlags: u32,
+        pub ParentVirtualStorageType: VIRTUAL_STORAGE_TYPE,
+        pub SourceVirtualStorageType: VIRTUAL_STORAGE_TYPE,
+        pub ResiliencyGuid: GUID,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct CREATE_VIRTUAL_DISK_PARAMETERS_3 {
+        pub UniqueId: GUID,
+        pub MaximumSize: ULONGLONG,
+        pub BlockSizeInBytes: ULONG,
+        pub SectorSizeInBytes: ULONG,
+        pub PhysicalSectorSizeInBytes: ULONG,
+        pub ParentPath: PCWSTR,
+        pub SourcePath: PCWSTR,
+        pub OpenFlags: u32,
+        pub ParentVirtualStorageType: VIRTUAL_STORAGE_TYPE,
+        pub SourceVirtualStorageType: VIRTUAL_STORAGE_TYPE,
+        pub ResiliencyGuid: GUID,
+        pub SourceLimitPath: PCWSTR,
+        pub BackingStorageType: VIRTUAL_STORAGE_TYPE,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct CREATE_VIRTUAL_DISK_PARAMETERS_4 {
+        pub UniqueId: GUID,
+        pub MaximumSize: ULONGLONG,
+        pub BlockSizeInBytes: ULONG,
+        pub SectorSizeInBytes: ULONG,
+        pub PhysicalSectorSizeInBytes: ULONG,
+        pub ParentPath: PCWSTR,
+        pub SourcePath: PCWSTR,
+        pub OpenFlags: u32,
+        pub ParentVirtualStorageType: VIRTUAL_STORAGE_TYPE,
+        pub SourceVirtualStorageType: VIRTUAL_STORAGE_TYPE,
+        pub ResiliencyGuid: GUID,
+        pub SourceLimitPath: PCWSTR,
+        pub BackingStorageType: VIRTUAL_STORAGE_TYPE,
+        pub PmemAddressAbstractionType: GUID,
+        pub DataAlignment: ULONGLONG,
     }
 
     pub const VIRTUAL_DISK_ACCESS_ATTACH_RO: u32 = 0x00010000;
@@ -226,6 +367,17 @@ mod virtdisk {
             size_use: Option<&mut u32>,
         ) -> u32;
 
+        pub fn CreateVirtualDisk(
+            virtual_storage_type: &mut VIRTUAL_STORAGE_TYPE,
+            path: *const u16,
+            virtual_disk_access_mask: u32,
+            security_descriptor: Option<&mut SECURITY_DESCRIPTOR>,
+            flags: u32,
+            provider_specific_flags: u32,
+            parameters: Option<&mut CREATE_VIRTUAL_DISK_PARAMETERS>,
+            overlapped: Option<&mut OVERLAPPED>,
+            handle: &mut RawHandle,
+        ) -> u32;
     }
 }
 
@@ -267,6 +419,56 @@ impl Vhd {
                 0,
                 0,
                 Some(&mut parameters),
+                &mut handle,
+            ))?;
+            fs::File::from_raw_handle(handle)
+        };
+        Ok(Self(file))
+    }
+
+    /// Create a new differencing VHD
+    pub fn create_diff(path: &Path, parent_path: &Path) -> std::io::Result<Self> {
+        let file = unsafe {
+            let mut storage_type = std::mem::zeroed();
+
+            let path = {
+                let mut path16: Vec<_> = path.as_os_str().encode_wide().collect();
+                path16.push(0);
+                path16
+            };
+
+            let parent_path = {
+                let mut parent_path16: Vec<_> = parent_path.as_os_str().encode_wide().collect();
+                parent_path16.push(0);
+                parent_path16
+            };
+
+            // Use a unique ID for each open to avoid virtual disk sharing
+            // within VHDMP. In the future, consider taking this as a parameter
+            // to support failover.
+            let resiliency_guid = Guid::new_random();
+            let mut parameters = virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS {
+                Version: 2,
+                u: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_u {
+                    Version2: virtdisk::CREATE_VIRTUAL_DISK_PARAMETERS_2 {
+                        ParentPath: parent_path.as_ptr(),
+                        OpenFlags: virtdisk::OPEN_VIRTUAL_DISK_FLAG_CACHED_IO,
+                        ResiliencyGuid: resiliency_guid.into(),
+                        ..std::mem::zeroed()
+                    },
+                },
+            };
+
+            let mut handle = std::mem::zeroed();
+            chk_win32(virtdisk::CreateVirtualDisk(
+                &mut storage_type,
+                path.as_ptr(),
+                0,
+                None,
+                0,
+                0,
+                Some(&mut parameters),
+                None,
                 &mut handle,
             ))?;
             fs::File::from_raw_handle(handle)
@@ -390,6 +592,8 @@ pub struct VhdmpDisk {
 pub enum Error {
     #[error("failed to open VHD")]
     Open(#[source] std::io::Error),
+    #[error("failed to create VHD")]
+    Create(#[source] std::io::Error),
     #[error("failed to attach VHD")]
     Attach(#[source] std::io::Error),
     #[error("failed to query VHD metadata")]

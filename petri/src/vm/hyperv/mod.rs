@@ -268,7 +268,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
                         .to_string_lossy()
                 ));
 
-                powershell::create_child_vhd(&diff_disk_path, vhd)?;
+                {
+                    let path = diff_disk_path.clone();
+                    let parent_path = vhd.to_path_buf();
+                    tracing::debug!(?path, ?parent_path, "creating differencing vhd");
+                    blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path))
+                        .await?;
+                }
+
                 vm.add_vhd(
                     &diff_disk_path,
                     controller_type,
