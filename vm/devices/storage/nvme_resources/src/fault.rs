@@ -93,7 +93,10 @@ impl AdminQueueFaultConfig {
         }
     }
 
-    /// Add a CommandMatch -> FaultBehavior mapping for the submission queue. Cannot configure a CommandMatch more than once
+    /// Add a [`CommandMatch`] -> [`QueueFaultBehavior`] mapping for the submission queue.
+    ///
+    /// # Panics
+    /// Panics if an identical [`CommandMatch`] has already been configured.
     pub fn with_submission_queue_fault(
         mut self,
         pattern: CommandMatch,
