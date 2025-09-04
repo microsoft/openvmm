@@ -5586,6 +5586,7 @@ dependencies = [
  "diag_client",
  "disk_backend_resources",
  "disk_vhd1",
+ "disk_vhdmp",
  "fatfs",
  "framebuffer",
  "fs-err",

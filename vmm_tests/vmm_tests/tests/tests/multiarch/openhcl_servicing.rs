@@ -34,6 +34,8 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -160,7 +162,10 @@ async fn keepalive<T: PetriVmmBackend>(
     .await
 }
 
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64])]
+#[vmm_test(
+    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[RELEASE_25_05_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+)]
 async fn servicing_upgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (to_igvm, from_igvm): (
@@ -180,7 +185,10 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
     .await
 }
 
-#[openvmm_test(openhcl_linux_direct_x64 [RELEASE_25_05_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64])]
+#[vmm_test(
+    openvmm_openhcl_linux_direct_x64 [RELEASE_25_05_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[RELEASE_25_05_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+)]
 async fn servicing_downgrade<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (to_igvm, from_igvm): (
