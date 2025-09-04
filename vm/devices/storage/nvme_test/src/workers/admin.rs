@@ -13,6 +13,7 @@ use crate::NVME_VERSION;
 use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
+use crate::command_match::match_command_pattern;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
 use crate::namespace::Namespace;
@@ -476,7 +477,7 @@ impl AdminHandler {
                         .admin_fault
                         .admin_submission_queue_faults
                         .iter()
-                        .find(|(op, _)| *op == opcode.0)
+                        .find(|(pattern, _)| match_command_pattern(pattern, &command))
                         .map(|(_, behavior)| behavior.clone())
                         .unwrap_or_else(|| QueueFaultBehavior::Default);
 

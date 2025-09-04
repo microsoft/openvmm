@@ -827,6 +827,7 @@ mod test {
     use crate::host_params::PartitionInfo;
     use crate::host_params::shim_params::IsolationType;
     use crate::memory::AddressSpaceManager;
+    use crate::memory::AddressSpaceManagerBuilder;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
@@ -1039,16 +1040,14 @@ mod test {
             })
             .collect::<Vec<_>>();
         let mut address_space = AddressSpaceManager::new_const();
-        address_space
-            .init(
-                &ram,
-                bootshim_used,
-                subtract_ranges([parameter_range], reclaim),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            &ram,
+            bootshim_used,
+            subtract_ranges([parameter_range], reclaim),
+        )
+        .init()
+        .unwrap();
         address_space
     }
 
@@ -1228,16 +1227,14 @@ mod test {
                 })
                 .collect::<Vec<_>>();
             let mut address_space = AddressSpaceManager::new_const();
-            address_space
-                .init(
-                    &ram,
-                    bootshim_used,
-                    subtract_ranges([parameter_range], None),
-                    None,
-                    None,
-                    None,
-                )
-                .unwrap();
+            AddressSpaceManagerBuilder::new(
+                &mut address_space,
+                &ram,
+                bootshim_used,
+                core::iter::once(parameter_range),
+            )
+            .init()
+            .unwrap();
             address_space
         };
 

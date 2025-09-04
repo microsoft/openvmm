@@ -116,32 +116,73 @@ pub struct AddressSpaceManager {
     vtl2_pool: bool,
 }
 
-impl AddressSpaceManager {
-    pub const fn new_const() -> Self {
-        Self {
-            address_space: ArrayVec::new_const(),
-            vtl2_pool: false,
-        }
-    }
+/// A builder used to initialize an [`AddressSpaceManager`].
+pub struct AddressSpaceManagerBuilder<'a, I: Iterator<Item = MemoryRange>> {
+    manager: &'a mut AddressSpaceManager,
+    vtl2_ram: &'a [MemoryEntry],
+    bootshim_used: MemoryRange,
+    vtl2_config: I,
+    reserved_range: Option<MemoryRange>,
+    sidecar_image: Option<MemoryRange>,
+    page_tables: Option<MemoryRange>,
+}
 
-    /// Initialize the address space manager.
+impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
+    /// Create a new builder to initialize an [`AddressSpaceManager`].
     ///
     /// `vtl2_ram` is the list of ram ranges for VTL2, which must be sorted.
     ///
     /// `bootshim_used` is the range used by the bootshim, but may be reclaimed
     /// as ram by the kernel.
     ///
-    /// Each other range must lie within `bootshim_used`, and denotes a range
-    /// that must be reported as reserved to the kernel.
-    pub fn init(
-        &mut self,
-        vtl2_ram: &[MemoryEntry],
+    /// Other ranges described by other methods must lie within `bootshim_used`.
+    pub fn new(
+        manager: &'a mut AddressSpaceManager,
+        vtl2_ram: &'a [MemoryEntry],
         bootshim_used: MemoryRange,
-        vtl2_config: impl Iterator<Item = MemoryRange>,
-        reserved_range: Option<MemoryRange>,
-        sidecar_image: Option<MemoryRange>,
-        page_tables: Option<MemoryRange>,
-    ) -> Result<(), Error> {
+        vtl2_config: I,
+    ) -> AddressSpaceManagerBuilder<'a, I> {
+        AddressSpaceManagerBuilder {
+            manager,
+            vtl2_ram,
+            bootshim_used,
+            vtl2_config,
+            reserved_range: None,
+            sidecar_image: None,
+            page_tables: None,
+        }
+    }
+
+    /// A reserved range reported as type [`MemoryVtlType::VTL2_RESERVED`].
+    pub fn with_reserved_range(mut self, reserved_range: MemoryRange) -> Self {
+        self.reserved_range = Some(reserved_range);
+        self
+    }
+
+    /// The sidecar image, reported as type [`MemoryVtlType::VTL2_SIDECAR_IMAGE`].
+    pub fn with_sidecar_image(mut self, sidecar_image: MemoryRange) -> Self {
+        self.sidecar_image = Some(sidecar_image);
+        self
+    }
+
+    /// Pagetables that are reported as type [`MemoryVtlType::VTL2_TDX_PAGE_TABLES`].
+    pub fn with_page_tables(mut self, page_tables: MemoryRange) -> Self {
+        self.page_tables = Some(page_tables);
+        self
+    }
+
+    /// Consume the builder and initialize the address space manager.
+    pub fn init(self) -> Result<&'a mut AddressSpaceManager, Error> {
+        let Self {
+            manager,
+            vtl2_ram,
+            bootshim_used,
+            vtl2_config,
+            reserved_range,
+            sidecar_image,
+            page_tables,
+        } = self;
+
         if vtl2_ram.len() > MAX_VTL2_RAM_RANGES {
             return Err(Error::RamLen {
                 len: vtl2_ram.len() as u64,
@@ -149,7 +190,7 @@ impl AddressSpaceManager {
             });
         }
 
-        if !self.address_space.is_empty() {
+        if !manager.address_space.is_empty() {
             return Err(Error::AlreadyInitialized);
         }
 
@@ -200,7 +241,7 @@ impl AddressSpaceManager {
         }
 
         // Construct the initial state of VTL2 address space by walking ram and reserved ranges
-        assert!(self.address_space.is_empty());
+        assert!(manager.address_space.is_empty());
         for (entry, r) in walk_ranges(
             vtl2_ram.iter().map(|e| (e.range, e.vnode)),
             used_ranges.iter().map(|(r, usage)| (*r, usage)),
@@ -208,7 +249,7 @@ impl AddressSpaceManager {
             match r {
                 RangeWalkResult::Left(vnode) => {
                     // VTL2 normal ram, unused by anything.
-                    self.address_space.push(AddressRange {
+                    manager.address_space.push(AddressRange {
                         range: entry,
                         vnode,
                         usage: AddressUsage::Free,
@@ -216,7 +257,7 @@ impl AddressSpaceManager {
                 }
                 RangeWalkResult::Both(vnode, usage) => {
                     // VTL2 ram, currently in use.
-                    self.address_space.push(AddressRange {
+                    manager.address_space.push(AddressRange {
                         range: entry,
                         vnode,
                         usage: *usage,
@@ -229,7 +270,16 @@ impl AddressSpaceManager {
             }
         }
 
-        Ok(())
+        Ok(manager)
+    }
+}
+
+impl AddressSpaceManager {
+    pub const fn new_const() -> Self {
+        Self {
+            address_space: ArrayVec::new_const(),
+            vtl2_pool: false,
+        }
     }
 
     /// Split a free range into two, with allocation policy deciding if we
@@ -414,25 +464,27 @@ mod tests {
     #[test]
     fn test_allocate() {
         let mut address_space = AddressSpaceManager::new_const();
-        address_space
-            .init(
-                &[MemoryEntry {
-                    range: MemoryRange::new(0x0..0x20000),
-                    vnode: 0,
-                    mem_type: MemoryMapEntryType::MEMORY,
-                }],
-                MemoryRange::new(0x0..0xF000),
-                [
-                    MemoryRange::new(0x3000..0x4000),
-                    MemoryRange::new(0x5000..0x6000),
-                ]
-                .iter()
-                .cloned(),
-                Some(MemoryRange::new(0x8000..0xA000)),
-                Some(MemoryRange::new(0xA000..0xC000)),
-                None,
-            )
-            .unwrap();
+        let vtl2_ram = &[MemoryEntry {
+            range: MemoryRange::new(0x0..0x20000),
+            vnode: 0,
+            mem_type: MemoryMapEntryType::MEMORY,
+        }];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0xF000),
+            [
+                MemoryRange::new(0x3000..0x4000),
+                MemoryRange::new(0x5000..0x6000),
+            ]
+            .iter()
+            .cloned(),
+        )
+        .with_reserved_range(MemoryRange::new(0x8000..0xA000))
+        .with_sidecar_image(MemoryRange::new(0xA000..0xC000))
+        .init()
+        .unwrap();
 
         let range = address_space
             .allocate(
@@ -480,42 +532,44 @@ mod tests {
     #[test]
     fn test_allocate_numa() {
         let mut address_space = AddressSpaceManager::new_const();
-        address_space
-            .init(
-                &[
-                    MemoryEntry {
-                        range: MemoryRange::new(0x0..0x20000),
-                        vnode: 0,
-                        mem_type: MemoryMapEntryType::MEMORY,
-                    },
-                    MemoryEntry {
-                        range: MemoryRange::new(0x20000..0x40000),
-                        vnode: 1,
-                        mem_type: MemoryMapEntryType::MEMORY,
-                    },
-                    MemoryEntry {
-                        range: MemoryRange::new(0x40000..0x60000),
-                        vnode: 2,
-                        mem_type: MemoryMapEntryType::MEMORY,
-                    },
-                    MemoryEntry {
-                        range: MemoryRange::new(0x60000..0x80000),
-                        vnode: 3,
-                        mem_type: MemoryMapEntryType::MEMORY,
-                    },
-                ],
-                MemoryRange::new(0x0..0x10000),
-                [
-                    MemoryRange::new(0x3000..0x4000),
-                    MemoryRange::new(0x5000..0x6000),
-                ]
-                .iter()
-                .cloned(),
-                Some(MemoryRange::new(0x8000..0xA000)),
-                Some(MemoryRange::new(0xA000..0xC000)),
-                None,
-            )
-            .unwrap();
+        let vtl2_ram = &[
+            MemoryEntry {
+                range: MemoryRange::new(0x0..0x20000),
+                vnode: 0,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+            MemoryEntry {
+                range: MemoryRange::new(0x20000..0x40000),
+                vnode: 1,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+            MemoryEntry {
+                range: MemoryRange::new(0x40000..0x60000),
+                vnode: 2,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+            MemoryEntry {
+                range: MemoryRange::new(0x60000..0x80000),
+                vnode: 3,
+                mem_type: MemoryMapEntryType::MEMORY,
+            },
+        ];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0x10000),
+            [
+                MemoryRange::new(0x3000..0x4000),
+                MemoryRange::new(0x5000..0x6000),
+            ]
+            .iter()
+            .cloned(),
+        )
+        .with_reserved_range(MemoryRange::new(0x8000..0xA000))
+        .with_sidecar_image(MemoryRange::new(0xA000..0xC000))
+        .init()
+        .unwrap();
 
         let range = address_space
             .allocate(
@@ -578,25 +632,27 @@ mod tests {
     #[test]
     fn test_unaligned_allocations() {
         let mut address_space = AddressSpaceManager::new_const();
-        address_space
-            .init(
-                &[MemoryEntry {
-                    range: MemoryRange::new(0x0..0x20000),
-                    vnode: 0,
-                    mem_type: MemoryMapEntryType::MEMORY,
-                }],
-                MemoryRange::new(0x0..0xF000),
-                [
-                    MemoryRange::new(0x3000..0x4000),
-                    MemoryRange::new(0x5000..0x6000),
-                ]
-                .iter()
-                .cloned(),
-                Some(MemoryRange::new(0x8000..0xA000)),
-                Some(MemoryRange::new(0xA000..0xC000)),
-                None,
-            )
-            .unwrap();
+        let vtl2_ram = &[MemoryEntry {
+            range: MemoryRange::new(0x0..0x20000),
+            vnode: 0,
+            mem_type: MemoryMapEntryType::MEMORY,
+        }];
+
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            vtl2_ram,
+            MemoryRange::new(0x0..0xF000),
+            [
+                MemoryRange::new(0x3000..0x4000),
+                MemoryRange::new(0x5000..0x6000),
+            ]
+            .iter()
+            .cloned(),
+        )
+        .with_reserved_range(MemoryRange::new(0x8000..0xA000))
+        .with_sidecar_image(MemoryRange::new(0xA000..0xC000))
+        .init()
+        .unwrap();
 
         let range = address_space
             .allocate(
@@ -639,14 +695,14 @@ mod tests {
 
         // test config range completely outside of bootshim_used
         let mut address_space = AddressSpaceManager::new_const();
-        let result = address_space.init(
+
+        let result = AddressSpaceManagerBuilder::new(
+            &mut address_space,
             &vtl2_ram,
             bootshim_used,
             [MemoryRange::new(0x10000..0x11000)].iter().cloned(), // completely outside
-            None,
-            None,
-            None,
-        );
+        )
+        .init();
 
         assert!(matches!(
             result,
@@ -656,14 +712,13 @@ mod tests {
         // test config range partially overlapping with bootshim_used
 
         let mut address_space = AddressSpaceManager::new_const();
-        let result = address_space.init(
+        let result = AddressSpaceManagerBuilder::new(
+            &mut address_space,
             &vtl2_ram,
             bootshim_used,
             [MemoryRange::new(0xE000..0x10000)].iter().cloned(), // partially overlapping
-            None,
-            None,
-            None,
-        );
+        )
+        .init();
 
         assert!(matches!(
             result,
