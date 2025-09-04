@@ -132,8 +132,7 @@ async fn do_read(
     let data_size = info.valid_bytes;
 
     if let Some(encryption_key) = key {
-        let _key_index = vmgs
-            .unlock_with_encryption_key(encryption_key)
+        vmgs.unlock_with_encryption_key(encryption_key)
             .await
             .map_err(|_| VmgsError::DecryptionFailed)?;
     }

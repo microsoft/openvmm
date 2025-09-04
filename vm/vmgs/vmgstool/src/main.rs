@@ -934,7 +934,7 @@ async fn vmgs_open(disk: Disk, encryption_key: Option<&[u8]>) -> Result<Vmgs, Er
     if let Some(encryption_key) = encryption_key {
         #[cfg(with_encryption)]
         if vmgs.is_encrypted() {
-            let _key_index = vmgs.unlock_with_encryption_key(encryption_key).await?;
+            vmgs.unlock_with_encryption_key(encryption_key).await?;
         } else {
             return Err(Error::NotEncrypted);
         }
