@@ -14,6 +14,7 @@ use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::shim_params::IsolationType;
 use crate::memory::AddressSpaceManager;
+use crate::memory::AddressSpaceManagerBuilder;
 use crate::memory::AllocationPolicy;
 use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
@@ -445,35 +446,38 @@ impl PartitionInfo {
             params.parameter_region_start
                 ..(params.parameter_region_start + params.parameter_region_size),
         );
-        let vtl2_reserved_range = (params.vtl2_reserved_region_size != 0).then(|| {
-            MemoryRange::new(
+
+        let mut address_space_builder = AddressSpaceManagerBuilder::new(
+            address_space,
+            &storage.vtl2_ram,
+            params.used,
+            subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
+        );
+
+        if params.vtl2_reserved_region_size != 0 {
+            address_space_builder = address_space_builder.with_reserved_range(MemoryRange::new(
                 params.vtl2_reserved_region_start
                     ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
-            )
-        });
-        let sidecar_image = (params.sidecar_size != 0).then(|| {
-            MemoryRange::new(params.sidecar_base..(params.sidecar_base + params.sidecar_size))
-        });
+            ));
+        }
+
+        if params.sidecar_size != 0 {
+            address_space_builder = address_space_builder.with_sidecar_image(MemoryRange::new(
+                params.sidecar_base..(params.sidecar_base + params.sidecar_size),
+            ));
+        }
 
         // Only specify pagetables as a reserved region on TDX, as they are used
         // for AP startup via the mailbox protocol. On other platforms, the
         // memory is free to be reclaimed.
-        let page_tables = if params.isolation_type == IsolationType::Tdx {
+        if params.isolation_type == IsolationType::Tdx {
             assert!(params.page_tables.is_some());
-            params.page_tables
-        } else {
-            None
-        };
+            address_space_builder = address_space_builder
+                .with_page_tables(params.page_tables.expect("always present on tdx"));
+        }
 
-        address_space
-            .init(
-                &storage.vtl2_ram,
-                params.used,
-                subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
-                vtl2_reserved_range,
-                sidecar_image,
-                page_tables,
-            )
+        address_space_builder
+            .init()
             .expect("failed to initialize address space manager");
 
         // Decide if we will reserve memory for a VTL2 private pool. Parse this
