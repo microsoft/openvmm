@@ -359,9 +359,8 @@ pub async fn initialize_platform_security(
         };
         changed
     } else {
-        tracing::info!("First booting of the VM");
-        // Previous id in KP not found means this is the first boot,
-        // treat id as unchanged for this case.
+        // Previous id in KP not found means this is the first boot or the GspById
+        // is not provisioned, treat id as unchanged for this case.
         false
     };
 
@@ -500,6 +499,14 @@ async fn unlock_vmgs_data_store(
         );
         provision = true;
     }
+
+    tracing::info!(
+        CVM_ALLOWED,
+        should_write_kp = key_protector_settings.should_write_kp,
+        use_gsp_by_id = key_protector_settings.use_gsp_by_id,
+        use_hardware_unlock = key_protector_settings.use_hardware_unlock,
+        "key protector settings"
+    );
 
     if key_protector_settings.should_write_kp {
         // Update on disk KP with all seeds used, to allow for disaster recovery

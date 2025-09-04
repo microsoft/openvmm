@@ -90,9 +90,9 @@ pub(crate) enum KeyReleaseError {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TestIgvmAgent {
     /// Optional RSA private key used for attestation.
-    pub secret_key: Option<RsaPrivateKey>,
+    secret_key: Option<RsaPrivateKey>,
     /// Optional DES key
-    pub des_key: Option<[u8; 32]>,
+    des_key: Option<[u8; 32]>,
     /// Optional scripted actions per request type for tests.
     plan: Option<Arc<Mutex<IgvmAgentScriptPlan>>>,
 }
@@ -131,13 +131,25 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentScriptPla
 }
 
 impl TestIgvmAgent {
-    pub(crate) fn handle_request(
-        &mut self,
-        request_bytes: &[u8],
-        test_config: Option<&IgvmAttestTestConfig>,
-    ) -> Result<(Vec<u8>, u32), Error> {
-        tracing::info!(test_config = ?test_config, "Test IGVM agent");
+    /// Create an instance with optional `test_config`.
+    pub(crate) fn new(test_config: Option<IgvmAttestTestConfig>) -> Self {
+        tracing::info!(test_config = ?test_config, "Create test IGVM agent");
 
+        let plan = test_config.map(|config| Arc::new(Mutex::new(test_config_to_plan(&config))));
+
+        Self {
+            secret_key: None,
+            des_key: None,
+            plan,
+        }
+    }
+
+    /// Install a scripted plan used by tests.
+    pub fn set_plan(&mut self, plan: IgvmAgentScriptPlan) {
+        self.plan = Some(Arc::new(Mutex::new(plan)));
+    }
+
+    pub(crate) fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
         let request = IgvmAttestRequest::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
@@ -156,14 +168,6 @@ impl TestIgvmAgent {
             return Err(Error::InvalidIgvmAttestRequest);
         }
         let runtime_claims_bytes = &request_bytes[runtime_claims_start..runtime_claims_end];
-
-        // If test config is provided but the plan is not, set the plan based on the config.
-        if let Some(config) = test_config {
-            if self.plan.is_none() {
-                let plan = test_config_to_plan(config);
-                self.plan = Some(Arc::new(Mutex::new(plan)));
-            }
-        }
 
         // If a plan is provided and has a queued action for this request type,
         // execute it. This allows tests to force success/no-response, etc.
@@ -288,6 +292,8 @@ impl TestIgvmAgent {
             }
         }
 
+        // If no plan is provided, fall back to the default behavior that
+        // always return valid responses.
         let (response, length) = match request.header.request_type {
             IgvmAttestRequestType::AK_CERT_REQUEST => {
                 tracing::info!("Send a response for AK_CERT_REQEUST");
@@ -362,11 +368,6 @@ impl TestIgvmAgent {
         };
 
         Ok((response, length))
-    }
-
-    /// Install a scripted plan used by tests.
-    pub fn set_plan(&mut self, plan: IgvmAgentScriptPlan) {
-        self.plan = Some(Arc::new(Mutex::new(plan)));
     }
 
     pub(crate) fn initialize_keys(&mut self) -> Result<(), Error> {

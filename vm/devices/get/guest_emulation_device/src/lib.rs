@@ -232,9 +232,6 @@ pub struct GuestEmulationDevice {
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
 
-    #[inspect(skip)]
-    igvm_attest_test_config: Option<IgvmAttestTestConfig>,
-
     #[cfg(feature = "test_igvm_agent")]
     /// Test agent implementation for `handle_igvm_attest`
     #[inspect(skip)]
@@ -274,8 +271,7 @@ impl GuestEmulationDevice {
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
             #[cfg(feature = "test_igvm_agent")]
-            igvm_agent: TestIgvmAgent::default(),
-            igvm_attest_test_config,
+            igvm_agent: TestIgvmAgent::new(igvm_attest_test_config),
         }
     }
 
@@ -285,6 +281,8 @@ impl GuestEmulationDevice {
         }
     }
 
+    /// Set the IGVM agent script plan.
+    /// Used by test_utilities.
     #[cfg(feature = "test_igvm_agent")]
     pub fn set_igvm_agent_plan(&mut self, plan: IgvmAgentScriptPlan) {
         self.igvm_agent.set_plan(plan);
@@ -874,7 +872,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        tracing::info!(test_config = ?state.igvm_attest_test_config, "Handle IGVM Attest request");
+        tracing::info!("Handle IGVM Attest request");
 
         let request = get_protocol::IgvmAttestRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
@@ -893,10 +891,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             {
                 state
                     .igvm_agent
-                    .handle_request(
-                        &request.report[..request.report_length as usize],
-                        state.igvm_attest_test_config.as_ref(),
-                    )
+                    .handle_request(&request.report[..request.report_length as usize])
                     .map_err(Error::TestIgvmAgent)?
             }
             #[cfg(not(feature = "test_igvm_agent"))]
