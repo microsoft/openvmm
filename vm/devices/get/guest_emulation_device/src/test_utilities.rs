@@ -32,13 +32,7 @@ use vmbus_ring::RingMem;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
-
-// A stable alias for the optional IGVM script plan. Always defined so that
-// function signatures don't change across feature flags.
-#[cfg(feature = "test_igvm_agent")]
-use crate::test_igvm_agent::IgvmAgentScriptPlan;
-#[cfg(not(feature = "test_igvm_agent"))]
-pub type IgvmAgentScriptPlan = ();
+use crate::IgvmAgentScriptPlan;
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -243,7 +237,7 @@ pub fn create_host_channel(
     ged_responses: Option<Vec<TestGetResponses>>,
     version: get_protocol::ProtocolVersion,
     guest_memory: Option<GuestMemory>,
-    igvm_agent_plan: Option<IgvmAgentScriptPlan>,
+    _igvm_agent_plan: Option<IgvmAgentScriptPlan>,
 ) -> TestGedClient {
     let guest_config = GuestConfig {
         firmware: GuestFirmwareConfig::Uefi {
@@ -291,7 +285,7 @@ pub fn create_host_channel(
     );
 
     #[cfg(feature = "test_igvm_agent")]
-    if let Some(plan) = igvm_agent_plan {
+    if let Some(plan) = _igvm_agent_plan {
         ged_state.set_igvm_agent_plan(plan);
     }
 

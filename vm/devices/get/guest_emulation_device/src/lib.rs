@@ -26,10 +26,12 @@ use crate::test_igvm_agent::TestIgvmAgent;
 
 // A stable alias for the optional IGVM script plan. Always defined so that
 // function signatures don't change across feature flags.
-#[cfg(feature = "test_igvm_agent")]
-pub use crate::test_igvm_agent::IgvmAgentScriptPlan;
-// #[cfg(not(feature = "test_igvm_agent"))]
-// pub type IgvmAgentScriptPlan = ();
+cfg_if::cfg_if!(
+    if #[cfg(feature = "test_igvm_agent")] {
+    pub use crate::test_igvm_agent::IgvmAgentScriptPlan;
+} else {
+    pub type IgvmAgentScriptPlan = ();
+});
 
 use async_trait::async_trait;
 use core::mem::size_of;
@@ -255,7 +257,7 @@ impl GuestEmulationDevice {
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
-        igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+        _igvm_attest_test_config: Option<IgvmAttestTestConfig>,
     ) -> Self {
         Self {
             config,
@@ -271,7 +273,7 @@ impl GuestEmulationDevice {
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
             #[cfg(feature = "test_igvm_agent")]
-            igvm_agent: TestIgvmAgent::new(igvm_attest_test_config),
+            igvm_agent: TestIgvmAgent::new(_igvm_attest_test_config),
         }
     }
 
@@ -870,7 +872,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_igvm_attest(
         &mut self,
         message_buf: &[u8],
-        state: &mut GuestEmulationDevice,
+        _state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
         tracing::info!("Handle IGVM Attest request");
 
@@ -889,7 +891,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let (response_payload, length) = {
             #[cfg(feature = "test_igvm_agent")]
             {
-                state
+                _state
                     .igvm_agent
                     .handle_request(&request.report[..request.report_length as usize])
                     .map_err(Error::TestIgvmAgent)?
