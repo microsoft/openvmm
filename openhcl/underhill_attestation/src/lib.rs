@@ -65,8 +65,6 @@ impl<T: Into<AttestationErrorInner>> From<T> for Error {
 enum AttestationErrorInner {
     #[error("read security profile from vmgs")]
     ReadSecurityProfile(#[source] vmgs::ReadFromVmgsError),
-    #[error("failed to request vmgs encryption keys")]
-    RequestVmgsEncryptionKeys(#[source] secure_key_release::RequestVmgsEncryptionKeysError),
     #[error("failed to get derived keys")]
     GetDerivedKeys(#[source] GetDerivedKeysError),
     #[error("failed to read key protector from vmgs")]
@@ -239,14 +237,14 @@ pub async fn initialize_platform_security(
     bios_guid: Guid,
     attestation_vm_config: &AttestationVmConfig,
     vmgs: &mut Vmgs,
-    attestation_type: AttestationType,
+    tee_call: Option<&dyn TeeCall>,
     suppress_attestation: bool,
     driver: LocalDriver,
     guest_state_encryption_policy: GuestStateEncryptionPolicy,
     strict_encryption_policy: bool,
 ) -> Result<PlatformAttestationData, Error> {
     tracing::info!(CVM_ALLOWED,
-        attestation_type=?attestation_type,
+        tee_type=?tee_call.map(|tee| tee.tee_type()),
         secure_boot=attestation_vm_config.secure_boot,
         tpm_enabled=attestation_vm_config.tpm_enabled,
         tpm_persisted=attestation_vm_config.tpm_persisted,
@@ -273,31 +271,48 @@ pub async fn initialize_platform_security(
         });
     }
 
-    let tee_call: Option<Box<dyn TeeCall>> = match attestation_type {
-        AttestationType::Snp => Some(Box::new(tee_call::SnpCall)),
-        AttestationType::Tdx => Some(Box::new(tee_call::TdxCall)),
-        AttestationType::Vbs => Some(Box::new(tee_call::VbsCall)),
-        AttestationType::Host => None,
-    };
-
     let VmgsEncryptionKeys {
         ingress_rsa_kek,
         wrapped_des_key,
         tcb_version,
-    } = if let Some(tee_call) = tee_call.as_ref() {
+    } = if let Some(tee_call) = tee_call {
         tracing::info!(CVM_ALLOWED, "Retrieving key-encryption key");
 
         // Retrieve the tenant key via attestation
-        secure_key_release::request_vmgs_encryption_keys(
+        match secure_key_release::request_vmgs_encryption_keys(
             get,
-            tee_call.as_ref(),
+            tee_call,
             vmgs,
             attestation_vm_config,
             &mut agent_data,
             driver,
         )
         .await
-        .map_err(AttestationErrorInner::RequestVmgsEncryptionKeys)?
+        {
+            Ok(VmgsEncryptionKeys {
+                ingress_rsa_kek,
+                wrapped_des_key,
+                tcb_version,
+            }) => {
+                tracing::info!(CVM_ALLOWED, "Successfully retrieved key-encryption key");
+
+                VmgsEncryptionKeys {
+                    ingress_rsa_kek,
+                    wrapped_des_key,
+                    tcb_version,
+                }
+            }
+            Err(e) => {
+                // Non-fatal, allowing for hardware-based recovery
+                tracing::error!(
+                    CVM_ALLOWED,
+                    error = &e as &dyn std::error::Error,
+                    "Failed to retrieve key-encryption key"
+                );
+
+                VmgsEncryptionKeys::default()
+            }
+        }
     } else {
         tracing::info!(CVM_ALLOWED, "Key-encryption key retrieval not required");
 
@@ -355,7 +370,7 @@ pub async fn initialize_platform_security(
     tracing::info!(tcb_version=?tcb_version, vmgs_encrypted = vmgs_encrypted, "Deriving keys");
     let derived_keys_result = get_derived_keys(
         get,
-        tee_call.as_deref(),
+        tee_call,
         vmgs,
         &mut key_protector,
         &mut key_protector_by_id,
@@ -667,6 +682,8 @@ async fn get_derived_keys(
 
     // Attempt GSP
     let (gsp_response, no_gsp, requires_gsp) = {
+        tracing::info!(CVM_ALLOWED, "attempting GSP");
+
         let response = get_gsp_data(get, key_protector).await;
 
         tracing::info!(
@@ -704,6 +721,8 @@ async fn get_derived_keys(
     // Attempt GSP By Id protection if GSP is not available, when changing
     // schemes, or as requested
     let (gsp_response_by_id, no_gsp_by_id) = if no_gsp || requires_gsp_by_id {
+        tracing::info!(CVM_ALLOWED, "attempting GSP By Id");
+
         let gsp_response_by_id = get
             .guest_state_protection_data_by_id()
             .await
@@ -1193,24 +1212,138 @@ async fn persist_all_key_protectors(
     Ok(())
 }
 
+/// Module that implements the mock [`TeeCall`] for testing purposes
+#[cfg(test)]
+pub mod test_utils {
+    use tee_call::GetAttestationReportResult;
+    use tee_call::HW_DERIVED_KEY_LENGTH;
+    use tee_call::REPORT_DATA_SIZE;
+    use tee_call::TeeCall;
+    use tee_call::TeeCallGetDerivedKey;
+    use tee_call::TeeType;
+
+    /// Mock implementation of [`TeeCall`] with get derived key support for testing purposes
+    pub struct MockTeeCall {
+        /// Mock TCB version to return from get_attestation_report
+        pub tcb_version: u64,
+    }
+
+    impl MockTeeCall {
+        /// Create a new instance of [`MockTeeCall`].
+        pub fn new(tcb_version: u64) -> Self {
+            Self { tcb_version }
+        }
+    }
+
+    impl TeeCall for MockTeeCall {
+        fn get_attestation_report(
+            &self,
+            report_data: &[u8; REPORT_DATA_SIZE],
+        ) -> Result<GetAttestationReportResult, tee_call::Error> {
+            let mut report =
+                [0x6c; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE];
+            report[..REPORT_DATA_SIZE].copy_from_slice(report_data);
+
+            Ok(GetAttestationReportResult {
+                report: report.to_vec(),
+                tcb_version: Some(self.tcb_version),
+            })
+        }
+
+        fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey> {
+            Some(self)
+        }
+
+        fn tee_type(&self) -> TeeType {
+            // Use Snp for testing
+            TeeType::Snp
+        }
+    }
+
+    impl TeeCallGetDerivedKey for MockTeeCall {
+        fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; 32], tee_call::Error> {
+            // Base test key; mix in policy so different policies yield different derived secrets
+            let mut key: [u8; HW_DERIVED_KEY_LENGTH] = [0xab; HW_DERIVED_KEY_LENGTH];
+
+            // Use mutation to simulate the policy
+            let tcb = tcb_version.to_le_bytes();
+            for (i, b) in key.iter_mut().enumerate() {
+                *b ^= tcb[i % tcb.len()];
+            }
+
+            Ok(key)
+        }
+    }
+
+    /// Mock implementation of [`TeeCall`] without get derived key support for testing purposes
+    pub struct MockTeeCallNoGetDerivedKey;
+
+    impl TeeCall for MockTeeCallNoGetDerivedKey {
+        fn get_attestation_report(
+            &self,
+            report_data: &[u8; REPORT_DATA_SIZE],
+        ) -> Result<GetAttestationReportResult, tee_call::Error> {
+            let mut report =
+                [0x6c; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE];
+            report[..REPORT_DATA_SIZE].copy_from_slice(report_data);
+
+            Ok(GetAttestationReportResult {
+                report: report.to_vec(),
+                tcb_version: None,
+            })
+        }
+
+        fn supports_get_derived_key(&self) -> Option<&dyn TeeCallGetDerivedKey> {
+            None
+        }
+
+        fn tee_type(&self) -> TeeType {
+            // Use Snp for testing
+            TeeType::Snp
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::MockTeeCallNoGetDerivedKey;
     use disk_backend::Disk;
     use disklayer_ram::ram_disk;
     use get_protocol::GSP_CLEARTEXT_MAX;
     use get_protocol::GspExtendedStatusFlags;
+    use guest_emulation_device::AgentAction;
+    use guest_emulation_device::IgvmAgentScriptPlan;
+    use guest_emulation_transport::test_utilities::TestGet;
     use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use pal_async::task::Spawn;
+    use std::collections::VecDeque;
+    use std::sync::Once;
+    use test_utils::MockTeeCall;
+    use tracing_subscriber::EnvFilter;
     use vmgs_format::EncryptionAlgorithm;
     use vmgs_format::FileId;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
+
+    // Initialize tracing once for all tests in this module. Honors RUST_LOG.
+    fn init_tracing() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(EnvFilter::from_default_env())
+                .with_target(false)
+                .try_init();
+        });
+    }
 
     fn new_test_file() -> Disk {
         ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
@@ -1248,6 +1381,17 @@ mod tests {
                 matches!(
                     err,
                     vmgs::ReadFromVmgsError::EntryNotFound(FileId::VM_UNIQUE_ID)
+                )
+            })
+    }
+
+    async fn hardware_key_protector_is_empty(vmgs: &mut Vmgs) -> bool {
+        vmgs::read_hardware_key_protector(vmgs)
+            .await
+            .is_err_and(|err| {
+                matches!(
+                    err,
+                    vmgs::ReadFromVmgsError::EntryNotFound(FileId::HW_KEY_PROTECTOR)
                 )
             })
     }
@@ -1291,6 +1435,40 @@ mod tests {
         KeyProtectorById {
             inner: key_protector_by_id,
             found_id,
+        }
+    }
+
+    async fn new_test_get(
+        spawn: impl Spawn,
+        enable_igvm_attest: bool,
+        plan: Option<IgvmAgentScriptPlan>,
+    ) -> TestGet {
+        if enable_igvm_attest {
+            // Use `DeviceTestMemory` to set up shared memory required by the IGVM_ATTEST GET calls.
+            let dev_test_mem =
+                user_driver_emulated_mock::DeviceTestMemory::new(64, true, "test-attest");
+
+            let mut test_get = guest_emulation_transport::test_utilities::new_transport_pair(
+                spawn,
+                None,
+                get_protocol::ProtocolVersion::NICKEL_REV2,
+                Some(dev_test_mem.guest_memory()),
+                plan,
+            )
+            .await;
+
+            test_get.client.set_gpa_allocator(dev_test_mem.dma_client());
+
+            test_get
+        } else {
+            guest_emulation_transport::test_utilities::new_transport_pair(
+                spawn,
+                None,
+                get_protocol::ProtocolVersion::NICKEL_REV2,
+                None,
+                plan,
+            )
+            .await
         }
     }
 
@@ -1928,5 +2106,366 @@ mod tests {
             found_key_protector_by_id.id_guid,
             key_protector_by_id.inner.id_guid
         );
+    }
+
+    // --- initialize_platform_security tests ---
+
+    #[async_test]
+    async fn init_sec_suppress_attestation(driver: DefaultDriver) {
+        init_tracing();
+
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // Write non-zero agent data to VMGS so we can verify it is returned.
+        let agent = SecurityProfile {
+            agent_data: [0xAA; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE],
+        };
+        vmgs.write_file(FileId::ATTEST, agent.as_bytes())
+            .await
+            .unwrap();
+
+        // Ensure no IGVM attest call out
+        let get_pair = new_test_get(driver, false, None).await;
+
+        let bios_guid = Guid::new_random();
+        let att_cfg = AttestationVmConfig::default();
+
+        // Obtain a LocalDriver briefly, then run the async flow under the pool executor
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            None, // no TEE when suppressed and no HW sealing
+            true, // suppress_attestation
+            ldriver,
+            GuestStateEncryptionPolicy::None,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS remains unencrypted and KP/HWKP not written.
+        assert!(!vmgs.is_encrypted());
+        assert!(key_protector_is_empty(&mut vmgs).await);
+        assert!(hardware_key_protector_is_empty(&mut vmgs).await);
+        // Agent data passed through
+        assert_eq!(res.agent_data.unwrap(), agent.agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+    }
+
+    #[async_test]
+    async fn init_sec_secure_key_release(driver: DefaultDriver) {
+        init_tracing();
+
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // IGVM attest is required
+        let get_pair = new_test_get(driver, true, None).await;
+
+        let bios_guid = Guid::new_random();
+        let att_cfg = AttestationVmConfig::default();
+        let tee = MockTeeCall::new(0x1234);
+
+        // Ensure VMGS is not encrypted and agent data is empty before the call
+        assert!(!vmgs.is_encrypted());
+
+        // Obtain a LocalDriver briefly, then run the async flow under the pool executor
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS is now encrypted and HWKP is updated.
+        assert!(vmgs.is_encrypted());
+        assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
+
+        // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
+        // See vm/devices/get/guest_emulation_device/src/test_igvm_agent.rs for the expected response.
+        let key_reference = serde_json::json!({
+            "key_info": {
+                "host": "name"
+            },
+            "attestation_info": {
+                "host": "attestation_name"
+            }
+        });
+        let key_reference = serde_json::to_string(&key_reference).unwrap();
+        let key_reference = key_reference.as_bytes();
+        let mut expected_agent_data =
+            [0u8; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE];
+        expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
+        assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+
+        // Second call: VMGS unlock via SKR should succeed
+        initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS should remain encrypted
+        assert!(vmgs.is_encrypted());
+    }
+
+    #[async_test]
+    async fn init_sec_secure_key_release_without_wrapped_key_request(driver: DefaultDriver) {
+        init_tracing();
+
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // Write non-zero agent data to workaround the WRAPPED_KEY_REQUEST requirement.
+        let agent = SecurityProfile {
+            agent_data: [0xAA; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE],
+        };
+        vmgs.write_file(FileId::ATTEST, agent.as_bytes())
+            .await
+            .unwrap();
+
+        // Skip WRAPPED_KEY_REQUEST for both boots
+        let mut plan = IgvmAgentScriptPlan::default();
+        plan.insert(
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+            VecDeque::from([AgentAction::NoResponse, AgentAction::NoResponse]),
+        );
+
+        // IGVM attest is required
+        let get_pair = new_test_get(driver, true, Some(plan)).await;
+
+        let bios_guid = Guid::new_random();
+        let att_cfg = AttestationVmConfig::default();
+        let tee = MockTeeCall::new(0x1234);
+
+        // Ensure VMGS is not encrypted and agent data is empty before the call
+        assert!(!vmgs.is_encrypted());
+
+        // Obtain a LocalDriver briefly, then run the async flow under the pool executor
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS is now encrypted and HWKP is updated.
+        assert!(vmgs.is_encrypted());
+        assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
+        // Agent data passed through
+        assert_eq!(res.agent_data.clone().unwrap(), agent.agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+
+        // Second call: VMGS unlock via SKR should succeed
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS should remain encrypted
+        assert!(vmgs.is_encrypted());
+        // Agent data passed through
+        assert_eq!(res.agent_data.clone().unwrap(), agent.agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+    }
+
+    #[async_test]
+    async fn init_sec_secure_key_release_hw_sealing_backup(driver: DefaultDriver) {
+        init_tracing();
+
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // IGVM attest is required
+        let mut plan = IgvmAgentScriptPlan::default();
+        plan.insert(
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+            VecDeque::from([AgentAction::RespondSuccess, AgentAction::RespondFailure]),
+        );
+
+        let get_pair = new_test_get(driver, true, Some(plan)).await;
+
+        let bios_guid = Guid::new_random();
+        let att_cfg = AttestationVmConfig::default();
+
+        // Ensure VMGS is not encrypted and agent data is empty before the call
+        assert!(!vmgs.is_encrypted());
+
+        // Obtain a LocalDriver briefly, then run the async flow under the pool executor
+        let tee = MockTeeCall::new(0x1234);
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS is now encrypted and HWKP is updated.
+        assert!(vmgs.is_encrypted());
+        assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
+        // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
+        // See vm/devices/get/guest_emulation_device/src/test_igvm_agent.rs for the expected response.
+        let key_reference = serde_json::json!({
+            "key_info": {
+                "host": "name"
+            },
+            "attestation_info": {
+                "host": "attestation_name"
+            }
+        });
+        let key_reference = serde_json::to_string(&key_reference).unwrap();
+        let key_reference = key_reference.as_bytes();
+        let mut expected_agent_data =
+            [0u8; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE];
+        expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
+        assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+
+        // Second call: VMGS unlock via key recovered with hardware sealing
+        // NOTE: The test relies on the test GED to return failing WRAPPED_KEY response
+        // with retry recommendation as false to skip the retry loop in
+        // secure_key_release::request_vmgs_encryption_keys. Otherwise, the test will stuck
+        // on the timer.sleep() as the the driver is not progressed.
+        initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS should remain encrypted
+        assert!(vmgs.is_encrypted());
+    }
+
+    #[async_test]
+    async fn init_sec_secure_key_release_no_hw_sealing_backup(driver: DefaultDriver) {
+        init_tracing();
+
+        let mut vmgs = new_formatted_vmgs().await;
+
+        // IGVM attest is required
+        let mut plan = IgvmAgentScriptPlan::default();
+        plan.insert(
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+            VecDeque::from([AgentAction::RespondSuccess, AgentAction::RespondFailure]),
+        );
+
+        let get_pair = new_test_get(driver, true, Some(plan)).await;
+
+        let bios_guid = Guid::new_random();
+        let att_cfg = AttestationVmConfig::default();
+        // Without hardware sealing support
+        let tee = MockTeeCallNoGetDerivedKey {};
+
+        // Ensure VMGS is not encrypted and agent data is empty before the call
+        assert!(!vmgs.is_encrypted());
+
+        // Obtain a LocalDriver briefly, then run the async flow under the pool executor
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let res = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // VMGS is now encrypted but HWKP remains empty.
+        assert!(vmgs.is_encrypted());
+        assert!(hardware_key_protector_is_empty(&mut vmgs).await);
+        // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
+        // See vm/devices/get/guest_emulation_device/src/test_igvm_agent.rs for the expected response.
+        let key_reference = serde_json::json!({
+            "key_info": {
+                "host": "name"
+            },
+            "attestation_info": {
+                "host": "attestation_name"
+            }
+        });
+        let key_reference = serde_json::to_string(&key_reference).unwrap();
+        let key_reference = key_reference.as_bytes();
+        let mut expected_agent_data =
+            [0u8; openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE];
+        expected_agent_data[..key_reference.len()].copy_from_slice(key_reference);
+        assert_eq!(res.agent_data.unwrap(), expected_agent_data.to_vec());
+        // Secure key should be None without pre-provisioning
+        assert!(res.guest_secret_key.is_none());
+
+        // Second call: VMGS unlock should fail without hardware sealing support
+        let result = initialize_platform_security(
+            &get_pair.client,
+            bios_guid,
+            &att_cfg,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 }

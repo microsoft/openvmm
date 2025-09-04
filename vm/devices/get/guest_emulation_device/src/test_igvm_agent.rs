@@ -21,6 +21,7 @@ use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmSignal;
 use rsa::Oaep;
 use rsa::RsaPrivateKey;
 use rsa::RsaPublicKey;
@@ -28,19 +29,19 @@ use rsa::pkcs8::EncodePrivateKey;
 use rsa::rand_core::OsRng;
 use sha1::Sha1;
 use sha2::Sha256;
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
+
+pub type IgvmAgentScriptPlan = HashMap<IgvmAttestRequestType, VecDeque<AgentAction>>;
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
     #[error("unsupported igvm attest request type: {0:?}")]
     UnsupportedIgvmAttestRequestType(u32),
-    #[error("invalid igvm attest state: {state:?}, test config: {test_config:?}")]
-    InvalidIgvmAttestState {
-        state: IgvmAttestState,
-        test_config: Option<IgvmAttestTestConfig>,
-    },
     #[error("failed to initialize keys for attestation")]
     KeyInitializationFailed(#[source] rsa::Error),
     #[error("keys not initialized")]
@@ -85,26 +86,48 @@ pub(crate) enum KeyReleaseError {
     JsonSerializeError(#[source] serde_json::Error),
 }
 
-/// Simple state machine to support AK cert preserving test.
-// TODO: add more states to cover other test scenarios.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum IgvmAttestState {
-    Init,
-    SendEmptyAkCert,
-    SendInvalidAkCert,
-    SendValidAkCert,
-    Done,
-}
-
-// Test IGVM agent includes states that need to be persisted.
-#[derive(Debug, Clone)]
+/// Test IGVM agent includes states that need to be persisted.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct TestIgvmAgent {
-    /// State machine for `handle_request`
-    pub state: IgvmAttestState,
     /// Optional RSA private key used for attestation.
     pub secret_key: Option<RsaPrivateKey>,
     /// Optional DES key
     pub des_key: Option<[u8; 32]>,
+    /// Optional scripted actions per request type for tests.
+    plan: Option<Arc<Mutex<IgvmAgentScriptPlan>>>,
+}
+
+/// Possible actions for the IGVM agent to take in response to a request.
+#[derive(Debug, Clone)]
+pub enum AgentAction {
+    RespondSuccess,
+    RespondFailure,
+    NoResponse,
+}
+
+fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentScriptPlan {
+    let mut plan = IgvmAgentScriptPlan::default();
+
+    match test_config {
+        IgvmAttestTestConfig::AkCertRequestFailureAndRetry => {
+            plan.insert(
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                VecDeque::from([
+                    AgentAction::NoResponse,
+                    AgentAction::RespondFailure,
+                    AgentAction::RespondSuccess,
+                ]),
+            );
+        }
+        IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
+            plan.insert(
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                VecDeque::from([AgentAction::RespondSuccess, AgentAction::NoResponse]),
+            );
+        }
+    }
+
+    plan
 }
 
 impl TestIgvmAgent {
@@ -113,7 +136,7 @@ impl TestIgvmAgent {
         request_bytes: &[u8],
         test_config: Option<&IgvmAttestTestConfig>,
     ) -> Result<(Vec<u8>, u32), Error> {
-        tracing::info!(state = ?self.state, test_config = ?test_config, "Test IGVM agent");
+        tracing::info!(test_config = ?test_config, "Test IGVM agent");
 
         let request = IgvmAttestRequest::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
@@ -134,56 +157,152 @@ impl TestIgvmAgent {
         }
         let runtime_claims_bytes = &request_bytes[runtime_claims_start..runtime_claims_end];
 
-        // Determine the first state before handling the request
-        if matches!(self.state, IgvmAttestState::Init) {
-            self.update_igvm_attest_state(test_config).map_err(|_| {
-                Error::InvalidIgvmAttestState {
-                    state: self.state,
-                    test_config: test_config.cloned(),
+        // If test config is provided but the plan is not, set the plan based on the config.
+        if let Some(config) = test_config {
+            if self.plan.is_none() {
+                let plan = test_config_to_plan(config);
+                self.plan = Some(Arc::new(Mutex::new(plan)));
+            }
+        }
+
+        // If a plan is provided and has a queued action for this request type,
+        // execute it. This allows tests to force success/no-response, etc.
+        // Take next scripted action, if any, in a separate scope to avoid holding the lock
+        // across calls that may mutably borrow self.
+        if let Some(action) = (|| {
+            self.plan
+                .as_ref()
+                .and_then(|plan| plan.lock().ok())
+                .and_then(|mut map| {
+                    map.get_mut(&request.header.request_type)
+                        .and_then(|q| q.pop_front())
+                })
+        })() {
+            match action {
+                AgentAction::NoResponse => {
+                    tracing::info!(?request.header.request_type, "Test plan: NoResponse");
+                    return Ok((vec![], 0));
                 }
-            })?;
-            tracing::info!(state = ?self.state, test_config = ?test_config, "Update init state");
+                AgentAction::RespondSuccess => {
+                    tracing::info!(?request.header.request_type, "Test plan: RespondSuccess");
+                    match request.header.request_type {
+                        IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
+                            self.initialize_keys()?;
+                            let data = self
+                                .generate_mock_wrapped_key_response()
+                                .map_err(Error::WrappedKeyError)?;
+                            let header = IgvmAttestWrappedKeyResponseHeader {
+                                data_size: (data.len()
+                                    + size_of::<IgvmAttestWrappedKeyResponseHeader>())
+                                    as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo::default(),
+                            };
+                            let payload = [header.as_bytes(), &data].concat();
+                            return Ok((payload.clone(), payload.len() as u32));
+                        }
+                        IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
+                            if self.secret_key.is_none() {
+                                // Ensure keys exist so we can generate a valid JWT response
+                                self.initialize_keys()?;
+                            }
+                            let jwt = self
+                                .generate_mock_key_release_response(
+                                    &request_bytes[size_of::<IgvmAttestRequest>()..],
+                                )
+                                .map_err(Error::KeyReleaseError)?;
+                            let data = jwt.as_bytes().to_vec();
+                            let header = IgvmAttestKeyReleaseResponseHeader {
+                                data_size: (data.len()
+                                    + size_of::<IgvmAttestKeyReleaseResponseHeader>())
+                                    as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo::default(),
+                            };
+                            let payload = [header.as_bytes(), &data].concat();
+                            return Ok((payload.clone(), payload.len() as u32));
+                        }
+                        IgvmAttestRequestType::AK_CERT_REQUEST => {
+                            let data = vec![0xab; 2500];
+                            let header = IgvmAttestAkCertResponseHeader {
+                                data_size: (data.len()
+                                    + size_of::<IgvmAttestAkCertResponseHeader>())
+                                    as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo::default(),
+                            };
+                            let payload = [header.as_bytes(), &data].concat();
+                            return Ok((payload.clone(), payload.len() as u32));
+                        }
+                        ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+                    }
+                }
+                AgentAction::RespondFailure => {
+                    tracing::info!(?request.header.request_type, "Test plan: RespondFailure");
+                    match request.header.request_type {
+                        IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
+                            let header = IgvmAttestWrappedKeyResponseHeader {
+                                data_size: size_of::<IgvmAttestWrappedKeyResponseHeader>() as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo {
+                                    error_code: 0x1234,
+                                    http_status_code: 400,
+                                    igvm_signal: IgvmSignal::default().with_retry(false),
+                                    reserved: [0; 3],
+                                },
+                            };
+                            let payload = header.as_bytes().to_vec();
+                            return Ok((payload.clone(), payload.len() as u32));
+                        }
+                        IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
+                            let header = IgvmAttestKeyReleaseResponseHeader {
+                                data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo {
+                                    error_code: 0x1234,
+                                    http_status_code: 400,
+                                    igvm_signal: IgvmSignal::default().with_retry(false),
+                                    reserved: [0; 3],
+                                },
+                            };
+                            let payload = header.as_bytes().to_vec();
+                            return Ok((payload.clone(), payload.len() as u32));
+                        }
+                        IgvmAttestRequestType::AK_CERT_REQUEST => {
+                            let header = IgvmAttestAkCertResponseHeader {
+                                data_size: size_of::<IgvmAttestAkCertResponseHeader>() as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo {
+                                    error_code: 0x1234,
+                                    http_status_code: 400,
+                                    igvm_signal: IgvmSignal::default().with_retry(false),
+                                    reserved: [0; 3],
+                                },
+                            };
+                            let payload = header.as_bytes().to_vec();
+                            return Ok((payload.clone(), payload.len() as u32));
+                        }
+                        ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+                    }
+                }
+            }
         }
 
         let (response, length) = match request.header.request_type {
-            IgvmAttestRequestType::AK_CERT_REQUEST => match self.state {
-                IgvmAttestState::SendEmptyAkCert => {
-                    tracing::info!("Send an empty response for AK_CERT_REQEUST");
-                    (vec![], 0)
-                }
-                IgvmAttestState::SendInvalidAkCert => {
-                    tracing::info!("Return an invalid response for AK_CERT_REQUEST");
-                    (
-                        vec![],
-                        get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE as u32,
-                    )
-                }
-                IgvmAttestState::SendValidAkCert => {
-                    tracing::info!("Send a response for AK_CERT_REQEUST");
-                    let data = vec![0xab; 2500];
-                    let header = IgvmAttestAkCertResponseHeader {
-                        data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
-                            as u32,
-                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                        error_info: IgvmErrorInfo::default(),
-                    };
-                    let payload = [header.as_bytes(), &data].concat();
-                    let payload_len = payload.len() as u32;
+            IgvmAttestRequestType::AK_CERT_REQUEST => {
+                tracing::info!("Send a response for AK_CERT_REQEUST");
 
-                    (payload, payload_len)
-                }
-                IgvmAttestState::Done => {
-                    tracing::info!("Bypass AK_CERT_REQEUST");
+                let data = vec![0xab; 2500];
+                let header = IgvmAttestAkCertResponseHeader {
+                    data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info: IgvmErrorInfo::default(),
+                };
+                let payload = [header.as_bytes(), &data].concat();
+                let payload_len = payload.len() as u32;
 
-                    return Ok((vec![], 0));
-                }
-                _ => {
-                    return Err(Error::InvalidIgvmAttestState {
-                        state: self.state,
-                        test_config: test_config.cloned(),
-                    });
-                }
-            },
+                (payload, payload_len)
+            }
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
                 tracing::info!("Send a response for WRAPPED_KEY_REQUEST");
 
@@ -214,7 +333,7 @@ impl TestIgvmAgent {
                 tracing::info!("Send a response for KEY_RELEASE_REQUEST");
 
                 if self.secret_key.is_none() {
-                    return Err(Error::KeysNotInitialized);
+                    self.initialize_keys()?;
                 }
 
                 // Generate a mock JWT response for testing - convert request to proper type
@@ -242,52 +361,12 @@ impl TestIgvmAgent {
             ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
         };
 
-        // Update state
-        self.update_igvm_attest_state(test_config)
-            .map_err(|_| Error::InvalidIgvmAttestState {
-                state: self.state,
-                test_config: test_config.cloned(),
-            })?;
-
-        tracing::info!(state = ?self.state, test_config = ?test_config, "Updated state after request");
-
         Ok((response, length))
     }
 
-    /// Update IGVM Attest state machine based on IGVM Attest test config.
-    pub(crate) fn update_igvm_attest_state(
-        &mut self,
-        test_config: Option<&IgvmAttestTestConfig>,
-    ) -> Result<(), Error> {
-        match test_config {
-            // No test config set, default to sending valid AK cert for now.
-            None => {
-                self.state = IgvmAttestState::SendValidAkCert;
-            }
-            // State machine for testing retrying AK cert request after failing attempt.
-            Some(IgvmAttestTestConfig::AkCertRequestFailureAndRetry) => match self.state {
-                IgvmAttestState::Init => self.state = IgvmAttestState::SendEmptyAkCert,
-                IgvmAttestState::SendEmptyAkCert => self.state = IgvmAttestState::SendInvalidAkCert,
-                IgvmAttestState::SendInvalidAkCert => self.state = IgvmAttestState::SendValidAkCert,
-                IgvmAttestState::SendValidAkCert => self.state = IgvmAttestState::Done,
-                IgvmAttestState::Done => {}
-            },
-            // State machine for testing AK cert persistency across boots.
-            Some(IgvmAttestTestConfig::AkCertPersistentAcrossBoot) => match self.state {
-                IgvmAttestState::Init => self.state = IgvmAttestState::SendValidAkCert,
-                IgvmAttestState::SendValidAkCert => self.state = IgvmAttestState::SendEmptyAkCert,
-                IgvmAttestState::SendEmptyAkCert => self.state = IgvmAttestState::Done,
-                IgvmAttestState::Done => {}
-                _ => {
-                    return Err(Error::InvalidIgvmAttestState {
-                        state: self.state,
-                        test_config: test_config.copied(),
-                    });
-                }
-            },
-        }
-
-        Ok(())
+    /// Install a scripted plan used by tests.
+    pub fn set_plan(&mut self, plan: IgvmAgentScriptPlan) {
+        self.plan = Some(Arc::new(Mutex::new(plan)));
     }
 
     pub(crate) fn initialize_keys(&mut self) -> Result<(), Error> {

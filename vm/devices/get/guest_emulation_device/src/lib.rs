@@ -20,9 +20,17 @@ pub mod test_utilities;
 mod test_igvm_agent;
 
 #[cfg(feature = "test_igvm_agent")]
-use crate::test_igvm_agent::IgvmAttestState;
+pub use crate::test_igvm_agent::AgentAction;
 #[cfg(feature = "test_igvm_agent")]
 use crate::test_igvm_agent::TestIgvmAgent;
+
+// A stable alias for the optional IGVM script plan. Always defined so that
+// function signatures don't change across feature flags.
+#[cfg(feature = "test_igvm_agent")]
+pub use crate::test_igvm_agent::IgvmAgentScriptPlan;
+// #[cfg(not(feature = "test_igvm_agent"))]
+// pub type IgvmAgentScriptPlan = ();
+
 use async_trait::async_trait;
 use core::mem::size_of;
 use disk_backend::Disk;
@@ -266,11 +274,7 @@ impl GuestEmulationDevice {
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
             #[cfg(feature = "test_igvm_agent")]
-            igvm_agent: TestIgvmAgent {
-                state: IgvmAttestState::Init,
-                secret_key: None,
-                des_key: None,
-            },
+            igvm_agent: TestIgvmAgent::default(),
             igvm_attest_test_config,
         }
     }
@@ -279,6 +283,11 @@ impl GuestEmulationDevice {
         if let Some(sender) = &self.firmware_event_send {
             sender.send(event);
         }
+    }
+
+    #[cfg(feature = "test_igvm_agent")]
+    pub fn set_igvm_agent_plan(&mut self, plan: IgvmAgentScriptPlan) {
+        self.igvm_agent.set_plan(plan);
     }
 }
 

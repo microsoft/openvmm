@@ -33,6 +33,13 @@ use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+// A stable alias for the optional IGVM script plan. Always defined so that
+// function signatures don't change across feature flags.
+#[cfg(feature = "test_igvm_agent")]
+use crate::test_igvm_agent::IgvmAgentScriptPlan;
+#[cfg(not(feature = "test_igvm_agent"))]
+pub type IgvmAgentScriptPlan = ();
+
 #[derive(Debug, Clone)]
 pub enum Event {
     Response(Vec<u8>),
@@ -235,6 +242,8 @@ pub fn create_host_channel(
     host_vmbus: MessagePipe<FlatRingMem>,
     ged_responses: Option<Vec<TestGetResponses>>,
     version: get_protocol::ProtocolVersion,
+    guest_memory: Option<GuestMemory>,
+    igvm_agent_plan: Option<IgvmAgentScriptPlan>,
 ) -> TestGedClient {
     let guest_config = GuestConfig {
         firmware: GuestFirmwareConfig::Uefi {
@@ -281,6 +290,11 @@ pub fn create_host_channel(
         None,
     );
 
+    #[cfg(feature = "test_igvm_agent")]
+    if let Some(plan) = igvm_agent_plan {
+        ged_state.set_igvm_agent_plan(plan);
+    }
+
     if let Some(ged_responses) = ged_responses {
         let mut host_get_channel =
             TestGedChannel::new(host_vmbus, ged_responses, version, halt_reason);
@@ -294,10 +308,13 @@ pub fn create_host_channel(
         }
     } else {
         let mut task = TaskControl::new(ged_state);
+        // Optionally provide a guest memory backing so handlers like IGVM_ATTEST can write
+        // response payloads into the shared buffer GPAs provided by GET.
+        let gm = guest_memory.unwrap_or_else(|| GuestMemory::empty());
         task.insert(
             spawn,
             "automated GED host channel",
-            GedChannel::new(host_vmbus, GuestMemory::empty()),
+            GedChannel::new(host_vmbus, gm),
         );
         task.start();
 
