@@ -1246,8 +1246,7 @@ impl Vmgs {
 
     /// Associates a new root key with the data store and removes the old
     /// encryption key, if it exists. If two keys already exist, the
-    /// inactive key is removed first. Returns the index of the newly
-    /// associated key.
+    /// inactive key is removed first.
     #[cfg(with_encryption)]
     pub async fn update_encryption_key(
         &mut self,
