@@ -57,6 +57,10 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
             _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
 
+            _ if id == openhcl_igvm::RELEASE_25_05_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::LinuxDirect),
+            _ if id == openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Release2505, OpenhclFlavor::Standard),
+
             _ if id == openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmBin),
             _ if id == openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmDbg),
 
@@ -95,6 +99,7 @@ enum PipetteFlavor {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum OpenhclVersion {
     Latest,
+    Release2505,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -375,6 +380,30 @@ fn openhcl_bin_path(
             MissingCommand::XFlowey {
                 description: "OpenHCL IGVM file",
                 xflowey_args: &["build-igvm", "aarch64-devkern"],
+            },
+        ),
+        (MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::LinuxDirect) => (
+            "flowey-out/artifacts/latest-release-igvm-files",
+            "release-2505-x64-direct-openhcl.bin",
+            MissingCommand::XFlowey {
+                description: "Previous OpenHCL release IGVM file",
+                xflowey_args: &["restore-packages"],
+            },
+        ),
+        (MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::Standard) => (
+            "flowey-out/artifacts/latest-release-igvm-files",
+            "release-2505-x64-openhcl.bin",
+            MissingCommand::XFlowey {
+                description: "Previous OpenHCL release IGVM file",
+                xflowey_args: &["restore-packages"],
+            },
+        ),
+        (MachineArch::Aarch64, OpenhclVersion::Release2505, OpenhclFlavor::Standard) => (
+            "flowey-out/artifacts/latest-release-igvm-files",
+            "release-2505-aarch64-openhcl.bin",
+            MissingCommand::XFlowey {
+                description: "Previous OpenHCL release IGVM file",
+                xflowey_args: &["restore-packages"],
             },
         ),
         _ => anyhow::bail!("no openhcl bin with given arch, version, and flavor"),

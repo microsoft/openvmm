@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod command_match;
 mod error;
 mod namespace;
 mod pci;

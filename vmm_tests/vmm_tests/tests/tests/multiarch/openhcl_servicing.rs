@@ -18,7 +18,9 @@ use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::PciFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
+use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
+use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
@@ -30,6 +32,10 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -83,6 +89,11 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
     new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
 ) -> anyhow::Result<()> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .run()
@@ -119,12 +130,7 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
 async fn basic<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
+) -> anyhow::Result<()> {
     openhcl_servicing_core(
         config,
         "",
@@ -143,12 +149,7 @@ async fn basic<T: PetriVmmBackend>(
 async fn keepalive<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
+) -> anyhow::Result<()> {
     openhcl_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
@@ -161,16 +162,61 @@ async fn keepalive<T: PetriVmmBackend>(
     .await
 }
 
+#[vmm_test(
+    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_25_05_LINUX_DIRECT_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[RELEASE_25_05_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+)]
+async fn servicing_upgrade<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (to_igvm, from_igvm): (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    ),
+) -> anyhow::Result<()> {
+    // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
+    openhcl_servicing_core(
+        config
+            .with_custom_openhcl(from_igvm)
+            .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
+        "",
+        to_igvm,
+        OpenHclServicingFlags::default(),
+    )
+    .await
+}
+
+#[vmm_test(
+    openvmm_openhcl_linux_direct_x64 [RELEASE_25_05_LINUX_DIRECT_X64, LATEST_LINUX_DIRECT_TEST_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[RELEASE_25_05_STANDARD_AARCH64, LATEST_STANDARD_AARCH64]
+)]
+async fn servicing_downgrade<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (to_igvm, from_igvm): (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    ),
+) -> anyhow::Result<()> {
+    // TODO: remove .with_guest_state_lifetime(PetriGuestStateLifetime::Disk). The default (ephemeral) does not exist in the 2505 release.
+    openhcl_servicing_core(
+        config
+            .with_custom_openhcl(from_igvm)
+            .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
+        "",
+        to_igvm,
+        OpenHclServicingFlags::default(),
+    )
+    .await
+}
+
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn shutdown_ic(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
+) -> anyhow::Result<()> {
     if !host_supports_servicing() {
         tracing::info!("skipping OpenHCL servicing test on unsupported host");
         return Ok(());
     }
-
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
@@ -255,7 +301,120 @@ async fn keepalive_with_nvme_fault(
     let fault_configuration = FaultConfiguration {
         fault_active: fault_start_updater.cell(),
         admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-            nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0,
+            CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
+            QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+        ),
+        pci_fault: PciFaultConfig::new(),
+    };
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off") // disable sidecar until #1345 is fixed
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                // Add a fault controller to test the nvme controller functionality
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: NVME_INSTANCE,
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count: 10,
+                        max_io_queues: 10,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: vtl2_nsid,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(256 * 1024),
+                            })
+                            .into_resource(),
+                        }],
+                        fault_config: fault_configuration,
+                    }
+                    .into_resource(),
+                })
+            })
+            // Assign the fault controller to VTL2
+            .with_custom_vtl2_settings(|v| {
+                v.dynamic.as_mut().unwrap().storage_controllers.push(
+                    vtl2_settings_proto::StorageController {
+                        instance_id: scsi_instance.to_string(),
+                        protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
+                            .into(),
+                        luns: vec![vtl2_settings_proto::Lun {
+                            location: vtl0_nvme_lun,
+                            device_id: Guid::new_random().to_string(),
+                            vendor_id: "OpenVMM".to_string(),
+                            product_id: "Disk".to_string(),
+                            product_revision_level: "1.0".to_string(),
+                            serial_number: "0".to_string(),
+                            model_number: "1".to_string(),
+                            physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
+                                r#type: vtl2_settings_proto::physical_devices::BackingType::Single
+                                    .into(),
+                                device: Some(vtl2_settings_proto::PhysicalDevice {
+                                    device_type:
+                                        vtl2_settings_proto::physical_device::DeviceType::Nvme
+                                            .into(),
+                                    device_path: NVME_INSTANCE.to_string(),
+                                    sub_device_path: vtl2_nsid,
+                                }),
+                                devices: Vec::new(),
+                            }),
+                            ..Default::default()
+                        }],
+                        io_queue_depth: None,
+                    },
+                )
+            })
+        })
+        .run()
+        .await?;
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    // CREATE_IO_COMPLETION_QUEUE is blocked. This will time out without keepalive enabled.
+    fault_start_updater.set(true).await;
+    vm.restart_openhcl(
+        igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support and a faulty controller that responds incorrectly to the IDENTIFY CONTROLLER command
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn keepalive_with_nvme_identify_fault(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    let vtl0_nvme_lun = 1;
+    let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
+    let scsi_instance = Guid::new_random();
+
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration {
+        fault_active: fault_start_updater.cell(),
+        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+            CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
             QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
         ),
         pci_fault: PciFaultConfig::new(),

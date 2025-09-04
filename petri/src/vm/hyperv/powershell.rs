@@ -396,22 +396,6 @@ pub async fn run_set_vm_scsi_controller_target_vtl(
     .context("set_vm_scsi_controller_target_vtl")
 }
 
-/// Create a new differencing VHD with the provided parent.
-pub async fn create_child_vhd(path: &Path, parent_path: &Path) -> anyhow::Result<()> {
-    run_cmd(
-        PowerShellBuilder::new()
-            .cmdlet("New-VHD")
-            .arg("Path", path)
-            .arg("ParentPath", parent_path)
-            .flag("Differencing")
-            .finish()
-            .build(),
-    )
-    .await
-    .map(|_| ())
-    .context("create_child_vhd")
-}
-
 /// Runs Dismount-VHD with the given arguments.
 pub async fn run_dismount_vhd(path: &Path) -> anyhow::Result<()> {
     run_cmd(

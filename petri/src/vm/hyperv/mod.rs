@@ -268,7 +268,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
                         .to_string_lossy()
                 ));
 
-                create_child_vhd_locking(driver, &diff_disk_path, vhd).await?;
+                {
+                    let path = diff_disk_path.clone();
+                    let parent_path = vhd.to_path_buf();
+                    tracing::debug!(?path, ?parent_path, "creating differencing vhd");
+                    blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path))
+                        .await?;
+                }
+
                 vm.add_vhd(
                     &diff_disk_path,
                     controller_type,
@@ -565,51 +572,6 @@ fn build_and_persist_agent_image(
             false
         },
     )
-}
-
-/// Create a new differencing VHD with the provided parent.
-pub async fn create_child_vhd_locking(
-    driver: &DefaultDriver,
-    path: &Path,
-    parent_path: &Path,
-) -> anyhow::Result<()> {
-    let lock_file_path = {
-        let mut path = parent_path.to_owned();
-        path.as_mut_os_string().push(".lock");
-        path
-    };
-
-    tracing::debug!("creating child vhd from {}", path.to_string_lossy());
-
-    let start = Timestamp::now();
-    loop {
-        match fs_err::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_file_path)
-        {
-            Ok(_) => break,
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                tracing::debug!("vhd lock taken, waiting...");
-                PolledTimer::new(driver).sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-    let time_elapsed = Timestamp::now() - start;
-
-    tracing::debug!(
-        "waited {}s for {}",
-        time_elapsed.total(jiff::Unit::Second).unwrap(),
-        lock_file_path.to_string_lossy()
-    );
-
-    let res = powershell::create_child_vhd(path, parent_path).await;
-
-    fs_err::remove_file(&lock_file_path)?;
-
-    res
 }
 
 async fn hyperv_serial_log_task(
