@@ -2534,16 +2534,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             ?vtl,
                             is_shared,
                             ?extra_info,
-                            "guest read monitor page, continuing"
-                        );
-                    } else {
-                        tracelimit::warn_ratelimited!(
-                            CVM_ALLOWED,
-                            gpa,
-                            ?vtl,
-                            is_shared,
-                            ?extra_info,
-                            "guest wrote to monitor page, emulating"
+                            "spurious exit for guest monitor page read"
                         );
                     }
 

@@ -699,8 +699,8 @@ impl MnfInfo {
         self.allocated_monitor_pages
             .as_ref()
             .map(|allocated| MonitorPageGpas {
-                parent_to_child: allocated.pfns()[0] << HV_PAGE_SHIFT,
-                child_to_parent: allocated.pfns()[1] << HV_PAGE_SHIFT,
+                child_to_parent: allocated.pfns()[0] << HV_PAGE_SHIFT,
+                parent_to_child: 0,
             })
     }
 }
@@ -1909,12 +1909,11 @@ impl ServerTaskInner {
                 if let Some(version) = request.version {
                     if version.feature_flags.server_specified_monitor_pages() {
                         if let Some(dma_client) = self.dma_client.as_ref() {
-                            // If we haven't allocated monitor pages yet, do so now. They may have
+                            // If we haven't allocated a monitor page yet, do so now. It may have
                             // been allocated already for a previous connection.
                             if mnf_info.allocated_monitor_pages.is_none() {
-                                let block = dma_client.allocate_dma_buffer(PAGE_SIZE * 2)?;
-                                block.write_at(0, &[0u8; PAGE_SIZE * 2]);
-                                mnf_info.allocated_monitor_pages = Some(block);
+                                mnf_info.allocated_monitor_pages =
+                                    Some(dma_client.allocate_dma_buffer(PAGE_SIZE)?);
                             }
 
                             // Utilize the server-allocated pages.
