@@ -221,7 +221,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
 pub struct Completion {
     pub dw0: u32,
     pub dw1: u32,
@@ -232,7 +232,7 @@ pub struct Completion {
 }
 
 #[bitfield(u16)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
 pub struct CompletionStatus {
     pub phase: bool,
     /// 8 bits of status code followed by 3 bits of the status code type.
