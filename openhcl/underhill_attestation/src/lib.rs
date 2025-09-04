@@ -1473,7 +1473,7 @@ mod tests {
                 None,
                 get_protocol::ProtocolVersion::NICKEL_REV2,
                 None,
-                plan,
+                None,
             )
             .await
         }
@@ -2137,6 +2137,9 @@ mod tests {
         let bios_guid = Guid::new_random();
         let att_cfg = AttestationVmConfig::default();
 
+        // Ensure VMGS is not encrypted and agent data is empty before the call
+        assert!(!vmgs.is_encrypted());
+
         // Obtain a LocalDriver briefly, then run the async flow under the pool executor
         let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
         let res = initialize_platform_security(
@@ -2144,7 +2147,7 @@ mod tests {
             bios_guid,
             &att_cfg,
             &mut vmgs,
-            None, // no TEE when suppressed and no HW sealing
+            None, // no TEE when suppressed
             true, // suppress_attestation
             ldriver,
             GuestStateEncryptionPolicy::None,
