@@ -204,6 +204,10 @@ async fn shutdown_ic(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
