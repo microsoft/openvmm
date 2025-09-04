@@ -341,14 +341,16 @@ impl NetQueue for TestNicQueue {
     }
 
     fn rx_avail(&mut self, done: &[RxId]) {
-        for rx_id in done.iter() {
-            self.rx_ids.push_back(*rx_id);
-        }
+        self.rx_ids.extend(done);
     }
 
     fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
-        if packets.is_empty() {
+        if packets.is_empty() || self.rx_ids.is_empty() {
             return Ok(0);
+        }
+
+        if self.next_rx_packet.is_none() {
+            self.next_rx_packet = self.rx.try_recv().ok();
         }
 
         if let Some(packet) = self.next_rx_packet.take() {
@@ -4032,19 +4034,41 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
         }
     }
 
-    // Get the transaction IDs for all of the received packets.
+    // Receive and complete the data packets.
     for idx in 0..TOTAL_QUEUES {
-        channel
+        let txid = channel
             .read_subchannel_with(idx, |packet| match packet {
                 IncomingPacket::Data(packet) => {
                     let (_, external_ranges) = rndis_parser.parse_data_message(packet);
                     let data: u8 = rndis_parser.get_data_packet_content(&external_ranges);
                     assert_eq!(idx, data as u32);
+                    packet
+                        .transaction_id()
+                        .expect("data packets should have txid")
                 }
                 _ => panic!("Unexpected packet on subchannel {}", idx),
             })
             .await
             .expect("Data packet");
+        channel
+            .write_subchannel(
+                idx,
+                OutgoingPacket {
+                    transaction_id: txid,
+                    packet_type: OutgoingPacketType::Completion,
+                    payload: &NvspMessage {
+                        header: protocol::MessageHeader {
+                            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                        },
+                        data: protocol::Message1SendRndisPacketComplete {
+                            status: protocol::Status::SUCCESS,
+                        },
+                        padding: &[],
+                    }
+                    .payload(),
+                },
+            )
+            .await;
     }
 
     // Set packet filter to None
@@ -4072,7 +4096,7 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
     assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
 
     // Test sending packets with the filter set to None.
-    {
+    for _ in 0..2 {
         let locked_state = endpoint_state.lock();
         for (idx, queue) in locked_state.queues.iter().enumerate() {
             queue.send(vec![idx as u8]);
@@ -4085,6 +4109,37 @@ async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
             .read_subchannel_with(idx, |_| panic!("Unexpected packet on subchannel {}", idx))
             .await
             .expect_err("Packet should have been filtered");
+    }
+
+    // Set packet filter to receive new packets.
+    let request_id = 456;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let _: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    // Expect processing of rx packets to have stopped because of the filter
+    // state. For the test queues, this means they should still have pending
+    // data, so rx packets should be available.
+    for idx in 0..TOTAL_QUEUES {
+        channel
+            .read_subchannel_with(idx, |_| ())
+            .await
+            .expect("Data packet");
     }
 }
 

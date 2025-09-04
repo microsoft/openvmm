@@ -441,6 +441,7 @@ struct ActiveState {
     pending_tx_packets: Vec<PendingTxPacket>,
     free_tx_packets: Vec<TxId>,
     pending_tx_completions: VecDeque<PendingTxCompletion>,
+    pending_rx_packets: VecDeque<RxId>,
 
     rx_bufs: RxBuffers,
 
@@ -918,6 +919,7 @@ impl ActiveState {
             pending_tx_packets: vec![Default::default(); TX_PACKET_QUOTA],
             free_tx_packets: (0..TX_PACKET_QUOTA as u32).rev().map(TxId).collect(),
             pending_tx_completions: VecDeque::new(),
+            pending_rx_packets: VecDeque::new(),
             rx_bufs: RxBuffers::new(recv_buffer_count),
             stats: Default::default(),
         }
@@ -4835,6 +4837,17 @@ impl<T: 'static + RingMem> NetChannel<T> {
             send.capacity() - limit
         };
 
+        // If the packet filter has changed to allow rx packets, add any pended RxIds.
+        if !state.pending_rx_packets.is_empty()
+            && self.packet_filter != rndisprot::NDIS_PACKET_TYPE_NONE
+        {
+            let epqueue = queue_state.queue.as_mut();
+            let (front, back) = state.pending_rx_packets.as_slices();
+            epqueue.rx_avail(front);
+            epqueue.rx_avail(back);
+            state.pending_rx_packets.clear();
+        }
+
         // Handle any guest state changes since last run.
         if let Some(primary) = state.primary.as_mut() {
             if primary.requested_num_queues > 1 && !primary.tx_spread_sent {
@@ -5043,7 +5056,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 packet_filter = self.packet_filter,
                 "rx packets dropped due to packet filter"
             );
-            epqueue.rx_avail(&data.rx_ready[..n]);
+            // Pend the newly available RxIds until the packet filter is updated.
+            // Under high load this will eventually lead to no available RxIds,
+            // which will cause the backend to drop the packets instead of
+            // processing them here.
+            state.pending_rx_packets.extend(&data.rx_ready[..n]);
             state.stats.rx_dropped_filtered.add(n as u64);
             return Ok(false);
         }
@@ -5072,7 +5089,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
             }
             Some(_) => {
                 // Ring buffer is full. Drop the packets and free the rx
-                // buffers.
+                // buffers. When the ring has limited space, the main loop will
+                // stop polling for receive packets.
                 state.stats.rx_dropped_ring_full.add(n as u64);
 
                 state.rx_bufs.free(data.rx_ready[0].0);
