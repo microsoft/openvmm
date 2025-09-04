@@ -4423,6 +4423,10 @@ impl Coordinator {
             // Update the receive packet filter for the subchannel worker.
             if let Some(worker) = worker.state_mut() {
                 worker.channel.packet_filter = worker_0_packet_filter;
+                // Clear any pending RxIds as buffers were redistributed.
+                if let Some(ready_state) = worker.state.ready_mut() {
+                    ready_state.state.pending_rx_packets.clear();
+                }
             }
         }
 
