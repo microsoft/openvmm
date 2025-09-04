@@ -115,7 +115,10 @@ impl AdminQueueFaultConfig {
         self
     }
 
-    /// Add a CommandMatch -> FaultBehavior mapping for the completion queue. Cannot configure a CommandMatch more than once
+    /// Add a [`CommandMatch`] -> [`QueueFaultBehavior`] mapping for the completion queue.
+    ///
+    /// # Panics
+    /// Panics if an identical [`CommandMatch`] has already been configured.
     pub fn with_completion_queue_fault(
         mut self,
         pattern: CommandMatch,
