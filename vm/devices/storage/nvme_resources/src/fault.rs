@@ -117,6 +117,7 @@ impl AdminQueueFaultConfig {
     pub fn with_submission_queue_fault(
         mut self,
         pattern: CommandMatch,
+        pattern: CommandMatch,
         behaviour: QueueFaultBehavior<Command>,
     ) -> Self {
         if self
