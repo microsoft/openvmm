@@ -46,7 +46,7 @@ pub fn initialize(guest_os_id: u64) {
     write_hypercall_msr(true);
 }
 
-/// Call before jumping to kernel.
+/// Call to uninitialize hypercalL page overlay
 pub fn uninitialize() {
     write_hypercall_msr(false);
     report_os_id(0);

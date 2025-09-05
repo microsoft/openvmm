@@ -21,8 +21,7 @@ where
     let mut _tpm = Tpm::new();
     let protocol_version = Tpm::get_tcg_protocol_version();
     log::warn!("TPM protocol version: 0x{:x}", protocol_version);
-
-    let tpm_gpa = Tpm::get_mapped_shared_memory();
+    let tpm_gpa: u32 = Tpm::get_mapped_shared_memory();
     log::warn!("TPM CMD buffer from vTPM Device: 0x{:x}", tpm_gpa);
     let tpm_ptr = (tpm_gpa as u64) as *mut u8;
 
@@ -78,6 +77,7 @@ where
     tmk_assert!(r.is_ok(), "set_interrupt_idx should succeed");
 
     let cmd = TpmUtil::get_self_test_cmd();
+
     _tpm.copy_to_command_buffer(&cmd);
     log::warn!("TPM self test command copied to buffer");
     log::warn!("about to execute TPM self test command..");

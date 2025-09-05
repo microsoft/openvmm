@@ -16,15 +16,16 @@ use crate::context::VtlPlatformTrait;
 use crate::create_function_with_restore;
 use crate::tmk_assert;
 
-static mut HEAPX: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
+static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 
 #[inline(never)]
 #[expect(warnings)]
+// writing to a static generates a warning. we safely handle HEAP_ALLOC_PTR so ignoring it here.
 fn violate_heap() {
     unsafe {
-        let heapx = *HEAPX.borrow();
-        *(heapx.add(10)) = 0x56;
+        let alloc_ptr = *HEAP_ALLOC_PTR.borrow();
+        *(alloc_ptr.add(10)) = 0x56;
     }
 }
 create_function_with_restore!(f_violate_heap, violate_heap);
@@ -67,7 +68,7 @@ where
 
         #[expect(warnings)]
         unsafe {
-            let mut z = HEAPX.borrow_mut();
+            let mut z = HEAP_ALLOC_PTR.borrow_mut();
             *z = ptr;
             *ptr.add(10) = 0xA2;
         }

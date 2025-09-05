@@ -12,6 +12,7 @@ use crate::tmk_assert;
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 
 #[inline(never)]
+#[cfg(target_arch = "x86_64")]
 fn violate_reg_rule() {
     unsafe {
         asm!(
@@ -23,6 +24,7 @@ fn violate_reg_rule() {
         );
     }
 }
+
 // The macro `create_function_with_restore!` generates a wrapper function (`f_violate_reg_rule`)
 // that calls `violate_reg_rule` and restores the processor state as needed for virtualization tests.
 // Usage: create_function_with_restore!(wrapper_fn_name, target_fn_name);

@@ -17,7 +17,6 @@ extern crate alloc;
 pub mod arch;
 pub mod context;
 pub mod devices;
-pub mod hypercall;
 pub mod platform;
 pub mod tests;
 pub mod tmk_assert;

@@ -6,7 +6,6 @@ use hvdef::Vtl;
 use crate::tmkdefs::TmkResult;
 
 #[cfg(feature = "nightly")]
-#[cfg(target_arch = "x86_64")]
 pub trait SecureInterceptPlatformTrait {
     /// Installs a secure-world intercept for the given interrupt.
     ///
@@ -33,7 +32,6 @@ pub trait InterruptPlatformTrait {
     fn setup_interrupt_handler(&mut self) -> TmkResult<()>;
 }
 
-#[cfg(target_arch = "x86_64")]
 pub trait MsrPlatformTrait {
     /// Reads the content of `msr`.
     ///
@@ -88,9 +86,6 @@ pub trait VtlPlatformTrait {
 
     /// Returns the VTL level the caller is currently executing in.
     fn get_current_vtl(&self) -> TmkResult<Vtl>;
-
-    /// Sets the default VTL context on `vp_index`.
-    fn set_default_ctx_to_vp(&mut self, vp_index: u32, vtl: Vtl) -> TmkResult<()>;
 
     /// Performs partition wide initialisation for a given `vtl`.
     fn setup_partition_vtl(&mut self, vtl: Vtl) -> TmkResult<()>;

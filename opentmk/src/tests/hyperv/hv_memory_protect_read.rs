@@ -15,17 +15,18 @@ use crate::context::VtlPlatformTrait;
 use crate::create_function_with_restore;
 use crate::tmk_assert;
 
-static mut HEAPX: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
+static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
 
 static mut RETURN_VALUE: u8 = 0;
 
 #[inline(never)]
 #[expect(warnings)]
+// writing to a static generates a warning. we safely handle RETURN_VALUE so ignoring it here.
 fn violate_heap() {
     unsafe {
-        let heapx = *HEAPX.borrow();
+        let alloc_ptr = *HEAP_ALLOC_PTR.borrow();
         // after a VTL switch we can't trust the value returned by eax
-        RETURN_VALUE = *(heapx.add(10));
+        RETURN_VALUE = *(alloc_ptr.add(10));
     }
 }
 create_function_with_restore!(f_violate_heap, violate_heap);
@@ -65,8 +66,9 @@ where
         log::info!("allocated some memory in the heap from vtl1");
 
         #[expect(warnings)]
+        // writing to a static generates a warning. we safely handle HEAP_ALLOC_PTR so ignoring it here.
         unsafe {
-            let mut z = HEAPX.borrow_mut();
+            let mut z = HEAP_ALLOC_PTR.borrow_mut();
             *z = ptr;
             *ptr.add(10) = 0xA2;
         }
@@ -117,6 +119,7 @@ where
             f_violate_heap();
 
             #[expect(warnings)]
+            // reading a reference to a shared static reference generates a warning. we safely handle RETURN_VALUE so ignoring it here.
             {
                 log::info!(
                     "reading mutated heap memory from vtl0(it should not be 0xA2): 0x{:x}",
