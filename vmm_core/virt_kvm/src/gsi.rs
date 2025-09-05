@@ -189,7 +189,7 @@ impl GsiRoute {
                 // the type of the interrupt: SPI or PPI handled by the in-kernel vGIC,
                 // or the user mode GIC emulator (where have to specify the target VP, too).
 
-                // xtask-fmt allow-target-arch oneoff-guest-arch-impl
+                // xtask-fmt allow-target-arch sys-crate
                 assert!(cfg!(target_arch = "x86_64"));
                 partition
                     .kvm
