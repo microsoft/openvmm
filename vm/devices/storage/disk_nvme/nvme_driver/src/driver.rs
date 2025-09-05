@@ -103,6 +103,12 @@ pub enum RestoreError {
     InvalidData,
 }
 
+#[derive(Debug, Error)]
+pub enum IOError {
+    #[error("no more io queues available")]
+    NoMoreIoQueues,
+}
+
 #[derive(Inspect)]
 struct IoQueue {
     queue: QueuePair,
@@ -868,12 +874,23 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .find_map(|(i, issuer)| issuer.get().map(|issuer| (i, issuer)))
                     .unwrap();
 
-                tracing::error!(
-                    cpu,
-                    fallback_cpu,
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to create io queue, falling back"
-                );
+                // Error due to running out of IO queues as a result of
+                // lack of hardware resources should be logged as INFO
+                if err.downcast_ref::<IOError>().is_some() {
+                    tracing::info!(
+                        cpu,
+                        fallback_cpu,
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "failed to create io queue, falling back"
+                    );
+                } else {
+                    tracing::error!(
+                        cpu,
+                        fallback_cpu,
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "failed to create io queue, falling back"
+                    );
+                }
                 fallback.clone()
             }
         };
@@ -890,7 +907,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         cpu: u32,
     ) -> anyhow::Result<IoIssuer> {
         if self.io.len() >= state.max_io_queues as usize {
-            anyhow::bail!("no more io queues available");
+            anyhow::bail!(IOError::NoMoreIoQueues);
         }
 
         let qid = self.io.len() as u16 + 1;
