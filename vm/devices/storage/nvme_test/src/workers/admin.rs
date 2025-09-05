@@ -1156,6 +1156,17 @@ impl AdminHandler {
         }
         Ok(())
     }
+
+    /// Returns the configured fault behavior for the given command if a fault is configured.
+    fn get_configured_fault_behavior<T: Clone>(
+        fault_configs: &[(CommandMatch, QueueFaultBehavior<T>)],
+        command: &nvme_spec::Command,
+    ) -> Option<QueueFaultBehavior<T>> {
+        fault_configs
+            .iter()
+            .find(|(pattern, _)| match_command_pattern(pattern, command))
+            .map(|(_, behavior)| behavior.clone())
+    }
 }
 
 impl AsyncRun<AdminState> for AdminHandler {
