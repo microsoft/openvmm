@@ -505,6 +505,7 @@ impl AdminHandler {
                                 &command, &message
                             );
                         }
+                        QueueFaultBehavior::Payload()
                     }
                 }
 
