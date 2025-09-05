@@ -39,18 +39,9 @@ const R_ERROR_REL: u64 = 3;
 const R_ERROR_RELSZ: u64 = 4;
 
 #[cfg(target_arch = "x86_64")]
-const fn r_relative() -> u32 {
-    const R_X64_RELATIVE: u32 = 8;
-    R_X64_RELATIVE
-}
-
+const R_RELATIVE: u32 = 8;
 #[cfg(target_arch = "aarch64")]
-const fn r_relative() -> u32 {
-    const R_AARCH64_RELATIVE: u32 = 0x403;
-    R_AARCH64_RELATIVE
-}
-
-const R_RELATIVE: u32 = r_relative();
+const R_RELATIVE: u32 = 0x403;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
