@@ -482,7 +482,7 @@ impl AdminHandler {
                 {
                     match fault {
                         QueueFaultBehavior::Update(command_updated) => {
-                            tracing::warn!(
+                            tracing::info!(
                                 "configured fault: admin command updated in sq. original: {:?},\n new: {:?}",
                                 &command,
                                 &command_updated
@@ -490,7 +490,7 @@ impl AdminHandler {
                             command = command_updated;
                         }
                         QueueFaultBehavior::Drop => {
-                            tracing::warn!(
+                            tracing::info!(
                                 "configured fault: admin command dropped from sq {:?}",
                                 &command
                             );
@@ -616,7 +616,7 @@ impl AdminHandler {
         {
             match fault {
                 QueueFaultBehavior::Update(completion_updated) => {
-                    tracing::warn!(
+                    tracing::info!(
                         "configured fault: admin completion updated in cq. command: {:?},original: {:?},\n new: {:?}",
                         &command,
                         &completion,
@@ -625,7 +625,7 @@ impl AdminHandler {
                     completion = completion_updated;
                 }
                 QueueFaultBehavior::Drop => {
-                    tracing::warn!(
+                    tracing::info!(
                         "configured fault: admin completion dropped from cq. command: {:?}, completion: {:?}",
                         &command,
                         &completion
@@ -642,7 +642,7 @@ impl AdminHandler {
                     );
                 }
                 QueueFaultBehavior::CustomPayload(payload) => {
-                    tracing::warn!(
+                    tracing::info!(
                         "configured fault: admin completion custom payload write. completion: {:?}, payload size: {}",
                         &completion,
                         payload.len()
