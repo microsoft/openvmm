@@ -40,6 +40,11 @@ store-success-output = "true"
 filter = 'test(loom)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 
+# Allow end-to-end attestation tests more time
+[[profile.ci.overrides]]
+filter = 'package(underhill_attestation) & test(^init_sec)'
+slow-timeout = { period = "5s", terminate-after = 2 }
+
 # Reboot VMM tests take extra long
 [[profile.ci.overrides]]
 filter = 'package(~vmm_tests) & test(reboot)'
