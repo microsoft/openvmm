@@ -76,6 +76,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
     async fn create_driver(
         &self,
         driver_source: &VmTaskDriverSource,
+        controller_instance_id: Option<String>,
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
@@ -97,7 +98,11 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
 
         let nvme_driver = if let Some(saved_state) = saved_state {
             let vfio_device = VfioDevice::restore(driver_source, pci_id, true, dma_client)
-                .instrument(tracing::info_span!("nvme_vfio_device_restore", pci_id))
+                .instrument(tracing::info_span!(
+                    "nvme_vfio_device_restore",
+                    controller_instance_id,
+                    pci_id
+                ))
                 .await
                 .map_err(NvmeSpawnerError::Vfio)?;
 
@@ -117,6 +122,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         } else {
             Self::create_nvme_device(
                 driver_source,
+                controller_instance_id,
                 pci_id,
                 vp_count,
                 self.nvme_always_flr,
@@ -136,6 +142,7 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
 impl VfioNvmeDriverSpawner {
     async fn create_nvme_device(
         driver_source: &VmTaskDriverSource,
+        controller_instance_id: Option<String>,
         pci_id: &str,
         vp_count: u32,
         nvme_always_flr: bool,
@@ -170,6 +177,7 @@ impl VfioNvmeDriverSpawner {
             update_reset(*reset_method);
             match Self::try_create_nvme_device(
                 driver_source,
+                controller_instance_id.clone(),
                 pci_id,
                 vp_count,
                 is_isolated,
@@ -185,6 +193,7 @@ impl VfioNvmeDriverSpawner {
                 }
                 Err(err) => {
                     tracing::error!(
+                        controller_instance_id,
                         pci_id,
                         ?reset_method,
                         %err,
@@ -201,13 +210,18 @@ impl VfioNvmeDriverSpawner {
 
     async fn try_create_nvme_device(
         driver_source: &VmTaskDriverSource,
+        controller_instance_id: Option<String>,
         pci_id: &str,
         vp_count: u32,
         is_isolated: bool,
         dma_client: Arc<dyn user_driver::DmaClient>,
     ) -> Result<nvme_driver::NvmeDriver<VfioDevice>, NvmeSpawnerError> {
         let device = VfioDevice::new(driver_source, pci_id, dma_client)
-            .instrument(tracing::info_span!("nvme_vfio_device_open", pci_id))
+            .instrument(tracing::info_span!(
+                "nvme_vfio_device_open",
+                controller_instance_id,
+                pci_id
+            ))
             .await
             .map_err(NvmeSpawnerError::Vfio)?;
 
@@ -215,7 +229,11 @@ impl VfioNvmeDriverSpawner {
         // needs to change when we have nvme devices that support DMA to
         // confidential memory.
         nvme_driver::NvmeDriver::new(driver_source, vp_count, device, is_isolated)
-            .instrument(tracing::info_span!("nvme_driver_new", pci_id))
+            .instrument(tracing::info_span!(
+                "nvme_driver_new",
+                controller_instance_id,
+                pci_id
+            ))
             .await
             .map_err(NvmeSpawnerError::DeviceInitFailed)
     }
@@ -244,6 +262,7 @@ enum NvmeDriverRequest {
 
 pub struct NvmeDriverManager {
     task: Task<()>,
+    controller_instance_id: Option<String>,
     pci_id: String,
     client: NvmeDriverManagerClient,
 }
@@ -272,6 +291,7 @@ impl NvmeDriverManager {
     /// Creates the [`NvmeDriverManager`].
     pub fn new(
         driver_source: &VmTaskDriverSource,
+        controller_instance_id: Option<String>,
         pci_id: &str,
         vp_count: u32,
         save_restore_supported: bool,
@@ -283,6 +303,7 @@ impl NvmeDriverManager {
 
         let mut worker = NvmeDriverManagerWorker {
             driver_source: driver_source.clone(),
+            controller_instance_id: controller_instance_id.clone(),
             pci_id: pci_id.into(),
             vp_count,
             save_restore_supported,
@@ -292,8 +313,10 @@ impl NvmeDriverManager {
         let task = driver.spawn("nvme-driver-manager", async move { worker.run(recv).await });
         Ok(Self {
             task,
+            controller_instance_id: controller_instance_id.clone(),
             pci_id: pci_id.into(),
             client: NvmeDriverManagerClient {
+                controller_instance_id,
                 pci_id: pci_id.into(),
                 sender: send,
             },
@@ -309,6 +332,7 @@ impl NvmeDriverManager {
 
         let span = tracing::info_span!(
             "nvme_device_manager_shutdown",
+            controller_instance_id = self.controller_instance_id,
             pci_id = self.pci_id,
             do_not_reset = opts.do_not_reset,
             skip_device_shutdown = opts.skip_device_shutdown
@@ -322,6 +346,7 @@ impl NvmeDriverManager {
             .await
         {
             tracing::warn!(
+                controller_instance_id = self.controller_instance_id,
                 pci_id = self.pci_id,
                 error = &e as &dyn std::error::Error,
                 "nvme device manager already shut down"
@@ -330,10 +355,15 @@ impl NvmeDriverManager {
 
         self.task.await;
     }
+
+    pub(crate) fn controller_instance_id(&self) -> Option<String> {
+        self.controller_instance_id.clone()
+    }
 }
 
 #[derive(Inspect, Debug, Clone)]
 pub struct NvmeDriverManagerClient {
+    controller_instance_id: Option<String>,
     pci_id: String,
     #[inspect(skip)]
     sender: mesh::Sender<NvmeDriverRequest>,
@@ -347,6 +377,7 @@ impl NvmeDriverManagerClient {
     pub async fn get_namespace(&self, nsid: u32) -> anyhow::Result<nvme_driver::Namespace> {
         let span = tracing::info_span!(
             "nvme_device_manager_get_namespace",
+            controller_instance_id = self.controller_instance_id,
             pci_id = self.pci_id,
             nsid
         );
@@ -366,7 +397,11 @@ impl NvmeDriverManagerClient {
     }
 
     pub async fn load_driver(&self) -> anyhow::Result<()> {
-        let span = tracing::info_span!("nvme_driver_client_load_driver", pci_id = self.pci_id);
+        let span = tracing::info_span!(
+            "nvme_driver_client_load_driver",
+            controller_instance_id = self.controller_instance_id,
+            pci_id = self.pci_id
+        );
         match self
             .sender
             .call_failable(NvmeDriverRequest::LoadDriver, span.clone())
@@ -383,7 +418,11 @@ impl NvmeDriverManagerClient {
     }
 
     pub(crate) async fn save(&self) -> anyhow::Result<NvmeDriverSavedState> {
-        let span = tracing::info_span!("nvme_driver_client_save", pci_id = self.pci_id);
+        let span = tracing::info_span!(
+            "nvme_driver_client_save",
+            controller_instance_id = self.controller_instance_id,
+            pci_id = self.pci_id
+        );
         match self
             .sender
             .call_failable(NvmeDriverRequest::Save, span.clone())
@@ -398,12 +437,17 @@ impl NvmeDriverManagerClient {
             Ok(state) => Ok(state),
         }
     }
+
+    pub(crate) fn controller_instance_id(&self) -> Option<String> {
+        self.controller_instance_id.clone()
+    }
 }
 
 #[derive(Inspect)]
 struct NvmeDriverManagerWorker {
     #[inspect(skip)]
     driver_source: VmTaskDriverSource,
+    controller_instance_id: Option<String>,
     pci_id: String,
     vp_count: u32,
     /// Whether the running environment (specifically the VTL2 memory layout) allows save/restore.
@@ -429,8 +473,9 @@ impl NvmeDriverManagerWorker {
                             // Just let the winning thread create the driver.
                             if self.driver.is_some() {
                                 tracing::debug!(
-                                    "nvme device manager worker load driver called for {} with existing driver",
-                                    self.pci_id
+                                    controller_instance_id = self.controller_instance_id,
+                                    pci_id = self.pci_id,
+                                    "nvme device manager worker load driver called for with existing driver"
                                 );
                                 return Ok(());
                             }
@@ -439,6 +484,7 @@ impl NvmeDriverManagerWorker {
                                 .nvme_driver_spawner
                                 .create_driver(
                                     &self.driver_source,
+                                    self.controller_instance_id.clone(),
                                     &self.pci_id,
                                     self.vp_count,
                                     self.save_restore_supported,
@@ -476,8 +522,9 @@ impl NvmeDriverManagerWorker {
                             match self.driver.take() {
                                 None => {
                                     tracing::debug!(
-                                        "nvme device manager worker shutdown called for {pci_id} with no driver",
-                                        pci_id = self.pci_id
+                                        controller_instance_id = self.controller_instance_id,
+                                        pci_id = self.pci_id,
+                                        "nvme device manager worker shutdown called with no driver"
                                     );
                                 },
                                 Some(mut driver) => {
@@ -486,7 +533,7 @@ impl NvmeDriverManagerWorker {
                                     if !options.skip_device_shutdown {
                                         driver.shutdown()
                                             .instrument(
-                                                tracing::info_span!("shutdown_nvme_device", pci_id = %self.pci_id),
+                                                tracing::info_span!("shutdown_nvme_device", controller_instance_id = self.controller_instance_id, pci_id = %self.pci_id),
                                             )
                                             .await;
                                     }

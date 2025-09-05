@@ -20,4 +20,6 @@ pub struct NvmeSavedDiskConfig {
     pub pci_id: String,
     #[mesh(2)]
     pub driver_state: nvme_driver::NvmeDriverSavedState,
+    #[mesh(3)]
+    pub controller_instance_id: Option<String>,
 }
