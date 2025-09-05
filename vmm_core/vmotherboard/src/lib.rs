@@ -19,6 +19,7 @@ pub use self::base_chipset::BaseChipsetDeviceInterfaces;
 pub use self::base_chipset::options;
 pub use self::chipset::Chipset;
 pub use self::chipset::ChipsetDevices;
+pub use self::chipset::DynamicDeviceUnit;
 
 // API wart: future changes should avoid exposing the `ChipsetBuilder`, and move
 // _all_ device instantiation into `vmotherboard` itself.

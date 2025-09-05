@@ -9,6 +9,7 @@ use inspect::Inspect;
 use vmcore::save_restore::ProtobufSaveRestore;
 
 pub mod msix;
+pub mod pci_express;
 pub mod read_only;
 
 /// A generic PCI configuration space capability structure.

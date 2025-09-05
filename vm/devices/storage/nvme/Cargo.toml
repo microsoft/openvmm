@@ -27,7 +27,6 @@ inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 async-trait.workspace = true
-event-listener.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true

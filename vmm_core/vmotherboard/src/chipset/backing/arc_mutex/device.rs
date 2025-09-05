@@ -211,6 +211,7 @@ where
     /// attempts to use a service without also implementing the service's
     /// corresponding `ChipsetDevice::supports_` method.
     #[instrument(name = "add_device", skip_all, fields(device = self.dev_name.as_ref()))]
+    #[expect(clippy::should_implement_trait)]
     pub fn add<F>(mut self, f: F) -> Result<Arc<CloseableMutex<T>>, AddDeviceError>
     where
         F: FnOnce(&mut ArcMutexChipsetServices<'a, 'b>) -> T,

@@ -9,7 +9,6 @@ use crate::build_openvmm::OpenvmmOutput;
 use crate::build_pipette::PipetteOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
-use crate::download_release_igvm_files::OpenhclReleaseVersion;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
@@ -62,7 +61,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::resolve::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
-        ctx.import::<crate::download_release_igvm_files::resolve::Node>();
+        ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
@@ -126,15 +125,28 @@ impl SimpleFlowNode for Node {
             },
         ));
 
+        let arch = match target.architecture {
+            target_lexicon::Architecture::X86_64 => {
+                crate::run_cargo_build::common::CommonArch::X86_64
+            }
+            target_lexicon::Architecture::Aarch64(_) => {
+                crate::run_cargo_build::common::CommonArch::Aarch64
+            }
+            a => anyhow::bail!("unsupported target architecture: {a}"),
+        };
+        let release_igvm_files =
+            ctx.reqv(
+                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
+                    arch,
+                    release_igvm_files: v,
+                    release_version:
+                        crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
+                },
+            );
+
         let pre_run_deps = vec![ctx.reqv(crate::install_vmm_tests_deps::Request::Install)];
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
-
-        let latest_release_igvm_files =
-            ctx.reqv(|v| crate::download_release_igvm_files::resolve::Request {
-                release_igvm_files: v,
-                release_version: OpenhclReleaseVersion::latest(),
-            });
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir,
@@ -150,7 +162,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
-            release_igvm_files: latest_release_igvm_files,
+            release_igvm_files: Some(release_igvm_files),
             use_relative_paths: false,
         });
 

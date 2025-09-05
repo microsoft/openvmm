@@ -8,11 +8,11 @@
 use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::Throughput;
-use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;
 use safeatomic::AsAtomicBytes;
 use safeatomic::AtomicSliceOps;
+use std::hint::black_box;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU32;
 use vmbus_ring::CONTROL_WORD_COUNT;

@@ -40,6 +40,11 @@ store-success-output = "true"
 filter = 'test(loom)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 
+# Reboot VMM tests take extra long
+[[profile.ci.overrides]]
+filter = 'package(~vmm_tests) & test(reboot)'
+slow-timeout = { period = "5m", terminate-after = 2 }
+
 [[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile

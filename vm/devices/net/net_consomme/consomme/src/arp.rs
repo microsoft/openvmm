@@ -27,15 +27,15 @@ impl<T: Client> Access<'_, T> {
                 source_protocol_addr,
                 target_hardware_addr: _,
                 target_protocol_addr,
-            } if target_protocol_addr == self.inner.state.gateway_ip => {
+            } if target_protocol_addr == self.inner.state.params.gateway_ip => {
                 let e_repr = EthernetRepr {
-                    src_addr: self.inner.state.gateway_mac,
+                    src_addr: self.inner.state.params.gateway_mac,
                     dst_addr: frame.src_addr,
                     ethertype: EthernetProtocol::Arp,
                 };
                 let arp_repr = ArpRepr::EthernetIpv4 {
                     operation: ArpOperation::Reply,
-                    source_hardware_addr: self.inner.state.gateway_mac,
+                    source_hardware_addr: self.inner.state.params.gateway_mac,
                     source_protocol_addr: target_protocol_addr,
                     target_hardware_addr: source_hardware_addr,
                     target_protocol_addr: source_protocol_addr,

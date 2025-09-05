@@ -16,6 +16,13 @@ pub mod resolver;
 #[cfg(feature = "test_utilities")]
 pub mod test_utilities;
 
+#[cfg(feature = "test_igvm_agent")]
+mod test_igvm_agent;
+
+#[cfg(feature = "test_igvm_agent")]
+use crate::test_igvm_agent::IgvmAttestState;
+#[cfg(feature = "test_igvm_agent")]
+use crate::test_igvm_agent::TestIgvmAgent;
 use async_trait::async_trait;
 use core::mem::size_of;
 use disk_backend::Disk;
@@ -28,7 +35,6 @@ use get_protocol::GspExtendedStatusFlags;
 use get_protocol::HeaderGeneric;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
-use get_protocol::IgvmAttestRequest;
 use get_protocol::MAX_PAYLOAD_SIZE;
 use get_protocol::RegisterState;
 use get_protocol::SaveGuestVtl2StateFlags;
@@ -58,10 +64,6 @@ use jiff::civil::date;
 use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
-use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -110,15 +112,11 @@ enum Error {
     LargeDpsV2Unimplemented,
     #[error("invalid IGVM_ATTEST request")]
     InvalidIgvmAttestRequest,
-    #[error("unsupported igvm attest request type: {0:?}")]
-    UnsupportedIgvmAttestRequestType(u32),
+    #[cfg(feature = "test_igvm_agent")]
+    #[error("test IGVM agent error")]
+    TestIgvmAgent(#[source] test_igvm_agent::Error),
     #[error("failed to write to shared memory")]
     SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
-    #[error("invalid igvm attest state: {state:?}, test config: {test_config:?}")]
-    InvalidIgvmAttestState {
-        state: IgvmAttestState,
-        test_config: Option<IgvmAttestTestConfig>,
-    },
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -204,17 +202,6 @@ pub enum GuestEvent {
     BootAttempt,
 }
 
-/// Simple state machine to support AK cert preserving test.
-// TODO: add more states to cover other test scenarios.
-#[derive(Debug, Clone, Copy)]
-enum IgvmAttestState {
-    Init,
-    SendEmptyAkCert,
-    SendInvalidAkCert,
-    SendValidAkCert,
-    Done,
-}
-
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
 #[derive(InspectMut)]
 pub struct GuestEmulationDevice {
@@ -240,9 +227,10 @@ pub struct GuestEmulationDevice {
     #[inspect(skip)]
     igvm_attest_test_config: Option<IgvmAttestTestConfig>,
 
-    /// State machine for `handle_igvm_attest`
+    #[cfg(feature = "test_igvm_agent")]
+    /// Test agent implementation for `handle_igvm_attest`
     #[inspect(skip)]
-    igvm_attest_state: IgvmAttestState,
+    igvm_agent: TestIgvmAgent,
 }
 
 #[derive(Inspect)]
@@ -277,7 +265,12 @@ impl GuestEmulationDevice {
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
-            igvm_attest_state: IgvmAttestState::Init,
+            #[cfg(feature = "test_igvm_agent")]
+            igvm_agent: TestIgvmAgent {
+                state: IgvmAttestState::Init,
+                secret_key: None,
+                des_key: None,
+            },
             igvm_attest_test_config,
         }
     }
@@ -286,55 +279,6 @@ impl GuestEmulationDevice {
         if let Some(sender) = &self.firmware_event_send {
             sender.send(event);
         }
-    }
-
-    /// Update IGVM Attest state machine based on IGVM Attest test config.
-    fn update_igvm_attest_state(&mut self) -> Result<(), Error> {
-        match self.igvm_attest_test_config {
-            // No test config set, default to sending valid AK cert for now.
-            None => self.igvm_attest_state = IgvmAttestState::SendValidAkCert,
-            // State machine for testing retrying AK cert request after failing attempt.
-            Some(IgvmAttestTestConfig::AkCertRequestFailureAndRetry) => {
-                match self.igvm_attest_state {
-                    IgvmAttestState::Init => {
-                        self.igvm_attest_state = IgvmAttestState::SendEmptyAkCert
-                    }
-                    IgvmAttestState::SendEmptyAkCert => {
-                        self.igvm_attest_state = IgvmAttestState::SendInvalidAkCert
-                    }
-                    IgvmAttestState::SendInvalidAkCert => {
-                        self.igvm_attest_state = IgvmAttestState::SendValidAkCert
-                    }
-                    IgvmAttestState::SendValidAkCert => {
-                        self.igvm_attest_state = IgvmAttestState::Done
-                    }
-                    IgvmAttestState::Done => {}
-                }
-            }
-            // State machine for testing AK cert persistency across boots.
-            Some(IgvmAttestTestConfig::AkCertPersistentAcrossBoot) => {
-                match self.igvm_attest_state {
-                    IgvmAttestState::Init => {
-                        self.igvm_attest_state = IgvmAttestState::SendValidAkCert
-                    }
-                    IgvmAttestState::SendValidAkCert => {
-                        self.igvm_attest_state = IgvmAttestState::SendEmptyAkCert
-                    }
-                    IgvmAttestState::SendEmptyAkCert => {
-                        self.igvm_attest_state = IgvmAttestState::Done
-                    }
-                    IgvmAttestState::Done => {}
-                    _ => {
-                        return Err(Error::InvalidIgvmAttestState {
-                            state: self.igvm_attest_state,
-                            test_config: self.igvm_attest_test_config,
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -921,9 +865,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        tracing::info!(state = ?state.igvm_attest_state, test_config = ?state.igvm_attest_test_config, "Handle IGVM Attest request");
+        tracing::info!(test_config = ?state.igvm_attest_test_config, "Handle IGVM Attest request");
 
-        let request = IgvmAttestRequest::read_from_prefix(message_buf)
+        let request = get_protocol::IgvmAttestRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
@@ -935,71 +879,33 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             Err(Error::InvalidIgvmAttestRequest)?
         }
 
-        let request_payload = IgvmAttestRequestHeader::read_from_prefix(&request.report)
-            .map_err(|_| Error::MessageTooSmall)?
-            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-
-        // Determine the first state before handling the request
-        if matches!(state.igvm_attest_state, IgvmAttestState::Init) {
-            state.update_igvm_attest_state()?;
-            tracing::info!(state = ?state.igvm_attest_state, test_config = ?state.igvm_attest_test_config, "Update init state");
-        }
-
-        let response = match request_payload.request_type {
-            IgvmAttestRequestType::AK_CERT_REQUEST => match state.igvm_attest_state {
-                IgvmAttestState::SendEmptyAkCert => {
-                    tracing::info!("Send an empty response for AK_CERT_REQEUST");
-                    get_protocol::IgvmAttestResponse {
-                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-                        length: 0,
-                    }
-                }
-                IgvmAttestState::SendInvalidAkCert => {
-                    tracing::info!("Return an invalid response for AK_CERT_REQUEST");
-                    get_protocol::IgvmAttestResponse {
-                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-                        length: get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE as u32,
-                    }
-                }
-                IgvmAttestState::SendValidAkCert => {
-                    let data = vec![0xab; 2500];
-                    let header = IgvmAttestAkCertResponseHeader {
-                        data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
-                            as u32,
-                        version: AK_CERT_RESPONSE_HEADER_VERSION,
-                    };
-                    let payload = [header.as_bytes(), &data].concat();
-
-                    self.gm
-                        .write_at(request.shared_gpa[0], &payload)
-                        .map_err(Error::SharedMemoryWriteFailed)?;
-
-                    tracing::info!("Send a response for AK_CERT_REQEUST");
-
-                    get_protocol::IgvmAttestResponse {
-                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-                        length: payload.len() as u32,
-                    }
-                }
-                IgvmAttestState::Done => {
-                    tracing::info!("Bypass AK_CERT_REQEUST");
-
-                    return Ok(());
-                }
-                _ => {
-                    return Err(Error::InvalidIgvmAttestState {
-                        state: state.igvm_attest_state,
-                        test_config: state.igvm_attest_test_config,
-                    });
-                }
-            },
-            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+        let (response_payload, length) = {
+            #[cfg(feature = "test_igvm_agent")]
+            {
+                state
+                    .igvm_agent
+                    .handle_request(
+                        &request.report[..request.report_length as usize],
+                        state.igvm_attest_test_config.as_ref(),
+                    )
+                    .map_err(Error::TestIgvmAgent)?
+            }
+            #[cfg(not(feature = "test_igvm_agent"))]
+            {
+                tracing::warn!("Test IGVM agent feature not enabled, returning empty response");
+                (&[][..], 0)
+            }
         };
 
-        // Update state
-        state.update_igvm_attest_state()?;
+        // Write the response payload to the guest's shared memory
+        self.gm
+            .write_at(request.shared_gpa[0], &response_payload)
+            .map_err(Error::SharedMemoryWriteFailed)?;
 
-        tracing::info!(state = ?state.igvm_attest_state, test_config = ?state.igvm_attest_test_config, "Update init state");
+        let response = get_protocol::IgvmAttestResponse {
+            message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+            length,
+        };
 
         self.channel
             .try_send(response.as_bytes())

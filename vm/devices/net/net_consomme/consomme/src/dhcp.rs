@@ -33,13 +33,13 @@ impl<T: Client> Access<'_, T> {
         let message_type;
         match dhcp_req.message_type {
             DhcpMessageType::Discover => {
-                your_ip = Some(self.inner.state.client_ip);
+                your_ip = Some(self.inner.state.params.client_ip);
                 message_type = DhcpMessageType::Offer;
             }
             DhcpMessageType::Request => {
                 your_ip = match dhcp_req.requested_ip {
-                    Some(addr) if addr == self.inner.state.client_ip => Some(addr),
-                    None => Some(self.inner.state.client_ip),
+                    Some(addr) if addr == self.inner.state.params.client_ip => Some(addr),
+                    None => Some(self.inner.state.params.client_ip),
                     Some(_) => None,
                 };
                 message_type = DhcpMessageType::Ack;
@@ -47,11 +47,18 @@ impl<T: Client> Access<'_, T> {
             ty => return Err(DropReason::UnsupportedDhcp(ty)),
         }
 
-        let dns_servers = if self.inner.state.nameservers.is_empty() {
+        let dns_servers = if self.inner.state.params.nameservers.is_empty() {
             None
         } else {
             let mut dns_servers = [None; DHCP_MAX_DNS_SERVER_COUNT];
-            for (&s, d) in self.inner.state.nameservers.iter().zip(&mut dns_servers) {
+            for (&s, d) in self
+                .inner
+                .state
+                .params
+                .nameservers
+                .iter()
+                .zip(&mut dns_servers)
+            {
                 *d = Some(s);
             }
             Some(dns_servers)
@@ -64,14 +71,14 @@ impl<T: Client> Access<'_, T> {
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
                 your_ip,
-                server_ip: self.inner.state.gateway_ip,
-                router: Some(self.inner.state.gateway_ip),
-                subnet_mask: Some(self.inner.state.net_mask),
+                server_ip: self.inner.state.params.gateway_ip,
+                router: Some(self.inner.state.params.gateway_ip),
+                subnet_mask: Some(self.inner.state.params.net_mask),
                 relay_agent_ip: Ipv4Address::UNSPECIFIED,
                 broadcast: false,
                 requested_ip: None,
                 client_identifier: None,
-                server_identifier: Some(self.inner.state.gateway_ip),
+                server_identifier: Some(self.inner.state.params.gateway_ip),
                 parameter_request_list: None,
                 dns_servers,
                 max_size: None,
@@ -84,7 +91,7 @@ impl<T: Client> Access<'_, T> {
                 client_hardware_address: dhcp_req.client_hardware_address,
                 client_ip: Ipv4Address::UNSPECIFIED,
                 your_ip: Ipv4Address::BROADCAST,
-                server_ip: self.inner.state.gateway_ip,
+                server_ip: self.inner.state.params.gateway_ip,
                 router: None,
                 subnet_mask: None,
                 relay_agent_ip: Ipv4Address::UNSPECIFIED,
@@ -104,14 +111,14 @@ impl<T: Client> Access<'_, T> {
             dst_port: DHCP_CLIENT,
         };
         let resp_ipv4 = Ipv4Repr {
-            src_addr: self.inner.state.gateway_ip,
+            src_addr: self.inner.state.params.gateway_ip,
             dst_addr: Ipv4Address::BROADCAST,
             protocol: IpProtocol::Udp,
             payload_len: resp_udp.header_len() + resp_dhcp.buffer_len(),
             hop_limit: 64,
         };
         let resp_eth = EthernetRepr {
-            src_addr: self.inner.state.gateway_mac,
+            src_addr: self.inner.state.params.gateway_mac,
             dst_addr: dhcp_req.client_hardware_address,
             ethertype: EthernetProtocol::Ipv4,
         };

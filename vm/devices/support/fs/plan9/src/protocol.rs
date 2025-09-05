@@ -365,8 +365,9 @@ impl<'a> SliceWriter<'a> {
     pub fn next(&mut self, count: usize) -> lx::Result<&mut [u8]> {
         let start = self.offset;
         let end = start + count;
+        let r = self.slice.get_mut(start..end).ok_or(lx::Error::EINVAL)?;
         self.offset = end;
-        self.slice.get_mut(start..end).ok_or(lx::Error::EINVAL)
+        Ok(r)
     }
 
     // Gets the currently written size.
@@ -377,5 +378,27 @@ impl<'a> SliceWriter<'a> {
     // Resets the write position to after the header.
     pub fn reset(&mut self) {
         self.offset = HEADER_SIZE;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slice_writer_next_doesnt_advance_on_error() {
+        let mut buf = vec![0u8; HEADER_SIZE + 4];
+        let mut w = SliceWriter::new(&mut buf);
+
+        // This succeeds and moves offset to HEADER_SIZE + 2.
+        w.next(2).unwrap();
+        assert_eq!(w.size(), HEADER_SIZE + 2);
+
+        // This request exceeds remaining capacity by 1, so it returns Err.
+        // However, next() still advances the internal offset, which is a bug.
+        assert!(w.next(HEADER_SIZE).is_err());
+
+        // The offset should not have changed on error. If it did, this assert will panic.
+        assert_eq!(w.size(), HEADER_SIZE + 2);
     }
 }

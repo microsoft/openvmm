@@ -41,6 +41,8 @@ use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
+use petri_artifacts_common::tags::GuestQuirks;
+use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
@@ -86,6 +88,10 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         arch == MachineArch::host()
             && !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
             && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
+    }
+
+    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner {
+        quirks.openvmm
     }
 
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
@@ -135,7 +141,6 @@ struct PetriVmResourcesOpenVmm {
     firmware_event_recv: Receiver<FirmwareEvent>,
     shutdown_ic_send: Sender<ShutdownRpc>,
     kvp_ic_send: Sender<hyperv_ic_resources::kvp::KvpConnectRpc>,
-    expected_boot_event: Option<FirmwareEvent>,
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
     vtl2_pipette_listener: Option<PolledSocket<UnixListener>>,

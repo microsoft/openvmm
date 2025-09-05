@@ -17,6 +17,8 @@ encryption_win = ["dep:windows"]
 # Use OpenSSL crypto APIs
 encryption_ossl = ["dep:openssl"]
 
+test_helpers = []
+
 [dependencies]
 disk_backend.workspace = true
 guestmem.workspace = true

@@ -901,7 +901,10 @@ impl IntoPipeline for CheckinGatesCli {
         ];
 
         let cvm_filter = |arch| format!("test({arch}) + (test(vbs) & test(hyperv))");
-        let cvm_x64_test_artifacts = vec![KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd];
+        let cvm_x64_test_artifacts = vec![
+            KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
+            KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
+        ];
 
         for VmmTestJobParams {
             platform,

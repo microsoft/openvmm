@@ -38,6 +38,7 @@ zerocopy.workspace = true
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 disklayer_ram.workspace = true
 disk_backend.workspace = true
+vmgs = { workspace = true, features = ["encryption_ossl", "test_helpers"] }
 vmgs_format.workspace = true
 
 [lints]

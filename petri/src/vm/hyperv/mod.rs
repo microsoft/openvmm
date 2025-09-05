@@ -13,15 +13,14 @@ use crate::IsolationType;
 use crate::NoPetriVmInspector;
 use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
+use crate::PetriHaltReason;
 use crate::PetriVmConfig;
-use crate::PetriVmFramebufferAccess;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
 use crate::UefiConfig;
-use crate::VmScreenshotMeta;
 use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
@@ -38,32 +37,31 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
+use petri_artifacts_common::tags::GuestQuirks;
+use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
-use std::fs;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::Weak;
 use std::time::Duration;
 use vm::HyperVVM;
-use vmm_core_defs::HaltReason;
 
 /// The Hyper-V Petri backend
 pub struct HyperVPetriBackend {}
 
 /// Resources needed at runtime for a Hyper-V Petri VM
 pub struct HyperVPetriRuntime {
-    vm: Arc<HyperVVM>,
+    vm: HyperVVM,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
     temp_dir: tempfile::TempDir,
+    driver: DefaultDriver,
+
     is_openhcl: bool,
     is_isolated: bool,
-    driver: DefaultDriver,
 }
 
 #[async_trait]
@@ -75,6 +73,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
         arch == MachineArch::host()
             && !firmware.is_linux_direct()
             && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
+    }
+
+    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner {
+        quirks.hyperv
     }
 
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
@@ -187,7 +189,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             guest_state_isolation_type,
             memory.startup_bytes,
             log_source.log_file("hyperv")?,
-            firmware.expected_boot_event(),
             driver.clone(),
         )
         .await?;
@@ -267,7 +268,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
                         .to_string_lossy()
                 ));
 
-                create_child_vhd_locking(driver, &diff_disk_path, vhd).await?;
+                {
+                    let path = diff_disk_path.clone();
+                    let parent_path = vhd.to_path_buf();
+                    tracing::debug!(?path, ?parent_path, "creating differencing vhd");
+                    blocking::unblock(move || disk_vhdmp::Vhd::create_diff(&path, &parent_path))
+                        .await?;
+                }
+
                 vm.add_vhd(
                     &diff_disk_path,
                     controller_type,
@@ -292,7 +300,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     // location at runtime.
                     let imc_hive = temp_dir.path().join("imc.hiv");
                     {
-                        let mut imc_hive_file = fs::File::create_new(&imc_hive)?;
+                        let mut imc_hive_file = fs_err::File::create_new(&imc_hive)?;
                         imc_hive_file
                             .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
                             .context("failed to write imc hive")?;
@@ -427,12 +435,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
         vm.start().await?;
 
         Ok(HyperVPetriRuntime {
-            vm: Arc::new(vm),
+            vm,
             log_tasks,
             temp_dir,
+            driver: driver.clone(),
             is_openhcl: openhcl_config.is_some(),
             is_isolated: firmware.isolation().is_some(),
-            driver: driver.clone(),
         })
     }
 }
@@ -440,19 +448,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
 #[async_trait]
 impl PetriVmRuntime for HyperVPetriRuntime {
     type VmInspector = NoPetriVmInspector;
-    type VmFramebufferAccess = HyperVFramebufferAccess;
+    type VmFramebufferAccess = vm::HyperVFramebufferAccess;
 
     async fn teardown(mut self) -> anyhow::Result<()> {
         futures::future::join_all(self.log_tasks.into_iter().map(|t| t.cancel())).await;
-        Arc::into_inner(self.vm)
-            .context("all references to the Hyper-V VM object have not been closed")?
-            .remove()
-            .await
+        self.vm.remove().await
     }
 
-    async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        self.vm.wait_for_halt().await?;
-        Ok(HaltReason::PowerOff) // TODO: Get actual halt reason
+    async fn wait_for_halt(&mut self, allow_reset: bool) -> anyhow::Result<PetriHaltReason> {
+        self.vm.wait_for_halt(allow_reset).await
     }
 
     async fn wait_for_agent(&mut self, set_high_vtl: bool) -> anyhow::Result<PipetteClient> {
@@ -501,10 +505,6 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         })
     }
 
-    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
-        self.vm.wait_for_successful_boot_event().await
-    }
-
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
         self.vm.wait_for_boot_event().await
     }
@@ -531,26 +531,8 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.restart_openhcl(flags).await
     }
 
-    fn take_framebuffer_access(&mut self) -> Option<HyperVFramebufferAccess> {
-        (!self.is_isolated).then(|| HyperVFramebufferAccess {
-            vm: Arc::downgrade(&self.vm),
-        })
-    }
-}
-
-/// Interface to the Hyper-V framebuffer
-pub struct HyperVFramebufferAccess {
-    vm: Weak<HyperVVM>,
-}
-
-#[async_trait]
-impl PetriVmFramebufferAccess for HyperVFramebufferAccess {
-    async fn screenshot(&mut self, image: &mut Vec<u8>) -> anyhow::Result<VmScreenshotMeta> {
-        self.vm
-            .upgrade()
-            .context("VM no longer exists")?
-            .screenshot(image)
-            .await
+    fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
+        (!self.is_isolated).then(|| self.vm.get_framebuffer_access())
     }
 }
 
@@ -592,51 +574,6 @@ fn build_and_persist_agent_image(
     )
 }
 
-/// Create a new differencing VHD with the provided parent.
-pub async fn create_child_vhd_locking(
-    driver: &DefaultDriver,
-    path: &Path,
-    parent_path: &Path,
-) -> anyhow::Result<()> {
-    let lock_file_path = {
-        let mut path = parent_path.to_owned();
-        path.as_mut_os_string().push(".lock");
-        path
-    };
-
-    tracing::debug!("creating child vhd from {}", path.to_string_lossy());
-
-    let start = Timestamp::now();
-    loop {
-        match fs_err::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_file_path)
-        {
-            Ok(_) => break,
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                tracing::debug!("vhd lock taken, waiting...");
-                PolledTimer::new(driver).sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-    let time_elapsed = Timestamp::now() - start;
-
-    tracing::debug!(
-        "waited {}s for {}",
-        time_elapsed.total(jiff::Unit::Second).unwrap(),
-        lock_file_path.to_string_lossy()
-    );
-
-    let res = powershell::create_child_vhd(path, parent_path).await;
-
-    fs_err::remove_file(&lock_file_path)?;
-
-    res
-}
-
 async fn hyperv_serial_log_task(
     driver: DefaultDriver,
     serial_pipe_path: String,
@@ -644,13 +581,15 @@ async fn hyperv_serial_log_task(
 ) -> anyhow::Result<()> {
     let mut timer = None;
     loop {
-        match fs_err::OpenOptions::new()
+        // using `std::fs` here instead of `fs_err` since `raw_os_error` always
+        // returns `None` for `fs_err` errors.
+        match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&serial_pipe_path)
         {
             Ok(file) => {
-                let pipe = PolledPipe::new(&driver, file.into()).expect("failed to create pipe");
+                let pipe = PolledPipe::new(&driver, file).expect("failed to create pipe");
                 // connect/disconnect messages logged internally
                 _ = crate::log_task(log_file.clone(), pipe, &serial_pipe_path).await;
             }
@@ -661,7 +600,7 @@ async fn hyperv_serial_log_task(
                 if !(err.kind() == ErrorKind::NotFound
                     || matches!(err.raw_os_error(), Some(ERROR_PIPE_BUSY)))
                 {
-                    tracing::warn!("{err:#}")
+                    tracing::warn!("failed to open {serial_pipe_path}: {err:#}",)
                 }
                 // Wait a bit and try again.
                 timer

@@ -289,7 +289,7 @@ pub fn check_security(file: &OwnedHandle, desired_access: u32) -> lx::Result<u32
     let mut privilege_set = W32Sec::PRIVILEGE_SET::default();
     let mut privilege_set_length = size_of::<W32Sec::PRIVILEGE_SET>() as u32;
     let mut granted_access = 0;
-    let mut access_status = Foundation::BOOL::default();
+    let mut access_status = ::windows::core::BOOL::default();
 
     // SAFETY: calling Win32 API as documented.
     unsafe {

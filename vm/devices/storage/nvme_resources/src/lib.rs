@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+use crate::fault::FaultConfiguration;
 use guid::Guid;
 use mesh::MeshPayload;
 use vm_resource::Resource;
@@ -42,6 +43,8 @@ pub struct NvmeFaultControllerHandle {
     pub max_io_queues: u16,
     /// The initial set of namespaces.
     pub namespaces: Vec<NamespaceDefinition>,
+    /// Configuration for the fault
+    pub fault_config: FaultConfiguration,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {

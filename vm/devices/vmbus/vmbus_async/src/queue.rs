@@ -230,7 +230,7 @@ impl<T: RingMem> DataPacket<'_, T> {
     /// N.B. This reads the payload in place, so multiple instantiations of the
     /// reader may see multiple different results if the (malicious) opposite
     /// endpoint is mutating the ring buffer.
-    pub fn reader(&self) -> impl MemoryRead + '_ {
+    pub fn reader(&self) -> vmbus_ring::RingRangeReader<'_, T> {
         self.payload.reader(self.ring)
     }
 

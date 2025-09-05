@@ -582,7 +582,7 @@ impl Tpm {
                 .allocate_guest_attestation_nv_indices(
                     auth_value,
                     !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
-                    matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)),
+                    self.ak_cert_type.attested(),
                     fixup_16k_ak_cert,
                 )
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
@@ -841,7 +841,7 @@ impl Tpm {
 
     /// Create a new request needed by AK cert request callout.
     ///
-    /// This function can only be called when `ak_cert_type` is `Trusted` or `HwAttested`.
+    /// This function can only be called when `ak_cert_type` is `Trusted`, `HwAttested`, or `SwAttested`.
     fn create_ak_cert_request(&mut self) -> Result<Vec<u8>, TpmError> {
         let mut guest_attestation_input = [0u8; ATTESTATION_REPORT_DATA_SIZE];
         // No need to check the result as long as it's Ok(..) because the output data will
@@ -873,7 +873,7 @@ impl Tpm {
 
     /// Renew the nv index `TPM_NV_INDEX_ATTESTATION_REPORT` with the input data.
     ///
-    /// This function is expected to only be called when `ak_cert_type` is `HwAttested`.
+    /// This function is expected to only be called when `ak_cert_type` is `HwAttested` or `SwAttested`.
     fn renew_attestation_report(&mut self, data: &[u8]) -> Result<(), TpmError> {
         let auth_value = self.auth_value.expect("auth value is uninitialized");
         self.attestation_report_renew_time = Some(std::time::SystemTime::now());
@@ -885,7 +885,7 @@ impl Tpm {
     }
 
     /// This routine calls (via GET) external server to issue AK cert.
-    /// This function can only be called when `ak_cert_type` is `Trusted` or `HwAttested`.
+    /// This function can only be called when `ak_cert_type` is `Trusted`, `HwAttested`, or `SwAttested`.
     fn renew_ak_cert(&mut self) -> Result<(), TpmError> {
         // Silently do nothing if renewal is not allowed.
         if !self.allow_ak_cert_renewal {
@@ -901,8 +901,8 @@ impl Tpm {
         tracing::trace!("Request AK cert renewal");
 
         let ak_cert_request = self.create_ak_cert_request()?;
-        // Store the ak cert request that includes the attestation report if `ak_cert_type` is `HwAttested`.
-        if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)) {
+        // Store the ak cert request that includes the attestation report if `ak_cert_type` is `HwAttested` or `SwAttested`.
+        if self.ak_cert_type.attested() {
             self.renew_attestation_report(&ak_cert_request)?;
         }
 
@@ -1048,7 +1048,7 @@ impl Tpm {
         // On start of read of attestation report index, refresh report when
         // attestation report is supported.
         if u32::from(nv_read.nv_index) == TPM_NV_INDEX_ATTESTATION_REPORT
-            && matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_))
+            && self.ak_cert_type.attested()
         {
             if attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
                 || self.attestation_report_renew_time.is_none()
@@ -1302,7 +1302,9 @@ impl MmioIntercept for Tpm {
 
                     if matches!(
                         self.ak_cert_type,
-                        TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_)
+                        TpmAkCertType::Trusted(_)
+                            | TpmAkCertType::HwAttested(_)
+                            | TpmAkCertType::SwAttested(_)
                     ) {
                         if let Some(CommandCodeEnum::NV_Read) = cmd_header {
                             self.refresh_device_attestation_data_on_nv_read()

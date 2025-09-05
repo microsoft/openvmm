@@ -187,6 +187,9 @@ pub struct Options {
     /// (HCL_ATTEMPT_AK_CERT_CALLBACK=1) Attempt to renew the AK cert.
     /// If not specified, use the configuration in DPSv2 ManagementVtlFeatures.
     pub attempt_ak_cert_callback: Option<bool>,
+
+    /// (OPENHCL_ENABLE_VPCI_RELAY=1) Enable the VPCI relay.
+    pub enable_vpci_relay: Option<bool>,
 }
 
 impl Options {
@@ -322,6 +325,9 @@ impl Options {
             .map_err(|e| tracing::warn!("failed to parse HCL_ATTEMPT_AK_CERT_CALLBACK: {:#}", e))
             .ok()
             .flatten();
+        let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY")
+            .ok()
+            .flatten();
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -381,6 +387,7 @@ impl Options {
             disable_uefi_frontpage,
             guest_state_encryption_policy,
             attempt_ak_cert_callback,
+            enable_vpci_relay,
         })
     }
 

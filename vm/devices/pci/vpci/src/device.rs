@@ -186,8 +186,8 @@ enum PacketError {
     UnknownType(protocol::MessageType),
     #[error("memory access error")]
     Access(#[source] AccessError),
-    #[error("invalid interrupt type")]
-    InvalidInterruptType(u8),
+    #[error("invalid interrupt type {0:?}")]
+    InvalidInterruptType(vpci_protocol::DeliveryMode),
     #[error("invalid interrupt resources")]
     InvalidInterrupt,
     #[error("packet is too small: {0}")]
@@ -250,11 +250,11 @@ enum AssignedResourcesReplyType {
     V2,
 }
 
-fn get_interrupt_type(interrupt_type: u8) -> Result<InterruptType, PacketError> {
-    match interrupt_type {
-        0 => Ok(InterruptType::Fixed),
-        1 => Ok(InterruptType::LowestPriority),
-        _ => Err(PacketError::InvalidInterruptType(interrupt_type)),
+fn get_interrupt_type(mode: vpci_protocol::DeliveryMode) -> Result<InterruptType, PacketError> {
+    match mode {
+        vpci_protocol::DeliveryMode::FIXED => Ok(InterruptType::Fixed),
+        vpci_protocol::DeliveryMode::LOWEST_PRIORITY => Ok(InterruptType::LowestPriority),
+        _ => Err(PacketError::InvalidInterruptType(mode)),
     }
 }
 
@@ -1475,7 +1475,7 @@ mod tests {
         ) -> (u64, u32) {
             let mut interrupt = protocol::MsiResourceDescriptor2 {
                 vector,
-                delivery_mode: 0, // fixed
+                delivery_mode: protocol::DeliveryMode::FIXED,
                 vector_count: 1,
                 processor_count: target_processors.len() as u16,
                 processor_array: Default::default(),

@@ -1,7 +1,7 @@
 # File containing policy for file ownership
 
 # Reviewers for all files in the repository
-* @microsoft/openvmm-maintain
+* @microsoft/openvmm-reviewers
 
 # Any CI changes require special approval
 /ci/ @microsoft/openvmm-ci-reviewers
@@ -14,10 +14,10 @@
 /vm/devices/get/underhill_config/* @microsoft/openvmm-vtl2-settings-approvers
 
 # Vmbus
-/vm/devices/vmbus/ @microsoft/openvmm-maintain @microsoft/openvmm-vmbus
+/vm/devices/vmbus/ @microsoft/openvmm-reviewers @microsoft/openvmm-vmbus
 
 # Storage
-/vm/devices/storage @microsoft/openvmm-maintain @microsoft/openvmm-storage
+/vm/devices/storage @microsoft/openvmm-reviewers @microsoft/openvmm-storage
 
 # Cargo dependencies
 /Cargo.lock @microsoft/openvmm-dependency-reviewers
