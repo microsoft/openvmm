@@ -5383,11 +5383,13 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "blocking",
  "chipset_resources",
  "clap",
  "diag_client",
  "disk_backend_resources",
  "disk_vhd1",
+ "disk_vhdmp",
  "fatfs",
  "framebuffer",
  "fs-err",
@@ -5454,6 +5456,7 @@ dependencies = [
  "vmotherboard",
  "vmsocket",
  "vtl2_settings_proto",
+ "windows-version",
 ]
 
 [[package]]
@@ -8874,7 +8877,6 @@ dependencies = [
  "cfg-if",
  "disk_backend_resources",
  "futures",
- "get_resources",
  "guid",
  "hvdef",
  "hvlite_defs",
@@ -8901,7 +8903,6 @@ dependencies = [
  "unix_socket",
  "virtio_resources",
  "vm_resource",
- "vmm_core_defs",
  "vmm_test_macros",
  "vtl2_settings_proto",
  "x86defs",
@@ -9574,6 +9575,15 @@ dependencies = [
  "windows_x86_64_gnu 0.53.0",
  "windows_x86_64_gnullvm 0.53.0",
  "windows_x86_64_msvc 0.53.0",
+]
+
+[[package]]
+name = "windows-version"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e04a5c6627e310a23ad2358483286c7df260c964eb2d003d8efd6d0f4e79265c"
+dependencies = [
+ "windows-link",
 ]
 
 [[package]]

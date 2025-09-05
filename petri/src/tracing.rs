@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use diag_client::kmsg_stream::KmsgStream;
 use fs_err::File;
 use fs_err::PathExt;
 use futures::AsyncBufReadExt;
@@ -304,43 +303,79 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 }
 
 /// Logs lines from `reader` into `log_file`.
-pub async fn log_stream(
+///
+/// Attempts to parse lines as `SyslogParsedEntry`, extracting the log level.
+/// Passes through any non-conforming logs.
+pub async fn log_task(
     log_file: PetriLogFile,
     reader: impl AsyncRead + Unpin + Send + 'static,
+    name: &str,
 ) -> anyhow::Result<()> {
+    tracing::info!("connected to {name}");
     let mut buf = Vec::new();
     let mut reader = BufReader::new(reader);
     loop {
         buf.clear();
-        let n = (&mut reader).take(256).read_until(b'\n', &mut buf).await?;
-        if n == 0 {
-            break;
+        match (&mut reader).take(256).read_until(b'\n', &mut buf).await {
+            Ok(0) => {
+                tracing::info!("disconnected from {name}: EOF");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::info!("disconnected from {name}: error: {e:#}");
+                return Err(e.into());
+            }
+            _ => {}
         }
 
         let string_buf = String::from_utf8_lossy(&buf);
         let string_buf_trimmed = string_buf.trim_end();
-        log_file.write_entry(string_buf_trimmed);
+
+        if let Some(message) = kmsg::SyslogParsedEntry::new(string_buf_trimmed) {
+            let level = kernel_level_to_tracing_level(message.level);
+            log_file.write_entry_fmt(None, level, format_args!("{}", message.display(false)));
+        } else {
+            log_file.write_entry(string_buf_trimmed);
+        }
     }
-    Ok(())
 }
 
 /// read from the kmsg stream and write entries to the log
 pub async fn kmsg_log_task(
     log_file: PetriLogFile,
-    mut file_stream: KmsgStream,
+    diag_client: diag_client::DiagClient,
 ) -> anyhow::Result<()> {
-    while let Some(data) = file_stream.next().await {
-        match data {
-            Ok(data) => {
-                let message = kmsg::KmsgParsedEntry::new(&data).unwrap();
-                log_file.write_entry(message.display(false));
-            }
-            Err(err) => {
-                tracing::info!("kmsg disconnected: {err:?}");
-                break;
+    loop {
+        diag_client.wait_for_server().await?;
+        let mut kmsg = diag_client.kmsg(true).await?;
+        tracing::info!("kmsg connected");
+        while let Some(data) = kmsg.next().await {
+            match data {
+                Ok(data) => {
+                    let message = kmsg::KmsgParsedEntry::new(&data).unwrap();
+                    let level = kernel_level_to_tracing_level(message.level);
+                    log_file.write_entry_fmt(
+                        None,
+                        level,
+                        format_args!("{}", message.display(false)),
+                    );
+                }
+                Err(err) => {
+                    tracing::info!("kmsg disconnected: {err:#}");
+                    break;
+                }
             }
         }
     }
+}
 
-    Ok(())
+/// Maps kernel log levels to tracing levels.
+fn kernel_level_to_tracing_level(kernel_level: u8) -> Level {
+    match kernel_level {
+        0..=3 => Level::ERROR,
+        4 => Level::WARN,
+        5..=6 => Level::INFO,
+        7 => Level::DEBUG,
+        _ => Level::INFO,
+    }
 }

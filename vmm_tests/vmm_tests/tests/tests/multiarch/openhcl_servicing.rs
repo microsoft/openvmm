@@ -1,23 +1,33 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Integration tests for x86_64 OpenHCL servicing.
+//! Integration tests for OpenHCL servicing.
+//! OpenHCL servicing is supported on x86-64 and aarch64.
+//! For x86-64, it is supported using both Hyper-V and OpenVMM.
+//! For aarch64, it is supported using Hyper-V.
 
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use hvlite_defs::config::DeviceVtl;
 use petri::OpenHclServicingFlags;
+use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
-use petri::openvmm::PetriVmConfigOpenVmm;
+use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
-use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::vmm_test;
 
 // TODO: Move this host query logic into common code so that we can instead
 // filter tests based on host capabilities.
@@ -58,8 +68,8 @@ fn is_amd_nested_via_cpuid() -> bool {
     is_nested && vendor.is_amd_compatible()
 }
 
-async fn openhcl_servicing_core(
-    config: PetriVmConfigOpenVmm,
+async fn openhcl_servicing_core<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
     openhcl_cmdline: &str,
     new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
@@ -75,7 +85,7 @@ async fn openhcl_servicing_core(
         // Test that inspect serialization works with the old version.
         vm.test_inspect_openhcl().await?;
 
-        vm.restart_openhcl(&new_openhcl, flags).await?;
+        vm.restart_openhcl(new_openhcl.clone(), flags).await?;
 
         agent.ping().await?;
 
@@ -84,15 +94,21 @@ async fn openhcl_servicing_core(
     }
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn openhcl_servicing(
-    config: PetriVmConfigOpenVmm,
+///
+/// N.B. These Hyper-V tests fail in CI for x64. Tracked by #1652.
+#[vmm_test(
+    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64],
+    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
+)]
+async fn basic<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
     if !host_supports_servicing() {
@@ -100,14 +116,23 @@ async fn openhcl_servicing(
         return Ok(());
     }
 
-    openhcl_servicing_core(config, "", igvm_file, OpenHclServicingFlags::default()).await
+    openhcl_servicing_core(
+        config,
+        "",
+        igvm_file,
+        OpenHclServicingFlags {
+            override_version_checks: true,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
-/// with VF keepalive support.
+/// with NVMe keepalive support.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn openhcl_servicing_keepalive(
-    config: PetriVmConfigOpenVmm,
+async fn keepalive<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
     if !host_supports_servicing() {
@@ -121,14 +146,15 @@ async fn openhcl_servicing_keepalive(
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
+            ..Default::default()
         },
     )
     .await
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn openhcl_servicing_shutdown_ic(
-    config: PetriVmConfigOpenVmm,
+async fn shutdown_ic(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
     if !host_supports_servicing() {
@@ -137,36 +163,38 @@ async fn openhcl_servicing_shutdown_ic(
     }
 
     let (mut vm, agent) = config
-        .with_vmbus_redirect()
-        .with_custom_config(|c| {
-            // Add a disk so that we can make sure (non-intercepted) relay
-            // channels are also functional.
-            c.vmbus_devices.push((
-                DeviceVtl::Vtl0,
-                ScsiControllerHandle {
-                    instance_id: guid::Guid::new_random(),
-                    max_sub_channel_count: 1,
-                    devices: vec![ScsiDeviceAndPath {
-                        path: ScsiPath {
-                            path: 0,
-                            target: 0,
-                            lun: 0,
-                        },
-                        device: SimpleScsiDiskHandle {
-                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                len: Some(256 * 1024),
-                            })
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                // Add a disk so that we can make sure (non-intercepted) relay
+                // channels are also functional.
+                c.vmbus_devices.push((
+                    DeviceVtl::Vtl0,
+                    ScsiControllerHandle {
+                        instance_id: guid::Guid::new_random(),
+                        max_sub_channel_count: 1,
+                        devices: vec![ScsiDeviceAndPath {
+                            path: ScsiPath {
+                                path: 0,
+                                target: 0,
+                                lun: 0,
+                            },
+                            device: SimpleScsiDiskHandle {
+                                disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                    len: Some(256 * 1024),
+                                })
+                                .into_resource(),
+                                read_only: false,
+                                parameters: Default::default(),
+                            }
                             .into_resource(),
-                            read_only: false,
-                            parameters: Default::default(),
-                        }
-                        .into_resource(),
-                    }],
-                    io_queue_depth: None,
-                    requests: None,
-                }
-                .into_resource(),
-            ));
+                        }],
+                        io_queue_depth: None,
+                        requests: None,
+                    }
+                    .into_resource(),
+                ));
+            })
         })
         .run()
         .await?;
@@ -176,20 +204,20 @@ async fn openhcl_servicing_shutdown_ic(
     // Make sure the disk showed up.
     cmd!(sh, "ls /dev/sda").run().await?;
 
-    let shutdown_ic = vm.wait_for_enlightened_shutdown_ready().await?;
-    vm.restart_openhcl(&igvm_file, OpenHclServicingFlags::default())
+    let shutdown_ic = vm.backend().wait_for_enlightened_shutdown_ready().await?;
+    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
         .await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");
     shutdown_ic.await.unwrap_err();
-    vm.wait_for_enlightened_shutdown_ready().await?;
+    vm.backend().wait_for_enlightened_shutdown_ready().await?;
 
     // Make sure the VTL0 disk is still present by reading it.
     agent.read_file("/dev/sda").await?;
 
     vm.send_enlightened_shutdown(petri::ShutdownKind::Shutdown)
         .await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 

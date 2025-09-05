@@ -553,18 +553,24 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `guest_test_uefi_{arch}`: Our UEFI test application
 /// - `none`: No guest
 ///
-/// Valid VHD options are:
+/// Valid x64 VHD options are:
 /// - `ubuntu_2204_server_x64`: Ubuntu Linux 22.04 cloudimg from Canonical
 /// - `windows_datacenter_core_2022_x64`: Windows Server Datacenter Core 2022 from the Azure Marketplace
 /// - `windows_datacenter_core_2025_x64`: Windows Server Datacenter Core 2025 from the Azure Marketplace
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
+///
+/// Valid aarch64 VHD options are:
+/// - `ubuntu_2404_server_aarch64`: Ubuntu Linux 24.04 cloudimg from Canonical
+/// - `windows_11_enterprise_aarch64`: Windows 11 Enterprise from the Azure Marketplace
 ///
 /// Valid x64 ISO options are:
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 installer from the FreeBSD Project
 ///
 /// Valid OpenHCL UEFI options are:
 /// - `nvme`: Attach the boot drive via NVMe assigned to VTL2.
-/// - `vbs`: Use VBS based isolation.
+/// - `vbs`: Use VBS isolation.
+/// - `snp`: Use SNP isolation.
+/// - `tdx`: Use TDX isolation.
 ///
 /// Each configuration can be optionally followed by a square-bracketed, comma-separated
 /// list of additional artifacts required for that particular configuration.
@@ -575,7 +581,20 @@ pub fn vmm_test(
 ) -> proc_macro::TokenStream {
     let args = parse_macro_input!(attr as Args);
     let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item, None)
+    make_vmm_test(args, item, None, true)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+/// Same options as `vmm_test`, but without using pipette in VTL0.
+#[proc_macro_attribute]
+pub fn vmm_test_no_agent(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let args = parse_macro_input!(attr as Args);
+    let item = parse_macro_input!(item as ItemFn);
+    make_vmm_test(args, item, None, false)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
@@ -588,25 +607,30 @@ pub fn openvmm_test(
 ) -> proc_macro::TokenStream {
     let args = parse_macro_input!(attr as Args);
     let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item, Some(Vmm::OpenVmm))
+    make_vmm_test(args, item, Some(Vmm::OpenVmm), true)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
 
-/// Same options as `vmm_test`, but only for Hyper-V tests
+/// Same options as `vmm_test`, but only for OpenVMM tests and without using pipette in VTL0.
 #[proc_macro_attribute]
-pub fn hyperv_test(
+pub fn openvmm_test_no_agent(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     let args = parse_macro_input!(attr as Args);
     let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item, Some(Vmm::HyperV))
+    make_vmm_test(args, item, Some(Vmm::OpenVmm), false)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
 
-fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Result<TokenStream> {
+fn make_vmm_test(
+    args: Args,
+    item: ItemFn,
+    specific_vmm: Option<Vmm>,
+    with_vtl0_pipette: bool,
+) -> syn::Result<TokenStream> {
     let original_args = match item.sig.inputs.len() {
         1 => quote! {config},
         2 => quote! {config, extra_deps},
@@ -638,25 +662,22 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
             | (Some(Vmm::HyperV), None)
             | (None, Some(Vmm::HyperV)) => (
                 quote!(#[cfg(windows)]),
-                quote!(::petri::hyperv::PetriVmArtifactsHyperV),
-                quote!(::petri::hyperv::PetriVmConfigHyperV),
+                quote!(::petri::PetriVmArtifacts::<::petri::hyperv::HyperVPetriBackend>),
+                quote!(::petri::PetriVmBuilder::<::petri::hyperv::HyperVPetriBackend>),
             ),
 
             (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
             | (Some(Vmm::OpenVmm), None)
             | (None, Some(Vmm::OpenVmm)) => (
                 quote!(),
-                quote!(::petri::openvmm::PetriVmArtifactsOpenVmm),
-                quote!(::petri::openvmm::PetriVmConfigOpenVmm),
+                quote!(::petri::PetriVmArtifacts::<::petri::openvmm::OpenVmmPetriBackend>),
+                quote!(::petri::PetriVmBuilder::<::petri::openvmm::OpenVmmPetriBackend>),
             ),
             (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
             _ => return Err(Error::new(config.span, "vmm mismatch")),
         };
 
-        let mut petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
-        if specific_vmm.is_none() {
-            petri_vm_config = quote!(Box::new(#petri_vm_config));
-        }
+        let petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
 
         let test = quote! {
             #cfg_conditions
@@ -666,7 +687,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                     let firmware = #firmware;
                     let arch = #arch;
                     let extra_deps = (#(resolver.require(#extra_deps),)*);
-                    let artifacts = #artifacts::new(resolver, firmware, arch)?;
+                    let artifacts = #artifacts::new(resolver, firmware, arch, #with_vtl0_pipette)?;
                     Some((artifacts, extra_deps))
                 },
                 |params, (artifacts, extra_deps)| {
