@@ -464,7 +464,7 @@ impl AdminHandler {
         // processing, just to keep it simple.
         state.admin_sq.advance_evt_idx(&self.config.mem)?;
 
-        let (cid, result) = match event? {
+        let (command_processed, cid, result) = match event? {
             Event::Command(command) => {
                 let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
@@ -562,7 +562,7 @@ impl AdminHandler {
                     }
                 };
 
-                (command.cdw0.cid(), result)
+                (Some(command), command.cdw0.cid(), result)
             }
             Event::SqDeleteComplete(sqid) => {
                 let sq = &mut state.io_sqs[sqid as usize - 1];
@@ -578,7 +578,7 @@ impl AdminHandler {
                         .take(),
                     Some(sqid)
                 );
-                (cid, Default::default())
+                (None, cid, Default::default())
             }
             Event::NamespaceChange(nsid) => {
                 state.add_changed_namespace(nsid);
@@ -588,7 +588,7 @@ impl AdminHandler {
 
         let status = spec::CompletionStatus::new().with_status(result.status.0);
 
-        let completion = spec::Completion {
+        let mut completion = spec::Completion {
             dw0: result.dw[0],
             dw1: result.dw[1],
             sqid: 0,
@@ -596,6 +596,49 @@ impl AdminHandler {
             status,
             cid,
         };
+
+        // Apply a completion queue fault only to incoming commands (Ignore namespace change and sq delete complete events for now).
+        if let Some(command) = command_processed {
+            if self.config.fault_configuration.fault_active.get() {
+                let fault = self
+                    .config
+                    .fault_configuration
+                    .admin_fault
+                    .admin_completion_queue_faults
+                    .iter()
+                    .find(|(pattern, _)| match_command_pattern(pattern, &command))
+                    .map(|(_, behavior)| behavior.clone())
+                    .unwrap_or_else(|| QueueFaultBehavior::Default);
+
+                match fault {
+                    QueueFaultBehavior::Update(completion_updated) => {
+                        tracing::warn!(
+                            "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
+                            &completion,
+                            &completion_updated
+                        );
+                        completion = completion_updated;
+                    }
+                    QueueFaultBehavior::Drop => {
+                        tracing::warn!(
+                            "configured fault: admin completion dropped from cq {:?}",
+                            &completion
+                        );
+                        return Ok(());
+                    }
+                    QueueFaultBehavior::Delay(duration) => {
+                        self.timer.sleep(duration).await;
+                    }
+                    QueueFaultBehavior::Panic(message) => {
+                        panic!(
+                            "configured fault: admin completion panic with completion: {:?} and message: {}",
+                            &completion, &message
+                        );
+                    }
+                    QueueFaultBehavior::Default => {}
+                }
+            }
+        }
 
         state.admin_cq.write(&self.config.mem, completion)?;
         // Again, for simplicity, update EVT_IDX here.
