@@ -505,7 +505,12 @@ impl AdminHandler {
                                 &command, &message
                             );
                         }
-                        QueueFaultBehavior::Payload()
+                        QueueFaultBehavior::CustomPayload(_) => {
+                            panic!(
+                                "bad fault configuration: custom payloads are not applicable to admin submission commands. command: {:?}",
+                                &command
+                            );
+                        }
                     }
                 }
 
@@ -634,6 +639,12 @@ impl AdminHandler {
                     panic!(
                         "configured fault: admin completion panic with command: {:?}, completion: {:?} and message: {}",
                         &command, &completion, &message
+                    );
+                }
+                QueueFaultBehavior::CustomPayload(_) => {
+                    panic!(
+                        "bad fault configuration: custom payloads are not applicable to admin submission commands. command: {:?}",
+                        &command
                     );
                 }
             }

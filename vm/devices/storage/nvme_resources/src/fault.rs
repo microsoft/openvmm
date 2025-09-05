@@ -21,7 +21,7 @@ pub enum QueueFaultBehavior<T> {
     /// Panic
     Panic(String),
     /// Update a completion payload
-    Payload(Vec<u8>),
+    CustomPayload(Vec<u8>),
 }
 
 #[derive(Clone, MeshPayload)]
