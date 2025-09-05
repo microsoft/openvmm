@@ -1346,6 +1346,15 @@ pub struct CvmLateParams {
     pub private_dma_client: Arc<dyn DmaClient>,
 }
 
+/// Represents a GPN that is either in guest memory or was allocated by dma_client.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GpnSource {
+    /// The GPN is in regular guest RAM.
+    GuestMemory,
+    /// The GPN was allocated by dma_client.
+    Dma,
+}
+
 /// Trait for CVM-related protections on guest memory.
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
@@ -1392,6 +1401,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         &self,
         vtl: GuestVtl,
         gpn: u64,
+        gpn_source: GpnSource,
         check_perms: HvMapGpaFlags,
         new_perms: Option<HvMapGpaFlags>,
         tlb_access: &mut dyn TlbFlushLockAccess,
@@ -1403,6 +1413,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         &self,
         vtl: GuestVtl,
         gpn: u64,
+        gpn_source: GpnSource,
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError>;
 
@@ -1857,6 +1868,7 @@ impl UhPartition {
                 .unregister_overlay_page(
                     _vtl,
                     gpn,
+                    GpnSource::Dma,
                     &mut SnpBacked::tlb_flush_lock_access(
                         None,
                         self.inner.as_ref(),
@@ -1871,6 +1883,7 @@ impl UhPartition {
                 .unregister_overlay_page(
                     _vtl,
                     gpn,
+                    GpnSource::Dma,
                     &mut TdxBacked::tlb_flush_lock_access(
                         None,
                         self.inner.as_ref(),
@@ -1896,7 +1909,6 @@ impl UhPartition {
         gpn: u64,
         new_perms: HvMapGpaFlags,
     ) -> anyhow::Result<()> {
-        let _check_perms = HvMapGpaFlags::new();
         match &self.inner.backing_shared {
             #[cfg(guest_arch = "x86_64")]
             BackingShared::Snp(snp_backed_shared) => snp_backed_shared
@@ -1905,7 +1917,9 @@ impl UhPartition {
                 .register_overlay_page(
                     _vtl,
                     gpn,
-                    _check_perms,
+                    // On a CVM, the monitor page is always DMA-allocated.
+                    GpnSource::Dma,
+                    HvMapGpaFlags::new(),
                     Some(new_perms),
                     &mut SnpBacked::tlb_flush_lock_access(
                         None,
@@ -1921,7 +1935,9 @@ impl UhPartition {
                 .register_overlay_page(
                     _vtl,
                     gpn,
-                    _check_perms,
+                    // On a CVM, the monitor page is always DMA-allocated.
+                    GpnSource::Dma,
+                    HvMapGpaFlags::new(),
                     Some(new_perms),
                     &mut TdxBacked::tlb_flush_lock_access(
                         None,

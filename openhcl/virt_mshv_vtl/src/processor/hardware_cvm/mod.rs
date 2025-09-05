@@ -9,6 +9,7 @@ pub mod tlb_lock;
 use super::UhEmulationState;
 use super::UhProcessor;
 use crate::CvmVtl1State;
+use crate::GpnSource;
 use crate::GuestVsmState;
 use crate::GuestVtl;
 use crate::InitialVpContextOperation;
@@ -1537,6 +1538,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         self.protector.register_overlay_page(
             self.vtl,
             gpn,
+            GpnSource::GuestMemory,
             check_perms,
             new_perms,
             self.tlb_access,
@@ -1549,8 +1551,12 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
     }
 
     fn unlock_overlay_page(&mut self, gpn: u64) -> Result<(), HvError> {
-        self.protector
-            .unregister_overlay_page(self.vtl, gpn, self.tlb_access)
+        self.protector.unregister_overlay_page(
+            self.vtl,
+            gpn,
+            GpnSource::GuestMemory,
+            self.tlb_access,
+        )
     }
 }
 

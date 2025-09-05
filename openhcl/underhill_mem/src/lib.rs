@@ -28,6 +28,7 @@ use hcl::ioctl::snp::SnpPageError;
 use hv1_structs::VtlArray;
 use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
 use hvdef::HV_MAP_GPA_PERMISSIONS_NONE;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -46,6 +47,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use thiserror::Error;
 use virt::IsolationType;
+use virt_mshv_vtl::GpnSource;
 use virt_mshv_vtl::ProtectIsolatedMemory;
 use virt_mshv_vtl::TlbFlushLockAccess;
 use vm_topology::memory::MemoryLayout;
@@ -427,9 +429,10 @@ impl HardwareIsolatedMemoryProtector {
                     continue 'outer;
                 }
             }
+
             // We can only reach here if the range does not contain any overlay
             // pages, so now we can apply the protections to the range.
-            self.apply_protections(range, target_vtl, protections)?
+            self.apply_protections(range, target_vtl, protections, GpnSource::GuestMemory)?
         }
 
         Ok(())
@@ -440,9 +443,10 @@ impl HardwareIsolatedMemoryProtector {
         range: MemoryRange,
         target_vtl: GuestVtl,
         protections: HvMapGpaFlags,
+        gpn_source: GpnSource,
     ) -> Result<(), ApplyVtlProtectionsError> {
-        if target_vtl == GuestVtl::Vtl0 {
-            // Only permissions imposed on VTL 0 are explicitly tracked
+        if gpn_source == GpnSource::GuestMemory && target_vtl == GuestVtl::Vtl0 {
+            // Only permissions imposed on VTL 0 guest memory are explicitly tracked
             self.vtl0.update_permission_bitmaps(range, protections);
         }
         self.acceptor
@@ -458,14 +462,9 @@ impl HardwareIsolatedMemoryProtector {
         vtl: GuestVtl,
         gpn: u64,
     ) -> Result<HvMapGpaFlags, HvError> {
-        // if !self
-        //     .layout
-        //     .ram()
-        //     .iter()
-        //     .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
-        // {
-        //     return Err(HvError::OperationDenied);
-        // }
+        if !self.is_guest_memory(gpn) {
+            return Err(HvError::OperationDenied);
+        }
 
         let res = match vtl {
             GuestVtl::Vtl0 => self
@@ -495,6 +494,11 @@ impl HardwareIsolatedMemoryProtector {
         }
         Ok(())
     }
+
+    fn is_guest_memory(&self, gpn: u64) -> bool {
+        let gpa = gpn << HV_PAGE_SHIFT;
+        self.layout.ram().iter().any(|r| r.range.contains_addr(gpa))
+    }
 }
 
 impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
@@ -509,12 +513,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         for &gpn in gpns {
             // Validate the ranges are RAM.
-            if !self
-                .layout
-                .ram()
-                .iter()
-                .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
-            {
+            if !self.is_guest_memory(gpn) {
                 return Err((HvError::OperationDenied, 0));
             }
 
@@ -723,14 +722,22 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             // protections directly without handling them.
             for &range in &ranges {
                 // Make sure we reset the permissions bitmaps for VTL 0.
-                self.apply_protections(range, GuestVtl::Vtl0, inner.default_vtl_permissions.vtl0)
-                    .expect("should be able to apply default protections");
+                self.apply_protections(
+                    range,
+                    GuestVtl::Vtl0,
+                    inner.default_vtl_permissions.vtl0,
+                    GpnSource::GuestMemory,
+                )
+                .expect("should be able to apply default protections");
 
                 if let Some(vtl1_protections) = inner.default_vtl_permissions.vtl1 {
-                    self.apply_protections(range, GuestVtl::Vtl1, vtl1_protections)
-                        .expect(
-                            "everything should be in a state where we can apply VTL protections",
-                        );
+                    self.apply_protections(
+                        range,
+                        GuestVtl::Vtl1,
+                        vtl1_protections,
+                        GpnSource::GuestMemory,
+                    )
+                    .expect("everything should be in a state where we can apply VTL protections");
                 }
             }
         }
@@ -747,12 +754,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     ) -> Result<(), (HvError, usize)> {
         // Validate the ranges are RAM.
         for (i, &gpn) in gpns.iter().enumerate() {
-            if !self
-                .layout
-                .ram()
-                .iter()
-                .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
-            {
+            if !self.is_guest_memory(gpn) {
                 return Err((HvError::OperationDenied, i));
             }
         }
@@ -861,12 +863,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         // Validate the ranges are RAM.
         for &gpn in gpns {
-            if !self
-                .layout
-                .ram()
-                .iter()
-                .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
-            {
+            if !self.is_guest_memory(gpn) {
                 return Err((HvError::OperationDenied, 0));
             }
 
@@ -915,6 +912,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         &self,
         vtl: GuestVtl,
         gpn: u64,
+        gpn_source: GpnSource,
         check_perms: HvMapGpaFlags,
         new_perms: Option<HvMapGpaFlags>,
         tlb_access: &mut dyn TlbFlushLockAccess,
@@ -936,36 +934,38 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             return Ok(());
         }
 
-        let is_guest_mem = self
-            .layout
-            .ram()
-            .iter()
-            .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE));
-        // Check that the required permissions are present.
-        let current_perms = self.query_lower_vtl_permissions(vtl, gpn)?;
-        if current_perms.into_bits() | check_perms.into_bits() != current_perms.into_bits() {
-            return Err(HvError::OperationDenied);
-        }
+        let current_perms = if gpn_source == GpnSource::GuestMemory {
+            // Check that the required permissions are present.
+            let current_perms = self.query_lower_vtl_permissions(vtl, gpn)?;
+            if current_perms.into_bits() | check_perms.into_bits() != current_perms.into_bits() {
+                return Err(HvError::OperationDenied);
+            }
 
-        // Protections cannot be applied to a host-visible page.
-        if inner.valid_shared.check_valid(gpn) {
+            // Protections cannot be applied to a host-visible page.
+            if inner.valid_shared.check_valid(gpn) {
+                return Err(HvError::OperationDenied);
+            }
+
+            current_perms
+        } else if self.is_guest_memory(gpn) {
+            // DMA memory must not be in guest RAM.
             return Err(HvError::OperationDenied);
-        }
+        } else {
+            HV_MAP_GPA_PERMISSIONS_ALL
+        };
 
         // Or a locked page.
         self.check_gpn_not_locked(&inner, vtl, gpn)?;
 
         // Everything's validated, change the permissions.
         if let Some(new_perms) = new_perms {
-            let range = MemoryRange::from_4k_gpn_range(gpn..gpn + 1);
-
-            if vtl == GuestVtl::Vtl0 && is_guest_mem {
-                // Only permissions imposed on VTL 0 are explicitly tracked
-                self.vtl0.update_permission_bitmaps(range, new_perms);
-            }
-            self.acceptor
-                .apply_protections(range, vtl, new_perms)
-                .map_err(|_| HvError::OperationDenied)?;
+            self.apply_protections(
+                MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
+                vtl,
+                new_perms,
+                gpn_source,
+            )
+            .map_err(|_| HvError::OperationDenied)?;
         }
 
         // Nothing from this point on can fail, so we can safely register the overlay page.
@@ -994,6 +994,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         &self,
         vtl: GuestVtl,
         gpn: u64,
+        gpn_source: GpnSource,
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError> {
         let mut inner = self.inner.lock();
@@ -1019,6 +1020,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
             vtl,
             overlay_pages[index].previous_permissions,
+            gpn_source,
         )
         .map_err(|_| HvError::OperationDenied)?;
 
