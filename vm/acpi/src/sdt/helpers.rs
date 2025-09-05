@@ -153,7 +153,7 @@ pub fn char_to_hex(value: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsdt::tests::verify_expected_bytes;
+    use crate::sdt::test_helpers::verify_expected_bytes;
 
     #[test]
     fn verify_simple_name() {
