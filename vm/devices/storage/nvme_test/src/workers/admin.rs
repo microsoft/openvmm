@@ -29,7 +29,6 @@ use futures::FutureExt;
 use futures::SinkExt;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
-use futures_concurrency::vec;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
