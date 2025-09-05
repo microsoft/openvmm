@@ -2544,7 +2544,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         );
                     }
 
-                    // Emulate writes but not reads.
+                    // Emulate monitor page writes, but not reads.
                     is_write
                 } else {
                     if !self.cvm_partition().hide_isolation {

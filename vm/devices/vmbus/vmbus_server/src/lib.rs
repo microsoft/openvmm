@@ -192,8 +192,12 @@ pub type HvsockRelayChannel = RelayChannel<HvsockConnectRequest, HvsockConnectRe
 
 /// A request from the server to the relay to modify connection state.
 ///
-/// The version, use_interrupt_page and target_message_vp field can only be present if this request
-/// was sent for an InitiateContact message from the guest.
+/// The version and use_interrupt_page fields can only be present if this request was sent for an
+/// InitiateContact message from the guest.
+///
+/// If `version` is `Some`, the relay must respond with either `ModifyRelayResponse::Supported` or
+/// `ModifyRelayResponse::Unsupported`. If `version` is `None`, the relay must respond with
+/// `ModifyRelayResponse::Modified`.
 #[derive(Debug, Copy, Clone)]
 pub struct ModifyRelayRequest {
     pub version: Option<u32>,
@@ -201,7 +205,7 @@ pub struct ModifyRelayRequest {
     pub use_interrupt_page: Option<bool>,
 }
 
-/// Response to a ModifyRelayRequest.
+/// A response from the relay to a ModifyRelayRequest from the server.
 #[derive(Debug, Copy, Clone)]
 pub enum ModifyRelayResponse {
     /// The requested version change is supported, and the relay completed the connection
@@ -211,8 +215,8 @@ pub enum ModifyRelayResponse {
     /// A version change was requested but the relay host doesn't support that version. This
     /// response cannot be returned for a request with no version change set.
     Unsupported,
-    /// The connection modification completed with the specified status. This is the response that
-    /// must be sent if no version change was requested.
+    /// The connection modification completed with the specified status. This response must be sent
+    /// if no version change was requested.
     Modified(protocol::ConnectionState),
 }
 
@@ -513,7 +517,8 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
 
         // If MNF is handled by this server and this is a paravisor for an isolated VM, the monitor
         // pages must be allocated by the server, not the guest, since the guest will provide shared
-        // pages which can't be used in this case.
+        // pages which can't be used in this case. If the guest doesn't support server-specified
+        // monitor pages, MNF will be disabled for all channels for that connection.
         server.set_require_server_allocated_mnf(self.enable_mnf && self.private_gm.is_some());
 
         // If requested, limit the maximum protocol version and feature flags.
@@ -528,6 +533,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
                 let (req_send, req_recv) = mesh::channel();
                 let resp_recv = req_recv
                     .map(|req: ModifyRelayRequest| {
+                        // Map to the correct response type for the request.
                         if req.version.is_some() {
                             ModifyRelayResponse::Supported(
                                 protocol::ConnectionState::SUCCESSFUL,
@@ -688,18 +694,22 @@ pub struct SynicMessage {
     trusted: bool,
 }
 
+/// Information used by a server that supports MNF.
 #[derive(Default)]
 struct MnfInfo {
     allocated_monitor_pages: Option<MemoryBlock>,
+    // Indicates whether the current guest connection is using the server-allocated monitor pages.
     allocated_pages_in_use: bool,
 }
 
 impl MnfInfo {
-    fn gpas(&self) -> Option<MonitorPageGpas> {
+    /// Returns the GPAs of the server-allocated monitor pages, if any.
+    fn allocated_gpas(&self) -> Option<MonitorPageGpas> {
         self.allocated_monitor_pages
             .as_ref()
             .map(|allocated| MonitorPageGpas {
                 child_to_parent: allocated.pfns()[0] << HV_PAGE_SHIFT,
+                // N.B. A parent-to-child page is not allocated by this server.
                 parent_to_child: 0,
             })
     }
@@ -1135,18 +1145,18 @@ impl ServerTask {
     }
 
     fn handle_relay_response(&mut self, response: ModifyRelayResponse) {
-        // Provide the server-allocated monitor page to the server only if they're actually being
-        // used (they may still be allocated from a previous connection).
-        let allocated_monitor_gpas = self
-            .inner
-            .mnf_info
-            .as_ref()
-            .and_then(|info| info.allocated_pages_in_use.then(|| info.gpas()))
-            .flatten();
-
-        // Convert to a matching MonitorConnectionResponse.
+        // Convert to a matching ModifyConnectionResponse.
         let response = match response {
             ModifyRelayResponse::Supported(state, features) => {
+                // Provide the server-allocated monitor page to the server only if they're actually being
+                // used (if not, they may still be allocated from a previous connection).
+                let allocated_monitor_gpas = self
+                    .inner
+                    .mnf_info
+                    .as_ref()
+                    .and_then(|info| info.allocated_pages_in_use.then(|| info.allocated_gpas()))
+                    .flatten();
+
                 ModifyConnectionResponse::Supported(state, features, allocated_monitor_gpas)
             }
             ModifyRelayResponse::Unsupported => ModifyConnectionResponse::Unsupported,
@@ -1631,14 +1641,6 @@ impl Notifier for ServerTaskInner {
         }
 
         if request.notify_relay {
-            // If this server is handling MNF, the monitor pages should not be relayed.
-            // N.B. Since the relay is being asked not to update the monitor pages, rather than
-            //      reset them, this is only safe because the value of enable_mnf won't change after
-            //      the server has been created.
-            if self.mnf_info.is_some() {
-                request.monitor_page = Update::Unchanged;
-            }
-
             self.relay_send.send(request.into());
         }
 
@@ -1903,9 +1905,6 @@ impl ServerTaskInner {
             if let Some(monitor) = self.synic.monitor_support() {
                 mnf_info.allocated_pages_in_use = false;
 
-                // If a version is present in the request, then Update::Reset actually means that
-                // the guest didn't specify the monitor pages, but may still want to use
-                // server-allocated ones.
                 if let Some(version) = request.version {
                     if version.feature_flags.server_specified_monitor_pages() {
                         if let Some(dma_client) = self.dma_client.as_ref() {
@@ -1916,9 +1915,11 @@ impl ServerTaskInner {
                                     Some(dma_client.allocate_dma_buffer(PAGE_SIZE)?);
                             }
 
-                            // Utilize the server-allocated pages.
+                            // Utilize the server-allocated pages. We do this even if the request
+                            // was for Update::Reset, because if a version is present that actually
+                            // means the guest just didn't provide monitor pages.
                             mnf_info.allocated_pages_in_use = true;
-                            monitor_page = mnf_info.gpas();
+                            monitor_page = mnf_info.allocated_gpas();
                             tracelimit::info_ratelimited!(
                                 ?monitor_page,
                                 "using server-allocated monitor pages"

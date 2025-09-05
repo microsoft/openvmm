@@ -429,7 +429,6 @@ impl HardwareIsolatedMemoryProtector {
                     continue 'outer;
                 }
             }
-
             // We can only reach here if the range does not contain any overlay
             // pages, so now we can apply the protections to the range.
             self.apply_protections(range, target_vtl, protections, GpnSource::GuestMemory)?
@@ -462,7 +461,7 @@ impl HardwareIsolatedMemoryProtector {
         vtl: GuestVtl,
         gpn: u64,
     ) -> Result<HvMapGpaFlags, HvError> {
-        if !self.is_guest_memory(gpn) {
+        if !self.is_in_guest_memory(gpn) {
             return Err(HvError::OperationDenied);
         }
 
@@ -495,7 +494,8 @@ impl HardwareIsolatedMemoryProtector {
         Ok(())
     }
 
-    fn is_guest_memory(&self, gpn: u64) -> bool {
+    /// Checks whether the given GPN is present in guest RAM.
+    fn is_in_guest_memory(&self, gpn: u64) -> bool {
         let gpa = gpn << HV_PAGE_SHIFT;
         self.layout.ram().iter().any(|r| r.range.contains_addr(gpa))
     }
@@ -513,7 +513,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         for &gpn in gpns {
             // Validate the ranges are RAM.
-            if !self.is_guest_memory(gpn) {
+            if !self.is_in_guest_memory(gpn) {
                 return Err((HvError::OperationDenied, 0));
             }
 
@@ -754,7 +754,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     ) -> Result<(), (HvError, usize)> {
         // Validate the ranges are RAM.
         for (i, &gpn) in gpns.iter().enumerate() {
-            if !self.is_guest_memory(gpn) {
+            if !self.is_in_guest_memory(gpn) {
                 return Err((HvError::OperationDenied, i));
             }
         }
@@ -863,7 +863,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
 
         // Validate the ranges are RAM.
         for &gpn in gpns {
-            if !self.is_guest_memory(gpn) {
+            if !self.is_in_guest_memory(gpn) {
                 return Err((HvError::OperationDenied, 0));
             }
 
@@ -934,24 +934,30 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             return Ok(());
         }
 
-        let current_perms = if gpn_source == GpnSource::GuestMemory {
-            // Check that the required permissions are present.
-            let current_perms = self.query_lower_vtl_permissions(vtl, gpn)?;
-            if current_perms.into_bits() | check_perms.into_bits() != current_perms.into_bits() {
-                return Err(HvError::OperationDenied);
-            }
+        let current_perms = match gpn_source {
+            GpnSource::GuestMemory => {
+                // Check that the required permissions are present.
+                let current_perms = self.query_lower_vtl_permissions(vtl, gpn)?;
+                if current_perms.into_bits() | check_perms.into_bits() != current_perms.into_bits()
+                {
+                    return Err(HvError::OperationDenied);
+                }
 
-            // Protections cannot be applied to a host-visible page.
-            if inner.valid_shared.check_valid(gpn) {
-                return Err(HvError::OperationDenied);
-            }
+                // Protections cannot be applied to a host-visible page.
+                if inner.valid_shared.check_valid(gpn) {
+                    return Err(HvError::OperationDenied);
+                }
 
-            current_perms
-        } else if self.is_guest_memory(gpn) {
-            // DMA memory must not be in guest RAM.
-            return Err(HvError::OperationDenied);
-        } else {
-            HV_MAP_GPA_PERMISSIONS_ALL
+                current_perms
+            }
+            GpnSource::Dma => {
+                if self.is_in_guest_memory(gpn) {
+                    // DMA memory must not be in guest RAM.
+                    return Err(HvError::OperationDenied);
+                }
+
+                HV_MAP_GPA_PERMISSIONS_NONE
+            }
         };
 
         // Or a locked page.

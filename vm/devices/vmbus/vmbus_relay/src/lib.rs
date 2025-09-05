@@ -790,7 +790,7 @@ impl RelayTask {
             }
         };
 
-        // Use Supported only for new connections (with a version).
+        // Use Supported only for new connections (which have a version).
         if request.version.is_some() {
             ModifyRelayResponse::Supported(state, self.version.feature_flags)
         } else {

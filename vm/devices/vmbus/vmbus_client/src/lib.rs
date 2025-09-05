@@ -1019,7 +1019,7 @@ impl ClientTask {
 
         match msg {
             Message::VersionResponse3(version_response, ..) => {
-                // The client never sends the server-specified monitor pages feature flags, but
+                // The client never sends the server-specified monitor pages feature flag, but
                 // since version response messages are distinguished only by size, the response can
                 // still look like `VersionResponse3` if the size was not set exactly by the server.
                 // Since the feature flag can't be set, the extra data can be ignored.

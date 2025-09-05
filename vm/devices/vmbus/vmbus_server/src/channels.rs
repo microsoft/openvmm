@@ -133,7 +133,8 @@ pub struct Server {
     // or messages for reserved channels, can be pending even when disconnected.
     pending_messages: PendingMessages,
     // If this is set, the server cannot utilize monitor pages provided by the guest. This is
-    // typically the case for hardware-isolated VMs.
+    // typically the case for OpenHCL in hardware-isolated VMs because the monitor pages must be in
+    // shared memory and we cannot set protections on shared memory.
     require_server_allocated_mnf: bool,
 }
 
@@ -201,6 +202,7 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
     }
 }
 
+/// Stores the monitor page GPAs along with their source.
 #[derive(Debug, Copy, Clone, Inspect)]
 struct MonitorPageGpaInfo {
     gpas: MonitorPageGpas,
@@ -208,6 +210,7 @@ struct MonitorPageGpaInfo {
 }
 
 impl MonitorPageGpaInfo {
+    /// Creates a new MonitorPageGpaInfo from guest-provided GPAs.
     fn from_guest_gpas(gpas: MonitorPageGpas) -> Self {
         Self {
             gpas,
@@ -215,6 +218,7 @@ impl MonitorPageGpaInfo {
         }
     }
 
+    /// Creates a new MonitorPageGpaInfo from server-allocated GPAs.
     fn from_server_gpas(gpas: MonitorPageGpas) -> Self {
         Self {
             gpas,
@@ -413,7 +417,7 @@ pub enum ModifyConnectionResponse {
     /// A version change was requested but the relay host doesn't support that version.
     Unsupported,
     /// The connection modification completed with the specified status. This response type must be
-    /// sent if no version change was requested.
+    /// sent if and only if no version change was requested.
     Modified(protocol::ConnectionState),
 }
 
@@ -2368,9 +2372,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // the guest to include only those handled by the relay or locally.
         info.version.feature_flags &= relay_feature_flags | LOCAL_FEATURE_FLAGS;
 
-        // If the server allocated a monitor page, also indicate the relevant feature is supported,
-        // and store the server pages. The feature must be re-enabled because the relay may not
-        // report support for it.
+        // If the server allocated a monitor page, also report that feature is supported, and store
+        // the server pages. The feature bit must be re-enabled because the relay may not report
+        // support for it.
         if let Some(gpas) = server_specified_monitor_page {
             info.monitor_page = Some(MonitorPageGpaInfo::from_server_gpas(gpas));
             info.version

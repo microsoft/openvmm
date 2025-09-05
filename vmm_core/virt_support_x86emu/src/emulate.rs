@@ -1101,7 +1101,6 @@ pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
     interruption_pending: bool,
     tlb_lock_held: bool,
 ) -> Option<u32> {
-    tracing::info!("attempting fast path MNF write emulation");
     let mut cpu = EmulatorCpu::new(gm, dev, support);
     let instruction_bytes = cpu.support.instruction_bytes();
     if interruption_pending || !tlb_lock_held || instruction_bytes.is_empty() {

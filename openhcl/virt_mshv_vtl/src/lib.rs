@@ -1859,56 +1859,14 @@ impl UhPartition {
         self.inner.hcl.set_pm_timer_assist(port)
     }
 
-    fn revert_monitor_page_protection(&self, _vtl: GuestVtl, gpn: u64) -> anyhow::Result<()> {
-        match &self.inner.backing_shared {
-            #[cfg(guest_arch = "x86_64")]
-            BackingShared::Snp(snp_backed_shared) => snp_backed_shared
-                .cvm
-                .isolated_memory_protector
-                .unregister_overlay_page(
-                    _vtl,
-                    gpn,
-                    GpnSource::Dma,
-                    &mut SnpBacked::tlb_flush_lock_access(
-                        None,
-                        self.inner.as_ref(),
-                        snp_backed_shared,
-                    ),
-                )
-                .map_err(|e| anyhow::anyhow!(e)),
-            #[cfg(guest_arch = "x86_64")]
-            BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
-                .cvm
-                .isolated_memory_protector
-                .unregister_overlay_page(
-                    _vtl,
-                    gpn,
-                    GpnSource::Dma,
-                    &mut TdxBacked::tlb_flush_lock_access(
-                        None,
-                        self.inner.as_ref(),
-                        tdx_backed_shared,
-                    ),
-                )
-                .map_err(|e| anyhow::anyhow!(e)),
-            BackingShared::Hypervisor(_) => self
-                .inner
-                .hcl
-                .modify_vtl_protection_mask(
-                    MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
-                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-                    HvInputVtl::CURRENT_VTL,
-                )
-                .map_err(|e| anyhow::anyhow!(e)),
-        }
-    }
-
+    /// Sets guest memory protections for a monitor page.
     fn set_monitor_page_protection(
         &self,
         _vtl: GuestVtl,
         gpn: u64,
         new_perms: HvMapGpaFlags,
     ) -> anyhow::Result<()> {
+        // How the monitor page is protected depends on the isolation type of the VM.
         match &self.inner.backing_shared {
             #[cfg(guest_arch = "x86_64")]
             BackingShared::Snp(snp_backed_shared) => snp_backed_shared
@@ -1952,6 +1910,54 @@ impl UhPartition {
                 .modify_vtl_protection_mask(
                     MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
                     new_perms,
+                    HvInputVtl::CURRENT_VTL,
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
+    /// Reverts guest memory protections for a monitor page.
+    fn revert_monitor_page_protection(&self, _vtl: GuestVtl, gpn: u64) -> anyhow::Result<()> {
+        // How the monitor page is protected depends on the isolation type of the VM.
+        match &self.inner.backing_shared {
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .unregister_overlay_page(
+                    _vtl,
+                    gpn,
+                    GpnSource::Dma,
+                    &mut SnpBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        snp_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .unregister_overlay_page(
+                    _vtl,
+                    gpn,
+                    GpnSource::Dma,
+                    &mut TdxBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        tdx_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            BackingShared::Hypervisor(_) => self
+                .inner
+                .hcl
+                .modify_vtl_protection_mask(
+                    MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
+                    // Since the monitor page must always be in guest memory on a non-CVM, restore
+                    // it to full permissions.
+                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
                     HvInputVtl::CURRENT_VTL,
                 )
                 .map_err(|e| anyhow::anyhow!(e)),

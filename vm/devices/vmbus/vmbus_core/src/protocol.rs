@@ -178,6 +178,16 @@ pub struct FeatureFlags {
     pub pause_resume: bool, // 0x20
 
     /// The guest supports having the server (host or paravisor) provide monitor page GPAs.
+    ///
+    /// If this flag is present in the `InitiateContact` message, the guest may still provide its
+    /// own monitor pages, which the server may ignore if it supports the flag. The server will
+    /// only set this flag in the `VersionResponse` message if it is actually providing monitor
+    /// pages, which the guest must then use instead of its own.
+    ///
+    /// If the server sets the flag in the `VersionResponse` message, it must provide a non-zero
+    /// value for the [`VersionResponse3::child_to_parent_monitor_page_gpa`]; the
+    /// [`VersionResponse3::parent_to_child_monitor_page_gpa`] is optional and may be zero, in which
+    /// case the guest cannot cancel MNF interrupts from the host.
     pub server_specified_monitor_pages: bool, // 0x40
 
     #[bits(25)]
