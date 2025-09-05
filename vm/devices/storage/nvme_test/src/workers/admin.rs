@@ -29,9 +29,11 @@ use futures::FutureExt;
 use futures::SinkExt;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
+use futures_concurrency::vec;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
@@ -469,18 +471,16 @@ impl AdminHandler {
                 let mut command = command?;
                 let opcode = spec::AdminOpcode(command.cdw0.opcode());
 
-                if self.config.fault_configuration.fault_active.get() {
-                    // Get a configured fault. Default if nothing was configured
-                    let fault = self
-                        .config
-                        .fault_configuration
-                        .admin_fault
-                        .admin_submission_queue_faults
-                        .iter()
-                        .find(|(pattern, _)| match_command_pattern(pattern, &command))
-                        .map(|(_, behavior)| behavior.clone())
-                        .unwrap_or_else(|| QueueFaultBehavior::Default);
-
+                if self.config.fault_configuration.fault_active.get()
+                    && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Command>(
+                        &self
+                            .config
+                            .fault_configuration
+                            .admin_fault
+                            .admin_submission_queue_faults,
+                        &command,
+                    )
+                {
                     match fault {
                         QueueFaultBehavior::Update(command_updated) => {
                             tracing::warn!(
@@ -506,7 +506,6 @@ impl AdminHandler {
                                 &command, &message
                             );
                         }
-                        QueueFaultBehavior::Default => {}
                     }
                 }
 
@@ -598,46 +597,43 @@ impl AdminHandler {
         };
 
         // Apply a completion queue fault only to incoming commands (Ignore namespace change and sq delete complete events for now).
-        if let Some(command) = command_processed {
-            if self.config.fault_configuration.fault_active.get() {
-                let fault = self
+        if let Some(command) = command_processed
+            && self.config.fault_configuration.fault_active.get()
+            && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Completion>(
+                &self
                     .config
                     .fault_configuration
                     .admin_fault
-                    .admin_completion_queue_faults
-                    .iter()
-                    .find(|(pattern, _)| match_command_pattern(pattern, &command))
-                    .map(|(_, behavior)| behavior.clone())
-                    .unwrap_or_else(|| QueueFaultBehavior::Default);
-
-                match fault {
-                    QueueFaultBehavior::Update(completion_updated) => {
-                        tracing::warn!(
-                            "configured fault: admin completion updated in cq. command: {:?},original: {:?},\n new: {:?}",
-                            &command,
-                            &completion,
-                            &completion_updated
-                        );
-                        completion = completion_updated;
-                    }
-                    QueueFaultBehavior::Drop => {
-                        tracing::warn!(
-                            "configured fault: admin completion dropped from cq. command: {:?}, completion: {:?}",
-                            &command,
-                            &completion
-                        );
-                        return Ok(());
-                    }
-                    QueueFaultBehavior::Delay(duration) => {
-                        self.timer.sleep(duration).await;
-                    }
-                    QueueFaultBehavior::Panic(message) => {
-                        panic!(
-                            "configured fault: admin completion panic with command: {:?}, completion: {:?} and message: {}",
-                            &command, &completion, &message
-                        );
-                    }
-                    QueueFaultBehavior::Default => {}
+                    .admin_completion_queue_faults,
+                &command,
+            )
+        {
+            match fault {
+                QueueFaultBehavior::Update(completion_updated) => {
+                    tracing::warn!(
+                        "configured fault: admin completion updated in cq. command: {:?},original: {:?},\n new: {:?}",
+                        &command,
+                        &completion,
+                        &completion_updated
+                    );
+                    completion = completion_updated;
+                }
+                QueueFaultBehavior::Drop => {
+                    tracing::warn!(
+                        "configured fault: admin completion dropped from cq. command: {:?}, completion: {:?}",
+                        &command,
+                        &completion
+                    );
+                    return Ok(());
+                }
+                QueueFaultBehavior::Delay(duration) => {
+                    self.timer.sleep(duration).await;
+                }
+                QueueFaultBehavior::Panic(message) => {
+                    panic!(
+                        "configured fault: admin completion panic with command: {:?}, completion: {:?} and message: {}",
+                        &command, &completion, &message
+                    );
                 }
             }
         }

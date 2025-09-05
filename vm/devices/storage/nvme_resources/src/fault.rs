@@ -16,8 +16,6 @@ pub enum QueueFaultBehavior<T> {
     Update(T),
     /// Drop the queue entry
     Drop,
-    /// No Fault
-    Default,
     /// Delay
     Delay(Duration),
     /// Panic
