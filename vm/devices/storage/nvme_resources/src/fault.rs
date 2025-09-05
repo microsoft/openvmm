@@ -20,6 +20,8 @@ pub enum QueueFaultBehavior<T> {
     Delay(Duration),
     /// Panic
     Panic(String),
+    /// Update a completion payload
+    CustomPayload(Vec<u8>),
 }
 
 #[derive(Clone, MeshPayload)]
