@@ -55,8 +55,8 @@ impl OperationObject for ReturnOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsdt::encode_integer;
-    use crate::dsdt::tests::verify_expected_bytes;
+    use crate::sdt::encode_integer;
+    use crate::sdt::test_helpers::verify_expected_bytes;
 
     #[test]
     fn verify_and_operation() {
