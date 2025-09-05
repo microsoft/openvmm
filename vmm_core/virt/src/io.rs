@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::VpHaltReason;
 use hvdef::Vtl;
 use std::future::Future;
 use vm_topology::processor::VpIndex;
@@ -47,4 +48,8 @@ pub trait CpuIo {
     /// Programmed IO write.
     #[must_use]
     fn write_io(&self, vp: VpIndex, port: u16, data: &[u8]) -> impl Future<Output = ()>;
+
+    /// Report an internal fatal error
+    #[track_caller]
+    fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> VpHaltReason;
 }

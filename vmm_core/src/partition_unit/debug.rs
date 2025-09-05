@@ -55,9 +55,7 @@ impl DebuggerState {
             notify.send(match reason {
                 HaltReason::PowerOff | HaltReason::Hibernate => DebugStopReason::PowerOff,
                 HaltReason::Reset => DebugStopReason::Reset,
-                HaltReason::TripleFault { vp, .. }
-                | HaltReason::InvalidVmState { vp }
-                | HaltReason::VpError { vp } => DebugStopReason::TripleFault { vp: *vp },
+                HaltReason::TripleFault { vp, .. } => DebugStopReason::TripleFault { vp: *vp },
                 HaltReason::DebugBreak { .. } => DebugStopReason::Break,
                 HaltReason::SingleStep { vp } => DebugStopReason::SingleStep { vp: *vp },
                 HaltReason::HwBreakpoint { vp, breakpoint } => DebugStopReason::HwBreakpoint {
