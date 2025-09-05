@@ -10,7 +10,7 @@
 mod devmsr;
 
 cfg_if::cfg_if!(
-    if #[cfg(guest_arch = "x86_64")] {
+    if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
         mod cvm_cpuid;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
@@ -30,7 +30,7 @@ cfg_if::cfg_if!(
         /// Bitarray type for representing IRR bits in a x86-64 APIC
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
-    } else if #[cfg(guest_arch = "aarch64")] {
+    } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
         use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
     }
