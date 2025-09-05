@@ -20,6 +20,8 @@ pub mod fault;
 pub struct NvmeControllerHandle {
     /// The subsystem ID to use when responding to controller identify queries.
     pub subsystem_id: Guid,
+    /// The controller ID to use when responding to controller identify queries.
+    pub controller_id: u16,
     /// The number of MSI-X interrupts to support.
     pub msix_count: u16,
     /// The number of IO queues to support.
@@ -37,6 +39,8 @@ impl ResourceId<PciDeviceHandleKind> for NvmeControllerHandle {
 pub struct NvmeFaultControllerHandle {
     /// The subsystem ID to use when responding to controller identify queries.
     pub subsystem_id: Guid,
+    /// The controller ID to use when responding to controller identify queries.
+    pub controller_id: u16,
     /// The number of MSI-X interrupts to support.
     pub msix_count: u16,
     /// The number of IO queues to support.

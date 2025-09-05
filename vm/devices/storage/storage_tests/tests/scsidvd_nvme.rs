@@ -42,6 +42,7 @@ impl ScsiDvdNvmeTest {
         sector_count: u64,
         read_only: bool,
     ) -> Self {
+        const CNTLID: u16 = 0;
         const MSIX_COUNT: u16 = 2;
         const IO_QUEUE_COUNT: u16 = 64;
         const CPU_COUNT: u32 = 64;
@@ -64,6 +65,7 @@ impl ScsiDvdNvmeTest {
                 msix_count: MSIX_COUNT,
                 max_io_queues: IO_QUEUE_COUNT,
                 subsystem_id: Guid::new_random(),
+                controller_id: CNTLID,
             },
         );
 

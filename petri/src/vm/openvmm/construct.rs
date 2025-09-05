@@ -828,6 +828,7 @@ impl PetriVmConfigSetupCore<'_> {
                     instance_id: BOOT_NVME_INSTANCE,
                     resource: NvmeControllerHandle {
                         subsystem_id: BOOT_NVME_INSTANCE,
+                        controller_id: 0,
                         max_io_queues: 64,
                         msix_count: 64,
                         namespaces: vec![NamespaceDefinition {

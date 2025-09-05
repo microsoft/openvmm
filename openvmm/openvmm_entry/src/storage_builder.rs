@@ -334,6 +334,7 @@ impl StorageBuilder {
                 instance_id: NVME_VTL0_INSTANCE_ID,
                 resource: NvmeControllerHandle {
                     subsystem_id: NVME_VTL0_INSTANCE_ID,
+                    controller_id: 0,
                     namespaces: std::mem::take(&mut self.vtl0_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
@@ -366,6 +367,7 @@ impl StorageBuilder {
                 instance_id: NVME_VTL2_INSTANCE_ID,
                 resource: NvmeControllerHandle {
                     subsystem_id: NVME_VTL2_INSTANCE_ID,
+                    controller_id: 0,
                     namespaces: std::mem::take(&mut self.vtl2_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,

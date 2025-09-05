@@ -55,6 +55,7 @@ impl FuzzNvmeDriver {
                 msix_count: 2,     // TODO: [use-arbitrary-input]
                 max_io_queues: 64, // TODO: [use-arbitrary-input]
                 subsystem_id: guid,
+                controller_id: 0,
             },
         );
 

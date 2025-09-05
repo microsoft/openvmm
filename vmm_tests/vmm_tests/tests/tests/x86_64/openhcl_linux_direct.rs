@@ -142,6 +142,7 @@ fn new_test_vtl2_nvme_device(
         instance_id,
         resource: NvmeControllerHandle {
             subsystem_id: instance_id,
+            controller_id: 0,
             max_io_queues: 64,
             msix_count: 64,
             namespaces: vec![NamespaceDefinition {

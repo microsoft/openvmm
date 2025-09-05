@@ -103,6 +103,8 @@ pub struct NvmeControllerCaps {
     /// The subsystem ID, used as part of the subnqn field of the identify
     /// controller response.
     pub subsystem_id: Guid,
+    /// The controller ID, used in the identify controller response.
+    pub controller_id: u16,
 }
 
 impl NvmeController {
@@ -153,6 +155,7 @@ impl NvmeController {
             caps.max_io_queues,
             Arc::clone(&qe_sizes),
             caps.subsystem_id,
+            caps.controller_id,
         );
 
         Self {
