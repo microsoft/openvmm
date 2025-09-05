@@ -6,6 +6,7 @@
 use mesh::Cell;
 use mesh::MeshPayload;
 use nvme_spec::Command;
+use nvme_spec::Completion;
 use std::time::Duration;
 
 /// Supported fault behaviour for NVMe queues
@@ -42,8 +43,10 @@ pub struct PciFaultConfig {
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
-    /// A map of NVME opcodes to the fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
+    /// A map of NVME opcodes to the submission fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
     pub admin_submission_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Command>)>,
+    /// A map of NVME opcodes to the completion fault behavior for each.
+    pub admin_completion_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Completion>)>,
 }
 
 #[derive(Clone, MeshPayload, PartialEq)]
@@ -86,10 +89,14 @@ impl AdminQueueFaultConfig {
     pub fn new() -> Self {
         Self {
             admin_submission_queue_faults: vec![],
+            admin_completion_queue_faults: vec![],
         }
     }
 
-    /// Add a CommandMatch -> FaultBehavior mapping. Cannot configure a CommandMatch more than once
+    /// Add a [`CommandMatch`] -> [`QueueFaultBehavior`] mapping for the submission queue.
+    ///
+    /// # Panics
+    /// Panics if an identical [`CommandMatch`] has already been configured.
     pub fn with_submission_queue_fault(
         mut self,
         pattern: CommandMatch,
@@ -107,6 +114,31 @@ impl AdminQueueFaultConfig {
         }
 
         self.admin_submission_queue_faults
+            .push((pattern, behaviour));
+        self
+    }
+
+    /// Add a [`CommandMatch`] -> [`QueueFaultBehavior`] mapping for the completion queue.
+    ///
+    /// # Panics
+    /// Panics if an identical [`CommandMatch`] has already been configured.
+    pub fn with_completion_queue_fault(
+        mut self,
+        pattern: CommandMatch,
+        behaviour: QueueFaultBehavior<Completion>,
+    ) -> Self {
+        if self
+            .admin_completion_queue_faults
+            .iter()
+            .any(|(c, _)| (pattern == *c))
+        {
+            panic!(
+                "Duplicate completion queue fault for Compare {:?} and Mask {:?}",
+                pattern.command, pattern.mask
+            );
+        }
+
+        self.admin_completion_queue_faults
             .push((pattern, behaviour));
         self
     }
