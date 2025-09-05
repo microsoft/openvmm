@@ -641,11 +641,18 @@ impl AdminHandler {
                         &command, &completion, &message
                     );
                 }
-                QueueFaultBehavior::CustomPayload(_) => {
-                    panic!(
-                        "bad fault configuration: custom payloads are not applicable to admin submission commands. command: {:?}",
-                        &command
+                QueueFaultBehavior::CustomPayload(payload) => {
+                    tracing::warn!(
+                        "configured fault: admin completion custom payload write. completion: {:?}, payload size: {}",
+                        &completion,
+                        payload.len()
                     );
+
+                    // Panic to avoid silent test failures.
+                    PrpRange::parse(&self.config.mem, payload.len(), command.dptr)
+                        .map_err(|e| panic!("configured fault failure: failed to parse PRP for custom payload write with error {}", e))?
+                        .write(&self.config.mem, &payload)
+                        .map_err(|e| panic!("configured fault failure: failed to write custom payload with error {}", e))?
                 }
             }
         }
