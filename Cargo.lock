@@ -4779,6 +4779,7 @@ dependencies = [
  "pci_core",
  "pci_resources",
  "scsi_buffers",
+ "slab",
  "task_control",
  "thiserror 2.0.16",
  "tracelimit",
