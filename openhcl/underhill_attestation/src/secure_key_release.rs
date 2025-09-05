@@ -221,7 +221,7 @@ pub async fn request_vmgs_encryption_keys(
         timer.sleep(std::time::Duration::new(1, 0)).await;
     }
 
-    return Err(RequestVmgsEncryptionKeysError::MaximumAttemptsReached);
+    Err(RequestVmgsEncryptionKeysError::MaximumAttemptsReached)
 }
 
 /// Get windows epoch from host via GET and covert it into unix epoch.

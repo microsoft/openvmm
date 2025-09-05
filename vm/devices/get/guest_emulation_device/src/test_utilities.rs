@@ -304,7 +304,7 @@ pub fn create_host_channel(
         let mut task = TaskControl::new(ged_state);
         // Optionally provide a guest memory backing so handlers like IGVM_ATTEST can write
         // response payloads into the shared buffer GPAs provided by GET.
-        let gm = guest_memory.unwrap_or_else(|| GuestMemory::empty());
+        let gm = guest_memory.unwrap_or_else(GuestMemory::empty);
         task.insert(
             spawn,
             "automated GED host channel",

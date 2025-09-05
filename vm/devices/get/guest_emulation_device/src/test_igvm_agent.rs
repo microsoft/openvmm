@@ -31,8 +31,6 @@ use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::Mutex;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -95,7 +93,7 @@ pub(crate) struct TestIgvmAgent {
     /// Optional DES key
     des_key: Option<[u8; 32]>,
     /// Optional scripted actions per request type for tests.
-    plan: Option<Arc<Mutex<IgvmAgentScriptPlan>>>,
+    plan: Option<IgvmAgentScriptPlan>,
 }
 
 /// Possible actions for the IGVM agent to take in response to a request.
@@ -133,10 +131,10 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentScriptPla
 
 impl TestIgvmAgent {
     /// Create an instance with optional `test_config`.
-    pub(crate) fn new(test_config: Option<IgvmAttestTestConfig>) -> Self {
+    pub(crate) fn new(test_config: Option<&IgvmAttestTestConfig>) -> Self {
         tracing::info!(test_config = ?test_config, "Create test IGVM agent");
 
-        let plan = test_config.map(|config| Arc::new(Mutex::new(test_config_to_plan(&config))));
+        let plan = test_config.map(test_config_to_plan);
 
         Self {
             secret_key: None,
@@ -147,19 +145,17 @@ impl TestIgvmAgent {
 
     /// Install a scripted plan used by tests.
     pub fn set_plan(&mut self, plan: IgvmAgentScriptPlan) {
-        self.plan = Some(Arc::new(Mutex::new(plan)));
+        self.plan = Some(plan);
     }
 
     /// Take the next scripted action for the given request type, if any.
     pub(crate) fn take_next_action(
-        &self,
+        &mut self,
         request_type: IgvmAttestRequestType,
     ) -> Option<AgentAction> {
         // Fast path: no plan installed.
-        let plan = self.plan.as_ref()?;
-        // If the mutex is poisoned just skip (mirrors old `.ok()` behavior).
-        let mut guard = plan.lock().ok()?;
-        guard.get_mut(&request_type)?.pop_front()
+        let plan = self.plan.as_mut()?;
+        plan.get_mut(&request_type)?.pop_front()
     }
 
     pub(crate) fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {

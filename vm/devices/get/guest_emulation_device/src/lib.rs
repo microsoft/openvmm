@@ -273,7 +273,7 @@ impl GuestEmulationDevice {
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
             #[cfg(feature = "test_igvm_agent")]
-            igvm_agent: TestIgvmAgent::new(_igvm_attest_test_config),
+            igvm_agent: TestIgvmAgent::new(_igvm_attest_test_config.as_ref()),
         }
     }
 
