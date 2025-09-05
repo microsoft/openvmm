@@ -382,7 +382,7 @@ pub mod runtime_claims {
     }
 
     /// VM configuration to be included in the `RuntimeClaims`.
-    #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
+    #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload, Default)]
     #[serde(rename_all = "kebab-case")]
     pub struct AttestationVmConfig {
         /// Time stamp

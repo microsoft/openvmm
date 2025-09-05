@@ -291,7 +291,7 @@ mod tests {
     use vmgs_broker::spawn_vmgs_broker;
 
     async fn spawn_vmgs(driver: &DefaultDriver) -> (VmgsClient, TestGet, Task<()>) {
-        let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
         let vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap(), None)
             .await
@@ -399,7 +399,7 @@ mod tests {
 
     #[async_test]
     async fn test_read_write_encryption(driver: DefaultDriver) {
-        let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
         let mut vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap(), None)
             .await

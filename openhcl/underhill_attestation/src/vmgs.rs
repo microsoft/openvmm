@@ -209,10 +209,15 @@ pub async fn read_hardware_key_protector(
     use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
 
     let file_id = FileId::HW_KEY_PROTECTOR;
-    let data = vmgs
-        .read_file(file_id)
-        .await
-        .map_err(|vmgs_err| ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id })?;
+    let data = match vmgs.read_file(file_id).await {
+        Ok(data) => data,
+        Err(vmgs::Error::FileInfoAllocated) => {
+            return Err(ReadFromVmgsError::EntryNotFound(file_id));
+        }
+        Err(vmgs_err) => {
+            return Err(ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id });
+        }
+    };
 
     if data.len() != HW_KEY_PROTECTOR_SIZE {
         Err(ReadFromVmgsError::EntrySizeUnexpected {
