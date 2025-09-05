@@ -762,43 +762,37 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// returns that status.
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
         tracing::info!("Waiting for boot event...");
-        let boot_event = if let Some(timeout) = self.vmm_quirks.flaky_boot {
-            let inspector = self.runtime.inspector();
-            loop {
-                match CancelContext::new()
-                    .with_timeout(timeout)
-                    .until_cancelled(self.runtime.wait_for_boot_event())
-                    .await
-                {
-                    Ok(res) => break res?,
-                    Err(_) => {
-                        tracing::error!(
-                            "Did not get boot event in required time, saving inspect and resetting..."
-                        );
-                        if let Some(inspector) = &inspector {
-                            match inspector.inspect().await {
-                                Err(e) => {
-                                    tracing::error!(?e, "Failed to get inspect contents");
+        let inspector = self.runtime.inspector();
+        let boot_event = loop {
+            match CancelContext::new()
+                .with_timeout(self.vmm_quirks.flaky_boot.unwrap_or(Duration::MAX))
+                .until_cancelled(self.runtime.wait_for_boot_event())
+                .await
+            {
+                Ok(res) => break res?,
+                Err(_) => {
+                    tracing::error!("Did not get boot event in required time, resetting...");
+                    if let Some(inspector) = &inspector {
+                        match inspector.inspect().await {
+                            Err(e) => {
+                                tracing::error!(?e, "Failed to get inspect contents");
+                            }
+                            Ok(info) => {
+                                if let Err(e) = self
+                                    .resources
+                                    .log_source
+                                    .write_attachment("timeout_inspect.log", info)
+                                {
+                                    tracing::error!(?e, "Failed to save inspect log");
                                 }
-                                Ok(info) => {
-                                    if let Err(e) = self
-                                        .resources
-                                        .log_source
-                                        .write_attachment("timeout_inspect.log", info)
-                                    {
-                                        tracing::error!(?e, "Failed to save inspect log");
-                                    }
-                                }
-                            };
-                        }
-
-                        self.runtime.reset().await?;
-                        continue;
+                            }
+                        };
                     }
+
+                    self.runtime.reset().await?;
+                    continue;
                 }
             }
-        } else {
-            self.runtime.wait_for_boot_event().await?
         };
         tracing::info!("Got boot event: {boot_event:?}");
         Ok(boot_event)
