@@ -650,9 +650,9 @@ impl AdminHandler {
 
                     // Panic to avoid silent test failures.
                     PrpRange::parse(&self.config.mem, payload.len(), command.dptr)
-                        .map_err(|e| panic!("configured fault failure: failed to parse PRP for custom payload write with error {}", e))?
+                        .unwrap_or_else(|e| panic!("configured fault failure: failed to parse PRP for custom payload write with error {}", e))
                         .write(&self.config.mem, &payload)
-                        .map_err(|e| panic!("configured fault failure: failed to write custom payload with error {}", e))?
+                        .unwrap_or_else(|e| panic!("configured fault failure: failed to write custom payload with error {}", e));
                 }
             }
         }
