@@ -190,7 +190,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 proc_topology: Default::default(),
                 agent_image: artifacts.agent_image,
                 openhcl_agent_image: artifacts.openhcl_agent_image,
-                vmgs: PetriVmgsResource::Ephemeral,
+                // OpenHCL doesn't support ephemeral guest state in release 2505
+                vmgs: PetriVmgsResource::Disk(None),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
