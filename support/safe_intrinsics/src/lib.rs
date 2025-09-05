@@ -28,19 +28,21 @@ pub fn rdtsc() -> u64 {
 
 /// Emit a store fence to flush the processor's store buffer
 pub fn store_fence() {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: this instruction has no safety requirements.
-        unsafe { core::arch::x86_64::_mm_sfence() }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: this instruction has no safety requirements.
-        unsafe { core::arch::asm!("dsb st", options(nostack)) };
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        compile_error!("Unsupported architecture");
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: this instruction has no safety requirements.
+            unsafe { core::arch::x86_64::_mm_sfence() }
+        }
+        else if #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: this instruction has no safety requirements.
+            unsafe { core::arch::asm!("dsb st", options(nostack)) };
+        }
+        else
+        {
+            compile_error!("Unsupported architecture");
+        }
     }
 
     // Make the compiler aware.
