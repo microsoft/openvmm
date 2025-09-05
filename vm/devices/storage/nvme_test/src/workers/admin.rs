@@ -613,7 +613,8 @@ impl AdminHandler {
                 match fault {
                     QueueFaultBehavior::Update(completion_updated) => {
                         tracing::warn!(
-                            "configured fault: admin completion updated in cq. original: {:?},\n new: {:?}",
+                            "configured fault: admin completion updated in cq. command: {:?},original: {:?},\n new: {:?}",
+                            &command,
                             &completion,
                             &completion_updated
                         );
@@ -621,7 +622,8 @@ impl AdminHandler {
                     }
                     QueueFaultBehavior::Drop => {
                         tracing::warn!(
-                            "configured fault: admin completion dropped from cq {:?}",
+                            "configured fault: admin completion dropped from cq. command: {:?}, completion: {:?}",
+                            &command,
                             &completion
                         );
                         return Ok(());
@@ -631,8 +633,8 @@ impl AdminHandler {
                     }
                     QueueFaultBehavior::Panic(message) => {
                         panic!(
-                            "configured fault: admin completion panic with completion: {:?} and message: {}",
-                            &completion, &message
+                            "configured fault: admin completion panic with command: {:?}, completion: {:?} and message: {}",
+                            &command, &completion, &message
                         );
                     }
                     QueueFaultBehavior::Default => {}
