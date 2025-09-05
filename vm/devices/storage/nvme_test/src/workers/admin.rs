@@ -596,7 +596,8 @@ impl AdminHandler {
             cid,
         };
 
-        // Apply a completion queue fault only to incoming commands (Ignore namespace change and sq delete complete events for now).
+        // Apply a completion queue fault only to synchronously processed admin commands
+        // (Ignore namespace change and sq delete complete events for now).
         if let Some(command) = command_processed
             && self.config.fault_configuration.fault_active.get()
             && let Some(fault) = Self::get_configured_fault_behavior::<nvme_spec::Completion>(
