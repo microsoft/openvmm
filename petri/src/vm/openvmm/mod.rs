@@ -17,6 +17,7 @@ pub use runtime::OpenVmmFramebufferAccess;
 pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;
 
+use crate::BootDeviceType;
 use crate::Firmware;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
@@ -129,6 +130,7 @@ pub struct PetriVmConfigOpenVmm {
     firmware: Firmware,
     arch: MachineArch,
     config: Config,
+    boot_device_type: BootDeviceType,
 
     // Runtime resources
     resources: PetriVmResourcesOpenVmm,

@@ -463,6 +463,7 @@ impl PetriVmConfigOpenVmm {
             firmware,
             arch,
             config,
+            boot_device_type,
 
             resources: PetriVmResourcesOpenVmm {
                 log_stream_tasks,
