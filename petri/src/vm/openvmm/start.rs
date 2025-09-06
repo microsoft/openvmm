@@ -6,6 +6,7 @@
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmOpenVmm;
 use super::PetriVmResourcesOpenVmm;
+use crate::BootDeviceType;
 use crate::Firmware;
 use crate::PetriLogFile;
 use crate::worker::Worker;
@@ -34,6 +35,7 @@ impl PetriVmConfigOpenVmm {
             firmware,
             arch,
             mut config,
+            boot_device_type,
 
             mut resources,
 
@@ -122,9 +124,11 @@ impl PetriVmConfigOpenVmm {
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
+        // TODO: VPCI and NVMe don't support save/restore
         if !firmware.is_openhcl()
             && !matches!(firmware, Firmware::Pcat { .. })
             && !matches!(arch, MachineArch::Aarch64)
+            && !matches!(boot_device_type, BootDeviceType::Nvme)
         {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;

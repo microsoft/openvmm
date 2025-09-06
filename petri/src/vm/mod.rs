@@ -121,6 +121,8 @@ pub struct PetriVmConfig {
     pub openhcl_agent_image: Option<AgentImage>,
     /// VM guest state
     pub vmgs: PetriVmgsResource,
+    /// The boot device type for the VM
+    pub boot_device_type: BootDeviceType,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -179,6 +181,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     ) -> anyhow::Result<Self> {
         let quirks = T::select_quirks(artifacts.firmware.quirks());
         let expected_boot_event = artifacts.firmware.expected_boot_event();
+        let boot_device_type = match artifacts.firmware {
+            Firmware::LinuxDirect { .. } => BootDeviceType::None,
+            Firmware::OpenhclLinuxDirect { .. } => BootDeviceType::None,
+            Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => BootDeviceType::Ide,
+            Firmware::Uefi {
+                guest: UefiGuest::None,
+                ..
+            }
+            | Firmware::OpenhclUefi {
+                guest: UefiGuest::None,
+                ..
+            } => BootDeviceType::None,
+            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
+        };
 
         Ok(Self {
             backend: artifacts.backend,
@@ -186,6 +202,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 name: make_vm_safe_name(params.test_name),
                 arch: artifacts.arch,
                 firmware: artifacts.firmware,
+                boot_device_type,
                 memory: Default::default(),
                 proc_topology: Default::default(),
                 agent_image: artifacts.agent_image,
@@ -605,6 +622,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 panic!("attempted to specify a backing vmgs with ephemeral guest state")
             }
         }
+        self
+    }
+
+    /// Set the boot device type for the VM.
+    ///
+    /// This overrides the default, which is determined by the firmware type.
+    pub fn with_boot_device_type(mut self, boot: BootDeviceType) -> Self {
+        self.config.boot_device_type = boot;
         self
     }
 
@@ -1081,6 +1106,19 @@ pub enum Firmware {
         /// OpenHCL configuration
         openhcl_config: OpenHclConfig,
     },
+}
+
+/// The boot device type.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BootDeviceType {
+    /// Don't initialize a boot device.
+    None,
+    /// Boot from IDE.
+    Ide,
+    /// Boot from SCSI.
+    Scsi,
+    /// Boot from an NVMe controller.
+    Nvme,
 }
 
 impl Firmware {

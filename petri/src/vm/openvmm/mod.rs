@@ -17,6 +17,7 @@ pub use runtime::OpenVmmFramebufferAccess;
 pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;
 
+use crate::BootDeviceType;
 use crate::Firmware;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
@@ -59,8 +60,13 @@ use vtl2_settings_proto::Vtl2Settings;
 /// The instance guid used for all of our SCSI drives.
 pub(crate) const SCSI_INSTANCE: Guid = guid::guid!("27b553e8-8b39-411b-a55f-839971a7884f");
 
+/// The instance guid for the NVMe controller automatically added for boot media
+/// for paravisor storage translation.
+pub(crate) const PARAVISOR_BOOT_NVME_INSTANCE: Guid =
+    guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
+
 /// The instance guid for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_INSTANCE: Guid = guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
+pub(crate) const BOOT_NVME_INSTANCE: Guid = guid::guid!("e23a04e2-90f5-4852-bc9d-e7ac691b756c");
 
 /// The instance guid for the MANA nic automatically added when specifying `PetriVmConfigOpenVmm::with_nic`
 const MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
@@ -124,6 +130,7 @@ pub struct PetriVmConfigOpenVmm {
     firmware: Firmware,
     arch: MachineArch,
     config: Config,
+    boot_device_type: BootDeviceType,
 
     // Runtime resources
     resources: PetriVmResourcesOpenVmm,
