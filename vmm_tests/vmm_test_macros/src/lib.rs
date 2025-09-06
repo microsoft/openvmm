@@ -653,6 +653,35 @@ fn make_vmm_test(
     for config in args.configs {
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
+        // Build requirements based on the configuration
+        let mut requirements_builder = quote!(::petri::requirements::TestCaseRequirements::new());
+
+        // Add isolation requirement if specified
+        if let Firmware::OpenhclUefi(
+            OpenhclUefiOptions {
+                isolation: Some(isolation),
+                ..
+            },
+            _,
+        ) = &config.firmware
+        {
+            let isolation_requirement = match isolation {
+                IsolationType::Vbs => quote!(::petri::requirements::IsolationRequirement::new(
+                    ::petri::requirements::IsolationType::Vbs
+                )),
+                IsolationType::Snp => quote!(::petri::requirements::IsolationRequirement::new(
+                    ::petri::requirements::IsolationType::Snp
+                )),
+                IsolationType::Tdx => quote!(::petri::requirements::IsolationRequirement::new(
+                    ::petri::requirements::IsolationType::Tdx
+                )),
+            };
+            requirements_builder.extend(quote!(
+                .require(#isolation_requirement)
+            ));
+        }
+
+        // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
 
         let firmware = FirmwareAndArch {
@@ -699,7 +728,8 @@ fn make_vmm_test(
                         let config = #petri_vm_config;
                         #original_name(#original_args).await
                     })
-                }
+                },
+                Some(#requirements_builder)
             ).into(),
         };
 

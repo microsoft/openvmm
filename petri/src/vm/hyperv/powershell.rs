@@ -38,20 +38,20 @@ impl ps::AsVal for HyperVGeneration {
 }
 
 /// Hyper-V Guest State Isolation Type
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
 pub enum HyperVGuestStateIsolationType {
     /// Trusted Launch (OpenHCL, SecureBoot, TPM)
-    TrustedLaunch,
+    TrustedLaunch = 0,
     /// VBS
-    Vbs,
+    Vbs = 1,
     /// SNP
-    Snp,
+    Snp = 2,
     /// TDX
-    Tdx,
+    Tdx = 3,
     /// OpenHCL but no isolation
-    OpenHCL,
+    OpenHCL = 16,
     /// No HCL and no isolation
-    Disabled,
+    Disabled = -1,
 }
 
 impl ps::AsVal for HyperVGuestStateIsolationType {
@@ -1022,4 +1022,35 @@ pub async fn run_set_turn_off_on_guest_restart(
     .await
     .map(|_| ())
     .context("set_turn_off_on_guest_restart")
+}
+
+/// Hyper-V Get VM Host Output
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct HyperVGetVmHost {
+    /// GuestIsolationTypes supported on the host
+    pub guest_isolation_types: Vec<HyperVGuestStateIsolationType>,
+    /// Whether SNP is supported on the host
+    pub snp_status: bool,
+    /// Whether TDX is supported on the host
+    pub tdx_status: bool,
+}
+
+/// Gets the VM host information and returns the output string
+pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
+    let output = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VMHost")
+            .pipeline()
+            .cmdlet("ConvertTo-Json")
+            .arg("Depth", 3)
+            .finish()
+            .build(),
+    )
+    .await
+    .context("get_vm_host")?;
+
+    // Parse the JSON output
+    let vm_host: HyperVGetVmHost = serde_json::from_str(&output)?;
+
+    Ok(vm_host)
 }

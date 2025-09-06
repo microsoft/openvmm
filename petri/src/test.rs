@@ -15,6 +15,7 @@ pub mod test_macro_support {
 use crate::PetriLogSource;
 use crate::TestArtifactRequirements;
 use crate::TestArtifacts;
+use crate::requirements::{HostContext, TestCaseRequirements, can_run_test_with_context};
 use crate::tracing::try_init_tracing;
 use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
@@ -28,7 +29,7 @@ use test_macro_support::TESTS;
 macro_rules! test {
     ($f:ident, $req:expr) => {
         $crate::multitest!(vec![
-            $crate::SimpleTest::new(stringify!($f), $req, $f).into()
+            $crate::SimpleTest::new(stringify!($f), $req, $f, None).into()
         ]);
     };
 }
@@ -186,12 +187,15 @@ pub trait RunTest: Send {
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
+    /// Returns the test configuration, if any.
+    fn config(&self) -> Option<&TestCaseRequirements>;
 }
 
 trait DynRunTest: Send {
     fn leaf_name(&self) -> &str;
     fn requirements(&self) -> Option<TestArtifactRequirements>;
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
+    fn config(&self) -> Option<&TestCaseRequirements>;
 }
 
 impl<T: RunTest> DynRunTest for T {
@@ -211,6 +215,10 @@ impl<T: RunTest> DynRunTest for T {
             .context("test should have been skipped")?;
         self.run(params, artifacts)
     }
+
+    fn config(&self) -> Option<&TestCaseRequirements> {
+        self.config()
+    }
 }
 
 /// Parameters passed to a [`RunTest`] when it is run.
@@ -229,6 +237,8 @@ pub struct SimpleTest<A, F> {
     leaf_name: &'static str,
     resolve: A,
     run: F,
+    /// Optional test configuration
+    pub config: Option<TestCaseRequirements>,
 }
 
 impl<A, AR, F, E> SimpleTest<A, F>
@@ -237,13 +247,19 @@ where
     F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
-    /// Returns a new test with the given `leaf_name`, `resolve`, and `run`
-    /// functions.
-    pub fn new(leaf_name: &'static str, resolve: A, run: F) -> Self {
+    /// Returns a new test with the given `leaf_name`, `resolve`, `run` functions,
+    /// and optional configuration.
+    pub fn new(
+        leaf_name: &'static str,
+        resolve: A,
+        run: F,
+        config: Option<TestCaseRequirements>,
+    ) -> Self {
         SimpleTest {
             leaf_name,
             resolve,
             run,
+            config,
         }
     }
 }
@@ -266,6 +282,10 @@ where
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()> {
         (self.run)(params, artifacts).map_err(Into::into)
+    }
+
+    fn config(&self) -> Option<&TestCaseRequirements> {
+        self.config.as_ref()
     }
 }
 
@@ -307,6 +327,21 @@ pub fn test_main(
     }
     args.inner.test_threads = Some(1);
 
-    let trials = Test::all().map(|test| test.trial(resolve)).collect();
-    libtest_mimic::run(&args.inner, trials).exit()
+    // Create the host context once to avoid repeated expensive queries
+    let host_context = futures::executor::block_on(HostContext::new());
+
+    let trials: Vec<libtest_mimic::Trial> = Test::all()
+        .filter(|test| {
+            if let Some(config) = test.test.0.config() {
+                if !can_run_test_with_context(&test.name(), Some(config), &host_context) {
+                    println!("ignoring test {} due to unmet requirements", test.name());
+                    return false;
+                }
+            }
+            true
+        })
+        .map(|test| test.trial(resolve))
+        .collect();
+
+    libtest_mimic::run(&args.inner, trials).exit();
 }
