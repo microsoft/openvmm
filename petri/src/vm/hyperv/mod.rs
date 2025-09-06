@@ -251,7 +251,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         let mut vhd_paths = Vec::new();
         if let Some((controller_type, controller_number)) = match boot_device_type {
             BootDeviceType::None => None,
-            BootDeviceType::Ide => Some((powershell::ControllerType::Ide, 0 as u32)),
+            BootDeviceType::Ide => Some((powershell::ControllerType::Ide, 0)),
             BootDeviceType::Scsi => Some((
                 powershell::ControllerType::Scsi,
                 vm.add_scsi_controller(0).await?,
