@@ -143,12 +143,8 @@ enum UnlockVmgsDataStoreError {
     WriteKeyProtector(#[source] vmgs::WriteToVmgsError),
     #[error("failed to read key protector by id to vmgs")]
     WriteKeyProtectorById(#[source] vmgs::WriteToVmgsError),
-    #[error("failed to remove the old vmgs encryption key")]
-    RemoveOldVmgsEncryptionKey(#[source] ::vmgs::Error),
-    #[error("failed to add a new vmgs encryption key after removing the old key")]
-    AddNewVmgsEncryptionKeyAfterRemoval(#[source] ::vmgs::Error),
-    #[error("failed to add a new vmgs encryption key")]
-    AddNewVmgsEncryptionKey(#[source] ::vmgs::Error),
+    #[error("failed to update the vmgs encryption key")]
+    UpdateVmgsEncryptionKey(#[source] ::vmgs::Error),
     #[error("failed to persist all key protectors")]
     PersistAllKeyProtectors(#[source] PersistAllKeyProtectorsError),
 }
@@ -455,26 +451,21 @@ async fn unlock_vmgs_data_store(
     }
 
     // Call unlock_with_encryption_key using ingress_key if datastore is encrypted
-    let mut old_index = 2;
     let mut provision = false;
     if vmgs_encrypted {
         tracing::info!(CVM_ALLOWED, "Decrypting vmgs file...");
-        match vmgs.unlock_with_encryption_key(&new_ingress_key).await {
-            Ok(index) => old_index = index,
-            Err(e) => {
-                if let Some(key) = old_egress_key {
-                    // Key rolling did not complete successfully last time and there's an old
-                    // egress key in the VMGS. It may be needed for decryption.
-                    tracing::trace!(CVM_ALLOWED, "Old EgressKey found");
-                    old_index = vmgs
-                        .unlock_with_encryption_key(&key)
-                        .await
-                        .map_err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingEgressKey)?;
-                } else {
-                    Err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingIngressKey(
-                        e,
-                    ))?
-                }
+        if let Err(e) = vmgs.unlock_with_encryption_key(&new_ingress_key).await {
+            if let Some(key) = old_egress_key {
+                // Key rolling did not complete successfully last time and there's an old
+                // egress key in the VMGS. It may be needed for decryption.
+                tracing::trace!(CVM_ALLOWED, "Old EgressKey found");
+                vmgs.unlock_with_encryption_key(&key)
+                    .await
+                    .map_err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingEgressKey)?;
+            } else {
+                Err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingIngressKey(
+                    e,
+                ))?
             }
         }
     } else {
@@ -499,37 +490,13 @@ async fn unlock_vmgs_data_store(
         }
     }
 
-    // Call add_new_encryption_key adding egress_key if different with ingress_key or during provision
     if provision || new_key {
-        let result = vmgs
-            .add_new_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
-            .await;
-
-        match result {
-            Ok(_new_index) => (),
-            Err(_) if old_index != 2 => {
-                // If last time we failed to remove old key then we'll come here.
-                // We have to remove old key before adding egress_key.
-                let key_index = if old_index == 0 { 1 } else { 0 };
-                tracing::trace!(CVM_ALLOWED, key_index = key_index, "Remove old key...");
-                vmgs.remove_encryption_key(key_index)
-                    .await
-                    .map_err(UnlockVmgsDataStoreError::RemoveOldVmgsEncryptionKey)?;
-
-                tracing::trace!(CVM_ALLOWED, "Add egress_key again...");
-                vmgs.add_new_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
-                    .await
-                    .map_err(UnlockVmgsDataStoreError::AddNewVmgsEncryptionKeyAfterRemoval)?;
-            }
-            Err(e) => Err(UnlockVmgsDataStoreError::AddNewVmgsEncryptionKey(e))?,
-        }
-    }
-
-    // Remove ingress_key if different with egress_key
-    if !provision && new_key {
-        vmgs.remove_encryption_key(old_index)
+        // Add the new egress key. If we are not provisioning, then this will
+        // also remove the old key. This will also remove the inactive key if
+        // last time we failed to remove it.
+        vmgs.update_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
             .await
-            .map_err(UnlockVmgsDataStoreError::RemoveOldVmgsEncryptionKey)?;
+            .map_err(UnlockVmgsDataStoreError::UpdateVmgsEncryptionKey)?;
     }
 
     // Persist KP to VMGS
@@ -1389,9 +1356,9 @@ mod tests {
         vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
 
         // The egress key was used to lock the VMGS after provisioning
-        let egress_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
+        vmgs.unlock_with_encryption_key(&egress).await.unwrap();
         // Since this is a new VMGS, the egress key is the first and only key
-        assert_eq!(egress_index, 0);
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(0));
 
         // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
         assert!(!key_protector_is_empty(&mut vmgs).await);
@@ -1445,9 +1412,9 @@ mod tests {
         vmgs.unlock_with_encryption_key(&egress).await.unwrap_err();
 
         // The new egress key should be able to unlock the VMGS
-        let new_egress_index = vmgs.unlock_with_encryption_key(&new_egress).await.unwrap();
+        vmgs.unlock_with_encryption_key(&new_egress).await.unwrap();
         // The old egress key was removed, but not before the new egress key was added in the 1th slot
-        assert_eq!(new_egress_index, 1);
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(1));
 
         let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
             .await
@@ -1477,13 +1444,13 @@ mod tests {
             encrypt_egress: egress,
         };
 
-        vmgs.add_new_encryption_key(&ingress, EncryptionAlgorithm::AES_GCM)
+        vmgs.update_encryption_key(&ingress, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
 
         // Initially, the VMGS can be unlocked using the ingress key
-        let ingress_index = vmgs.unlock_with_encryption_key(&ingress).await.unwrap();
-        assert_eq!(ingress_index, 0);
+        vmgs.unlock_with_encryption_key(&ingress).await.unwrap();
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(0));
 
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: true,
@@ -1507,9 +1474,9 @@ mod tests {
 
         // After the VMGS has been unlocked, the VMGS encryption key should be rotated from ingress to egress
         vmgs.unlock_with_encryption_key(&ingress).await.unwrap_err();
-        let egress_index = vmgs.unlock_with_encryption_key(&egress).await.unwrap();
+        vmgs.unlock_with_encryption_key(&egress).await.unwrap();
         // The ingress key was removed, but not before the egress key was added in the 0th slot
-        assert_eq!(egress_index, 1);
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(1));
 
         // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
         let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
@@ -1542,16 +1509,16 @@ mod tests {
         };
 
         // Add only the egress key to the VMGS to simulate a failure to persist the ingress key
-        let egress_key_index = vmgs
-            .add_new_encryption_key(&decrypt_egress, EncryptionAlgorithm::AES_GCM)
+        vmgs.test_add_new_encryption_key(&decrypt_egress, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
+        let egress_key_index = vmgs.test_get_active_datastore_key_index().unwrap();
         assert_eq!(egress_key_index, 0);
 
-        let found_egress_key_index = vmgs
-            .unlock_with_encryption_key(&decrypt_egress)
+        vmgs.unlock_with_encryption_key(&decrypt_egress)
             .await
             .unwrap();
+        let found_egress_key_index = vmgs.test_get_active_datastore_key_index().unwrap();
         assert_eq!(found_egress_key_index, egress_key_index);
 
         // Confirm that the ingress key cannot be used to unlock the VMGS
@@ -1586,11 +1553,10 @@ mod tests {
             .unwrap_err();
 
         // The encrypt_egress key can unlock the VMGS and was added as a new key
-        let found_egress_key_index = vmgs
-            .unlock_with_encryption_key(&encrypt_egress)
+        vmgs.unlock_with_encryption_key(&encrypt_egress)
             .await
             .unwrap();
-        assert_eq!(found_egress_key_index, 1);
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(1));
 
         // Since both `should_write_kp` and `use_gsp_by_id` are true, both key protectors should be updated
         let found_key_protector = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
@@ -1625,17 +1591,15 @@ mod tests {
         let additional_key = [2; AES_GCM_KEY_LENGTH];
         let yet_another_key = [3; AES_GCM_KEY_LENGTH];
 
-        let additional_key_index = vmgs
-            .add_new_encryption_key(&additional_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.test_add_new_encryption_key(&additional_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(additional_key_index, 0);
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(0));
 
-        let yet_another_key_index = vmgs
-            .add_new_encryption_key(&yet_another_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.test_add_new_encryption_key(&yet_another_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(yet_another_key_index, 1);
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(1));
 
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: true,
@@ -1679,17 +1643,15 @@ mod tests {
         let additional_key = [3; AES_GCM_KEY_LENGTH];
         let yet_another_key = [4; AES_GCM_KEY_LENGTH];
 
-        let additional_key_index = vmgs
-            .add_new_encryption_key(&additional_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.test_add_new_encryption_key(&additional_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(additional_key_index, 0);
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(0));
 
-        let yet_another_key_index = vmgs
-            .add_new_encryption_key(&yet_another_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.test_add_new_encryption_key(&yet_another_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(yet_another_key_index, 1);
+        assert_eq!(vmgs.test_get_active_datastore_key_index(), Some(1));
 
         let key_protector_settings = KeyProtectorSettings {
             should_write_kp: true,

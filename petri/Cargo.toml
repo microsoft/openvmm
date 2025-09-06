@@ -89,6 +89,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+disk_vhdmp.workspace = true
 windows-version.workspace = true
 
 [lints]
