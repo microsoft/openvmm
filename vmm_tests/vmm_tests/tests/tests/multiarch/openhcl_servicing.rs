@@ -375,7 +375,7 @@ async fn keepalive_with_nvme_identify_namespace_fault(
     // Make sure the disk showed up.
     cmd!(sh, "ls /dev/sda").run().await?;
 
-    // CREATE_IO_COMPLETION_QUEUE is blocked. This will time out without keepalive enabled.
+    // IDENTIFY:NAMESPACE is faulty. It will report a changed namespace size. The driver is still expected to make progress.
     fault_start_updater.set(true).await;
     vm.restart_openhcl(
         igvm_file.clone(),
