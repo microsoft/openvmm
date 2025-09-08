@@ -351,7 +351,7 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
                         rest,
                         msg.msi_resource_count as usize,
                     )
-                    .map_err(|_| PacketError::PacketTooSmall("msi3"))? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                    .map_err(|_| PacketError::PacketTooSmall("msi3"))?
                     .0
                     .iter()
                     .map(|rsrc| InterruptResourceRequest::from_protocol3(rsrc.descriptor()))
