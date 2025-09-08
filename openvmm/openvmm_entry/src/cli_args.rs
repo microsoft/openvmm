@@ -168,6 +168,9 @@ flags:
     `vtl2`                         assign this disk to VTL2
     `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as NVMe)
     `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as NVMe)
+
+options:
+    `pcie_port=<name>`             present the disk using pcie under the specified port
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
@@ -904,6 +907,7 @@ pub struct DiskCli {
     pub read_only: bool,
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
+    pub pcie_port: Option<String>,
 }
 
 #[derive(Copy, Clone)]
@@ -923,6 +927,7 @@ impl FromStr for DiskCli {
         let mut is_dvd = false;
         let mut underhill = None;
         let mut vtl = DeviceVtl::Vtl0;
+        let mut pcie_port = None;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().unwrap();
@@ -937,6 +942,10 @@ impl FromStr for DiskCli {
                 }
                 "uh" => underhill = Some(UnderhillDiskSource::Scsi),
                 "uh-nvme" => underhill = Some(UnderhillDiskSource::Nvme),
+                "pcie_port" => {
+                    let port = s.next().context("pcie_port requires port name")?;
+                    pcie_port = Some(String::from(port));
+                }
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -951,6 +960,7 @@ impl FromStr for DiskCli {
             read_only,
             is_dvd,
             underhill,
+            pcie_port,
         })
     }
 }

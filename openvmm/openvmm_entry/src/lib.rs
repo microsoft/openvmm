@@ -506,8 +506,13 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        ref pcie_port,
     } in &opt.disk
     {
+        if pcie_port.is_some() {
+            anyhow::bail!("`--disk` is incompatible with PCIe");
+        }
+
         storage.add(
             vtl,
             underhill,
@@ -542,12 +547,13 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        ref pcie_port,
     } in &opt.nvme
     {
         storage.add(
             vtl,
             underhill,
-            storage_builder::DiskLocation::Nvme(None),
+            storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
             kind,
             is_dvd,
             read_only,
