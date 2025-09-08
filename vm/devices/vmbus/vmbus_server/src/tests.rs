@@ -931,13 +931,13 @@ async fn test_server_monitor_page_helper(
         let flags =
             protocol::FeatureFlags::from_bits(response.version_response2.supported_features);
         assert!(flags.server_specified_monitor_pages());
-        assert_eq!(response.parent_to_child_monitor_page_gpa, 0x123000);
-        assert_eq!(response.child_to_parent_monitor_page_gpa, 0x124000);
+        assert_eq!(response.parent_to_child_monitor_page_gpa, 0);
+        assert_eq!(response.child_to_parent_monitor_page_gpa, 0x123000);
         assert_eq!(
             env.synic.inner.lock().monitor_page,
             Some(MonitorPageGpas {
-                parent_to_child: 0x123000,
-                child_to_parent: 0x124000,
+                parent_to_child: 0,
+                child_to_parent: 0x123000,
             })
         );
     } else {
