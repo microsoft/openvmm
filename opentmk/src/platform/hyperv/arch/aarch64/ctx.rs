@@ -123,7 +123,7 @@ impl VtlPlatformTrait for HvTestCtx {
     /// Return from a high VTL back to the low VTL (`vtl_return`).
     fn switch_to_low_vtl(&mut self) {}
 
-    fn set_vp_state_with_vtl(
+    fn set_vp_register_with_vtl(
         &mut self,
         register_index: u32,
         value: u64,
@@ -137,7 +137,7 @@ impl VtlPlatformTrait for HvTestCtx {
             .map_err(|e| e.into())
     }
 
-    fn get_vp_state_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64> {
+    fn get_vp_register_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64> {
         let vtl = vtl_transform(vtl);
         self.hvcall
             .get_register(hvdef::HvRegisterName(register_index), Some(vtl))

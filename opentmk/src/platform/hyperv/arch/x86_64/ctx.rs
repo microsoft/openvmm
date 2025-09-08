@@ -36,7 +36,6 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     /// Configure the Secure Interrupt Message Page (SIMP) and the first
     /// SynIC interrupt (SINT0) so that the hypervisor can vector
     /// hypervisor side notifications back to the guest.  
-    /// Returns [`TmkError`] if the allocation of the SIMP buffer fails.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
         let layout = Layout::from_size_align(4096, 4096).map_err(|_| TmkError::AllocationFailed)?;
 
@@ -66,15 +65,12 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
 #[cfg(feature = "nightly")]
 impl InterruptPlatformTrait for HvTestCtx {
     /// Install an interrupt handler for the supplied vector on x86-64.
-    /// For non-x86-64 targets the call returns
-    /// [`TmkError::NotImplemented`].
     fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) -> TmkResult<()> {
         crate::arch::interrupt::set_handler(interrupt_idx, handler);
         Ok(())
     }
 
     /// Initialise the minimal in-guest interrupt infrastructure
-    /// (IDT/GIC, etc. depending on architecture).
     fn setup_interrupt_handler(&mut self) -> TmkResult<()> {
         crate::arch::interrupt::init();
         Ok(())
@@ -382,7 +378,8 @@ impl VtlPlatformTrait for HvTestCtx {
         }
     }
 
-    fn set_vp_state_with_vtl(
+    // Set the state of a virtual processor (VP) with the specified VTL.
+    fn set_vp_register_with_vtl(
         &mut self,
         register_index: u32,
         value: u64,
@@ -396,7 +393,7 @@ impl VtlPlatformTrait for HvTestCtx {
             .map_err(|e| e.into())
     }
 
-    fn get_vp_state_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64> {
+    fn get_vp_register_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64> {
         let vtl = vtl_transform(vtl);
         self.hvcall
             .get_register(hvdef::HvRegisterName(register_index), Some(vtl))
@@ -406,6 +403,7 @@ impl VtlPlatformTrait for HvTestCtx {
 }
 
 impl HvTestCtx {
+    /// Return the index of the VP that is currently executing this code.
     pub(crate) fn get_vp_idx() -> u32 {
         // SAFETY: we are executing a valid CPUID instruction.
         let result = unsafe { core::arch::x86_64::__cpuid(0x1) };
@@ -423,12 +421,12 @@ impl HvTestCtx {
             Vtl::Vtl1 => HvTestCtx::secure_exec_handler,
             _ => return Err(TmkError::InvalidParameter),
         };
-        self.run_fn_with_current_context(handler)
+        self.exec_fn_with_current_context(handler)
     }
 
-    /// Helper to wrap an arbitrary function with a captured VP context
+    /// Helper to return an arbitrary function with a captured VP context
     /// that can later be used to start a new VP/VTL instance.
-    fn run_fn_with_current_context(&mut self, func: fn()) -> Result<InitialVpContextX64, TmkError> {
+    fn exec_fn_with_current_context(&mut self, func: fn()) -> Result<InitialVpContextX64, TmkError> {
         let mut vp_context: InitialVpContextX64 = self
             .hvcall
             .get_current_vtl_vp_context()

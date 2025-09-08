@@ -184,7 +184,7 @@ impl HvCall {
     // avoiding inline for debuggability in release builds 
     #[inline(never)]
     /// Invokes the VtlCall hypercall.
-    pub fn vtl_call() {
+    pub(crate) fn vtl_call() {
         let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()
             .with_code(hvdef::HypercallCode::HvCallVtlCall.0)
             .with_rep_count(0);
@@ -195,7 +195,7 @@ impl HvCall {
     // avoiding inline for debuggability in release builds 
     #[inline(never)]
     /// Invokes the VtlReturn hypercall.
-    pub fn vtl_return() {
+    pub(crate) fn vtl_return() {
         let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()
             .with_code(hvdef::HypercallCode::HvCallVtlReturn.0)
             .with_rep_count(0);

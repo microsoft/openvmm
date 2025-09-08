@@ -146,12 +146,9 @@ impl HvCall {
 
     /// Enables VTL protection for the specified VTL.
     pub fn enable_vtl_protection(&mut self, vtl: HvInputVtl) -> Result<(), hvdef::HvError> {
-        // let hvreg = self.get_register(HvX64RegisterName::VsmPartitionConfig.into(), Some(vtl))?;
         let mut hvreg: HvRegisterVsmPartitionConfig = HvRegisterVsmPartitionConfig::new();
         hvreg.set_enable_vtl_protection(true);
-        // hvreg.set_intercept_page(true);
         hvreg.set_default_vtl_protection_mask(0xF);
-        // hvreg.set_intercept_enable_vtl_protection(true);
         let bits = hvreg.into_bits();
         let hvre: HvRegisterValue = HvRegisterValue::from(bits);
         self.set_register(
@@ -188,7 +185,6 @@ impl HvCall {
 
     /// Initializes the hypercall interface.
     pub fn initialize(&mut self) {
-        // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
         // This is an idempotent operation, so we can call it multiple times.
         // we proceed and initialize the hypercall interface because we don't know the current vtl

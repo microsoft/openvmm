@@ -104,10 +104,12 @@ pub trait VtlPlatformTrait {
     /// Switches the current hardware thread back to the lower privileged VTL.
     fn switch_to_low_vtl(&mut self);
 
-    fn set_vp_state_with_vtl(&mut self, register_index: u32, value: u64, vtl: Vtl)
+    /// Sets the state of a register on a VP in a specific VTL.
+    fn set_vp_register_with_vtl(&mut self, register_index: u32, value: u64, vtl: Vtl)
         -> TmkResult<()>;
 
-    fn get_vp_state_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64>;
+    /// Gets the state of a register on a VP in a specific VTL.
+    fn get_vp_register_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64>;
 }
 
 pub struct VpExecutor<T> {
