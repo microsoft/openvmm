@@ -271,7 +271,6 @@ enum DeviceRequest {
 enum AssignedResourcesReplyType {
     V1,
     V2,
-    V3,
 }
 
 fn get_interrupt_type(mode: vpci_protocol::DeliveryMode) -> Result<InterruptType, PacketError> {
@@ -342,7 +341,12 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
                     .collect::<Result<Vec<_>, _>>()?,
                 ),
                 protocol::MessageType::ASSIGNED_RESOURCES3 => (
-                    AssignedResourcesReplyType::V3,
+                    // Weirdly enough, the reply still uses the V2 resource
+                    // format even though the request has the V3 resource type.
+                    // This is not lossy since the reply format is the same between
+                    // V2 and V3; V3 just has more padding in order to fit the V3
+                    // request format.
+                    AssignedResourcesReplyType::V2,
                     <[protocol::MsiResource3]>::ref_from_prefix_with_elems(
                         rest,
                         msg.msi_resource_count as usize,
@@ -791,9 +795,6 @@ impl ReadyState {
                             }
                             AssignedResourcesReplyType::V2 => {
                                 tr.extend(protocol::MsiResource2::from(r).as_bytes());
-                            }
-                            AssignedResourcesReplyType::V3 => {
-                                tr.extend(protocol::MsiResource3::from(r).as_bytes());
                             }
                         })
                         .await?;
