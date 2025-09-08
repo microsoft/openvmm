@@ -100,7 +100,6 @@ impl TopologyBuilder<X86Topology> {
     ///
     /// Note that this only queries SMT state and the socket size, it does not
     /// otherwise affect APIC configuration.
-    #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
     pub fn from_cpuid(
         cpuid: &mut dyn FnMut(u32, u32) -> [u32; 4],
     ) -> Result<Self, HostTopologyError> {
