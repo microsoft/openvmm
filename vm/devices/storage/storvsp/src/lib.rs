@@ -145,9 +145,9 @@ impl InspectMut for StorageDevice {
                 .filter(|task| task.worker.has_state())
                 .enumerate(),
         )
-        .field_mut(
+        .field(
             "poll_mode_queue_depth",
-            &mut &self.controller.poll_mode_queue_depth,
+            inspect::AtomicMut(&self.controller.poll_mode_queue_depth),
         );
     }
 }
