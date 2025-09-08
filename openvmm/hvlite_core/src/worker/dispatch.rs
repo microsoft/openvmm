@@ -33,6 +33,7 @@ use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::PcieRootComplexConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
@@ -170,6 +171,7 @@ impl Manifest {
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
+            pcie_devices: config.pcie_devices,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
@@ -212,6 +214,7 @@ pub struct Manifest {
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pcie_devices: Vec<PcieDeviceConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -1805,6 +1808,37 @@ impl InitializedVm {
             }
         }
 
+        for dev_cfg in cfg.pcie_devices {
+            let dev_name = format!("pcie:{}-{}", dev_cfg.port_name, dev_cfg.resource.id());
+            let mut msi_set = MsiInterruptSet::new();
+            chipset_builder
+                .arc_mutex_device(dev_name)
+                .on_pcie_port(vmotherboard::BusId::new(&dev_cfg.port_name))
+                .try_add_async(async |services| {
+                    resolver
+                        .resolve(
+                            dev_cfg.resource,
+                            pci_resources::ResolvePciDeviceHandleParams {
+                                register_msi: &mut msi_set,
+                                register_mmio: &mut services.register_mmio(),
+                                driver_source: &driver_source,
+                                guest_memory: &gm,
+                                doorbell_registration: partition
+                                    .clone()
+                                    .into_doorbell_registration(Vtl::Vtl0),
+                                shared_mem_mapper: Some(&mapper),
+                            },
+                        )
+                        .await
+                        .map(|r| r.0)
+                })
+                .await?;
+
+            if let Some(target) = partition.clone().into_msi_target(Vtl::Vtl0) {
+                msi_set.connect(target.as_ref());
+            }
+        }
+
         if let Some(vmbus_cfg) = cfg.vmbus {
             if !cfg.hypervisor.with_hv {
                 anyhow::bail!("vmbus required hypervisor enlightements");
@@ -3034,6 +3068,7 @@ impl LoadedVm {
             floppy_disks: vec![],        // TODO
             ide_disks: vec![],           // TODO
             pcie_root_complexes: vec![], // TODO
+            pcie_devices: vec![],        // TODO
             vpci_devices: vec![],        // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),

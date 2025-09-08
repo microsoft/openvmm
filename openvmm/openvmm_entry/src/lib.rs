@@ -1351,6 +1351,7 @@ fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         pcie_root_complexes,
+        pcie_devices: Vec::new(),
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {
