@@ -75,6 +75,8 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
+use pcie::root::GenericPcieRootComplex;
+use pcie::root::GenericPcieRootPortDefinition;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -1762,6 +1764,28 @@ impl InitializedVm {
                         high_mmio_address..high_mmio_address + rc.high_mmio_size,
                     ),
                 };
+
+                let device_name = format!("pcie-rc{}:{}", host_bridge.index, rc.name);
+                let _root_complex =
+                    chipset_builder
+                        .arc_mutex_device(device_name)
+                        .add(|services| {
+                            let root_port_definitions = rc
+                                .ports
+                                .into_iter()
+                                .map(|rp_cfg| GenericPcieRootPortDefinition {
+                                    name: rp_cfg.name.into(),
+                                })
+                                .collect();
+
+                            GenericPcieRootComplex::new(
+                                &mut services.register_mmio(),
+                                host_bridge.start_bus,
+                                host_bridge.end_bus,
+                                host_bridge.ecam_range.start(),
+                                root_port_definitions,
+                            )
+                        })?;
 
                 pcie_host_bridges.push(host_bridge);
 
