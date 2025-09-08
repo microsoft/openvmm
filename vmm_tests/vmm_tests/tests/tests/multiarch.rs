@@ -471,6 +471,27 @@ async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
     Ok(())
 }
 
+// Test AP startup on a TDX CVM with a numa topology s.t.
+// APIC_ID != VCPU Index
+#[vmm_test_no_agent(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn mailbox_tdx<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 10,
+            vps_per_socket: Some(4),
+            ..Default::default()
+        })
+        .run_without_agent()
+        .await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Openhcl boot test with MNF enabled in vmbus relay.
 ///
 /// TODO: Remove the no_agent version below once agents are supported in CVMs.
