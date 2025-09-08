@@ -213,16 +213,8 @@ impl QueuePair {
             };
         let dma_client = device.dma_client();
 
-        // FIXME: do not round to 2mb here but chunk it in dma_manager itself
-        let rounded_2mb = (total_size / (2 * 1024 * 1024) + 1) * (2 * 1024 * 1024);
-        tracing::error!(
-            total_size,
-            extra_bytes = rounded_2mb - total_size,
-            "nvme queues"
-        );
-
         let mem = dma_client
-            .allocate_dma_buffer(rounded_2mb)
+            .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
 
         assert!(sq_entries <= Self::MAX_SQ_ENTRIES);

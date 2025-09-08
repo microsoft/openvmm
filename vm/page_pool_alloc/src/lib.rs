@@ -954,7 +954,7 @@ impl PagePoolAllocator {
                         va: allocation.base.cast(),
                         allocation_index,
                     },
-                    size_pages,
+                    size_pages: allocation.len_bytes as u64 / PAGE_SIZE,
                     state: SlotState::Free,
                 });
                 pages.push(allocation);

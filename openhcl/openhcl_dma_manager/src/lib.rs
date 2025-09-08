@@ -117,6 +117,7 @@ pub struct OpenhclDmaManager {
     shared_pool: Option<PagePool>,
     /// Page pool with pages that are mapped with private visibility on CVMs.
     private_pool: Option<PagePool>,
+    growable_pool: PagePool,
     #[inspect(skip)]
     inner: Arc<DmaManagerInner>,
 }
@@ -155,6 +156,7 @@ pub struct DmaClientParameters {
 struct DmaManagerInner {
     shared_spawner: Option<PagePoolAllocatorSpawner>,
     private_spawner: Option<PagePoolAllocatorSpawner>,
+    growable_spawner: PagePoolAllocatorSpawner,
     lower_vtl: Option<Arc<DmaManagerLowerVtl>>,
 }
 
@@ -291,7 +293,12 @@ impl DmaManagerInner {
                     LowerVtlPermissionPolicy::Any => {
                         // No persistence needed means the `LockedMemorySpawner`
                         // using normal VTL2 ram is fine.
-                        DmaClientBacking::LockedMemory(LockedMemorySpawner)
+                        // DmaClientBacking::LockedMemory(LockedMemorySpawner)
+                        DmaClientBacking::GrowablePool(
+                            self.growable_spawner
+                                .allocator(device_name.into())
+                                .context("failed to create growable allocator")?,
+                        )
                     }
                     LowerVtlPermissionPolicy::Vtl0 => {
                         // `LockedMemorySpawner` uses private VTL2 ram, so
@@ -347,10 +354,14 @@ impl OpenhclDmaManager {
             )
         };
 
+        let growable_pool =
+            PagePool::new_growable().context("failed to create growable page pool")?;
+
         Ok(OpenhclDmaManager {
             inner: Arc::new(DmaManagerInner {
                 shared_spawner: shared_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 private_spawner: private_pool.as_ref().map(|pool| pool.allocator_spawner()),
+                growable_spawner: growable_pool.allocator_spawner(),
                 lower_vtl: if isolation_type.is_hardware_isolated() {
                     None
                 } else {
@@ -359,6 +370,7 @@ impl OpenhclDmaManager {
             }),
             shared_pool,
             private_pool,
+            growable_pool,
         })
     }
 
@@ -415,7 +427,8 @@ impl DmaClientSpawner {
 enum DmaClientBacking {
     SharedPool(#[inspect(skip)] PagePoolAllocator),
     PrivatePool(#[inspect(skip)] PagePoolAllocator),
-    LockedMemory(#[inspect(skip)] LockedMemorySpawner),
+    // LockedMemory(#[inspect(skip)] LockedMemorySpawner),
+    GrowablePool(#[inspect(skip)] PagePoolAllocator),
     PrivatePoolLowerVtl(#[inspect(skip)] LowerVtlMemorySpawner<PagePoolAllocator>),
     LockedMemoryLowerVtl(#[inspect(skip)] LowerVtlMemorySpawner<LockedMemorySpawner>),
 }
@@ -428,7 +441,8 @@ impl DmaClientBacking {
         match self {
             DmaClientBacking::SharedPool(allocator) => allocator.allocate_dma_buffer(total_size),
             DmaClientBacking::PrivatePool(allocator) => allocator.allocate_dma_buffer(total_size),
-            DmaClientBacking::LockedMemory(spawner) => spawner.allocate_dma_buffer(total_size),
+            // DmaClientBacking::LockedMemory(spawner) => spawner.allocate_dma_buffer(total_size),
+            DmaClientBacking::GrowablePool(allocator) => allocator.allocate_dma_buffer(total_size),
             DmaClientBacking::PrivatePoolLowerVtl(spawner) => {
                 spawner.allocate_dma_buffer(total_size)
             }
@@ -442,7 +456,8 @@ impl DmaClientBacking {
         match self {
             DmaClientBacking::SharedPool(allocator) => allocator.attach_pending_buffers(),
             DmaClientBacking::PrivatePool(allocator) => allocator.attach_pending_buffers(),
-            DmaClientBacking::LockedMemory(spawner) => spawner.attach_pending_buffers(),
+            // DmaClientBacking::LockedMemory(spawner) => spawner.attach_pending_buffers(),
+            DmaClientBacking::GrowablePool(allocator) => allocator.attach_pending_buffers(),
             DmaClientBacking::PrivatePoolLowerVtl(spawner) => spawner.attach_pending_buffers(),
             DmaClientBacking::LockedMemoryLowerVtl(spawner) => spawner.attach_pending_buffers(),
         }
