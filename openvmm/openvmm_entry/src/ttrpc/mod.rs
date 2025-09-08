@@ -14,6 +14,7 @@ use futures::StreamExt;
 use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
+use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
@@ -457,6 +458,7 @@ impl VmService {
             load_mode,
             ide_disks: vec![],
             floppy_disks: vec![],
+            pcie_root_complexes: vec![],
             vpci_devices: vec![],
             memory: MemoryConfig {
                 mem_size: req_config
@@ -468,6 +470,7 @@ impl VmService {
                     .context("invalid memory configuration")?,
                 mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
                 prefetch_memory: false,
+                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {

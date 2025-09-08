@@ -546,6 +546,31 @@ flags:
     /// Perform a default boot even if boot entries exist and fail
     #[clap(long)]
     pub default_boot_always_attempt: bool,
+
+    /// Attach a PCI Express root complex to the VM
+    #[clap(long_help = r#"
+e.g: --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G
+
+syntax: <name>[,opt=arg,...]
+
+options:
+    `segment=<value>`              configures the PCI Express segment, default 0
+    `start_bus=<value>`            lowest valid bus number, default 0
+    `end_bus=<value>`              highest valid bus number, default 255
+    `low_mmio=<size>`              low MMIO window size, default 4M
+    `high_mmio=<size>`             high MMIO window size, default 1G
+"#)]
+    #[clap(long, conflicts_with("pcat"))]
+    pub pcie_root_complex: Vec<PcieRootComplexCli>,
+
+    /// Attach a PCI Express root root port to the VM
+    #[clap(long_help = r#"
+e.g: --pcie-root-port rc0:rc0rp0
+
+syntax: <root_complex_name>:<name>
+"#)]
+    #[clap(long, conflicts_with("pcat"))]
+    pub pcie_root_port: Vec<PcieRootPortCli>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1358,6 +1383,113 @@ pub enum UefiConsoleModeCli {
     None,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieRootComplexCli {
+    pub name: String,
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    pub low_mmio: u32,
+    pub high_mmio: u64,
+}
+
+impl FromStr for PcieRootComplexCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = s.split(',');
+        let name = opts.next().context("expected root complex name")?;
+        if name.is_empty() {
+            anyhow::bail!("must provide a root complex name");
+        }
+
+        let mut segment = 0;
+        let mut start_bus = 0;
+        let mut end_bus = 255;
+        let mut low_mmio = 4 * 1024 * 1024;
+        let mut high_mmio = 1024 * 1024 * 1024;
+        for opt in opts {
+            let mut s = opt.split('=');
+            let opt = s.next().context("expected option")?;
+            match opt {
+                "segment" => {
+                    let seg_str = s.next().context("expected segment number")?;
+                    segment = u16::from_str(seg_str).context("failed to parse segment number")?;
+                }
+                "start_bus" => {
+                    let bus_str = s.next().context("expected start bus number")?;
+                    start_bus =
+                        u8::from_str(bus_str).context("failed to parse start bus number")?;
+                }
+                "end_bus" => {
+                    let bus_str = s.next().context("expected end bus number")?;
+                    end_bus = u8::from_str(bus_str).context("failed to parse end bus number")?;
+                }
+                "low_mmio" => {
+                    let low_mmio_str = s.next().context("expected low MMIO size")?;
+                    low_mmio = parse_memory(low_mmio_str)
+                        .context("failed to parse low MMIO size")?
+                        .try_into()?;
+                }
+                "high_mmio" => {
+                    let high_mmio_str = s.next().context("expected high MMIO size")?;
+                    high_mmio =
+                        parse_memory(high_mmio_str).context("failed to parse high MMIO size")?;
+                }
+                opt => anyhow::bail!("unknown option: '{opt}'"),
+            }
+        }
+
+        if start_bus >= end_bus {
+            anyhow::bail!("start_bus must be below end_bus");
+        }
+
+        Ok(PcieRootComplexCli {
+            name: name.to_string(),
+            segment,
+            start_bus,
+            end_bus,
+            low_mmio,
+            high_mmio,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieRootPortCli {
+    pub root_complex_name: String,
+    pub name: String,
+}
+
+impl FromStr for PcieRootPortCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = s.split(',');
+        let names = opts.next().context("expected root port identifiers")?;
+        if names.is_empty() {
+            anyhow::bail!("must provide a root port identifiers");
+        }
+
+        let mut s = names.split(':');
+        let rc_name = s.next().context("expected name of parent root complex")?;
+        let rp_name = s.next().context("expect root port name")?;
+
+        if let Some(extra) = s.next() {
+            anyhow::bail!("unexpected token: '{extra}'")
+        }
+
+        if let Some(extra) = opts.next() {
+            anyhow::bail!("unexpected token: '{extra}'")
+        }
+
+        Ok(PcieRootPortCli {
+            root_complex_name: rc_name.to_string(),
+            name: rp_name.to_string(),
+        })
+    }
+}
+
 /// Read a environment variable that may / may-not have a target-specific
 /// prefix. e.g: `default_value_from_arch_env("FOO")` would first try and read
 /// from `FOO`, and if that's not found, it will try `X86_64_FOO`.
@@ -1836,5 +1968,137 @@ mod tests {
         // Test error cases
         assert!(FloppyDiskCli::from_str("").is_err());
         assert!(FloppyDiskCli::from_str("file:/path/to/floppy.img,invalid").is_err());
+    }
+
+    #[test]
+    fn test_pcie_root_complex_from_str() {
+        const ONE_MB: u64 = 1024 * 1024;
+        const ONE_GB: u64 = 1024 * ONE_MB;
+
+        const DEFAULT_LOW_MMIO: u32 = (4 * ONE_MB) as u32;
+        const DEFAULT_HIGH_MMIO: u64 = ONE_GB;
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc0").unwrap(),
+            PcieRootComplexCli {
+                name: "rc0".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc1,segment=1").unwrap(),
+            PcieRootComplexCli {
+                name: "rc1".to_string(),
+                segment: 1,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc2,start_bus=32").unwrap(),
+            PcieRootComplexCli {
+                name: "rc2".to_string(),
+                segment: 0,
+                start_bus: 32,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc3,end_bus=31").unwrap(),
+            PcieRootComplexCli {
+                name: "rc3".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 31,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc4,start_bus=32,end_bus=127,high_mmio=2G").unwrap(),
+            PcieRootComplexCli {
+                name: "rc4".to_string(),
+                segment: 0,
+                start_bus: 32,
+                end_bus: 127,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: 2 * ONE_GB,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc5,segment=2,start_bus=32,end_bus=127").unwrap(),
+            PcieRootComplexCli {
+                name: "rc5".to_string(),
+                segment: 2,
+                start_bus: 32,
+                end_bus: 127,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc6,low_mmio=1M,high_mmio=64G").unwrap(),
+            PcieRootComplexCli {
+                name: "rc6".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: ONE_MB as u32,
+                high_mmio: 64 * ONE_GB,
+            }
+        );
+
+        // Error cases
+        assert!(PcieRootComplexCli::from_str("").is_err());
+        assert!(PcieRootComplexCli::from_str("poorly,").is_err());
+        assert!(PcieRootComplexCli::from_str("configured,complex").is_err());
+        assert!(PcieRootComplexCli::from_str("fails,start_bus=foo").is_err());
+        assert!(PcieRootComplexCli::from_str("fails,start_bus=32,end_bus=31").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,start_bus=256").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,end_bus=256").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,low_mmio=5G").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,low_mmio=aG").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,high_mmio=bad").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,high_mmio").is_err());
+    }
+
+    #[test]
+    fn test_pcie_root_port_from_str() {
+        assert_eq!(
+            PcieRootPortCli::from_str("rc0:rc0rp0").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "rc0".to_string(),
+                name: "rc0rp0".to_string()
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port2").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port2".to_string()
+            }
+        );
+
+        // Error cases
+        assert!(PcieRootPortCli::from_str("").is_err());
+        assert!(PcieRootPortCli::from_str("rp0").is_err());
+        assert!(PcieRootPortCli::from_str("rp0,opt").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,rp3").is_err());
     }
 }

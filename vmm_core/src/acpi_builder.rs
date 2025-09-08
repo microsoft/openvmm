@@ -16,6 +16,7 @@ use chipset::psp;
 use inspect::Inspect;
 use std::collections::BTreeMap;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::aarch64::Aarch64Topology;
@@ -44,6 +45,10 @@ pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     ///
     /// If and only if this is set, then the PPTT table will be generated.
     pub cache_topology: Option<&'a CacheTopology>,
+    /// The PCIe topology.
+    ///
+    /// If and only if this has root complexes, then an MCFG will be generated.
+    pub pcie_host_bridges: &'a Vec<PcieHostBridge>,
     /// If an ioapic is present.
     pub with_ioapic: bool,
     /// If a PIC is present.
@@ -229,6 +234,37 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 flags,
             },
             &[madt_extra.as_slice()],
+        ))
+    }
+
+    fn with_mcfg<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        let mut mcfg_extra: Vec<u8> = Vec::new();
+        for bridge in self.pcie_host_bridges {
+            // Note: The topology representation of the host bridge reflects
+            // the actual MMIO region regardless of starting bus number, but the
+            // address reported in the MCFG table must reflect wherever bus number
+            // 0 would be accessible even if the host bridge has a different starting
+            // bus number.
+            let ecam_region_offset = (bridge.start_bus as u64) * 256 * 4096;
+            mcfg_extra.extend_from_slice(
+                acpi_spec::mcfg::McfgSegmentBusRange::new(
+                    bridge.ecam_range.start() - ecam_region_offset,
+                    bridge.segment,
+                    bridge.start_bus,
+                    bridge.end_bus,
+                )
+                .as_bytes(),
+            )
+        }
+
+        (f)(&acpi::builder::Table::new_dyn(
+            acpi_spec::mcfg::MCFG_REVISION,
+            None,
+            &acpi_spec::mcfg::McfgHeader::new(),
+            &[mcfg_extra.as_slice()],
         ))
     }
 
@@ -535,6 +571,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         self.with_madt(|t| b.append(t));
         self.with_srat(|t| b.append(t));
+        if !self.pcie_host_bridges.is_empty() {
+            self.with_mcfg(|t| b.append(t));
+        }
         if self.cache_topology.is_some() {
             self.with_pptt(|t| b.append(t));
         }
@@ -554,6 +593,12 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// the ACPI tables.
     pub fn build_srat(&self) -> Vec<u8> {
         self.with_srat(|t| t.to_vec(&OEM_INFO))
+    }
+
+    /// Helper method to construct a MCFG without constructing the rest of the
+    /// ACPI tables.
+    pub fn build_mcfg(&self) -> Vec<u8> {
+        self.with_mcfg(|t| t.to_vec(&OEM_INFO))
     }
 
     /// Helper method to construct a PPTT without constructing the rest of the
