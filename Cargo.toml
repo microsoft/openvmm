@@ -27,8 +27,6 @@ members = [
   "support/sparse_mmap/fuzz",
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
-  #opentmk support
-  "support/nostd_spin_channel",
   "vm/devices/firmware/firmware_uefi/fuzz",
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
@@ -121,6 +119,7 @@ mesh_remote = { path = "support/mesh/mesh_remote" }
 mesh_rpc = { path = "support/mesh/mesh_rpc" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
+nostd_spin_channel = { path = "support/nostd_spin_channel"}
 open_enum = { path = "support/open_enum" }
 openssl_kdf = { path = "support/openssl_kdf" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
@@ -377,9 +376,6 @@ vnc_worker = { path = "workers/vnc_worker" }
 vnc_worker_defs = { path = "workers/vnc_worker_defs" }
 vnc = { path = "workers/vnc_worker/vnc" }
 profiler_worker = { path = "openhcl/profiler_worker" }
-
-# opentmk
-nostd_spin_channel = { path = "support/nostd_spin_channel"}
 
 # crates.io
 anyhow = "1.0"

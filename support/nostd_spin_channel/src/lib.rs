@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(unsafe_code)]
 extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -28,11 +27,6 @@ struct ChannelInner<T> {
     receivers: AtomicUsize,
 }
 
-// SAFETY: ChannelInner<T> is safe to share across threads as it uses atomic operations for senders and receivers counts
-unsafe impl<T: Send> Send for ChannelInner<T> {}
-// SAFETY: ChannelInner<T> is safe to use across threads as it uses atomic operations for senders and receivers counts
-unsafe impl<T: Send> Sync for ChannelInner<T> {}
-
 /// Error type for sending operations
 #[derive(Debug, Eq, PartialEq, Error)]
 pub enum SendError<T> {
@@ -48,6 +42,8 @@ pub enum RecvError {
     Empty,
     #[error("receive failed because all senders are disconnected")]
     Disconnected,
+    #[error("channel is locked by another operation")]
+    Unavailable
 }
 
 /// Sender half of the channel
@@ -204,13 +200,20 @@ impl<T> Receiver<T> {
     /// Tries to receive an element from the front of the queue while blocking
     /// Returns Ok(value) if successful, Err(RecvError) otherwise
     pub fn recv(&self) -> Result<T, RecvError> {
-        loop {
-            match self.try_recv() {
-                Ok(value) => return Ok(value),
-                Err(RecvError::Empty) => {
-                    // Yield to the scheduler and try again
+        // Use a separate scope for the lock to ensure it's released promptly
+        let result = {
+            let mut buffer = self.inner.buffer.lock();
+            buffer.pop_front()
+        };
+         match result {
+            Some(val) => Ok(val),
+            None => {
+                // Check if there are any senders left
+                if self.inner.senders.load(Ordering::SeqCst) == 0 {
+                    Err(RecvError::Disconnected)
+                } else {
+                    Err(RecvError::Empty)
                 }
-                Err(err) => return Err(err),
             }
         }
     }
@@ -220,8 +223,11 @@ impl<T> Receiver<T> {
     pub fn try_recv(&self) -> Result<T, RecvError> {
         // Use a separate scope for the lock to ensure it's released promptly
         let result = {
-            let mut buffer = self.inner.buffer.lock();
-            buffer.pop_front()
+            let mut buffer = self.inner.buffer.try_lock();
+            if buffer.is_none() {
+                return Err(RecvError::Unavailable);
+            }
+            buffer.as_mut().unwrap().pop_front()
         };
 
         match result {
@@ -239,7 +245,7 @@ impl<T> Receiver<T> {
 
     /// Tries to receive multiple elements at once, up to the specified limit
     /// Returns a vector of received elements
-    pub fn recv_batch(&self, max_items: usize) -> Vec<T>
+    pub fn try_recv_batch(&self, max_items: usize) -> Vec<T>
     where
         T: Send,
     {

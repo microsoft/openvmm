@@ -161,7 +161,7 @@ impl HvCall {
         )
     }
 
-    /// Hypercall for setting a register to a value.
+    /// Hypercall for getting a register value.
     pub fn get_register(
         &mut self,
         name: hvdef::HvRegisterName,
