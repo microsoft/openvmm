@@ -504,6 +504,7 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        pcie_port: _,
     } in &opt.disk
     {
         storage.add(
@@ -540,12 +541,13 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        ref pcie_port,
     } in &opt.nvme
     {
         storage.add(
             vtl,
             underhill,
-            storage_builder::DiskLocation::Nvme(None),
+            storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
             kind,
             is_dvd,
             read_only,
