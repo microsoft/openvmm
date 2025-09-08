@@ -797,7 +797,10 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
 mod weak_mutex_pci {
     use crate::chipset::PciConflict;
     use crate::chipset::PciConflictReason;
+    use crate::chipset::PcieConflict;
+    use crate::chipset::PcieConflictReason;
     use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
+    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPcie;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
@@ -883,6 +886,27 @@ mod weak_mutex_pci {
                     reason: PciConflictReason::ExistingDev(existing_dev),
                     conflict_dev: name,
                 })
+        }
+    }
+
+    // wiring to enable using the generic PCIe root port alongside the Arc+CloseableMutex device infra
+    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::root::GenericPcieRootComplex>> {
+        fn add_pcie_device(
+            &mut self,
+            port: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.lock()
+                .add_pcie_device(port, name.clone(), WeakMutexPciDeviceWrapper(dev))
+                .map_err(|(_, existing_dev)| PcieConflict {
+                    reason: PcieConflictReason::ExistingDev(existing_dev),
+                    conflict_dev: name,
+                })
+        }
+
+        fn downstream_ports(&self) -> Vec<(u8, Arc<str>)> {
+            self.lock().downstream_ports()
         }
     }
 }

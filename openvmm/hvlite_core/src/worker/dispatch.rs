@@ -1766,7 +1766,7 @@ impl InitializedVm {
                 };
 
                 let device_name = format!("pcie-rc{}:{}", host_bridge.index, rc.name);
-                let _root_complex =
+                let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
                         .add(|services| {
@@ -1787,6 +1787,8 @@ impl InitializedVm {
                             )
                         })?;
 
+                let bus_id = vmotherboard::BusId::new(&rc.name);
+                chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
                 pcie_host_bridges.push(host_bridge);
 
                 ecam_address += ecam_size;
