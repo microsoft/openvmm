@@ -90,6 +90,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>>;
 
+    /// Gets the [`MsiInterruptTarget`] interface for a particular VTL.
+    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>>;
+
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
 
@@ -202,6 +205,10 @@ where
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>> {
         self.doorbell_registration(minimum_vtl)
+    }
+
+    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
+        self.msi_interrupt_target(minimum_vtl)
     }
 
     fn supports_virtual_devices(&self) -> bool {

@@ -40,6 +40,7 @@ use memory::MemoryMapper;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
+use pci_core::msi::MsiInterruptTarget;
 use range_map_vec::RangeMap;
 use std::convert::Infallible;
 use std::ops::Index;
@@ -539,6 +540,10 @@ impl virt::Partition for WhpPartition {
         self: &Arc<Self>,
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>> {
+        Some(self.with_vtl(minimum_vtl).clone())
+    }
+
+    fn msi_interrupt_target(self: &Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
