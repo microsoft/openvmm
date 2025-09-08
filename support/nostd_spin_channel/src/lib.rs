@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use spin::MutexGuard;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
@@ -10,7 +11,7 @@ use thiserror::Error;
 
 /// An unbounded channel implementation with priority send capability.
 /// This implementation works in no_std environments using spin-rs.
-/// It uses a VecDeque as the underlying buffer and ensures non-blocking operations.
+/// It uses a VecDeque as the underlying buffer and provides blocking and non-blocking interfaces.
 pub struct Channel<T> {
     inner: Arc<ChannelInner<T>>,
 }
@@ -114,13 +115,7 @@ impl<T> Sender<T> {
     /// Sends an element to the back of the queue
     /// Returns Ok(()) if successful, Err(SendError) if all receivers have been dropped
     pub fn send(&self, value: T) -> Result<(), SendError> {
-        self.ensure_connected()?;
-
-        // Lock the buffer - only locked during the actual send operation
-        let mut buffer = self.inner.buffer.lock();
-
-        self.ensure_connected()?;
-
+        let mut buffer = self.buffer()?;
         // Push to the back of the queue - can't fail since we're unbounded
         buffer.push_back(value);
 
@@ -130,13 +125,8 @@ impl<T> Sender<T> {
     /// Sends an element to the front of the queue (highest priority)
     /// Returns Ok(()) if successful, Err(SendError) if all receivers have been dropped
     pub fn send_priority(&self, value: T) -> Result<(), SendError> {
-        self.ensure_connected()?;
+        let mut buffer = self.buffer()?;
 
-        // Lock the buffer - only locked during the actual send operation
-        let mut buffer = self.inner.buffer.lock();
-
-        self.ensure_connected()?;
-        
         // Push to the front of the queue - can't fail since we're unbounded
         buffer.push_front(value);
 
@@ -149,12 +139,7 @@ impl<T> Sender<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        self.ensure_connected()?;
-
-        // Lock the buffer once for the entire batch
-        let mut buffer = self.inner.buffer.lock();
-
-        self.ensure_connected()?;
+        let mut buffer = self.buffer()?;
 
         let mut count = 0;
 
@@ -177,11 +162,12 @@ impl<T> Sender<T> {
         self.inner.buffer.lock().is_empty()
     }
 
-    fn ensure_connected(&self) -> Result<(), SendError> {
+    fn buffer(&self) -> Result<MutexGuard<'_, VecDeque<T>>, SendError> {
         if self.inner.receivers.load(Ordering::SeqCst) == 0 {
             return Err(SendError::Disconnected);
         }
-        Ok(())
+        let buffer = self.inner.buffer.lock();
+        Ok(buffer)
     }
 }
 
