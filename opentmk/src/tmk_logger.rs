@@ -11,9 +11,12 @@ use spin::MutexGuard;
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::serial::InstrIoAccess;
+#[cfg(target_arch = "x86_64")]
 use crate::arch::serial::Serial;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::serial::SerialPort;
+#[cfg(target_arch = "aarch64")]
+use minimal_rt::arch::Serial;
 
 #[derive(Serialize)]
 struct LogEntry {
