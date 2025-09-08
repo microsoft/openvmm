@@ -31,7 +31,6 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         Ok(())
     }
 
-    /// Return the number of logical processors present in the machine
     fn get_vp_count(&self) -> TmkResult<u32> {
         unimplemented!();
     }
@@ -148,8 +147,6 @@ impl VtlPlatformTrait for HvTestCtx {
 }
 
 impl HvTestCtx {
-    /// Capture the current VP context, patch the entry point and stack
-    /// so that the new VP starts in `exec_handler`.
     fn get_default_context(&mut self, _vtl: Vtl) -> Result<InitialVpContextArm64, TmkError> {
         unimplemented!("aarch64 not implemented");
     }
