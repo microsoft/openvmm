@@ -79,9 +79,8 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 
 #[cfg(windows)] // requires VPCI support, which is only on Windows right now
 #[vmm_test(
-    // TODO: aarch64 support (VPCI bugs/limitiations)
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // TODO: Linux image is missing VPCI driver in its initrd
     // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))
@@ -99,9 +98,9 @@ async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
 /// Tests NVMe boot with OpenHCL VPCI relaying enabled.
 #[cfg(windows)] // requires VPCI support, which is only on Windows right now
 #[vmm_test(
-    // TODO: aarch64 support (VPCI bugs/limitiations)
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    // TODO: aarch64 support (WHP missing ARM64 VTL2 support)
+    // openvmm_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    // openvmm_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // TODO: Linux image is missing VPCI driver in its initrd
     // openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
