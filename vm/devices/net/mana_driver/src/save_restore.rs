@@ -57,31 +57,13 @@ pub struct GdmaDriverSavedState {
     /// Minimum number of queues available
     #[mesh(12)]
     pub min_queue_avail: u32,
-
-    /// Saved interrupts for restoration
-    #[mesh(13)]
-    pub interrupt_config: Vec<InterruptSavedState>,
-
     /// Link status by vport index
-    #[mesh(14)]
+    #[mesh(13)]
     pub link_toggle: Vec<(u32, bool)>,
 
     /// The hwc failure state
-    #[mesh(15)]
+    #[mesh(14)]
     pub hwc_failure: bool,
-}
-
-/// Saved state of an interrupt for restoration during servicing
-#[derive(Protobuf, Clone, Debug)]
-#[mesh(package = "mana_driver")]
-pub struct InterruptSavedState {
-    /// The index in the msix table for this interrupt
-    #[mesh(1)]
-    pub msix_index: u32,
-
-    /// Which CPU this interrupt is assigned to
-    #[mesh(2)]
-    pub cpu: u32,
 }
 
 /// The saved state of a completion queue or event queue for restoration

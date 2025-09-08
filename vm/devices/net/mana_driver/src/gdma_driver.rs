@@ -11,7 +11,6 @@ use crate::resources::Resource;
 use crate::resources::ResourceArena;
 use crate::save_restore::DoorbellSavedState;
 use crate::save_restore::GdmaDriverSavedState;
-use crate::save_restore::InterruptSavedState;
 use crate::save_restore::SavedMemoryState;
 use anyhow::Context;
 use futures::FutureExt;
@@ -506,21 +505,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
-        let interrupt_config = self
-            .interrupts
-            .iter()
-            .enumerate()
-            .filter_map(|(index, interrupt)| {
-                if interrupt.is_some() {
-                    Some(InterruptSavedState {
-                        msix_index: index as u32,
-                        cpu: index as u32,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
 
         Ok(GdmaDriverSavedState {
             mem: SavedMemoryState {
@@ -540,7 +524,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             min_queue_avail: self.min_queue_avail,
             link_toggle: self.link_toggle.clone(),
             hwc_failure: self.hwc_failure,
-            interrupt_config,
         })
     }
 
@@ -638,11 +621,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         )?;
 
         let mut interrupts = vec![None; saved_state.num_msix as usize];
-        for int_state in &saved_state.interrupt_config {
-            let interrupt = device.map_interrupt(int_state.msix_index, int_state.cpu)?;
-
-            interrupts[int_state.msix_index as usize] = Some(interrupt);
-        }
+        interrupts[0] = Some(device.map_interrupt(0, 0)?);
 
         let mut this = Self {
             device: Some(device),
@@ -1272,12 +1251,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     fn get_msix_for_cpu(&mut self, cpu: u32) -> anyhow::Result<u32> {
         let msix = cpu % self.num_msix;
-        // Allocate MSI-X, if it hasn't been allocated so far.
-        if self.interrupts[msix as usize].is_none() {
-            let device = self.device.as_mut().expect("device should be present");
-            let interrupt = device.map_interrupt(msix, cpu)?;
-            self.interrupts[msix as usize] = Some(interrupt);
-        }
+        let device = self.device.as_mut().expect("device should be present");
+        let interrupt = device.map_interrupt(msix, cpu)?;
+        self.interrupts[msix as usize] = Some(interrupt);
 
         Ok(msix)
     }
