@@ -40,20 +40,24 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
         let layout = Layout::from_size_align(4096, 4096).map_err(|_| TmkError::AllocationFailed)?;
 
+        // SAFETY: the pointer is managed carefully and is not deallocated until the end of the test.
         let ptr = unsafe { alloc(layout) };
         let gpn = (ptr as u64) >> 12;
         let reg = (gpn << 12) | 0x1;
 
-        self.write_msr(hvdef::HV_X64_MSR_SIMP, reg)?;
+        // SAFETY: we are writing to a valid MSR.
+        unsafe { self.write_msr(hvdef::HV_X64_MSR_SIMP, reg)? };
         log::info!("Successfully set the SIMP register.");
 
-        let reg = self.read_msr(hvdef::HV_X64_MSR_SINT0)?;
+        // SAFETY: we are writing to a valid MSR.
+        let reg = unsafe { self.read_msr(hvdef::HV_X64_MSR_SINT0)? };
         let mut reg: hvdef::HvSynicSint = reg.into();
         reg.set_vector(interrupt_idx);
         reg.set_masked(false);
         reg.set_auto_eoi(true);
 
-        self.write_msr(hvdef::HV_X64_MSR_SINT0, reg.into())?;
+        // SAFETY: we are writing to a valid MSR.
+        unsafe { self.write_msr(hvdef::HV_X64_MSR_SINT0, reg.into())? };
         log::info!("Successfully set the SINT0 register.");
         Ok(())
     }
@@ -79,13 +83,15 @@ impl InterruptPlatformTrait for HvTestCtx {
 
 impl MsrPlatformTrait for HvTestCtx {
     /// Read an MSR directly from the CPU and return the raw value.
-    fn read_msr(&mut self, msr: u32) -> TmkResult<u64> {
+    unsafe fn read_msr(&mut self, msr: u32) -> TmkResult<u64> {
+        // SAFETY: tests should only read to valid MSRs. Caller must ensure safety.
         let r = unsafe { read_msr(msr) };
         Ok(r)
     }
 
     /// Write an MSR directly on the CPU.
-    fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()> {
+    unsafe fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()> {
+        // SAFETY: tests should only write to valid MSRs. Caller must ensure safety.
         unsafe { write_msr(msr, value) };
         Ok(())
     }
@@ -291,6 +297,8 @@ impl VtlPlatformTrait for HvTestCtx {
     /// one (`vtl_call`).
     #[inline(never)]
     fn switch_to_high_vtl(&mut self) {
+        // SAFETY: we are calling a valid function that switches to high VTL. With valid instructions
+        // to save restore register states.
         unsafe {
             asm!(
                 "
@@ -333,6 +341,8 @@ impl VtlPlatformTrait for HvTestCtx {
     /// Return from a high VTL back to the low VTL (`vtl_return`).
     #[inline(never)]
     fn switch_to_low_vtl(&mut self) {
+        // SAFETY: we are calling a valid function that switches to low VTL. With valid instructions
+        // to save restore register states.
         unsafe {
             asm!(
                 "
@@ -397,6 +407,7 @@ impl VtlPlatformTrait for HvTestCtx {
 
 impl HvTestCtx {
     pub(crate) fn get_vp_idx() -> u32 {
+        // SAFETY: we are executing a valid CPUID instruction.
         let result = unsafe { core::arch::x86_64::__cpuid(0x1) };
         (result.ebx >> 24) & 0xFF
     }
@@ -424,13 +435,14 @@ impl HvTestCtx {
             .expect("Failed to get current VTL context");
         let stack_layout = Layout::from_size_align(1024 * 1024, 16)
             .expect("Failed to create layout for stack allocation");
+        // SAFETY: the pointer is managed carefully and is not deallocated until the end of the test.
         let allocated_stack_ptr = unsafe { alloc(stack_layout) };
         if allocated_stack_ptr.is_null() {
-            return Err(TmkError::AllocationFailed.into());
+            return Err(TmkError::AllocationFailed);
         }
         let stack_size = stack_layout.size();
         let stack_top = allocated_stack_ptr as u64 + stack_size as u64;
-        let fn_address = func as u64;
+        let fn_address = func as usize as u64;
         vp_context.rip = fn_address;
         vp_context.rsp = stack_top;
         Ok(vp_context)

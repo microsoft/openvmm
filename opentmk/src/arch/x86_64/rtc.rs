@@ -43,7 +43,7 @@ impl core::fmt::Display for DateTime {
 
 // convert datetime to Unix epoch
 impl DateTime {
-    pub fn to_unix_epoch_sec(&self) -> u64 {
+    pub fn unix_epoch_sec(&self) -> u64 {
         // Check if a year is a leap year
         let is_leap_year =
             |year: u64| -> bool { (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 };
@@ -147,10 +147,10 @@ pub fn read_rtc() -> DateTime {
 }
 
 pub fn delay_sec(seconds: u64) {
-    let start = read_rtc().to_unix_epoch_sec();
+    let start = read_rtc().unix_epoch_sec();
     let end = start + seconds;
     loop {
-        let current = read_rtc().to_unix_epoch_sec();
+        let current = read_rtc().unix_epoch_sec();
         if current >= end {
             break;
         }

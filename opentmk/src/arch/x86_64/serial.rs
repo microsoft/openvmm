@@ -79,6 +79,7 @@ impl<T: IoAccess> Serial<T> {
     }
 
     pub fn init(&self) {
+        // SAFETY: Initializing the serial port is safe.
         unsafe {
             self.io.outb(self.serial_port.value() + 1, 0x00); // Disable all interrupts
             self.io.outb(self.serial_port.value() + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold

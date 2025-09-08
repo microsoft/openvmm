@@ -1,5 +1,4 @@
 use alloc::string::String;
-use alloc::string::ToString;
 use core::fmt::Write;
 
 use serde::Serialize;
@@ -53,8 +52,7 @@ where
 {
     let assert_json = AssertJson::new("assert", "WARN", s, line, assert_result, testname);
 
-    let out = serde_json::to_string(&assert_json).expect("Failed to serialize assert JSON");
-    let mut out = out.to_string();
+    let mut out = serde_json::to_string(&assert_json).expect("Failed to serialize assert JSON");
     if terminate_new_line {
         out.push('\n');
     }

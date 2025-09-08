@@ -27,7 +27,9 @@ where
     let tpm_ptr = (tpm_gpa as u64) as *mut u8;
 
     // build slice from pointer
+    // SAFETY: we trust the address set by UEFI is valid
     let tpm_command = unsafe { core::slice::from_raw_parts_mut(tpm_ptr, 4096) };
+    // SAFETY: we trust the address set by UEFI is valid
     let tpm_response = unsafe { core::slice::from_raw_parts_mut(tpm_ptr.add(4096), 4096) };
 
     _tpm.set_command_buffer(tpm_command);

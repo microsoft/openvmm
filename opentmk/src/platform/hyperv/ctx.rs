@@ -19,6 +19,7 @@ static mut CMD: Mutex<CommandTable> = Mutex::new(BTreeMap::new());
 
 #[expect(static_mut_refs)]
 pub(crate) fn cmdt() -> &'static Mutex<CommandTable> {
+    // SAFETY: CMD is only mutated through safe APIs and is protected by a Mutex.
     unsafe { &CMD }
 }
 

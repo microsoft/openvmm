@@ -85,16 +85,21 @@ impl HvCall {
         let mut context: InitialVpContextX64 = FromZeros::new_zeroed();
 
         let rsp: u64;
+        // SAFETY: we are reading the stack pointer register.
         unsafe { asm!("mov {0:r}, rsp", out(reg) rsp, options(nomem, nostack)) };
 
         let cr0;
+        // SAFETY: we are reading the control register.
         unsafe { asm!("mov {0:r}, cr0", out(reg) cr0, options(nomem, nostack)) };
         let cr3;
+        // SAFETY: we are reading the control register.
         unsafe { asm!("mov {0:r}, cr3", out(reg) cr3, options(nomem, nostack)) };
         let cr4;
+        // SAFETY: we are reading the control register.
         unsafe { asm!("mov {0:r}, cr4", out(reg) cr4, options(nomem, nostack)) };
 
         let rflags: u64;
+        // SAFETY: we are reading the rflags register.
         unsafe {
             asm!(
                 "pushfq",
@@ -121,6 +126,7 @@ impl HvCall {
         let fs: u16;
         let gs: u16;
 
+        // SAFETY: we are reading the segment registers.
         unsafe {
             asm!("
                 mov {0:x}, cs
@@ -168,6 +174,7 @@ impl HvCall {
         context.gdtr.base = gdtr.base.as_u64();
         context.gdtr.limit = gdtr.limit;
 
+        // SAFETY: we are reading a valid MSR.
         let efer = unsafe { read_msr(0xC0000080) };
         context.efer = efer;
 

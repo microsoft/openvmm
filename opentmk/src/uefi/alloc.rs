@@ -24,17 +24,21 @@ pub struct MemoryAllocator {
     uefi_allocator: Allocator,
 }
 
-#[expect(unsafe_code)]
+
+// SAFETY: The methods of GlobalAlloc are unsafe because the caller must ensure the safety
 unsafe impl GlobalAlloc for MemoryAllocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        // SAFETY: caller must ensure layout is valid
         unsafe { self.get_allocator().alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        // SAFETY: caller must ensure ptr and layout are valid
         unsafe { self.get_allocator().dealloc(ptr, layout) };
     }
 
     unsafe fn alloc_zeroed(&self, layout: core::alloc::Layout) -> *mut u8 {
+        // SAFETY: caller must ensure layout is valid
         unsafe { self.get_allocator().alloc_zeroed(layout) }
     }
 
@@ -44,6 +48,7 @@ unsafe impl GlobalAlloc for MemoryAllocator {
         layout: core::alloc::Layout,
         new_size: usize,
     ) -> *mut u8 {
+        // SAFETY: caller must ensure ptr is valid for layout
         unsafe { self.get_allocator().realloc(ptr, layout, new_size) }
     }
 }
@@ -61,6 +66,7 @@ impl MemoryAllocator {
             return false;
         }
         let ptr = mem.unwrap().as_ptr();
+        // SAFETY: its safe to init a locked heap at this point, we know memory allocated is valid
         unsafe { self.locked_heap.lock().init(ptr, size) };
         *self.use_locked_heap.lock().borrow_mut() = true;
         true

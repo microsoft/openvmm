@@ -65,6 +65,7 @@ where
 
         let layout =
             Layout::from_size_align(1024 * 1024, 4096).expect("msg: failed to create layout");
+        // SAFETY: we are allocating memory to heap, we don't free it in this test.
         let ptr = unsafe { alloc(layout) };
         log::info!("allocated some memory in the heap from vtl1");
 

@@ -64,6 +64,7 @@ where
 
         let layout =
             Layout::from_size_align(1024 * 1024, 4096).expect("msg: failed to create layout");
+        // SAFETY: we are allocating memory to heap, we don't free it in this test.
         let ptr = unsafe { alloc(layout) };
         log::info!("allocated some memory in the heap from vtl1");
 
@@ -108,7 +109,7 @@ where
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
     let r = ctx.start_on_vp(
-        VpExecutor::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| unsafe {
+        VpExecutor::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| {
             log::info!("successfully started running VTL0 on vp2.");
 
             let r =
@@ -122,7 +123,8 @@ where
 
             #[expect(warnings)]
             // reading a reference to a shared static reference generates a warning. we safely handle RETURN_VALUE so ignoring it here.
-            {
+            // SAFETY: we are reading a static variable that is written to only once.
+            unsafe{
                 log::info!(
                     "reading mutated heap memory from vtl0(it should not be 0xA2): 0x{:x}",
                     RETURN_VALUE

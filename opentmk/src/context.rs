@@ -36,10 +36,14 @@ pub trait MsrPlatformTrait {
     /// Reads the content of `msr`.
     ///
     /// Returns the 64-bit value currently stored in that MSR.
-    fn read_msr(&mut self, msr: u32) -> TmkResult<u64>;
+    /// # Safety 
+    /// Caller must ensure that reading the specified MSR is a safe operation.
+    unsafe fn read_msr(&mut self, msr: u32) -> TmkResult<u64>;
 
     /// Writes `value` into `msr`.
-    fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()>;
+    /// # Safety
+    /// Caller must ensure that writing to the specified MSR is a safe operation.
+    unsafe fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()>;
 }
 
 pub trait VirtualProcessorPlatformTrait<T>

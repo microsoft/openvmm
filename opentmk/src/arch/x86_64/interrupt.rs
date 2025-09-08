@@ -20,6 +20,8 @@ static MUTEX: Mutex<()> = Mutex::new(());
 fn no_op() {}
 
 fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
+    // SAFETY: Handlers are initilizaed to no_op and only set via set_handler which is
+    // protected by a mutex.
     unsafe {
         HANDLERS[interrupt as usize]();
     }
@@ -27,6 +29,7 @@ fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
 
 pub fn set_handler(interrupt: u8, handler: fn()) {
     let _lock = MUTEX.lock();
+    // SAFETY: handlers is protected by a mutex.
     unsafe {
         HANDLERS[interrupt as usize] = handler;
     }
@@ -41,7 +44,9 @@ extern "x86-interrupt" fn handler_double_fault(
         _error_code,
         stack_frame
     );
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 // Initialize the IDT

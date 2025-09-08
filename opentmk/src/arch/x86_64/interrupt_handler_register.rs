@@ -8,6 +8,7 @@ static COMMON_HANDLER_MUTEX: Mutex<()> = Mutex::new(());
 
 #[unsafe(no_mangle)]
 fn abstraction_handle(stack_frame: InterruptStackFrame, interrupt: u8) {
+    // SAFETY: COMMON_HANDLER is only set via set_common_handler which is protected by a mutex.
     unsafe { (COMMON_HANDLER)(stack_frame, interrupt) };
     log::debug!("Interrupt: {}", interrupt);
 }
@@ -71,6 +72,7 @@ fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
 
 pub fn set_common_handler(handler: fn(InterruptStackFrame, u8)) {
     let _guard = COMMON_HANDLER_MUTEX.lock();
+    // SAFETY: COMMON_HANDLER is only set via this function which is protected by a mutex.
     unsafe {
         COMMON_HANDLER = handler;
     }

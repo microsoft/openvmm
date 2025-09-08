@@ -1,3 +1,4 @@
+use alloc::borrow::ToOwned;
 use alloc::fmt::format;
 use alloc::string::String;
 use alloc::string::ToString;
@@ -24,25 +25,24 @@ struct LogEntry {
 }
 
 impl LogEntry {
-    fn new(level: log::Level, message: &String, line: &String) -> Self {
+    fn new(level: log::Level, message: &str, line: &str) -> Self {
         LogEntry {
             log_type: "log",
             level: level.as_str().to_string(),
-            message: message.clone(),
-            line: line.clone(),
+            message: message.to_owned(),
+            line: line.to_owned(),
         }
     }
 }
 
 pub(crate) fn format_log_string_to_json(
-    message: &String,
-    line: &String,
+    message: &str,
+    line: &str,
     terminate_new_line: bool,
     level: log::Level,
 ) -> String {
     let log_entry = LogEntry::new(level, message, line);
-    let out = serde_json::to_string(&log_entry).unwrap();
-    let mut out = out.to_string();
+    let mut out = serde_json::to_string(&log_entry).unwrap();
     if terminate_new_line {
         out.push('\n');
     }

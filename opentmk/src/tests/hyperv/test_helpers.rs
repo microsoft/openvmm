@@ -4,6 +4,7 @@ macro_rules! create_function_with_restore {
         #[inline(never)]
         // avoiding inline for debuggability in release builds 
         fn $func_name() {
+            // SAFETY: we are calling a function pointer and restoring all registers.
             unsafe {
                 asm!("
                     push rax

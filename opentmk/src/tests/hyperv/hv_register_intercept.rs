@@ -16,6 +16,7 @@ static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 #[inline(never)]
 #[cfg(target_arch = "x86_64")]
 fn violate_reg_rule() {
+    // SAFETY: we are writing to a valid MSR
     unsafe {
         asm!(
             "mov ecx, 0x1B",

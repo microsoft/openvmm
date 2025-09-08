@@ -1,9 +1,9 @@
 use zerocopy::IntoBytes;
 
-use crate::devices::tpm::protocol::protocol::SelfTestCmd;
-use crate::devices::tpm::protocol::protocol::TpmCommand;
-use crate::devices::tpm::protocol::SessionTagEnum;
-use crate::devices::tpm::protocol::TpmCommandError;
+use crate::devices::tpm::tpm_protocol::protocol::SelfTestCmd;
+use crate::devices::tpm::tpm_protocol::protocol::TpmCommand;
+use crate::devices::tpm::tpm_protocol::SessionTagEnum;
+use crate::devices::tpm::tpm_protocol::TpmCommandError;
 
 pub const TPM_DEVICE_MMIO_REGION_BASE_ADDRESS: u64 = 0xfed40000;
 pub const TPM_DEVICE_MMIO_REGION_SIZE: u64 = 0x70;
@@ -78,18 +78,20 @@ impl<'a> Tpm<'a> {
         buffer.copy_from_slice(self.response_buffer.as_ref().unwrap());
     }
 
+                    
+    #[expect(clippy::while_immutable_condition, reason = "tpm device updates status of MMIO read")]
     pub fn execute_command() {
         let command_exec_mmio_addr = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + 0x4c;
         let command_exec_mmio_ptr = command_exec_mmio_addr as *mut u32;
-
+        
+        // SAFETY: we are writing to a valid memory-mapped IO register.
         unsafe {
             *command_exec_mmio_ptr = 0x1;
         }
 
+        // SAFETY: we are reading from a valid memory-mapped IO register.
         while unsafe { *command_exec_mmio_ptr } == 0x1 {
-            unsafe {
-                core::arch::x86_64::_mm_pause();
-            }
+            core::hint::spin_loop();
         }
     }
 
