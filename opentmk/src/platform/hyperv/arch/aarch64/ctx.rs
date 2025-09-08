@@ -10,7 +10,6 @@ use memory_range::MemoryRange;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VpExecutor;
 use crate::context::VtlPlatformTrait;
-use crate::platform::hyperv::ctx::cmdt;
 use crate::platform::hyperv::ctx::vtl_transform;
 use crate::platform::hyperv::ctx::HvTestCtx;
 use crate::tmkdefs::TmkError;
@@ -34,7 +33,6 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     }
 
     /// Return the number of logical processors present in the machine
-    /// by issuing the `cpuid` leaf 1 call on x86-64.
     fn get_vp_count(&self) -> TmkResult<u32> {
         Err(TmkError::NotImplemented)
     }
@@ -43,22 +41,15 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     /// by the busy-loop running in `exec_handler`. No scheduling happens
     /// here – we simply enqueue.
     fn queue_command_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
-        let (vp_index, vtl, cmd) = cmd.get();
-        let cmd = cmd.ok_or(TmkError::QueueCommandFailed)?;
-        cmdt()
-            .lock()
-            .get_mut(&vp_index)
-            .unwrap()
-            .push_back((cmd, vtl));
-        Ok(())
+        unimplemented!();
     }
 
     fn start_on_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
-        unimplemented!()
+        unimplemented!();
     }
 
     /// Start the given VP in the current VTL using a freshly captured
-    /// context and *do not* queue any additional work.
+    /// context.
     fn start_running_vp_with_default_context(
         &mut self,
         cmd: VpExecutor<HvTestCtx>,

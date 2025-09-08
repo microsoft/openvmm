@@ -110,7 +110,6 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     }
 
     /// Return the number of logical processors present in the machine
-    /// by issuing the `cpuid` leaf 1 call on x86-64.
     fn get_vp_count(&self) -> TmkResult<u32> {
         Ok(4)
     }
@@ -214,7 +213,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     }
 
     /// Start the given VP in the current VTL using a freshly captured
-    /// context and *do not* queue any additional work.
+    /// context.
     fn start_running_vp_with_default_context(
         &mut self,
         cmd: VpExecutor<HvTestCtx>,
