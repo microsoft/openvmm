@@ -147,11 +147,19 @@ const LINK_DELAY_DURATION: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const LINK_DELAY_DURATION: Duration = Duration::from_millis(333);
 
-#[derive(PartialEq)]
-enum CoordinatorMessage {
+#[derive(Default, PartialEq)]
+struct CoordinatorMessageUpdateType {
     /// Update guest VF state based on current availability and the guest VF state tracked by the primary channel.
     /// This includes adding the guest VF device and switching the data path.
-    UpdateGuestVfState,
+    guest_vf_state: bool,
+    /// Update the receive filter for all channels.
+    filter_state: bool,
+}
+
+#[derive(PartialEq)]
+enum CoordinatorMessage {
+    /// Update network state.
+    Update(CoordinatorMessageUpdateType),
     /// Restart endpoints and resume processing. This will also attempt to set VF and data path state to match current
     /// expectations.
     Restart,
@@ -382,6 +390,7 @@ struct NetChannel<T: RingMem> {
     pending_send_size: usize,
     restart: Option<CoordinatorMessage>,
     can_use_ring_size_opt: bool,
+    packet_filter: u32,
 }
 
 /// Buffers used during packet processing.
@@ -432,6 +441,7 @@ struct ActiveState {
     pending_tx_packets: Vec<PendingTxPacket>,
     free_tx_packets: Vec<TxId>,
     pending_tx_completions: VecDeque<PendingTxCompletion>,
+    pending_rx_packets: VecDeque<RxId>,
 
     rx_bufs: RxBuffers,
 
@@ -442,6 +452,7 @@ struct ActiveState {
 struct QueueStats {
     tx_stalled: Counter,
     rx_dropped_ring_full: Counter,
+    rx_dropped_filtered: Counter,
     spurious_wakes: Counter,
     rx_packets: Counter,
     tx_packets: Counter,
@@ -455,6 +466,7 @@ struct QueueStats {
 struct PendingTxCompletion {
     transaction_id: u64,
     tx_id: Option<TxId>,
+    status: protocol::Status,
 }
 
 #[derive(Clone, Copy)]
@@ -907,6 +919,7 @@ impl ActiveState {
             pending_tx_packets: vec![Default::default(); TX_PACKET_QUOTA],
             free_tx_packets: (0..TX_PACKET_QUOTA as u32).rev().map(TxId).collect(),
             pending_tx_completions: VecDeque::new(),
+            pending_rx_packets: VecDeque::new(),
             rx_bufs: RxBuffers::new(recv_buffer_count),
             stats: Default::default(),
         }
@@ -935,11 +948,14 @@ impl ActiveState {
                 // This shouldn't be referenced, but set it in case it is in the future.
                 active.pending_tx_packets[id.0 as usize].transaction_id = transaction_id;
             }
+            // Save/Restore does not preserve the status of pending tx completions,
+            // completing any pending completions with 'success' to avoid making changes to saved_state.
             active
                 .pending_tx_completions
                 .push_back(PendingTxCompletion {
                     transaction_id,
                     tx_id,
+                    status: protocol::Status::SUCCESS,
                 });
         }
         Ok(active)
@@ -1111,8 +1127,15 @@ fn can_use_ring_opt<T: RingMem>(queue: &mut Queue<T>, guest_os_id: Option<HvGues
     match HvGuestOsOpenSourceType(open_source_os.os_type()) {
         // Although FreeBSD indicates support for `pending send size`, it doesn't
         // implement it correctly. This was fixed in FreeBSD version `1400097`.
-        // No known issues with other open source OS.
         HvGuestOsOpenSourceType::FREEBSD => open_source_os.version() >= 1400097,
+        // Linux kernels prior to 3.11 have issues with pending send size optimization
+        // which can affect certain Asynchronous I/O (AIO) network operations.
+        // Disable ring size optimization for these older kernels to avoid flow control issues.
+        HvGuestOsOpenSourceType::LINUX => {
+            // Linux version is encoded as: ((major << 16) | (minor << 8) | patch)
+            // Linux 3.11.0 = (3 << 16) | (11 << 8) | 0 = 199424
+            open_source_os.version() >= 199424
+        }
         _ => true,
     }
 }
@@ -1360,6 +1383,7 @@ impl Nic {
                 pending_send_size: 0,
                 restart: None,
                 can_use_ring_size_opt,
+                packet_filter: rndisprot::NDIS_PACKET_TYPE_NONE,
             },
             state,
             coordinator_send: self.coordinator_send.clone().unwrap(),
@@ -1449,6 +1473,7 @@ impl Nic {
         mut control: RestoreControl<'_>,
         state: saved_state::SavedState,
     ) -> Result<(), NetRestoreError> {
+        let mut saved_packet_filter = 0u32;
         if let Some(state) = state.open {
             let open = match &state.primary {
                 saved_state::Primary::Version => vec![true],
@@ -1533,7 +1558,11 @@ impl Nic {
                         tx_spread_sent,
                         guest_link_down,
                         pending_link_action,
+                        packet_filter,
                     } = ready;
+
+                    // If saved state does not have a packet filter set, default to directed, multicast, and broadcast.
+                    saved_packet_filter = packet_filter.unwrap_or(rndisprot::NPROTO_PACKET_FILTER);
 
                     let version = check_version(version)
                         .ok_or(NetRestoreError::UnsupportedVersion(version))?;
@@ -1615,6 +1644,11 @@ impl Nic {
             for (channel_idx, (state, request)) in states.into_iter().zip(requests).enumerate() {
                 if let Some(state) = state {
                     self.insert_worker(channel_idx as u16, &request.unwrap(), state, false)?;
+                }
+            }
+            for worker in self.coordinator.state_mut().unwrap().workers.iter_mut() {
+                if let Some(worker_state) = worker.state_mut() {
+                    worker_state.channel.packet_filter = saved_packet_filter;
                 }
             }
         } else {
@@ -1702,7 +1736,7 @@ impl Nic {
                         .iter()
                         .map(|worker| {
                             worker.state().map(|worker| {
-                                let channel = if let Some(ready) = worker.state.ready() {
+                                if let Some(ready) = worker.state.ready() {
                                     // In flight tx will be considered as dropped packets through save/restore, but need
                                     // to complete the requests back to the guest.
                                     let pending_tx_completions = ready
@@ -1736,8 +1770,7 @@ impl Nic {
                                         pending_tx_completions: Vec::new(),
                                         in_use_rx: Vec::new(),
                                     }
-                                };
-                                channel
+                                }
                             })
                         })
                         .collect();
@@ -1778,6 +1811,11 @@ impl Nic {
                         PrimaryChannelGuestVfState::Restoring(saved_state) => saved_state,
                     };
 
+                    let worker_0_packet_filter = coordinator.workers[0]
+                        .state()
+                        .unwrap()
+                        .channel
+                        .packet_filter;
                     saved_state::Primary::Ready(saved_state::ReadyPrimary {
                         version: ready.buffers.version as u32,
                         receive_buffer: ready.buffers.recv_buffer.saved_state(),
@@ -1807,6 +1845,7 @@ impl Nic {
                         tx_spread_sent: primary.tx_spread_sent,
                         guest_link_down: !primary.guest_link_up,
                         pending_link_action,
+                        packet_filter: Some(worker_0_packet_filter),
                     })
                 }
             };
@@ -2590,7 +2629,12 @@ impl<T: RingMem> NetChannel<T> {
             if primary.rndis_state == RndisState::Operational {
                 if self.guest_vf_is_available(Some(vfid), buffers.version, buffers.ndis_config)? {
                     primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
-                    return Ok(Some(CoordinatorMessage::UpdateGuestVfState));
+                    return Ok(Some(CoordinatorMessage::Update(
+                        CoordinatorMessageUpdateType {
+                            guest_vf_state: true,
+                            ..Default::default()
+                        },
+                    )));
                 } else if let Some(true) = primary.is_data_path_switched {
                     tracing::error!(
                         "Data path switched, but current guest negotiation does not support VTL0 VF"
@@ -2730,10 +2774,7 @@ impl<T: RingMem> NetChannel<T> {
                         // flag on inband packets and won't send a completion
                         // packet.
                         primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
-                        // restart will also add the VF based on the guest_vf_state
-                        if self.restart.is_none() {
-                            self.restart = Some(CoordinatorMessage::UpdateGuestVfState);
-                        }
+                        self.send_coordinator_update_vf();
                     } else if let Some(true) = primary.is_data_path_switched {
                         tracing::error!(
                             "Data path switched, but current guest negotiation does not support VTL0 VF"
@@ -2781,11 +2822,17 @@ impl<T: RingMem> NetChannel<T> {
                 tracing::trace!(?request, "handling control message MESSAGE_TYPE_SET_MSG");
 
                 let status = match self.adapter.handle_oid_set(primary, request.oid, reader) {
-                    Ok(restart_endpoint) => {
+                    Ok((restart_endpoint, packet_filter)) => {
                         // Restart the endpoint if the OID changed some critical
                         // endpoint property.
                         if restart_endpoint {
                             self.restart = Some(CoordinatorMessage::Restart);
+                        }
+                        if let Some(filter) = packet_filter {
+                            if self.packet_filter != filter {
+                                self.packet_filter = filter;
+                                self.send_coordinator_update_filter();
+                            }
                         }
                         rndisprot::STATUS_SUCCESS
                     }
@@ -2969,6 +3016,31 @@ impl<T: RingMem> NetChannel<T> {
             }
         }
         Ok(())
+    }
+
+    fn send_coordinator_update_message(&mut self, guest_vf: bool, packet_filter: bool) {
+        if self.restart.is_none() {
+            self.restart = Some(CoordinatorMessage::Update(CoordinatorMessageUpdateType {
+                guest_vf_state: guest_vf,
+                filter_state: packet_filter,
+            }));
+        } else if let Some(CoordinatorMessage::Restart) = self.restart {
+            // If a restart message is pending, do nothing.
+            // A restart will try to switch the data path based on primary.guest_vf_state.
+            // A restart will apply packet filter changes.
+        } else if let Some(CoordinatorMessage::Update(ref mut update)) = self.restart {
+            // Add the new update to the existing message.
+            update.guest_vf_state |= guest_vf;
+            update.filter_state |= packet_filter;
+        }
+    }
+
+    fn send_coordinator_update_vf(&mut self) {
+        self.send_coordinator_update_message(true, false);
+    }
+
+    fn send_coordinator_update_filter(&mut self) {
+        self.send_coordinator_update_message(false, true);
     }
 }
 
@@ -3287,13 +3359,14 @@ impl Adapter {
         primary: &mut PrimaryChannelState,
         oid: rndisprot::Oid,
         reader: impl MemoryRead + Clone,
-    ) -> Result<bool, OidError> {
+    ) -> Result<(bool, Option<u32>), OidError> {
         tracing::debug!(?oid, "oid set");
 
         let mut restart_endpoint = false;
+        let mut packet_filter = None;
         match oid {
             rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER => {
-                // TODO
+                packet_filter = self.oid_set_packet_filter(reader)?;
             }
             rndisprot::Oid::OID_TCP_OFFLOAD_PARAMETERS => {
                 self.oid_set_offload_parameters(reader, primary)?;
@@ -3320,7 +3393,7 @@ impl Adapter {
                 return Err(OidError::UnknownOid);
             }
         }
-        Ok(restart_endpoint)
+        Ok((restart_endpoint, packet_filter))
     }
 
     fn oid_set_rss_parameters(
@@ -3376,6 +3449,15 @@ impl Adapter {
             indirection_table: indirection_table.iter().map(|&x| x as u16).collect(),
         });
         Ok(())
+    }
+
+    fn oid_set_packet_filter(
+        &self,
+        reader: impl MemoryRead + Clone,
+    ) -> Result<Option<u32>, OidError> {
+        let filter: rndisprot::RndisPacketFilterOidValue = reader.clone().read_plain()?;
+        tracing::debug!(filter, "set packet filter");
+        Ok(Some(filter))
     }
 
     fn oid_set_offload_parameters(
@@ -3742,16 +3824,46 @@ impl Coordinator {
                 PendingVfStateComplete,
                 TimerExpired,
             }
-            let timer_sleep = async {
-                if let Some(sleep_duration) = sleep_duration {
-                    let mut timer = PolledTimer::new(&state.adapter.driver);
-                    timer.sleep_until(sleep_duration).await;
-                } else {
-                    pending::<()>().await;
+            let message = if matches!(
+                state.pending_vf_state,
+                CoordinatorStatePendingVfState::Pending
+            ) {
+                // The primary worker is allowed to run, but as no
+                // notifications are being processed, if it is waiting for an
+                // action then it should remain stopped until this completes
+                // and the regular message processing logic resumes. Currently
+                // the only message that requires processing is
+                // DataPathSwitchPending, so check for that here.
+                if !self.workers[0].is_running()
+                    && self.primary_mut().is_none_or(|primary| {
+                        !matches!(
+                            primary.guest_vf_state,
+                            PrimaryChannelGuestVfState::DataPathSwitchPending { result: None, .. }
+                        )
+                    })
+                {
+                    self.workers[0].start();
                 }
-                Message::TimerExpired
-            };
-            let message = {
+
+                // guest_ready_for_device is not restartable, so do not poll on
+                // stop.
+                state
+                    .virtual_function
+                    .as_mut()
+                    .expect("Pending requires a VF")
+                    .guest_ready_for_device()
+                    .await;
+                Message::PendingVfStateComplete
+            } else {
+                let timer_sleep = async {
+                    if let Some(sleep_duration) = sleep_duration {
+                        let mut timer = PolledTimer::new(&state.adapter.driver);
+                        timer.sleep_until(sleep_duration).await;
+                    } else {
+                        pending::<()>().await;
+                    }
+                    Message::TimerExpired
+                };
                 let wait_for_message = async {
                     let internal_msg = self
                         .recv
@@ -3787,21 +3899,7 @@ impl Coordinator {
                                     .race()
                                     .await
                             }
-                            CoordinatorStatePendingVfState::Pending => {
-                                // Allow the network workers to continue while
-                                // waiting for the Vf add/remove call to
-                                // complete, but block any other notifications
-                                // while it is running. This is necessary to
-                                // support Vf removal, which may trigger the
-                                // guest to send a switch data path request and
-                                // wait for a completion message as part of
-                                // its eject handling. The switch data path
-                                // request won't send a message here because
-                                // the Vf is not available -- it will be a
-                                // no-op.
-                                vf.guest_ready_for_device().await;
-                                Message::PendingVfStateComplete
-                            }
+                            CoordinatorStatePendingVfState::Pending => unreachable!(),
                         }
                     } else {
                         (internal_msg, endpoint_restart, timer_sleep).race().await
@@ -3852,8 +3950,26 @@ impl Coordinator {
                     }
                     sleep_duration = None;
                 }
-                Message::Internal(CoordinatorMessage::UpdateGuestVfState) => {
-                    self.update_guest_vf_state(state).await;
+                Message::Internal(CoordinatorMessage::Update(update_type)) => {
+                    if update_type.filter_state {
+                        self.stop_workers().await;
+                        let worker_0_packet_filter =
+                            self.workers[0].state().unwrap().channel.packet_filter;
+                        self.workers.iter_mut().skip(1).for_each(|worker| {
+                            if let Some(state) = worker.state_mut() {
+                                state.channel.packet_filter = worker_0_packet_filter;
+                                tracing::debug!(
+                                    packet_filter = ?worker_0_packet_filter,
+                                    channel_idx = state.channel_idx,
+                                    "update packet filter"
+                                );
+                            }
+                        });
+                    }
+
+                    if update_type.guest_vf_state {
+                        self.update_guest_vf_state(state).await;
+                    }
                 }
                 Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
                 Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
@@ -3980,12 +4096,13 @@ impl Coordinator {
                         _ => (true, None),
                     };
                     // Cancel any outstanding delay timers for VF offers if the data path is
-                    // getting switched. Those timers are essentially no-op at this point.
+                    // getting switched, since the guest is already issuing
+                    // commands assuming a VF.
                     if matches!(
                         c_state.pending_vf_state,
                         CoordinatorStatePendingVfState::Delay { .. }
                     ) {
-                        c_state.pending_vf_state = CoordinatorStatePendingVfState::Ready;
+                        c_state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
                     }
                     let result = c_state.endpoint.set_data_path_to_guest_vf(to_guest).await;
                     let result = if let Err(err) = result {
@@ -4295,6 +4412,7 @@ impl Coordinator {
             self.num_queues = num_queues;
         }
 
+        let worker_0_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
         for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
             worker.task_mut().queue_state = Some(QueueState {
@@ -4302,6 +4420,14 @@ impl Coordinator {
                 target_vp_set: false,
                 rx_buffer_range: rx_buffer,
             });
+            // Update the receive packet filter for the subchannel worker.
+            if let Some(worker) = worker.state_mut() {
+                worker.channel.packet_filter = worker_0_packet_filter;
+                // Clear any pending RxIds as buffers were redistributed.
+                if let Some(ready_state) = worker.state.ready_mut() {
+                    ready_state.state.pending_rx_packets.clear();
+                }
+            }
         }
 
         Ok(())
@@ -4715,6 +4841,17 @@ impl<T: 'static + RingMem> NetChannel<T> {
             send.capacity() - limit
         };
 
+        // If the packet filter has changed to allow rx packets, add any pended RxIds.
+        if !state.pending_rx_packets.is_empty()
+            && self.packet_filter != rndisprot::NDIS_PACKET_TYPE_NONE
+        {
+            let epqueue = queue_state.queue.as_mut();
+            let (front, back) = state.pending_rx_packets.as_slices();
+            epqueue.rx_avail(front);
+            epqueue.rx_avail(back);
+            state.pending_rx_packets.clear();
+        }
+
         // Handle any guest state changes since last run.
         if let Some(primary) = state.primary.as_mut() {
             if primary.requested_num_queues > 1 && !primary.tx_spread_sent {
@@ -4916,6 +5053,22 @@ impl<T: 'static + RingMem> NetChannel<T> {
             return Ok(false);
         }
 
+        state.stats.rx_packets_per_wake.add_sample(n as u64);
+
+        if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
+            tracing::trace!(
+                packet_filter = self.packet_filter,
+                "rx packets dropped due to packet filter"
+            );
+            // Pend the newly available RxIds until the packet filter is updated.
+            // Under high load this will eventually lead to no available RxIds,
+            // which will cause the backend to drop the packets instead of
+            // processing them here.
+            state.pending_rx_packets.extend(&data.rx_ready[..n]);
+            state.stats.rx_dropped_filtered.add(n as u64);
+            return Ok(false);
+        }
+
         let transaction_id = data.rx_ready[0].0.into();
         let ready_ids = data.rx_ready[..n].iter().map(|&RxId(id)| id);
 
@@ -4940,7 +5093,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
             }
             Some(_) => {
                 // Ring buffer is full. Drop the packets and free the rx
-                // buffers.
+                // buffers. When the ring has limited space, the main loop will
+                // stop polling for receive packets.
                 state.stats.rx_dropped_ring_full.add(n as u64);
 
                 state.rx_bufs.free(data.rx_ready[0].0);
@@ -4948,7 +5102,6 @@ impl<T: 'static + RingMem> NetChannel<T> {
             }
         }
 
-        state.stats.rx_packets_per_wake.add_sample(n as u64);
         Ok(true)
     }
 
@@ -4972,7 +5125,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     assert!(tx_packet.pending_packet_count > 0);
                     tx_packet.pending_packet_count -= 1;
                     if tx_packet.pending_packet_count == 0 {
-                        self.complete_tx_packet(state, id)?;
+                        self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
                     }
                 }
 
@@ -4990,6 +5143,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             Some(PendingTxCompletion {
                                 transaction_id: inflight.transaction_id,
                                 tx_id: Some(TxId(id as u32)),
+                                status: protocol::Status::SUCCESS,
                             })
                         } else {
                             None
@@ -5050,10 +5204,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             _ => (),
         };
         if queue_switch_operation {
-            // A restart will also try to switch the data path based on primary.guest_vf_state.
-            if self.restart.is_none() {
-                self.restart = Some(CoordinatorMessage::UpdateGuestVfState)
-            };
+            self.send_coordinator_update_vf();
         } else {
             self.send_completion(transaction_id, &[])?;
         }
@@ -5086,8 +5237,19 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 PacketData::RndisPacket(_) => {
                     assert!(data.tx_segments.is_empty());
                     let id = state.free_tx_packets.pop().unwrap();
-                    let num_packets =
-                        self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments)?;
+                    let result: Result<usize, WorkerError> =
+                        self.handle_rndis(buffers, id, state, &packet, &mut data.tx_segments);
+                    let num_packets = match result {
+                        Ok(num_packets) => num_packets,
+                        Err(err) => {
+                            tracelimit::error_ratelimited!(
+                                err = &err as &dyn std::error::Error,
+                                "failed to handle RNDIS packet"
+                            );
+                            self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
+                            continue;
+                        }
+                    };
                     total_packets += num_packets as u64;
                     state.pending_tx_packets[id.0 as usize].pending_packet_count += num_packets;
 
@@ -5098,7 +5260,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             state.stats.tx_stalled.increment();
                         }
                     } else {
-                        self.complete_tx_packet(state, id)?;
+                        self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
                     }
                 }
                 PacketData::RndisPacketComplete(_completion) => {
@@ -5238,7 +5400,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         }
 
         if state.pending_tx_packets[id.0 as usize].pending_packet_count == 0 {
-            self.complete_tx_packet(state, id)?;
+            self.complete_tx_packet(state, id, protocol::Status::SUCCESS)?;
         }
 
         Ok(packets_sent)
@@ -5292,12 +5454,14 @@ impl<T: 'static + RingMem> NetChannel<T> {
         Ok(num_packets)
     }
 
-    fn try_send_tx_packet(&mut self, transaction_id: u64) -> Result<bool, WorkerError> {
+    fn try_send_tx_packet(
+        &mut self,
+        transaction_id: u64,
+        status: protocol::Status,
+    ) -> Result<bool, WorkerError> {
         let message = self.message(
             protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
-            protocol::Message1SendRndisPacketComplete {
-                status: protocol::Status::SUCCESS,
-            },
+            protocol::Message1SendRndisPacketComplete { status },
         );
         let result = self.queue.split().1.try_write(&queue::OutgoingPacket {
             transaction_id,
@@ -5318,7 +5482,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
     fn send_pending_packets(&mut self, state: &mut ActiveState) -> Result<bool, WorkerError> {
         let mut did_some_work = false;
         while let Some(pending) = state.pending_tx_completions.front() {
-            if !self.try_send_tx_packet(pending.transaction_id)? {
+            if !self.try_send_tx_packet(pending.transaction_id, pending.status)? {
                 return Ok(did_some_work);
             }
             did_some_work = true;
@@ -5333,10 +5497,17 @@ impl<T: 'static + RingMem> NetChannel<T> {
         Ok(did_some_work)
     }
 
-    fn complete_tx_packet(&mut self, state: &mut ActiveState, id: TxId) -> Result<(), WorkerError> {
+    fn complete_tx_packet(
+        &mut self,
+        state: &mut ActiveState,
+        id: TxId,
+        status: protocol::Status,
+    ) -> Result<(), WorkerError> {
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
         assert_eq!(tx_packet.pending_packet_count, 0);
-        if self.pending_send_size == 0 && self.try_send_tx_packet(tx_packet.transaction_id)? {
+        if self.pending_send_size == 0
+            && self.try_send_tx_packet(tx_packet.transaction_id, status)?
+        {
             tracing::trace!(id = id.0, "sent tx completion");
             state.free_tx_packets.push(id);
         } else {
@@ -5344,6 +5515,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             state.pending_tx_completions.push_back(PendingTxCompletion {
                 transaction_id: tx_packet.transaction_id,
                 tx_id: Some(id),
+                status,
             });
         }
         Ok(())

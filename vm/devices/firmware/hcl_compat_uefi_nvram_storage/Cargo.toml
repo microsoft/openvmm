@@ -10,9 +10,11 @@ rust-version.workspace = true
 default = []
 
 inspect = ["dep:inspect", "uefi_nvram_storage/inspect"]
+save_restore = [ "dep:vmcore", "uefi_nvram_storage/save_restore"]
 
 [dependencies]
 uefi_nvram_storage.workspace = true
+vmcore = { workspace = true, optional = true }
 
 cvm_tracing.workspace = true
 guid.workspace = true

@@ -1080,10 +1080,7 @@ impl Vmgs {
     /// Decrypts the extended file table by the encryption_key and
     /// updates the related metadata in memory.
     #[cfg(with_encryption)]
-    pub async fn unlock_with_encryption_key(
-        &mut self,
-        encryption_key: &[u8],
-    ) -> Result<usize, Error> {
+    pub async fn unlock_with_encryption_key(&mut self, encryption_key: &[u8]) -> Result<(), Error> {
         if self.version < VMGS_VERSION_3_0 {
             return Err(Error::Other(anyhow!(
                 "unlock_with_encryption_key() not supported with VMGS version"
@@ -1168,7 +1165,7 @@ impl Vmgs {
         self.datastore_keys[valid_index].copy_from_slice(encryption_key);
         self.active_datastore_key_index = Some(valid_index);
 
-        Ok(valid_index)
+        Ok(())
     }
 
     /// Encrypts the plaintext data and writes the encrypted data to the storage.
@@ -1244,13 +1241,51 @@ impl Vmgs {
         }
     }
 
-    /// Associates a new root key with the data store. Returns the index of the newly associated key.
+    /// Associates a new root key with the data store and removes the old
+    /// encryption key, if it exists. If two keys already exist, the
+    /// inactive key is removed first.
     #[cfg(with_encryption)]
-    pub async fn add_new_encryption_key(
+    pub async fn update_encryption_key(
         &mut self,
         encryption_key: &[u8],
         encryption_algorithm: EncryptionAlgorithm,
-    ) -> Result<usize, Error> {
+    ) -> Result<(), Error> {
+        let old_index = self.active_datastore_key_index;
+
+        match self
+            .add_new_encryption_key(encryption_key, encryption_algorithm)
+            .await
+        {
+            Ok(_) => {}
+            Err(Error::DatastoreKeysFull) => {
+                if let Some(old_index) = old_index {
+                    let inactive_index = if old_index == 0 { 1 } else { 0 };
+                    tracing::warn!(CVM_ALLOWED, inactive_index, "removing inactive key");
+                    self.remove_encryption_key(inactive_index).await?;
+                    tracing::trace!(CVM_ALLOWED, "attempting to add the key again");
+                    self.add_new_encryption_key(encryption_key, encryption_algorithm)
+                        .await?;
+                } else {
+                    return Err(Error::NoActiveDatastoreKey);
+                }
+            }
+            Err(e) => return Err(e),
+        };
+
+        if let Some(old_index) = old_index {
+            self.remove_encryption_key(old_index).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Associates a new root key with the data store.
+    #[cfg(with_encryption)]
+    async fn add_new_encryption_key(
+        &mut self,
+        encryption_key: &[u8],
+        encryption_algorithm: EncryptionAlgorithm,
+    ) -> Result<(), Error> {
         if self.version < VMGS_VERSION_3_0 {
             return Err(Error::Other(anyhow!(
                 "add_new_encryption_key() not supported with VMGS version"
@@ -1264,9 +1299,7 @@ impl Vmgs {
             )));
         }
         if self.datastore_key_count == self.datastore_keys.len() as u8 {
-            return Err(Error::Other(anyhow!(
-                "add_new_encryption_key() no space to add new encryption key"
-            )));
+            return Err(Error::DatastoreKeysFull);
         }
         if is_empty_key(encryption_key) {
             return Err(Error::Other(anyhow!("Trying to add empty encryption key")));
@@ -1368,12 +1401,12 @@ impl Vmgs {
         self.encryption_algorithm = encryption_algorithm;
         self.active_datastore_key_index = Some(new_key_index);
 
-        Ok(new_key_index)
+        Ok(())
     }
 
     /// Disassociates the root key at the specified index from the data store.
     #[cfg(with_encryption)]
-    pub async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
+    async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
         if self.version < VMGS_VERSION_3_0 {
             return Err(Error::Other(anyhow!(
                 "remove_encryption_key() not supported with VMGS version."
@@ -1445,11 +1478,6 @@ impl Vmgs {
         self.encryption_algorithm != EncryptionAlgorithm::NONE
     }
 
-    /// Get the active datastore key index
-    pub fn get_active_datastore_key_index(&self) -> Option<usize> {
-        self.active_datastore_key_index
-    }
-
     fn prepare_new_header(&self, file_table_fcb: &ResolvedFileControlBlock) -> VmgsHeader {
         VmgsHeader {
             signature: VMGS_SIGNATURE,
@@ -1458,6 +1486,31 @@ impl Vmgs {
             file_table_offset: file_table_fcb.block_offset,
             file_table_size: file_table_fcb.allocated_blocks.get(),
             ..VmgsHeader::new_zeroed()
+        }
+    }
+}
+
+/// Additional test-only functions for use in other crates that reveal
+/// implmentation details of the vmgs datastore encryption keys.
+#[cfg(feature = "test_helpers")]
+mod test_helpers {
+    use super::*;
+
+    impl Vmgs {
+        /// Get the active datastore key index
+        pub fn test_get_active_datastore_key_index(&self) -> Option<usize> {
+            self.active_datastore_key_index
+        }
+
+        /// Associates a new root key with the data store.
+        #[cfg(with_encryption)]
+        pub async fn test_add_new_encryption_key(
+            &mut self,
+            encryption_key: &[u8],
+            encryption_algorithm: EncryptionAlgorithm,
+        ) -> Result<(), Error> {
+            self.add_new_encryption_key(encryption_key, encryption_algorithm)
+                .await
         }
     }
 }
@@ -2361,7 +2414,7 @@ mod tests {
         let buf = b"hello world";
         let buf_1 = b"hello universe";
         vmgs.write_file(FileId::BIOS_NVRAM, buf).await.unwrap();
-        vmgs.add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.update_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
         vmgs.write_file_encrypted(FileId::TPM_PPI, buf_1)
@@ -2406,11 +2459,10 @@ mod tests {
         let buf_1 = vec![2; 8 * 1024];
 
         // Add root key.
-        let key_index = vmgs
-            .add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(key_index, 0);
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
 
         // Write a file to the store.
         vmgs.write_file_encrypted(FileId::BIOS_NVRAM, &buf)
@@ -2437,11 +2489,10 @@ mod tests {
         let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
 
         // Add datastore key.
-        let key_index = vmgs
-            .add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(key_index, 0);
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
 
         // Write a file to the store.
         vmgs.write_file_encrypted(FileId::BIOS_NVRAM, &buf)
@@ -2462,20 +2513,18 @@ mod tests {
 
         // Unlock the store.
 
-        let key_index = vmgs
-            .unlock_with_encryption_key(&encryption_key)
+        vmgs.unlock_with_encryption_key(&encryption_key)
             .await
             .unwrap();
 
-        assert_eq!(key_index, 0);
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
 
         // Change to a new datastore key.
         let new_encryption_key = [2; VMGS_ENCRYPTION_KEY_SIZE];
-        let key_index = vmgs
-            .add_new_encryption_key(&new_encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.add_new_encryption_key(&new_encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(key_index, 1);
+        assert_eq!(vmgs.active_datastore_key_index, Some(1));
         vmgs.remove_encryption_key(0).await.unwrap();
 
         let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
@@ -2494,11 +2543,10 @@ mod tests {
         let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
 
         // Add datastore key.
-        let key_index = vmgs
-            .add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(key_index, 0);
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
 
         // Write a file to the store.
         vmgs.write_file_encrypted(FileId::BIOS_NVRAM, &buf)
@@ -2508,44 +2556,39 @@ mod tests {
         // Read the file, after closing and reopening the data store.
         drop(vmgs);
         let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
-        let key_index = vmgs
-            .unlock_with_encryption_key(&encryption_key)
+        vmgs.unlock_with_encryption_key(&encryption_key)
             .await
             .unwrap();
-        assert_eq!(key_index, 0);
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
         let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
         assert_eq!(read_buf, buf);
 
         // Add new datastore key.
-        let key_index = vmgs
-            .add_new_encryption_key(&new_encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.add_new_encryption_key(&new_encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(key_index, 1);
+        assert_eq!(vmgs.active_datastore_key_index, Some(1));
 
         // Read the file by using two different datastore keys, after closing and reopening the data store.
         drop(vmgs);
         let mut vmgs = Vmgs::open(disk, None).await.unwrap();
-        let key_index = vmgs
-            .unlock_with_encryption_key(&encryption_key)
+        vmgs.unlock_with_encryption_key(&encryption_key)
             .await
             .unwrap();
-        assert_eq!(key_index, 0);
-        let key_index = vmgs
-            .unlock_with_encryption_key(&new_encryption_key)
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
+        vmgs.unlock_with_encryption_key(&new_encryption_key)
             .await
             .unwrap();
-        assert_eq!(key_index, 1);
+        assert_eq!(vmgs.active_datastore_key_index, Some(1));
         let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
         assert_eq!(read_buf, buf);
 
         // Remove the newly added datastore key and add it again.
-        vmgs.remove_encryption_key(key_index).await.unwrap();
-        let key_index = vmgs
-            .add_new_encryption_key(&new_encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.remove_encryption_key(1).await.unwrap();
+        vmgs.add_new_encryption_key(&new_encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
-        assert_eq!(key_index, 1);
+        assert_eq!(vmgs.active_datastore_key_index, Some(1));
 
         // Remove the old datastore key
         vmgs.remove_encryption_key(0).await.unwrap();
@@ -2607,7 +2650,7 @@ mod tests {
 
         // write
         let buf = b"hello world";
-        vmgs.add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.update_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .unwrap();
         vmgs.write_file_encrypted(FileId::BIOS_NVRAM, buf)
@@ -2626,5 +2669,137 @@ mod tests {
         // verify that the string is logged
         let result = data.lock();
         assert_eq!(*result, "test logger");
+    }
+
+    #[cfg(with_encryption)]
+    #[async_test]
+    async fn update_key() {
+        let buf: Vec<u8> = (0..255).collect();
+        let encryption_key = [1; VMGS_ENCRYPTION_KEY_SIZE];
+
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+
+        // Add datastore key.
+        vmgs.update_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
+        assert_eq!(vmgs.datastore_key_count, 1);
+
+        // Write a file to the store.
+        vmgs.write_file_encrypted(FileId::BIOS_NVRAM, &buf)
+            .await
+            .unwrap();
+
+        // Read the file, without closing the datastore
+        let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
+        assert_eq!(buf, read_buf);
+
+        // Close and reopen the store
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+
+        // Unlock the store.
+        vmgs.unlock_with_encryption_key(&encryption_key)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
+
+        // Read the file again
+        let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
+        assert_eq!(buf, read_buf);
+
+        // Change to a new datastore key.
+        let new_encryption_key = [2; VMGS_ENCRYPTION_KEY_SIZE];
+        vmgs.update_encryption_key(&new_encryption_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(1));
+        assert_eq!(vmgs.datastore_key_count, 1);
+
+        // Read the file again
+        let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
+        assert_eq!(buf, read_buf);
+
+        // Close and reopen the store
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk, None).await.unwrap();
+
+        // Unlock the store.
+        vmgs.unlock_with_encryption_key(&new_encryption_key)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(1));
+
+        // Read the file again
+        let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
+        assert_eq!(buf, read_buf);
+    }
+
+    #[cfg(with_encryption)]
+    #[async_test]
+    async fn update_key_no_space() {
+        let buf: Vec<u8> = (0..255).collect();
+        let encryption_key = [1; VMGS_ENCRYPTION_KEY_SIZE];
+
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+
+        // Add datastore key.
+        vmgs.update_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
+        assert_eq!(vmgs.datastore_key_count, 1);
+
+        // Write a file to the store.
+        vmgs.write_file_encrypted(FileId::BIOS_NVRAM, &buf)
+            .await
+            .unwrap();
+
+        // Read the file, without closing the datastore
+        let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
+        assert_eq!(buf, read_buf);
+
+        // Add a new datastore key, but don't remove the old one.
+        let new_encryption_key = [2; VMGS_ENCRYPTION_KEY_SIZE];
+        vmgs.add_new_encryption_key(&new_encryption_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(1));
+        assert_eq!(vmgs.datastore_key_count, 2);
+
+        // Close and reopen the store
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+
+        // Unlock the store.
+        vmgs.unlock_with_encryption_key(&new_encryption_key)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(1));
+
+        // Add yet another new datastore key. This should remove both previous keys
+        let another_encryption_key = [2; VMGS_ENCRYPTION_KEY_SIZE];
+        vmgs.update_encryption_key(&another_encryption_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
+        assert_eq!(vmgs.datastore_key_count, 1);
+
+        // Close and reopen the store
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk, None).await.unwrap();
+
+        // Unlock the store.
+        vmgs.unlock_with_encryption_key(&another_encryption_key)
+            .await
+            .unwrap();
+        assert_eq!(vmgs.active_datastore_key_index, Some(0));
+
+        // Read the file again
+        let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
+        assert_eq!(buf, read_buf);
     }
 }

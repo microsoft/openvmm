@@ -4,7 +4,7 @@
 //! Implements VTL2 settings worker
 
 use super::LoadedVm;
-use crate::nvme_manager::NvmeDiskConfig;
+use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
 use cvm_tracing::CVM_ALLOWED;
@@ -59,6 +59,7 @@ use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vmcore::vm_task::VmTaskDriverSource;
 
 #[derive(Error, Debug)]
 enum Error<'a> {
@@ -552,13 +553,14 @@ pub async fn disk_from_disk_type(
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
     resolver: &ResourceResolver,
+    driver_source: &VmTaskDriverSource,
 ) -> Result<Disk, Vtl2SettingsErrorInfo> {
     let disk = resolver
         .resolve(
             disk_type,
             ResolveDiskParameters {
                 read_only,
-                _async_trait_workaround: &(),
+                driver_source,
             },
         )
         .await

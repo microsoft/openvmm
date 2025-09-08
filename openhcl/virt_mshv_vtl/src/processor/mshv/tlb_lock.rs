@@ -49,6 +49,10 @@ impl UhProcessor<'_, HypervisorBacked> {
     /// Mark the TLB of the target VTL on the current VP as locked without
     /// informing the hypervisor. Only should be used when the hypervisor
     /// is expected to have already locked the TLB.
+    #[expect(
+        clippy::debug_assert_with_mut_call,
+        reason = "is_tlb_locked_in_hypervisor doesn't actually mutate state"
+    )]
     pub(crate) fn mark_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
         debug_assert!(self.is_tlb_locked_in_hypervisor(target_vtl));
@@ -56,7 +60,11 @@ impl UhProcessor<'_, HypervisorBacked> {
     }
 
     /// Check the status of the TLB lock of the target VTL on the current VP.
-    pub(crate) fn is_tlb_locked(&self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
+    #[expect(
+        clippy::debug_assert_with_mut_call,
+        reason = "is_tlb_locked_in_hypervisor doesn't actually mutate state"
+    )]
+    pub(crate) fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         // This function should only be called in debug assertions.
         assert!(cfg!(debug_assertions));
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
@@ -68,16 +76,15 @@ impl UhProcessor<'_, HypervisorBacked> {
         local_status
     }
 
-    fn is_tlb_locked_in_hypervisor(&self, target_vtl: GuestVtl) -> bool {
+    fn is_tlb_locked_in_hypervisor(&mut self, target_vtl: GuestVtl) -> bool {
         // This function should only be called in debug assertions.
         assert!(cfg!(debug_assertions));
         let name = HvAllArchRegisterName(
             HvAllArchRegisterName::VsmVpSecureConfigVtl0.0 + target_vtl as u32,
         );
         let result = self
-            .partition
-            .hcl
-            .get_vp_register(name, hvdef::hypercall::HvInputVtl::CURRENT_VTL)
+            .runner
+            .get_vp_vtl2_register(name.into())
             .expect("failure is a misconfiguration");
         let config = hvdef::HvRegisterVsmVpSecureVtlConfig::from(result.as_u64());
         config.tlb_locked()

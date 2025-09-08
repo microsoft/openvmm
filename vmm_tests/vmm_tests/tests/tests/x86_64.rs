@@ -4,20 +4,30 @@
 //! Integration tests for x86_64 guests.
 
 mod openhcl_linux_direct;
-mod openhcl_servicing;
 mod openhcl_uefi;
 
 use anyhow::Context;
+use hvlite_defs::config::DeviceVtl;
+use hvlite_defs::config::VpciDeviceConfig;
+use net_backend_resources::mac_address::MacAddress;
+use net_backend_resources::null::NullHandle;
+use nvme_resources::NvmeControllerHandle;
 use petri::ApicMode;
-use petri::PetriVmConfig;
+use petri::PetriGuestStateLifetime;
+use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::ShutdownKind;
-use petri::openvmm::PetriVmConfigOpenVmm;
+use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
-use vmm_core_defs::HaltReason;
+use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::net::VirtioNetHandle;
+use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::openvmm_test_no_agent;
 use vmm_test_macros::vmm_test;
+use vmm_test_macros::vmm_test_no_agent;
 
 /// Basic boot test with the VTL 0 alias map.
 // TODO: Remove once #73 is fixed.
@@ -26,10 +36,13 @@ use vmm_test_macros::vmm_test;
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let (vm, agent) = config.with_vtl0_alias_map().run().await?;
+async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| b.with_vtl0_alias_map())
+        .run()
+        .await?;
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
@@ -38,158 +51,199 @@ async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config.with_tpm();
+    let config = config.modify_backend(|b| b.with_tpm());
 
     let (vm, agent) = match os_flavor {
         OsFlavor::Windows => config.run().await?,
         OsFlavor::Linux => {
-            let mut vm = config.run_with_lazy_pipette().await?;
-            // Workaround to https://github.com/microsoft/openvmm/issues/379
-            assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
-
-            vm.reset().await?;
-            let agent = vm.wait_for_agent().await?;
-            vm.wait_for_successful_boot_event().await?;
-
-            (vm, agent)
+            config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                // TODO: this shouldn't be needed once with_tpm() is
+                // backend-agnostic.
+                .with_expect_reset()
+                .run()
+                .await?
         }
         _ => unreachable!(),
     };
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
-// TODO: Test disabled because AK cert renewal with non-hardware isolation is
-// disabled.
-// /// Test AK cert is persistent across boots on Linux.
-// // TODO: Add in-guest TPM tests for Windows as we currently
-// // do have an easy way to interact with TPM without a private
-// // or custom tool.
-// #[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
-// async fn tpm_ak_cert_persisted(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-//     let config = config
-//         .with_tpm()
-//         .with_tpm_state_persistence()
-//         .with_igvm_attest_test_config(
-//             get_resources::ged::IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
-//         );
+/// Test AK cert is persistent across boots on Linux.
+// TODO: Add in-guest TPM tests for Windows as we currently
+// do not have an easy way to interact with TPM without a private
+// or custom tool.
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
+async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let config = config
+        // See `get_protocol::dps_json::ManagementVtlFeatures`
+        // Enables attempt ak cert callback
+        .with_openhcl_command_line("HCL_ATTEMPT_AK_CERT_CALLBACK=1")
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .modify_backend(|b| {
+            b.with_tpm()
+                .with_tpm_state_persistence()
+                .with_igvm_attest_test_config(
+                    get_resources::ged::IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+                )
+        });
 
-//     // First boot - AK cert request will be served by GED
-//     let mut vm = config.run_with_lazy_pipette().await?;
-//     // Workaround to https://github.com/microsoft/openvmm/issues/379
-//     assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+    // First boot - AK cert request will be served by GED
+    // Second boot - Ak cert request will be bypassed by GED
+    // TODO: with_expect_reset shouldn't be needed once with_tpm() is
+    // backend-agnostic.
+    let (vm, agent) = config.with_expect_reset().run().await?;
 
-//     // Second boot - Ak cert request will be bypassed by GED
-//     vm.reset().await?;
-//     let agent = vm.wait_for_agent().await?;
-//     vm.wait_for_successful_boot_event().await?;
+    // Use the python script to read AK cert from TPM nv index
+    // and verify that the AK cert preserves across boot.
+    // TODO: Replace the script with tpm2-tools
+    const TEST_FILE: &str = "tpm.py";
+    const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
 
-//     // Use the python script to read AK cert from TPM nv index
-//     // and verify that the AK cert preserves across boot.
-//     // TODO: Replace the script with tpm2-tools
-//     const TEST_FILE: &str = "tpm.py";
-//     const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
+    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
 
-//     agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
-//     assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
 
-//     let sh = agent.unix_shell();
-//     let output = cmd!(sh, "python3 tpm.py").read().await?;
+    // Check if the content preserves as expected
+    assert!(output.contains("succeeded"));
 
-//     // Check if the content preserves as expected
-//     assert!(output.contains("succeeded"));
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
 
-//     agent.power_off().await?;
-//     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-//     Ok(())
-// }
+/// Test AK cert retry logic on Linux.
+// TODO: Add in-guest TPM tests for Windows as we currently
+// do not have an easy way to interact with TPM without a private
+// or custom tool.
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
+async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let config = config
+        // See `get_protocol::dps_json::ManagementVtlFeatures`
+        // Enables attempt ak cert callback
+        .with_openhcl_command_line("HCL_ATTEMPT_AK_CERT_CALLBACK=1")
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .modify_backend(|b| {
+            b.with_tpm()
+                .with_tpm_state_persistence()
+                .with_igvm_attest_test_config(
+                    get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+                )
+        });
 
-// TODO: Test disabled because AK cert renewal with non-hardware isolation is
-// disabled.
-// /// Test AK cert retry logic on Linux.
-// // TODO: Add in-guest TPM tests for Windows as we currently
-// // do have an easy way to interact with TPM without a private
-// // or custom tool.
-// #[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
-// async fn tpm_ak_cert_retry(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-//     let config = config
-//         .with_tpm()
-//         .with_tpm_state_persistence()
-//         .with_igvm_attest_test_config(
-//             get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
-//         );
+    // First boot - expect no AK cert from GED
+    // Second boot - except get AK cert from GED on the second attempts
+    // TODO: with_expect_reset shouldn't be needed once with_tpm() is
+    // backend-agnostic.
+    let (vm, agent) = config.with_expect_reset().run().await?;
 
-//     // First boot - expect no AK cert from GED
-//     let mut vm = config.run_with_lazy_pipette().await?;
-//     // Workaround to https://github.com/microsoft/openvmm/issues/379
-//     assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+    // Use the python script to read AK cert from TPM nv index
+    // and verify that the AK cert preserves across boot.
+    // TODO: Replace the script with tpm2-tools
+    const TEST_FILE: &str = "tpm.py";
+    const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
 
-//     // Second boot - except get AK cert from GED on the second attempts
-//     vm.reset().await?;
-//     let agent = vm.wait_for_agent().await?;
-//     vm.wait_for_successful_boot_event().await?;
+    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
 
-//     // Use the python script to read AK cert from TPM nv index
-//     // and verify that the AK cert preserves across boot.
-//     // TODO: Replace the script with tpm2-tools
-//     const TEST_FILE: &str = "tpm.py";
-//     const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
+    // The first AK cert request made during boot is expected to
+    // get invalid response from GED such that no data is set
+    // to nv index. The script should return failure. Also, the nv
+    // read made by the script is expected to trigger another AK cert
+    // request.
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
 
-//     agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
-//     assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+    // Check if there is no content yet
+    assert!(!output.contains("succeeded"));
 
-//     // The first AK cert request made during boot is expected to
-//     // get invalid response from GED such that no data is set
-//     // to nv index. The script should return failure. Also, the nv
-//     // read made by the script is expected to trigger another AK cert
-//     // request.
-//     let sh = agent.unix_shell();
-//     let output = cmd!(sh, "python3 tpm.py").read().await?;
+    // Run the script again to test if the AK cert triggered by nv read
+    // succeeds and the data is written into the nv index.
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
 
-//     // Check if there is no content yet
-//     assert!(!output.contains("succeeded"));
+    // Check if the content is now available
+    assert!(output.contains("succeeded"));
 
-//     // Run the script again to test if the AK cert triggered by nv read
-//     // succeeds and the data is written into the nv index.
-//     let sh = agent.unix_shell();
-//     let output = cmd!(sh, "python3 tpm.py").read().await?;
-
-//     // Check if the content is now available
-//     assert!(output.contains("succeeded"));
-
-//     agent.power_off().await?;
-//     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-//     Ok(())
-// }
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
 
 /// Basic VBS boot test with TPM enabled.
-#[openvmm_test(
+#[openvmm_test_no_agent(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
 )]
-async fn vbs_boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let mut vm = config.with_tpm().run_without_agent().await?;
+    let config = config.modify_backend(|b| b.with_tpm());
 
-    if matches!(os_flavor, OsFlavor::Linux) {
-        // Workaround to https://github.com/microsoft/openvmm/issues/379
-        assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
-        vm.reset().await?;
-    }
+    let mut vm = match os_flavor {
+        OsFlavor::Windows => config.run_without_agent().await?,
+        OsFlavor::Linux => {
+            config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                // TODO: this shouldn't be needed once with_tpm() is
+                // backend-agnostic.
+                .with_expect_reset()
+                .run_without_agent()
+                .await?
+        }
+        _ => unreachable!(),
+    };
 
-    vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// VBS boot test with attestation enabled
+// TODO: Add in-guest tests to retrieve and verify the report.
+#[openvmm_test_no_agent(
+    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
+)]
+async fn vbs_boot_with_attestation(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let config = config.modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
+
+    let mut vm = match os_flavor {
+        OsFlavor::Windows => {
+            config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                .run_without_agent()
+                .await?
+        }
+        OsFlavor::Linux => {
+            config
+                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+                // TODO: this shouldn't be needed once with_tpm() is
+                // backend-agnostic.
+                .with_expect_reset()
+                .run_without_agent()
+                .await?
+        }
+        _ => unreachable!(),
+    };
+
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
 /// Basic VTL 2 pipette functionality test.
 #[openvmm_test(openhcl_linux_direct_x64)]
-async fn vtl2_pipette(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+async fn vtl2_pipette(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (mut vm, agent) = config.run().await?;
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
@@ -198,13 +252,13 @@ async fn vtl2_pipette(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     assert!(output.contains("openvmm_hcl vm"));
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
 /// Boot Linux and have it dump MTRR related output.
 #[openvmm_test(linux_direct_x64, openhcl_linux_direct_x64)]
-async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn mtrrs(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let (vm, agent) = config.run().await?;
 
     let sh = agent.unix_shell();
@@ -213,7 +267,7 @@ async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     let dmesg_output = cmd!(sh, "dmesg").read().await?;
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     // Validate that output does not contain any MTRR-related errors.
     // If all MTRR registers are zero we get this message.
@@ -251,11 +305,10 @@ async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn vmbus_redirect(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config.with_vmbus_redirect().run().await?;
-    vm.wait_for_successful_boot_event().await?;
+async fn vmbus_redirect(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
+    let (vm, agent) = config.with_vmbus_redirect(true).run().await?;
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
@@ -266,10 +319,11 @@ async fn vmbus_redirect(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Erro
     uefi_x64(vhd(ubuntu_2204_server_x64)),
     uefi_x64(vhd(windows_datacenter_core_2022_x64))
 )]
-async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+async fn battery_capacity(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
     let os_flavor = config.os_flavor();
-    let (mut vm, agent) = config.with_battery().run().await?;
-    vm.wait_for_successful_boot_event().await?;
+    let (vm, agent) = config.modify_backend(|b| b.with_battery()).run().await?;
 
     let output = match os_flavor {
         OsFlavor::Linux => {
@@ -301,15 +355,15 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
     assert_eq!(guest_capacity, 95, "Output did not match expected capacity");
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
-fn configure_for_sidecar(
-    config: Box<dyn PetriVmConfig>,
+fn configure_for_sidecar<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
     proc_count: u32,
     node_count: u32,
-) -> Box<dyn PetriVmConfig> {
+) -> PetriVmBuilder<T> {
     config.with_processor_topology({
         ProcessorTopology {
             vp_count: proc_count,
@@ -325,14 +379,15 @@ fn configure_for_sidecar(
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
-#[vmm_test(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
-async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
+async fn sidecar_aps_unused<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
     let proc_count = 4;
     let mut vm = configure_for_sidecar(config, proc_count, 1)
         .with_uefi_frontpage(true)
         .run_without_agent()
         .await?;
-    vm.wait_for_successful_boot_event().await?;
 
     let agent = vm.wait_for_vtl2_agent().await?;
     let sh = agent.unix_shell();
@@ -360,9 +415,68 @@ async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn sidecar_boot(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let nvme_guid = guid::guid!("78fc4861-29bf-408d-88b7-24199de560d1");
+    let virtio_guid = guid::guid!("382a9da7-a7d8-44a5-9644-be3785bceda6");
+
+    // Add an NVMe controller and a Virtio network controller. Only the NVMe
+    // controller should be allowed by OpenHCL.
+    let (vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.vpci_devices.extend([
+                    VpciDeviceConfig {
+                        vtl: DeviceVtl::Vtl0,
+                        instance_id: nvme_guid,
+                        resource: NvmeControllerHandle {
+                            subsystem_id: nvme_guid,
+                            msix_count: 1,
+                            max_io_queues: 1,
+                            namespaces: Vec::new(),
+                        }
+                        .into_resource(),
+                    },
+                    VpciDeviceConfig {
+                        vtl: DeviceVtl::Vtl0,
+                        instance_id: virtio_guid,
+                        resource: VirtioPciDeviceHandle(
+                            VirtioNetHandle {
+                                max_queues: None,
+                                mac_address: MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]),
+                                endpoint: NullHandle.into_resource(),
+                            }
+                            .into_resource(),
+                        )
+                        .into_resource(),
+                    },
+                ])
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+    let lspci_output = cmd!(sh, "lspci").read().await?;
+    let devices = lspci_output
+        .lines()
+        .map(|line| line.trim().split_once(' ').ok_or_else(|| line.trim()))
+        .collect::<Vec<_>>();
+
+    // The virtio device should not have made it through, but the NVMe
+    // controller should be there.
+    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:00a9"))]);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }

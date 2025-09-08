@@ -310,6 +310,8 @@ async fn launch_workers(
         vmbus_max_version: opt.vmbus_max_version,
         vmbus_enable_mnf: opt.vmbus_enable_mnf,
         vmbus_force_confidential_external_memory: opt.vmbus_force_confidential_external_memory,
+        vmbus_channel_unstick_delay: (opt.vmbus_channel_unstick_delay_ms != 0)
+            .then(|| Duration::from_millis(opt.vmbus_channel_unstick_delay_ms)),
         cmdline_append: opt.cmdline_append.clone(),
         reformat_vmgs: opt.reformat_vmgs,
         vtl0_starts_paused: opt.vtl0_starts_paused,
@@ -323,8 +325,12 @@ async fn launch_workers(
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
+        nvme_always_flr: opt.nvme_always_flr,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
+        guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
+        enable_vpci_relay: opt.enable_vpci_relay,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =

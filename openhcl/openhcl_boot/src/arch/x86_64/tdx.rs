@@ -22,7 +22,6 @@ use tdcall::tdcall_map_gpa;
 use tdcall::tdcall_wrmsr;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::RESET_VECTOR_PAGE;
-use x86defs::tdx::TdVmCallR10Result;
 
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {
@@ -155,14 +154,7 @@ pub fn invoke_tdcall_hypercall(
     control: hvdef::hypercall::Control,
     io: &TdxHypercallPage,
 ) -> hvdef::hypercall::HypercallOutput {
-    let result = tdcall_hypercall(&mut TdcallInstruction, control, io.input(), io.output());
-    match result {
-        Ok(()) => 0.into(),
-        Err(val) => {
-            let TdVmCallR10Result(return_code) = val;
-            return_code.into()
-        }
-    }
+    tdcall_hypercall(&mut TdcallInstruction, control, io.input(), io.output())
 }
 
 /// Global variable to store tsc frequency.
@@ -203,6 +195,9 @@ pub fn tdx_prepare_ap_trampoline() {
 }
 
 pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
+    // Update the TDX Trampoline Context for AP Startup
+    tdx_prepare_ap_trampoline();
+
     for cpu in 1..partition_info.cpus.len() {
         hvcall()
             .tdx_enable_vp_vtl2(cpu as u32)
@@ -215,7 +210,4 @@ pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
             .tdx_start_vp(cpu as u32)
             .expect("start vp should not fail");
     }
-
-    // Update the TDX Trampoline Context for AP Startup
-    tdx_prepare_ap_trampoline();
 }

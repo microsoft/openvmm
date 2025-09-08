@@ -30,6 +30,7 @@ pub enum KnownTestArtifacts {
     FreeBsd13_2X64Vhd,
     FreeBsd13_2X64Iso,
     Ubuntu2204ServerX64Vhd,
+    Ubuntu2404ServerX64Vhd,
     Ubuntu2404ServerAarch64Vhd,
     Windows11EnterpriseAarch64Vhdx,
     VmgsWithBootEntry,
@@ -82,6 +83,11 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
         KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::SIZE,
+    ),
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
+        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64::SIZE,
     ),
     KnownTestArtifactMeta::new(
         KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,

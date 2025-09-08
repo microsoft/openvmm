@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 //! UEFI specific loader definitions and implementation.
-#![allow(non_camel_case_types)]
 
 pub mod config;
 
@@ -499,12 +498,9 @@ pub mod x86_64 {
                     importer,
                     CONFIG_BLOB_GPA_BASE / HV_PAGE_SIZE,
                     match isolation.isolation_type {
-                        IsolationType::Snp => {
-                            let table = shared_vis_page_tables
-                                .as_ref()
-                                .expect("should be shared vis page tables");
-                            table
-                        }
+                        IsolationType::Snp => shared_vis_page_tables
+                            .as_ref()
+                            .expect("should be shared vis page tables"),
                         _ => &[],
                     },
                 )?

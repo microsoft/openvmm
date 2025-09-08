@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use thiserror::Error;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
@@ -14,6 +15,7 @@ use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdGlaVmAndFlags;
+use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdVmCallSubFunction;
 use x86defs::tdx::TdgMemPageAcceptRcx;
@@ -85,7 +87,7 @@ pub fn tdcall_hypercall(
     control: hvdef::hypercall::Control,
     input_gpa: u64,
     output_gpa: u64,
-) -> Result<(), TdVmCallR10Result> {
+) -> HypercallOutput {
     let input = TdcallInput {
         leaf: TdCallLeaf::VP_VMCALL,
         rcx: 0x0d04, // pass RDX, R8, R10, R11
@@ -113,12 +115,7 @@ pub fn tdcall_hypercall(
     }
 
     // TD.VMCALL for Hypercall passes return code in r11
-    let result = TdVmCallR10Result(output.r11);
-
-    match result {
-        TdVmCallR10Result::SUCCESS => Ok(()),
-        val => Err(val),
-    }
+    HypercallOutput::from(output.r11)
 }
 
 /// Perform a tdcall based MSR read. This is done by issuing a TDG.VP.VMCALL.
@@ -746,6 +743,40 @@ pub fn tdcall_vp_invgla(
         r10: 0,
         r11: 0,
         r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+#[repr(C, align(64))]
+struct AddlData {
+    /// Report data buffer for TDG.MR.REPORT call.
+    pub report_data: [u8; 64],
+}
+
+/// Issue a TDG.MR.REPORT call with empty additional data.
+pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result<(), TdCallResult> {
+    let addl_data = AddlData {
+        report_data: [0; 64],
+    };
+
+    let input = TdcallInput {
+        leaf: TdCallLeaf::MR_REPORT,
+        rcx: core::ptr::from_mut::<TdReport>(report) as u64,
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: addl_data.report_data.as_ptr() as u64,
         r13: 0,
         r14: 0,
         r15: 0,

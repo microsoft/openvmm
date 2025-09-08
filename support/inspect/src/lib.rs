@@ -1620,6 +1620,12 @@ impl Inspect for std::fs::File {
     }
 }
 
+impl Inspect for core::time::Duration {
+    fn inspect(&self, req: Request<'_>) {
+        req.value(format!("{}.{:09}s", self.as_secs(), self.subsec_nanos()));
+    }
+}
+
 /// Wrapper around `T` that implements [`Inspect`] by calling
 /// [`ToString::to_string()`].
 pub struct AsDisplay<T>(pub T);
@@ -2864,6 +2870,7 @@ mod tests {
             ignored: Ignored,
             tr1: Tr1,
             tr2: Tr2,
+            unnamed: Unnamed,
             #[inspect(iter_by_index, hex)]
             hex_array: [u8; 4],
             hex_inner: HexInner,
@@ -2892,6 +2899,9 @@ mod tests {
         struct Transparent {
             inner: Inner,
         }
+
+        #[derive(Inspect)]
+        struct Unnamed(u8, i32);
 
         #[derive(Inspect)]
         #[inspect(transparent)]
@@ -2941,6 +2951,7 @@ mod tests {
             ignored: Ignored { _x: || () },
             tr1: Tr1(10, PhantomData),
             tr2: Tr2(()),
+            unnamed: Unnamed(5, -83),
             hex_array: [100, 101, 102, 103],
             hex_inner: HexInner { val: 100 },
             inner_as_hex: Inner { val: 100 },
@@ -2984,6 +2995,10 @@ mod tests {
                     },
                     tr1: 0xa,
                     tr2: "()",
+                    unnamed: {
+                        0: 5,
+                        1: -83,
+                    },
                     val: 8,
                     var: "bar_baz",
                 }"#]),

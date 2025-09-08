@@ -13,7 +13,7 @@ ioperf = ["dep:disklayer_ram"]
 arbitrary = [ "scsi_defs/arbitrary"]
 
 # Expose some implementation details publicly, used for fuzzing.
-fuzz_helpers = []
+test = []
 
 [dependencies]
 

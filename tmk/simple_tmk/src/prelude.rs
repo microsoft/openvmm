@@ -8,7 +8,7 @@
 //! use crate::prelude::*;
 //! ```
 
-#![allow(unused_imports)]
+#![cfg_attr(target_arch = "aarch64", expect(unused_imports))]
 
 pub use tmk_core::Scope;
 pub use tmk_core::TestContext;

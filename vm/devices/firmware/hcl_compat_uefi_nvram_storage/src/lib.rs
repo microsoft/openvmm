@@ -94,6 +94,9 @@ pub struct HclCompatNvram<S> {
     // reduced allocator pressure
     #[cfg_attr(feature = "inspect", inspect(skip))] // internal bookkeeping - not worth inspecting
     nvram_buf: Vec<u8>,
+
+    // whether the NVRAM has been loaded, either from storage or saved state
+    loaded: bool,
 }
 
 /// "Quirks" to take into account when loading/storing nvram blob data.
@@ -129,6 +132,8 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             in_memory: in_memory::InMemoryNvram::new(),
 
             nvram_buf: Vec::new(),
+
+            loaded: false,
         }
     }
 
@@ -146,9 +151,11 @@ impl<S: StorageBackend> HclCompatNvram<S> {
     }
 
     async fn lazy_load_from_storage_inner(&mut self) -> Result<(), NvramStorageError> {
-        if !self.nvram_buf.is_empty() {
+        if self.loaded {
             return Ok(());
         }
+
+        tracing::info!("loading uefi nvram from storage");
 
         let nvram_buf = self
             .storage
@@ -288,11 +295,13 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             ));
         }
 
+        self.loaded = true;
         Ok(())
     }
 
     /// Dump in-memory nvram to the underlying storage device.
     async fn flush_storage(&mut self) -> Result<(), NvramStorageError> {
+        tracing::info!("flushing uefi nvram to storage");
         self.nvram_buf.clear();
 
         for in_memory::VariableEntry {
@@ -470,6 +479,30 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
         }
 
         self.in_memory.next_variable(name_vendor).await
+    }
+}
+
+#[cfg(feature = "save_restore")]
+mod save_restore {
+    use super::*;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+
+    impl<S: StorageBackend> SaveRestore for HclCompatNvram<S> {
+        type SavedState = <in_memory::InMemoryNvram as SaveRestore>::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            self.in_memory.save()
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            if state.nvram.is_some() {
+                self.in_memory.restore(state)?;
+                self.loaded = true;
+            }
+            Ok(())
+        }
     }
 }
 

@@ -5,6 +5,7 @@
 //! sent to and received from the IGVm agent runs on the host via GET
 //! `IGVM_ATTEST` host request.
 
+use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -17,9 +18,9 @@ const ATTESTATION_SIGNATURE: u32 = 0x414c4348; // 'HCLA'
 /// Currently it's the size of a SNP report.
 const ATTESTATION_REPORT_SIZE_MAX: usize = SNP_VM_REPORT_SIZE;
 
-pub const VBS_VM_REPORT_SIZE: usize = 0x230;
-pub const SNP_VM_REPORT_SIZE: usize = sev_guest_device::protocol::SNP_REPORT_SIZE;
-pub const TDX_VM_REPORT_SIZE: usize = tdx_guest_device::protocol::TDX_REPORT_SIZE;
+pub const VBS_VM_REPORT_SIZE: usize = hvdef::vbs::VBS_REPORT_SIZE;
+pub const SNP_VM_REPORT_SIZE: usize = x86defs::snp::SNP_REPORT_SIZE;
+pub const TDX_VM_REPORT_SIZE: usize = x86defs::tdx::TDX_REPORT_SIZE;
 /// No TEE attestation report for TVM
 pub const TVM_REPORT_SIZE: usize = 0;
 
@@ -35,8 +36,10 @@ pub const KEY_RELEASE_RESPONSE_BUFFER_SIZE: usize = 16 * PAGE_SIZE;
 /// Currently the AK cert request only requires 1 page.
 pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
 
-/// Current AK cert response header version
-pub const AK_CERT_RESPONSE_HEADER_VERSION: u32 = 1;
+// IGVM Attest response header version
+pub const IGVM_ATTEST_RESPONSE_VERSION_1: u32 = 1;
+pub const IGVM_ATTEST_RESPONSE_VERSION_2: u32 = 2;
+pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: u32 = IGVM_ATTEST_RESPONSE_VERSION_2;
 
 /// Request structure (C-style)
 /// The struct (includes the appended [`runtime_claims::RuntimeClaims`]) also serves as the
@@ -135,7 +138,19 @@ impl IgvmAttestRequestHeader {
     }
 }
 
-const IGVM_ATTEST_VERSION_CURRENT: u32 = 1;
+const IGVM_ATTEST_VERSION_CURRENT: u32 = 2;
+
+/// Bitmap of additional Igvm request attributes.
+/// 0 - error_code: Requesting IGVM Agent Error code
+/// 1 - retry: Retry preference
+#[bitfield(u32)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct IgvmCapabilityBitMap {
+    pub error_code: bool,
+    pub retry: bool,
+    #[bits(30)]
+    _reserved: u32,
+}
 
 /// Unmeasured user data, used for host attestation requests (C-style struct)
 #[repr(C)]
@@ -151,6 +166,8 @@ pub struct IgvmAttestRequestData {
     pub report_data_hash_type: IgvmAttestHashType,
     /// Size of the appended raw runtime claims
     pub variable_data_size: u32,
+    /// Bitmap of additional requested attributes
+    pub capability_bitmap: IgvmCapabilityBitMap,
 }
 
 impl IgvmAttestRequestData {
@@ -160,6 +177,7 @@ impl IgvmAttestRequestData {
         report_type: IgvmAttestReportType,
         report_data_hash_type: IgvmAttestHashType,
         variable_data_size: u32,
+        capability_bitmap: IgvmCapabilityBitMap,
     ) -> Self {
         Self {
             data_size,
@@ -167,13 +185,46 @@ impl IgvmAttestRequestData {
             report_type,
             report_data_hash_type,
             variable_data_size,
+            capability_bitmap,
         }
     }
 }
 
+/// Bitmap indicates a signal to requestor
+/// 0 - IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct IgvmSignal {
+    pub retry: bool,
+    #[bits(31)]
+    _reserved: u32,
+}
+
+/// The common response header that comply with both V1 and V2 Igvm attest response
+#[repr(C)]
+#[derive(Default, Debug, IntoBytes, FromBytes)]
+pub struct IgvmAttestCommonResponseHeader {
+    /// Data size
+    pub data_size: u32,
+    /// Version
+    pub version: u32,
+}
+
+/// The response header for `IGVM_ERROR_INFO` (C-style struct)
+#[repr(C)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct IgvmErrorInfo {
+    /// ErrorCode propagated from IgvmAgent
+    pub error_code: u32,
+    /// HttpStatusCode propagated from IgvmAgent that enhances the ErrorCode
+    pub http_status_code: u32,
+    /// Igvm signal from response
+    pub igvm_signal: IgvmSignal,
+    /// Reserved
+    pub reserved: [u32; 3],
+}
+
 /// The response header for `KEY_RELEASE_REQUEST` (C-style struct)
-///
-/// reSearch query: `IGVM_KEY_MESSAGE_HEADER`
 #[repr(C)]
 #[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestKeyReleaseResponseHeader {
@@ -181,12 +232,12 @@ pub struct IgvmAttestKeyReleaseResponseHeader {
     pub data_size: u32,
     /// Version
     pub version: u32,
+    /// IgvmErrorInfo that contains RPC result and retry recommendation
+    pub error_info: IgvmErrorInfo,
 }
 
 /// The response header for `WRAPPED_KEY_REQUEST` (C-style struct)
 /// Currently the definition is the same as [`IgvmAttestKeyReleaseResponseHeader`].
-///
-/// reSearch query: `IGVM_KEY_MESSAGE_HEADER`
 #[repr(C)]
 #[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestWrappedKeyResponseHeader {
@@ -194,11 +245,11 @@ pub struct IgvmAttestWrappedKeyResponseHeader {
     pub data_size: u32,
     /// Version
     pub version: u32,
+    /// IgvmErrorInfo that contains RPC result and retry recommendation
+    pub error_info: IgvmErrorInfo,
 }
 
 /// The response header for `AK_CERT_REQUEST` (C-style struct)
-///
-/// reSearch query: `IGVM_CERT_MESSAGE_HEADER`
 #[repr(C)]
 #[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestAkCertResponseHeader {
@@ -206,6 +257,8 @@ pub struct IgvmAttestAkCertResponseHeader {
     pub data_size: u32,
     /// Version
     pub version: u32,
+    /// IgvmErrorInfo that contains RPC result and retry recommendation
+    pub error_info: IgvmErrorInfo,
 }
 
 /// Definition of the runt-time claims, which will be appended to the
@@ -345,6 +398,8 @@ pub mod runtime_claims {
         pub tpm_enabled: bool,
         /// Whether the TPM states is persisted
         pub tpm_persisted: bool,
+        /// Whether certain vPCI devices are allowed through the device filter
+        pub filtered_vpci_devices_allowed: bool,
         /// VM id
         #[serde(rename = "vmUniqueId")]
         pub vm_unique_id: String,

@@ -37,6 +37,7 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
+use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
@@ -86,6 +87,7 @@ use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
 use mesh::CancelContext;
+use mesh::CellUpdater;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
@@ -910,18 +912,6 @@ fn vm_config_from_command_line(
         resources.ged_rpc = Some(send);
 
         let vmgs = vmgs.take().unwrap();
-        // OpenHCL doesn't support ephemeral guest state yet,
-        // so give it a memory-backed VMGS
-        let vmgs = if matches!(vmgs, VmgsResource::Ephemeral) {
-            VmgsResource::Disk(
-                disk_backend_resources::LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-                })
-                .into_resource(),
-            )
-        } else {
-            vmgs
-        };
 
         vmbus_devices.extend([
             (
@@ -984,7 +974,7 @@ fn vm_config_from_command_line(
                             get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows
                         },
                         Some(SecureBootTemplateCli::UefiCa) => {
-                            get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy
+                            get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority
                         }
                         None => {
                             get_resources::ged::GuestSecureBootTemplateType::None
@@ -1028,6 +1018,7 @@ fn vm_config_from_command_line(
                 register_layout,
                 guest_secret_key: None,
                 logger: None,
+                is_confidential_vm: false,
             }
             .into_resource(),
         });
@@ -1167,6 +1158,7 @@ fn vm_config_from_command_line(
         hvlite_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
             gic_config: None,
+            pmu_gsiv: hvlite_defs::config::PmuGsivConfig::Platform,
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1380,6 +1372,7 @@ fn vm_config_from_command_line(
         debugger_rpc: None,
         generation_id_recv: None,
         rtc_delta_milliseconds: 0,
+        automatic_guest_reset: !opt.halt_on_reset,
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
@@ -1585,6 +1578,13 @@ fn disk_open_inner(
         DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
             disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
         )),
+        DiskCliKind::DelayDiskWrapper {
+            delay_ms,
+            disk: inner,
+        } => layers.push(disk(DelayDiskHandle {
+            delay: CellUpdater::new(Duration::from_millis(*delay_ms)).cell(),
+            disk: disk_open(inner, read_only)?,
+        })),
         DiskCliKind::Crypt {
             disk: inner,
             cipher,
@@ -2315,23 +2315,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             Event::Quit => break,
             Event::Halt(reason) => {
-                match reason {
-                    vmm_core_defs::HaltReason::Reset
-                        if !opt.halt_on_reset && state_change_task.is_none() =>
-                    {
-                        tracing::info!("guest-initiated reset");
-                        state_change(
-                            driver,
-                            &vm_rpc,
-                            &mut state_change_task,
-                            VmRpc::Reset,
-                            StateChange::Reset,
-                        );
-                    }
-                    _ => {
-                        tracing::info!(?reason, "guest halted");
-                    }
-                }
+                tracing::info!(?reason, "guest halted");
                 continue;
             }
             Event::PulseSaveRestore => {

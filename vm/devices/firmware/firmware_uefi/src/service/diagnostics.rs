@@ -32,6 +32,9 @@ use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 use zerocopy::FromBytes;
 
+/// Default number of EfiDiagnosticsLogs emitted per period
+pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
+
 /// 8-byte alignment for every entry
 const ALIGNMENT: usize = 8;
 
@@ -102,14 +105,75 @@ fn phase_to_string(phase: u16) -> &'static str {
         .unwrap_or("UNKNOWN")
 }
 
+/// Rate-limited handler for EFI diagnostics logs during normal processing.
+pub fn log_diagnostic_ratelimited(log: EfiDiagnosticsLog<'_>, limit: u32) {
+    let debug_level_str = debug_level_to_string(log.debug_level);
+    let phase_str = phase_to_string(log.phase);
+
+    match log.debug_level {
+        DEBUG_WARN => tracelimit::warn_ratelimited!(
+            limit: limit,
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        DEBUG_ERROR => tracelimit::error_ratelimited!(
+            limit: limit,
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        _ => tracelimit::info_ratelimited!(
+            limit: limit,
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+    }
+}
+
+/// Unrestricted handler for EFI diagnostics logs during inspection.
+pub fn log_diagnostic_unrestricted(log: EfiDiagnosticsLog<'_>) {
+    let debug_level_str = debug_level_to_string(log.debug_level);
+    let phase_str = phase_to_string(log.phase);
+
+    match log.debug_level {
+        DEBUG_WARN => tracing::warn!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        DEBUG_ERROR => tracing::error!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+        _ => tracing::info!(
+            debug_level = %debug_level_str,
+            ticks = log.ticks,
+            phase = %phase_str,
+            log_message = log.message,
+            "EFI log entry"
+        ),
+    }
+}
+
 /// Errors that occur when parsing entries
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum EntryParseError {
     #[error("Expected: {0:#x}, got: {1:#x}")]
     SignatureMismatch(u32, u32),
-    #[error("Expected non-zero timestamp, got: {0:#x}")]
-    Timestamp(u64),
     #[error("Expected message length < {0:#x}, got: {1:#x}")]
     MessageLength(u16, u16),
     #[error("Failed to read from buffer slice")]
@@ -224,8 +288,8 @@ pub enum DiagnosticsError {
 pub struct DiagnosticsServices {
     /// The guest physical address of the diagnostics buffer
     gpa: Option<u32>,
-    /// Flag to indicate if we have already processed the buffer
-    did_process: bool,
+    /// Flag indicating if guest-initiated processing has occurred before
+    has_guest_processed_before: bool,
 }
 
 impl DiagnosticsServices {
@@ -233,14 +297,14 @@ impl DiagnosticsServices {
     pub fn new() -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
-            did_process: false,
+            has_guest_processed_before: false,
         }
     }
 
     /// Reset the diagnostics services state
     pub fn reset(&mut self) {
         self.gpa = None;
-        self.did_process = false;
+        self.has_guest_processed_before = false;
     }
 
     /// Set the GPA of the diagnostics buffer
@@ -251,15 +315,31 @@ impl DiagnosticsServices {
         }
     }
 
-    /// Process the diagnostics buffer
-    pub fn process_diagnostics<F>(
+    /// Processes diagnostics from guest memory
+    ///
+    /// # Arguments
+    /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `gm` - Guest memory to read diagnostics from
+    /// * `log_handler` - Function to handle each parsed log entry
+    fn process_diagnostics<F>(
         &mut self,
+        allow_reprocess: bool,
         gm: &GuestMemory,
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
     where
         F: FnMut(EfiDiagnosticsLog<'_>),
     {
+        // Prevent the guest from spamming diagnostics processing
+        // unless explicitly allowed
+        if !allow_reprocess {
+            if self.has_guest_processed_before {
+                tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
+                return Ok(());
+            }
+            self.has_guest_processed_before = true;
+        }
+
         // Validate the GPA
         let gpa = match self.gpa {
             Some(gpa) if gpa != 0 && gpa != u32::MAX => gpa,
@@ -413,54 +493,27 @@ impl DiagnosticsServices {
 }
 
 impl UefiDevice {
-    /// Process the diagnostics buffer and log the entries to tracing
-    pub(crate) fn process_diagnostics(&mut self) {
-        // Do not proceed if we have already processed before
-        if self.service.diagnostics.did_process {
-            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
-            return;
-        }
-        self.service.diagnostics.did_process = true;
-
-        // Process diagnostics logs and send each directly to tracing
-        match self
-            .service
-            .diagnostics
-            .process_diagnostics(&self.gm, |log| {
-                let debug_level_str = debug_level_to_string(log.debug_level);
-                let phase_str = phase_to_string(log.phase);
-
-                match log.debug_level {
-                    DEBUG_WARN => tracing::warn!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                    DEBUG_ERROR => tracing::error!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                    _ => tracing::info!(
-                        debug_level = %debug_level_str,
-                        ticks = log.ticks,
-                        phase = %phase_str,
-                        log_message = log.message,
-                        "EFI log entry"
-                    ),
-                }
-            }) {
-            Ok(_) => {}
-            Err(error) => {
-                tracelimit::error_ratelimited!(
-                    error = &error as &dyn std::error::Error,
-                    "Failed to process diagnostics buffer"
-                );
-            }
+    /// Processes UEFI diagnostics from guest memory.
+    ///
+    /// When a limit is provided, traces are rate-limited to avoid spam.
+    /// When no limit is provided, traces are unrestricted.
+    ///
+    /// # Arguments
+    /// * `allow_reprocess` - If true, allows processing even if already processed for guest
+    /// * `limit` - Maximum number of logs to process per period, or `None` for no limit
+    pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: Option<u32>) {
+        if let Err(error) =
+            self.service
+                .diagnostics
+                .process_diagnostics(allow_reprocess, &self.gm, |log| match limit {
+                    Some(limit) => log_diagnostic_ratelimited(log, limit),
+                    None => log_diagnostic_unrestricted(log),
+                })
+        {
+            tracelimit::error_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                "failed to process diagnostics buffer"
+            );
         }
     }
 }
@@ -491,14 +544,14 @@ mod save_restore {
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 gpa: self.gpa,
-                did_flush: self.did_process,
+                did_flush: self.has_guest_processed_before,
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let state::SavedState { gpa, did_flush } = state;
             self.gpa = gpa;
-            self.did_process = did_flush;
+            self.has_guest_processed_before = did_flush;
             Ok(())
         }
     }

@@ -160,8 +160,6 @@ pub struct ParsedBootDtInfo {
     /// guest.
     #[inspect(iter_by_index)]
     pub accepted_ranges: Vec<MemoryRange>,
-    /// GIC information
-    pub gic: Option<GicInfo>,
     /// The memory allocation mode the bootloader decided to use.
     pub memory_allocation_mode: MemoryAllocationMode,
     /// The isolation type of the partition.
@@ -169,6 +167,11 @@ pub struct ParsedBootDtInfo {
     /// VTL2 range for private pool memory.
     #[inspect(iter_by_index)]
     pub private_pool_ranges: Vec<MemoryRangeWithNode>,
+
+    /// GIC information, on AArch64.
+    pub gic: Option<GicInfo>,
+    /// PMU GSIV, on AArch64.
+    pub pmu_gsiv: Option<u32>,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -485,6 +488,34 @@ fn parse_gic(node: &Node<'_>) -> anyhow::Result<GicInfo> {
     })
 }
 
+fn parse_pmu(node: &Node<'_>) -> anyhow::Result<u32> {
+    let interrupts =
+        try_find_property(node, "interrupts").context("pmu node missing interrupts")?;
+    let interrupts_typ = interrupts
+        .read_u32(0)
+        .map_err(err_to_owned)
+        .context("missing pmu interrupts typ")?;
+    let interrupts_ppi_index = interrupts
+        .read_u32(1)
+        .map_err(err_to_owned)
+        .context("missing pmu interrupts index")?;
+
+    // The interrupt is expected to be a PPI.
+    const GIC_PPI: u32 = 1;
+    if interrupts_typ != GIC_PPI {
+        bail!("pmu node has unexpected interrupt type {interrupts_typ}");
+    }
+
+    // The index is the index off of the PPI base of 16. PPIs only exist from 16
+    // to 31, so the index should be < 16.
+    if interrupts_ppi_index >= 16 {
+        bail!("pmu node has unexpected interrupt index {interrupts_ppi_index}");
+    }
+
+    const PPI_BASE: u32 = 16;
+    Ok(PPI_BASE + interrupts_ppi_index)
+}
+
 impl ParsedBootDtInfo {
     /// Read parameters passed via device tree by openhcl_boot, at
     /// /sys/firmware/fdt.
@@ -502,6 +533,7 @@ impl ParsedBootDtInfo {
         let mut config_ranges = Vec::new();
         let mut vtl2_memory = Vec::new();
         let mut gic = None;
+        let mut pmu_gsiv = None;
         let mut partition_memory_map = Vec::new();
         let mut accepted_ranges = Vec::new();
         let mut vtl0_alias_map = None;
@@ -559,6 +591,11 @@ impl ParsedBootDtInfo {
                     gic = Some(parse_gic(&child)?);
                 }
 
+                _ if child.name.starts_with("pmu") => {
+                    // TODO: make sure we are on aarch64
+                    pmu_gsiv = Some(parse_pmu(&child)?);
+                }
+
                 _ => {
                     // Ignore other nodes.
                 }
@@ -576,6 +613,7 @@ impl ParsedBootDtInfo {
             vtl0_alias_map,
             accepted_ranges,
             gic,
+            pmu_gsiv,
             memory_allocation_mode,
             isolation,
             vtl2_reserved_range,
@@ -677,6 +715,7 @@ mod tests {
         let p_numa_node_id = builder.add_string("numa-node-id")?;
         let p_igvm_type = builder.add_string(IGVM_DT_IGVM_TYPE_PROPERTY)?;
         let p_openhcl_memory = builder.add_string("openhcl,memory-type")?;
+        let p_interrupts = builder.add_string("interrupts")?;
 
         let mut root_builder = builder
             .start_node("")?
@@ -738,6 +777,18 @@ mod tests {
                 .add_null(p_interrupt_controller)?
                 .add_u32(p_phandle, 1)?
                 .add_null(p_ranges)?
+                .end_node()?;
+        }
+
+        // PMU
+        if let Some(pmu_gsiv) = info.pmu_gsiv {
+            assert!((16..32).contains(&pmu_gsiv));
+            const GIC_PPI: u32 = 1;
+            const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
+            root_builder = root_builder
+                .start_node("pmu")?
+                .add_str(p_compatible, "arm,armv8-pmuv3")?
+                .add_u32_array(p_interrupts, &[GIC_PPI, pmu_gsiv - 16, IRQ_TYPE_LEVEL_HIGH])?
                 .end_node()?;
         }
 
@@ -931,6 +982,7 @@ mod tests {
                 gic_distributor_base: 0x10000,
                 gic_redistributors_base: 0x20000,
             }),
+            pmu_gsiv: Some(0x17),
             accepted_ranges: vec![
                 MemoryRange::new(0x10000..0x20000),
                 MemoryRange::new(0x1000000..0x1500000),

@@ -428,7 +428,7 @@ pub struct MsiResourceDescriptor {
     /// Interrupt vector number
     pub vector: u8,
     /// Interrupt delivery mode
-    pub delivery_mode: u8,
+    pub delivery_mode: DeliveryMode,
     /// Number of interrupt vectors requested
     pub vector_count: u16,
     /// Reserved fields
@@ -447,7 +447,7 @@ pub struct MsiResourceDescriptor2 {
     /// Interrupt vector number
     pub vector: u8,
     /// Interrupt delivery mode
-    pub delivery_mode: u8,
+    pub delivery_mode: DeliveryMode,
     /// Number of interrupt vectors requested
     pub vector_count: u16,
     /// Number of processors in the processor_array
@@ -456,6 +456,17 @@ pub struct MsiResourceDescriptor2 {
     pub processor_array: [u16; 32],
     /// Reserved field
     pub reserved: u16,
+}
+
+open_enum! {
+    /// Interrupt delivery mode
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+    pub enum DeliveryMode: u8 {
+        /// Fixed priority delivery mode
+        FIXED = 0,
+        /// Lowest priority delivery mode (x86 only)
+        LOWEST_PRIORITY = 1,
+    }
 }
 
 /// MSI resource descriptor (version 3).

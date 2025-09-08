@@ -38,8 +38,8 @@ impl FuzzNvmeDriver {
         let pages = 512; // 2MB TODO: [use-arbitrary-input]
         let mem = DeviceTestMemory::new(pages, false, "fuzz_nvme_driver");
 
-        // Trasfer buffer
-        let payload_mem = mem.guest_memory();
+        // Transfer buffer
+        let payload_mem = mem.payload_mem();
 
         // Nvme device and driver setup
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));

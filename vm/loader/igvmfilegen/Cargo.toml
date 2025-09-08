@@ -14,7 +14,6 @@ loader_defs.workspace = true
 hvdef.workspace = true
 
 memory_range.workspace = true
-underhill_confidentiality.workspace = true
 vbs_defs.workspace = true
 x86defs.workspace = true
 
@@ -32,8 +31,6 @@ thiserror.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
 zerocopy.workspace = true
-[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))'.build-dependencies]
-loader_defs.workspace = true
 
 [lints]
 workspace = true

@@ -186,8 +186,8 @@ enum PacketError {
     UnknownType(protocol::MessageType),
     #[error("memory access error")]
     Access(#[source] AccessError),
-    #[error("invalid interrupt type")]
-    InvalidInterruptType(u8),
+    #[error("invalid interrupt type {0:?}")]
+    InvalidInterruptType(vpci_protocol::DeliveryMode),
     #[error("invalid interrupt resources")]
     InvalidInterrupt,
     #[error("packet is too small: {0}")]
@@ -250,11 +250,11 @@ enum AssignedResourcesReplyType {
     V2,
 }
 
-fn get_interrupt_type(interrupt_type: u8) -> Result<InterruptType, PacketError> {
-    match interrupt_type {
-        0 => Ok(InterruptType::Fixed),
-        1 => Ok(InterruptType::LowestPriority),
-        _ => Err(PacketError::InvalidInterruptType(interrupt_type)),
+fn get_interrupt_type(mode: vpci_protocol::DeliveryMode) -> Result<InterruptType, PacketError> {
+    match mode {
+        vpci_protocol::DeliveryMode::FIXED => Ok(InterruptType::Fixed),
+        vpci_protocol::DeliveryMode::LOWEST_PRIORITY => Ok(InterruptType::LowestPriority),
+        _ => Err(PacketError::InvalidInterruptType(mode)),
     }
 }
 
@@ -693,12 +693,14 @@ impl ReadyState {
                 return Err(WorkerError::UnexpectedPacketOrder);
             }
             PacketData::FdoD0Entry { mmio_start } => {
+                tracing::trace!(?mmio_start, ?dev.instance_id, "FDO D0 entry");
                 dev.config_space.map(mmio_start);
                 self.send_device = true;
                 // Send the completion after the device has been sent.
                 self.send_completion = transaction_id;
             }
             PacketData::FdoD0Exit => {
+                tracing::trace!(?dev.instance_id, "FDO D0 exit");
                 dev.config_space.unmap();
                 conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
             }
@@ -997,6 +999,7 @@ impl VpciChannel {
         Ok(())
     }
 
+    /// Release all resources associated with the device (not the bus).
     async fn release_all(&mut self) {
         // Power off the device.
         self.set_power(false);
@@ -1075,6 +1078,8 @@ impl VpciConfigSpace {
         // Note that there may be some current accessors that this will not
         // flush out synchronously. The MMIO implementation in bus.rs must be
         // careful to ignore reads/writes that are not to an expected address.
+        //
+        // This is idempotent. See [`impl_device_range!`].
         self.control_mmio.unmap();
         self.offset
             .0
@@ -1165,6 +1170,9 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
 
     async fn close(&mut self) {
         self.release_all().await;
+
+        // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
+        self.config_space.unmap();
     }
 
     async fn run(
@@ -1467,7 +1475,7 @@ mod tests {
         ) -> (u64, u32) {
             let mut interrupt = protocol::MsiResourceDescriptor2 {
                 vector,
-                delivery_mode: 0, // fixed
+                delivery_mode: protocol::DeliveryMode::FIXED,
                 vector_count: 1,
                 processor_count: target_processors.len() as u16,
                 processor_array: Default::default(),

@@ -279,8 +279,7 @@ impl VportState {
 
     /// Get current filter setting if known.
     pub fn get_direction_to_vtl0(&self) -> Option<bool> {
-        let direction_to_vtl0 = *self.direction_to_vtl0.lock();
-        direction_to_vtl0
+        *self.direction_to_vtl0.lock()
     }
 }
 

@@ -5,7 +5,7 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-#![allow(non_camel_case_types)]
+#![expect(non_camel_case_types)]
 
 use bitfield_struct::bitfield;
 use igvm_defs::PAGE_SIZE_4K;

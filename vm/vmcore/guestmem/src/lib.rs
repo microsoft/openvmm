@@ -1956,6 +1956,14 @@ impl GuestMemory {
         self.read_at_inner(gpa, &mut b).map_err(|err| err.kind)
     }
 
+    /// Check if a given GPA is writeable or not.
+    pub fn probe_gpa_writable(&self, gpa: u64) -> Result<(), GuestMemoryErrorKind> {
+        let _ = self
+            .compare_exchange(gpa, 0u8, 0)
+            .map_err(|err| err.kind())?;
+        Ok(())
+    }
+
     /// Gets a slice of guest memory assuming the memory was already locked via
     /// [`GuestMemory::lock_gpns`].
     ///
@@ -2297,12 +2305,15 @@ pub trait MemoryRead {
     }
 }
 
+/// A trait for sequentially updating a region of memory.
 pub trait MemoryWrite {
     fn write(&mut self, data: &[u8]) -> Result<(), AccessError>;
     fn zero(&mut self, len: usize) -> Result<(), AccessError> {
         self.fill(0, len)
     }
     fn fill(&mut self, val: u8, len: usize) -> Result<(), AccessError>;
+
+    /// The space remaining in the memory region.
     fn len(&self) -> usize;
 
     fn limit(self, len: usize) -> Limit<Self>

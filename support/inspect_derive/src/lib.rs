@@ -408,7 +408,7 @@ fn impl_defs(
 
 fn fields_response(
     fields: &syn::Fields,
-    field_vars: &[TokenStream],
+    field_vars: &[(TokenStream, String)],
     req: &Ident,
     bitfield: Option<Ident>,
     transparent: Option<(Span, Vec<Attr<FieldAttr>>)>,
@@ -418,7 +418,7 @@ fn fields_response(
     let field_vars =
         field_vars
             .iter()
-            .map(|x| Some(x.clone()))
+            .map(|x| Some(x.clone()).unzip())
             .chain(fields.iter().enumerate().map(|(field_index, field)| {
                 // Bitfield fields starting with '_' don't have accessor methods, so skip them.
                 let skip = bitfield.is_some()
@@ -427,26 +427,31 @@ fn fields_response(
                         .as_ref()
                         .is_some_and(|id| id.to_string().starts_with('_'));
 
-                (!skip).then(|| {
-                    let ident = field.ident.as_ref().map_or_else(
-                        || syn::Index::from(field_index).into_token_stream(),
-                        |ident| ident.into_token_stream(),
-                    );
-                    if bitfield.is_some() {
-                        quote!(self.#ident())
-                    } else {
-                        quote!(self.#ident)
-                    }
-                })
+                (!skip)
+                    .then(|| {
+                        let ident = field.ident.as_ref().map_or_else(
+                            || syn::Index::from(field_index).into_token_stream(),
+                            |ident| ident.into_token_stream(),
+                        );
+                        let field_ident = if bitfield.is_some() {
+                            quote!(self.#ident())
+                        } else {
+                            quote!(self.#ident)
+                        };
+                        let inspect_name = ident.to_string();
+                        (field_ident, inspect_name)
+                    })
+                    .unzip()
             }));
 
     let mut fields = fields
         .iter()
         .zip(field_vars)
-        .map(|(field, ident)| {
+        .map(|(field, (ident, name))| {
             field_response(
                 field,
                 ident,
+                name,
                 transparent.as_ref().map(|(_, attr)| attr.as_slice()),
                 req,
                 &resp,
@@ -489,6 +494,7 @@ fn fields_response(
 fn field_response(
     field: &syn::Field,
     ident: Option<TokenStream>,
+    mut inspect_name: Option<String>,
     transparent_attrs: Option<&[Attr<FieldAttr>]>,
     req: &Ident,
     resp: &Ident,
@@ -529,7 +535,6 @@ fn field_response(
         Binary,
     }
 
-    let mut inspect_name = None;
     let mut sensitivity = None;
     let mut is_mut = false;
     let mut kind = None;
@@ -666,13 +671,7 @@ fn field_response(
 
     let tokens = match kind {
         Kind::Field => {
-            let name = match inspect_name {
-                Some(name) => name,
-                None => match &field.ident {
-                    Some(name) => name.to_string(),
-                    None => return Err(syn::Error::new(field.span(), "field name not specified")),
-                },
-            };
+            let name = inspect_name.unwrap();
             let func = if is_mut {
                 "sensitivity_field_mut"
             } else {
@@ -847,7 +846,11 @@ fn derive_tagged_enum(
             // `fields_response` will want to apply the appropriate reference
             // type, but we already have references from destructuring the enum
             // variant.
-            let dereferenced = field_vars.iter().map(|x| quote!((*#x))).collect::<Vec<_>>();
+            let dereferenced = field_vars
+                .iter()
+                .zip(fields.iter())
+                .map(|(x, name)| (quote!((*#x)), name.to_string()))
+                .collect::<Vec<_>>();
 
             let inner_req = Ident::new("req", Span::call_site());
             let inner_response = fields_response(

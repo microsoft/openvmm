@@ -108,12 +108,18 @@
                 while (/\s/.test(input[i])) i++;
             }
 
+            /**
+             * Parses a key from the input string.
+             * A key is defined as a sequence of characters followed by a colon and whitespace.
+             * Of note: a key can contain any character (including spaces and colons).
+             * Throws an error if the key is invalid.
+             */
             function parseKey() {
                 skipWhitespace();
-                const match = /^\S*:/.exec(input.slice(i));
+                const match = /^(.+?):\s/.exec(input.slice(i));
                 if (!match) throw new Error(`Invalid key at position ${i}: '${input.slice(i, i + 10)}'`);
                 i += match[0].length;
-                return match[0].slice(0, -1); // Remove the trailing ':'
+                return match[1];
             }
 
             function parseString() {
@@ -144,21 +150,21 @@
                 if (input[i] === '_') return { type: 'unevaluated' };
                 if (input[i] === 't') {
                     if (input.slice(i, i + 4) !== 'true') {
-                        throw new Error(`Expected 'true' at position ${i}`);
+                        throw new Error(`Expected 'true' at position ${i}, saw '${input.slice(i, i + 10)}'`);
                     }
                     i += 4; // skip 'true'
                     return { type: 'boolean', value: true };
                 }
                 if (input[i] === 'f') {
                     if (input.slice(i, i + 5) !== 'false') {
-                        throw new Error(`Expected 'false' at position ${i}`);
+                        throw new Error(`Expected 'false' at position ${i}, saw '${input.slice(i, i + 10)}'`);
                     }
                     i += 5; // skip 'false'
                     return { type: 'boolean', value: false };
                 }
                 if (input[i] === 'e') {
                     if (input.slice(i, i + 7) !== 'error (') {
-                        throw new Error(`Expected 'error (' at position ${i}`);
+                        throw new Error(`Expected 'error (' at position ${i}, saw '${input.slice(i, i + 10)}'`);
                     }
                     i += 7; // skip 'error ('
                     const start = i;

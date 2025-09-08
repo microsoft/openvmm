@@ -46,5 +46,8 @@ hvdef.workspace = true
 event-listener.workspace = true
 test_with_tracing.workspace = true
 
+getrandom.workspace = true
+
+
 [lints]
 workspace = true
