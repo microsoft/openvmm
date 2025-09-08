@@ -29,10 +29,10 @@ struct ChannelInner<T> {
 
 /// Error type for sending operations
 #[derive(Debug, Eq, PartialEq, Error)]
-pub enum SendError<T> {
+pub enum SendError {
     /// All receivers have been dropped
     #[error("send failed because receiver is disconnected")]
-    Disconnected(T),
+    Disconnected,
 }
 
 /// Error type for receiving operations
@@ -113,19 +113,13 @@ impl<T> Channel<T> {
 impl<T> Sender<T> {
     /// Sends an element to the back of the queue
     /// Returns Ok(()) if successful, Err(SendError) if all receivers have been dropped
-    pub fn send(&self, value: T) -> Result<(), SendError<T>> {
-        // Check if there are any receivers left
-        if self.inner.receivers.load(Ordering::SeqCst) == 0 {
-            return Err(SendError::Disconnected(value));
-        }
+    pub fn send(&self, value: T) -> Result<(), SendError> {
+        self.ensure_connected()?;
 
         // Lock the buffer - only locked during the actual send operation
         let mut buffer = self.inner.buffer.lock();
 
-        // Check again after locking
-        if self.inner.receivers.load(Ordering::SeqCst) == 0 {
-            return Err(SendError::Disconnected(value));
-        }
+        self.ensure_connected()?;
 
         // Push to the back of the queue - can't fail since we're unbounded
         buffer.push_back(value);
@@ -135,20 +129,14 @@ impl<T> Sender<T> {
 
     /// Sends an element to the front of the queue (highest priority)
     /// Returns Ok(()) if successful, Err(SendError) if all receivers have been dropped
-    pub fn send_priority(&self, value: T) -> Result<(), SendError<T>> {
-        // Check if there are any receivers left
-        if self.inner.receivers.load(Ordering::SeqCst) == 0 {
-            return Err(SendError::Disconnected(value));
-        }
+    pub fn send_priority(&self, value: T) -> Result<(), SendError> {
+        self.ensure_connected()?;
 
         // Lock the buffer - only locked during the actual send operation
         let mut buffer = self.inner.buffer.lock();
 
-        // Check again after locking
-        if self.inner.receivers.load(Ordering::SeqCst) == 0 {
-            return Err(SendError::Disconnected(value));
-        }
-
+        self.ensure_connected()?;
+        
         // Push to the front of the queue - can't fail since we're unbounded
         buffer.push_front(value);
 
@@ -157,22 +145,16 @@ impl<T> Sender<T> {
 
     /// Send a batch of elements at once
     /// Returns the number of elements successfully sent (all of them, unless disconnected)
-    pub fn send_batch<I>(&self, items: I) -> usize
+    pub fn send_batch<I>(&self, items: I) -> Result<usize, SendError>
     where
         I: IntoIterator<Item = T>,
     {
-        // Check if there are any receivers left
-        if self.inner.receivers.load(Ordering::SeqCst) == 0 {
-            return 0;
-        }
+        self.ensure_connected()?;
 
         // Lock the buffer once for the entire batch
         let mut buffer = self.inner.buffer.lock();
 
-        // Check again after locking
-        if self.inner.receivers.load(Ordering::SeqCst) == 0 {
-            return 0;
-        }
+        self.ensure_connected()?;
 
         let mut count = 0;
 
@@ -182,7 +164,7 @@ impl<T> Sender<T> {
             count += 1;
         }
 
-        count
+        Ok(count)
     }
 
     /// Returns the current number of elements in the channel
@@ -193,6 +175,13 @@ impl<T> Sender<T> {
     /// Returns true if the channel is empty
     pub fn is_empty(&self) -> bool {
         self.inner.buffer.lock().is_empty()
+    }
+
+    fn ensure_connected(&self) -> Result<(), SendError> {
+        if self.inner.receivers.load(Ordering::SeqCst) == 0 {
+            return Err(SendError::Disconnected);
+        }
+        Ok(())
     }
 }
 
