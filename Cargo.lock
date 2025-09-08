@@ -9323,6 +9323,7 @@ dependencies = [
  "vmm_test_macros",
  "vtl2_settings_proto",
  "x86defs",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]

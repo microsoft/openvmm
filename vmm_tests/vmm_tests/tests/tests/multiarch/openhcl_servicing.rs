@@ -44,6 +44,7 @@ use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
+use zerocopy::IntoBytes;
 
 // TODO: Move this host query logic into common code so that we can instead
 // filter tests based on host capabilities.
@@ -328,10 +329,12 @@ async fn keepalive_with_nvme_fault(
     Ok(())
 }
 
-/// Test servicing an OpenHCL VM from the current version to itself
-/// with NVMe keepalive support and a faulty controller that responds incorrectly to the IDENTIFY:NAMESPACE command
+/// Test servicing an OpenHCL VM from the current version to itself with NVMe keepalive support
+/// and a faulty controller that responds incorrectly to the IDENTIFY:NAMESPACE command after servicing.
+/// TODO: For now this test will succeed because the driver currently requeries the namespace size and only checks that the size is non-zero.
+/// Once AER support is added to the driver the checks will be more stringent and this test will need updating
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn keepalive_with_nvme_identify_fault(
+async fn keepalive_with_nvme_identify_namespace_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
@@ -341,11 +344,25 @@ async fn keepalive_with_nvme_identify_fault(
     }
 
     let mut fault_start_updater = CellUpdater::new(false);
+
+    // The first 8bytes of the response buffer correspond to the nsze field of the Identify Namespace data structure.
+    // Reduce the reported size of the namespace to 256 blocks instead of the original 512.
+    let mut buf: u64 = 256;
+    let buf = buf.as_mut_bytes();
+
     let fault_configuration = FaultConfiguration {
         fault_active: fault_start_updater.cell(),
-        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-            CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
-            QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+        admin_fault: AdminQueueFaultConfig::new().with_completion_queue_fault(
+            CommandMatchBuilder::new()
+                .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
+                .match_cdw10(
+                    nvme_spec::Cdw10Identify::new()
+                        .with_cns(nvme_spec::Cns::NAMESPACE.0)
+                        .into(),
+                    nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into(),
+                )
+                .build(),
+            QueueFaultBehavior::CustomPayload(buf.to_vec()),
         ),
         pci_fault: PciFaultConfig::new(),
     };
