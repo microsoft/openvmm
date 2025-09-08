@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use core::ops::Range;
 
 use hvdef::hypercall::HvInputVtl;
@@ -34,20 +33,17 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
 
     /// Return the number of logical processors present in the machine
     fn get_vp_count(&self) -> TmkResult<u32> {
-        Err(TmkError::NotImplemented)
-    }
-
-    /// Push a command onto the per-VP linked-list so it will be executed
-    /// by the busy-loop running in `exec_handler`. No scheduling happens
-    /// here – we simply enqueue.
-    fn queue_command_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         unimplemented!();
     }
 
-    fn start_on_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
+    fn queue_command_vp(&mut self, _cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         unimplemented!();
     }
 
+    fn start_on_vp(&mut self, _cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
+        unimplemented!();
+    }
+ 
     /// Start the given VP in the current VTL using a freshly captured
     /// context.
     fn start_running_vp_with_default_context(

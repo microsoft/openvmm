@@ -45,7 +45,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
         let reg = (gpn << 12) | 0x1;
 
         self.write_msr(hvdef::HV_X64_MSR_SIMP, reg)?;
-        log::info!("Successfuly set the SIMP register.");
+        log::info!("Successfully set the SIMP register.");
 
         let reg = self.read_msr(hvdef::HV_X64_MSR_SINT0)?;
         let mut reg: hvdef::HvSynicSint = reg.into();
@@ -54,7 +54,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
         reg.set_auto_eoi(true);
 
         self.write_msr(hvdef::HV_X64_MSR_SINT0, reg.into())?;
-        log::info!("Successfuly set the SINT0 register.");
+        log::info!("Successfully set the SINT0 register.");
         Ok(())
     }
 }
@@ -111,6 +111,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
 
     /// Return the number of logical processors present in the machine
     fn get_vp_count(&self) -> TmkResult<u32> {
+        // TODO: use ACPI to get the actual count
         Ok(4)
     }
 
@@ -409,7 +410,7 @@ impl HvTestCtx {
         let handler = match vtl {
             Vtl::Vtl0 => HvTestCtx::general_exec_handler,
             Vtl::Vtl1 => HvTestCtx::secure_exec_handler,
-            _ => return Err(TmkError::InvalidParameter.into()),
+            _ => return Err(TmkError::InvalidParameter),
         };
         self.run_fn_with_current_context(handler)
     }
@@ -420,7 +421,7 @@ impl HvTestCtx {
         let mut vp_context: InitialVpContextX64 = self
             .hvcall
             .get_current_vtl_vp_context()
-            .expect("Failed to get VTL1 context");
+            .expect("Failed to get current VTL context");
         let stack_layout = Layout::from_size_align(1024 * 1024, 16)
             .expect("Failed to create layout for stack allocation");
         let allocated_stack_ptr = unsafe { alloc(stack_layout) };
@@ -429,8 +430,7 @@ impl HvTestCtx {
         }
         let stack_size = stack_layout.size();
         let stack_top = allocated_stack_ptr as u64 + stack_size as u64;
-        let fn_ptr = func as fn();
-        let fn_address = fn_ptr as u64;
+        let fn_address = func as u64;
         vp_context.rip = fn_address;
         vp_context.rsp = stack_top;
         Ok(vp_context)
