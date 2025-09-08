@@ -6,7 +6,6 @@ use crate::context::VpExecutor;
 use crate::context::VtlPlatformTrait;
 use crate::tmk_assert;
 
-#[inline(never)]
 pub fn exec<T>(ctx: &mut T)
 where
     T: VtlPlatformTrait + VirtualProcessorPlatformTrait<T>,

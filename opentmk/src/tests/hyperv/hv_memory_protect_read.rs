@@ -19,6 +19,8 @@ static mut HEAP_ALLOC_PTR: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
 
 static mut RETURN_VALUE: u8 = 0;
 
+// Without inline the compiler may optimize away the call and the VTL switch may
+// distort the architectural registers
 #[inline(never)]
 #[expect(warnings)]
 // writing to a static generates a warning. we safely handle RETURN_VALUE so ignoring it here.

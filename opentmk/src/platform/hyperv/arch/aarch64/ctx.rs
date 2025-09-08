@@ -119,11 +119,9 @@ impl VtlPlatformTrait for HvTestCtx {
 
     /// Switch execution from the current (low) VTL to the next higher
     /// one (`vtl_call`).
-    #[inline(never)]
     fn switch_to_high_vtl(&mut self) {}
 
     /// Return from a high VTL back to the low VTL (`vtl_return`).
-    #[inline(never)]
     fn switch_to_low_vtl(&mut self) {}
 
     fn set_vp_state_with_vtl(

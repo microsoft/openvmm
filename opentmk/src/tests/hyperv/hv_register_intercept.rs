@@ -11,6 +11,8 @@ use crate::tmk_assert;
 
 static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 
+// Without inline the compiler may optimize away the call and the VTL switch may
+// distort the architectural registers
 #[inline(never)]
 #[cfg(target_arch = "x86_64")]
 fn violate_reg_rule() {

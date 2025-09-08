@@ -8,8 +8,7 @@ use zerocopy::IntoBytes;
 
 use crate::platform::hyperv::arch::hypercall::HvCall;
 
-// Without inline the compiler may optimize away the call and the VTL switch may
-// distort the architectural registers
+// avoiding inline for debuggability in release builds
 #[inline(never)]
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn invoke_hypercall_vtl(control: hvdef::hypercall::Control) {
@@ -175,6 +174,7 @@ impl HvCall {
         Ok(context)
     }
 
+    // avoiding inline for debuggability in release builds 
     #[inline(never)]
     /// Invokes the VtlCall hypercall.
     pub fn vtl_call() {
@@ -185,6 +185,7 @@ impl HvCall {
         unsafe { invoke_hypercall_vtl(control) };
     }
 
+    // avoiding inline for debuggability in release builds 
     #[inline(never)]
     /// Invokes the VtlReturn hypercall.
     pub fn vtl_return() {
