@@ -80,9 +80,9 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 #[cfg(windows)] // requires VPCI support, which is only on Windows right now
 #[vmm_test(
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // TODO: Linux image is missing VPCI driver in its initrd
+    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
 async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
