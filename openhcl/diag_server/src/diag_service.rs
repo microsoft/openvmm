@@ -334,7 +334,7 @@ impl DiagServiceHandler {
 
         // HACK: A hack to fix segfault caused by glibc bug in L1 TDX VMM.
         // Should be removed after glibc update or a clean CPUID virtualization solution.
-        // Please refer to https://github.com/microsoft/HvLite/issues/872 for more information.
+        // Please refer to https://github.com/microsoft/openvmm-deps/issues/21 for more information.
         // xtask-fmt allow-target-arch cpu-intrinsic
         #[cfg(target_arch = "x86_64")]
         {
