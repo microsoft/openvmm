@@ -247,7 +247,7 @@ impl HvCall {
         output.result()
     }
 
-    /// Call before jumping to kernel.
+    /// call to initialize the hypercall interface
     pub fn uninitialize(&mut self) {
         crate::arch::hypercall::uninitialize();
     }
