@@ -9030,7 +9030,6 @@ dependencies = [
  "tracing",
  "unicycle",
  "unix_socket",
- "user_driver",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_core",

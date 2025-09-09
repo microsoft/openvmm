@@ -676,6 +676,16 @@ pub trait SynicMonitor: Synic {
 
     /// Sets the GPA of the monitor page currently in use.
     fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()>;
+
+    /// Allocates a monitor page and sets it as the monitor page currently in use. If allocating
+    /// monitor pages is not supported, returns `Ok(None)`.
+    ///
+    /// The page will be deallocated if the monitor page is subsequently changed or cleared using
+    /// [`SynicMonitor::set_monitor_page`].
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<u64>> {
+        let _ = vtl;
+        Ok(None)
+    }
 }
 
 /// MNF support routines for the emulator

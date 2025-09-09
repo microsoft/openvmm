@@ -1,11 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// UNSAFETY: Need to implement mock versions of an unsafe trait.
-#![expect(unsafe_code)]
-
 use super::*;
-use hvdef::HV_PAGE_SIZE_USIZE;
 use inspect::InspectMut;
 use mesh::CancelReason;
 use pal_async::DefaultDriver;
@@ -16,7 +12,6 @@ use parking_lot::Mutex;
 use protocol::UserDefinedData;
 use std::time::Duration;
 use test_with_tracing::test;
-use user_driver::memory::MappedDmaTarget;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::channel::DeviceResources;
@@ -42,10 +37,15 @@ struct MockSynic {
     inner: Mutex<MockSynicInner>,
     message_send: mesh::Sender<Vec<u8>>,
     spawner: DefaultDriver,
+    allow_allocated_monitor_pages: bool,
 }
 
 impl MockSynic {
-    fn new(message_send: mesh::Sender<Vec<u8>>, spawner: DefaultDriver) -> Self {
+    fn new(
+        message_send: mesh::Sender<Vec<u8>>,
+        spawner: DefaultDriver,
+        allow_allocated_monitor_pages: bool,
+    ) -> Self {
         Self {
             inner: Mutex::new(MockSynicInner {
                 message_port: None,
@@ -53,6 +53,7 @@ impl MockSynic {
             }),
             message_send,
             spawner,
+            allow_allocated_monitor_pages,
         }
     }
 
@@ -202,6 +203,21 @@ impl SynicMonitorAccess for MockSynic {
         inner.monitor_page = gpa;
         Ok(())
     }
+
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<MonitorPageGpas>> {
+        assert!(vtl == Vtl::Vtl0);
+        if !self.allow_allocated_monitor_pages {
+            return Ok(None);
+        }
+
+        let gpas = MonitorPageGpas {
+            child_to_parent: 0x123000,
+            parent_to_child: 0x321000,
+        };
+        let mut inner = self.inner.lock();
+        inner.monitor_page = Some(gpas);
+        Ok(Some(gpas))
+    }
 }
 
 struct TestChannel {
@@ -254,6 +270,46 @@ impl TestChannel {
     }
 }
 
+struct TestEnvBuilder {
+    spawner: DefaultDriver,
+    allow_allocated_monitor_pages: bool,
+}
+
+impl TestEnvBuilder {
+    fn new(spawner: DefaultDriver) -> Self {
+        Self {
+            spawner,
+            allow_allocated_monitor_pages: false,
+        }
+    }
+
+    fn allow_allocated_monitor_pages(mut self, allow: bool) -> Self {
+        self.allow_allocated_monitor_pages = allow;
+        self
+    }
+
+    fn build(self) -> TestEnv {
+        let (message_send, message_recv) = mesh::channel();
+        let synic = Arc::new(MockSynic::new(
+            message_send,
+            self.spawner.clone(),
+            self.allow_allocated_monitor_pages,
+        ));
+        let gm = GuestMemory::empty();
+        let vmbus = VmbusServerBuilder::new(self.spawner, synic.clone(), gm)
+            .enable_mnf(true)
+            .build()
+            .unwrap();
+
+        TestEnv {
+            vmbus,
+            synic,
+            message_recv,
+            trusted: false,
+        }
+    }
+}
+
 struct TestEnv {
     vmbus: VmbusServer,
     synic: Arc<MockSynic>,
@@ -261,68 +317,9 @@ struct TestEnv {
     trusted: bool,
 }
 
-struct MockMappedDmaTarget(Vec<u64>);
-
-/// SAFETY: This is a mock implementation for testing purposes, and the memory is never accessed.
-unsafe impl MappedDmaTarget for MockMappedDmaTarget {
-    fn base(&self) -> *const u8 {
-        std::ptr::null()
-    }
-
-    fn len(&self) -> usize {
-        self.0.len() * HV_PAGE_SIZE_USIZE
-    }
-
-    fn pfn_bias(&self) -> u64 {
-        0
-    }
-
-    fn pfns(&self) -> &[u64] {
-        &self.0
-    }
-}
-
-#[derive(Inspect)]
-struct MockDmaClient;
-
-impl DmaClient for MockDmaClient {
-    fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock> {
-        assert_eq!(total_size % PAGE_SIZE, 0);
-        let page_count = total_size / PAGE_SIZE;
-        let pages = (0..page_count as u64).map(|i| i + 0x123).collect();
-        Ok(MemoryBlock::new(MockMappedDmaTarget(pages)))
-    }
-
-    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<MemoryBlock>> {
-        unimplemented!()
-    }
-}
-
 impl TestEnv {
     fn new(spawner: DefaultDriver) -> Self {
-        Self::new_ex(spawner, false)
-    }
-
-    fn new_ex(spawner: DefaultDriver, use_dma_client: bool) -> Self {
-        let (message_send, message_recv) = mesh::channel();
-        let synic = Arc::new(MockSynic::new(message_send, spawner.clone()));
-        let gm = GuestMemory::empty();
-        let vmbus = VmbusServerBuilder::new(spawner, synic.clone(), gm)
-            .dma_client(if use_dma_client {
-                Some(Arc::new(MockDmaClient))
-            } else {
-                None
-            })
-            .enable_mnf(true)
-            .build()
-            .unwrap();
-
-        Self {
-            vmbus,
-            synic,
-            message_recv,
-            trusted: false,
-        }
+        TestEnvBuilder::new(spawner).build()
     }
 
     async fn offer(&self, id: u32, allow_confidential_external_memory: bool) -> TestChannel {
@@ -915,9 +912,11 @@ async fn test_server_monitor_page(spawner: DefaultDriver) {
 async fn test_server_monitor_page_helper(
     spawner: DefaultDriver,
     supply_guest_pages: bool,
-    use_dma_client: bool,
+    allow_allocated_monitor_pages: bool,
 ) {
-    let mut env = TestEnv::new_ex(spawner, use_dma_client);
+    let mut env = TestEnvBuilder::new(spawner)
+        .allow_allocated_monitor_pages(allow_allocated_monitor_pages)
+        .build();
     env.vmbus.start();
     env.initiate_contact(
         protocol::Version::Copper,
@@ -926,17 +925,17 @@ async fn test_server_monitor_page_helper(
         supply_guest_pages,
     );
 
-    if use_dma_client {
+    if allow_allocated_monitor_pages {
         let response: protocol::VersionResponse3 = env.get_response().await;
         let flags =
             protocol::FeatureFlags::from_bits(response.version_response2.supported_features);
         assert!(flags.server_specified_monitor_pages());
-        assert_eq!(response.parent_to_child_monitor_page_gpa, 0);
+        assert_eq!(response.parent_to_child_monitor_page_gpa, 0x321000);
         assert_eq!(response.child_to_parent_monitor_page_gpa, 0x123000);
         assert_eq!(
             env.synic.inner.lock().monitor_page,
             Some(MonitorPageGpas {
-                parent_to_child: 0,
+                parent_to_child: 0x321000,
                 child_to_parent: 0x123000,
             })
         );

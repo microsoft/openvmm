@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod channel_bitmap;
 pub mod channels;
@@ -38,7 +39,6 @@ use futures::future::OptionFuture;
 use futures::future::poll_fn;
 use futures::stream::SelectAll;
 use guestmem::GuestMemory;
-use hvdef::HV_PAGE_SHIFT;
 use hvdef::Vtl;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
@@ -65,8 +65,6 @@ use std::task::Poll;
 use std::task::ready;
 use std::time::Duration;
 use unicycle::FuturesUnordered;
-use user_driver::DmaClient;
-use user_driver::memory::MemoryBlock;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
@@ -137,7 +135,6 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
     channel_unstick_delay: Option<Duration>,
-    dma_client: Option<Arc<dyn DmaClient>>,
 }
 
 #[derive(mesh::MeshPayload)]
@@ -314,7 +311,6 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             force_confidential_external_memory: false,
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
-            dma_client: None,
         }
     }
 
@@ -439,13 +435,6 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
     /// If not set, the default is 100ms. If set to `None`, no interrupt will be triggered.
     pub fn channel_unstick_delay(mut self, delay: Option<Duration>) -> Self {
         self.channel_unstick_delay = delay;
-        self
-    }
-
-    /// Sets a DMA client that can be used to allocate server-specified monitor pages. If not set,
-    /// the server will not support using server-specified monitor pages.
-    pub fn dma_client(mut self, dma_client: Option<Arc<dyn DmaClient>>) -> Self {
-        self.dma_client = dma_client;
         self
     }
 
@@ -583,8 +572,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             channel_bitmap: None,
             shared_event_port: None,
             reset_done: Vec::new(),
-            mnf_info: self.enable_mnf.then(MnfInfo::default),
-            dma_client: self.dma_client,
+            mnf_support: self.enable_mnf.then(MnfSupport::default),
         };
 
         let (task_send, task_recv) = mesh::channel();
@@ -696,23 +684,8 @@ pub struct SynicMessage {
 
 /// Information used by a server that supports MNF.
 #[derive(Default)]
-struct MnfInfo {
-    allocated_monitor_pages: Option<MemoryBlock>,
-    // Indicates whether the current guest connection is using the server-allocated monitor pages.
-    allocated_pages_in_use: bool,
-}
-
-impl MnfInfo {
-    /// Returns the GPAs of the server-allocated monitor pages, if any.
-    fn allocated_gpas(&self) -> Option<MonitorPageGpas> {
-        self.allocated_monitor_pages
-            .as_ref()
-            .map(|allocated| MonitorPageGpas {
-                child_to_parent: allocated.pfns()[0] << HV_PAGE_SHIFT,
-                // N.B. A parent-to-child page is not allocated by this server.
-                parent_to_child: 0,
-            })
-    }
+struct MnfSupport {
+    allocated_monitor_page: Option<MonitorPageGpas>,
 }
 
 /// Disambiguates offer instances that may have reused the same offer ID.
@@ -763,8 +736,7 @@ struct ServerTaskInner {
     reset_done: Vec<Rpc<(), ()>>,
     /// Stores information needed to support MNF. If `None`, this server doesn't support MNF (in
     /// the case of OpenHCL, that means it will be handled by the relay host).
-    mnf_info: Option<MnfInfo>,
-    dma_client: Option<Arc<dyn DmaClient>>,
+    mnf_support: Option<MnfSupport>,
 }
 
 #[derive(Debug)]
@@ -822,7 +794,7 @@ impl ServerTask {
         let key = info.params.key();
         let flags = info.params.flags;
 
-        if self.inner.mnf_info.is_some() && self.inner.synic.monitor_support().is_some() {
+        if self.inner.mnf_support.is_some() && self.inner.synic.monitor_support().is_some() {
             // If this server is handling MnF, ignore any relayed monitor IDs but still enable MnF
             // for those channels.
             // N.B. Since this can only happen in OpenHCL, which emulates MnF, the latency is
@@ -1152,10 +1124,9 @@ impl ServerTask {
                 // used (if not, they may still be allocated from a previous connection).
                 let allocated_monitor_gpas = self
                     .inner
-                    .mnf_info
+                    .mnf_support
                     .as_ref()
-                    .and_then(|info| info.allocated_pages_in_use.then(|| info.allocated_gpas()))
-                    .flatten();
+                    .and_then(|mnf| mnf.allocated_monitor_page);
 
                 ModifyConnectionResponse::Supported(state, features, allocated_monitor_gpas)
             }
@@ -1882,7 +1853,7 @@ impl ServerTaskInner {
     }
 
     fn set_monitor_page(&mut self, request: &mut ModifyConnectionRequest) -> anyhow::Result<()> {
-        let mut monitor_page = match request.monitor_page {
+        let monitor_page = match request.monitor_page {
             Update::Unchanged => return Ok(()),
             Update::Reset => None,
             Update::Set(value) => Some(value),
@@ -1901,36 +1872,29 @@ impl ServerTaskInner {
         // Check if the server is handling MNF.
         // N.B. If the server is not handling MNF, there is currently no way to request
         //      server-allocated monitor pages from the relay host.
-        if let Some(mnf_info) = self.mnf_info.as_mut() {
+        if let Some(mnf_support) = self.mnf_support.as_mut() {
             if let Some(monitor) = self.synic.monitor_support() {
-                mnf_info.allocated_pages_in_use = false;
+                mnf_support.allocated_monitor_page = None;
 
                 if let Some(version) = request.version {
                     if version.feature_flags.server_specified_monitor_pages() {
-                        if let Some(dma_client) = self.dma_client.as_ref() {
-                            // If we haven't allocated a monitor page yet, do so now. It may have
-                            // been allocated already for a previous connection.
-                            if mnf_info.allocated_monitor_pages.is_none() {
-                                mnf_info.allocated_monitor_pages =
-                                    Some(dma_client.allocate_dma_buffer(PAGE_SIZE)?);
-                            }
-
-                            // Utilize the server-allocated pages. We do this even if the request
-                            // was for Update::Reset, because if a version is present that actually
-                            // means the guest just didn't provide monitor pages.
-                            mnf_info.allocated_pages_in_use = true;
-                            monitor_page = mnf_info.allocated_gpas();
+                        if let Some(monitor_page) = monitor.allocate_monitor_page(self.vtl)? {
                             tracelimit::info_ratelimited!(
                                 ?monitor_page,
                                 "using server-allocated monitor pages"
                             );
+                            mnf_support.allocated_monitor_page = Some(monitor_page);
                         }
                     }
                 }
-                if let Err(err) = monitor.set_monitor_page(self.vtl, monitor_page) {
-                    anyhow::bail!(
-                        "setting monitor page failed, err = {err:?}, monitor_page = {monitor_page:?}"
-                    );
+
+                // If no monitor page was allocated above, use the one provided by the client.
+                if mnf_support.allocated_monitor_page.is_none() {
+                    if let Err(err) = monitor.set_monitor_page(self.vtl, monitor_page) {
+                        anyhow::bail!(
+                            "setting monitor page failed, err = {err:?}, monitor_page = {monitor_page:?}"
+                        );
+                    }
                 }
             }
 

@@ -14,7 +14,6 @@ vmbus_ring.workspace = true
 
 hvdef.workspace = true
 guestmem.workspace = true
-user_driver.workspace = true
 vmcore.workspace = true
 
 guid.workspace = true
