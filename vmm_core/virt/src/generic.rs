@@ -682,9 +682,11 @@ pub trait SynicMonitor: Synic {
 pub trait EmulatorMonitorSupport {
     /// Check if the specified write is inside the monitor page, and signal the associated
     /// connection ID if it is.
+    #[must_use]
     fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool;
 
     /// Check if the specified read is inside the monitor page, and fill the provided buffer
     /// if it is.
+    #[must_use]
     fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool;
 }

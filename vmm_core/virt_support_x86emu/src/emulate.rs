@@ -807,17 +807,15 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
         self.check_vtl_access(gpa, TranslateMode::Read)?;
 
         if self.check_monitor_read(gpa, bytes) {
-            return Ok(());
-        }
-
-        if self.support.is_gpa_mapped(gpa, false) {
-            self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
+            Ok(())
+        } else if self.support.is_gpa_mapped(gpa, false) {
+            self.gm.read_at(gpa, bytes).map_err(Error::Memory)
         } else {
             self.dev
                 .read_mmio(self.support.vp_index(), gpa, bytes)
                 .await;
+            Ok(())
         }
-        Ok(())
     }
 
     async fn write_memory(

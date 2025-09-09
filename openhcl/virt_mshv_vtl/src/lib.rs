@@ -1350,7 +1350,7 @@ pub struct CvmLateParams {
 pub enum GpnSource {
     /// The GPN is in regular guest RAM.
     GuestMemory,
-    /// The GPN was allocated by dma_client.
+    /// The GPN was allocated by dma_client and is not in guest RAM.
     Dma,
 }
 
