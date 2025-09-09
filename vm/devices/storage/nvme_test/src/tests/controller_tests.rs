@@ -207,11 +207,7 @@ pub async fn instantiate_and_build_admin_queue(
 #[async_test]
 async fn test_basic_registers(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(false).cell(),
-        admin_fault: AdminQueueFaultConfig::new(),
-        pci_fault: PciFaultConfig::new(),
-    };
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
 
@@ -236,11 +232,8 @@ async fn test_basic_registers(driver: DefaultDriver) {
 #[async_test]
 async fn test_invalid_configuration(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(false).cell(),
-        admin_fault: AdminQueueFaultConfig::new(),
-        pci_fault: PciFaultConfig::new(),
-    };
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
+
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
     let mut dword = 0u32;
     nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
@@ -255,11 +248,7 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
 #[async_test]
 async fn test_enable_controller(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(false).cell(),
-        admin_fault: AdminQueueFaultConfig::new(),
-        pci_fault: PciFaultConfig::new(),
-    };
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x2000.
@@ -287,11 +276,7 @@ async fn test_enable_controller(driver: DefaultDriver) {
 #[async_test]
 async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     let gm = test_memory();
-    let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(false).cell(),
-        admin_fault: AdminQueueFaultConfig::new(),
-        pci_fault: PciFaultConfig::new(),
-    };
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
     let mut nvmec = instantiate_controller(driver, &gm, None, fault_configuration);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x3000.
@@ -362,11 +347,7 @@ async fn send_identify(
 
 #[async_test]
 async fn test_send_identify_no_fault(driver: DefaultDriver) {
-    let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(false).cell(),
-        admin_fault: AdminQueueFaultConfig::new(),
-        pci_fault: PciFaultConfig::new(),
-    };
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
     let cqe = send_identify(driver, fault_configuration).await;
 
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
@@ -378,16 +359,16 @@ async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
     let mut faulty_identify = Command::new_zeroed();
     faulty_identify.cdw0.set_cid(10);
 
-    let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(true).cell(),
-        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-            CommandMatchBuilder::new()
-                .match_cdw0_opcode(spec::AdminOpcode::IDENTIFY.0)
-                .build(),
-            QueueFaultBehavior::Update(faulty_identify),
-        ),
-        pci_fault: PciFaultConfig::new(),
-    };
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(spec::AdminOpcode::IDENTIFY.0)
+                    .build(),
+                QueueFaultBehavior::Update(faulty_identify),
+            ),
+        );
+
     let cqe = send_identify(driver, fault_configuration).await;
 
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
