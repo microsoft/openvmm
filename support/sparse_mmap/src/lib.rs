@@ -321,12 +321,13 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
     }
 }
 
-/// Reads the value at `src` treating the pointer as a volatile access.
+/// Reads the value at `src` using one or more read instructions.
+///
+/// If `T` is 1, 2, 4, or 8 bytes in size, then exactly one read instruction is
+/// used.
 ///
 /// Returns `Ok(T)` if the read was successful, or `Err(MemoryError)` if the
 /// read was unsuccessful.
-///
-/// Fails at compile time if the size is not 1, 2, 4, or 8 bytes.
 ///
 /// # Safety
 ///
@@ -341,9 +342,6 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
 pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
     src: *const T,
 ) -> Result<T, MemoryError> {
-    const {
-        assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
-    };
     let mut dest = MaybeUninit::<T>::uninit();
     let mut failure = MaybeUninit::uninit();
     // SAFETY: guaranteed by caller
@@ -353,7 +351,12 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
             2 => try_read16(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
             4 => try_read32(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
             8 => try_read64(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
-            _ => unreachable!(),
+            _ => try_memmove(
+                dest.as_mut_ptr().cast(),
+                src.cast::<u8>(),
+                size_of::<T>(),
+                failure.as_mut_ptr(),
+            ),
         }
     };
     match ret {
@@ -371,13 +374,14 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
     }
 }
 
-/// Writes `value` at `dest` treating the pointer as a volatile access.
+/// Writes `value` at `dest` using one or more write instructions.
+///
+/// If `T` is 1, 2, 4, or 8 bytes in size, then exactly one write instruction is
+/// used.
 ///
 /// Returns `Ok(())` if the write was successful, or `Err(MemoryError)` if the
 /// write was unsuccessful.
-///
-/// Fails at compile time if the size is not 1, 2, 4, or 8 bytes.
-///
+//
 /// # Safety
 ///
 /// This routine is safe to use if the memory pointed to by `dest` is being
@@ -392,9 +396,6 @@ pub unsafe fn try_write_volatile<T: IntoBytes + Immutable + KnownLayout>(
     dest: *mut T,
     value: &T,
 ) -> Result<(), MemoryError> {
-    const {
-        assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
-    };
     let mut failure = MaybeUninit::uninit();
     // SAFETY: guaranteed by caller
     let ret = unsafe {
@@ -419,7 +420,12 @@ pub unsafe fn try_write_volatile<T: IntoBytes + Immutable + KnownLayout>(
                 std::mem::transmute_copy(value),
                 failure.as_mut_ptr(),
             ),
-            _ => unreachable!(),
+            _ => try_memmove(
+                dest.cast(),
+                std::ptr::from_ref(value).cast(),
+                size_of::<T>(),
+                failure.as_mut_ptr(),
+            ),
         }
     };
     match ret {

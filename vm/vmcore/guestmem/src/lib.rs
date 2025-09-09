@@ -1736,18 +1736,9 @@ impl GuestMemory {
                 len,
                 (),
                 |(), dest| {
-                    match len {
-                        1 | 2 | 4 | 8 => {
-                            // SAFETY: dest..dest+len is guaranteed to point to
-                            // a reserved VA range.
-                            unsafe { sparse_mmap::try_write_volatile(dest.cast(), b) }
-                        }
-                        _ => {
-                            // SAFETY: dest..dest+len is guaranteed to point to
-                            // a reserved VA range.
-                            unsafe { sparse_mmap::try_copy(b.as_bytes().as_ptr(), dest, len) }
-                        }
-                    }
+                    // SAFETY: dest..dest+len is guaranteed to point to
+                    // a reserved VA range.
+                    unsafe { sparse_mmap::try_write_volatile(dest.cast(), b) }
                 },
                 |()| {
                     // SAFETY: b is a valid buffer for reads.
@@ -1827,21 +1818,9 @@ impl GuestMemory {
                 len,
                 (),
                 |(), src| {
-                    match len {
-                        1 | 2 | 4 | 8 => {
-                            // SAFETY: src..src+len is guaranteed to point to a reserved VA
-                            // range.
-                            unsafe { sparse_mmap::try_read_volatile(src.cast::<T>()) }
-                        }
-                        _ => {
-                            let mut obj = std::mem::MaybeUninit::<T>::zeroed();
-                            // SAFETY: src..src+len is guaranteed to point to a reserved VA
-                            // range.
-                            unsafe { sparse_mmap::try_copy(src, obj.as_mut_ptr().cast(), len)? };
-                            // SAFETY: `obj` was fully initialized by `try_copy`.
-                            Ok(unsafe { obj.assume_init() })
-                        }
-                    }
+                    // SAFETY: src..src+len is guaranteed to point to a reserved VA
+                    // range.
+                    unsafe { sparse_mmap::try_read_volatile(src.cast::<T>()) }
                 },
                 |()| {
                     let mut obj = std::mem::MaybeUninit::<T>::zeroed();
