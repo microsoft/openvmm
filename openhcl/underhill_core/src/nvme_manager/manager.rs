@@ -150,7 +150,7 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(Rpc<(String, u32), anyhow::Result<nvme_driver::Namespace>>),
+    GetNamespace(Rpc<(String, String, u32), anyhow::Result<nvme_driver::Namespace>>),
     Save(Rpc<(), anyhow::Result<NvmeManagerSavedState>>),
     Shutdown {
         span: tracing::Span,
@@ -166,13 +166,18 @@ pub struct NvmeManagerClient {
 impl NvmeManagerClient {
     pub async fn get_namespace(
         &self,
+        controller_instance_id: String,
         pci_id: String,
         nsid: u32,
     ) -> anyhow::Result<nvme_driver::Namespace> {
         self.sender
-            .call(Request::GetNamespace, (pci_id.clone(), nsid))
+            .call(
+                Request::GetNamespace,
+                (controller_instance_id.clone(), pci_id.clone(), nsid),
+            )
             .instrument(tracing::info_span!(
                 "nvme_manager_get_namespace",
+                %controller_instance_id,
                 %pci_id,
                 nsid
             ))
@@ -240,8 +245,12 @@ impl NvmeManagerWorker {
             match req {
                 Request::Inspect(deferred) => deferred.inspect(&self),
                 Request::ForceLoadDriver(update) => {
-                    match Self::load_driver(update.new_value().to_owned(), self.context.clone())
-                        .await
+                    match Self::load_driver(
+                        None,
+                        update.new_value().to_owned(),
+                        self.context.clone(),
+                    )
+                    .await
                     {
                         Ok(_) => {
                             let pci_id = update.new_value().to_string();
@@ -256,8 +265,14 @@ impl NvmeManagerWorker {
                     let context = self.context.clone();
                     self.tasks.push(self.context.driver_source.simple().spawn(
                         "get-namespace",
-                        rpc.handle(async move |(pci_id, nsid)| {
-                            Self::get_namespace(pci_id.clone(), nsid, context).await
+                        rpc.handle(async move |(controller_instance_id, pci_id, nsid)| {
+                            Self::get_namespace(
+                                Some(controller_instance_id.clone()),
+                                pci_id.clone(),
+                                nsid,
+                                context,
+                            )
+                            .await
                         }),
                     ));
                 }
@@ -311,6 +326,7 @@ impl NvmeManagerWorker {
 
         async {
             join_all(devices_to_shutdown.into_iter().map(|(pci_id, driver)| {
+                let controller_instance_id = driver.controller_instance_id();
                 driver
                     .shutdown(NvmeDriverShutdownOptions {
                         // nvme_keepalive is received from host but it is only valid
@@ -318,7 +334,7 @@ impl NvmeManagerWorker {
                         do_not_reset: nvme_keepalive && self.context.save_restore_supported,
                         skip_device_shutdown: nvme_keepalive && self.context.save_restore_supported,
                     })
-                    .instrument(tracing::info_span!("shutdown_nvme_driver", %pci_id))
+                    .instrument(tracing::info_span!("shutdown_nvme_driver", controller_instance_id, %pci_id))
             }))
             .await
         }
@@ -326,11 +342,16 @@ impl NvmeManagerWorker {
         .await;
     }
 
-    async fn load_driver(pci_id: String, context: NvmeWorkerContext) -> anyhow::Result<()> {
+    async fn load_driver(
+        controller_instance_id: Option<String>,
+        pci_id: String,
+        context: NvmeWorkerContext,
+    ) -> anyhow::Result<()> {
         if context.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
             anyhow::bail!(
-                "nvme device manager worker is shut down, cannot load driver for {}",
-                pci_id
+                "nvme device manager worker is shut down, cannot load driver controller_instance_id={}, pci_id={}",
+                controller_instance_id.unwrap_or("unspecified".to_string()),
+                pci_id,
             );
         }
 
@@ -357,8 +378,9 @@ impl NvmeManagerWorker {
             } else if context.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
                 // No driver AND there's now a shutdown in progress, just bail.
                 anyhow::bail!(
-                    "nvme device manager worker is shut down, cannot load driver for {}",
-                    pci_id
+                    "nvme device manager worker is shut down, cannot load driver controller_instance_id={}, pci_id={}",
+                    controller_instance_id.unwrap_or("unspecified".to_string()),
+                    pci_id,
                 );
             } else {
                 // We're first! Create a new driver manager and place it in the map.
@@ -367,6 +389,7 @@ impl NvmeManagerWorker {
                     hash_map::Entry::Vacant(entry) => {
                         let driver = NvmeDriverManager::new(
                             &context.driver_source,
+                            controller_instance_id,
                             &pci_id,
                             context.vp_count,
                             context.save_restore_supported,
@@ -389,6 +412,7 @@ impl NvmeManagerWorker {
     }
 
     async fn get_namespace(
+        controller_instance_id: Option<String>,
         pci_id: String,
         nsid: u32,
         context: NvmeWorkerContext,
@@ -404,7 +428,12 @@ impl NvmeManagerWorker {
 
         if client.is_none() {
             // No driver loaded yet, so load it.
-            Self::load_driver(pci_id.to_owned(), context.clone()).await?;
+            Self::load_driver(
+                controller_instance_id.to_owned(),
+                pci_id.to_owned(),
+                context.clone(),
+            )
+            .await?;
 
             // This time, if there is no entry, then we know that the driver failed to load OR a shutdown came in
             // since we loaded the driver (so we should fail).
@@ -440,6 +469,7 @@ impl NvmeManagerWorker {
             nvme_disks.push(NvmeSavedDiskConfig {
                 pci_id: pci_id.clone(),
                 driver_state: client.save().await?,
+                controller_instance_id: client.controller_instance_id(),
             });
         }
 
@@ -454,12 +484,14 @@ impl NvmeManagerWorker {
         let mut restored_devices: HashMap<String, NvmeDriverManager> = HashMap::new();
 
         for disk in &saved_state.nvme_disks {
+            let controller_instance_id = disk.controller_instance_id.clone();
             let pci_id = disk.pci_id.clone();
             let nvme_driver = self
                 .context
                 .nvme_driver_spawner
                 .create_driver(
                     &self.context.driver_source,
+                    controller_instance_id.clone(),
                     &pci_id,
                     saved_state.cpu_count,
                     true, // save_restore_supported is always `true` when restoring.
@@ -471,6 +503,7 @@ impl NvmeManagerWorker {
                 disk.pci_id.clone(),
                 NvmeDriverManager::new(
                     &self.context.driver_source,
+                    controller_instance_id,
                     &pci_id,
                     self.context.vp_count,
                     true, // save_restore_supported is always `true` when restoring.
@@ -514,7 +547,7 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
     ) -> Result<Self::Output, Self::Error> {
         let namespace = self
             .manager
-            .get_namespace(rsrc.pci_id, rsrc.nsid)
+            .get_namespace(rsrc.controller_instance_id, rsrc.pci_id, rsrc.nsid)
             .await
             .context("could not open nvme namespace")?;
 
@@ -524,6 +557,7 @@ impl AsyncResolveResource<DiskHandleKind, NvmeDiskConfig> for NvmeDiskResolver {
 
 #[derive(MeshPayload, Default)]
 pub struct NvmeDiskConfig {
+    pub controller_instance_id: String,
     pub pci_id: String,
     pub nsid: u32,
 }
@@ -578,6 +612,7 @@ mod tests {
     /// Mock NVMe driver for testing that simulates realistic delays and tracks call patterns
     #[derive(Inspect, Clone)]
     struct MockNvmeDriver {
+        controller_instance_id: Option<String>,
         pci_id: String,
         /// Simulated delay for namespace operations
         #[inspect(skip)]
@@ -607,12 +642,14 @@ mod tests {
 
     impl MockNvmeDriver {
         fn new(
+            controller_instance_id: Option<String>,
             pci_id: &str,
             namespace_delay: Duration,
             shutdown_delay: Duration,
             driver_source: VmTaskDriverSource,
         ) -> Self {
             Self {
+                controller_instance_id,
                 pci_id: pci_id.to_string(),
                 namespace_delay,
                 shutdown_delay,
@@ -679,14 +716,26 @@ mod tests {
             self.save_call_count.fetch_add(1, Ordering::SeqCst);
 
             if self.fail_save.load(Ordering::SeqCst) {
-                anyhow::bail!("Mock save failure for {}", self.pci_id);
+                anyhow::bail!(
+                    "Mock save failure for controller_instance_id={}, pci_id={}",
+                    self.controller_instance_id
+                        .clone()
+                        .unwrap_or("unspecified".to_string()),
+                    self.pci_id
+                );
             }
 
             // Simulate work
             let mut timer = pal_async::timer::PolledTimer::new(&self.driver_source.simple());
             timer.sleep(Duration::from_millis(10)).await;
 
-            anyhow::bail!("MOCK_SUCCESS: save operation completed for {}", self.pci_id);
+            anyhow::bail!(
+                "MOCK_SUCCESS: save operation completed for controller_instance_id={}, pci_id={}",
+                self.controller_instance_id
+                    .clone()
+                    .unwrap_or("unspecified".to_string()),
+                self.pci_id
+            );
         }
 
         async fn shutdown(mut self: Box<Self>) {
@@ -749,6 +798,7 @@ mod tests {
         async fn create_driver(
             &self,
             driver_source: &VmTaskDriverSource,
+            controller_instance_id: Option<String>,
             pci_id: &str,
             _vp_count: u32,
             _save_restore_supported: bool,
@@ -762,6 +812,7 @@ mod tests {
             }
 
             let driver = Arc::new(MockNvmeDriver::new(
+                controller_instance_id,
                 pci_id,
                 self.namespace_delay,
                 self.shutdown_delay,
@@ -808,8 +859,13 @@ mod tests {
         let start_time = Instant::now();
         let tasks = (0..3).map(|i| {
             let client = client.clone();
+            let controller_instance_id = guid::Guid::new_random().to_string();
             let pci_id = format!("test-device-{}", i);
-            async move { client.get_namespace(pci_id, 1).await }
+            async move {
+                client
+                    .get_namespace(controller_instance_id, pci_id, 1)
+                    .await
+            }
         });
 
         // Wait for all to complete
@@ -848,8 +904,11 @@ mod tests {
 
         // First, create several devices by calling GetNamespace
         for i in 0..4 {
+            let controller_instance_id = guid::Guid::new_random().to_string();
             let pci_id = format!("test-device-{}", i);
-            let _ = client.get_namespace(pci_id, 1).await; // Ignore the mock "error"
+            let _ = client
+                .get_namespace(controller_instance_id, pci_id, 1)
+                .await; // Ignore the mock "error"
         }
 
         // Verify we have 4 drivers
@@ -894,8 +953,13 @@ mod tests {
         // Launch multiple concurrent calls to the same device
         let tasks = (0..3).map(|nsid| {
             let client = client.clone();
+            let controller_instance_id = guid::Guid::new_random().to_string();
             let pci_id = pci_id.clone();
-            async move { client.get_namespace(pci_id, nsid + 1).await }
+            async move {
+                client
+                    .get_namespace(controller_instance_id, pci_id, nsid + 1)
+                    .await
+            }
         });
 
         let results: Vec<_> = join_all(tasks).await;
@@ -928,18 +992,36 @@ mod tests {
 
         // Test spawner creation failure
         spawner.set_fail_create(true);
-        let result = client.get_namespace("failing-device".to_string(), 1).await;
+        let result = client
+            .get_namespace(
+                guid::Guid::new_random().to_string(),
+                "failing-device".to_string(),
+                1,
+            )
+            .await;
         assert!(result.is_err());
 
         // Reset and create a working device
         spawner.set_fail_create(false);
-        let _ = client.get_namespace("working-device".to_string(), 1).await;
+        let _ = client
+            .get_namespace(
+                guid::Guid::new_random().to_string(),
+                "working-device".to_string(),
+                1,
+            )
+            .await;
 
         // Test namespace operation failure
         let driver = spawner.get_driver("working-device").unwrap();
         driver.set_fail_namespace(true);
 
-        let result = client.get_namespace("working-device".to_string(), 2).await;
+        let result = client
+            .get_namespace(
+                guid::Guid::new_random().to_string(),
+                "working-device".to_string(),
+                2,
+            )
+            .await;
         assert!(result.is_err());
 
         manager.shutdown(false).await;
@@ -962,7 +1044,13 @@ mod tests {
         manager.shutdown(false).await;
 
         // Now try to use the client - should fail gracefully
-        let result = client.get_namespace("test-device".to_string(), 1).await;
+        let result = client
+            .get_namespace(
+                guid::Guid::new_random().to_string(),
+                "test-device".to_string(),
+                1,
+            )
+            .await;
         assert!(result.is_err());
         assert!(
             result
@@ -989,10 +1077,13 @@ mod tests {
         let start_time = Instant::now();
         let tasks = (0..4).map(|i| {
             let client = client.clone();
+            let controller_instance_id = guid::Guid::new_random().to_string();
             let pci_id = format!("timing-device-{}", i);
             async move {
                 let start = Instant::now();
-                let _ = client.get_namespace(pci_id, 1).await;
+                let _ = client
+                    .get_namespace(controller_instance_id, pci_id, 1)
+                    .await;
                 (i, start.elapsed())
             }
         });
@@ -1039,7 +1130,9 @@ mod tests {
         // Create some devices by calling GetNamespace
         let device_ids = vec!["inspect-device-1", "inspect-device-2", "inspect-device-3"];
         for pci_id in device_ids {
-            let _ = client.get_namespace(pci_id.into(), 1).await; // Ignore mock "error"
+            let _ = client
+                .get_namespace(guid::Guid::new_random().to_string(), pci_id.into(), 1)
+                .await; // Ignore mock "error"
         }
 
         // Verify devices were created
@@ -1072,9 +1165,16 @@ mod tests {
         ));
 
         // Create a driver manager
-        let driver_manager =
-            NvmeDriverManager::new(&driver_source, "0000:00:04.0", 4, false, None, spawner)
-                .unwrap();
+        let driver_manager = NvmeDriverManager::new(
+            &driver_source,
+            Some(guid::Guid::new_random().to_string()),
+            "0000:00:04.0",
+            4,
+            false,
+            None,
+            spawner,
+        )
+        .unwrap();
 
         let client = driver_manager.client().clone();
 
@@ -1135,7 +1235,13 @@ mod tests {
         manager.shutdown(false).await;
 
         // Try to get namespace for new device - will try to load driver and hit shutdown check
-        let result = client.get_namespace("0000:00:04.0".to_string(), 1).await;
+        let result = client
+            .get_namespace(
+                guid::Guid::new_random().to_string(),
+                "0000:00:04.0".to_string(),
+                1,
+            )
+            .await;
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(
@@ -1155,6 +1261,7 @@ mod tests {
 
         let driver_manager = NvmeDriverManager::new(
             &driver_source,
+            Some(guid::Guid::new_random().to_string()),
             "0000:00:05.0",
             4,
             true, // save_restore_supported
@@ -1245,7 +1352,13 @@ mod tests {
         manager.shutdown(false).await;
 
         // Try to get namespace - load_driver will fail, leaving no client
-        let result = client.get_namespace("0000:00:07.0".to_string(), 1).await;
+        let result = client
+            .get_namespace(
+                guid::Guid::new_random().to_string(),
+                "0000:00:07.0".to_string(),
+                1,
+            )
+            .await;
         assert!(result.is_err());
         let error = result.unwrap_err().to_string();
         assert!(
@@ -1270,7 +1383,9 @@ mod tests {
 
             manager.shutdown(false).await;
 
-            let result = client.get_namespace("test1".to_string(), 1).await;
+            let result = client
+                .get_namespace(guid::Guid::new_random().to_string(), "test1".to_string(), 1)
+                .await;
             assert!(result.is_err());
             assert!(result.unwrap_err().to_string().contains("shut down"));
         }
@@ -1281,12 +1396,16 @@ mod tests {
             let client = manager.client().clone();
 
             // This will fail due to mock, but should create the driver manager
-            let _ = client.get_namespace("test2".to_string(), 1).await;
+            let _ = client
+                .get_namespace(guid::Guid::new_random().to_string(), "test2".to_string(), 1)
+                .await;
 
             manager.shutdown(false).await;
 
             // Try another operation after shutdown
-            let result = client.get_namespace("test3".to_string(), 1).await;
+            let result = client
+                .get_namespace(guid::Guid::new_random().to_string(), "test3".to_string(), 1)
+                .await;
             assert!(result.is_err());
             assert!(result.unwrap_err().to_string().contains("shut down"));
         }
