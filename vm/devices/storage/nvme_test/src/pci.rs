@@ -192,7 +192,7 @@ impl NvmeFaultController {
             bars,
         );
 
-        let interrupts: Vec<Interrupt> = (0..caps.msix_count)
+        let interrupts = (0..caps.msix_count)
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
 

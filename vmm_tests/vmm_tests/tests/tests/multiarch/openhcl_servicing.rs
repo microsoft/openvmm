@@ -17,9 +17,7 @@ use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::PciFaultConfig;
-use nvme_resources::fault::PciFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
-use nvme_test::command_match::CommandMatchBuilder;
 use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
@@ -425,6 +423,7 @@ async fn create_keepalive_test_config(
                             .into_resource(),
                         }],
                         fault_config: fault_configuration,
+                        flr_support: false,
                     }
                     .into_resource(),
                 })
