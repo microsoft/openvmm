@@ -334,7 +334,7 @@ pub fn test_main(
         .filter(|test| {
             if let Some(config) = test.test.0.config() {
                 if !can_run_test_with_context(&test.name(), Some(config), &host_context) {
-                    println!("ignoring test {} due to unmet requirements", test.name());
+                    // println!("ignoring test {} due to unmet requirements", test.name());
                     return false;
                 }
             }
