@@ -5,7 +5,6 @@
 
 use mesh::Cell;
 use mesh::MeshPayload;
-use mesh::MeshPayload;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use std::time::Duration;
@@ -23,22 +22,6 @@ pub enum QueueFaultBehavior<T> {
     Panic(String),
     /// Update a completion payload
     CustomPayload(Vec<u8>),
-}
-
-#[derive(Clone, MeshPayload)]
-/// Supported fault behaviour for PCI faults
-pub enum PciFaultBehavior {
-    /// Introduce a delay to the PCI operation
-    Delay(Duration),
-    /// Do nothing
-    Default,
-}
-
-#[derive(MeshPayload, Clone)]
-/// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
-pub struct PciFaultConfig {
-    /// Fault to apply to cc.en() bit during enablement
-    pub controller_management_fault_enable: PciFaultBehavior,
 }
 
 #[derive(Clone, MeshPayload)]
@@ -116,7 +99,6 @@ impl AdminQueueFaultConfig {
     /// Panics if an identical [`CommandMatch`] has already been configured.
     pub fn with_submission_queue_fault(
         mut self,
-        pattern: CommandMatch,
         pattern: CommandMatch,
         behaviour: QueueFaultBehavior<Command>,
     ) -> Self {

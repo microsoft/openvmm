@@ -47,8 +47,6 @@ pub struct NvmeFaultControllerHandle {
     pub flr_support: bool,
     /// Configuration for the fault
     pub fault_config: FaultConfiguration,
-    /// Whether to enable flr support.
-    pub flr_support: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {

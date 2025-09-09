@@ -14,7 +14,6 @@ use crate::PAGE_MASK;
 use crate::PAGE_SIZE;
 use crate::VENDOR_ID;
 use crate::command_match::match_command_pattern;
-use crate::command_match::match_command_pattern;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
 use crate::namespace::Namespace;

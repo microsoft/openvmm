@@ -13,6 +13,7 @@ use guid::Guid;
 use mesh::CellUpdater;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::PciFaultConfig;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::capabilities::pci_express::PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK;
@@ -46,6 +47,7 @@ fn instantiate_controller_with_flr(
         FaultConfiguration {
             fault_active: CellUpdater::new(false).cell(),
             admin_fault: AdminQueueFaultConfig::new(),
+            pci_fault: PciFaultConfig::new(),
         },
     )
 }
