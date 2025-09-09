@@ -1551,12 +1551,8 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
     }
 
     fn unlock_overlay_page(&mut self, gpn: u64) -> Result<(), HvError> {
-        self.protector.unregister_overlay_page(
-            self.vtl,
-            gpn,
-            GpnSource::GuestMemory,
-            self.tlb_access,
-        )
+        self.protector
+            .unregister_overlay_page(self.vtl, gpn, self.tlb_access)
     }
 }
 
@@ -2534,7 +2530,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             None => {
                 if self.partition.monitor_page.gpa() == Some(gpa & !(hvdef::HV_PAGE_SIZE - 1)) {
                     if !is_write {
-                        tracelimit::warn_ratelimited!(
+                        tracing::debug!(
                             CVM_ALLOWED,
                             gpa,
                             ?vtl,

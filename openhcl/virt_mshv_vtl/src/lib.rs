@@ -14,6 +14,7 @@ cfg_if::cfg_if!(
         mod cvm_cpuid;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
+        use crate::processor::HardwareIsolatedBacking;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
@@ -40,8 +41,6 @@ mod processor;
 pub use processor::Backing;
 pub use processor::UhProcessor;
 
-#[cfg(guest_arch = "x86_64")]
-use crate::processor::HardwareIsolatedBacking;
 use anyhow::Context as AnyhowContext;
 use bitfield_struct::bitfield;
 use bitvec::boxed::BitBox;
@@ -1413,7 +1412,6 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         &self,
         vtl: GuestVtl,
         gpn: u64,
-        gpn_source: GpnSource,
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError>;
 
@@ -1927,7 +1925,6 @@ impl UhPartition {
                 .unregister_overlay_page(
                     _vtl,
                     gpn,
-                    GpnSource::Dma,
                     &mut SnpBacked::tlb_flush_lock_access(
                         None,
                         self.inner.as_ref(),
@@ -1942,7 +1939,6 @@ impl UhPartition {
                 .unregister_overlay_page(
                     _vtl,
                     gpn,
-                    GpnSource::Dma,
                     &mut TdxBacked::tlb_flush_lock_access(
                         None,
                         self.inner.as_ref(),

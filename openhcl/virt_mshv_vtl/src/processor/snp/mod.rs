@@ -48,6 +48,7 @@ use hvdef::hypercall::HypercallOutput;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -61,7 +62,6 @@ use virt::x86::MsrErrorExt;
 use virt::x86::SegmentRegister;
 use virt::x86::TableRegister;
 use virt_support_apic::ApicClient;
-use virt_support_x86emu::emulate::EmulatorMonitorSupport;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
@@ -1877,28 +1877,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
 
     fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
         Some(self)
-    }
-}
-
-impl<T: CpuIo> EmulatorMonitorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
-    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        self.vp
-            .partition
-            .monitor_page
-            .check_write(gpa, bytes, |connection_id| {
-                if let Err(err) = self.devices.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        error = &err as &dyn std::error::Error,
-                        connection_id,
-                        "failed to signal mnf"
-                    );
-                }
-            })
-    }
-
-    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
-        self.vp.partition.monitor_page.check_read(gpa, bytes)
     }
 }
 

@@ -179,11 +179,7 @@ impl MonitorPage {
                 if let Some(connection_id) = &self.monitors.get(MonitorId(monitor_id as u8)) {
                     signal(*connection_id);
                 } else {
-                    tracelimit::warn_ratelimited!(
-                        monitor_id,
-                        ?bytes,
-                        "monitor write for unknown id"
-                    );
+                    tracelimit::warn_ratelimited!(monitor_id, "monitor write for unknown id");
                 }
             }
         }

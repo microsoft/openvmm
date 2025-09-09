@@ -43,6 +43,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
+use virt::EmulatorMonitorSupport;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::aarch64::vp;
@@ -54,7 +55,6 @@ use virt_support_aarch64emu::emulate;
 use virt_support_aarch64emu::emulate::EmuCheckVtlAccessError;
 use virt_support_aarch64emu::emulate::EmuTranslateError;
 use virt_support_aarch64emu::emulate::EmuTranslateResult;
-use virt_support_aarch64emu::emulate::EmulatorMonitorSupport;
 use virt_support_aarch64emu::emulate::EmulatorSupport;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -764,21 +764,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
         self.vp.partition.is_gpa_mapped(gpa, write)
-    }
-}
-
-impl<T: CpuIo> EmulatorMonitorSupport for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
-    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        self.vp
-            .partition
-            .monitor_page
-            .check_write(gpa, bytes, |connection_id| {
-                signal_mnf(self.devices, connection_id)
-            })
-    }
-
-    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
-        self.vp.partition.monitor_page.check_read(gpa, bytes)
     }
 }
 

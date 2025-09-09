@@ -52,6 +52,7 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
 use std::sync::atomic::Ordering::Relaxed;
+use virt::EmulatorMonitorSupport;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -64,7 +65,6 @@ use virt::x86::MsrError;
 use virt_support_x86emu::emulate::EmuCheckVtlAccessError;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
-use virt_support_x86emu::emulate::EmulatorMonitorSupport;
 use virt_support_x86emu::emulate::EmulatorSupport;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
@@ -1377,21 +1377,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
 
     fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
         unimplemented!()
-    }
-}
-
-impl<T: CpuIo> EmulatorMonitorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX86> {
-    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        self.vp
-            .partition
-            .monitor_page
-            .check_write(gpa, bytes, |connection_id| {
-                signal_mnf(self.devices, connection_id)
-            })
-    }
-
-    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
-        self.vp.partition.monitor_page.check_read(gpa, bytes)
     }
 }
 

@@ -361,6 +361,7 @@ struct OverlayPage {
     previous_permissions: HvMapGpaFlags,
     overlay_permissions: HvMapGpaFlags,
     ref_count: u16,
+    gpn_source: GpnSource,
 }
 
 impl HardwareIsolatedMemoryProtector {
@@ -980,6 +981,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             previous_permissions: current_perms,
             overlay_permissions: new_perms.unwrap_or(current_perms),
             ref_count: 1,
+            gpn_source,
         });
 
         // Flush any threads accessing pages that had their VTL protections
@@ -1000,7 +1002,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         &self,
         vtl: GuestVtl,
         gpn: u64,
-        gpn_source: GpnSource,
         tlb_access: &mut dyn TlbFlushLockAccess,
     ) -> Result<(), HvError> {
         let mut inner = self.inner.lock();
@@ -1026,7 +1027,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             MemoryRange::from_4k_gpn_range(gpn..gpn + 1),
             vtl,
             overlay_pages[index].previous_permissions,
-            gpn_source,
+            overlay_pages[index].gpn_source,
         )
         .map_err(|_| HvError::OperationDenied)?;
 

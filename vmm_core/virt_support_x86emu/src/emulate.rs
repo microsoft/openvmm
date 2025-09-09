@@ -12,6 +12,7 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
 use thiserror::Error;
+use virt::EmulatorMonitorSupport;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
 use vm_topology::processor::VpIndex;
@@ -128,17 +129,6 @@ pub trait EmulatorSupport {
     /// This will only be called on an address in the page returned by
     /// `lapic_base_address`.
     fn lapic_write(&mut self, address: u64, data: &[u8]);
-}
-
-/// MNF support routines for the emulator
-pub trait EmulatorMonitorSupport {
-    /// Check if the specified write is inside the monitor page, and signal the associated
-    /// connection ID if it is.
-    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool;
-
-    /// Check if the specified read is inside the monitor page, and fill the provided buffer
-    /// if it is.
-    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool;
 }
 
 pub trait TranslateGvaSupport {
@@ -816,14 +806,16 @@ impl<T: EmulatorSupport, U: CpuIo> x86emu::Cpu for EmulatorCpu<'_, T, U> {
 
         self.check_vtl_access(gpa, TranslateMode::Read)?;
 
-        if !self.check_monitor_read(gpa, bytes) {
-            if self.support.is_gpa_mapped(gpa, false) {
-                self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
-            } else {
-                self.dev
-                    .read_mmio(self.support.vp_index(), gpa, bytes)
-                    .await;
-            }
+        if self.check_monitor_read(gpa, bytes) {
+            return Ok(());
+        }
+
+        if self.support.is_gpa_mapped(gpa, false) {
+            self.gm.read_at(gpa, bytes).map_err(Error::Memory)?;
+        } else {
+            self.dev
+                .read_mmio(self.support.vp_index(), gpa, bytes)
+                .await;
         }
         Ok(())
     }

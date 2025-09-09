@@ -69,6 +69,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -1175,6 +1176,21 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     devices: &'a T,
     vtl: GuestVtl,
     cache: U::EmulationCache,
+}
+
+impl<T: CpuIo, U: Backing> EmulatorMonitorSupport for UhEmulationState<'_, '_, T, U> {
+    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+        self.vp
+            .partition
+            .monitor_page
+            .check_write(gpa, bytes, |connection_id| {
+                signal_mnf(self.devices, connection_id);
+            })
+    }
+
+    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        self.vp.partition.monitor_page.check_read(gpa, bytes)
+    }
 }
 
 struct UhHypercallHandler<'a, 'b, T, B: Backing> {

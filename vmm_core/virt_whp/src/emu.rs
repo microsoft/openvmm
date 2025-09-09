@@ -247,7 +247,7 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         }
     }
 
-    fn monitor_support(&self) -> Option<&dyn virt_support_x86emu::emulate::EmulatorMonitorSupport> {
+    fn monitor_support(&self) -> Option<&dyn virt::EmulatorMonitorSupport> {
         Some(self)
     }
 
@@ -300,9 +300,7 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
     }
 }
 
-impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorMonitorSupport
-    for WhpEmulationState<'_, '_, T>
-{
+impl<T: CpuIo> virt::EmulatorMonitorSupport for WhpEmulationState<'_, '_, T> {
     fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
         self.vp
             .vp

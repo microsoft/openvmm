@@ -55,6 +55,7 @@ use thiserror::Error;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -71,7 +72,6 @@ use virt::x86::TableRegister;
 use virt_support_apic::ApicClient;
 use virt_support_apic::OffloadNotSupported;
 use virt_support_x86emu::emulate::EmulatedMemoryOperation;
-use virt_support_x86emu::emulate::EmulatorMonitorSupport;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::emulate::emulate_insn_memory_op;
@@ -2981,28 +2981,6 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
 
     fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
         Some(self)
-    }
-}
-
-impl<T: CpuIo> EmulatorMonitorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
-    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        self.vp
-            .partition
-            .monitor_page
-            .check_write(gpa, bytes, |connection_id| {
-                if let Err(err) = self.devices.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        error = &err as &dyn std::error::Error,
-                        connection_id,
-                        "failed to signal mnf"
-                    );
-                }
-            })
-    }
-
-    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
-        self.vp.partition.monitor_page.check_read(gpa, bytes)
     }
 }
 
