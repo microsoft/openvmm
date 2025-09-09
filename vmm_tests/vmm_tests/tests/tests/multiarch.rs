@@ -486,9 +486,8 @@ async fn mailbox_tdx<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
         })
         .run_without_agent()
         .await?;
-    vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
