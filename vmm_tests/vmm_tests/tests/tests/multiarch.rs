@@ -471,7 +471,7 @@ async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
     Ok(())
 }
 
-// Test AP startup on a TDX CVM with a numa topology s.t.
+// Test AP startup on a TDX CVM with a NUMA topology such that
 // APIC_ID != VCPU Index
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
