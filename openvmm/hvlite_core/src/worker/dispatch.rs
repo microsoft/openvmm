@@ -1825,6 +1825,10 @@ impl InitializedVm {
                         .map(|r| r.0)
                 })
                 .await?;
+
+            if let Some(target) = partition.clone().into_msi_target(Vtl::Vtl0) {
+                msi_set.connect(target.as_ref());
+            }
         }
 
         if let Some(vmbus_cfg) = cfg.vmbus {
