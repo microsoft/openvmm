@@ -1096,7 +1096,7 @@ impl virt::SynicMonitor for UhPartition {
         let gpa = gpn << HV_PAGE_SHIFT;
         let old_gpa = self.inner.monitor_page.set_gpa(Some(gpa));
         if let Some(old_gpa) = old_gpa {
-            self.unregister_cvm_overlay_page(vtl, old_gpa >> HV_PAGE_SHIFT)
+            self.unregister_cvm_dma_overlay_page(vtl, old_gpa >> HV_PAGE_SHIFT)
                 .context("failed to unregister old monitor page")
                 .inspect_err(|_| {
                     // Leave the page unset if returning a failure.
@@ -1108,7 +1108,7 @@ impl virt::SynicMonitor for UhPartition {
 
         // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
         // permissions must be enabled or this doesn't work correctly.
-        self.register_cvm_overlay_page(vtl, gpn, HvMapGpaFlags::new().with_readable(true))
+        self.register_cvm_dma_overlay_page(vtl, gpn, HvMapGpaFlags::new().with_readable(true))
             .context("failed to unregister monitor page")
             .inspect_err(|_| {
                 // Leave the page unset if returning a failure.
@@ -1922,9 +1922,9 @@ impl UhPartition {
     }
 
     /// Sets guest memory protections for a monitor page.
-    fn register_cvm_overlay_page(
+    fn register_cvm_dma_overlay_page(
         &self,
-        _vtl: GuestVtl,
+        vtl: GuestVtl,
         gpn: u64,
         new_perms: HvMapGpaFlags,
     ) -> anyhow::Result<()> {
@@ -1935,7 +1935,7 @@ impl UhPartition {
                 .cvm
                 .isolated_memory_protector
                 .register_overlay_page(
-                    _vtl,
+                    vtl,
                     gpn,
                     // On a CVM, the monitor page is always DMA-allocated.
                     GpnSource::Dma,
@@ -1953,9 +1953,8 @@ impl UhPartition {
                 .cvm
                 .isolated_memory_protector
                 .register_overlay_page(
-                    _vtl,
+                    vtl,
                     gpn,
-                    // On a CVM, the monitor page is always DMA-allocated.
                     GpnSource::Dma,
                     HvMapGpaFlags::new(),
                     Some(new_perms),
@@ -1966,12 +1965,15 @@ impl UhPartition {
                     ),
                 )
                 .map_err(|e| anyhow::anyhow!(e)),
-            BackingShared::Hypervisor(_) => unreachable!(),
+            BackingShared::Hypervisor(_) => {
+                let _ = (vtl, gpn, new_perms);
+                unreachable!()
+            }
         }
     }
 
     /// Reverts guest memory protections for a monitor page.
-    fn unregister_cvm_overlay_page(&self, _vtl: GuestVtl, gpn: u64) -> anyhow::Result<()> {
+    fn unregister_cvm_dma_overlay_page(&self, vtl: GuestVtl, gpn: u64) -> anyhow::Result<()> {
         // How the monitor page is protected depends on the isolation type of the VM.
         match &self.inner.backing_shared {
             #[cfg(guest_arch = "x86_64")]
@@ -1979,7 +1981,7 @@ impl UhPartition {
                 .cvm
                 .isolated_memory_protector
                 .unregister_overlay_page(
-                    _vtl,
+                    vtl,
                     gpn,
                     &mut SnpBacked::tlb_flush_lock_access(
                         None,
@@ -1993,7 +1995,7 @@ impl UhPartition {
                 .cvm
                 .isolated_memory_protector
                 .unregister_overlay_page(
-                    _vtl,
+                    vtl,
                     gpn,
                     &mut TdxBacked::tlb_flush_lock_access(
                         None,
@@ -2002,7 +2004,10 @@ impl UhPartition {
                     ),
                 )
                 .map_err(|e| anyhow::anyhow!(e)),
-            BackingShared::Hypervisor(_) => unreachable!(),
+            BackingShared::Hypervisor(_) => {
+                let _ = (vtl, gpn);
+                unreachable!()
+            }
         }
     }
 }
