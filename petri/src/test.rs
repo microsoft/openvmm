@@ -331,16 +331,18 @@ pub fn test_main(
     let host_context = futures::executor::block_on(HostContext::new());
 
     let trials: Vec<libtest_mimic::Trial> = Test::all()
-        .filter(|test| {
+        .map(|test| {
             if let Some(config) = test.test.0.config() {
                 if !can_run_test_with_context(&test.name(), Some(config), &host_context) {
-                    // println!("ignoring test {} due to unmet requirements", test.name());
-                    return false;
+                    // Create a trial that immediately succeeds and indicates the test is ignored
+                    let test_name = test.name();
+                    let _evaluation = config.evaluate_with_context(&test_name, &host_context);
+                    return libtest_mimic::Trial::test(test_name, move || Ok(()))
+                        .with_ignored_flag(true);
                 }
             }
-            true
+            test.trial(resolve)
         })
-        .map(|test| test.trial(resolve))
         .collect();
 
     libtest_mimic::run(&args.inner, trials).exit();
