@@ -381,7 +381,7 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
 ///
 /// Returns `Ok(())` if the write was successful, or `Err(MemoryError)` if the
 /// write was unsuccessful.
-//
+///
 /// # Safety
 ///
 /// This routine is safe to use if the memory pointed to by `dest` is being
