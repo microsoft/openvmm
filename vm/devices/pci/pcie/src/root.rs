@@ -38,10 +38,10 @@ pub struct GenericPcieRootPortDefinition {
 }
 
 enum DecodedEcamAccess<'a> {
-    UnexpectedIntercept(),
-    Unroutable(),
+    UnexpectedIntercept,
+    Unroutable,
     InternalBus(&'a mut RootPort, u16),
-    DownstreamPort(&'a mut RootPort, u8, u16),
+    DownstreamPort(&'a mut RootPort, u8, u8, u16),
 }
 
 impl GenericPcieRootComplex {
@@ -100,7 +100,7 @@ impl GenericPcieRootComplex {
         let ecam_offset = match self.ecam.offset_of(addr) {
             Some(offset) => offset,
             None => {
-                return DecodedEcamAccess::UnexpectedIntercept();
+                return DecodedEcamAccess::UnexpectedIntercept;
             }
         };
 
@@ -115,7 +115,7 @@ impl GenericPcieRootComplex {
                 Some((_, port)) => {
                     return DecodedEcamAccess::InternalBus(port, cfg_offset_within_function);
                 }
-                None => return DecodedEcamAccess::Unroutable(),
+                None => return DecodedEcamAccess::Unroutable,
             }
         } else if bus_number > self.start_bus && bus_number <= self.end_bus {
             for (_, port) in self.ports.values_mut() {
@@ -123,14 +123,15 @@ impl GenericPcieRootComplex {
                     return DecodedEcamAccess::DownstreamPort(
                         port,
                         bus_number,
+                        device_function,
                         cfg_offset_within_function,
                     );
                 }
             }
-            return DecodedEcamAccess::Unroutable();
+            return DecodedEcamAccess::Unroutable;
         }
 
-        DecodedEcamAccess::UnexpectedIntercept()
+        DecodedEcamAccess::UnexpectedIntercept
     }
 }
 
@@ -185,18 +186,18 @@ impl MmioIntercept for GenericPcieRootComplex {
 
         let mut value = !0;
         match self.decode_ecam_access(addr) {
-            DecodedEcamAccess::UnexpectedIntercept() => {
+            DecodedEcamAccess::UnexpectedIntercept => {
                 tracing::error!("unexpected intercept at address 0x{:16x}", addr);
             }
-            DecodedEcamAccess::Unroutable() => {
+            DecodedEcamAccess::Unroutable => {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 let _ = port.pci_cfg_read(cfg_offset & !3, &mut value);
                 value = shift_read_value(cfg_offset, data.len(), value);
             }
-            DecodedEcamAccess::DownstreamPort(port, bus_number, cfg_offset) => {
-                let _ = port.forward_cfg_read(&bus_number, cfg_offset & !3, &mut value);
+            DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
+                let _ = port.forward_cfg_read(&bus_number, &device_function, cfg_offset & !3, &mut value);
                 value = shift_read_value(cfg_offset, data.len(), value);
             }
         }
@@ -215,10 +216,10 @@ impl MmioIntercept for GenericPcieRootComplex {
         };
 
         match self.decode_ecam_access(addr) {
-            DecodedEcamAccess::UnexpectedIntercept() => {
+            DecodedEcamAccess::UnexpectedIntercept => {
                 tracing::error!("unexpected intercept at address 0x{:16x}", addr);
             }
-            DecodedEcamAccess::Unroutable() => {
+            DecodedEcamAccess::Unroutable => {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
@@ -233,17 +234,17 @@ impl MmioIntercept for GenericPcieRootComplex {
 
                 let _ = port.pci_cfg_write(rounded_offset, merged_value);
             }
-            DecodedEcamAccess::DownstreamPort(port, bus_number, cfg_offset) => {
+            DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
                 let rounded_offset = cfg_offset & !3;
                 let merged_value = if data.len() == 4 {
                     write_value
                 } else {
                     let mut temp: u32 = 0;
-                    let _ = port.forward_cfg_read(&bus_number, rounded_offset, &mut temp);
+                    let _ = port.forward_cfg_read(&bus_number, &device_function, rounded_offset, &mut temp);
                     combine_old_new_values(cfg_offset, temp, write_value, data.len())
                 };
 
-                let _ = port.forward_cfg_write(&bus_number, rounded_offset, merged_value);
+                let _ = port.forward_cfg_write(&bus_number, &device_function, rounded_offset, merged_value);
             }
         }
 
@@ -359,11 +360,11 @@ impl RootPort {
         bus >= secondary_bus_number && bus <= suboordinate_bus_number
     }
 
-    fn forward_cfg_read(&mut self, bus: &u8, cfg_offset: u16, value: &mut u32) -> IoResult {
+    fn forward_cfg_read(&mut self, bus: &u8, device_function: &u8, cfg_offset: u16, value: &mut u32) -> IoResult {
         let secondary_bus_number = ((self.bus_number_registers >> 8) & 0xFF) as u8;
         let suboordinate_bus_number = ((self.bus_number_registers >> 16) & 0xFF) as u8;
 
-        if *bus == secondary_bus_number {
+        if *bus == secondary_bus_number && *device_function == 0 {
             if let Some((_, device)) = &mut self.link {
                 let _ = device.pci_cfg_read(cfg_offset, value);
             }
@@ -374,11 +375,11 @@ impl RootPort {
         IoResult::Ok
     }
 
-    fn forward_cfg_write(&mut self, bus: &u8, cfg_offset: u16, value: u32) -> IoResult {
+    fn forward_cfg_write(&mut self, bus: &u8, device_function: &u8, cfg_offset: u16, value: u32) -> IoResult {
         let secondary_bus_number = ((self.bus_number_registers >> 8) & 0xFF) as u8;
         let suboordinate_bus_number = ((self.bus_number_registers >> 16) & 0xFF) as u8;
 
-        if *bus == secondary_bus_number {
+        if *bus == secondary_bus_number && *device_function == 0 {
             if let Some((_, device)) = &mut self.link {
                 let _ = device.pci_cfg_write(cfg_offset, value);
             }
