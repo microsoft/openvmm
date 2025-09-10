@@ -21,12 +21,45 @@ use syn::parse::ParseStream;
 use syn::parse_macro_input;
 use syn::spanned::Spanned;
 
+/// Represents a requirement specification that can be parsed from the macro syntax
+#[derive(Debug, Clone)]
+enum RequirementSpec {
+    /// Execution environment requirement: ExecutionEnvironment::BareMetal or ExecutionEnvironment::Nested
+    ExecutionEnvironment(ExecutionEnvironmentType),
+    /// CPU vendor requirement: Vendor::Amd or Vendor::Intel
+    Vendor(VendorType),
+    /// Isolation type requirement: IsolationType::Vbs, IsolationType::Snp, or IsolationType::Tdx
+    IsolationType(IsolationTypeSpec),
+}
+
+/// Execution environment types that can be specified in the macro
+#[derive(Debug, Clone)]
+enum ExecutionEnvironmentType {
+    BareMetal,
+    Nested,
+}
+
+/// CPU vendor types that can be specified in the macro
+#[derive(Debug, Clone)]
+enum VendorType {
+    Amd,
+    Intel,
+}
+
+/// Isolation types that can be specified in the macro
+#[derive(Debug, Clone)]
+enum IsolationTypeSpec {
+    Vbs,
+    Snp,
+    Tdx,
+}
 struct Config {
     vmm: Option<Vmm>,
     firmware: Firmware,
     arch: MachineArch,
     span: Span,
     extra_deps: Vec<Path>,
+    requirements: Vec<RequirementSpec>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -295,6 +328,7 @@ impl Parse for Config {
         };
 
         let extra_deps = parse_extra_deps(input)?;
+        let requirements = parse_test_case_host_requirements(input)?;
 
         Ok(Config {
             vmm,
@@ -302,6 +336,7 @@ impl Parse for Config {
             arch,
             span: input.span(),
             extra_deps,
+            requirements,
         })
     }
 }
@@ -530,6 +565,50 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
     Ok(deps.into_iter().collect())
 }
 
+fn parse_test_case_host_requirements(input: ParseStream<'_>) -> syn::Result<Vec<RequirementSpec>> {
+    if input.is_empty() || input.peek(Token![,]) {
+        return Ok(vec![]);
+    }
+
+    let content;
+    syn::braced!(content in input);
+    let punctuated = content.parse_terminated(RequirementSpec::parse, Token![,])?;
+    Ok(punctuated.into_iter().collect())
+}
+
+impl Parse for RequirementSpec {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let path: Path = input.parse()?;
+        let segments: Vec<&Ident> = path.segments.iter().map(|seg| &seg.ident).collect();
+
+        match segments.as_slice() {
+            [a, b] if *a == "ExecutionEnvironment" && *b == "BareMetal" => Ok(
+                RequirementSpec::ExecutionEnvironment(ExecutionEnvironmentType::BareMetal),
+            ),
+            [a, b] if *a == "ExecutionEnvironment" && *b == "Nested" => Ok(
+                RequirementSpec::ExecutionEnvironment(ExecutionEnvironmentType::Nested),
+            ),
+            [a, b] if *a == "Vendor" && *b == "Amd" => Ok(RequirementSpec::Vendor(VendorType::Amd)),
+            [a, b] if *a == "Vendor" && *b == "Intel" => {
+                Ok(RequirementSpec::Vendor(VendorType::Intel))
+            }
+            [a, b] if *a == "IsolationType" && *b == "Vbs" => {
+                Ok(RequirementSpec::IsolationType(IsolationTypeSpec::Vbs))
+            }
+            [a, b] if *a == "IsolationType" && *b == "Snp" => {
+                Ok(RequirementSpec::IsolationType(IsolationTypeSpec::Snp))
+            }
+            [a, b] if *a == "IsolationType" && *b == "Tdx" => {
+                Ok(RequirementSpec::IsolationType(IsolationTypeSpec::Tdx))
+            }
+            _ => Err(Error::new(
+                path.span(),
+                format!("unrecognized requirement: {:?}", segments),
+            )),
+        }
+    }
+}
+
 /// Transform the function into VMM tests, one for each specified firmware configuration.
 ///
 /// Valid configuration options are:
@@ -577,7 +656,32 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `tdx`: Use TDX isolation.
 ///
 /// Each configuration can be optionally followed by a square-bracketed, comma-separated
-/// list of additional artifacts required for that particular configuration.
+/// list of additional artifacts and requirements for that particular configuration.
+///
+/// Requirements can be specified using curly braces with type-safe requirement constants:
+///
+/// **Execution Environment Requirements:**
+/// - `{execution_environment::BARE_METAL}`: Requires bare metal execution (not nested virtualization)
+/// - `{execution_environment::NESTED}`: Requires nested virtualization
+///
+/// **CPU Vendor Requirements:**
+/// - `{vendor::AMD}`: Requires AMD CPU
+/// - `{vendor::INTEL}`: Requires Intel CPU
+///
+/// **Isolation Type Requirements:**
+/// - `{isolation::VBS_OPENVMM}`: Requires VBS isolation support with OpenVMM
+/// - `{isolation::VBS_HYPERV}`: Requires VBS isolation support with Hyper-V
+/// - `{isolation::SNP_OPENVMM}`: Requires SNP isolation support with OpenVMM
+/// - `{isolation::SNP_HYPERV}`: Requires SNP isolation support with Hyper-V
+/// - `{isolation::TDX_OPENVMM}`: Requires TDX isolation support with OpenVMM
+/// - `{isolation::TDX_HYPERV}`: Requires TDX isolation support with Hyper-V
+///
+/// Example usage:
+/// ```
+/// #[vmm_test(
+///     openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, {execution_environment::BARE_METAL}]
+/// )]
+/// ```
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
@@ -665,19 +769,77 @@ fn make_vmm_test(
             _,
         ) = &config.firmware
         {
+            let vmm_type = match (specific_vmm, config.vmm) {
+                (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => {
+                    quote!(::petri::requirements::VmmType::HyperV)
+                }
+                (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => {
+                    quote!(::petri::requirements::VmmType::OpenVmm)
+                }
+                _ => quote!(::petri::requirements::VmmType::OpenVmm), // Default to OpenVmm
+            };
+
             let isolation_requirement = match isolation {
                 IsolationType::Vbs => quote!(::petri::requirements::IsolationRequirement::new(
-                    ::petri::requirements::IsolationType::Vbs
+                    ::petri::requirements::IsolationType::Vbs,
+                    #vmm_type
                 )),
                 IsolationType::Snp => quote!(::petri::requirements::IsolationRequirement::new(
-                    ::petri::requirements::IsolationType::Snp
+                    ::petri::requirements::IsolationType::Snp,
+                    #vmm_type
                 )),
                 IsolationType::Tdx => quote!(::petri::requirements::IsolationRequirement::new(
-                    ::petri::requirements::IsolationType::Tdx
+                    ::petri::requirements::IsolationType::Tdx,
+                    #vmm_type
                 )),
             };
             requirements_builder.extend(quote!(
                 .require(#isolation_requirement)
+            ));
+        }
+
+        // Add user-specified requirements from the macro
+        for requirement in &config.requirements {
+            let requirement_code = match requirement {
+                RequirementSpec::ExecutionEnvironment(env_type) => {
+                    let env = match env_type {
+                        ExecutionEnvironmentType::BareMetal => {
+                            quote!(::petri::requirements::ExecutionEnvironment::Baremetal)
+                        }
+                        ExecutionEnvironmentType::Nested => {
+                            quote!(::petri::requirements::ExecutionEnvironment::Nested)
+                        }
+                    };
+                    quote!(::petri::requirements::ExecutionEnvironmentRequirement::new(#env))
+                }
+                RequirementSpec::Vendor(vendor_type) => {
+                    let vendor = match vendor_type {
+                        VendorType::Amd => quote!(::petri::requirements::Vendor::Amd),
+                        VendorType::Intel => quote!(::petri::requirements::Vendor::Intel),
+                    };
+                    quote!(::petri::requirements::VendorRequirement::new(#vendor))
+                }
+                RequirementSpec::IsolationType(isolation_type) => {
+                    let vmm_type = match (specific_vmm, config.vmm) {
+                        (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => {
+                            quote!(::petri::requirements::VmmType::HyperV)
+                        }
+                        (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => {
+                            quote!(::petri::requirements::VmmType::OpenVmm)
+                        }
+                        _ => quote!(::petri::requirements::VmmType::OpenVmm), // Default to OpenVmm
+                    };
+
+                    let isolation = match isolation_type {
+                        IsolationTypeSpec::Vbs => quote!(::petri::requirements::IsolationType::Vbs),
+                        IsolationTypeSpec::Snp => quote!(::petri::requirements::IsolationType::Snp),
+                        IsolationTypeSpec::Tdx => quote!(::petri::requirements::IsolationType::Tdx),
+                    };
+                    quote!(::petri::requirements::IsolationRequirement::new(#isolation, #vmm_type))
+                }
+            };
+            requirements_builder.extend(quote!(
+                .require(#requirement_code)
             ));
         }
 

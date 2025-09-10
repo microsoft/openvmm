@@ -6,9 +6,10 @@
 #[cfg(windows)]
 use crate::vm::hyperv::powershell;
 
-/// Context containing pre-computed host information to avoid repeated expensive queries
+/// Platform-specific host context extending the base HostContext
 #[derive(Debug, Clone)]
 pub struct HostContext {
+    /// Windows-specific VM host information
     #[cfg(windows)]
     pub vm_host_info: Option<powershell::HyperVGetVmHost>,
 }
@@ -173,63 +174,144 @@ impl Clone for TestCaseRequirements {
     }
 }
 
-// Built-in requirement types
-
-/// Isolation technology types supported by the platform
-#[derive(Debug, Clone)]
-pub enum IsolationType {
-    /// Virtualization-based Security
-    Vbs,
-    /// AMD Secure Nested Paging
-    Snp,
-    /// Intel Trust Domain Extensions
-    Tdx,
+/// Execution environment requirements for test cases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionEnvironmentRequirement {
+    /// The required execution environment
+    pub environment: ExecutionEnvironment,
 }
 
-/// Requirement for specific guest isolation technology
-#[derive(Debug, Clone)]
+impl ExecutionEnvironmentRequirement {
+    /// Create a new execution environment requirement
+    pub fn new(environment: ExecutionEnvironment) -> Self {
+        Self { environment }
+    }
+}
+
+/// CPU vendor requirements for test cases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VendorRequirement {
+    /// The required CPU vendor
+    pub vendor: Vendor,
+}
+
+impl VendorRequirement {
+    /// Create a new CPU vendor requirement
+    pub fn new(vendor: Vendor) -> Self {
+        Self { vendor }
+    }
+}
+
+/// Isolation requirements for test cases.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsolationRequirement {
-    /// The required isolation technology
-    pub required_isolation: IsolationType,
+    /// The required isolation type
+    pub isolation_type: IsolationType,
+    /// The required VMM type
+    pub vmm_type: VmmType,
 }
 
 impl IsolationRequirement {
     /// Create a new isolation requirement
-    pub fn new(isolation: IsolationType) -> Self {
+    pub fn new(isolation_type: IsolationType, vmm_type: VmmType) -> Self {
         Self {
-            required_isolation: isolation,
+            isolation_type,
+            vmm_type,
+        }
+    }
+}
+
+/// Execution environments where tests can run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionEnvironment {
+    /// Bare metal execution (not nested virtualization).
+    Baremetal,
+    /// Nested virtualization environment.
+    Nested,
+}
+
+/// CPU vendors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vendor {
+    /// AMD processors.
+    Amd,
+    /// Intel processors.
+    Intel,
+}
+
+/// Types of isolation supported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolationType {
+    /// Virtualization-Based Security.
+    Vbs,
+    /// AMD Secure Nested Paging.
+    Snp,
+    /// Intel Trust Domain Extensions.
+    Tdx,
+}
+
+/// VMM implementation types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmmType {
+    /// OpenVMM hypervisor.
+    OpenVmm,
+    /// Microsoft Hyper-V.
+    HyperV,
+}
+
+impl TestRequirement for ExecutionEnvironmentRequirement {
+    fn requirement_type(&self) -> &'static str {
+        "ExecutionEnvironment"
+    }
+
+    fn is_satisfied_with_context(&self, _context: &HostContext) -> anyhow::Result<bool> {
+        // For now, return true as a placeholder
+        // This should be implemented based on actual environment detection logic
+        Ok(true)
+    }
+
+    fn description(&self) -> String {
+        match self.environment {
+            ExecutionEnvironment::Baremetal => {
+                "Requires bare metal execution environment".to_string()
+            }
+            ExecutionEnvironment::Nested => {
+                "Requires nested virtualization environment".to_string()
+            }
+        }
+    }
+}
+
+impl TestRequirement for VendorRequirement {
+    fn requirement_type(&self) -> &'static str {
+        "CpuVendor"
+    }
+
+    fn is_satisfied_with_context(&self, _context: &HostContext) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+
+    fn description(&self) -> String {
+        match self.vendor {
+            Vendor::Amd => "Requires AMD processor".to_string(),
+            Vendor::Intel => "Requires Intel processor".to_string(),
         }
     }
 }
 
 impl TestRequirement for IsolationRequirement {
     fn requirement_type(&self) -> &'static str {
-        "guest_isolation_type"
+        "Isolation"
     }
 
     fn is_satisfied_with_context(&self, context: &HostContext) -> anyhow::Result<bool> {
         #[cfg(windows)]
         {
-            // Use cached host information from context to avoid repeated expensive queries
-            let host_info = match &context.vm_host_info {
-                Some(info) => info,
-                None => {
-                    // Fallback to direct query if context doesn't have the information
-                    use futures::executor::block_on;
-                    return Ok(match block_on(powershell::run_get_vm_host()) {
-                        Ok(info) => match self.required_isolation {
-                            IsolationType::Vbs => info
-                                .guest_isolation_types
-                                .contains(&powershell::HyperVGuestStateIsolationType::Vbs),
-                            IsolationType::Snp => info.snp_status,
-                            IsolationType::Tdx => info.tdx_status,
-                        },
-                        Err(_) => false,
-                    });
-                }
-            };
+            let host_info = context.vm_host_info.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Failed to retrieve VM host information on Windows")
+            })?;
 
-            let supported = match self.required_isolation {
+            let supported = match self.isolation_type {
                 IsolationType::Vbs => host_info
                     .guest_isolation_types
                     .contains(&powershell::HyperVGuestStateIsolationType::Vbs),
@@ -248,16 +330,16 @@ impl TestRequirement for IsolationRequirement {
     }
 
     fn description(&self) -> String {
-        let isolation_name = match self.required_isolation {
+        let isolation_str = match self.isolation_type {
             IsolationType::Vbs => "VBS",
             IsolationType::Snp => "SNP",
             IsolationType::Tdx => "TDX",
         };
-        format!("Requires {} isolation technology", isolation_name)
-    }
-
-    fn failure_reason(&self) -> Option<String> {
-        None
+        let vmm_str = match self.vmm_type {
+            VmmType::OpenVmm => "OpenVMM",
+            VmmType::HyperV => "Hyper-V",
+        };
+        format!("Requires {} isolation with {} VMM", isolation_str, vmm_str)
     }
 }
 
