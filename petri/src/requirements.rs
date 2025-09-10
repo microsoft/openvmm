@@ -80,7 +80,17 @@ impl HostContext {
         let vendor = {
             let result =
                 safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
-            x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
+            if x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
+                .is_amd_compatible()
+            {
+                Vendor::Amd
+            } else {
+                assert!(
+                    x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
+                        .is_intel_compatible()
+                );
+                Vendor::Intel
+            }
         };
         #[cfg(not(target_arch = "x86_64"))]
         let vendor = Vendor::Unknown;
@@ -88,12 +98,7 @@ impl HostContext {
         Self {
             #[cfg(windows)]
             vm_host_info: powershell::run_get_vm_host().await.ok(),
-            vendor: if vendor.is_amd_compatible() {
-                Vendor::Amd
-            } else {
-                assert!(vendor.is_intel_compatible());
-                Vendor::Intel
-            },
+            vendor,
             execution_environment: if is_nested {
                 ExecutionEnvironment::Nested
             } else {
