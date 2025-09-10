@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-pub use crate::sdt::*;
+pub use crate::aml::*;
 use memory_range::MemoryRange;
 use x86defs::apic::APIC_BASE_ADDRESS;
 use zerocopy::FromBytes;
@@ -13,9 +13,9 @@ use zerocopy::KnownLayout;
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DescriptionHeader {
     pub signature: u32,
-    _length: u32,
+    _length: u32, // placeholder, filled in during serialization to bytes
     pub revision: u8,
-    _checksum: u8,
+    _checksum: u8, // placeholder, filled in during serialization to bytes
     pub oem_id: [u8; 6],
     pub oem_table_id: u64,
     pub oem_revision: u32,
@@ -46,7 +46,7 @@ impl PciRoutingTable {
     }
 }
 
-impl SdtObject for PciRoutingTable {
+impl AmlObject for PciRoutingTable {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
         let mut table_data: Vec<u8> = Vec::with_capacity(self.entries.len() * 10);
         for entry in self.entries.iter() {
@@ -120,7 +120,7 @@ impl Dsdt {
         byte_stream
     }
 
-    pub fn add_object(&mut self, obj: &impl SdtObject) {
+    pub fn add_object(&mut self, obj: &impl AmlObject) {
         obj.append_to_vec(&mut self.objects);
     }
 
@@ -365,7 +365,7 @@ impl Dsdt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdt::test_helpers::verify_expected_bytes;
+    use crate::aml::test_helpers::verify_expected_bytes;
 
     pub fn verify_header(bytes: &[u8]) {
         assert!(bytes.len() >= 36);

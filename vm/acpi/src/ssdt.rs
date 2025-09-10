@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-pub use crate::sdt::*;
+pub use crate::aml::*;
 use memory_range::MemoryRange;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -12,9 +12,9 @@ use zerocopy::KnownLayout;
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DescriptionHeader {
     pub signature: u32,
-    _length: u32,
+    _length: u32, // placeholder, filled in during serialization to bytes
     pub revision: u8,
-    _checksum: u8,
+    _checksum: u8, // placeholder, filled in during serialization to bytes
     pub oem_id: [u8; 6],
     pub oem_table_id: u64,
     pub oem_revision: u32,
@@ -73,7 +73,7 @@ impl Ssdt {
         byte_stream
     }
 
-    pub fn add_object(&mut self, obj: &impl SdtObject) {
+    pub fn add_object(&mut self, obj: &impl AmlObject) {
         obj.append_to_vec(&mut self.objects);
     }
 
@@ -135,7 +135,7 @@ impl Ssdt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdt::test_helpers::verify_expected_bytes;
+    use crate::aml::test_helpers::verify_expected_bytes;
 
     pub fn verify_header(bytes: &[u8]) {
         assert!(bytes.len() >= 36);
@@ -204,10 +204,10 @@ mod tests {
 
     #[test]
     fn verify_simple_table() {
-        let mut dsdt = Ssdt::new();
+        let mut ssdt = Ssdt::new();
         let nobj = NamedObject::new(b"_S0", &Package(vec![0, 0]));
-        dsdt.add_object(&nobj);
-        let bytes = dsdt.to_bytes();
+        ssdt.add_object(&nobj);
+        let bytes = ssdt.to_bytes();
         verify_header(&bytes);
         verify_expected_bytes(&bytes[36..], &[8, b'_', b'S', b'0', b'_', 0x12, 4, 2, 0, 0]);
     }

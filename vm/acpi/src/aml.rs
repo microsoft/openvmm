@@ -1,8 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared utilities for generating differentiated (DSDT) and
-//! secondary (SSDT) system description tables.
+//! Shared utilities for generating ACPI Machine Language (AML),
+//! particularly for use in differentiated and secondary system
+//! description tables (DSDT and SSDT, respectively).
 
 pub mod devices;
 pub mod helpers;

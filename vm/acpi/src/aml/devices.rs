@@ -1,10 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Utilities for encoding devices into ACPI Machine Language (AML).
+
 use super::helpers::*;
 use super::objects::*;
 use super::ops::*;
 
+/// An AML Method
 pub struct Method {
     pub name: [u8; 4],
     pub sync_level: u8,
@@ -14,6 +17,7 @@ pub struct Method {
 }
 
 impl Method {
+    /// Constructs a new [`Method`].
     pub fn new(name: &[u8; 4]) -> Self {
         let local_name: [u8; 4] = [name[0], name[1], name[2], name[3]];
         Self {
@@ -25,16 +29,18 @@ impl Method {
         }
     }
 
+    /// Set the number of arguments the method accepts.
     pub fn set_arg_count(&mut self, arg_count: u8) {
         self.arg_count = arg_count;
     }
 
+    /// Add an operation to the method body.
     pub fn add_operation(&mut self, op: &impl OperationObject) {
         op.append_to_vec(&mut self.operations);
     }
 }
 
-impl SdtObject for Method {
+impl AmlObject for Method {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
         byte_stream.push(0x14);
         byte_stream.extend_from_slice(&encode_package_len(5 + self.operations.len()));
@@ -46,12 +52,14 @@ impl SdtObject for Method {
     }
 }
 
+/// An AML Device
 pub struct Device {
     name: Vec<u8>,
     objects: Vec<u8>,
 }
 
 impl Device {
+    /// Construct a new [`Device`]
     pub fn new(name: &[u8]) -> Self {
         Self {
             name: encode_name(name),
@@ -59,12 +67,13 @@ impl Device {
         }
     }
 
-    pub fn add_object(&mut self, obj: &impl SdtObject) {
+    /// Add an object to the body of the device.
+    pub fn add_object(&mut self, obj: &impl AmlObject) {
         obj.append_to_vec(&mut self.objects);
     }
 }
 
-impl SdtObject for Device {
+impl AmlObject for Device {
     // A device object consists of the extended identifier (0x5b 0x82) followed by the length, the name and then the
     // contained objects.
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
@@ -77,9 +86,10 @@ impl SdtObject for Device {
     }
 }
 
+/// An EISA identifier for a device.
 pub struct EisaId(pub [u8; 7]);
 
-impl SdtObject for EisaId {
+impl AmlObject for EisaId {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
         let mut id: [u8; 4] = [0; 4];
         id[0] = (self.0[0] - b'@') << 2 | (self.0[1] - b'@') >> 3;
@@ -93,7 +103,7 @@ impl SdtObject for EisaId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdt::test_helpers::verify_expected_bytes;
+    use crate::aml::test_helpers::verify_expected_bytes;
 
     #[test]
     fn verify_eisaid() {
