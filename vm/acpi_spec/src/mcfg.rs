@@ -78,7 +78,7 @@ pub fn parse_mcfg<'a>(
 ) -> Result<(&'a crate::Header, &'a McfgHeader), ParseMcfgError> {
     let raw_mcfg_len = raw_mcfg.len();
     let (acpi_header, buf) = Ref::<_, crate::Header>::from_prefix(raw_mcfg)
-        .map_err(|_| ParseMcfgError::MissingAcpiHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        .map_err(|_| ParseMcfgError::MissingAcpiHeader)?;
 
     if acpi_header.signature != *b"MCFG" {
         return Err(ParseMcfgError::InvalidSignature(acpi_header.signature));
@@ -92,11 +92,11 @@ pub fn parse_mcfg<'a>(
     }
 
     let (mcfg_header, mut buf) =
-        Ref::<_, McfgHeader>::from_prefix(buf).map_err(|_| ParseMcfgError::MissingFixedHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        Ref::<_, McfgHeader>::from_prefix(buf).map_err(|_| ParseMcfgError::MissingFixedHeader)?;
 
     while !buf.is_empty() {
         let (sbr, rest) = Ref::<_, McfgSegmentBusRange>::from_prefix(buf)
-            .map_err(|_| ParseMcfgError::BadSegmentBusRange)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+            .map_err(|_| ParseMcfgError::BadSegmentBusRange)?;
         on_segment_bus_range(Ref::into_ref(sbr));
         buf = rest
     }
