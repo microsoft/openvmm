@@ -333,11 +333,10 @@ pub fn test_main(
     let trials: Vec<libtest_mimic::Trial> = Test::all()
         .map(|test| {
             if let Some(config) = test.test.0.config() {
-                if !can_run_test_with_context(&test.name(), Some(config), &host_context) {
-                    // Create a trial that immediately succeeds and indicates the test is ignored
-                    let test_name = test.name();
-                    let _evaluation = config.evaluate_with_context(&test_name, &host_context);
-                    return libtest_mimic::Trial::test(test_name, move || Ok(()))
+                let evaluation_result =
+                    can_run_test_with_context(&test.name(), Some(config), &host_context);
+                if !evaluation_result.can_run {
+                    return libtest_mimic::Trial::test(test.name(), move || Ok(()))
                         .with_ignored_flag(true);
                 }
             }

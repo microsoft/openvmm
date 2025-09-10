@@ -6,28 +6,89 @@
 #[cfg(windows)]
 use crate::vm::hyperv::powershell;
 
+/// Execution environments where tests can run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionEnvironment {
+    /// Bare metal execution (not nested virtualization).
+    Baremetal,
+    /// Nested virtualization environment.
+    Nested,
+}
+
+/// CPU vendors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vendor {
+    /// AMD processors.
+    Amd,
+    /// Intel processors.
+    Intel,
+}
+
+/// Types of isolation supported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolationType {
+    /// Virtualization-Based Security.
+    Vbs,
+    /// AMD Secure Nested Paging.
+    Snp,
+    /// Intel Trust Domain Extensions.
+    Tdx,
+}
+
+/// VMM implementation types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmmType {
+    /// OpenVMM hypervisor.
+    OpenVmm,
+    /// Microsoft Hyper-V.
+    HyperV,
+}
+
 /// Platform-specific host context extending the base HostContext
 #[derive(Debug, Clone)]
 pub struct HostContext {
-    /// Windows-specific VM host information
     #[cfg(windows)]
     pub vm_host_info: Option<powershell::HyperVGetVmHost>,
+    /// CPU vendor
+    pub vendor: Vendor,
+    /// Execution environment
+    pub execution_environment: ExecutionEnvironment,
 }
 
 impl HostContext {
     /// Create a new host context by querying host information
     pub async fn new() -> Self {
+        let is_nested = {
+            let result =
+                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+            hvdef::HvEnlightenmentInformation::from(
+                result.eax as u128
+                    | (result.ebx as u128) << 32
+                    | (result.ecx as u128) << 64
+                    | (result.edx as u128) << 96,
+            )
+            .nested()
+        };
+
+        let vendor = {
+            let result =
+                safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
+            x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
+        };
         Self {
             #[cfg(windows)]
             vm_host_info: powershell::run_get_vm_host().await.ok(),
-        }
-    }
-
-    /// Create an empty host context (for testing or non-Windows platforms)
-    pub fn empty() -> Self {
-        Self {
-            #[cfg(windows)]
-            vm_host_info: None,
+            vendor: if vendor.is_amd_compatible() {
+                Vendor::Amd
+            } else {
+                assert!(vendor.is_intel_compatible());
+                Vendor::Intel
+            },
+            execution_environment: if is_nested {
+                ExecutionEnvironment::Nested
+            } else {
+                ExecutionEnvironment::Baremetal
+            },
         }
     }
 }
@@ -38,14 +99,7 @@ pub trait TestRequirement: Send + Sync + std::fmt::Debug {
     fn requirement_type(&self) -> &'static str;
 
     /// Evaluate if this requirement is met in the current environment
-    ///
-    /// This method falls back to the context-aware version for backwards compatibility
-    fn is_satisfied(&self) -> anyhow::Result<bool> {
-        self.is_satisfied_with_context(&HostContext::empty())
-    }
-
-    /// Evaluate if this requirement is met in the current environment with cached context
-    fn is_satisfied_with_context(&self, context: &HostContext) -> anyhow::Result<bool>;
+    fn is_satisfied(&self, context: &HostContext) -> anyhow::Result<bool>;
 
     /// Human-readable description of the requirement
     fn description(&self) -> String;
@@ -83,9 +137,20 @@ pub struct TestEvaluationResult {
     /// Name of the test being evaluated
     pub test_name: String,
     /// Detailed results for each requirement
-    pub results: Vec<RequirementResult>,
+    pub results: Option<Vec<RequirementResult>>,
     /// Overall result: can the test be run?
     pub can_run: bool,
+}
+
+impl TestEvaluationResult {
+    /// Create a default result indicating the test can run (no requirements)
+    pub fn default(test_name: &str) -> Self {
+        Self {
+            test_name: test_name.to_string(),
+            results: None,
+            can_run: true,
+        }
+    }
 }
 
 /// Container for test requirements that can be evaluated
@@ -108,22 +173,13 @@ impl TestCaseRequirements {
         self
     }
 
-    /// Evaluate all requirements and return comprehensive result
-    pub fn evaluate(&self, test_name: &str) -> TestEvaluationResult {
-        self.evaluate_with_context(test_name, &HostContext::empty())
-    }
-
     /// Evaluate all requirements with cached host context and return comprehensive result
-    pub fn evaluate_with_context(
-        &self,
-        test_name: &str,
-        context: &HostContext,
-    ) -> TestEvaluationResult {
+    pub fn evaluate(&self, test_name: &str, context: &HostContext) -> TestEvaluationResult {
         let mut results = Vec::new();
         let mut can_run = true;
 
         for requirement in &self.requirements {
-            match requirement.is_satisfied_with_context(context) {
+            match requirement.is_satisfied(context) {
                 Ok(true) => {
                     results.push(RequirementResult::Satisfied(
                         requirement.requirement_type().to_string(),
@@ -148,7 +204,7 @@ impl TestCaseRequirements {
 
         TestEvaluationResult {
             test_name: test_name.to_string(),
-            results,
+            results: Some(results),
             can_run,
         }
     }
@@ -221,53 +277,13 @@ impl IsolationRequirement {
     }
 }
 
-/// Execution environments where tests can run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionEnvironment {
-    /// Bare metal execution (not nested virtualization).
-    Baremetal,
-    /// Nested virtualization environment.
-    Nested,
-}
-
-/// CPU vendors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Vendor {
-    /// AMD processors.
-    Amd,
-    /// Intel processors.
-    Intel,
-}
-
-/// Types of isolation supported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IsolationType {
-    /// Virtualization-Based Security.
-    Vbs,
-    /// AMD Secure Nested Paging.
-    Snp,
-    /// Intel Trust Domain Extensions.
-    Tdx,
-}
-
-/// VMM implementation types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VmmType {
-    /// OpenVMM hypervisor.
-    OpenVmm,
-    /// Microsoft Hyper-V.
-    HyperV,
-}
-
 impl TestRequirement for ExecutionEnvironmentRequirement {
     fn requirement_type(&self) -> &'static str {
         "ExecutionEnvironment"
     }
 
-    fn is_satisfied_with_context(&self, _context: &HostContext) -> anyhow::Result<bool> {
-        // For now, return true as a placeholder
-        // This should be implemented based on actual environment detection logic
-        Ok(true)
+    fn is_satisfied(&self, context: &HostContext) -> anyhow::Result<bool> {
+        Ok(context.execution_environment == self.environment)
     }
 
     fn description(&self) -> String {
@@ -287,8 +303,8 @@ impl TestRequirement for VendorRequirement {
         "CpuVendor"
     }
 
-    fn is_satisfied_with_context(&self, _context: &HostContext) -> anyhow::Result<bool> {
-        Ok(true)
+    fn is_satisfied(&self, context: &HostContext) -> anyhow::Result<bool> {
+        Ok(context.vendor == self.vendor)
     }
 
     fn description(&self) -> String {
@@ -304,19 +320,20 @@ impl TestRequirement for IsolationRequirement {
         "Isolation"
     }
 
-    fn is_satisfied_with_context(&self, context: &HostContext) -> anyhow::Result<bool> {
+    fn is_satisfied(&self, context: &HostContext) -> anyhow::Result<bool> {
         #[cfg(windows)]
         {
-            let host_info = context.vm_host_info.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("Failed to retrieve VM host information on Windows")
-            })?;
-
+            assert!(
+                context.vm_host_info.is_some(),
+                "Host context must include VM host info on Windows"
+            );
+            let context = context.vm_host_info.as_ref().unwrap();
             let supported = match self.isolation_type {
-                IsolationType::Vbs => host_info
+                IsolationType::Vbs => context
                     .guest_isolation_types
                     .contains(&powershell::HyperVGuestStateIsolationType::Vbs),
-                IsolationType::Snp => host_info.snp_status,
-                IsolationType::Tdx => host_info.tdx_status,
+                IsolationType::Snp => context.snp_status,
+                IsolationType::Tdx => context.tdx_status,
             };
 
             Ok(supported)
@@ -343,22 +360,6 @@ impl TestRequirement for IsolationRequirement {
     }
 }
 
-/// Evaluates if a test case can be run in the current execution environment.
-///
-/// This function determines whether a test should be run or ignored based on
-/// the current environment conditions by evaluating all test requirements.
-///
-/// # Arguments
-/// * `test_name` - The name of the test case
-/// * `config` - Optional test configuration containing requirements
-///
-/// # Returns
-/// * `true` if the test can be run in the current environment
-/// * `false` if the test should be ignored
-pub fn can_run_test(test_name: &str, config: Option<&TestCaseRequirements>) -> bool {
-    can_run_test_with_context(test_name, config, &HostContext::empty())
-}
-
 /// Evaluates if a test case can be run in the current execution environment with cached context.
 ///
 /// This function determines whether a test should be run or ignored based on
@@ -377,28 +378,11 @@ pub fn can_run_test_with_context(
     test_name: &str,
     config: Option<&TestCaseRequirements>,
     context: &HostContext,
-) -> bool {
+) -> TestEvaluationResult {
     if let Some(requirements) = config {
-        let evaluation = requirements.evaluate_with_context(test_name, context);
-        evaluation.can_run
+        requirements.evaluate(test_name, context)
     } else {
         // No requirements means the test can run
-        true
+        TestEvaluationResult::default(test_name)
     }
-}
-
-/// Evaluates test requirements and returns detailed information about why
-/// a test can or cannot run.
-///
-/// # Arguments
-/// * `test_name` - The name of the test case
-/// * `config` - Optional test configuration containing requirements
-///
-/// # Returns
-/// * `TestEvaluationResult` with detailed requirement evaluation results
-pub fn evaluate_test_requirements(
-    test_name: &str,
-    config: Option<&TestCaseRequirements>,
-) -> Option<TestEvaluationResult> {
-    config.map(|requirements| requirements.evaluate(test_name))
 }
