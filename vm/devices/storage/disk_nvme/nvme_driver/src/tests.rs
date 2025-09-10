@@ -12,7 +12,6 @@ use mesh::CellUpdater;
 use nvme::NvmeControllerCaps;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::PciFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
