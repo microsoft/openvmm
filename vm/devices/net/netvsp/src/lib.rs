@@ -3749,13 +3749,21 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
             resp.merge(inspect::adhoc_mut(|req| {
                 let deferred = req.defer();
                 coordinator.workers[0].update_with(|_, worker| {
-                    if let Some(state) = worker.and_then(|worker| worker.state.ready()) {
+                    let Some(worker) = worker.as_deref() else {
+                        return;
+                    };
+                    if let Some(state) = worker.state.ready() {
                         deferred.respond(|resp| {
                             resp.merge(&state.buffers);
                             resp.sensitivity_field(
                                 "primary_channel_state",
                                 SensitivityLevel::Safe,
                                 &state.state.primary,
+                            )
+                            .sensitivity_field(
+                                "packet_filter",
+                                SensitivityLevel::Safe,
+                                inspect::AsHex(worker.channel.packet_filter),
                             );
                         });
                     }
