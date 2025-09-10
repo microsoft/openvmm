@@ -1016,19 +1016,35 @@ impl virt::Synic for UhPartition {
 }
 
 impl virt::SynicMonitor for UhPartition {
-    fn set_monitor_page(&self, _vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
         // Keep this locked the whole function to avoid racing with allocate_monitor_page.
         let mut allocated_block = self.inner.allocated_monitor_page.lock();
-        *allocated_block = None;
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
+
+        // Take ownership of any allocated monitor page so it will be freed on function exit.
+        let allocated_page = allocated_block.take();
         if let Some(old_gpa) = old_gpa {
-            self.inner
-                .hcl
-                .modify_vtl_protection_mask(
-                    MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
-                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-                    HvInputVtl::CURRENT_VTL,
-                )
+            let allocated_gpa = allocated_page
+                .as_ref()
+                .map(|b| b.pfns()[0] << HV_PAGE_SHIFT);
+
+            // Revert the old page's permissions, using the appropriate method depending on
+            // whether it was allocated or guest-supplied.
+            let result = if allocated_gpa == Some(old_gpa) {
+                let vtl = GuestVtl::try_from(vtl).unwrap();
+                self.unregister_cvm_dma_overlay_page(vtl, old_gpa >> HV_PAGE_SHIFT)
+            } else {
+                self.inner
+                    .hcl
+                    .modify_vtl_protection_mask(
+                        MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
+                        hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+                        HvInputVtl::CURRENT_VTL,
+                    )
+                    .map_err(|err| anyhow::anyhow!(err))
+            };
+
+            result
                 .context("failed to unregister old monitor page")
                 .inspect_err(|_| {
                     // Leave the page unset if returning a failure.
@@ -1096,7 +1112,15 @@ impl virt::SynicMonitor for UhPartition {
         let gpa = gpn << HV_PAGE_SHIFT;
         let old_gpa = self.inner.monitor_page.set_gpa(Some(gpa));
         if let Some(old_gpa) = old_gpa {
-            self.unregister_cvm_dma_overlay_page(vtl, old_gpa >> HV_PAGE_SHIFT)
+            // The old GPA is guaranteed not to be allocated, since that was checked above, so
+            // revert its permissions using the method for guest-supplied memory.
+            self.inner
+                .hcl
+                .modify_vtl_protection_mask(
+                    MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
+                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+                    HvInputVtl::CURRENT_VTL,
+                )
                 .context("failed to unregister old monitor page")
                 .inspect_err(|_| {
                     // Leave the page unset if returning a failure.
