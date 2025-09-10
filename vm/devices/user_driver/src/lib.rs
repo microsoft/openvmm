@@ -44,6 +44,14 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// This can be called multiple times for the same interrupt without disconnecting
     /// previous mappings. The last `cpu` value will be used as the target CPU.
     fn map_interrupt(&mut self, msix: u32, cpu: u32) -> anyhow::Result<DeviceInterrupt>;
+
+    /// Unmaps (disables) the specified MSI-X vector previously mapped via `map_interrupt`.
+    ///
+    /// Default implementation is a no-op for backends that do not support
+    /// dynamic interrupt unmapping.
+    fn unmap_interrupt(&mut self, _msix: u32) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Access to device registers.

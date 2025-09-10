@@ -210,6 +210,11 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
 
         // Don't destroy anything if we're saving its state for restoration.
         if self.state_saved {
+            // Attempt to unmap all MSI-X vectors we may have mapped.
+            if let Err(e) = self.unmap_all_msix() {
+                tracing::warn!(error = %e, "failed to unmap all msix vectors when dropping GdmaDriver");
+            }
+
             return;
         }
 
@@ -260,6 +265,23 @@ struct EqeWaitResult {
 }
 
 impl<T: DeviceBacking> GdmaDriver<T> {
+    /// Unmap (disable) all mapped MSI-X vectors for this driver instance.
+    pub fn unmap_all_msix(&mut self) -> anyhow::Result<()> {
+        let device = match self.device.as_mut() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+        for (idx, slot) in self.interrupts.iter_mut().enumerate() {
+            if slot.is_some() {
+                if let Err(e) = device.unmap_interrupt(idx as u32) {
+                    // Continue trying others.
+                    tracing::debug!(msix = idx, error = %e, "unmap_interrupt failed");
+                }
+                *slot = None;
+            }
+        }
+        Ok(())
+    }
     pub fn doorbell(&self) -> Arc<dyn Doorbell> {
         self.bar0.clone() as _
     }
