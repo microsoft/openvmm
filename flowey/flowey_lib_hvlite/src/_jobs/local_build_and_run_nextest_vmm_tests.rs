@@ -5,7 +5,8 @@
 
 use crate::_jobs::local_build_igvm::non_production_build_igvm_tool_out_name;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
-use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openhcl_igvm_from_recipe::{OpenhclIgvmRecipe, OpenhclIgvmRecipeDetailsLocalOnly};
+use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_build::common::CommonArch;
@@ -146,6 +147,11 @@ flowey_request! {
         /// Copy extras to output dir (symbols, etc)
         pub copy_extras: bool,
 
+        /// Optional: provide a custom kernel modules cpio or directory for initrd layering
+        pub custom_kernel_modules: Option<PathBuf>,
+        /// Optional: provide a custom kernel image to embed in IGVM (forces UEFI)
+        pub custom_kernel: Option<PathBuf>,
+
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -183,8 +189,17 @@ impl SimpleFlowNode for Node {
             release,
             build_only,
             copy_extras,
+            custom_kernel_modules,
+            custom_kernel,
             done,
         } = request;
+
+        // Pre-resolve absolute paths where needed in a fallible context.
+        let custom_kernel_modules_abs = custom_kernel_modules
+            .clone()
+            .map(|p| p.absolute())
+            .transpose()?;
+        let custom_kernel_abs = custom_kernel.clone().map(|p| p.absolute()).transpose()?;
 
         let target_triple = target.as_triple();
         let arch = target.common_arch().unwrap();
@@ -396,10 +411,41 @@ impl SimpleFlowNode for Node {
                 let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
                 let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
                 let (read_built_sidecar, built_sidecar) = ctx.new_var();
+                // Allow local custom kernel/modules by wrapping the recipe with LocalOnlyCustom details.
+                let recipe_to_use =
+                    if custom_kernel_modules_abs.is_some() || custom_kernel_abs.is_some() {
+                        let mut details = recipe.recipe_details(release);
+                        if custom_kernel_abs.is_some() {
+                            details.with_uefi = true;
+                        }
+                        assert!(details.local_only.is_none());
+                        let initrd_extra =
+                            custom_kernel_modules_abs
+                                .clone()
+                                .map(|ckm| OpenhclInitrdExtraParams {
+                                    extra_initrd_layers: vec![],
+                                    extra_initrd_directories: vec![],
+                                    custom_kernel_modules: Some(ckm),
+                                });
+                        details.local_only = Some(OpenhclIgvmRecipeDetailsLocalOnly {
+                            openvmm_hcl_no_strip: false,
+                            openhcl_initrd_extra_params: initrd_extra,
+                            custom_openvmm_hcl: None,
+                            custom_openhcl_boot: None,
+                            custom_uefi: None,
+                            custom_kernel: custom_kernel_abs.clone(),
+                            custom_sidecar: None,
+                            custom_extra_rootfs: vec![],
+                        });
+                        OpenhclIgvmRecipe::LocalOnlyCustom(details)
+                    } else {
+                        recipe.clone()
+                    };
+
                 ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
                     build_profile: openvmm_hcl_profile,
                     release_cfg: release,
-                    recipe: recipe.clone(),
+                    recipe: recipe_to_use,
                     custom_target: None,
                     built_openvmm_hcl,
                     built_openhcl_boot,
