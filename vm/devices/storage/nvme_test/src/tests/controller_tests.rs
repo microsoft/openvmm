@@ -358,7 +358,7 @@ async fn test_send_identify_with_sq_fault(driver: DefaultDriver) {
     let mut faulty_identify = Command::new_zeroed();
     faulty_identify.cdw0.set_cid(10);
 
-    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell())
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
         .with_admin_queue_fault(
             AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new()
