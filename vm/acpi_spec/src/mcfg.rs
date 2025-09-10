@@ -8,6 +8,7 @@ use super::Table;
 use crate::packed_nums::*;
 use core::mem::size_of;
 use static_assertions::const_assert_eq;
+use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -57,32 +58,19 @@ impl McfgSegmentBusRange {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ParseMcfgError {
+    #[error("could not read standard ACPI header")]
     MissingAcpiHeader,
+    #[error("invalid signature. expected b\"MCFG\", found {0:?}")]
     InvalidSignature([u8; 4]),
-    MismatchedLength { in_header: usize, actual: usize },
+    #[error("mismatched lengh, header: {0}, actual: {1}")]
+    MismatchedLength(usize, usize),
+    #[error("could not read fixed MCFG header")]
     MissingFixedHeader,
+    #[error("could not read segment bus range structure")]
     BadSegmentBusRange,
 }
-
-impl core::fmt::Display for ParseMcfgError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::MissingAcpiHeader => write!(f, "could not read standard ACPI header"),
-            Self::InvalidSignature(sig) => {
-                write!(f, "invalid signature. expected b\"MCFG\", found {sig:?}")
-            }
-            Self::MismatchedLength { in_header, actual } => {
-                write!(f, "mismatched len. in_header: {in_header}, actual {actual}")
-            }
-            Self::MissingFixedHeader => write!(f, "missing fixed MCFG header"),
-            Self::BadSegmentBusRange => write!(f, "could not read segment bus range structure"),
-        }
-    }
-}
-
-impl core::error::Error for ParseMcfgError {}
 
 pub fn parse_mcfg<'a>(
     raw_mcfg: &'a [u8],
@@ -97,10 +85,10 @@ pub fn parse_mcfg<'a>(
     }
 
     if acpi_header.length.get() as usize != raw_mcfg_len {
-        return Err(ParseMcfgError::MismatchedLength {
-            in_header: acpi_header.length.get() as usize,
-            actual: raw_mcfg_len,
-        });
+        return Err(ParseMcfgError::MismatchedLength(
+            acpi_header.length.get() as usize,
+            raw_mcfg_len,
+        ));
     }
 
     let (mcfg_header, mut buf) =
@@ -140,7 +128,7 @@ pub mod alloc_parse {
             OwnedMcfg {
                 acpi_header: *b.acpi_header,
                 mcfg_header: *b.mcfg_header,
-                segment_bus_ranges: b.segment_bus_ranges.into_iter().cloned().collect(),
+                segment_bus_ranges: b.segment_bus_ranges.into_iter().copied().collect(),
             }
         }
     }
