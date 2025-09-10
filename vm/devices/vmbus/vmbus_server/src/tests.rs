@@ -198,14 +198,14 @@ impl SynicPortAccess for MockSynic {
 
 impl SynicMonitorAccess for MockSynic {
     fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()> {
-        assert!(vtl == Vtl::Vtl0);
+        assert_eq!(vtl, Vtl::Vtl0);
         let mut inner = self.inner.lock();
         inner.monitor_page = gpa;
         Ok(())
     }
 
     fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<MonitorPageGpas>> {
-        assert!(vtl == Vtl::Vtl0);
+        assert_eq!(vtl, Vtl::Vtl0);
         if !self.allow_allocated_monitor_pages {
             return Ok(None);
         }

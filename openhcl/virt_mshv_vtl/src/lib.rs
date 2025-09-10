@@ -1098,7 +1098,7 @@ impl virt::SynicMonitor for UhPartition {
         if let Some(block) = allocated_block.as_ref() {
             // An allocated monitor page is already in use; no need to change it.
             let gpa = block.pfns()[0] << HV_PAGE_SHIFT;
-            assert!(self.inner.monitor_page.gpa() == Some(gpa));
+            assert_eq!(self.inner.monitor_page.gpa(), Some(gpa));
             return Ok(Some(gpa));
         }
 
