@@ -46,7 +46,6 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
-use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
