@@ -62,3 +62,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+serde_json.workspace = true

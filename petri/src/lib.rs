@@ -13,6 +13,8 @@ mod linux_direct_serial_agent;
 // TODO: Add docs and maybe a trait interface for this, or maybe this can
 // remain crate-local somehow without violating interface privacy.
 #[expect(missing_docs)]
+pub mod memstat;
+#[expect(missing_docs)]
 pub mod openhcl_diag;
 mod test;
 mod tracing;
