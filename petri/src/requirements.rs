@@ -22,6 +22,8 @@ pub enum Vendor {
     Amd,
     /// Intel processors.
     Intel,
+    /// Unknown CPU vendor.
+    Unknown,
 }
 
 /// Types of isolation supported.
@@ -48,6 +50,7 @@ pub enum VmmType {
 #[derive(Debug, Clone)]
 pub struct HostContext {
     #[cfg(windows)]
+    /// VmHost information retrieved via PowerShell
     pub vm_host_info: Option<powershell::HyperVGetVmHost>,
     /// CPU vendor
     pub vendor: Vendor,
@@ -58,6 +61,7 @@ pub struct HostContext {
 impl HostContext {
     /// Create a new host context by querying host information
     pub async fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
         let is_nested = {
             let result =
                 safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
@@ -69,12 +73,18 @@ impl HostContext {
             )
             .nested()
         };
+        #[cfg(not(target_arch = "x86_64"))]
+        let is_nested = false;
 
+        #[cfg(target_arch = "x86_64")]
         let vendor = {
             let result =
                 safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
             x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
         };
+        #[cfg(not(target_arch = "x86_64"))]
+        let vendor = Vendor::Unknown;
+
         Self {
             #[cfg(windows)]
             vm_host_info: powershell::run_get_vm_host().await.ok(),
@@ -221,15 +231,6 @@ impl Default for TestCaseRequirements {
     }
 }
 
-impl Clone for TestCaseRequirements {
-    fn clone(&self) -> Self {
-        // Note: This is a simplified clone that recreates an empty container
-        // In practice, you might want to implement Clone for Box<dyn TestRequirement>
-        // or use a different approach if cloning with requirements is needed
-        Self::new()
-    }
-}
-
 /// Execution environment requirements for test cases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionEnvironmentRequirement {
@@ -311,6 +312,7 @@ impl TestRequirement for VendorRequirement {
         match self.vendor {
             Vendor::Amd => "Requires AMD processor".to_string(),
             Vendor::Intel => "Requires Intel processor".to_string(),
+            Vendor::Unknown => "Requires unknown CPU vendor".to_string(),
         }
     }
 }
@@ -340,8 +342,7 @@ impl TestRequirement for IsolationRequirement {
         }
         #[cfg(not(windows))]
         {
-            let _ = context; // Suppress unused parameter warning
-            // On non-Windows platforms, isolation is not supported
+            let _ = context;
             Ok(false)
         }
     }
@@ -360,7 +361,7 @@ impl TestRequirement for IsolationRequirement {
     }
 }
 
-/// Evaluates if a test case can be run in the current execution environment with cached context.
+/// Evaluates if a test case can be run in the current execution environment with context.
 ///
 /// This function determines whether a test should be run or ignored based on
 /// the current environment conditions by evaluating all test requirements using
@@ -382,7 +383,7 @@ pub fn can_run_test_with_context(
     if let Some(requirements) = config {
         requirements.evaluate(test_name, context)
     } else {
-        // No requirements means the test can run
+        // No requirements means the test can run if it's built.
         TestEvaluationResult::default(test_name)
     }
 }
