@@ -771,7 +771,7 @@ impl UhVmNetworkSettings {
             } else {
                 AllocationVisibility::Private
             },
-            persistent_allocations: false,
+            persistent_allocations: true,
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(

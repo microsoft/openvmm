@@ -580,7 +580,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
+            let mut state = self.save(Some(deadline), true).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -798,6 +798,7 @@ impl LoadedVm {
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,
+                mana_state: None,
             },
             units,
         };
