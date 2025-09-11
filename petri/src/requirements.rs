@@ -113,7 +113,7 @@ impl HostContext {
 }
 
 /// Core trait for test requirements that can be evaluated at runtime
-pub trait TestRequirement: Send + Sync + std::fmt::Debug {
+pub trait TestRequirement: Send + Sync + fmt::Debug {
     /// Unique identifier for this requirement type
     fn requirement_type(&self) -> &'static str;
 

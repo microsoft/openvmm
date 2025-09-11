@@ -342,7 +342,7 @@ pub fn test_main(
                         && host_context.vendor == requirements::Vendor::Amd
                     {
                         println!("config: {}", config);
-                        println!("snp_status: {}", host_context.snp_status);
+                        println!("snp_status: {}", host_context.vm_host_info.snp_status);
                     }
                 }
                 if !evaluation_result.can_run {
