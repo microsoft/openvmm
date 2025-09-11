@@ -563,12 +563,6 @@ pub enum VpHaltReason {
         // FUTURE: move VTL state into `AccessVpState``.
         vtl: Vtl,
     },
-    /// The VM's state (e.g. registers, memory) is invalid.
-    InvalidVmState(Box<dyn std::error::Error + Send + Sync>),
-    /// The underlying hypervisor failed.
-    Hypervisor(Box<dyn std::error::Error + Send + Sync>),
-    /// Emulation failed.
-    EmulationFailure(Box<dyn std::error::Error + Send + Sync>),
     /// Debugger single step.
     SingleStep,
     /// Debugger hardware breakpoint.

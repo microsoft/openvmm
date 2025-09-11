@@ -295,7 +295,7 @@ pub async fn emulate<T: EmulatorSupport>(
 ) -> Result<(), VpHaltReason> {
     emulate_core(support, emu_mem, dev)
         .await
-        .map_err(|e| VpHaltReason::EmulationFailure(e.into()))
+        .map_err(|e| dev.fatal_error(e.into()))
 }
 
 async fn emulate_core<T: EmulatorSupport>(
@@ -514,7 +514,7 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
             emu.write_memory(segment, gva, alignment, data).await
         }
     }
-    .map_err(|e| VpHaltReason::EmulationFailure(e.into()))
+    .map_err(|e| dev.fatal_error(e.into()))
 
     // No need to flush the cache, we have not modified any registers.
 }

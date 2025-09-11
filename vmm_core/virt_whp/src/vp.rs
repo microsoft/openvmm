@@ -386,7 +386,7 @@ impl<'a> WhpProcessor<'a> {
             let mut runner = self.current_whp().runner();
             let exit = runner
                 .run()
-                .map_err(|err| VpHaltReason::Hypervisor(WhpRunVpError(err).into()))?;
+                .map_err(|err| dev.fatal_error(WhpRunVpError(err).into()))?;
 
             // Clear lazy EOI before processing the exit.
             if lazy_eoi {
@@ -628,7 +628,7 @@ mod x86 {
                     &mut self.state.exits.other
                 }
                 ExitReason::InvalidVpRegisterValue => {
-                    return Err(VpHaltReason::InvalidVmState(InvalidVpState.into()));
+                    return Err(dev.fatal_error(InvalidVpState.into()));
                 }
                 ExitReason::Halt => {
                     self.handle_halt(exit);
@@ -855,7 +855,7 @@ mod x86 {
                         .vtl0_deferred_policy
                     {
                         LateMapVtl0MemoryPolicy::Halt => {
-                            return Err(VpHaltReason::InvalidVmState(DeferredRamAccess.into()));
+                            return Err(dev.fatal_error(DeferredRamAccess.into()));
                         }
                         LateMapVtl0MemoryPolicy::Log => {}
                         LateMapVtl0MemoryPolicy::InjectException => {
@@ -1809,7 +1809,7 @@ mod aarch64 {
                 ExceptionClass::DATA_ABORT_LOWER => {
                     let iss = IssDataAbort::from(syndrome.iss());
                     if !iss.isv() {
-                        return Err(VpHaltReason::EmulationFailure(
+                        return Err(dev.fatal_error(
                             anyhow::anyhow!("can't handle data abort without isv: {iss:?}").into(),
                         ));
                     }
@@ -1847,7 +1847,7 @@ mod aarch64 {
                         .unwrap();
                 }
                 ec => {
-                    return Err(VpHaltReason::EmulationFailure(
+                    return Err(dev.fatal_error(
                         anyhow::anyhow!("unknown memory access exception: {ec:?}").into(),
                     ));
                 }
