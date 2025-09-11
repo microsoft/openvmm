@@ -773,18 +773,18 @@ fn make_vmm_test(
             };
 
             let isolation_requirement = match isolation {
-                IsolationType::Vbs => quote!(::petri::requirements::IsolationRequirement::new(
-                    ::petri::requirements::IsolationType::Vbs,
-                    #vmm_type
-                )),
-                IsolationType::Snp => quote!(::petri::requirements::IsolationRequirement::new(
-                    ::petri::requirements::IsolationType::Snp,
-                    #vmm_type
-                )),
-                IsolationType::Tdx => quote!(::petri::requirements::IsolationRequirement::new(
-                    ::petri::requirements::IsolationType::Tdx,
-                    #vmm_type
-                )),
+                IsolationType::Vbs => quote!(::petri::requirements::IsolationRequirement {
+                    isolation_type: ::petri::requirements::IsolationType::Vbs,
+                    vmm_type: #vmm_type
+                }),
+                IsolationType::Snp => quote!(::petri::requirements::IsolationRequirement {
+                    isolation_type: ::petri::requirements::IsolationType::Snp,
+                    vmm_type: #vmm_type
+                }),
+                IsolationType::Tdx => quote!(::petri::requirements::IsolationRequirement {
+                    isolation_type: ::petri::requirements::IsolationType::Tdx,
+                    vmm_type: #vmm_type
+                }),
             };
             requirements_builder.extend(quote!(
                 .require(#isolation_requirement)
@@ -803,14 +803,14 @@ fn make_vmm_test(
                             quote!(::petri::requirements::ExecutionEnvironment::Nested)
                         }
                     };
-                    quote!(::petri::requirements::ExecutionEnvironmentRequirement::new(#env))
+                    quote!(::petri::requirements::ExecutionEnvironmentRequirement { #env })
                 }
                 RequirementSpec::Vendor(vendor_type) => {
                     let vendor = match vendor_type {
                         VendorType::Amd => quote!(::petri::requirements::Vendor::Amd),
                         VendorType::Intel => quote!(::petri::requirements::Vendor::Intel),
                     };
-                    quote!(::petri::requirements::VendorRequirement::new(#vendor))
+                    quote!(::petri::requirements::VendorRequirement { #vendor })
                 }
                 RequirementSpec::IsolationType(isolation_type) => {
                     let vmm_type = match (specific_vmm, config.vmm) {
@@ -828,7 +828,7 @@ fn make_vmm_test(
                         IsolationTypeSpec::Snp => quote!(::petri::requirements::IsolationType::Snp),
                         IsolationTypeSpec::Tdx => quote!(::petri::requirements::IsolationType::Tdx),
                     };
-                    quote!(::petri::requirements::IsolationRequirement::new(#isolation, #vmm_type))
+                    quote!(::petri::requirements::IsolationRequirement { isolation_type: #isolation, vmm_type: #vmm_type })
                 }
             };
             requirements_builder.extend(quote!(
