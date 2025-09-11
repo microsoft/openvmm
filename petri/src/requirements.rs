@@ -5,6 +5,7 @@
 
 #[cfg(windows)]
 use crate::vm::hyperv::powershell;
+use std::fmt;
 
 /// Execution environments where tests can run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +199,17 @@ impl TestCaseRequirements {
     /// Get all requirements for inspection
     pub fn requirements(&self) -> &[Box<dyn TestRequirement>] {
         &self.requirements
+    }
+}
+
+impl fmt::Display for TestCaseRequirements {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reqs: Vec<String> = self
+            .requirements
+            .iter()
+            .map(|r| r.requirement_type().to_string())
+            .collect();
+        write!(f, "TestCaseRequirements({})", reqs.join(", "))
     }
 }
 
