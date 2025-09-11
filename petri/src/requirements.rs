@@ -61,6 +61,7 @@ pub struct HostContext {
 impl HostContext {
     /// Create a new host context by querying host information
     pub async fn new() -> Self {
+        // xtask-fmt allow-target-arch cpu-intrinsic
         #[cfg(target_arch = "x86_64")]
         let is_nested = {
             let result =
@@ -73,9 +74,10 @@ impl HostContext {
             )
             .nested()
         };
+        // xtask-fmt allow-target-arch cpu-intrinsic
         #[cfg(not(target_arch = "x86_64"))]
         let is_nested = false;
-
+        // xtask-fmt allow-target-arch cpu-intrinsic
         #[cfg(target_arch = "x86_64")]
         let vendor = {
             let result =
@@ -92,6 +94,7 @@ impl HostContext {
                 Vendor::Intel
             }
         };
+        // xtask-fmt allow-target-arch cpu-intrinsic
         #[cfg(not(target_arch = "x86_64"))]
         let vendor = Vendor::Unknown;
 
@@ -114,35 +117,20 @@ pub trait TestRequirement: Send + Sync + std::fmt::Debug {
     fn requirement_type(&self) -> &'static str;
 
     /// Evaluate if this requirement is met in the current environment
-    fn is_satisfied(&self, context: &HostContext) -> anyhow::Result<bool>;
-
-    /// Human-readable description of the requirement
-    fn description(&self) -> String;
-
-    /// Optional: detailed reason why requirement failed
-    fn failure_reason(&self) -> Option<String> {
-        None
-    }
+    fn is_satisfied(&self, context: &HostContext) -> RequirementResult;
 }
 
 /// Result of evaluating a single requirement
 #[derive(Debug, Clone)]
 pub enum RequirementResult {
     /// Requirement was satisfied
-    Satisfied(String),
+    Satisfied,
     /// Requirement failed
     Failed {
         /// Type of the requirement that failed
         requirement_type: String,
         /// Optional reason for the failure
         reason: Option<String>,
-    },
-    /// Error occurred while evaluating the requirement
-    Error {
-        /// Type of the requirement that errored
-        requirement_type: String,
-        /// Error message
-        error: String,
     },
 }
 
@@ -190,32 +178,15 @@ impl TestCaseRequirements {
 
     /// Evaluate all requirements with cached host context and return comprehensive result
     pub fn evaluate(&self, test_name: &str, context: &HostContext) -> TestEvaluationResult {
-        let mut results = Vec::new();
-        let mut can_run = true;
+        let results: Vec<RequirementResult> = self
+            .requirements
+            .iter()
+            .map(|req| req.is_satisfied(context))
+            .collect();
 
-        for requirement in &self.requirements {
-            match requirement.is_satisfied(context) {
-                Ok(true) => {
-                    results.push(RequirementResult::Satisfied(
-                        requirement.requirement_type().to_string(),
-                    ));
-                }
-                Ok(false) => {
-                    can_run = false;
-                    results.push(RequirementResult::Failed {
-                        requirement_type: requirement.requirement_type().to_string(),
-                        reason: requirement.failure_reason(),
-                    });
-                }
-                Err(e) => {
-                    can_run = false;
-                    results.push(RequirementResult::Error {
-                        requirement_type: requirement.requirement_type().to_string(),
-                        error: format!("{:#}", e),
-                    });
-                }
-            }
-        }
+        let can_run = results
+            .iter()
+            .all(|r| matches!(r, RequirementResult::Satisfied));
 
         TestEvaluationResult {
             test_name: test_name.to_string(),
@@ -243,10 +214,24 @@ pub struct ExecutionEnvironmentRequirement {
     pub environment: ExecutionEnvironment,
 }
 
-impl ExecutionEnvironmentRequirement {
-    /// Create a new execution environment requirement
-    pub fn new(environment: ExecutionEnvironment) -> Self {
-        Self { environment }
+impl TestRequirement for ExecutionEnvironmentRequirement {
+    fn requirement_type(&self) -> &'static str {
+        "ExecutionEnvironment"
+    }
+
+    fn is_satisfied(&self, context: &HostContext) -> RequirementResult {
+        if context.execution_environment == self.environment {
+            RequirementResult::Satisfied
+        } else {
+            RequirementResult::Failed {
+                requirement_type: self.requirement_type().to_string(),
+                reason: Some(format!(
+                    "Host environment {:?} does not match required {:?}",
+                    context.execution_environment, self.environment
+                )),
+            }
+        }
+        // Ok(context.execution_environment == self.environment)
     }
 }
 
@@ -257,10 +242,23 @@ pub struct VendorRequirement {
     pub vendor: Vendor,
 }
 
-impl VendorRequirement {
-    /// Create a new CPU vendor requirement
-    pub fn new(vendor: Vendor) -> Self {
-        Self { vendor }
+impl TestRequirement for VendorRequirement {
+    fn requirement_type(&self) -> &'static str {
+        "CpuVendor"
+    }
+
+    fn is_satisfied(&self, context: &HostContext) -> RequirementResult {
+        if context.vendor == self.vendor {
+            RequirementResult::Satisfied
+        } else {
+            RequirementResult::Failed {
+                requirement_type: self.requirement_type().to_string(),
+                reason: Some(format!(
+                    "Host vendor {:?} does not match required {:?}",
+                    context.vendor, self.vendor
+                )),
+            }
+        }
     }
 }
 
@@ -273,68 +271,18 @@ pub struct IsolationRequirement {
     pub vmm_type: VmmType,
 }
 
-impl IsolationRequirement {
-    /// Create a new isolation requirement
-    pub fn new(isolation_type: IsolationType, vmm_type: VmmType) -> Self {
-        Self {
-            isolation_type,
-            vmm_type,
-        }
-    }
-}
-
-impl TestRequirement for ExecutionEnvironmentRequirement {
-    fn requirement_type(&self) -> &'static str {
-        "ExecutionEnvironment"
-    }
-
-    fn is_satisfied(&self, context: &HostContext) -> anyhow::Result<bool> {
-        Ok(context.execution_environment == self.environment)
-    }
-
-    fn description(&self) -> String {
-        match self.environment {
-            ExecutionEnvironment::Baremetal => {
-                "Requires bare metal execution environment".to_string()
-            }
-            ExecutionEnvironment::Nested => {
-                "Requires nested virtualization environment".to_string()
-            }
-        }
-    }
-}
-
-impl TestRequirement for VendorRequirement {
-    fn requirement_type(&self) -> &'static str {
-        "CpuVendor"
-    }
-
-    fn is_satisfied(&self, context: &HostContext) -> anyhow::Result<bool> {
-        Ok(context.vendor == self.vendor)
-    }
-
-    fn description(&self) -> String {
-        match self.vendor {
-            Vendor::Amd => "Requires AMD processor".to_string(),
-            Vendor::Intel => "Requires Intel processor".to_string(),
-            Vendor::Unknown => "Requires unknown CPU vendor".to_string(),
-        }
-    }
-}
-
 impl TestRequirement for IsolationRequirement {
     fn requirement_type(&self) -> &'static str {
         "Isolation"
     }
 
-    fn is_satisfied(&self, context: &HostContext) -> anyhow::Result<bool> {
+    fn is_satisfied(&self, context: &HostContext) -> RequirementResult {
         #[cfg(windows)]
         {
-            assert!(
-                context.vm_host_info.is_some(),
-                "Host context must include VM host info on Windows"
-            );
-            let context = context.vm_host_info.as_ref().unwrap();
+            let context = context
+                .vm_host_info
+                .as_ref()
+                .expect("Host context must include VM host info on Windows");
             let supported = match self.isolation_type {
                 IsolationType::Vbs => context
                     .guest_isolation_types
@@ -343,43 +291,32 @@ impl TestRequirement for IsolationRequirement {
                 IsolationType::Tdx => context.tdx_status,
             };
 
-            Ok(supported)
+            if supported {
+                RequirementResult::Satisfied
+            } else {
+                RequirementResult::Failed {
+                    requirement_type: self.requirement_type().to_string(),
+                    reason: Some(format!(
+                        "Host does not support required isolation type {:?}. Supported types: {:?}",
+                        self.isolation_type, context.guest_isolation_types
+                    )),
+                }
+            }
         }
         #[cfg(not(windows))]
         {
             let _ = context;
-            Ok(false)
+            RequirementResult::Failed {
+                requirement_type: self.requirement_type().to_string(),
+                reason: Some(
+                    "Isolation requirements are only supported on Windows hosts".to_string(),
+                ),
+            }
         }
-    }
-
-    fn description(&self) -> String {
-        let isolation_str = match self.isolation_type {
-            IsolationType::Vbs => "VBS",
-            IsolationType::Snp => "SNP",
-            IsolationType::Tdx => "TDX",
-        };
-        let vmm_str = match self.vmm_type {
-            VmmType::OpenVmm => "OpenVMM",
-            VmmType::HyperV => "Hyper-V",
-        };
-        format!("Requires {} isolation with {} VMM", isolation_str, vmm_str)
     }
 }
 
 /// Evaluates if a test case can be run in the current execution environment with context.
-///
-/// This function determines whether a test should be run or ignored based on
-/// the current environment conditions by evaluating all test requirements using
-/// pre-computed host context to avoid repeated expensive queries.
-///
-/// # Arguments
-/// * `test_name` - The name of the test case
-/// * `config` - Optional test configuration containing requirements
-/// * `context` - Pre-computed host context to use for evaluation
-///
-/// # Returns
-/// * `true` if the test can be run in the current environment
-/// * `false` if the test should be ignored
 pub fn can_run_test_with_context(
     test_name: &str,
     config: Option<&TestCaseRequirements>,

@@ -675,13 +675,6 @@ impl Parse for RequirementSpec {
 /// - `{isolation::SNP_HYPERV}`: Requires SNP isolation support with Hyper-V
 /// - `{isolation::TDX_OPENVMM}`: Requires TDX isolation support with OpenVMM
 /// - `{isolation::TDX_HYPERV}`: Requires TDX isolation support with Hyper-V
-///
-/// Example usage:
-/// ```
-/// #[vmm_test(
-///     openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, {execution_environment::BARE_METAL}]
-/// )]
-/// ```
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
