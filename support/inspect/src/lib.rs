@@ -2364,7 +2364,7 @@ mod tests {
 
     #[async_test]
     async fn test_timeout(driver: DefaultDriver) {
-        inspect_async_expect(
+        let node = inspect_async_expect(
             &driver,
             "",
             None,
@@ -2379,6 +2379,8 @@ mod tests {
             expect!("error (unresolved)"),
         )
         .await;
+        let expected_json = expect!([r#"{"$error":"unresolved"}"#]);
+        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[test]
@@ -2587,7 +2589,7 @@ mod tests {
                 .field("1d/2b/3b", 0);
         });
 
-        inspect_sync_expect(
+        let node = inspect_sync_expect(
             "1d",
             Some(0),
             &mut obj,
@@ -2597,7 +2599,9 @@ mod tests {
                 2b: _,
             }"#]),
         );
-        inspect_sync_expect(
+        let expected_json = expect!([r#"{"2a":0,"2b":null}"#]);
+        expected_json.assert_eq(&node.json().to_string());
+        let node = inspect_sync_expect(
             "",
             Some(0),
             &mut obj,
@@ -2609,7 +2613,9 @@ mod tests {
                     1d: _,
                 }"#]),
         );
-        inspect_sync_expect(
+        let expected_json = expect!([r#"{"1a":0,"1b":0,"1c":0,"1d":null}"#]);
+        expected_json.assert_eq(&node.json().to_string());
+        let node = inspect_sync_expect(
             "",
             Some(1),
             &mut obj,
@@ -2624,38 +2630,49 @@ mod tests {
                     },
                 }"#]),
         );
+        let expected_json = expect!([r#"{"1a":0,"1b":0,"1c":0,"1d":{"2a":0,"2b":null}}"#]);
+        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[test]
     fn test_hex() {
         let mut obj = adhoc(|req| {
-            req.respond().hex("a", 0x1234);
+            req.respond().hex("a", 0x1234i32).hex("b", 0x5678u32);
         });
-        inspect_sync_expect(
+        let node = inspect_sync_expect(
             "",
             Some(0),
             &mut obj,
             expect!([r#"
             {
                 a: 0x1234,
+                b: 0x5678,
             }"#]),
         );
+
+        let expected_json = expect!([r#"{"a":"0x1234","b":"0x5678"}"#]);
+        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[test]
     fn test_binary() {
         let mut obj = adhoc(|req| {
-            req.respond().binary("a", 0b1001000110100);
+            req.respond()
+                .binary("a", 0b1001000110100i32)
+                .binary("b", 0b1101010101111000u32);
         });
-        inspect_sync_expect(
+        let node = inspect_sync_expect(
             "",
             Some(0),
             &mut obj,
             expect!([r#"
             {
                 a: 0b1001000110100,
+                b: 0b1101010101111000,
             }"#]),
         );
+        let expected_json = expect!([r#"{"a":"0b1001000110100","b":"0b1101010101111000"}"#]);
+        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[test]
