@@ -1044,7 +1044,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let v = i32::deserialize(deserializer)?;
-    Ok(v != 0)
+    Ok(v == 1)
 }
 
 /// Gets the VM host information and returns the output string
