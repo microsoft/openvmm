@@ -335,19 +335,6 @@ pub fn test_main(
             if let Some(config) = test.test.0.config() {
                 let evaluation_result =
                     can_run_test_with_context(&test.name(), Some(config), &host_context);
-                #[cfg(windows)]
-                {
-                    use crate::requirements;
-                    if test.name().contains("snp")
-                        && host_context.vendor == requirements::Vendor::Amd
-                    {
-                        println!("config: {}", config);
-                        println!(
-                            "snp_status: {}",
-                            host_context.vm_host_info.as_ref().unwrap().snp_status
-                        );
-                    }
-                }
                 if !evaluation_result.can_run {
                     return libtest_mimic::Trial::test(test.name(), move || Ok(()))
                         .with_ignored_flag(true);
