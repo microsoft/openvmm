@@ -78,7 +78,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
         num_vps: u32,
         max_queues_per_vport: u16,
     ) -> anyhow::Result<Self> {
-        let mut gdma = GdmaDriver::new(driver, device, num_vps)
+        let mut gdma = GdmaDriver::new(driver, device, num_vps, None)
             .instrument(tracing::info_span!("new_gdma_driver"))
             .await?;
         gdma.test_eq().await?;

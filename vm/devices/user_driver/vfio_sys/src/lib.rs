@@ -400,6 +400,33 @@ impl Device {
         }
         Ok(())
     }
+
+    /// Disable (unmap) a contiguous range of previously mapped MSI-X vectors.
+    ///
+    /// This issues VFIO_DEVICE_SET_IRQS with ACTION_TRIGGER + DATA_NONE and a
+    /// non-zero count, which per VFIO semantics removes the eventfd bindings
+    /// for the specified range starting at `start`.
+    pub fn unmap_msix(&self, start: u32, count: u32) -> anyhow::Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let header = vfio_irq_set {
+            argsz: size_of::<vfio_irq_set>() as u32,
+            flags: VFIO_IRQ_SET_ACTION_TRIGGER | VFIO_IRQ_SET_DATA_NONE,
+            index: VFIO_PCI_MSIX_IRQ_INDEX,
+            start,
+            count,
+            data: Default::default(),
+        };
+
+        // SAFETY: The file descriptor is valid; header constructed per VFIO spec.
+        unsafe {
+            ioctl::vfio_device_set_irqs(self.file.as_raw_fd(), &header)
+                .context("failed to unmap msix vectors")?;
+        }
+        Ok(())
+    }
 }
 
 impl AsRef<File> for Device {
