@@ -344,7 +344,7 @@ pub fn test_main(
                         println!("config: {}", config);
                         println!(
                             "snp_status: {}",
-                            host_context.vm_host_info.unwrap().snp_status
+                            host_context.vm_host_info.as_ref().unwrap().snp_status
                         );
                     }
                 }
