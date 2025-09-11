@@ -66,7 +66,6 @@ impl MemStat {
                 .unwrap()
                 .trim_matches(|c| c == '{' || c == '}')
                 .replace("-", "_");
-            println!("{}", process_name);
             per_process_data.insert(
                 process_name.clone(),
                 PerProcessMemstat {

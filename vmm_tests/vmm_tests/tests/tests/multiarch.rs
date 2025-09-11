@@ -858,7 +858,7 @@ async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
     assert!(now.elapsed() >= wait_time);
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
-    println!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
+    tracing::info!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
@@ -893,7 +893,7 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
-    println!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
+    tracing::info!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
@@ -935,7 +935,7 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
-    println!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
+    tracing::info!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
@@ -974,7 +974,7 @@ async fn meminfo_status_64_proc<T: PetriVmmBackend>(
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
-    println!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
+    tracing::info!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
