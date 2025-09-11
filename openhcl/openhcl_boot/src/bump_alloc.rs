@@ -14,7 +14,7 @@ use core::alloc::Layout;
 use core::cell::RefCell;
 use memory_range::MemoryRange;
 
-#[global_allocator]
+#[cfg_attr(minimal_rt, global_allocator)]
 pub static ALLOCATOR: BumpAllocator = BumpAllocator::new();
 
 #[derive(Debug)]

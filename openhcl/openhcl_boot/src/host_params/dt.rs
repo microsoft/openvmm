@@ -311,6 +311,32 @@ fn parse_host_vtl2_ram(
     vtl2_ram
 }
 
+#[cfg_attr(minimal_rt, allow(dead_code))]
+fn init_heap(params: &ShimParams) {
+    // Initialize the temporary heap.
+    //
+    // This is only to be enabled for mesh decode.
+    //
+    // SAFETY: The heap range is reserved at file build time, and is
+    // guaranteed to be unused by anything else.
+    unsafe {
+        crate::bump_alloc::ALLOCATOR.init(params.heap);
+    }
+
+    // TODO: test using heap, as no mesh decode yet.
+    #[cfg(debug_assertions)]
+    {
+        use alloc::boxed::Box;
+        crate::bump_alloc::ALLOCATOR.enable_alloc();
+
+        let box_int = Box::new(42);
+        log!("box int {box_int}");
+        drop(box_int);
+        crate::bump_alloc::ALLOCATOR.disable_alloc();
+        crate::bump_alloc::ALLOCATOR.log_stats();
+    }
+}
+
 impl PartitionInfo {
     // Read the IGVM provided DT for the vtl2 partition info.
     pub fn read_from_dt<'a>(
@@ -383,28 +409,7 @@ impl PartitionInfo {
         storage.vmbus_vtl2 = parsed.vmbus_vtl2.clone().ok_or(DtError::Vtl2Vmbus)?;
         storage.vmbus_vtl0 = parsed.vmbus_vtl0.clone().ok_or(DtError::Vtl0Vmbus)?;
 
-        // Initialize the temporary heap.
-        //
-        // This is only to be enabled for mesh decode.
-        //
-        // SAFETY: The heap range is reserved at file build time, and is
-        // guaranteed to be unused by anything else.
-        unsafe {
-            crate::bump_alloc::ALLOCATOR.init(params.heap);
-        }
-
-        // TODO: test using heap, as no mesh decode yet.
-        #[cfg(debug_assertions)]
-        {
-            use alloc::boxed::Box;
-            crate::bump_alloc::ALLOCATOR.enable_alloc();
-
-            let box_int = Box::new(42);
-            log!("box int {box_int}");
-            drop(box_int);
-            crate::bump_alloc::ALLOCATOR.disable_alloc();
-            crate::bump_alloc::ALLOCATOR.log_stats();
-        }
+        init_heap(params);
 
         // The host is responsible for allocating MMIO ranges for non-isolated
         // guests when it also provides the ram VTL2 should use.
