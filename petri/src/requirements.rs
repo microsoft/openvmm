@@ -5,6 +5,7 @@
 
 #[cfg(windows)]
 use crate::vm::hyperv::powershell;
+use raw_cpuid::CpuId;
 use std::fmt;
 
 /// Execution environments where tests can run.
@@ -95,6 +96,21 @@ impl HostContext {
                 Vendor::Intel
             }
         };
+        if vendor == Vendor::Amd {
+            let cpuid = CpuId::new();
+
+            if let Some(ext_feat) = cpuid.get_extended_processor_and_feature_identifiers() {
+                let has_svm = ext_feat.has_svm();
+                if has_svm
+                    && cpuid
+                        .get_svm_info()
+                        .map(|f| f.has_nested_paging())
+                        .unwrap_or(false)
+                {
+                    print!("AMD CPU with SVM and Nested Paging detected");
+                }
+            }
+        }
         // xtask-fmt allow-target-arch cpu-intrinsic
         #[cfg(not(target_arch = "x86_64"))]
         let vendor = Vendor::Unknown;

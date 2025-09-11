@@ -5626,6 +5626,7 @@ dependencies = [
  "pipette_client",
  "powershell_builder",
  "prost",
+ "raw-cpuid",
  "safe_intrinsics",
  "scsidisk_resources",
  "serde",
@@ -6073,6 +6074,15 @@ name = "range_map_vec"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cc2191ec1fd850e3ede4cf09ccfd40a33df561111f73e96e1b7c3f9eee31328"
+
+[[package]]
+name = "raw-cpuid"
+version = "11.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
+dependencies = [
+ "bitflags 2.9.3",
+]
 
 [[package]]
 name = "rayon"
