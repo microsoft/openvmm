@@ -15,8 +15,6 @@ mod saved_state;
 mod test;
 
 use crate::buffers::GuestBuffers;
-use crate::protocol::Message1RevokeReceiveBuffer;
-use crate::protocol::Message1RevokeSendBuffer;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
 use crate::protocol::Version;
 use crate::rndisprot::NDIS_HASH_FUNCTION_MASK;
@@ -2008,8 +2006,8 @@ enum PacketData {
     SendNdisVersion(protocol::Message1SendNdisVersion),
     SendReceiveBuffer(protocol::Message1SendReceiveBuffer),
     SendSendBuffer(protocol::Message1SendSendBuffer),
-    RevokeReceiveBuffer(Message1RevokeReceiveBuffer),
-    RevokeSendBuffer(Message1RevokeSendBuffer),
+    RevokeReceiveBuffer(protocol::Message1RevokeReceiveBuffer),
+    RevokeSendBuffer(protocol::Message1RevokeSendBuffer),
     RndisPacket(protocol::Message1SendRndisPacket),
     RndisPacketComplete(protocol::Message1SendRndisPacketComplete),
     SendNdisConfig(protocol::Message2SendNdisConfig),
@@ -5431,8 +5429,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         self.restart = Some(CoordinatorMessage::Restart);
                     }
                 }
-                PacketData::RevokeReceiveBuffer(Message1RevokeReceiveBuffer { id })
-                | PacketData::RevokeSendBuffer(Message1RevokeSendBuffer { id })
+                PacketData::RevokeReceiveBuffer(protocol::Message1RevokeReceiveBuffer { id })
+                | PacketData::RevokeSendBuffer(protocol::Message1RevokeSendBuffer { id })
                     if state.primary.is_some() =>
                 {
                     tracing::debug!(
