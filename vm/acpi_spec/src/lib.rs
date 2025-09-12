@@ -13,6 +13,7 @@ extern crate alloc;
 pub mod aspt;
 pub mod fadt;
 pub mod madt;
+pub mod mcfg;
 pub mod pptt;
 pub mod srat;
 
