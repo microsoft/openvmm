@@ -858,7 +858,7 @@ async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
     assert!(now.elapsed() >= wait_time);
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
-    tracing::info!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
+    tracing::info!("MEMSTAT_START:\n{}\n:MEMSTAT_END", to_string_pretty(&memstat).unwrap());
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
@@ -892,7 +892,7 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
-    tracing::info!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
+    tracing::info!("MEMSTAT_START:\n{}\n:MEMSTAT_END", to_string_pretty(&memstat).unwrap());
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
@@ -930,7 +930,7 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
-    tracing::info!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
+    tracing::info!("MEMSTAT_START:\n{}\n:MEMSTAT_END", to_string_pretty(&memstat).unwrap());
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
@@ -968,7 +968,45 @@ async fn meminfo_status_32_proc<T: PetriVmmBackend>(
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
-    tracing::info!("MEMSTAT:\n{}\n", to_string_pretty(&memstat).unwrap());
+    tracing::info!("MEMSTAT_START:\n{}\n:MEMSTAT_END", to_string_pretty(&memstat).unwrap());
+
+    agent.power_off().await?;
+    vm.wait_for_teardown().await?;
+    Ok(())
+}
+
+#[vmm_test(
+    openvmm_openhcl_linux_direct_x64,
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn meminfo_status_48_proc<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (mut vm, agent) = config
+        .with_processor_topology({
+            ProcessorTopology {
+                vp_count: 48,
+                ..Default::default()
+            }
+        })
+        .with_memory({
+            MemoryConfig {
+                startup_bytes: 16 * (1024 * 1024 * 1024),
+                dynamic_memory_range: None,
+            }
+        })
+        .run()
+        .await?;
+
+    let now = std::time::Instant::now();
+    let wait_time = Duration::from_secs(60);
+    std::thread::sleep(wait_time);
+    assert!(now.elapsed() >= wait_time);
+
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+    let memstat = MemStat::new(&vtl2_agent).await;
+    tracing::info!("MEMSTAT_START:\n{}\n:MEMSTAT_END", to_string_pretty(&memstat).unwrap());
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
