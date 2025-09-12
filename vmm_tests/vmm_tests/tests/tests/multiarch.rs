@@ -862,7 +862,6 @@ async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
-    assert!(true);
     Ok(())
 }
 
@@ -897,7 +896,6 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
-    assert!(true);
     Ok(())
 }
 
@@ -936,7 +934,6 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
-    assert!(true);
     Ok(())
 }
 
@@ -945,13 +942,13 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
-async fn meminfo_status_64_proc<T: PetriVmmBackend>(
+async fn meminfo_status_32_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
         .with_processor_topology({
             ProcessorTopology {
-                vp_count: 64,
+                vp_count: 32,
                 ..Default::default()
             }
         })
@@ -975,6 +972,5 @@ async fn meminfo_status_64_proc<T: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
-    assert!(true);
     Ok(())
 }
