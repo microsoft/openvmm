@@ -9304,6 +9304,7 @@ dependencies = [
  "petri_artifacts_vmm_test",
  "safe_intrinsics",
  "scsidisk_resources",
+ "serde_json",
  "storvsp_resources",
  "tempfile",
  "tmk_tests",
