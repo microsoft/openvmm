@@ -6,6 +6,9 @@ name = "openhcl_boot"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+nightly = []
+
 [dependencies]
 aarch64defs.workspace = true
 minimal_rt.workspace = true

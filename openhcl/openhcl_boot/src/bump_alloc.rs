@@ -130,25 +130,45 @@ unsafe impl GlobalAlloc for BumpAllocator {
     }
 }
 
+#[cfg(feature = "nightly")]
+unsafe impl core::alloc::Allocator for BumpAllocator {
+    fn allocate(&self, layout: Layout) -> Result<core::ptr::NonNull<[u8]>, std::alloc::AllocError> {
+        let ptr = unsafe { self.alloc(layout) };
+        if ptr.is_null() {
+            Err(std::alloc::AllocError)
+        } else {
+            unsafe {
+                Ok(core::ptr::NonNull::slice_from_raw_parts(
+                    core::ptr::NonNull::new_unchecked(ptr),
+                    layout.size(),
+                ))
+            }
+        }
+    }
+
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: Layout) {
+        log!("deallocate called on {:#x?} of size {}", ptr, layout.size());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "nightly")]
     #[test]
     fn test_alloc() {
-        let allocator = BumpAllocator::new();
-        // create a new page aligned box of memory with 20 pages.
-        let mut buffer = Box::new([0; 0x1000 * 20]);
-        let base_addr = buffer.as_ptr() as usize;
-        // align up base_addr to the next page.
-        let base_addr = align_up(base_addr as usize, 0x1000) as u64;
-        assert_eq!(base_addr & 0xFFF, 0); // ensure page aligned
-
-        let buffer_range = MemoryRange::new(base_addr..(base_addr + 10 * 0x1000));
-
-        unsafe {
-            allocator.init(buffer_range);
-        }
+        let buffer: Box<[u8]> = Box::new([0; 0x1000 * 20]);
+        let addr = Box::into_raw(buffer) as *mut u8;
+        let allocator = BumpAllocator {
+            inner: SingleThreaded(RefCell::new(Inner {
+                start: addr,
+                next: addr,
+                end: unsafe { addr.add(0x1000 * 20) },
+                allow_alloc: false,
+                alloc_count: 0,
+            })),
+        };
         allocator.enable_alloc();
 
         unsafe {
@@ -163,6 +183,19 @@ mod tests {
             let ptr3 = allocator.alloc(Layout::from_size_align(300, 32).unwrap());
             *ptr3 = 77;
             assert_eq!(*ptr3, 77);
+
+            let mut vec: Vec<u8, BumpAllocator> = Vec::new_in(allocator);
+
+            // Push 4096 bytes, which should force a vec realloc.
+            for i in 0..4096 {
+                vec.push(i as u8);
+            }
+
+            // force an explicit resize to 10000 bytes
+            vec.resize(10000, 0);
         }
+
+        // Recreate the box, then drop it so miri is satisifed.
+        let _buf = unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(addr, 0x1000 * 20)) };
     }
 }
