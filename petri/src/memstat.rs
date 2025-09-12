@@ -9,30 +9,20 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 #[expect(missing_docs)]
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Default)]
 pub struct PerProcessMemstat {
     pub smaps_rollup: HashMap<String, u64>,
     pub statm: HashMap<String, u64>,
 }
 
 #[expect(missing_docs)]
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Default)]
 pub struct MemStat {
     pub meminfo: HashMap<String, u64>,
     pub total_free_memory_per_zone: u64,
     pub underhill_init: PerProcessMemstat,
     pub openvmm_hcl: PerProcessMemstat,
     pub underhill_vm: PerProcessMemstat,
-}
-
-#[expect(missing_docs)]
-impl PerProcessMemstat {
-    pub fn clone(&self) -> PerProcessMemstat {
-        PerProcessMemstat {
-            smaps_rollup: self.smaps_rollup.clone(),
-            statm: self.statm.clone(),
-        }
-    }
 }
 
 #[expect(missing_docs)]
@@ -89,9 +79,9 @@ impl MemStat {
         Self {
             meminfo,
             total_free_memory_per_zone,
-            underhill_init: per_process_data["underhill_init"].clone(),
-            openvmm_hcl: per_process_data["openvmm_hcl"].clone(),
-            underhill_vm: per_process_data["underhill_vm"].clone(),
+            underhill_init: per_process_data.get("underhill_init").unwrap().clone(),
+            openvmm_hcl: per_process_data.get("openvmm_hcl").unwrap().clone(),
+            underhill_vm: per_process_data.get("underhill_vm").unwrap().clone(),
         }
     }
 

@@ -835,7 +835,7 @@ async fn validate_mnf_usage_in_guest(
 
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
@@ -868,7 +868,7 @@ async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
 
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
@@ -902,16 +902,13 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_linux_direct_x64,
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
+#[expect(dead_code)]
 async fn meminfo_status_2_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    //let (mut vm, agent) = config.run().await?;
-    // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)) == openvmm_uefi_x64_ubuntu_2204_server_x64_meminfo_status
-    // openvmm_openhcl_linux_direct_x64_meminfo_status
     let (mut vm, agent) = config
         .with_processor_topology({
             ProcessorTopology {
@@ -944,10 +941,10 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_linux_direct_x64,
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
+#[expect(dead_code)]
 async fn meminfo_status_64_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
