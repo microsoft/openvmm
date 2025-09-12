@@ -84,8 +84,8 @@ macro_rules! define_vmm_test_selection_flags {
 }
 
 define_vmm_test_selection_flags! {
-    tdx: false,
-    snp: false,
+    tdx: true,
+    snp: true,
     hyperv_vbs: false,
     windows: true,
     ubuntu: true,

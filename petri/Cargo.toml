@@ -49,6 +49,9 @@ vmm_core_defs.workspace = true
 vmotherboard.workspace = true
 vmsocket.workspace = true
 
+hvdef.workspace = true
+safe_intrinsics.workspace = true
+x86defs.workspace = true
 guid.workspace = true
 inspect = { workspace = true, features = ["initiate"] }
 kmsg.workspace = true

@@ -38,20 +38,37 @@ impl ps::AsVal for HyperVGeneration {
 }
 
 /// Hyper-V Guest State Isolation Type
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(try_from = "i32")]
 pub enum HyperVGuestStateIsolationType {
     /// Trusted Launch (OpenHCL, SecureBoot, TPM)
-    TrustedLaunch,
+    TrustedLaunch = 0,
     /// VBS
-    Vbs,
+    Vbs = 1,
     /// SNP
-    Snp,
+    Snp = 2,
     /// TDX
-    Tdx,
+    Tdx = 3,
     /// OpenHCL but no isolation
-    OpenHCL,
+    OpenHCL = 16,
     /// No HCL and no isolation
-    Disabled,
+    Disabled = -1,
+}
+
+impl TryFrom<i32> for HyperVGuestStateIsolationType {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            -1 => Ok(HyperVGuestStateIsolationType::Disabled),
+            0 => Ok(HyperVGuestStateIsolationType::TrustedLaunch),
+            1 => Ok(HyperVGuestStateIsolationType::Vbs),
+            2 => Ok(HyperVGuestStateIsolationType::Snp),
+            3 => Ok(HyperVGuestStateIsolationType::Tdx),
+            16 => Ok(HyperVGuestStateIsolationType::OpenHCL),
+            _ => Err(format!("Unknown isolation type: {}", value)),
+        }
+    }
 }
 
 impl ps::AsVal for HyperVGuestStateIsolationType {
@@ -1006,4 +1023,52 @@ pub async fn run_set_turn_off_on_guest_restart(
     .await
     .map(|_| ())
     .context("set_turn_off_on_guest_restart")
+}
+
+/// Hyper-V Get VM Host Output
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct HyperVGetVmHost {
+    /// GuestIsolationTypes supported on the host
+    #[serde(rename = "GuestIsolationTypes")]
+    pub guest_isolation_types: Vec<HyperVGuestStateIsolationType>,
+    /// Whether SNP is supported on the host
+    #[serde(rename = "SnpStatus", deserialize_with = "int_to_bool")]
+    pub snp_status: bool,
+    /// Whether TDX is supported on the host
+    #[serde(rename = "TdxStatus", deserialize_with = "int_to_bool")]
+    pub tdx_status: bool,
+}
+
+fn int_to_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = i32::deserialize(deserializer)?;
+    Ok(v == 1)
+}
+
+/// Gets the VM host information and returns the output string
+pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
+    let output = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VMHost")
+            .pipeline()
+            .cmdlet("ConvertTo-Json")
+            .arg("Depth", 3)
+            .flag("Compress")
+            .finish()
+            .build(),
+    )
+    .await
+    .context("get_vm_host")?;
+
+    let json_value: serde_json::Value =
+        serde_json::from_str(&output).context("failed to parse json")?;
+
+    serde_json::from_value(serde_json::json!({
+        "GuestIsolationTypes": json_value.get("GuestIsolationTypes"),
+        "SnpStatus": json_value.get("SnpStatus"),
+        "TdxStatus": json_value.get("TdxStatus")
+    }))
+    .map_err(|e| anyhow::anyhow!("failed to parse HyperVGetVmHost: {}", e))
 }
