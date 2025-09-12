@@ -44,16 +44,16 @@ use pal_async::task::Spawn;
 pub(crate) fn inspect_internal_diagnostics(
     req: Request<'_>,
     reinspect: &Sender<Deferred>,
-    driver: DefaultDriver,
+    driver: &DefaultDriver,
 ) {
     req.respond()
         .sensitivity_field("build_info", SensitivityLevel::Safe, build_info::get())
         .sensitivity_child("net", SensitivityLevel::Safe, |req| {
-            net(req, reinspect, driver)
+            net(req, reinspect.clone(), driver)
         });
 }
 
-fn net(req: Request<'_>, reinspect: &Sender<Deferred>, driver: DefaultDriver) {
+fn net(req: Request<'_>, reinspect: Sender<Deferred>, driver: &DefaultDriver) {
     let defer = req.defer();
     let driver2 = driver.clone();
     driver
@@ -83,7 +83,7 @@ fn net(req: Request<'_>, reinspect: &Sender<Deferred>, driver: DefaultDriver) {
 
                     // The existence of a mac address is always known to the host, so this can always be Safe.
                     resp.sensitivity_child(&mac_name, SensitivityLevel::Safe, |req| {
-                        net_nic(req, nic_entry.name, reinspect, driver2.clone());
+                        net_nic(req, nic_entry.name, reinspect.clone(), &driver2);
                     });
                 }
             })
@@ -93,7 +93,7 @@ fn net(req: Request<'_>, reinspect: &Sender<Deferred>, driver: DefaultDriver) {
 
 // net/mac_address
 // Format for mac address is no separators, lowercase letters, e.g. 00155d121212.
-fn net_nic(req: Request<'_>, name: String, reinspect: &Sender<Deferred>, driver: DefaultDriver) {
+fn net_nic(req: Request<'_>, name: String, reinspect: Sender<Deferred>, driver: &DefaultDriver) {
     let defer = req.defer();
     driver
         .spawn("inspect-diagnostics-net-nic", async move {
@@ -103,7 +103,7 @@ fn net_nic(req: Request<'_>, name: String, reinspect: &Sender<Deferred>, driver:
             let mut vm_inspection = InspectionBuilder::new(&format!("vm/{name}"))
                 .depth(Some(5))
                 .sensitivity(Some(SensitivityLevel::Sensitive))
-                .inspect(inspect::send(reinspect, |req| req));
+                .inspect(inspect::send(&reinspect, |req| req));
             vm_inspection.resolve().await;
 
             if let Node::Dir(nodes) = vm_inspection.results() {

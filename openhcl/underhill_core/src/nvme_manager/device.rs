@@ -334,16 +334,13 @@ impl NvmeDriverManager {
 
 #[derive(Inspect, Debug, Clone)]
 pub struct NvmeDriverManagerClient {
-    pci_id: String,
     #[inspect(skip)]
+    pci_id: String,
+    #[inspect(flatten, send = "NvmeDriverRequest::Inspect")]
     sender: mesh::Sender<NvmeDriverRequest>,
 }
 
 impl NvmeDriverManagerClient {
-    pub fn send_inspect(&self, deferred: Deferred) {
-        self.sender.send(NvmeDriverRequest::Inspect(deferred));
-    }
-
     pub async fn get_namespace(&self, nsid: u32) -> anyhow::Result<nvme_driver::Namespace> {
         let span = tracing::info_span!(
             "nvme_device_manager_get_namespace",
