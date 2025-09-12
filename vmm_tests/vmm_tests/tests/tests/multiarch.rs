@@ -946,16 +946,16 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_linux_direct_x64,
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
-async fn meminfo_status_48_proc<T: PetriVmmBackend>(
+async fn meminfo_status_64_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
         .with_processor_topology({
             ProcessorTopology {
-                vp_count: 48,
+                vp_count: 64,
                 ..Default::default()
             }
         })
