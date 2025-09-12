@@ -905,7 +905,6 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
-#[expect(dead_code)]
 async fn meminfo_status_2_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -944,7 +943,6 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
-#[expect(dead_code)]
 async fn meminfo_status_64_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
