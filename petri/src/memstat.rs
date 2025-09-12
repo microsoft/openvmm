@@ -8,25 +8,37 @@ use pipette_client::cmd;
 use serde::Serialize;
 use std::collections::HashMap;
 
-#[expect(missing_docs)]
+/// PerProcessMemstat struct collects statistics from a single process relevant to memory validation
 #[derive(Serialize, Clone, Default)]
 pub struct PerProcessMemstat {
+    /// HashMap generated from the contents of the /proc/{process ID}/smaps_rollup file for an OpenHCL process
     pub smaps_rollup: HashMap<String, u64>,
+
+    /// HashMap generated from the contents of the /proc/{process ID}/statm file for an OpenHCL process
     pub statm: HashMap<String, u64>,
 }
 
-#[expect(missing_docs)]
+/// MemStat struct collects all relevant memory usage data from VTL2 in a VM
 #[derive(Serialize, Clone, Default)]
 pub struct MemStat {
+    /// meminfo is a HashMap generated from the contents of the /proc/meminfo file
     pub meminfo: HashMap<String, u64>,
+
+    /// total_free_memory_per_zone is an integer calculated by aggregating the free memory from each CPU zone in the /proc/zoneinfo file
     pub total_free_memory_per_zone: u64,
+
+    /// underhill_init corresponds to the memory usage statistics for the underhill-init process
     pub underhill_init: PerProcessMemstat,
+
+    /// openvmm_hcl corresponds to the memory usage statistics for the openvmm_hcl process
     pub openvmm_hcl: PerProcessMemstat,
+
+    /// underhill_vm corresponds to the memory usage statistics for the underhill-vm process
     pub underhill_vm: PerProcessMemstat,
 }
 
-#[expect(missing_docs)]
 impl MemStat {
+    /// Construction of a MemStat object takes the vtl2 Pipette agent to query OpenHCL for memory statistics for VTL2 as a whole and for VTL2's processes
     pub async fn new(vtl2_agent: &PipetteClient) -> Self {
         let sh = vtl2_agent.unix_shell();
         let meminfo = Self::parse_memfile(sh.read_file("/proc/meminfo").await.unwrap(), 0, 0, 1);
@@ -52,7 +64,7 @@ impl MemStat {
         {
             let process_name = key
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap()
                 .trim_matches(|c| c == '{' || c == '}')
                 .replace("-", "_");
@@ -94,8 +106,12 @@ impl MemStat {
         let mut parsed_data: HashMap<String, u64> = HashMap::new();
         for line in input.lines().skip(start_row) {
             let split_line = line.split_whitespace().collect::<Vec<&str>>();
-            let field = split_line[field_col].trim_matches(':').to_string();
-            let value: u64 = split_line[value_col].parse().unwrap();
+            let field = split_line
+                .get(field_col)
+                .unwrap()
+                .trim_matches(':')
+                .to_string();
+            let value: u64 = split_line.get(value_col).unwrap_or(&"0").parse().unwrap();
             parsed_data.insert(field, value);
         }
         parsed_data
