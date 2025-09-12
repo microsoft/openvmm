@@ -852,10 +852,7 @@ async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
         })
         .run_without_agent()
         .await?;
-    let now = std::time::Instant::now();
-    let wait_time = Duration::from_secs(60);
-    std::thread::sleep(wait_time);
-    assert!(now.elapsed() >= wait_time);
+    std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
     tracing::info!(
@@ -887,12 +884,7 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
         })
         .run_without_agent()
         .await?;
-
-    let now = std::time::Instant::now();
-    let wait_time = Duration::from_secs(60);
-    std::thread::sleep(wait_time);
-    assert!(now.elapsed() >= wait_time);
-
+    std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
     tracing::info!(
@@ -909,7 +901,7 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
     openvmm_openhcl_linux_direct_x64,
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
-async fn meminfo_status_2_proc<T: PetriVmmBackend>(
+async fn meminfo_status_2_proc_reboot<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
@@ -927,12 +919,7 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
         })
         .run()
         .await?;
-
-    let now = std::time::Instant::now();
-    let wait_time = Duration::from_secs(60);
-    std::thread::sleep(wait_time);
-    assert!(now.elapsed() >= wait_time);
-
+    std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
     tracing::info!(
@@ -949,7 +936,7 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
     openvmm_openhcl_linux_direct_x64,
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
-async fn meminfo_status_64_proc<T: PetriVmmBackend>(
+async fn meminfo_status_64_proc_reboot<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
@@ -967,12 +954,7 @@ async fn meminfo_status_64_proc<T: PetriVmmBackend>(
         })
         .run()
         .await?;
-
-    let now = std::time::Instant::now();
-    let wait_time = Duration::from_secs(60);
-    std::thread::sleep(wait_time);
-    assert!(now.elapsed() >= wait_time);
-
+    std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
     let memstat = MemStat::new(&vtl2_agent).await;
     tracing::info!(
