@@ -228,7 +228,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// event (if configured). Does not configure and start pipette. Should
     /// only be used for testing platforms that pipette does not support.
     pub async fn run_without_agent(self) -> anyhow::Result<PetriVm<T>> {
-        self.run_core().await
+        let (vm, _) = self.run_core(false).await?;
+        Ok(vm)
     }
 
     /// Build and run the VM, then wait for the VM to emit the expected boot
@@ -237,12 +238,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         assert!(self.config.agent_image.is_some());
         assert!(self.config.agent_image.as_ref().unwrap().contains_pipette());
 
-        let mut vm = self.run_core().await?;
-        let client = vm.wait_for_agent().await?;
-        Ok((vm, client))
+        let (vm, agent) = self.run_core(true).await?;
+        Ok((vm, agent.unwrap()))
     }
 
-    async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
+    async fn run_core(
+        self,
+        with_agent: bool,
+    ) -> anyhow::Result<(PetriVm<T>, Option<PipetteClient>)> {
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
 
@@ -268,9 +271,39 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             vm.wait_for_reset_core().await?;
         }
 
+        let client = if with_agent {
+            Some(vm.wait_for_agent().await?)
+        } else {
+            None
+        };
+
+        match vm.openhcl_diag() {
+            Ok(diag) => {
+                if with_agent {
+                    tracing::info!("Waiting for kmsg to come online");
+                    diag.kmsg().await?;
+                    tracing::info!("Kmsg is online now");
+                    match client.as_ref() {
+                        Some(client_ref) => {
+                            tracing::info!("Agent is online now");
+                            let sh = client_ref.unix_shell();
+                            pipette_client::cmd!(sh, "dmesg -n 3").run().await?;
+                            tracing::info!("Set console_loglevel to 3");
+                        }
+                        None => {
+                            tracing::warn!("No agent, so cannot set console_loglevel");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to open VTl2 diagnostic channel: {}", e);
+            }
+        }
+
         vm.wait_for_expected_boot_event().await?;
 
-        Ok(vm)
+        Ok((vm, client))
     }
 
     fn expect_reset(&self) -> bool {
