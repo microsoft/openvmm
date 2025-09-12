@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Simple bump allocator using https://os.phil-opp.com/allocator-designs/ as a
-//! reference and starting point.
+//! A simple bump allocator that can be used in the bootloader.
 //!
 //! Note that we only allow allocations in a small window for supporting
 //! mesh_protobuf. Any other attempts to allocate will result in a panic.
@@ -14,15 +13,28 @@ use core::alloc::Layout;
 use core::cell::RefCell;
 use memory_range::MemoryRange;
 
+// Only enable the bump allocator when compiling with minimal_rt, as otherwise
+// it will override the global allocator in unit tests which is not what we
+// want.
 #[cfg_attr(minimal_rt, global_allocator)]
 pub static ALLOCATOR: BumpAllocator = BumpAllocator::new();
+
+#[derive(Debug, PartialEq, Eq)]
+enum State {
+    /// Allocations can be enabled via `enable_alloc`.
+    Allowed,
+    /// Allocations are currently enabled.
+    Enabled,
+    /// Allocations are disabled and cannot be enabled again.
+    Disabled,
+}
 
 #[derive(Debug)]
 pub struct Inner {
     start: *mut u8,
     next: *mut u8,
     end: *mut u8,
-    allow_alloc: bool,
+    allow_alloc: State,
     alloc_count: usize,
 }
 
@@ -37,7 +49,7 @@ impl BumpAllocator {
                 start: core::ptr::null_mut(),
                 next: core::ptr::null_mut(),
                 end: core::ptr::null_mut(),
-                allow_alloc: false,
+                allow_alloc: State::Allowed,
                 alloc_count: 0,
             })),
         }
@@ -62,22 +74,47 @@ impl BumpAllocator {
         inner.end = mem.end() as *mut u8;
     }
 
+    /// Enable allocations. This panics if allocations were ever previously
+    /// allocated.
     pub fn enable_alloc(&self) {
         let mut inner = self.inner.borrow_mut();
-        inner.allow_alloc = true;
+
+        inner.allow_alloc = match inner.allow_alloc {
+            State::Allowed => State::Enabled,
+            State::Enabled => {
+                panic!("allocations are already enabled");
+            }
+            State::Disabled => {
+                panic!("allocations were previously disabled and cannot be re-enabled");
+            }
+        };
     }
 
+    /// Disable allocations. Panis if the allocator was not previously enabled.
     pub fn disable_alloc(&self) {
         let mut inner = self.inner.borrow_mut();
-        inner.allow_alloc = false;
+        inner.allow_alloc = match inner.allow_alloc {
+            State::Allowed => panic!("allocations were never enabled"),
+            State::Enabled => State::Disabled,
+            State::Disabled => {
+                panic!("allocations were previously disabled and cannot be disabled again");
+            }
+        };
     }
 
     pub fn log_stats(&self) {
         let inner = self.inner.borrow();
 
-        // FIXME: unsafe calcs
-        let allocated = unsafe { inner.next.offset_from(inner.start) };
-        let free = unsafe { inner.end.offset_from(inner.next) };
+        // SAFETY: The pointers are within the same original allocation,
+        // specified by init. They are u8 pointers, so there is no alignment
+        // requirement.
+        let (allocated, free) = unsafe {
+            (
+                inner.next.offset_from(inner.start),
+                inner.end.offset_from(inner.next),
+            )
+        };
+
         log!(
             "Bump allocator: allocated {} bytes in {} allocations ({} bytes free)",
             allocated,
@@ -87,23 +124,26 @@ impl BumpAllocator {
     }
 }
 
-// SAFETY: The allocator points to a valid identity mapped memory range via
-// init, which is unused by anything else.
+// SAFETY: The allocator points to a valid identity VA range via the
+// construction at init.
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut inner = self.inner.borrow_mut();
 
-        if !inner.allow_alloc {
-            panic!("allocations are not allowed");
+        if inner.allow_alloc != State::Enabled {
+            panic!("allocations are not allowed {:?}", inner.allow_alloc);
         }
 
-        // FIXME: verify math and wraparounds
         let align_offset = inner.next.align_offset(layout.align());
         let alloc_start = inner.next.wrapping_add(align_offset);
         let alloc_end = alloc_start.wrapping_add(layout.size());
 
+        // If end overflowed this allocation is too large. If start overflowed,
+        // end will also overflow.
+        //
+        // Rust `Layout` guarnantees that the size is not larger than `isize`,
+        // so it's not possible to wrap around twice.
         if alloc_end < alloc_start {
-            // overflow
             return core::ptr::null_mut();
         }
 
@@ -128,9 +168,13 @@ unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         log!("dealloc called on {:#x?} of size {}", ptr, layout.size());
     }
+
+    // TODO: consider implementing realloc for the Vec grow case, which is the
+    // main usecase we see. This would mean supporting realloc if the allocation
+    // being realloced was the last one aka the tail.
 }
 
-#[cfg(feature = "nightly")]
+#[cfg(nightly)]
 unsafe impl core::alloc::Allocator for BumpAllocator {
     fn allocate(&self, layout: Layout) -> Result<core::ptr::NonNull<[u8]>, std::alloc::AllocError> {
         let ptr = unsafe { self.alloc(layout) };
@@ -151,11 +195,13 @@ unsafe impl core::alloc::Allocator for BumpAllocator {
     }
 }
 
+#[cfg(nightly)]
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(feature = "nightly")]
+    // NOTE: run these tests with miri via
+    // `RUSTFLAGS="--cfg nightly" cargo +nightly miri test -p openhcl_boot`
     #[test]
     fn test_alloc() {
         let buffer: Box<[u8]> = Box::new([0; 0x1000 * 20]);
@@ -165,7 +211,7 @@ mod tests {
                 start: addr,
                 next: addr,
                 end: unsafe { addr.add(0x1000 * 20) },
-                allow_alloc: false,
+                allow_alloc: State::Allowed,
                 alloc_count: 0,
             })),
         };
@@ -183,7 +229,9 @@ mod tests {
             let ptr3 = allocator.alloc(Layout::from_size_align(300, 32).unwrap());
             *ptr3 = 77;
             assert_eq!(*ptr3, 77);
+        }
 
+        {
             let mut vec: Vec<u8, BumpAllocator> = Vec::new_in(allocator);
 
             // Push 4096 bytes, which should force a vec realloc.

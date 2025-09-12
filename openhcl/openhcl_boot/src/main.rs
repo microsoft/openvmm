@@ -8,7 +8,12 @@
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
-#![cfg_attr(feature = "nightly", feature(allocator_api))]
+// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`.
+//
+// Do not use a normal feature, as that shows errors rust-analyzer since most
+// people are using stable. We could remove this once the allocator_api feature
+// is stable.
+#![cfg_attr(nightly, feature(allocator_api))]
 
 mod arch;
 mod boot_logger;
