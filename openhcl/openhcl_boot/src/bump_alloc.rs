@@ -29,22 +29,10 @@ pub struct BumpAllocator {
     inner: SingleThreaded<RefCell<Inner>>,
 }
 
-/// Align downwards. Returns the greatest x with alignment `align`
-/// so that x <= addr. The alignment must be a power of 2.
-pub fn align_down(addr: usize, align: usize) -> usize {
-    if align.is_power_of_two() {
-        addr & !(align - 1)
-    } else if align == 0 {
-        addr
-    } else {
-        panic!("`align` must be a power of 2");
-    }
-}
-
 /// Align upwards. Returns the smallest x with alignment `align`
 /// so that x >= addr. The alignment must be a power of 2.
 pub fn align_up(addr: usize, align: usize) -> usize {
-    align_down(addr + align - 1, align)
+    (addr + align - 1) & !(align - 1)
 }
 
 impl BumpAllocator {
@@ -115,6 +103,14 @@ unsafe impl GlobalAlloc for BumpAllocator {
             None => return core::ptr::null_mut(),
         };
 
+        log!(
+            "bump_alloc: allocating {} bytes with alignment {} at {:#x}, alloc_end {:#x}",
+            layout.size(),
+            layout.align(),
+            alloc_start,
+            alloc_end,
+        );
+
         if alloc_end > inner.mem.end() as usize {
             core::ptr::null_mut() // out of memory
         } else {
@@ -125,4 +121,53 @@ unsafe impl GlobalAlloc for BumpAllocator {
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_align_up() {
+        assert_eq!(align_up(0x1000, 0x1000), 0x1000);
+        assert_eq!(align_up(0x1001, 0x1000), 0x2000);
+        assert_eq!(align_up(0x1FFF, 0x1000), 0x2000);
+        assert_eq!(align_up(0x2000, 0x1000), 0x2000);
+
+        assert_eq!(align_up(0x1003, 4), 0x1004);
+        assert_eq!(align_up(0x1003, 8), 0x1008);
+        assert_eq!(align_up(0x1003, 16), 0x1010);
+    }
+
+    #[test]
+    fn test_alloc() {
+        let allocator = BumpAllocator::new();
+        // create a new page aligned box of memory with 20 pages.
+        let mut buffer = Box::new([0; 0x1000 * 20]);
+        let base_addr = buffer.as_ptr() as usize;
+        // align up base_addr to the next page.
+        let base_addr = align_up(base_addr as usize, 0x1000) as u64;
+        assert_eq!(base_addr & 0xFFF, 0); // ensure page aligned
+
+        let buffer_range = MemoryRange::new(base_addr..(base_addr + 10 * 0x1000));
+
+        unsafe {
+            allocator.init(buffer_range);
+        }
+        allocator.enable_alloc();
+
+        unsafe {
+            let ptr1 = allocator.alloc(Layout::from_size_align(100, 8).unwrap());
+            *ptr1 = 42;
+            assert_eq!(*ptr1, 42);
+
+            let ptr2 = allocator.alloc(Layout::from_size_align(200, 16).unwrap());
+            *ptr2 = 55;
+            assert_eq!(*ptr2, 55);
+
+            let ptr3 = allocator.alloc(Layout::from_size_align(300, 32).unwrap());
+            *ptr3 = 77;
+            assert_eq!(*ptr3, 77);
+        }
+    }
 }
