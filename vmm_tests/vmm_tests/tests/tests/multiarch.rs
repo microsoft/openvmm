@@ -780,7 +780,7 @@ async fn boot_expect_fail(
     openvmm_openhcl_linux_direct_x64,
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn validate_mnf_usage_in_guest(
+async fn validate_mnf_usage_in_guest_reboot(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     // So far, NetVSC uses MNF, StorVSC doesn't hence attach a nic to the vm.
@@ -899,6 +899,7 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
 
 #[vmm_test(
     openvmm_openhcl_linux_direct_x64,
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn meminfo_status_2_proc_reboot<T: PetriVmmBackend>(
@@ -934,6 +935,7 @@ async fn meminfo_status_2_proc_reboot<T: PetriVmmBackend>(
 
 #[vmm_test(
     openvmm_openhcl_linux_direct_x64,
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn meminfo_status_64_proc_reboot<T: PetriVmmBackend>(
