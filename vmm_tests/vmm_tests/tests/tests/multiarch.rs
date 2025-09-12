@@ -902,6 +902,7 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
+    openvmm_openhcl_linux_direct_x64,
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
@@ -940,6 +941,7 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
+    openvmm_openhcl_linux_direct_x64,
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
