@@ -546,7 +546,7 @@ async fn run_control(
                                 inspect_internal::inspect_internal_diagnostics(
                                     req,
                                     &diag_reinspect_send,
-                                    driver.clone(),
+                                    &driver,
                                 )
                             });
 

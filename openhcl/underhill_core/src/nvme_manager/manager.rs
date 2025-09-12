@@ -198,40 +198,21 @@ struct NvmeWorkerContext {
     save_restore_supported: bool,
     #[inspect(skip)]
     driver_source: VmTaskDriverSource,
-    #[inspect(skip)]
+    #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_key(&*x.read()).inspect(req))")]
     devices: Arc<RwLock<HashMap<String, NvmeDriverManager>>>,
     #[inspect(skip)]
     nvme_driver_spawner: Arc<dyn CreateNvmeDriver>,
 }
 
 #[derive(Inspect)]
-#[inspect(extra = "NvmeManagerWorker::inspect_extra")]
 struct NvmeManagerWorker {
-    #[inspect(skip)]
+    #[inspect(with = "Vec::len")]
     tasks: Vec<Task<()>>,
+    #[inspect(flatten)]
     context: NvmeWorkerContext,
 }
 
 impl NvmeManagerWorker {
-    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
-        resp.child("outstanding-tasks", |req| {
-            req.value(self.tasks.len());
-        });
-
-        resp.child("devices", |req| {
-            let devices = self.context.devices.read();
-            let mut resp = req.respond();
-            for (pci_id, driver) in devices.iter() {
-                resp.field(
-                    pci_id,
-                    inspect::adhoc(|req| {
-                        driver.client().send_inspect(req.defer());
-                    }),
-                );
-            }
-        });
-    }
-
     async fn run(&mut self, mut recv: mesh::Receiver<Request>) {
         let (join_span, nvme_keepalive) = loop {
             let Some(req) = recv.next().await else {
