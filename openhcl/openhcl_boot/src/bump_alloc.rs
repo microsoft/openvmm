@@ -19,8 +19,9 @@ pub static ALLOCATOR: BumpAllocator = BumpAllocator::new();
 
 #[derive(Debug)]
 pub struct Inner {
-    mem: MemoryRange,
-    next: usize,
+    start: *mut u8,
+    next: *mut u8,
+    end: *mut u8,
     allow_alloc: bool,
     alloc_count: usize,
 }
@@ -29,18 +30,13 @@ pub struct BumpAllocator {
     inner: SingleThreaded<RefCell<Inner>>,
 }
 
-/// Align upwards. Returns the smallest x with alignment `align`
-/// so that x >= addr. The alignment must be a power of 2.
-pub fn align_up(addr: usize, align: usize) -> usize {
-    (addr + align - 1) & !(align - 1)
-}
-
 impl BumpAllocator {
     pub const fn new() -> Self {
         BumpAllocator {
             inner: SingleThreaded(RefCell::new(Inner {
-                mem: MemoryRange::EMPTY,
-                next: 0,
+                start: core::ptr::null_mut(),
+                next: core::ptr::null_mut(),
+                end: core::ptr::null_mut(),
                 allow_alloc: false,
                 alloc_count: 0,
             })),
@@ -50,19 +46,20 @@ impl BumpAllocator {
     /// Initialize the bump allocator with the specified memory range.
     ///
     /// # Safety
+    ///
     /// The caller must guarantee that the memory range is both valid to
     /// access via the current pagetable identity map, and that it is unused.
     pub unsafe fn init(&self, mem: MemoryRange) {
         let mut inner = self.inner.borrow_mut();
-        assert_eq!(
-            inner.mem,
-            MemoryRange::EMPTY,
-            "bump allocator memory range previously set {}",
-            inner.mem
+        assert!(
+            inner.start.is_null(),
+            "bump allocator memory range previously set {:#x?}",
+            inner.start
         );
 
-        inner.mem = mem;
-        inner.next = mem.start() as usize;
+        inner.start = mem.start() as *mut u8;
+        inner.next = mem.start() as *mut u8;
+        inner.end = mem.end() as *mut u8;
     }
 
     pub fn enable_alloc(&self) {
@@ -77,11 +74,15 @@ impl BumpAllocator {
 
     pub fn log_stats(&self) {
         let inner = self.inner.borrow();
+
+        // FIXME: unsafe calcs
+        let allocated = unsafe { inner.next.offset_from(inner.start) };
+        let free = unsafe { inner.end.offset_from(inner.next) };
         log!(
             "Bump allocator: allocated {} bytes in {} allocations ({} bytes free)",
-            inner.next - inner.mem.start() as usize,
+            allocated,
             inner.alloc_count,
-            inner.mem.end() as usize - inner.next
+            free
         );
     }
 }
@@ -96,48 +97,42 @@ unsafe impl GlobalAlloc for BumpAllocator {
             panic!("allocations are not allowed");
         }
 
-        let alloc_start: usize = align_up(inner.next, layout.align());
+        // FIXME: verify math and wraparounds
+        let align_offset = inner.next.align_offset(layout.align());
+        let alloc_start = inner.next.wrapping_add(align_offset);
+        let alloc_end = alloc_start.wrapping_add(layout.size());
 
-        let alloc_end = match alloc_start.checked_add(layout.size()) {
-            Some(end) => end,
-            None => return core::ptr::null_mut(),
-        };
+        if alloc_end < alloc_start {
+            // overflow
+            return core::ptr::null_mut();
+        }
 
         log!(
-            "bump_alloc: allocating {} bytes with alignment {} at {:#x}, alloc_end {:#x}",
+            "bump_alloc: allocating {} bytes with alignment {} at with offset {} alloc_start {:#x?}, alloc_end {:#x?}",
             layout.size(),
             layout.align(),
+            align_offset,
             alloc_start,
             alloc_end,
         );
 
-        if alloc_end > inner.mem.end() as usize {
+        if alloc_end > inner.end {
             core::ptr::null_mut() // out of memory
         } else {
             inner.next = alloc_end;
             inner.alloc_count += 1;
-            alloc_start as *mut u8
+            alloc_start
         }
     }
 
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        log!("dealloc called on {:#x?} of size {}", ptr, layout.size());
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_align_up() {
-        assert_eq!(align_up(0x1000, 0x1000), 0x1000);
-        assert_eq!(align_up(0x1001, 0x1000), 0x2000);
-        assert_eq!(align_up(0x1FFF, 0x1000), 0x2000);
-        assert_eq!(align_up(0x2000, 0x1000), 0x2000);
-
-        assert_eq!(align_up(0x1003, 4), 0x1004);
-        assert_eq!(align_up(0x1003, 8), 0x1008);
-        assert_eq!(align_up(0x1003, 16), 0x1010);
-    }
 
     #[test]
     fn test_alloc() {
