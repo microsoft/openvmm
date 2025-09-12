@@ -449,6 +449,10 @@ pub struct DisconnectableEndpoint {
     null_endpoint: Box<dyn Endpoint>,
     cached_state: Option<DisconnectableEndpointCachedState>,
     receive_update: Arc<Mutex<mesh::Receiver<DisconnectableEndpointUpdate>>>,
+    notify_disconnect_complete: Option<(
+        Rpc<(), Option<Box<dyn Endpoint>>>,
+        Option<Box<dyn Endpoint>>,
+    )>,
 }
 
 impl InspectMut for DisconnectableEndpoint {
@@ -469,6 +473,7 @@ impl DisconnectableEndpoint {
                 null_endpoint: Box::new(NullEndpoint::new()),
                 cached_state: None,
                 receive_update: Arc::new(Mutex::new(endpoint_rx)),
+                notify_disconnect_complete: None,
             },
             control,
         )
@@ -545,6 +550,12 @@ impl Endpoint for DisconnectableEndpoint {
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
+        // If the previous message disconnected the endpoint, notify the caller
+        // that the operation has completed, returning the old endpoint.
+        if let Some((rpc, old_endpoint)) = self.notify_disconnect_complete.take() {
+            rpc.handle(async |_| old_endpoint).await;
+        }
+
         enum Message {
             DisconnectableEndpointUpdate(DisconnectableEndpointUpdate),
             UpdateFromEndpoint(EndpointAction),
@@ -585,8 +596,11 @@ impl Endpoint for DisconnectableEndpoint {
                 DisconnectableEndpointUpdate::EndpointDisconnected(rpc),
             ) => {
                 let old_endpoint = self.endpoint.take();
-                self.endpoint = None;
-                rpc.handle(async |_| old_endpoint).await;
+                // Wait until the next call into this function to notify the
+                // caller that the operation has completed. This makes it more
+                // likely that the endpoint is no longer referenced (old queues
+                // have been disposed, etc.).
+                self.notify_disconnect_complete = Some((rpc, old_endpoint));
                 EndpointAction::RestartRequired
             }
             Message::UpdateFromEndpoint(update) => update,
