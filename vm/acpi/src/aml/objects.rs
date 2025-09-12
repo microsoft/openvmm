@@ -1,9 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Utilities for encoding various objects into ACPI Machine Language (AML).
+
 use super::helpers::*;
 
-pub trait DsdtObject {
+/// A trait indicating that a particular type can be serialized
+/// into a byte stream of ACPI Machine Language (AML).
+pub trait AmlObject {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>);
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -13,13 +17,15 @@ pub trait DsdtObject {
     }
 }
 
+/// A named AML object.
 pub struct NamedObject {
     name: Vec<u8>,
     object: Vec<u8>,
 }
 
 impl NamedObject {
-    pub fn new(name: &[u8], object: &impl DsdtObject) -> Self {
+    /// Construct a new [`NamedObject`]
+    pub fn new(name: &[u8], object: &impl AmlObject) -> Self {
         let encoded_name = encode_name(name);
         assert!(!encoded_name.is_empty());
         NamedObject {
@@ -29,7 +35,7 @@ impl NamedObject {
     }
 }
 
-impl DsdtObject for NamedObject {
+impl AmlObject for NamedObject {
     // A named object consists of the identifier (0x8) followed by the 4-byte name
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
         byte_stream.push(8);
@@ -40,7 +46,7 @@ impl DsdtObject for NamedObject {
 
 pub struct GenericObject<T: AsRef<[u8]>>(pub T);
 
-impl<T> DsdtObject for GenericObject<T>
+impl<T> AmlObject for GenericObject<T>
 where
     T: AsRef<[u8]>,
 {
@@ -50,11 +56,13 @@ where
     }
 }
 
+/// A named AML integer.
 pub struct NamedInteger {
     data: NamedObject,
 }
 
 impl NamedInteger {
+    /// Construct a new [`NamedInteger`]
     pub fn new(name: &[u8], value: u64) -> Self {
         Self {
             data: NamedObject::new(name, &GenericObject(encode_integer(value))),
@@ -62,17 +70,19 @@ impl NamedInteger {
     }
 }
 
-impl DsdtObject for NamedInteger {
+impl AmlObject for NamedInteger {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
         self.data.append_to_vec(byte_stream);
     }
 }
 
+/// A named AML string.
 pub struct NamedString {
     data: NamedObject,
 }
 
 impl NamedString {
+    /// Construct a new [`NamedString`]
     pub fn new(name: &[u8], value: &[u8]) -> Self {
         Self {
             data: NamedObject::new(name, &GenericObject(encode_string(value))),
@@ -80,18 +90,19 @@ impl NamedString {
     }
 }
 
-impl DsdtObject for NamedString {
+impl AmlObject for NamedString {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
         self.data.append_to_vec(byte_stream);
     }
 }
 
+/// A structured AML package.
 pub struct StructuredPackage<T: AsRef<[u8]>> {
     pub elem_count: u8,
     pub elem_data: T,
 }
 
-impl<T> DsdtObject for StructuredPackage<T>
+impl<T> AmlObject for StructuredPackage<T>
 where
     T: AsRef<[u8]>,
 {
@@ -108,7 +119,7 @@ where
 
 pub struct Package<T: AsRef<[u8]>>(pub T);
 
-impl<T> DsdtObject for Package<T>
+impl<T> AmlObject for Package<T>
 where
     T: AsRef<[u8]>,
 {
@@ -124,7 +135,7 @@ where
 
 pub struct Buffer<T: AsRef<[u8]>>(pub T);
 
-impl<T> DsdtObject for Buffer<T>
+impl<T> AmlObject for Buffer<T>
 where
     T: AsRef<[u8]>,
 {
@@ -143,7 +154,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsdt::tests::verify_expected_bytes;
+    use crate::aml::test_helpers::verify_expected_bytes;
 
     #[test]
     fn verify_package() {
