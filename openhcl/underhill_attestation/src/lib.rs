@@ -1286,7 +1286,7 @@ mod tests {
     use disklayer_ram::ram_disk;
     use get_protocol::GSP_CLEARTEXT_MAX;
     use get_protocol::GspExtendedStatusFlags;
-    use guest_emulation_device::AgentAction;
+    use guest_emulation_device::IgvmAgentAction;
     use guest_emulation_device::IgvmAgentScriptPlan;
     use guest_emulation_transport::test_utilities::TestGet;
     use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
@@ -1300,24 +1300,12 @@ mod tests {
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use std::collections::VecDeque;
-    use std::sync::Once;
     use test_utils::MockTeeCall;
-    use tracing_subscriber::EnvFilter;
+    use test_with_tracing::test;
     use vmgs_format::EncryptionAlgorithm;
     use vmgs_format::FileId;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
-
-    // Initialize tracing once for all tests in this module. Honors RUST_LOG.
-    fn init_tracing() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            let _ = tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .with_target(false)
-                .try_init();
-        });
-    }
 
     fn new_test_file() -> Disk {
         ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
@@ -1447,6 +1435,19 @@ mod tests {
                 None,
             )
             .await
+        }
+    }
+
+    fn new_attestation_vm_config() -> AttestationVmConfig {
+        AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            secure_boot: false,
+            tpm_enabled: true,
+            tpm_persisted: true,
+            filtered_vpci_devices_allowed: false,
+            vm_unique_id: String::new(),
         }
     }
 
@@ -2085,8 +2086,6 @@ mod tests {
 
     #[async_test]
     async fn init_sec_suppress_attestation(driver: DefaultDriver) {
-        init_tracing();
-
         let mut vmgs = new_formatted_vmgs().await;
 
         // Write non-zero agent data to VMGS so we can verify it is returned.
@@ -2101,7 +2100,7 @@ mod tests {
         let get_pair = new_test_get(driver, false, None).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = AttestationVmConfig::default();
+        let att_cfg = new_attestation_vm_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.is_encrypted());
@@ -2134,15 +2133,13 @@ mod tests {
 
     #[async_test]
     async fn init_sec_secure_key_release(driver: DefaultDriver) {
-        init_tracing();
-
         let mut vmgs = new_formatted_vmgs().await;
 
         // IGVM attest is required
         let get_pair = new_test_get(driver, true, None).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = AttestationVmConfig::default();
+        let att_cfg = new_attestation_vm_config();
         let tee = MockTeeCall::new(0x1234);
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
@@ -2208,8 +2205,6 @@ mod tests {
 
     #[async_test]
     async fn init_sec_secure_key_release_without_wrapped_key_request(driver: DefaultDriver) {
-        init_tracing();
-
         let mut vmgs = new_formatted_vmgs().await;
 
         // Write non-zero agent data to workaround the WRAPPED_KEY_REQUEST requirement.
@@ -2224,14 +2219,14 @@ mod tests {
         let mut plan = IgvmAgentScriptPlan::default();
         plan.insert(
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
-            VecDeque::from([AgentAction::NoResponse, AgentAction::NoResponse]),
+            VecDeque::from([IgvmAgentAction::NoResponse, IgvmAgentAction::NoResponse]),
         );
 
         // IGVM attest is required
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = AttestationVmConfig::default();
+        let att_cfg = new_attestation_vm_config();
         let tee = MockTeeCall::new(0x1234);
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
@@ -2286,21 +2281,22 @@ mod tests {
 
     #[async_test]
     async fn init_sec_secure_key_release_hw_sealing_backup(driver: DefaultDriver) {
-        init_tracing();
-
         let mut vmgs = new_formatted_vmgs().await;
 
         // IGVM attest is required
         let mut plan = IgvmAgentScriptPlan::default();
         plan.insert(
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
-            VecDeque::from([AgentAction::RespondSuccess, AgentAction::RespondFailure]),
+            VecDeque::from([
+                IgvmAgentAction::RespondSuccess,
+                IgvmAgentAction::RespondFailure,
+            ]),
         );
 
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = AttestationVmConfig::default();
+        let att_cfg = new_attestation_vm_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
         assert!(!vmgs.is_encrypted());
@@ -2369,21 +2365,22 @@ mod tests {
 
     #[async_test]
     async fn init_sec_secure_key_release_no_hw_sealing_backup(driver: DefaultDriver) {
-        init_tracing();
-
         let mut vmgs = new_formatted_vmgs().await;
 
         // IGVM attest is required
         let mut plan = IgvmAgentScriptPlan::default();
         plan.insert(
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
-            VecDeque::from([AgentAction::RespondSuccess, AgentAction::RespondFailure]),
+            VecDeque::from([
+                IgvmAgentAction::RespondSuccess,
+                IgvmAgentAction::RespondFailure,
+            ]),
         );
 
         let get_pair = new_test_get(driver, true, Some(plan)).await;
 
         let bios_guid = Guid::new_random();
-        let att_cfg = AttestationVmConfig::default();
+        let att_cfg = new_attestation_vm_config();
         // Without hardware sealing support
         let tee = MockTeeCallNoGetDerivedKey {};
 

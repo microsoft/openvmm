@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::GuestEmulationDevice;
+use crate::IgvmAgentSetting;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
@@ -167,7 +168,9 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             resource.guest_request_recv,
             framebuffer_control,
             vmgs_disk,
-            resource.igvm_attest_test_config,
+            resource
+                .igvm_attest_test_config
+                .map(IgvmAgentSetting::TestConfig),
         );
         Ok(SimpleDeviceWrapper::new(input.driver_source.simple(), device).into())
     }

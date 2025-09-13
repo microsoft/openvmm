@@ -11,6 +11,9 @@
 //! for production use and are *exclusively* for this test module on the
 //! Windows platform.
 
+use crate::IgvmAgentAction;
+use crate::IgvmAgentScriptPlan;
+use crate::IgvmAgentSetting;
 use aes_kw::KekAes256;
 use base64::Engine;
 use get_resources::ged::IgvmAttestTestConfig;
@@ -29,13 +32,13 @@ use rsa::pkcs8::EncodePrivateKey;
 use rsa::rand_core::OsRng;
 use sha1::Sha1;
 use sha2::Sha256;
-use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::sync::Once;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
-pub type IgvmAgentScriptPlan = HashMap<IgvmAttestRequestType, VecDeque<AgentAction>>;
+static INIT: Once = Once::new();
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
@@ -96,14 +99,6 @@ pub(crate) struct TestIgvmAgent {
     plan: Option<IgvmAgentScriptPlan>,
 }
 
-/// Possible actions for the IGVM agent to take in response to a request.
-#[derive(Debug, Clone)]
-pub enum AgentAction {
-    RespondSuccess,
-    RespondFailure,
-    NoResponse,
-}
-
 fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentScriptPlan {
     let mut plan = IgvmAgentScriptPlan::default();
 
@@ -112,16 +107,16 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentScriptPla
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([
-                    AgentAction::NoResponse,
-                    AgentAction::RespondFailure,
-                    AgentAction::RespondSuccess,
+                    IgvmAgentAction::NoResponse,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondSuccess,
                 ]),
             );
         }
         IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
-                VecDeque::from([AgentAction::RespondSuccess, AgentAction::NoResponse]),
+                VecDeque::from([IgvmAgentAction::RespondSuccess, IgvmAgentAction::NoResponse]),
             );
         }
     }
@@ -130,29 +125,36 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentScriptPla
 }
 
 impl TestIgvmAgent {
-    /// Create an instance with optional `test_config`.
-    pub(crate) fn new(test_config: Option<&IgvmAttestTestConfig>) -> Self {
-        tracing::info!(test_config = ?test_config, "Create test IGVM agent");
-
-        let plan = test_config.map(test_config_to_plan);
-
+    /// Create an instance.
+    pub(crate) fn new() -> Self {
         Self {
             secret_key: None,
             des_key: None,
-            plan,
+            plan: None,
         }
     }
 
-    /// Install a scripted plan used by tests.
-    pub fn set_plan(&mut self, plan: IgvmAgentScriptPlan) {
-        self.plan = Some(plan);
+    /// Install a scripted plan used by tests based on the setting. Can only be done once.
+    pub fn set_setting(&mut self, setting: &IgvmAgentSetting) {
+        INIT.call_once(|| {
+            tracing::info!("install the scripted plan for test IGVM Agent");
+
+            match setting {
+                IgvmAgentSetting::TestPlan(plan) => {
+                    self.plan = Some(plan.clone());
+                }
+                IgvmAgentSetting::TestConfig(config) => {
+                    self.plan = Some(test_config_to_plan(config));
+                }
+            }
+        });
     }
 
     /// Take the next scripted action for the given request type, if any.
     pub(crate) fn take_next_action(
         &mut self,
         request_type: IgvmAttestRequestType,
-    ) -> Option<AgentAction> {
+    ) -> Option<IgvmAgentAction> {
         // Fast path: no plan installed.
         let plan = self.plan.as_mut()?;
         plan.get_mut(&request_type)?.pop_front()
@@ -182,11 +184,11 @@ impl TestIgvmAgent {
         // execute it. This allows tests to force success/no-response, etc.
         if let Some(action) = self.take_next_action(request.header.request_type) {
             match action {
-                AgentAction::NoResponse => {
+                IgvmAgentAction::NoResponse => {
                     tracing::info!(?request.header.request_type, "Test plan: NoResponse");
                     return Ok((vec![], 0));
                 }
-                AgentAction::RespondSuccess => {
+                IgvmAgentAction::RespondSuccess => {
                     tracing::info!(?request.header.request_type, "Test plan: RespondSuccess");
                     match request.header.request_type {
                         IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
@@ -240,7 +242,7 @@ impl TestIgvmAgent {
                         ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
                     }
                 }
-                AgentAction::RespondFailure => {
+                IgvmAgentAction::RespondFailure => {
                     tracing::info!(?request.header.request_type, "Test plan: RespondFailure");
                     match request.header.request_type {
                         IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {

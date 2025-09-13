@@ -7,6 +7,7 @@ use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
 use crate::IgvmAgentScriptPlan;
+use crate::IgvmAgentSetting;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
@@ -237,7 +238,7 @@ pub fn create_host_channel(
     ged_responses: Option<Vec<TestGetResponses>>,
     version: get_protocol::ProtocolVersion,
     guest_memory: Option<GuestMemory>,
-    _igvm_agent_plan: Option<IgvmAgentScriptPlan>,
+    igvm_agent_plan: Option<IgvmAgentScriptPlan>,
 ) -> TestGedClient {
     let guest_config = GuestConfig {
         firmware: GuestFirmwareConfig::Uefi {
@@ -281,13 +282,8 @@ pub fn create_host_channel(
         recv,
         None,
         Some(disklayer_ram::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
-        None,
+        igvm_agent_plan.map(IgvmAgentSetting::TestPlan),
     );
-
-    #[cfg(feature = "test_igvm_agent")]
-    if let Some(plan) = _igvm_agent_plan {
-        ged_state.set_igvm_agent_plan(plan);
-    }
 
     if let Some(ged_responses) = ged_responses {
         let mut host_get_channel =
