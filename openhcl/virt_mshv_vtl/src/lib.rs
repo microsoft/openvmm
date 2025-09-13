@@ -14,6 +14,7 @@ cfg_if::cfg_if!(
         mod cvm_cpuid;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
+        use crate::processor::HardwareIsolatedBacking;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
@@ -56,7 +57,9 @@ use hv1_emulator::synic::GlobalSynic;
 use hv1_emulator::synic::SintProxied;
 use hv1_structs::VtlArray;
 use hvdef::GuestCrashCtl;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::HV_PAGE_SIZE;
+use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterName;
@@ -214,6 +217,8 @@ struct UhPartitionInner {
     #[inspect(skip)]
     crash_notification_send: mesh::Sender<VtlCrash>,
     monitor_page: MonitorPage,
+    #[inspect(skip)]
+    allocated_monitor_page: Mutex<Option<user_driver::memory::MemoryBlock>>,
     software_devices: Option<ApicSoftwareDevices>,
     #[inspect(skip)]
     vmtime: VmTimeSource,
@@ -1006,27 +1011,45 @@ impl virt::Synic for UhPartition {
     }
 
     fn monitor_support(&self) -> Option<&dyn virt::SynicMonitor> {
-        // TODO: MNF does not work on CVM, tracked by GH issue 1711.
-        if self.inner.isolation.is_hardware_isolated() {
-            None
-        } else {
-            Some(self)
-        }
+        Some(self)
     }
 }
 
 impl virt::SynicMonitor for UhPartition {
-    fn set_monitor_page(&self, _vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+        // Keep this locked the whole function to avoid racing with allocate_monitor_page.
+        let mut allocated_block = self.inner.allocated_monitor_page.lock();
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
+
+        // Take ownership of any allocated monitor page so it will be freed on function exit.
+        let allocated_page = allocated_block.take();
         if let Some(old_gpa) = old_gpa {
-            self.inner
-                .hcl
-                .modify_vtl_protection_mask(
-                    MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
-                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-                    HvInputVtl::CURRENT_VTL,
-                )
-                .context("failed to unregister old monitor page")?;
+            let allocated_gpa = allocated_page
+                .as_ref()
+                .map(|b| b.pfns()[0] << HV_PAGE_SHIFT);
+
+            // Revert the old page's permissions, using the appropriate method depending on
+            // whether it was allocated or guest-supplied.
+            let result = if allocated_gpa == Some(old_gpa) {
+                let vtl = GuestVtl::try_from(vtl).unwrap();
+                self.unregister_cvm_dma_overlay_page(vtl, old_gpa >> HV_PAGE_SHIFT)
+            } else {
+                self.inner
+                    .hcl
+                    .modify_vtl_protection_mask(
+                        MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
+                        hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+                        HvInputVtl::CURRENT_VTL,
+                    )
+                    .map_err(|err| anyhow::anyhow!(err))
+            };
+
+            result
+                .context("failed to unregister old monitor page")
+                .inspect_err(|_| {
+                    // Leave the page unset if returning a failure.
+                    self.inner.monitor_page.set_gpa(None);
+                })?;
 
             tracing::debug!(old_gpa, "unregistered monitor page");
         }
@@ -1034,21 +1057,18 @@ impl virt::SynicMonitor for UhPartition {
         if let Some(gpa) = gpa {
             // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
             // permissions must be enabled or this doesn't work correctly.
-            let result = self
-                .inner
+            self.inner
                 .hcl
                 .modify_vtl_protection_mask(
                     MemoryRange::new(gpa..gpa + HV_PAGE_SIZE),
                     HvMapGpaFlags::new().with_readable(true),
                     HvInputVtl::CURRENT_VTL,
                 )
-                .context("failed to register monitor page");
-
-            if result.is_err() {
-                // Unset the page so trying to remove it later won't fail too.
-                self.inner.monitor_page.set_gpa(None);
-                return result;
-            }
+                .context("failed to register monitor page")
+                .inspect_err(|_| {
+                    // Leave the page unset if returning a failure.
+                    self.inner.monitor_page.set_gpa(None);
+                })?;
 
             tracing::debug!(gpa, "registered monitor page");
         }
@@ -1064,6 +1084,64 @@ impl virt::SynicMonitor for UhPartition {
         self.inner
             .monitor_page
             .register_monitor(monitor_id, connection_id)
+    }
+
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<u64>> {
+        let vtl = GuestVtl::try_from(vtl).unwrap();
+
+        // Allocating a monitor page is only supported for CVMs.
+        let Some(state) = self.inner.backing_shared.cvm_state() else {
+            return Ok(None);
+        };
+
+        let mut allocated_block = self.inner.allocated_monitor_page.lock();
+        if let Some(block) = allocated_block.as_ref() {
+            // An allocated monitor page is already in use; no need to change it.
+            let gpa = block.pfns()[0] << HV_PAGE_SHIFT;
+            assert_eq!(self.inner.monitor_page.gpa(), Some(gpa));
+            return Ok(Some(gpa));
+        }
+
+        let block = state
+            .private_dma_client
+            .allocate_dma_buffer(HV_PAGE_SIZE_USIZE)
+            .context("failed to allocate monitor page")?;
+
+        let gpn = block.pfns()[0];
+        *allocated_block = Some(block);
+        let gpa = gpn << HV_PAGE_SHIFT;
+        let old_gpa = self.inner.monitor_page.set_gpa(Some(gpa));
+        if let Some(old_gpa) = old_gpa {
+            // The old GPA is guaranteed not to be allocated, since that was checked above, so
+            // revert its permissions using the method for guest-supplied memory.
+            self.inner
+                .hcl
+                .modify_vtl_protection_mask(
+                    MemoryRange::new(old_gpa..old_gpa + HV_PAGE_SIZE),
+                    hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+                    HvInputVtl::CURRENT_VTL,
+                )
+                .context("failed to unregister old monitor page")
+                .inspect_err(|_| {
+                    // Leave the page unset if returning a failure.
+                    self.inner.monitor_page.set_gpa(None);
+                })?;
+
+            tracing::debug!(old_gpa, "unregistered monitor page");
+        }
+
+        // Disallow VTL0 from writing to the page, so we'll get an intercept. Note that read
+        // permissions must be enabled or this doesn't work correctly.
+        self.register_cvm_dma_overlay_page(vtl, gpn, HvMapGpaFlags::new().with_readable(true))
+            .context("failed to unregister monitor page")
+            .inspect_err(|_| {
+                // Leave the page unset if returning a failure.
+                self.inner.monitor_page.set_gpa(None);
+            })?;
+
+        tracing::debug!(gpa, "registered allocated monitor page");
+
+        Ok(Some(gpa))
     }
 }
 
@@ -1354,6 +1432,15 @@ pub struct CvmLateParams {
     pub private_dma_client: Arc<dyn DmaClient>,
 }
 
+/// Represents a GPN that is either in guest memory or was allocated by dma_client.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GpnSource {
+    /// The GPN is in regular guest RAM.
+    GuestMemory,
+    /// The GPN was allocated by dma_client and is not in guest RAM.
+    Dma,
+}
+
 /// Trait for CVM-related protections on guest memory.
 pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
@@ -1400,6 +1487,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
         &self,
         vtl: GuestVtl,
         gpn: u64,
+        gpn_source: GpnSource,
         check_perms: HvMapGpaFlags,
         new_perms: Option<HvMapGpaFlags>,
         tlb_access: &mut dyn TlbFlushLockAccess,
@@ -1769,6 +1857,7 @@ impl<'a> UhProtoPartition<'a> {
             cpuid,
             crash_notification_send: late_params.crash_notification_send,
             monitor_page: MonitorPage::new(),
+            allocated_monitor_page: Mutex::new(None),
             software_devices,
             lower_vtl_memory_layout: params.lower_vtl_memory_layout.clone(),
             vmtime: late_params.vmtime.clone(),
@@ -1854,6 +1943,96 @@ impl UhPartition {
     /// Enables or disables the PM timer assist.
     pub fn set_pm_timer_assist(&self, port: Option<u16>) -> Result<(), HvError> {
         self.inner.hcl.set_pm_timer_assist(port)
+    }
+
+    /// Sets guest memory protections for a monitor page.
+    fn register_cvm_dma_overlay_page(
+        &self,
+        vtl: GuestVtl,
+        gpn: u64,
+        new_perms: HvMapGpaFlags,
+    ) -> anyhow::Result<()> {
+        // How the monitor page is protected depends on the isolation type of the VM.
+        match &self.inner.backing_shared {
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .register_overlay_page(
+                    vtl,
+                    gpn,
+                    // On a CVM, the monitor page is always DMA-allocated.
+                    GpnSource::Dma,
+                    HvMapGpaFlags::new(),
+                    Some(new_perms),
+                    &mut SnpBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        snp_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .register_overlay_page(
+                    vtl,
+                    gpn,
+                    GpnSource::Dma,
+                    HvMapGpaFlags::new(),
+                    Some(new_perms),
+                    &mut TdxBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        tdx_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            BackingShared::Hypervisor(_) => {
+                let _ = (vtl, gpn, new_perms);
+                unreachable!()
+            }
+        }
+    }
+
+    /// Reverts guest memory protections for a monitor page.
+    fn unregister_cvm_dma_overlay_page(&self, vtl: GuestVtl, gpn: u64) -> anyhow::Result<()> {
+        // How the monitor page is protected depends on the isolation type of the VM.
+        match &self.inner.backing_shared {
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(snp_backed_shared) => snp_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .unregister_overlay_page(
+                    vtl,
+                    gpn,
+                    &mut SnpBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        snp_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(tdx_backed_shared) => tdx_backed_shared
+                .cvm
+                .isolated_memory_protector
+                .unregister_overlay_page(
+                    vtl,
+                    gpn,
+                    &mut TdxBacked::tlb_flush_lock_access(
+                        None,
+                        self.inner.as_ref(),
+                        tdx_backed_shared,
+                    ),
+                )
+                .map_err(|e| anyhow::anyhow!(e)),
+            BackingShared::Hypervisor(_) => {
+                let _ = (vtl, gpn);
+                unreachable!()
+            }
+        }
     }
 }
 

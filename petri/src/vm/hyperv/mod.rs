@@ -8,6 +8,7 @@ use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
 use super::ProcessorTopology;
+use crate::BootDeviceType;
 use crate::Firmware;
 use crate::IsolationType;
 use crate::NoPetriVmInspector;
@@ -101,8 +102,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             proc_topology,
             agent_image,
             openhcl_agent_image,
+            boot_device_type,
             vmgs: _, // TODO
-        } = &config;
+        } = config;
 
         let PetriVmResources {
             driver,
@@ -177,14 +179,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
             ),
         };
 
-        let vhd_paths = guest_artifact
-            .map(|artifact| vec![vec![artifact.get()]])
-            .unwrap_or_default();
-
         let mut log_tasks = Vec::new();
 
         let mut vm = HyperVVM::new(
-            name,
+            &name,
             generation,
             guest_state_isolation_type,
             memory.startup_bytes,
@@ -208,17 +206,17 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     super::ApicMode::X2apicSupported => powershell::HyperVApicMode::X2Apic,
                     super::ApicMode::X2apicEnabled => powershell::HyperVApicMode::X2Apic,
                 })
-                .or((*arch == MachineArch::X86_64
+                .or((arch == MachineArch::X86_64
                     && generation == powershell::HyperVGeneration::Two)
                     .then_some({
                         // This is necessary for some tests to pass. TODO: fix.
                         powershell::HyperVApicMode::X2Apic
                     }));
             vm.set_processor(&powershell::HyperVSetVMProcessorArgs {
-                count: Some(*vp_count),
+                count: Some(vp_count),
                 apic_mode,
                 hw_thread_count_per_core: enable_smt.map(|smt| if smt { 2 } else { 1 }),
-                maximum_count_per_numa_node: *vps_per_socket,
+                maximum_count_per_numa_node: vps_per_socket,
             })
             .await?;
         }
@@ -250,14 +248,22 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
-        for (i, vhds) in vhd_paths.iter().enumerate() {
-            let (controller_type, controller_number) = match generation {
-                powershell::HyperVGeneration::One => (powershell::ControllerType::Ide, i as u32),
-                powershell::HyperVGeneration::Two => (
-                    powershell::ControllerType::Scsi,
-                    vm.add_scsi_controller(0).await?,
-                ),
-            };
+        let mut vhd_paths = Vec::new();
+        if let Some((controller_type, controller_number)) = match boot_device_type {
+            BootDeviceType::None => None,
+            BootDeviceType::Ide => Some((powershell::ControllerType::Ide, 0)),
+            BootDeviceType::Scsi => Some((
+                powershell::ControllerType::Scsi,
+                vm.add_scsi_controller(0).await?,
+            )),
+            BootDeviceType::Nvme => todo!("NVMe boot device not yet supported for Hyper-V"),
+        } {
+            if let Some(artifact) = guest_artifact {
+                vhd_paths.push((controller_type, controller_number, vec![artifact.get()]));
+            }
+        }
+
+        for (controller_type, controller_number, vhds) in vhd_paths {
             for (controller_location, vhd) in vhds.iter().enumerate() {
                 let diff_disk_path = temp_dir.path().join(format!(
                     "{}_{}_{}",
@@ -290,7 +296,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             // Construct the agent disk.
             let agent_disk_path = temp_dir.path().join("cidata.vhd");
 
-            if build_and_persist_agent_image(agent_image, &agent_disk_path)
+            if build_and_persist_agent_image(&agent_image, &agent_disk_path)
                 .context("vtl0 agent disk")?
             {
                 if agent_image.contains_pipette()
@@ -359,7 +365,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             if let Some(agent_image) = openhcl_agent_image {
                 let agent_disk_path = temp_dir.path().join("paravisor_cidata.vhd");
 
-                if build_and_persist_agent_image(agent_image, &agent_disk_path)
+                if build_and_persist_agent_image(&agent_image, &agent_disk_path)
                     .context("vtl2 agent disk")?
                 {
                     let controller_number = vm.add_scsi_controller(2).await?;

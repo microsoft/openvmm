@@ -111,7 +111,6 @@ use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::aarch64::GicInfo;
-use vm_topology::processor::x86::X2ApicState;
 use vm_topology::processor::x86::X86Topology;
 use vmbus_channel::channel::VmbusDevice;
 use vmbus_server::HvsockRelayChannel;
@@ -412,11 +411,14 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
     fn to_topology(
         &self,
         _hypervisor: Hypervisor,
     ) -> anyhow::Result<ProcessorTopology<X86Topology>> {
+        use vm_topology::processor::x86::X2ApicState;
+
         let arch = match &self.arch {
             None => Default::default(),
             Some(ArchTopologyConfig::X86(arch)) => arch.clone(),

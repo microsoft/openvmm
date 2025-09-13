@@ -23,6 +23,7 @@ mod tcp;
 mod udp;
 mod windows;
 
+use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
 use smoltcp::phy::Checksum;
@@ -43,31 +44,39 @@ use thiserror::Error;
 /// A consomme instance.
 #[derive(InspectMut)]
 pub struct Consomme {
-    #[inspect(skip)]
     state: ConsommeState,
     tcp: tcp::Tcp,
     #[inspect(mut)]
     udp: udp::Udp,
 }
 
+#[derive(Inspect)]
 struct ConsommeState {
     params: ConsommeParams,
+    #[inspect(skip)]
     buffer: Box<[u8]>,
 }
 
 /// Dynamic networking properties of a consomme endpoint.
+#[derive(Inspect)]
 pub struct ConsommeParams {
     /// Current IPv4 network mask.
+    #[inspect(display)]
     pub net_mask: Ipv4Address,
     /// Current Ipv4 gateway address.
+    #[inspect(display)]
     pub gateway_ip: Ipv4Address,
     /// Current Ipv4 gateway MAC address.
+    #[inspect(display)]
     pub gateway_mac: EthernetAddress,
     /// Current Ipv4 address assigned to endpoint.
+    #[inspect(display)]
     pub client_ip: Ipv4Address,
     /// Current client MAC address.
+    #[inspect(display)]
     pub client_mac: EthernetAddress,
     /// Current list of DNS resolvers.
+    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
     pub nameservers: Vec<Ipv4Address>,
 }
 

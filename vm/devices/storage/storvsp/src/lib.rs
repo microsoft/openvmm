@@ -57,6 +57,8 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering::Relaxed;
 use std::task::Context;
 use std::task::Poll;
 use storvsp_resources::ScsiPath;
@@ -98,6 +100,12 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+/// The IO queue depth at which the controller switches from guest-signal-driven
+/// to poll-mode operation. This optimization reduces the guest exit rate by
+/// relying on (typically-interrupt-driven) IO completions to drive polling for
+/// new IO requests.
+const DEFAULT_POLL_MODE_QUEUE_DEPTH: u32 = 1;
+
 pub struct StorageDevice {
     instance_id: Guid,
     ide_path: Option<ScsiPath>,
@@ -136,6 +144,10 @@ impl InspectMut for StorageDevice {
                 .iter()
                 .filter(|task| task.worker.has_state())
                 .enumerate(),
+        )
+        .field(
+            "poll_mode_queue_depth",
+            inspect::AtomicMut(&self.controller.poll_mode_queue_depth),
         );
     }
 }
@@ -1121,6 +1133,7 @@ impl WorkerInner {
         let (mut reader, mut writer) = queue.split();
         let mut total_completions = 0;
         let mut total_submissions = 0;
+        let poll_mode_queue_depth = self.controller.poll_mode_queue_depth.load(Relaxed) as usize;
 
         loop {
             // Drive IOs forward and collect completions.
@@ -1164,7 +1177,7 @@ impl WorkerInner {
                 if self.scsi_requests_states.len() >= self.max_io_queue_depth {
                     break;
                 }
-                let mut batch = if self.scsi_requests_states.is_empty() {
+                let mut batch = if self.scsi_requests_states.len() < poll_mode_queue_depth {
                     if let Poll::Ready(batch) = reader.poll_read_batch(cx) {
                         batch.map_err(WorkerError::Queue)?
                     } else {
@@ -1573,6 +1586,7 @@ impl ScsiControllerDisk {
 struct ScsiControllerState {
     disks: RwLock<HashMap<ScsiPath, ScsiControllerDisk>>,
     rescan_notification_source: Mutex<Vec<futures::channel::mpsc::Sender<()>>>,
+    poll_mode_queue_depth: AtomicU32,
 }
 
 pub struct ScsiController {
@@ -1585,6 +1599,7 @@ impl ScsiController {
             state: Arc::new(ScsiControllerState {
                 disks: Default::default(),
                 rescan_notification_source: Mutex::new(Vec::new()),
+                poll_mode_queue_depth: AtomicU32::new(DEFAULT_POLL_MODE_QUEUE_DEPTH),
             }),
         }
     }

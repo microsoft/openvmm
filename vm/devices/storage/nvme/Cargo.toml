@@ -26,13 +26,15 @@ guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+task_control.workspace = true
+tracelimit.workspace = true
+
 async-trait.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true
-task_control.workspace = true
+slab.workspace = true
 thiserror.workspace = true
-tracelimit.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy = { workspace = true, features = ["alloc"] }

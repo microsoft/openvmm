@@ -58,7 +58,7 @@ use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_server::HvsockRelayChannelHalf;
 use vmbus_server::MnfUsage;
-use vmbus_server::ModifyConnectionResponse;
+use vmbus_server::ModifyRelayResponse;
 use vmbus_server::OfferInfo;
 use vmbus_server::OfferParamsInternal;
 use vmbus_server::Update;
@@ -553,7 +553,7 @@ struct RelayTask {
     intercept_channels: HashMap<Guid, mesh::Sender<InterceptChannelRequest>>,
     use_interrupt_relay: Arc<AtomicBool>,
     #[inspect(skip)]
-    server_response_send: mesh::Sender<ModifyConnectionResponse>,
+    server_response_send: mesh::Sender<ModifyRelayResponse>,
     #[inspect(skip)]
     hvsock_relay: HvsockRelayChannelHalf,
     #[inspect(skip)]
@@ -568,7 +568,7 @@ impl RelayTask {
     fn new(
         spawner: Arc<dyn SpawnDriver>,
         vmbus_control: Arc<VmbusServerControl>,
-        server_response_send: mesh::Sender<ModifyConnectionResponse>,
+        server_response_send: mesh::Sender<ModifyRelayResponse>,
         hvsock_relay: HvsockRelayChannelHalf,
         vmbus_client: client::VmbusClientAccess,
         version: VersionInfo,
@@ -757,12 +757,12 @@ impl RelayTask {
     async fn handle_modify(
         &mut self,
         request: vmbus_server::ModifyRelayRequest,
-    ) -> ModifyConnectionResponse {
+    ) -> ModifyRelayResponse {
         // If the guest is requesting a version change, check whether that version is not newer
         // than what the host supports.
         if let Some(version) = request.version {
             if (self.version.version as u32) < version {
-                return ModifyConnectionResponse::Unsupported;
+                return ModifyRelayResponse::Unsupported;
             }
         }
 
@@ -790,7 +790,12 @@ impl RelayTask {
             }
         };
 
-        ModifyConnectionResponse::Supported(state, self.version.feature_flags)
+        // Use Supported only for new connections (which have a version).
+        if request.version.is_some() {
+            ModifyRelayResponse::Supported(state, self.version.feature_flags)
+        } else {
+            ModifyRelayResponse::Modified(state)
+        }
     }
 
     async fn handle_server_request(&mut self, request: vmbus_server::ModifyRelayRequest) {

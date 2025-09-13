@@ -151,7 +151,6 @@ use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::VpInfo;
-use vm_topology::processor::aarch64::GicInfo;
 use vmbus_relay_intercept_device::SimpleVmbusClientDeviceWrapper;
 use vmbus_server::VmbusServer;
 use vmcore::non_volatile_store::EphemeralNonVolatileStore;
@@ -1132,7 +1131,7 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+#[cfg(guest_arch = "x86_64")]
 fn new_x86_topology(
     cpus: &[bootloader_fdt_parser::Cpu],
     x2apic: vm_topology::processor::x86::X2ApicState,
@@ -1162,9 +1161,9 @@ fn new_x86_topology(
         .context("failed to construct the processor topology")
 }
 
-#[cfg_attr(guest_arch = "x86_64", expect(dead_code))]
+#[cfg(guest_arch = "aarch64")]
 fn new_aarch64_topology(
-    gic: GicInfo,
+    gic: vm_topology::processor::aarch64::GicInfo,
     cpus: &[bootloader_fdt_parser::Cpu],
     pmu_gsiv: u32,
 ) -> anyhow::Result<ProcessorTopology<vm_topology::processor::aarch64::Aarch64Topology>> {

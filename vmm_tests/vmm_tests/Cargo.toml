@@ -52,6 +52,7 @@ cfg-if.workspace = true
 futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true
+zerocopy.workspace = true
 
 hvlite_ttrpc_vmservice.workspace = true
 

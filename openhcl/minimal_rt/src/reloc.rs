@@ -38,27 +38,10 @@ const R_ERROR_RELASZ: u64 = 2;
 const R_ERROR_REL: u64 = 3;
 const R_ERROR_RELSZ: u64 = 4;
 
-const fn r_relative() -> u32 {
-    // `cfg_if::cfg_if` and `cfg_if!` would not work in the const context.
-    #[cfg(target_arch = "x86_64")]
-    {
-        const R_X64_RELATIVE: u32 = 8;
-        R_X64_RELATIVE
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        const R_AARCH64_RELATIVE: u32 = 0x403;
-        R_AARCH64_RELATIVE
-    }
-
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-    {
-        compile_error!("Unsupported architecture")
-    }
-}
-
-const R_RELATIVE: u32 = r_relative();
+#[cfg(target_arch = "x86_64")]
+const R_RELATIVE: u32 = 8;
+#[cfg(target_arch = "aarch64")]
+const R_RELATIVE: u32 = 0x403;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
