@@ -86,8 +86,11 @@ const REQUIRED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
 ///
 /// The relay will connect to the host when it first receives a start request through its state
 /// unit, and will remain connected until it is destroyed.
+#[derive(Inspect, Debug)]
 pub struct HostVmbusTransport {
+    #[inspect(skip)]
     _relay_task: Task<()>,
+    #[inspect(flatten, send = "TaskRequest::Inspect")]
     task_send: mesh::Sender<TaskRequest>,
 }
 
@@ -160,18 +163,6 @@ impl HostVmbusTransport {
     }
 }
 
-impl Inspect for HostVmbusTransport {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(TaskRequest::Inspect(req.defer()));
-    }
-}
-
-impl Debug for HostVmbusTransport {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(fmt, "HostVmbusTransport")
-    }
-}
-
 /// State needed to relay host-to-guest interrupts.
 struct InterruptRelay {
     /// Event signaled when the host sends an interrupt.
@@ -203,15 +194,10 @@ impl Debug for RelayChannelRequest {
     }
 }
 
+#[derive(Inspect)]
 struct RelayChannelInfo {
+    #[inspect(flatten, send = "RelayChannelRequest::Inspect")]
     relay_request_send: mesh::Sender<RelayChannelRequest>,
-}
-
-impl Inspect for RelayChannelInfo {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.relay_request_send
-            .send(RelayChannelRequest::Inspect(req.defer()));
-    }
 }
 
 #[derive(Inspect)]

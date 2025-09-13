@@ -31,14 +31,8 @@ pub struct GuestEmulationTransportClient {
     version: get_protocol::ProtocolVersion,
 }
 
-#[derive(Debug)]
-struct ProcessLoopControl(mesh::Sender<msg::Msg>);
-
-impl Inspect for ProcessLoopControl {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.0.send(msg::Msg::Inspect(req.defer()));
-    }
-}
+#[derive(Debug, Inspect)]
+struct ProcessLoopControl(#[inspect(flatten, send = "msg::Msg::Inspect")] mesh::Sender<msg::Msg>);
 
 impl ProcessLoopControl {
     async fn call<I, R: 'static + Send>(

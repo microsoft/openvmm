@@ -43,10 +43,15 @@ pub struct NvmeWorkersContext<'a> {
     pub fault_configuration: FaultConfiguration,
 }
 
+#[derive(InspectMut)]
 pub struct NvmeWorkers {
+    #[inspect(skip)]
     _task: Task<()>,
+    #[inspect(flatten, send = "CoordinatorRequest::Inspect")]
     send: mesh::Sender<CoordinatorRequest>,
+    #[inspect(skip)]
     doorbells: Vec<Arc<DoorbellRegister>>,
+    #[inspect(skip)]
     state: EnableState,
 }
 
@@ -56,12 +61,6 @@ enum EnableState {
     Enabling(PendingRpc<()>),
     Enabled,
     Resetting(PendingRpc<()>),
-}
-
-impl InspectMut for NvmeWorkers {
-    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        self.send.send(CoordinatorRequest::Inspect(req.defer()));
-    }
 }
 
 impl NvmeWorkers {
