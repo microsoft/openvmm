@@ -212,16 +212,17 @@ pub enum IgvmAgentAction {
     NoResponse,
 }
 
-pub type IgvmAgentScriptPlan = HashMap<IgvmAttestRequestType, VecDeque<IgvmAgentAction>>;
+/// IGVM Agent test plan that specifies the list of action for a given request type.
+pub type IgvmAgentTestPlan = HashMap<IgvmAttestRequestType, VecDeque<IgvmAgentAction>>;
 
-/// IGVM Agent test setting
+/// IGVM Agent test setting.
 #[derive(Debug)]
-pub enum IgvmAgentSetting {
-    /// Use test config. Used when creating GED via `GuestEmulationDeviceHandle`
+pub enum IgvmAgentTestSetting {
+    /// Use test config that will be mapped to a plan. Used when creating GED via `GuestEmulationDeviceHandle`
     /// (VMM tests).
     TestConfig(IgvmAttestTestConfig),
     /// Use test plan. Used when creating GED via test_utilities (unit tests).
-    TestPlan(IgvmAgentScriptPlan),
+    TestPlan(IgvmAgentTestPlan),
 }
 
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
@@ -247,7 +248,7 @@ pub struct GuestEmulationDevice {
     last_save_restore_buf_len: usize,
 
     #[inspect(skip)]
-    igvm_agent_setting: Option<IgvmAgentSetting>,
+    igvm_agent_setting: Option<IgvmAgentTestSetting>,
 
     #[cfg(feature = "test_igvm_agent")]
     /// Test agent implementation for `handle_igvm_attest`
@@ -272,7 +273,7 @@ impl GuestEmulationDevice {
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
-        igvm_agent_setting: Option<IgvmAgentSetting>,
+        igvm_agent_setting: Option<IgvmAgentTestSetting>,
     ) -> Self {
         Self {
             config,
@@ -901,7 +902,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             #[cfg(feature = "test_igvm_agent")]
             {
                 if let Some(setting) = &state.igvm_agent_setting {
-                    state.igvm_agent.set_setting(setting);
+                    state.igvm_agent.install_plan_from_setting(setting);
                 }
 
                 state

@@ -1287,7 +1287,7 @@ mod tests {
     use get_protocol::GSP_CLEARTEXT_MAX;
     use get_protocol::GspExtendedStatusFlags;
     use guest_emulation_device::IgvmAgentAction;
-    use guest_emulation_device::IgvmAgentScriptPlan;
+    use guest_emulation_device::IgvmAgentTestPlan;
     use guest_emulation_transport::test_utilities::TestGet;
     use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
@@ -1403,7 +1403,7 @@ mod tests {
     async fn new_test_get(
         spawn: impl Spawn,
         enable_igvm_attest: bool,
-        plan: Option<IgvmAgentScriptPlan>,
+        plan: Option<IgvmAgentTestPlan>,
     ) -> TestGet {
         if enable_igvm_attest {
             const TEST_DEVICE_MEMORY_SIZE: u64 = 64;
@@ -2216,7 +2216,7 @@ mod tests {
             .unwrap();
 
         // Skip WRAPPED_KEY_REQUEST for both boots
-        let mut plan = IgvmAgentScriptPlan::default();
+        let mut plan = IgvmAgentTestPlan::default();
         plan.insert(
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
             VecDeque::from([IgvmAgentAction::NoResponse, IgvmAgentAction::NoResponse]),
@@ -2284,7 +2284,7 @@ mod tests {
         let mut vmgs = new_formatted_vmgs().await;
 
         // IGVM attest is required
-        let mut plan = IgvmAgentScriptPlan::default();
+        let mut plan = IgvmAgentTestPlan::default();
         plan.insert(
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
             VecDeque::from([
@@ -2368,7 +2368,7 @@ mod tests {
         let mut vmgs = new_formatted_vmgs().await;
 
         // IGVM attest is required
-        let mut plan = IgvmAgentScriptPlan::default();
+        let mut plan = IgvmAgentTestPlan::default();
         plan.insert(
             IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
             VecDeque::from([

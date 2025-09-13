@@ -12,8 +12,8 @@
 //! Windows platform.
 
 use crate::IgvmAgentAction;
-use crate::IgvmAgentScriptPlan;
-use crate::IgvmAgentSetting;
+use crate::IgvmAgentTestPlan;
+use crate::IgvmAgentTestSetting;
 use aes_kw::KekAes256;
 use base64::Engine;
 use get_resources::ged::IgvmAttestTestConfig;
@@ -96,11 +96,11 @@ pub(crate) struct TestIgvmAgent {
     /// Optional DES key
     des_key: Option<[u8; 32]>,
     /// Optional scripted actions per request type for tests.
-    plan: Option<IgvmAgentScriptPlan>,
+    plan: Option<IgvmAgentTestPlan>,
 }
 
-fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentScriptPlan {
-    let mut plan = IgvmAgentScriptPlan::default();
+fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan {
+    let mut plan = IgvmAgentTestPlan::default();
 
     match test_config {
         IgvmAttestTestConfig::AkCertRequestFailureAndRetry => {
@@ -134,16 +134,16 @@ impl TestIgvmAgent {
         }
     }
 
-    /// Install a scripted plan used by tests based on the setting. Can only be done once.
-    pub fn set_setting(&mut self, setting: &IgvmAgentSetting) {
+    /// Install a scripted plan used by tests based on the setting.
+    pub fn install_plan_from_setting(&mut self, setting: &IgvmAgentTestSetting) {
         INIT.call_once(|| {
             tracing::info!("install the scripted plan for test IGVM Agent");
 
             match setting {
-                IgvmAgentSetting::TestPlan(plan) => {
+                IgvmAgentTestSetting::TestPlan(plan) => {
                     self.plan = Some(plan.clone());
                 }
-                IgvmAgentSetting::TestConfig(config) => {
+                IgvmAgentTestSetting::TestConfig(config) => {
                     self.plan = Some(test_config_to_plan(config));
                 }
             }
@@ -180,13 +180,15 @@ impl TestIgvmAgent {
         }
         let runtime_claims_bytes = &request_bytes[runtime_claims_start..runtime_claims_end];
 
-        // If a plan is provided and has a queued action for this request type,
-        // execute it. This allows tests to force success/no-response, etc.
-        if let Some(action) = self.take_next_action(request.header.request_type) {
+        let (response, length) = if let Some(action) =
+            self.take_next_action(request.header.request_type)
+        {
+            // If a plan is provided and has a queued action for this request type,
+            // execute it. This allows tests to force success/no-response, etc.
             match action {
                 IgvmAgentAction::NoResponse => {
                     tracing::info!(?request.header.request_type, "Test plan: NoResponse");
-                    return Ok((vec![], 0));
+                    (vec![], 0)
                 }
                 IgvmAgentAction::RespondSuccess => {
                     tracing::info!(?request.header.request_type, "Test plan: RespondSuccess");
@@ -204,7 +206,9 @@ impl TestIgvmAgent {
                                 error_info: IgvmErrorInfo::default(),
                             };
                             let payload = [header.as_bytes(), &data].concat();
-                            return Ok((payload.clone(), payload.len() as u32));
+                            let payload_len = payload.len() as u32;
+
+                            (payload, payload_len)
                         }
                         IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
                             if self.secret_key.is_none() {
@@ -225,7 +229,9 @@ impl TestIgvmAgent {
                                 error_info: IgvmErrorInfo::default(),
                             };
                             let payload = [header.as_bytes(), &data].concat();
-                            return Ok((payload.clone(), payload.len() as u32));
+                            let payload_len = payload.len() as u32;
+
+                            (payload, payload_len)
                         }
                         IgvmAttestRequestType::AK_CERT_REQUEST => {
                             let data = vec![0xab; 2500];
@@ -237,7 +243,9 @@ impl TestIgvmAgent {
                                 error_info: IgvmErrorInfo::default(),
                             };
                             let payload = [header.as_bytes(), &data].concat();
-                            return Ok((payload.clone(), payload.len() as u32));
+                            let payload_len = payload.len() as u32;
+
+                            (payload, payload_len)
                         }
                         ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
                     }
@@ -257,7 +265,9 @@ impl TestIgvmAgent {
                                 },
                             };
                             let payload = header.as_bytes().to_vec();
-                            return Ok((payload.clone(), payload.len() as u32));
+                            let payload_len = payload.len() as u32;
+
+                            (payload, payload_len)
                         }
                         IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
                             let header = IgvmAttestKeyReleaseResponseHeader {
@@ -271,7 +281,9 @@ impl TestIgvmAgent {
                                 },
                             };
                             let payload = header.as_bytes().to_vec();
-                            return Ok((payload.clone(), payload.len() as u32));
+                            let payload_len = payload.len() as u32;
+
+                            (payload, payload_len)
                         }
                         IgvmAttestRequestType::AK_CERT_REQUEST => {
                             let header = IgvmAttestAkCertResponseHeader {
@@ -285,87 +297,90 @@ impl TestIgvmAgent {
                                 },
                             };
                             let payload = header.as_bytes().to_vec();
-                            return Ok((payload.clone(), payload.len() as u32));
+                            let payload_len = payload.len() as u32;
+
+                            (payload.clone(), payload_len)
                         }
                         ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
                     }
                 }
             }
-        }
+        } else {
+            // If no plan is provided, fall back to the default behavior that
+            // always return valid responses.
+            match request.header.request_type {
+                IgvmAttestRequestType::AK_CERT_REQUEST => {
+                    tracing::info!("Send a response for AK_CERT_REQUEST");
 
-        // If no plan is provided, fall back to the default behavior that
-        // always return valid responses.
-        let (response, length) = match request.header.request_type {
-            IgvmAttestRequestType::AK_CERT_REQUEST => {
-                tracing::info!("Send a response for AK_CERT_REQEUST");
+                    let data = vec![0xab; 2500];
+                    let header = IgvmAttestAkCertResponseHeader {
+                        data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
+                            as u32,
+                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                        error_info: IgvmErrorInfo::default(),
+                    };
+                    let payload = [header.as_bytes(), &data].concat();
+                    let payload_len = payload.len() as u32;
 
-                let data = vec![0xab; 2500];
-                let header = IgvmAttestAkCertResponseHeader {
-                    data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
-                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                    error_info: IgvmErrorInfo::default(),
-                };
-                let payload = [header.as_bytes(), &data].concat();
-                let payload_len = payload.len() as u32;
-
-                (payload, payload_len)
-            }
-            IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
-                tracing::info!("Send a response for WRAPPED_KEY_REQUEST");
-
-                self.initialize_keys()?;
-
-                let mock_response = self
-                    .generate_mock_wrapped_key_response()
-                    .map_err(Error::WrappedKeyError)?;
-                let data = mock_response;
-
-                let header = IgvmAttestWrappedKeyResponseHeader {
-                    data_size: (data.len() + size_of::<IgvmAttestWrappedKeyResponseHeader>())
-                        as u32,
-                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                    error_info: IgvmErrorInfo::default(),
-                };
-                let payload = [header.as_bytes(), &data].concat();
-                let payload_len = payload.len() as u32;
-
-                tracing::info!(
-                    "Sent mock response for WRAPPED_KEY_REQUEST, length: {}",
-                    payload.len()
-                );
-
-                (payload, payload_len)
-            }
-            IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
-                tracing::info!("Send a response for KEY_RELEASE_REQUEST");
-
-                if self.secret_key.is_none() {
-                    self.initialize_keys()?;
+                    (payload, payload_len)
                 }
+                IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
+                    tracing::info!("Send a response for WRAPPED_KEY_REQUEST");
 
-                // Generate a mock JWT response for testing - convert request to proper type
-                let jwt_response = self
-                    .generate_mock_key_release_response(runtime_claims_bytes)
-                    .map_err(Error::KeyReleaseError)?;
-                let data = jwt_response.as_bytes().to_vec();
+                    self.initialize_keys()?;
 
-                let header = IgvmAttestKeyReleaseResponseHeader {
-                    data_size: (data.len() + size_of::<IgvmAttestKeyReleaseResponseHeader>())
-                        as u32,
-                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                    error_info: IgvmErrorInfo::default(),
-                };
-                let payload = [header.as_bytes(), &data].concat();
-                let payload_len = payload.len() as u32;
+                    let mock_response = self
+                        .generate_mock_wrapped_key_response()
+                        .map_err(Error::WrappedKeyError)?;
+                    let data = mock_response;
 
-                tracing::info!(
-                    "Sent mock response for KEY_RELEASE_REQUEST, length: {}",
-                    payload.len()
-                );
+                    let header = IgvmAttestWrappedKeyResponseHeader {
+                        data_size: (data.len() + size_of::<IgvmAttestWrappedKeyResponseHeader>())
+                            as u32,
+                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                        error_info: IgvmErrorInfo::default(),
+                    };
+                    let payload = [header.as_bytes(), &data].concat();
+                    let payload_len = payload.len() as u32;
 
-                (payload, payload_len)
+                    tracing::info!(
+                        "Sent mock response for WRAPPED_KEY_REQUEST, length: {}",
+                        payload.len()
+                    );
+
+                    (payload, payload_len)
+                }
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
+                    tracing::info!("Send a response for KEY_RELEASE_REQUEST");
+
+                    if self.secret_key.is_none() {
+                        self.initialize_keys()?;
+                    }
+
+                    // Generate a mock JWT response for testing - convert request to proper type
+                    let jwt_response = self
+                        .generate_mock_key_release_response(runtime_claims_bytes)
+                        .map_err(Error::KeyReleaseError)?;
+                    let data = jwt_response.as_bytes().to_vec();
+
+                    let header = IgvmAttestKeyReleaseResponseHeader {
+                        data_size: (data.len() + size_of::<IgvmAttestKeyReleaseResponseHeader>())
+                            as u32,
+                        version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                        error_info: IgvmErrorInfo::default(),
+                    };
+                    let payload = [header.as_bytes(), &data].concat();
+                    let payload_len = payload.len() as u32;
+
+                    tracing::info!(
+                        "Sent mock response for KEY_RELEASE_REQUEST, length: {}",
+                        payload.len()
+                    );
+
+                    (payload, payload_len)
+                }
+                ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
             }
-            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
         };
 
         Ok((response, length))

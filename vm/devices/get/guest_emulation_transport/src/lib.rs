@@ -56,7 +56,7 @@ pub mod test_utilities {
     use crate::worker::GuestEmulationTransportWorker;
     use client::GuestEmulationTransportClient;
     use get_protocol::ProtocolVersion;
-    use guest_emulation_device::IgvmAgentScriptPlan;
+    use guest_emulation_device::IgvmAgentTestPlan;
     use guest_emulation_device::test_utilities::TestGedClient;
     use guest_emulation_device::test_utilities::TestGetResponses;
     use mesh::Receiver;
@@ -83,7 +83,7 @@ pub mod test_utilities {
         ged_responses: Option<Vec<TestGetResponses>>,
         version: ProtocolVersion,
         guest_memory: Option<guestmem::GuestMemory>,
-        igvm_agent_script: Option<IgvmAgentScriptPlan>,
+        igvm_agent_script: Option<IgvmAgentTestPlan>,
     ) -> TestGet {
         let (host_vmbus, guest_vmbus) = vmbus_async::pipe::connected_message_pipes(
             get_protocol::MAX_MESSAGE_SIZE + vmbus_ring::PAGE_SIZE,
