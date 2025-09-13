@@ -67,7 +67,7 @@ impl NonVolatileStore for VmgsNonVolatileStore {
     async fn restore(&mut self) -> Result<Option<Vec<u8>>, NonVolatileStoreError> {
         match self.vmgs.read_file(self.file_id).await {
             Ok(buf) => Ok(Some(buf)),
-            Err(VmgsClientError::Vmgs(vmgs::Error::FileInfoAllocated)) => Ok(None),
+            Err(VmgsClientError::Vmgs(vmgs::Error::FileInfoNotAllocated)) => Ok(None),
             Err(e) => Err(NonVolatileStoreError::new(e)),
         }
     }

@@ -24,7 +24,7 @@ pub enum Error {
     FileInfo,
     /// No allocated bytes for file id being read.
     #[error("no allocated bytes for file id being read")]
-    FileInfoAllocated,
+    FileInfoNotAllocated,
     /// Cannot allocate 0 blocks.
     #[error("cannot allocate 0 blocks")]
     AllocateZero,

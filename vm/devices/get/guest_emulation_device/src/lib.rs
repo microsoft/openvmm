@@ -20,9 +20,8 @@ pub mod test_utilities;
 mod test_igvm_agent;
 
 #[cfg(feature = "test_igvm_agent")]
-use crate::test_igvm_agent::IgvmAttestState;
-#[cfg(feature = "test_igvm_agent")]
 use crate::test_igvm_agent::TestIgvmAgent;
+
 use async_trait::async_trait;
 use core::mem::size_of;
 use disk_backend::Disk;
@@ -64,9 +63,12 @@ use jiff::civil::date;
 use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io::IoSlice;
 use task_control::StopTask;
 use thiserror::Error;
@@ -202,6 +204,27 @@ pub enum GuestEvent {
     BootAttempt,
 }
 
+/// Possible actions for the IGVM agent to take in response to a request.
+#[derive(Debug, Clone)]
+pub enum IgvmAgentAction {
+    RespondSuccess,
+    RespondFailure,
+    NoResponse,
+}
+
+/// IGVM Agent test plan that specifies the list of action for a given request type.
+pub type IgvmAgentTestPlan = HashMap<IgvmAttestRequestType, VecDeque<IgvmAgentAction>>;
+
+/// IGVM Agent test setting.
+#[derive(Debug)]
+pub enum IgvmAgentTestSetting {
+    /// Use test config that will be mapped to a plan. Used when creating GED via `GuestEmulationDeviceHandle`
+    /// (VMM tests).
+    TestConfig(IgvmAttestTestConfig),
+    /// Use test plan. Used when creating GED via test_utilities (unit tests).
+    TestPlan(IgvmAgentTestPlan),
+}
+
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
 #[derive(InspectMut)]
 pub struct GuestEmulationDevice {
@@ -225,7 +248,7 @@ pub struct GuestEmulationDevice {
     last_save_restore_buf_len: usize,
 
     #[inspect(skip)]
-    igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+    igvm_agent_setting: Option<IgvmAgentTestSetting>,
 
     #[cfg(feature = "test_igvm_agent")]
     /// Test agent implementation for `handle_igvm_attest`
@@ -250,7 +273,7 @@ impl GuestEmulationDevice {
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
-        igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+        igvm_agent_setting: Option<IgvmAgentTestSetting>,
     ) -> Self {
         Self {
             config,
@@ -265,13 +288,9 @@ impl GuestEmulationDevice {
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
+            igvm_agent_setting,
             #[cfg(feature = "test_igvm_agent")]
-            igvm_agent: TestIgvmAgent {
-                state: IgvmAttestState::Init,
-                secret_key: None,
-                des_key: None,
-            },
-            igvm_attest_test_config,
+            igvm_agent: TestIgvmAgent::new(),
         }
     }
 
@@ -865,7 +884,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        tracing::info!(test_config = ?state.igvm_attest_test_config, "Handle IGVM Attest request");
+        tracing::info!(test_setting = ?state.igvm_agent_setting, "Handle IGVM Attest request");
 
         let request = get_protocol::IgvmAttestRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
@@ -882,12 +901,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let (response_payload, length) = {
             #[cfg(feature = "test_igvm_agent")]
             {
+                if let Some(setting) = &state.igvm_agent_setting {
+                    state.igvm_agent.install_plan_from_setting(setting);
+                }
+
                 state
                     .igvm_agent
-                    .handle_request(
-                        &request.report[..request.report_length as usize],
-                        state.igvm_attest_test_config.as_ref(),
-                    )
+                    .handle_request(&request.report[..request.report_length as usize])
                     .map_err(Error::TestIgvmAgent)?
             }
             #[cfg(not(feature = "test_igvm_agent"))]
