@@ -1872,7 +1872,6 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
 }
 
 /// Returns the public template for SRK.
-/// TODO: review the properties.
 pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     let symmetric = TpmtSymDefObject::new(
         AlgIdEnum::AES.into(),
@@ -1895,8 +1894,10 @@ pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         .with_restricted(true)
         .with_decrypt(true);
 
-    let mut unique: [u8; 102] = [0; 102]; // Initialize the unique field with zeros
-    unique[0] = 0x01; // Set the first byte to 1 to indicate a valid unique value, required for Ubuntu.
+    //let mut unique: [u8; 102] = [0; 102]; // Initialize the unique field with zeros
+    //unique[0] = 0x01; // Set the first byte to 1 to indicate a valid unique value, required for Ubuntu.
+    let unique = &[0u8; crate::RSA_2K_MODULUS_SIZE];
+    
     let in_public = TpmtPublic::new(
         AlgIdEnum::RSA.into(),
         AlgIdEnum::SHA256.into(),
