@@ -170,6 +170,8 @@ impl HostContext {
 
 /// A single requirement for a test to run.
 pub enum TestRequirement {
+    /// No specific requirements.
+    None,
     /// Execution environment requirement.
     ExecutionEnvironment(ExecutionEnvironment),
     /// Vendor requirement.
@@ -181,12 +183,19 @@ pub enum TestRequirement {
         /// Optional VMM type restriction.
         vmm_type: VmmType,
     },
+    /// Logical AND of two requirements.
+    And(Box<TestRequirement>, Box<TestRequirement>),
+    /// Logical OR of two requirements.
+    Or(Box<TestRequirement>, Box<TestRequirement>),
+    /// Logical NOT of a requirement.
+    Not(Box<TestRequirement>),
 }
 
 impl TestRequirement {
     /// Evaluate if this requirement is satisfied with the given host context
     pub fn is_satisfied(&self, context: &HostContext) -> bool {
         match self {
+            TestRequirement::None => true,
             TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
             TestRequirement::Vendor(vendor) => context.vendor == *vendor,
             TestRequirement::Isolation { isolation_type, .. } => {
@@ -205,6 +214,13 @@ impl TestRequirement {
                     false
                 }
             }
+            TestRequirement::And(req1, req2) => {
+                req1.is_satisfied(context) && req2.is_satisfied(context)
+            }
+            TestRequirement::Or(req1, req2) => {
+                req1.is_satisfied(context) || req2.is_satisfied(context)
+            }
+            TestRequirement::Not(req) => !req.is_satisfied(context),
         }
     }
 }
@@ -230,52 +246,25 @@ impl TestEvaluationResult {
 
 /// Container for test requirements that can be evaluated
 pub struct TestCaseRequirements {
-    requirements: Vec<TestRequirement>,
+    requirements: TestRequirement,
 }
 
 impl TestCaseRequirements {
-    /// Create a new empty requirements container
-    pub fn new() -> Self {
-        Self {
-            requirements: Vec::new(),
-        }
-    }
-
-    /// Add a requirement to this test case
-    pub fn require(mut self, requirement: TestRequirement) -> Self {
-        self.requirements.push(requirement);
-        self
-    }
-
-    /// Evaluate all requirements with cached host context and return comprehensive result
-    pub fn evaluate(&self, test_name: &str, context: &HostContext) -> TestEvaluationResult {
-        let can_run = self
-            .requirements
-            .iter()
-            .all(|req| req.is_satisfied(context));
-
-        TestEvaluationResult {
-            test_name: test_name.to_string(),
-            can_run,
-        }
-    }
-
-    /// Get all requirements for inspection
-    pub fn requirements(&self) -> &[TestRequirement] {
-        &self.requirements
+    /// Create a new TestCaseRequirements from a TestRequirement
+    pub fn new(requirements: TestRequirement) -> Self {
+        Self { requirements }
     }
 }
 
 /// Evaluates if a test case can be run in the current execution environment with context.
 pub fn can_run_test_with_context(
-    test_name: &str,
     config: Option<&TestCaseRequirements>,
     context: &HostContext,
-) -> TestEvaluationResult {
+) -> bool {
     if let Some(requirements) = config {
-        requirements.evaluate(test_name, context)
+        requirements.requirements.is_satisfied(context)
     } else {
         // No requirements means the test can run if it's built.
-        TestEvaluationResult::new(test_name)
+        true
     }
 }

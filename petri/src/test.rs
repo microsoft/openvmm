@@ -336,9 +336,7 @@ pub fn test_main(
     let trials: Vec<libtest_mimic::Trial> = Test::all()
         .map(|test| {
             if let Some(requirements) = test.test.0.host_requirements() {
-                let evaluation_result =
-                    can_run_test_with_context(&test.name(), Some(requirements), &host_context);
-                if !evaluation_result.can_run {
+                if !can_run_test_with_context(Some(requirements), &host_context) {
                     return libtest_mimic::Trial::test(test.name(), move || Ok(()))
                         .with_ignored_flag(true);
                 }
