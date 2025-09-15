@@ -818,17 +818,16 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
                 // this should track all pages that have been accepted and
                 // should be used instead.
                 // Also don't attempt to change the permissions of locked pages.
-                if !inner.valid_encrypted.check_valid(gpn)
-                    || self.check_gpn_not_locked(&inner, target_vtl, gpn).is_err()
-                {
+                if inner.valid_encrypted.check_valid(gpn) {
+                    self.check_gpn_not_locked(&inner, target_vtl, gpn)?;
+                    page_count += 1;
+                } else {
                     if page_count > 0 {
                         let end_address = protect_start + (page_count * PAGE_SIZE as u64);
                         ranges.push(MemoryRange::new(protect_start..end_address));
                     }
                     protect_start = (gpn + 1) * PAGE_SIZE as u64;
                     page_count = 0;
-                } else {
-                    page_count += 1;
                 }
             }
 
