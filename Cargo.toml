@@ -27,7 +27,6 @@ members = [
   "support/inspect/fuzz",
   "support/mesh/mesh_rpc/fuzz",
   "support/sparse_mmap/fuzz",
-  "support/stringbuf",
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
