@@ -708,7 +708,20 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to reset and pipette to connect.
     pub async fn wait_for_reset(&mut self) -> anyhow::Result<PipetteClient> {
         self.wait_for_reset_no_agent().await?;
-        self.wait_for_agent().await
+        let client = self.wait_for_agent().await?;
+
+        match self.openhcl_diag() {
+            Ok(diag) => {
+                diag.kmsg().await?;
+                let sh = client.unix_shell();
+                pipette_client::cmd!(sh, "dmesg -n 3").run().await?;
+            }
+            Err(e) => {
+                tracing::warn!("failed to open VTl2 diagnostic channel: {}", e);
+            }
+        }
+
+        Ok(client)
     }
 
     async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
