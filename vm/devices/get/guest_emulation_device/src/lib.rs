@@ -235,7 +235,7 @@ impl Inspect for IgvmAgentTestSetting {
             Self::TestPlan(plan) => {
                 // Only expose summary to avoid needing Inspect on HashMap.
                 let len = plan.len();
-                resp.field("TestPlan len", &len);
+                resp.field("TestPlan len", len);
             }
         }
     }
