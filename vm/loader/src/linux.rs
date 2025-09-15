@@ -3,6 +3,7 @@
 
 //! Linux specific loader definitions and implementation.
 
+use crate::common::VecPageTableBuffer;
 use crate::common::import_default_gdt;
 use crate::elf::load_static_elf;
 use crate::importer::Aarch64Register;
@@ -21,6 +22,8 @@ use bitfield_struct::bitfield;
 use hvdef::HV_PAGE_SIZE;
 use loader_defs::linux as defs;
 use page_table::IdentityMapSize;
+use page_table::PageTableBuffer;
+use page_table::x64::PageTable;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use page_table::x64::build_page_tables_64;
@@ -331,11 +334,16 @@ pub fn load_config(
     check_address_alignment(registers.gdt_address)?;
     import_default_gdt(importer, registers.gdt_address / HV_PAGE_SIZE).map_err(Error::Importer)?;
     check_address_alignment(registers.page_table_address)?;
-    let page_table = build_page_tables_64(
+    let mut page_table_work_buffer: VecPageTableBuffer<PageTable> = VecPageTableBuffer::new();
+    let mut page_table: VecPageTableBuffer<u8> = VecPageTableBuffer::new();
+    build_page_tables_64(
         registers.page_table_address,
         0,
         IdentityMapSize::Size4Gb,
         None,
+        false,
+        &mut page_table_work_buffer,
+        &mut page_table,
     );
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
@@ -344,7 +352,7 @@ pub fn load_config(
             page_table.len() as u64 / HV_PAGE_SIZE,
             "linux-pagetables",
             BootPageAcceptance::Exclusive,
-            &page_table,
+            page_table.as_slice(),
         )
         .map_err(Error::Importer)?;
 

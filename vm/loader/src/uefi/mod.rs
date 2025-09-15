@@ -359,6 +359,7 @@ pub mod x86_64 {
     use super::Error;
     use super::LoadInfo;
     use crate::common::DEFAULT_GDT_SIZE;
+    use crate::common::VecPageTableBuffer;
     use crate::common::import_default_gdt;
     use crate::cpuid::HV_PSP_CPUID_PAGE;
     use crate::importer::BootPageAcceptance;
@@ -371,6 +372,8 @@ pub mod x86_64 {
     use crate::uefi::get_sec_entry_point_offset;
     use hvdef::HV_PAGE_SIZE;
     use page_table::IdentityMapSize;
+    use page_table::PageTableBuffer;
+    use page_table::x64::PageTable;
     use page_table::x64::align_up_to_page_size;
     use page_table::x64::build_page_tables_64;
     use zerocopy::FromZeros;
@@ -404,7 +407,9 @@ pub mod x86_64 {
         //        to map the bottom 4GB of memory with shared visibility.
         //      - Otherwise, build the standard UEFI page tables. Bottom 4GB of address space,
         //        identity mapped with 2 MB pages.
-        let (page_tables, shared_vis_page_tables) =
+        let mut page_table_work_buffer: VecPageTableBuffer<PageTable> = VecPageTableBuffer::new();
+        let mut page_tables: VecPageTableBuffer<u8> = VecPageTableBuffer::new();
+        let shared_vis_page_tables =
             if isolation.isolation_type == IsolationType::Snp && !isolation.paravisor_present {
                 if let ConfigType::ConfigBlob(_) = config {
                     return Err(Error::InvalidConfigType(
@@ -418,29 +423,49 @@ pub mod x86_64 {
                     .ok_or(Error::InvalidSharedGpaBoundary)?;
                 let shared_gpa_boundary = 1 << shared_gpa_boundary_bits;
 
+                let mut shared_vis_page_table_work_buffer: VecPageTableBuffer<PageTable> =
+                    VecPageTableBuffer::new();
+                let mut shared_vis_page_tables: VecPageTableBuffer<u8> = VecPageTableBuffer::new();
+
                 // The extra page tables are placed after the first config blob
                 // page.  They will be accounted for when the IGVM parameters are
                 // built.
-                let shared_vis_page_tables = build_page_tables_64(
+                build_page_tables_64(
                     shared_vis_page_table_gpa,
                     shared_gpa_boundary,
                     IdentityMapSize::Size4Gb,
                     None,
+                    false,
+                    &mut shared_vis_page_table_work_buffer,
+                    &mut shared_vis_page_tables,
                 );
 
-                let page_tables = build_page_tables_64(
+                let mut page_table_work_buffer: VecPageTableBuffer<PageTable> =
+                    VecPageTableBuffer::new();
+                let mut page_tables: VecPageTableBuffer<u8> = VecPageTableBuffer::new();
+
+                build_page_tables_64(
                     PAGE_TABLE_GPA_BASE,
                     0,
                     IdentityMapSize::Size4Gb,
                     Some((shared_vis_page_table_gpa, shared_gpa_boundary)),
+                    false,
+                    &mut page_table_work_buffer,
+                    &mut page_tables,
                 );
 
-                (page_tables, Some(shared_vis_page_tables))
+                Some(shared_vis_page_tables)
             } else {
-                let page_tables =
-                    build_page_tables_64(PAGE_TABLE_GPA_BASE, 0, IdentityMapSize::Size4Gb, None);
-
-                (page_tables, None)
+                build_page_tables_64(
+                    PAGE_TABLE_GPA_BASE,
+                    0,
+                    IdentityMapSize::Size4Gb,
+                    None,
+                    false,
+                    &mut page_table_work_buffer,
+                    &mut page_tables,
+                );
+                None
             };
 
         // Size must match expected compiled constant
@@ -466,7 +491,7 @@ pub mod x86_64 {
                 PAGE_TABLE_SIZE / HV_PAGE_SIZE,
                 "uefi-page-tables",
                 BootPageAcceptance::Exclusive,
-                &page_tables,
+                page_tables.as_slice(),
             )
             .map_err(Error::Importer)?;
 
@@ -500,7 +525,8 @@ pub mod x86_64 {
                     match isolation.isolation_type {
                         IsolationType::Snp => shared_vis_page_tables
                             .as_ref()
-                            .expect("should be shared vis page tables"),
+                            .expect("should be shared vis page tables")
+                            .as_slice(),
                         _ => &[],
                     },
                 )?
