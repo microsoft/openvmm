@@ -667,6 +667,15 @@ struct OffloadConfig {
     lso6: bool,
 }
 
+impl OffloadConfig {
+    fn mask_to_supported(&mut self, supported: &OffloadConfig) {
+        self.checksum_tx.mask_to_supported(&supported.checksum_tx);
+        self.checksum_rx.mask_to_supported(&supported.checksum_rx);
+        self.lso4 &= supported.lso4;
+        self.lso6 &= supported.lso6;
+    }
+}
+
 #[derive(Debug, Inspect, Clone)]
 struct ChecksumOffloadConfig {
     #[inspect(safe)]
@@ -682,6 +691,14 @@ struct ChecksumOffloadConfig {
 }
 
 impl ChecksumOffloadConfig {
+    fn mask_to_supported(&mut self, supported: &ChecksumOffloadConfig) {
+        self.ipv4_header &= supported.ipv4_header;
+        self.tcp4 &= supported.tcp4;
+        self.udp4 &= supported.udp4;
+        self.tcp6 &= supported.tcp6;
+        self.udp6 &= supported.udp6;
+    }
+
     fn flags(
         &self,
     ) -> (
@@ -3514,11 +3531,14 @@ impl Adapter {
             primary.offload_config.checksum_rx.udp6 = rx;
         }
         if let Some(enable) = lsov2_ipv4.enable() {
-            primary.offload_config.lso4 = enable && self.offload_support.lso4;
+            primary.offload_config.lso4 = enable;
         }
         if let Some(enable) = lsov2_ipv6.enable() {
-            primary.offload_config.lso6 = enable && self.offload_support.lso6;
+            primary.offload_config.lso6 = enable;
         }
+        primary
+            .offload_config
+            .mask_to_supported(&self.offload_support);
         primary.pending_offload_change = true;
         Ok(())
     }
@@ -3584,10 +3604,10 @@ impl Adapter {
                         primary.offload_config.checksum_rx.ipv4_header = rx;
                     }
                     "*LsoV2IPv4" => {
-                        primary.offload_config.lso4 = as_num != 0 && self.offload_support.lso4;
+                        primary.offload_config.lso4 = as_num != 0;
                     }
                     "*LsoV2IPv6" => {
-                        primary.offload_config.lso6 = as_num != 0 && self.offload_support.lso6;
+                        primary.offload_config.lso6 = as_num != 0;
                     }
                     "*TCPChecksumOffloadIPv4" => {
                         primary.offload_config.checksum_tx.tcp4 = tx;
@@ -3607,6 +3627,9 @@ impl Adapter {
                     }
                     _ => {}
                 }
+                primary
+                    .offload_config
+                    .mask_to_supported(&self.offload_support);
             }
             rndisprot::NdisParameterType::INTEGER => {
                 let value: u32 = value.read_plain()?;
