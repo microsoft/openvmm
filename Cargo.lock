@@ -5007,6 +5007,7 @@ dependencies = [
  "mesh_protobuf",
  "minimal_rt",
  "minimal_rt_build",
+ "page_table",
  "safe_intrinsics",
  "sha2",
  "sidecar_defs",

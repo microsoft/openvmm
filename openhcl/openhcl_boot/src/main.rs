@@ -632,7 +632,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_memory(&p, partition_info, address_space);
     setup_vtl2_vp(partition_info);
 
     verify_imported_regions_hash(&p);
@@ -1314,6 +1314,7 @@ mod test {
                         AllocationType::SidecarNode
                     },
                     AllocationPolicy::LowMemory,
+                    None,
                 )
                 .expect("should be able to allocate sidecar node");
         }

@@ -182,7 +182,7 @@ pub fn get_tdx_tsc_reftime() -> Option<u64> {
 /// Update the TdxTrampolineContext, setting the necessary control registers for AP startup,
 /// and ensuring that LGDT will be skipped, so the GDT page does not need to be added to the
 /// e820 entries
-pub fn tdx_prepare_ap_trampoline() {
+pub fn tdx_prepare_ap_trampoline(cr3: u64) {
     let context_ptr: *mut TdxTrampolineContext = RESET_VECTOR_PAGE as *mut TdxTrampolineContext;
     // SAFETY: The TdxTrampolineContext is known to be stored at the architectural reset vector address
     let tdxcontext: &mut TdxTrampolineContext = unsafe { context_ptr.as_mut().unwrap() };
@@ -191,13 +191,11 @@ pub fn tdx_prepare_ap_trampoline() {
     tdxcontext.code_selector = 0;
     tdxcontext.task_selector = 0;
     tdxcontext.cr0 |= x86defs::X64_CR0_PG | x86defs::X64_CR0_PE | x86defs::X64_CR0_NE;
+    tdxcontext.cr3 = cr3;
     tdxcontext.cr4 |= x86defs::X64_CR4_PAE | x86defs::X64_CR4_MCE;
 }
 
 pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
-    // Update the TDX Trampoline Context for AP Startup
-    tdx_prepare_ap_trampoline();
-
     for cpu in 1..partition_info.cpus.len() {
         hvcall()
             .tdx_enable_vp_vtl2(cpu as u32)

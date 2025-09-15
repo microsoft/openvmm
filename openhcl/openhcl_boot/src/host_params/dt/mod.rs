@@ -358,14 +358,6 @@ fn add_common_ranges<'a, I: Iterator<Item = MemoryRange>>(
         ));
     }
 
-    // Only specify pagetables as a reserved region on TDX, as they are used
-    // for AP startup via the mailbox protocol. On other platforms, the
-    // memory is free to be reclaimed.
-    if params.isolation_type == IsolationType::Tdx {
-        assert!(params.page_tables.is_some());
-        builder = builder.with_page_tables(params.page_tables.expect("always present on tdx"));
-    }
-
     builder
 }
 
@@ -539,6 +531,7 @@ fn topology_from_host_dt(
                 pool_size_bytes,
                 AllocationType::GpaPool,
                 AllocationPolicy::LowMemory,
+                None,
             ) {
                 Some(pool) => {
                     log!("allocated VTL2 pool at {:#x?}", pool.range);

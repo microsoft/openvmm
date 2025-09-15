@@ -392,7 +392,6 @@ impl<'a> PageTableBuilder<'a> {
     /// The working memory and output memory are taken as parameters to allow for the caller
     /// to flexibly choose their allocation strategy, to support usage in no_std environments
     /// like openhcl_boot
-    ///
     pub fn new(
         page_table_gpa: u64,
         page_table: &'a mut [PageTable],
@@ -755,7 +754,7 @@ fn flatten_page_table<'a>(
     &flattened_page_table[0..PAGE_TABLE_SIZE * page_table_count]
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "no_std")))]
 mod tests {
     use std;
     use std::vec;
