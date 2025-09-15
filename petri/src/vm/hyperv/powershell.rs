@@ -1041,13 +1041,6 @@ pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
     .await
     .context("get_vm_host")?;
 
-    let json_value: serde_json::Value =
-        serde_json::from_str(&output).context("failed to parse json")?;
-
-    serde_json::from_value(serde_json::json!({
-        "GuestIsolationTypes": json_value.get("GuestIsolationTypes"),
-        "SnpStatus": json_value.get("SnpStatus"),
-        "TdxStatus": json_value.get("TdxStatus")
-    }))
-    .map_err(|e| anyhow::anyhow!("failed to parse HyperVGetVmHost: {}", e))
+    serde_json::from_str::<HyperVGetVmHost>(&output)
+        .map_err(|e| anyhow::anyhow!("failed to parse HyperVGetVmHost: {}", e))
 }
