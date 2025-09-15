@@ -5293,7 +5293,7 @@ name = "page_table"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
- "tracing",
+ "thiserror 2.0.16",
  "zerocopy 0.8.25",
 ]
 
