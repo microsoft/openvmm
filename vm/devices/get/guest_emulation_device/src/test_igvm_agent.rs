@@ -594,7 +594,7 @@ impl TestIgvmAgent {
 /// This avoids the high cost of using `OsRng` during RSA key generation,
 /// making `initialize_keys` run faster and with consistent timing across test runs.
 /// In contrast, `OsRng` can introduce significant variability and may cause
-/// tests to run slowly or even hit timeouts.
+/// tests to run slowly or even hit the default 5-second timeouts.
 pub struct DummyRng {
     state: u64,
 }
