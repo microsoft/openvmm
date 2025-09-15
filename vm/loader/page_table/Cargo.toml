@@ -14,7 +14,6 @@ tracing = { workspace = true, optional = true }
 zerocopy.workspace = true
 
 [features]
-default = ["tracing", "std"]
 tracing = ["dep:tracing", "std"]
 std = []
 

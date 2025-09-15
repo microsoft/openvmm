@@ -392,7 +392,6 @@ impl<'a> PageTableBuilder<'a> {
     /// The working memory and output memory are taken as parameters to allow for the caller
     /// to flexibly choose their allocation strategy, to support usage in no_std environments
     /// like openhcl_boot
-    ///
     pub fn new(
         page_table_gpa: u64,
         page_table: &'a mut [PageTable],
