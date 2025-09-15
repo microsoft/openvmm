@@ -838,7 +838,7 @@ async fn validate_mnf_usage_in_guest_reboot(
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
+async fn meminfo_status_2_proc_no_agent_reboot<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let mut vm = config
@@ -870,7 +870,7 @@ async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
+async fn meminfo_status_64_proc_no_agent_reboot<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let mut vm = config
