@@ -23,8 +23,8 @@ pub enum Vendor {
     Amd,
     /// Intel processors.
     Intel,
-    /// Unknown CPU vendor.
-    Unknown,
+    /// ARM processors.
+    Arm,
 }
 
 /// Types of isolation supported.
@@ -104,8 +104,9 @@ pub struct HostContext {
 }
 
 impl HostContext {
-    /// Create a new host context by querying host information
+    // xtask-fmt allow-target-arch cpu-intrinsic
     #[cfg(target_arch = "x86_64")]
+    /// Create a new host context by querying host information
     pub async fn new() -> Self {
         let is_nested = {
             let result =
@@ -149,10 +150,12 @@ impl HostContext {
         }
     }
 
+    // xtask-fmt allow-target-arch cpu-intrinsic
     #[cfg(not(target_arch = "x86_64"))]
+    /// Create a new host context by querying host information
     pub async fn new() -> Self {
         let is_nested = false;
-        let vendor = Vendor::Unknown;
+        let vendor = Vendor::Arm;
         Self {
             vm_host_info: None,
             vendor,
