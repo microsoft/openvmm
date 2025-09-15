@@ -298,24 +298,24 @@ impl fmt::Display for JsonDisplay<'_> {
             Node::Unevaluated => f.write_str("null"),
             // Errors are serialized using a key that should not occur in valid output, since those
             // are normally valid Rust identifiers.
-            Node::Failed(error) => write!(f, "{{\"$error\":{:?}}}", error.to_string()),
+            Node::Failed(error) => write!(f, r#"{{"$error":{:?}}}"#, error.to_string()),
             Node::Value(value) => match &value.kind {
                 ValueKind::Signed(v) => {
                     // For human readability, values that should be hex or binary are serialized as
                     // strings.
                     if value.flags.hex() {
-                        write!(f, "\"{v:#x}\"")
+                        write!(f, r#""{v:#x}""#)
                     } else if value.flags.binary() {
-                        write!(f, "\"{v:#b}\"")
+                        write!(f, r#""{v:#b}""#)
                     } else {
                         write!(f, "{v}")
                     }
                 }
                 ValueKind::Unsigned(v) => {
                     if value.flags.hex() {
-                        write!(f, "\"{v:#x}\"")
+                        write!(f, r#""{v:#x}""#)
                     } else if value.flags.binary() {
-                        write!(f, "\"{v:#b}\"")
+                        write!(f, r#""{v:#b}""#)
                     } else {
                         write!(f, "{v}")
                     }

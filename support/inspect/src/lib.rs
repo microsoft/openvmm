@@ -2188,7 +2188,7 @@ mod tests {
     use pal_async::timer::PolledTimer;
 
     fn expected_node(node: Node, expect: Expect) -> Node {
-        expect.assert_eq(&std::format!("{node:#}"));
+        expect.assert_eq(&std::format!("{node:#}|{}", node.json()));
         node
     }
 
@@ -2272,7 +2272,7 @@ mod tests {
                 },
             ],
         };
-        let node = inspect_sync_expect(
+        inspect_sync_expect(
             "",
             None,
             &f,
@@ -2288,11 +2288,8 @@ mod tests {
                     },
                     xx: 1,
                     xy: true,
-                }"#]),
+                }|{"0":{"xx":3,"xy":false},"1":{"xx":5,"xy":true},"xx":1,"xy":true}"#]),
         );
-        let expected_json =
-            expect!([r#"{"0":{"xx":3,"xy":false},"1":{"xx":5,"xy":true},"xx":1,"xy":true}"#]);
-        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[async_test]
@@ -2310,7 +2307,7 @@ mod tests {
                 {
                     xx: 0,
                     xy: false,
-                }"#]),
+                }|{"xx":0,"xy":false}"#]),
         )
         .await;
     }
@@ -2325,7 +2322,7 @@ mod tests {
             adhoc(|req| {
                 drop(req.defer());
             }),
-            expect!("error (unresolved)"),
+            expect!([r#"error (unresolved)|{"$error":"unresolved"}"#]),
         )
         .await;
     }
@@ -2339,32 +2336,47 @@ mod tests {
                 });
             });
         });
-        inspect_sync_expect("a", None, &mut obj, expect!("1"));
-        inspect_sync_expect("///a", None, &mut obj, expect!("1"));
+        inspect_sync_expect("a", None, &mut obj, expect!("1|1"));
+        inspect_sync_expect("///a", None, &mut obj, expect!("1|1"));
         inspect_sync_expect(
             "b",
             None,
             &mut obj,
             expect!([r#"
-            {
-                c: 2,
-                d: 2,
-                e: {},
-            }"#]),
+                {
+                    c: 2,
+                    d: 2,
+                    e: {},
+                }|{"c":2,"d":2,"e":{}}"#]),
         );
-        inspect_sync_expect("b/c", None, &mut obj, expect!("2"));
-        inspect_sync_expect("b////c", None, &mut obj, expect!("2"));
-        inspect_sync_expect("b/c/", None, &mut obj, expect!("error (not a directory)"));
-        inspect_sync_expect("b/c/x", None, &mut obj, expect!("error (not a directory)"));
-        inspect_sync_expect("b/e", None, &mut obj, expect!("{}"));
-        inspect_sync_expect("b/e/", None, &mut obj, expect!("{}"));
-        inspect_sync_expect("b/e///", None, &mut obj, expect!("{}"));
-        inspect_sync_expect("b/f", None, &mut obj, expect!("error (not found)"));
+        inspect_sync_expect("b/c", None, &mut obj, expect!("2|2"));
+        inspect_sync_expect("b////c", None, &mut obj, expect!("2|2"));
+        inspect_sync_expect(
+            "b/c/",
+            None,
+            &mut obj,
+            expect!([r#"error (not a directory)|{"$error":"not a directory"}"#]),
+        );
+        inspect_sync_expect(
+            "b/c/x",
+            None,
+            &mut obj,
+            expect!([r#"error (not a directory)|{"$error":"not a directory"}"#]),
+        );
+        inspect_sync_expect("b/e", None, &mut obj, expect!("{}|{}"));
+        inspect_sync_expect("b/e/", None, &mut obj, expect!("{}|{}"));
+        inspect_sync_expect("b/e///", None, &mut obj, expect!("{}|{}"));
+        inspect_sync_expect(
+            "b/f",
+            None,
+            &mut obj,
+            expect!([r#"error (not found)|{"$error":"not found"}"#]),
+        );
     }
 
     #[async_test]
     async fn test_timeout(driver: DefaultDriver) {
-        let node = inspect_async_expect(
+        inspect_async_expect(
             &driver,
             "",
             None,
@@ -2376,11 +2388,9 @@ mod tests {
                     foo.inspect(&Foo::default())
                 });
             }),
-            expect!("error (unresolved)"),
+            expect!([r#"error (unresolved)|{"$error":"unresolved"}"#]),
         )
         .await;
-        let expected_json = expect!([r#"{"$error":"unresolved"}"#]);
-        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[test]
@@ -2396,14 +2406,19 @@ mod tests {
             None,
             &mut obj,
             expect!([r#"
-            {
-                a: 1,
-                b: 2,
-            }"#]),
+                {
+                    a: 1,
+                    b: 2,
+                }|{"a":1,"b":2}"#]),
         );
-        inspect_sync_expect("a", None, &mut obj, expect!("1"));
-        inspect_sync_expect("b", None, &mut obj, expect!("2"));
-        inspect_sync_expect("c", None, &mut obj, expect!("error (not found)"));
+        inspect_sync_expect("a", None, &mut obj, expect!("1|1"));
+        inspect_sync_expect("b", None, &mut obj, expect!("2|2"));
+        inspect_sync_expect(
+            "c",
+            None,
+            &mut obj,
+            expect!([r#"error (not found)|{"$error":"not found"}"#]),
+        );
     }
 
     #[test]
@@ -2440,22 +2455,22 @@ mod tests {
                             y: 5,
                         },
                     },
-                }"#]),
+                }|{"a":2,"x":{"b":4,"c":{"y":4},"d":{"y":5}}}"#]),
         );
         inspect_sync_expect(
             "x",
             None,
             &mut obj,
             expect!([r#"
-            {
-                b: 4,
-                c: {
-                    y: 4,
-                },
-                d: {
-                    y: 5,
-                },
-            }"#]),
+                {
+                    b: 4,
+                    c: {
+                        y: 4,
+                    },
+                    d: {
+                        y: 5,
+                    },
+                }|{"b":4,"c":{"y":4},"d":{"y":5}}"#]),
         );
     }
 
@@ -2530,45 +2545,45 @@ mod tests {
             None,
             &mut obj,
             expect!([r#"
-            {
-                x: {
-                    a: {
-                        b: 1,
-                        c: 2,
+                {
+                    x: {
+                        a: {
+                            b: 1,
+                            c: 2,
+                        },
                     },
-                },
-            }"#]),
+                }|{"x":{"a":{"b":1,"c":2}}}"#]),
         );
         inspect_sync_expect(
             "x/a",
             None,
             &mut obj,
             expect!([r#"
-            {
-                b: 1,
-                c: 2,
-            }"#]),
+                {
+                    b: 1,
+                    c: 2,
+                }|{"b":1,"c":2}"#]),
         );
         inspect_sync_expect(
             "x",
             Some(0),
             &mut obj,
             expect!([r#"
-            {
-                a: _,
-            }"#]),
+                {
+                    a: _,
+                }|{"a":null}"#]),
         );
         inspect_sync_expect(
             "x",
             Some(2),
             &mut obj,
             expect!([r#"
-            {
-                a: {
-                    b: 1,
-                    c: 2,
-                },
-            }"#]),
+                {
+                    a: {
+                        b: 1,
+                        c: 2,
+                    },
+                }|{"a":{"b":1,"c":2}}"#]),
         );
     }
 
@@ -2589,19 +2604,17 @@ mod tests {
                 .field("1d/2b/3b", 0);
         });
 
-        let node = inspect_sync_expect(
+        inspect_sync_expect(
             "1d",
             Some(0),
             &mut obj,
             expect!([r#"
-            {
-                2a: 0,
-                2b: _,
-            }"#]),
+                {
+                    2a: 0,
+                    2b: _,
+                }|{"2a":0,"2b":null}"#]),
         );
-        let expected_json = expect!([r#"{"2a":0,"2b":null}"#]);
-        expected_json.assert_eq(&node.json().to_string());
-        let node = inspect_sync_expect(
+        inspect_sync_expect(
             "",
             Some(0),
             &mut obj,
@@ -2611,11 +2624,9 @@ mod tests {
                     1b: 0,
                     1c: 0,
                     1d: _,
-                }"#]),
+                }|{"1a":0,"1b":0,"1c":0,"1d":null}"#]),
         );
-        let expected_json = expect!([r#"{"1a":0,"1b":0,"1c":0,"1d":null}"#]);
-        expected_json.assert_eq(&node.json().to_string());
-        let node = inspect_sync_expect(
+        inspect_sync_expect(
             "",
             Some(1),
             &mut obj,
@@ -2628,10 +2639,8 @@ mod tests {
                         2a: 0,
                         2b: _,
                     },
-                }"#]),
+                }|{"1a":0,"1b":0,"1c":0,"1d":{"2a":0,"2b":null}}"#]),
         );
-        let expected_json = expect!([r#"{"1a":0,"1b":0,"1c":0,"1d":{"2a":0,"2b":null}}"#]);
-        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[test]
@@ -2639,19 +2648,16 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().hex("a", 0x1234i32).hex("b", 0x5678u32);
         });
-        let node = inspect_sync_expect(
+        inspect_sync_expect(
             "",
             Some(0),
             &mut obj,
             expect!([r#"
-            {
-                a: 0x1234,
-                b: 0x5678,
-            }"#]),
+                {
+                    a: 0x1234,
+                    b: 0x5678,
+                }|{"a":"0x1234","b":"0x5678"}"#]),
         );
-
-        let expected_json = expect!([r#"{"a":"0x1234","b":"0x5678"}"#]);
-        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[test]
@@ -2661,18 +2667,16 @@ mod tests {
                 .binary("a", 0b1001000110100i32)
                 .binary("b", 0b1101010101111000u32);
         });
-        let node = inspect_sync_expect(
+        inspect_sync_expect(
             "",
             Some(0),
             &mut obj,
             expect!([r#"
-            {
-                a: 0b1001000110100,
-                b: 0b1101010101111000,
-            }"#]),
+                {
+                    a: 0b1001000110100,
+                    b: 0b1101010101111000,
+                }|{"a":"0b1001000110100","b":"0b1101010101111000"}"#]),
         );
-        let expected_json = expect!([r#"{"a":"0b1001000110100","b":"0b1101010101111000"}"#]);
-        expected_json.assert_eq(&node.json().to_string());
     }
 
     #[test]
@@ -2718,7 +2722,7 @@ mod tests {
                         4_c: true,
                     },
                     f: 600,
-                }"#]),
+                }|{"c":50,"d":{"1_c":true,"2":true,"3":50,"4_b":true,"4_c":true},"f":600}"#]),
         );
     }
 
@@ -2728,7 +2732,7 @@ mod tests {
             "",
             Some(1),
             &AsBytes([0xab, 0xcd, 0xef]),
-            expect!("<abcdef>"),
+            expect!([r#"<abcdef>|"q83v""#]),
         );
     }
 
@@ -2783,7 +2787,7 @@ mod tests {
                     1d: {
                         2b: {},
                     },
-                }"#]),
+                }|{"1a":0,"1d":{"2b":{}}}"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Unspecified), &mut obj),
@@ -2796,7 +2800,7 @@ mod tests {
                             3b: 0,
                         },
                     },
-                }"#]),
+                }|{"1a":0,"1b":0,"1d":{"2b":{"3b":0}}}"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj),
@@ -2815,7 +2819,7 @@ mod tests {
                         },
                     },
                     1e: 0,
-                }"#]),
+                }|{"1a":0,"1b":0,"1c":0,"1d":{"2a":0,"2b":{"3a":{"4a":0},"3b":0}},"1e":0}"#]),
         );
         expected_node(
             inspect_sync("", None, &mut obj),
@@ -2834,7 +2838,7 @@ mod tests {
                         },
                     },
                     1e: 0,
-                }"#]),
+                }|{"1a":0,"1b":0,"1c":0,"1d":{"2a":0,"2b":{"3a":{"4a":0},"3b":0}},"1e":0}"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj),
@@ -2853,7 +2857,7 @@ mod tests {
                         },
                     },
                     1e: 0,
-                }"#]),
+                }|{"1a":0,"1b":0,"1c":0,"1d":{"2a":0,"2b":{"3a":{"4a":0},"3b":0}},"1e":0}"#]),
         );
     }
 
@@ -3018,7 +3022,7 @@ mod tests {
                     },
                     val: 8,
                     var: "bar_baz",
-                }"#]),
+                }|{"bin":"0b11","debug":"()","dec":5,"display":"10","hex":"0x4","hex_array":{"0":"0x64","1":"0x65","2":"0x66","3":"0x67"},"hex_inner":{"val":"0x64"},"inner":{"val":3},"inner_as_hex":{"val":"0x64"},"inner_mut":{"val":"hi"},"minute":"07","t":{"val":1},"t2":{"val":2},"tr1":"0xa","tr2":"()","unnamed":{"0":5,"1":-83},"val":8,"var":"bar_baz"}"#]),
         );
     }
 
@@ -3041,7 +3045,7 @@ mod tests {
             C,
         }
 
-        inspect_sync_expect("", None, &UnitEnum::B, expect!([r#""b""#]));
+        inspect_sync_expect("", None, &UnitEnum::B, expect!([r#""b"|"b""#]));
 
         #[expect(dead_code)]
         #[derive(Inspect)]
@@ -3059,7 +3063,7 @@ mod tests {
                 {
                     tag: "b",
                     y: true,
-                }"#]),
+                }|{"tag":"b","y":true}"#]),
         );
 
         #[expect(dead_code)]
@@ -3083,7 +3087,7 @@ mod tests {
                     b: {
                         y: true,
                     },
-                }"#]),
+                }|{"b":{"y":true}}"#]),
         );
 
         inspect_sync_expect(
@@ -3091,9 +3095,9 @@ mod tests {
             None,
             &ExternallyTaggedEnum::C(5),
             expect!([r#"
-            {
-                c: 5,
-            }"#]),
+                {
+                    c: 5,
+                }|{"c":5}"#]),
         );
 
         #[expect(dead_code)]
@@ -3109,9 +3113,9 @@ mod tests {
             None,
             &UntaggedEnum::B(true),
             expect!([r#"
-            {
-                y: true,
-            }"#]),
+                {
+                    y: true,
+                }|{"y":true}"#]),
         );
     }
 
@@ -3139,7 +3143,7 @@ mod tests {
                     sum: 7,
                     x: 2,
                     y: 5,
-                }"#]),
+                }|{"sum":7,"x":2,"y":5}"#]),
         );
     }
 
@@ -3207,7 +3211,7 @@ mod tests {
                     d: {
                         b: {},
                     },
-                }"#]),
+                }|{"a":0,"d":{"b":{}}}"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Unspecified), &obj),
@@ -3220,7 +3224,7 @@ mod tests {
                             b: 0,
                         },
                     },
-                }"#]),
+                }|{"a":0,"b":0,"d":{"b":{"b":0}}}"#]),
         );
         let node = expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &obj),
@@ -3238,7 +3242,7 @@ mod tests {
                             b: 0,
                         },
                     },
-                }"#]),
+                }|{"a":0,"b":0,"c":0,"d":{"a":0,"b":{"a":{"a":0},"b":0}}}"#]),
         );
         assert_eq!(
             node,
