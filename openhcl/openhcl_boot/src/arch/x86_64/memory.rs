@@ -121,10 +121,19 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
         }
     }
 
-    // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for
-    // hypercall IO pages. ram_buffer must not be used again beyond this point
-    // TODO: find an approach that does not require re-using the ram_buffer
     if shim_params.isolation_type == IsolationType::Tdx {
+        // Update the VP context stored in the page of the architectural
+        // reset vector, such that TDX APs start with the appropriate
+        // page table and execution controls
+        crate::arch::tdx::tdx_prepare_ap_trampoline(
+            shim_params
+                .ap_page_tables
+                .expect("AP page tables must be provided for TDX mailbox boot")
+                .start(),
+        );
+
+        // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for
+        // hypercall IO pages. ram_buffer must not be used again beyond this point
         let free_buffer = ram_buffer.as_mut_ptr() as u64;
         assert!(free_buffer % X64_LARGE_PAGE_SIZE == 0);
         // SAFETY: The bottom 2MB region of the ram_buffer is unused by the shim

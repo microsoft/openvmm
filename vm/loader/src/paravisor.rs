@@ -359,32 +359,10 @@ where
         }
         _ => None,
     };
-
-    // HACK: On TDX, the kernel uses the ACPI AP Mailbox protocol to start APs.
-    // However, the kernel assumes that all kernel ram is identity mapped, as
-    // the kernel will jump to a startup routine in any arbitrary kernel ram
-    // range.
-    //
-    // For now, describe 3GB of memory identity mapped in the page table used by
-    // the mailbox assembly stub, so the kernel can start APs regardless of how
-    // large the initial memory size was. An upcoming change will instead have
-    // the bootshim modify the pagetable at runtime to guarantee all ranges
-    // reported in the E820 map to kernel as ram are mapped.
-    //
-    // FUTURE: A future kernel change could remove this requirement entirely by
-    // making the kernel spec compliant, and only require that the reset vector
-    // page is identity mapped.
-
-    let page_table_mapping_size = if isolation_type == IsolationType::Tdx {
-        3 * 1024 * 1024 * 1024
-    } else {
-        memory_size
-    };
-
     let page_table_base_page_count = 5;
     let page_table_dynamic_page_count = {
         // Double the count to allow for simpler reconstruction.
-        calculate_pde_table_count(memory_start_address, page_table_mapping_size) * 2
+        calculate_pde_table_count(memory_start_address, memory_size) * 2
             + local_map.map_or(0, |v| calculate_pde_table_count(v.0, v.1))
     };
     let page_table_isolation_page_count = match isolation_type {
@@ -405,7 +383,7 @@ where
     tracing::debug!(page_table_region_start, page_table_region_size);
 
     let mut page_table_builder = PageTableBuilder::new(page_table_region_start)
-        .with_mapped_region(memory_start_address, page_table_mapping_size);
+        .with_mapped_region(memory_start_address, memory_size);
 
     if let Some((local_map_start, size)) = local_map {
         page_table_builder = page_table_builder.with_local_map(local_map_start, size);
@@ -426,8 +404,6 @@ where
     assert!(page_table.len() as u64 % HV_PAGE_SIZE == 0);
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
     assert!(page_table.len() as u64 <= page_table_region_size);
-
-    let offset = offset;
 
     if with_relocation {
         // Indicate relocation information. Don't include page table region.
@@ -450,6 +426,55 @@ where
             0,
         )?;
     }
+
+    // TDX-isolated VMs require an AP page table to boot with the mailbox protocol
+    //
+    // In the OpenHCL implementation of this protocol, we spin in the architectural reset
+    // vector until the kernel gives us a vector to jump to. The OpenHCL kernel can place
+    // this vector anywhere in the lower 4GB of GPA space, so we identity map the lower
+    // 4GB as R+X
+    let ap_page_table_region_start = offset;
+    let (
+        ap_page_table,
+        ap_page_table_page_base,
+        ap_page_table_region_start,
+        ap_page_table_region_size,
+        ap_page_table_page_count,
+    ) = if isolation_type == IsolationType::Tdx {
+        let ap_page_table_size = 4 * 1024 * 1024 * 1024;
+
+        // TDX requires up to an extra 3 pages to map the reset vector as a
+        // 4K page.
+        let ap_page_table_page_count = (calculate_pde_table_count(0, ap_page_table_size)) + 3;
+
+        let ap_page_table_region_size = HV_PAGE_SIZE * ap_page_table_page_count;
+        offset += ap_page_table_region_size;
+
+        tracing::debug!(ap_page_table_region_start, ap_page_table_region_size);
+
+        let ap_page_table_builder = PageTableBuilder::new(page_table_region_start)
+            .with_mapped_region(memory_start_address, memory_size);
+
+        let ap_page_table = ap_page_table_builder
+            .with_read_only(true)
+            .with_reset_vector(true)
+            .build();
+
+        assert!(ap_page_table.len() as u64 % HV_PAGE_SIZE == 0);
+        let ap_page_table_page_base = ap_page_table_region_start / HV_PAGE_SIZE;
+        assert!(ap_page_table.len() as u64 <= ap_page_table_region_size);
+        (
+            Some(ap_page_table),
+            Some(ap_page_table_page_base),
+            Some(ap_page_table_region_start),
+            Some(ap_page_table_region_size),
+            Some(ap_page_table_page_count),
+        )
+    } else {
+        (None, None, None, None, None)
+    };
+
+    let offset = offset;
 
     // The memory used by the loader must be smaller than the memory available.
     if offset > memory_start_address + memory_size {
@@ -489,8 +514,8 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
-        page_tables_start: calculate_shim_offset(page_table_region_start),
-        page_tables_size: page_table_region_size,
+        ap_page_tables_start: ap_page_table_region_start.map_or(0, |t| calculate_shim_offset(t)),
+        ap_page_tables_size: ap_page_table_region_size.unwrap_or(0),
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -512,6 +537,16 @@ where
         BootPageAcceptance::Exclusive,
         &page_table,
     )?;
+
+    if isolation_type == IsolationType::Tdx {
+        importer.import_pages(
+            ap_page_table_page_base.expect("AP page tables are required for TDX"),
+            ap_page_table_page_count.expect("AP page tables are required for TDX"),
+            "underhill-ap-page-tables",
+            BootPageAcceptance::Exclusive,
+            &ap_page_table.expect("AP page tables are required for TDX"),
+        )?;
+    }
 
     // Set selectors and control registers
     // Setup two selectors and segment registers.
@@ -1081,8 +1116,8 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
-        page_tables_start: 0,
-        page_tables_size: 0,
+        ap_page_tables_start: 0,
+        ap_page_tables_size: 0,
     };
 
     importer

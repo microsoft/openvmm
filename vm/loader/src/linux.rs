@@ -336,6 +336,7 @@ pub fn load_config(
         0,
         IdentityMapSize::Size4Gb,
         None,
+        false,
     );
     assert!(page_table.len() as u64 % HV_PAGE_SIZE == 0);
     importer
