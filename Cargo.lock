@@ -2516,6 +2516,7 @@ dependencies = [
 name = "get_resources"
 version = "0.0.0"
 dependencies = [
+ "inspect",
  "mesh",
  "thiserror 2.0.16",
  "vm_resource",

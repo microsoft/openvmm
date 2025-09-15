@@ -215,7 +215,7 @@ pub enum IgvmAgentAction {
 /// IGVM Agent test plan that specifies the list of action for a given request type.
 pub type IgvmAgentTestPlan = HashMap<IgvmAttestRequestType, VecDeque<IgvmAgentAction>>;
 
-/// IGVM Agent test setting.
+/// IGVM Agent test setting. Custom Inspect impl avoids requiring HashMap to implement Inspect.
 #[derive(Debug)]
 pub enum IgvmAgentTestSetting {
     /// Use test config that will be mapped to a plan. Used when creating GED via `GuestEmulationDeviceHandle`
@@ -223,6 +223,22 @@ pub enum IgvmAgentTestSetting {
     TestConfig(IgvmAttestTestConfig),
     /// Use test plan. Used when creating GED via test_utilities (unit tests).
     TestPlan(IgvmAgentTestPlan),
+}
+
+impl Inspect for IgvmAgentTestSetting {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let mut resp = req.respond();
+        match self {
+            Self::TestConfig(cfg) => {
+                resp.field("TestConfig", cfg);
+            }
+            Self::TestPlan(plan) => {
+                // Only expose summary to avoid needing Inspect on HashMap.
+                let len = plan.len();
+                resp.field("TestPlan len", &len);
+            }
+        }
+    }
 }
 
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
@@ -247,7 +263,6 @@ pub struct GuestEmulationDevice {
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
 
-    #[inspect(skip)]
     igvm_agent_setting: Option<IgvmAgentTestSetting>,
 
     #[cfg(feature = "test_igvm_agent")]

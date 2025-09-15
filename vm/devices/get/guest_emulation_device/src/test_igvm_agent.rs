@@ -41,6 +41,7 @@ use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
+// Support one-time initialization for `install_plan_from_setting`.
 static INIT: Once = Once::new();
 
 #[derive(Debug, Error)]
@@ -137,7 +138,7 @@ impl TestIgvmAgent {
         }
     }
 
-    /// Install a scripted plan used by tests based on the setting.
+    /// Install a scripted plan used by tests based on the setting (one-time only). Allow to be called multiple times.
     pub fn install_plan_from_setting(&mut self, setting: &IgvmAgentTestSetting) {
         INIT.call_once(|| {
             tracing::info!("install the scripted plan for test IGVM Agent");
