@@ -2132,7 +2132,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn init_sec_secure_key_release(driver: DefaultDriver) {
+    async fn init_sec_secure_key_release_with_wrapped_key_request(driver: DefaultDriver) {
         let mut vmgs = new_formatted_vmgs().await;
 
         // IGVM attest is required

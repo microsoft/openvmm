@@ -29,7 +29,10 @@ use rsa::Oaep;
 use rsa::RsaPrivateKey;
 use rsa::RsaPublicKey;
 use rsa::pkcs8::EncodePrivateKey;
+use rsa::rand_core::CryptoRng;
 use rsa::rand_core::OsRng;
+use rsa::rand_core::RngCore;
+use rsa::rand_core::SeedableRng;
 use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::VecDeque;
@@ -397,14 +400,15 @@ impl TestIgvmAgent {
             return Err(Error::KeysNotInitialized);
         }
 
-        let mut rng = OsRng;
+        let seed = 1234u64.to_le_bytes();
+        let mut rng = DummyRng::from_seed(seed);
         let private_key =
             RsaPrivateKey::new(&mut rng, 2048).map_err(Error::KeyInitializationFailed)?;
         let mut des_key = [0u8; 32];
 
         self.secret_key = Some(private_key);
 
-        rsa::rand_core::RngCore::fill_bytes(&mut rng, &mut des_key);
+        RngCore::fill_bytes(&mut rng, &mut des_key);
         self.des_key = Some(des_key);
 
         Ok(())
@@ -526,7 +530,7 @@ impl TestIgvmAgent {
 
         // Generate or reuse the Key Encryption Key (KEK) for AES-KW
         let mut kek_bytes = [0u8; 32];
-        rsa::rand_core::RngCore::fill_bytes(&mut rng, &mut kek_bytes);
+        RngCore::fill_bytes(&mut rng, &mut kek_bytes);
         let kek = KekAes256::from(kek_bytes);
 
         // Wrap the target RSA key using AES-KW - pad to expected 256 bytes
@@ -584,3 +588,50 @@ impl TestIgvmAgent {
         Ok(format!("{}.{}.{}", header_b64, body_b64, signature_b64))
     }
 }
+
+/// A simple deterministic RNG used only for testing (not cryptographically secure).
+///
+/// This avoids the high cost of using `OsRng` during RSA key generation,
+/// making `initialize_keys` run faster and with consistent timing across test runs.
+/// In contrast, `OsRng` can introduce significant variability and may cause
+/// tests to run slowly or even hit timeouts.
+pub struct DummyRng {
+    state: u64,
+}
+
+impl SeedableRng for DummyRng {
+    type Seed = [u8; 8]; // 64-bit seed
+
+    fn from_seed(seed: Self::Seed) -> Self {
+        DummyRng {
+            state: u64::from_le_bytes(seed),
+        }
+    }
+}
+
+impl RngCore for DummyRng {
+    fn next_u32(&mut self) -> u32 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (self.state >> 32) as u32
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.state
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        for chunk in dest.chunks_mut(8) {
+            let n = self.next_u64().to_le_bytes();
+            chunk.copy_from_slice(&n[..chunk.len()]);
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+/// Marker trait to satisfy `rsa::RsaPrivateKey::new`.
+impl CryptoRng for DummyRng {}
