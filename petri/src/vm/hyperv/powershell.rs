@@ -7,6 +7,7 @@ use super::vm::CommandError;
 use super::vm::run_cmd;
 use crate::OpenHclServicingFlags;
 use crate::VmScreenshotMeta;
+use crate::requirements::HyperVGetVmHost;
 use anyhow::Context;
 use core::str;
 use guid::Guid;
@@ -1023,28 +1024,6 @@ pub async fn run_set_turn_off_on_guest_restart(
     .await
     .map(|_| ())
     .context("set_turn_off_on_guest_restart")
-}
-
-/// Hyper-V Get VM Host Output
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct HyperVGetVmHost {
-    /// GuestIsolationTypes supported on the host
-    #[serde(rename = "GuestIsolationTypes")]
-    pub guest_isolation_types: Vec<HyperVGuestStateIsolationType>,
-    /// Whether SNP is supported on the host
-    #[serde(rename = "SnpStatus", deserialize_with = "int_to_bool")]
-    pub snp_status: bool,
-    /// Whether TDX is supported on the host
-    #[serde(rename = "TdxStatus", deserialize_with = "int_to_bool")]
-    pub tdx_status: bool,
-}
-
-fn int_to_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let v = i32::deserialize(deserializer)?;
-    Ok(v == 1)
 }
 
 /// Gets the VM host information and returns the output string

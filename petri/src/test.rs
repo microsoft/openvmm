@@ -15,7 +15,9 @@ pub mod test_macro_support {
 use crate::PetriLogSource;
 use crate::TestArtifactRequirements;
 use crate::TestArtifacts;
-use crate::requirements::{HostContext, TestCaseRequirements, can_run_test_with_context};
+use crate::requirements::HostContext;
+use crate::requirements::TestCaseRequirements;
+use crate::requirements::can_run_test_with_context;
 use crate::tracing::try_init_tracing;
 use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
@@ -68,7 +70,7 @@ impl<T: 'static + RunTest> From<T> for TestCase {
 struct Test {
     module: &'static str,
     test: TestCase,
-    requirements: TestArtifactRequirements,
+    artifact_requirements: TestArtifactRequirements,
 }
 
 impl Test {
@@ -77,12 +79,13 @@ impl Test {
         TESTS.iter().flat_map(|f| {
             let (module, tests) = f();
             tests.into_iter().filter_map(move |test| {
-                let mut requirements = test.0.requirements()?;
+                let mut artifact_requirements = test.0.artifact_requirements()?;
                 // All tests require the log directory.
-                requirements.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+                artifact_requirements
+                    .require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
                 Some(Self {
                     module,
-                    requirements,
+                    artifact_requirements,
                     test,
                 })
             })
@@ -103,8 +106,8 @@ impl Test {
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
     ) -> anyhow::Result<()> {
         let name = self.name();
-        let artifacts =
-            resolve(&name, self.requirements.clone()).context("failed to resolve artifacts")?;
+        let artifacts = resolve(&name, self.artifact_requirements.clone())
+            .context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
 
@@ -187,15 +190,15 @@ pub trait RunTest: Send {
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
-    /// Returns the test configuration, if any.
-    fn config(&self) -> Option<&TestCaseRequirements>;
+    /// Returns the host requirements of the current test, if any.
+    fn host_requirements(&self) -> Option<&TestCaseRequirements>;
 }
 
 trait DynRunTest: Send {
     fn leaf_name(&self) -> &str;
-    fn requirements(&self) -> Option<TestArtifactRequirements>;
+    fn artifact_requirements(&self) -> Option<TestArtifactRequirements>;
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
-    fn config(&self) -> Option<&TestCaseRequirements>;
+    fn host_requirements(&self) -> Option<&TestCaseRequirements>;
 }
 
 impl<T: RunTest> DynRunTest for T {
@@ -203,7 +206,7 @@ impl<T: RunTest> DynRunTest for T {
         self.leaf_name()
     }
 
-    fn requirements(&self) -> Option<TestArtifactRequirements> {
+    fn artifact_requirements(&self) -> Option<TestArtifactRequirements> {
         let mut requirements = TestArtifactRequirements::new();
         self.resolve(&ArtifactResolver::collector(&mut requirements))?;
         Some(requirements)
@@ -216,8 +219,8 @@ impl<T: RunTest> DynRunTest for T {
         self.run(params, artifacts)
     }
 
-    fn config(&self) -> Option<&TestCaseRequirements> {
-        self.config()
+    fn host_requirements(&self) -> Option<&TestCaseRequirements> {
+        self.host_requirements()
     }
 }
 
@@ -238,7 +241,7 @@ pub struct SimpleTest<A, F> {
     resolve: A,
     run: F,
     /// Optional test configuration
-    pub config: Option<TestCaseRequirements>,
+    pub host_requirements: Option<TestCaseRequirements>,
 }
 
 impl<A, AR, F, E> SimpleTest<A, F>
@@ -253,13 +256,13 @@ where
         leaf_name: &'static str,
         resolve: A,
         run: F,
-        config: Option<TestCaseRequirements>,
+        host_requirements: Option<TestCaseRequirements>,
     ) -> Self {
         SimpleTest {
             leaf_name,
             resolve,
             run,
-            config,
+            host_requirements,
         }
     }
 }
@@ -284,8 +287,8 @@ where
         (self.run)(params, artifacts).map_err(Into::into)
     }
 
-    fn config(&self) -> Option<&TestCaseRequirements> {
-        self.config.as_ref()
+    fn host_requirements(&self) -> Option<&TestCaseRequirements> {
+        self.host_requirements.as_ref()
     }
 }
 
@@ -307,10 +310,10 @@ pub fn test_main(
         // FUTURE: write this in a machine readable format.
         for test in Test::all() {
             println!("{}:", test.name());
-            for artifact in test.requirements.required_artifacts() {
+            for artifact in test.artifact_requirements.required_artifacts() {
                 println!("required: {artifact:?}");
             }
-            for artifact in test.requirements.optional_artifacts() {
+            for artifact in test.artifact_requirements.optional_artifacts() {
                 println!("optional: {artifact:?}");
             }
             println!();
@@ -332,9 +335,9 @@ pub fn test_main(
 
     let trials: Vec<libtest_mimic::Trial> = Test::all()
         .map(|test| {
-            if let Some(config) = test.test.0.config() {
+            if let Some(requirements) = test.test.0.host_requirements() {
                 let evaluation_result =
-                    can_run_test_with_context(&test.name(), Some(config), &host_context);
+                    can_run_test_with_context(&test.name(), Some(requirements), &host_context);
                 if !evaluation_result.can_run {
                     return libtest_mimic::Trial::test(test.name(), move || Ok(()))
                         .with_ignored_flag(true);

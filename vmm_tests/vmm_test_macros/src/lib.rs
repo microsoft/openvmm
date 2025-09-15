@@ -751,90 +751,7 @@ fn make_vmm_test(
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
         // Build requirements based on the configuration
-        let mut requirements_builder = quote!(::petri::requirements::TestCaseRequirements::new());
-
-        // Add isolation requirement if specified
-        if let Firmware::OpenhclUefi(
-            OpenhclUefiOptions {
-                isolation: Some(isolation),
-                ..
-            },
-            _,
-        ) = &config.firmware
-        {
-            let vmm_type = match (specific_vmm, config.vmm) {
-                (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => {
-                    quote!(::petri::requirements::VmmType::HyperV)
-                }
-                (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => {
-                    quote!(::petri::requirements::VmmType::OpenVmm)
-                }
-                _ => quote!(::petri::requirements::VmmType::OpenVmm), // Default to OpenVmm
-            };
-
-            let isolation_requirement = match isolation {
-                IsolationType::Vbs => quote!(::petri::requirements::IsolationRequirement {
-                    isolation_type: ::petri::requirements::IsolationType::Vbs,
-                    vmm_type: #vmm_type
-                }),
-                IsolationType::Snp => quote!(::petri::requirements::IsolationRequirement {
-                    isolation_type: ::petri::requirements::IsolationType::Snp,
-                    vmm_type: #vmm_type
-                }),
-                IsolationType::Tdx => quote!(::petri::requirements::IsolationRequirement {
-                    isolation_type: ::petri::requirements::IsolationType::Tdx,
-                    vmm_type: #vmm_type
-                }),
-            };
-            requirements_builder.extend(quote!(
-                .require(#isolation_requirement)
-            ));
-        }
-
-        // Add user-specified requirements from the macro
-        for requirement in &config.requirements {
-            let requirement_code = match requirement {
-                RequirementSpec::ExecutionEnvironment(env_type) => {
-                    let env = match env_type {
-                        ExecutionEnvironmentType::BareMetal => {
-                            quote!(::petri::requirements::ExecutionEnvironment::Baremetal)
-                        }
-                        ExecutionEnvironmentType::Nested => {
-                            quote!(::petri::requirements::ExecutionEnvironment::Nested)
-                        }
-                    };
-                    quote!(::petri::requirements::ExecutionEnvironmentRequirement { #env })
-                }
-                RequirementSpec::Vendor(vendor_type) => {
-                    let vendor = match vendor_type {
-                        VendorType::Amd => quote!(::petri::requirements::Vendor::Amd),
-                        VendorType::Intel => quote!(::petri::requirements::Vendor::Intel),
-                    };
-                    quote!(::petri::requirements::VendorRequirement { #vendor })
-                }
-                RequirementSpec::IsolationType(isolation_type) => {
-                    let vmm_type = match (specific_vmm, config.vmm) {
-                        (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => {
-                            quote!(::petri::requirements::VmmType::HyperV)
-                        }
-                        (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => {
-                            quote!(::petri::requirements::VmmType::OpenVmm)
-                        }
-                        _ => quote!(::petri::requirements::VmmType::OpenVmm), // Default to OpenVmm
-                    };
-
-                    let isolation = match isolation_type {
-                        IsolationTypeSpec::Vbs => quote!(::petri::requirements::IsolationType::Vbs),
-                        IsolationTypeSpec::Snp => quote!(::petri::requirements::IsolationType::Snp),
-                        IsolationTypeSpec::Tdx => quote!(::petri::requirements::IsolationType::Tdx),
-                    };
-                    quote!(::petri::requirements::IsolationRequirement { isolation_type: #isolation, vmm_type: #vmm_type })
-                }
-            };
-            requirements_builder.extend(quote!(
-                .require(#requirement_code)
-            ));
-        }
+        let requirements_builder = build_requirements_builder(&config, specific_vmm);
 
         // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
@@ -895,4 +812,94 @@ fn make_vmm_test(
         ::petri::multitest!(vec![#tests]);
         #item
     })
+}
+
+// Helper to build requirements_builder TokenStream for a config and specific_vmm
+fn build_requirements_builder(config: &Config, specific_vmm: Option<Vmm>) -> TokenStream {
+    let mut requirements_builder = quote!(::petri::requirements::TestCaseRequirements::new());
+
+    // Add isolation requirement if specified
+    if let Firmware::OpenhclUefi(
+        OpenhclUefiOptions {
+            isolation: Some(isolation),
+            ..
+        },
+        _,
+    ) = &config.firmware
+    {
+        let vmm_type = match (specific_vmm, config.vmm) {
+            (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => {
+                quote!(::petri::requirements::VmmType::HyperV)
+            }
+            (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => {
+                quote!(::petri::requirements::VmmType::OpenVmm)
+            }
+            _ => quote!(::petri::requirements::VmmType::OpenVmm), // Default to OpenVmm
+        };
+
+        let isolation_requirement = match isolation {
+            IsolationType::Vbs => quote!(::petri::requirements::IsolationRequirement {
+                isolation_type: ::petri::requirements::IsolationType::Vbs,
+                vmm_type: #vmm_type
+            }),
+            IsolationType::Snp => quote!(::petri::requirements::IsolationRequirement {
+                isolation_type: ::petri::requirements::IsolationType::Snp,
+                vmm_type: #vmm_type
+            }),
+            IsolationType::Tdx => quote!(::petri::requirements::IsolationRequirement {
+                isolation_type: ::petri::requirements::IsolationType::Tdx,
+                vmm_type: #vmm_type
+            }),
+        };
+        requirements_builder.extend(quote!(
+            .require(#isolation_requirement)
+        ));
+    }
+
+    // Add user-specified requirements from the macro
+    for requirement in &config.requirements {
+        let requirement_code = match requirement {
+            RequirementSpec::ExecutionEnvironment(env_type) => {
+                let env = match env_type {
+                    ExecutionEnvironmentType::BareMetal => {
+                        quote!(::petri::requirements::ExecutionEnvironment::Baremetal)
+                    }
+                    ExecutionEnvironmentType::Nested => {
+                        quote!(::petri::requirements::ExecutionEnvironment::Nested)
+                    }
+                };
+                quote!(::petri::requirements::ExecutionEnvironmentRequirement { #env })
+            }
+            RequirementSpec::Vendor(vendor_type) => {
+                let vendor = match vendor_type {
+                    VendorType::Amd => quote!(::petri::requirements::Vendor::Amd),
+                    VendorType::Intel => quote!(::petri::requirements::Vendor::Intel),
+                };
+                quote!(::petri::requirements::VendorRequirement { #vendor })
+            }
+            RequirementSpec::IsolationType(isolation_type) => {
+                let vmm_type = match (specific_vmm, config.vmm) {
+                    (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => {
+                        quote!(::petri::requirements::VmmType::HyperV)
+                    }
+                    (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => {
+                        quote!(::petri::requirements::VmmType::OpenVmm)
+                    }
+                    _ => quote!(::petri::requirements::VmmType::OpenVmm), // Default to OpenVmm
+                };
+
+                let isolation = match isolation_type {
+                    IsolationTypeSpec::Vbs => quote!(::petri::requirements::IsolationType::Vbs),
+                    IsolationTypeSpec::Snp => quote!(::petri::requirements::IsolationType::Snp),
+                    IsolationTypeSpec::Tdx => quote!(::petri::requirements::IsolationType::Tdx),
+                };
+                quote!(::petri::requirements::IsolationRequirement { isolation_type: #isolation, vmm_type: #vmm_type })
+            }
+        };
+        requirements_builder.extend(quote!(
+            .require(#requirement_code)
+        ));
+    }
+
+    requirements_builder
 }

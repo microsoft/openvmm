@@ -15,7 +15,7 @@ mod linux_direct_serial_agent;
 #[expect(missing_docs)]
 pub mod openhcl_diag;
 pub mod requirements;
-pub mod test;
+mod test;
 mod tracing;
 mod vm;
 mod worker;
