@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 //! Test requirements framework for runtime test filtering.
-#[cfg(windows)]
+// xtask-fmt allow-target-arch cpu-intrinsic
+#[cfg(all(windows, target_arch = "x86_64"))]
 use crate::vm::hyperv::powershell;
 use serde::Deserialize;
 use serde::Serialize;
