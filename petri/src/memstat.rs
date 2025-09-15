@@ -40,6 +40,10 @@ pub struct MemStat {
 impl MemStat {
     /// Construction of a MemStat object takes the vtl2 Pipette agent to query OpenHCL for memory statistics for VTL2 as a whole and for VTL2's processes
     pub async fn new(vtl2_agent: &PipetteClient) -> Self {
+        tracing::info!(
+            "PATH IN MEMSTAT: {}",
+            std::env::current_dir().unwrap().to_str().unwrap()
+        );
         let sh = vtl2_agent.unix_shell();
         let meminfo = Self::parse_memfile(sh.read_file("/proc/meminfo").await.unwrap(), 0, 0, 1);
         let total_free_memory_per_zone = sh
