@@ -785,6 +785,23 @@ fn build_requirements_builder(
         };
     }
 
+    if name.contains("hyperv") && name.contains("vbs") {
+        let hyperv_vbs_requirement_expr = quote!(
+            ::petri::requirements::TestRequirement::ExecutionEnvironment(
+                ::petri::requirements::ExecutionEnvironment::Nested
+            )
+        );
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#hyperv_vbs_requirement_expr)
+                )
+            )),
+            None => Some(hyperv_vbs_requirement_expr),
+        };
+    }
+
     // Default to "no requirements" if nothing was set
     let final_expr =
         requirement_expr.unwrap_or_else(|| quote!(::petri::requirements::TestRequirement::None));
