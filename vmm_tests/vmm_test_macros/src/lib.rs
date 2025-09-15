@@ -838,15 +838,15 @@ fn build_requirements_builder(config: &Config, specific_vmm: Option<Vmm>) -> Tok
         };
 
         let isolation_requirement = match isolation {
-            IsolationType::Vbs => quote!(::petri::requirements::IsolationRequirement {
+            IsolationType::Vbs => quote!(::petri::requirements::TestRequirement::Isolation {
                 isolation_type: ::petri::requirements::IsolationType::Vbs,
                 vmm_type: #vmm_type
             }),
-            IsolationType::Snp => quote!(::petri::requirements::IsolationRequirement {
+            IsolationType::Snp => quote!(::petri::requirements::TestRequirement::Isolation {
                 isolation_type: ::petri::requirements::IsolationType::Snp,
                 vmm_type: #vmm_type
             }),
-            IsolationType::Tdx => quote!(::petri::requirements::IsolationRequirement {
+            IsolationType::Tdx => quote!(::petri::requirements::TestRequirement::Isolation {
                 isolation_type: ::petri::requirements::IsolationType::Tdx,
                 vmm_type: #vmm_type
             }),
@@ -868,14 +868,14 @@ fn build_requirements_builder(config: &Config, specific_vmm: Option<Vmm>) -> Tok
                         quote!(::petri::requirements::ExecutionEnvironment::Nested)
                     }
                 };
-                quote!(::petri::requirements::ExecutionEnvironmentRequirement { #env })
+                quote!(::petri::requirements::TestRequirement::ExecutionEnvironment(#env))
             }
             RequirementSpec::Vendor(vendor_type) => {
                 let vendor = match vendor_type {
                     VendorType::Amd => quote!(::petri::requirements::Vendor::Amd),
                     VendorType::Intel => quote!(::petri::requirements::Vendor::Intel),
                 };
-                quote!(::petri::requirements::VendorRequirement { #vendor })
+                quote!(::petri::requirements::TestRequirement::Vendor(#vendor))
             }
             RequirementSpec::IsolationType(isolation_type) => {
                 let vmm_type = match (specific_vmm, config.vmm) {
@@ -893,7 +893,10 @@ fn build_requirements_builder(config: &Config, specific_vmm: Option<Vmm>) -> Tok
                     IsolationTypeSpec::Snp => quote!(::petri::requirements::IsolationType::Snp),
                     IsolationTypeSpec::Tdx => quote!(::petri::requirements::IsolationType::Tdx),
                 };
-                quote!(::petri::requirements::IsolationRequirement { isolation_type: #isolation, vmm_type: #vmm_type })
+                quote!(::petri::requirements::TestRequirement::Isolation {
+                    isolation_type: #isolation,
+                    vmm_type: #vmm_type
+                })
             }
         };
         requirements_builder.extend(quote!(

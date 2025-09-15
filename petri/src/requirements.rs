@@ -165,13 +165,45 @@ impl HostContext {
     }
 }
 
-/// Core trait for test requirements that can be evaluated at runtime
-pub trait TestRequirement: Send + Sync {
-    /// Unique identifier for this requirement type
-    fn requirement_type(&self) -> &'static str;
+/// A single requirement for a test to run.
+pub enum TestRequirement {
+    /// Execution environment requirement.
+    ExecutionEnvironment(ExecutionEnvironment),
+    /// Vendor requirement.
+    Vendor(Vendor),
+    /// Isolation requirement.
+    Isolation {
+        /// Required isolation type.
+        isolation_type: IsolationType,
+        /// Optional VMM type restriction.
+        vmm_type: VmmType,
+    },
+}
 
-    /// Evaluate if this requirement is met in the current environment
-    fn is_satisfied(&self, context: &HostContext) -> bool;
+impl TestRequirement {
+    /// Evaluate if this requirement is satisfied with the given host context
+    pub fn is_satisfied(&self, context: &HostContext) -> bool {
+        match self {
+            TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
+            TestRequirement::Vendor(vendor) => context.vendor == *vendor,
+            TestRequirement::Isolation { isolation_type, .. } => {
+                if let Some(vm_host_info) = &context.vm_host_info {
+                    match isolation_type {
+                        IsolationType::Vbs => vm_host_info
+                            .guest_isolation_types
+                            .contains(&IsolationType::Vbs),
+                        IsolationType::Snp => vm_host_info.snp_status,
+                        IsolationType::Tdx => vm_host_info.tdx_status,
+                        IsolationType::TrustedLaunch => false,
+                        IsolationType::OpenHCL => false,
+                        IsolationType::Disabled => false,
+                    }
+                } else {
+                    false
+                }
+            }
+        }
+    }
 }
 
 /// Result of evaluating all requirements for a test
@@ -195,7 +227,7 @@ impl TestEvaluationResult {
 
 /// Container for test requirements that can be evaluated
 pub struct TestCaseRequirements {
-    requirements: Vec<Box<dyn TestRequirement>>,
+    requirements: Vec<TestRequirement>,
 }
 
 impl TestCaseRequirements {
@@ -207,8 +239,8 @@ impl TestCaseRequirements {
     }
 
     /// Add a requirement to this test case
-    pub fn require<R: TestRequirement + 'static>(mut self, requirement: R) -> Self {
-        self.requirements.push(Box::new(requirement));
+    pub fn require(mut self, requirement: TestRequirement) -> Self {
+        self.requirements.push(requirement);
         self
     }
 
@@ -226,80 +258,8 @@ impl TestCaseRequirements {
     }
 
     /// Get all requirements for inspection
-    pub fn requirements(&self) -> &[Box<dyn TestRequirement>] {
+    pub fn requirements(&self) -> &[TestRequirement] {
         &self.requirements
-    }
-}
-
-/// Execution environment requirements for test cases.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecutionEnvironmentRequirement {
-    /// The required execution environment
-    pub environment: ExecutionEnvironment,
-}
-
-impl TestRequirement for ExecutionEnvironmentRequirement {
-    fn requirement_type(&self) -> &'static str {
-        "ExecutionEnvironment"
-    }
-
-    fn is_satisfied(&self, context: &HostContext) -> bool {
-        context.execution_environment == self.environment
-    }
-}
-
-/// CPU vendor requirements for test cases.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VendorRequirement {
-    /// The required CPU vendor
-    pub vendor: Vendor,
-}
-
-impl TestRequirement for VendorRequirement {
-    fn requirement_type(&self) -> &'static str {
-        "CpuVendor"
-    }
-
-    fn is_satisfied(&self, context: &HostContext) -> bool {
-        context.vendor == self.vendor
-    }
-}
-
-/// Isolation requirements for test cases.
-#[derive(Debug, Clone)]
-pub struct IsolationRequirement {
-    /// The required isolation type
-    pub isolation_type: IsolationType,
-    /// The required VMM type
-    pub vmm_type: VmmType,
-}
-
-impl TestRequirement for IsolationRequirement {
-    fn requirement_type(&self) -> &'static str {
-        "Isolation"
-    }
-
-    fn is_satisfied(&self, context: &HostContext) -> bool {
-        #[cfg(windows)]
-        {
-            let context = context
-                .vm_host_info
-                .as_ref()
-                .expect("Host context must include VM host info on Windows");
-            match self.isolation_type {
-                IsolationType::Vbs => context.guest_isolation_types.contains(&IsolationType::Vbs),
-                IsolationType::Snp => context.snp_status,
-                IsolationType::Tdx => context.tdx_status,
-                IsolationType::Disabled => false,
-                IsolationType::OpenHCL => false,
-                IsolationType::TrustedLaunch => false,
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = context;
-            false
-        }
     }
 }
 
