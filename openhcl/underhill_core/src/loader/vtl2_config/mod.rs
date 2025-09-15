@@ -39,7 +39,9 @@ pub struct RuntimeParameters {
     pptt: Option<Vec<u8>>,
     cvm_cpuid_info: Option<Vec<u8>>,
     snp_secrets: Option<Vec<u8>>,
-    bootshim_logs: String,
+    #[inspect(iter_by_index)]
+    bootshim_logs: Vec<String>,
+    bootshim_log_dropped: u16,
 }
 
 impl RuntimeParameters {
@@ -264,7 +266,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
     };
 
     // Read bootshim logs.
-    let bootshim_logs = {
+    let (bootshim_logs, bootshim_log_dropped) = {
         let range = *parsed_openhcl_boot
             .partition_memory_map
             .iter()
@@ -283,17 +285,19 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         let buf = StringBuffer::from_existing(raw.as_mut_slice())
             .context("bootshim buffer contents invalid")?;
 
-        let dropped = buf.dropped_messages();
-        if dropped != 0 {
-            tracing::info!(dropped, "bootshim logger dropped messages");
+        let bootshim_log_dropped = buf.dropped_messages();
+        if bootshim_log_dropped != 0 {
+            tracing::info!(bootshim_log_dropped, "bootshim logger dropped messages");
         }
 
-        buf.contents().to_string()
+        (
+            buf.contents().lines().map(|s| s.to_string()).collect(),
+            bootshim_log_dropped,
+        )
     };
 
-    // FIXME: tracing here or somewhere else?
-    for line in bootshim_logs.lines() {
-        tracing::error!(line, "bootshim log");
+    for line in &bootshim_logs {
+        tracing::info!(line, "openhcl_boot log");
     }
 
     let accepted_regions = if parsed_openhcl_boot.isolation != IsolationType::None {
@@ -325,6 +329,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         cvm_cpuid_info,
         snp_secrets,
         bootshim_logs,
+        bootshim_log_dropped,
     };
 
     let measured_vtl2_info = MeasuredVtl2Info {

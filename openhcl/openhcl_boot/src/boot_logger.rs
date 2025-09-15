@@ -52,7 +52,7 @@ pub static BOOT_LOGGER: BootLogger = BootLogger {
     in_memory_logger: SingleThreaded(RefCell::new(None)),
 };
 
-/// initialize the in-memory log buffer. This range must be identity mapped, and
+/// Initialize the in-memory log buffer. This range must be identity mapped, and
 /// unused by anything else.
 pub fn boot_logger_memory_init(buffer: MemoryRange) {
     if buffer.is_empty() {
@@ -74,9 +74,8 @@ pub fn boot_logger_memory_init(buffer: MemoryRange) {
     );
 }
 
-// fixme: runtime logger init only
-/// Initialize the boot logger. This replaces any previous init calls.
-pub fn boot_logger_init(isolation_type: IsolationType, com3_serial_available: bool) {
+/// Initialize the runtime boot logger, for logging to serial or other outputs.
+pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_available: bool) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
 
     *logger = match (isolation_type, com3_serial_available) {
@@ -94,13 +93,6 @@ impl Write for &BootLogger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
             // Ignore the errors from the in memory logger.
-            //
-            // TODO: `writeln!` may result in multiple `write_str` calls, which
-            // result in multiple entries in StringBuffer. This is fine but
-            // wastes a lot of space due to how strings are encoded. There
-            // aren't many bootshim logs today, but it may be better to modify
-            // StringBuffer to have some modify method to update a message until
-            // a newline is written.
             let _ = buf.append(s);
         }
         self.logger.borrow_mut().write_str(s)

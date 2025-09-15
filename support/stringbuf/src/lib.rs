@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A header + concatenated UTF-8 string buffer for storing logs over a buffer
-//! sized in 4K pages.
+//! A header + concatenated UTF-8 string buffer for storing logs backed by a 4K
+//! aligned buffer.
 
 #![no_std]
 #![forbid(unsafe_code)]

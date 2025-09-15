@@ -25,8 +25,8 @@ use crate::arch::setup_vtl2_vp;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
-use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::boot_logger_memory_init;
+use crate::boot_logger::boot_logger_runtime_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
@@ -557,7 +557,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Enable logging ASAP. This is fine even when isolated, as we don't have
     // any access to secrets in the boot shim.
-    boot_logger_init(p.isolation_type, partition_info.com3_serial_available);
+    boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
     log!("openhcl_boot: logging enabled");
 
     // Confidential debug will show up in boot_options only if included in the
