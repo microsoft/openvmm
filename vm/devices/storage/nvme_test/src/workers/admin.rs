@@ -165,15 +165,6 @@ impl AdminState {
             })
             .collect();
 
-        let admin_cq = CompletionQueue::new(
-            handler.config.doorbells.clone(),
-            1,
-            handler.config.mem.clone(),
-            Some(handler.config.interrupts[0].clone()),
-            acq,
-            acqs,
-        );
-
         let mut state = Self {
             admin_sq: SubmissionQueue::new(
                 handler.config.doorbells.clone(),
@@ -182,7 +173,14 @@ impl AdminState {
                 asqs,
                 handler.config.mem.clone(),
             ),
-            admin_cq,
+            admin_cq: CompletionQueue::new(
+                handler.config.doorbells.clone(),
+                1,
+                handler.config.mem.clone(),
+                Some(handler.config.interrupts[0].clone()),
+                acq,
+                acqs,
+            ),
             io_sqs: Vec::new(),
             io_cqs: Vec::new(),
             sq_delete_response: Default::default(),
