@@ -175,7 +175,13 @@ impl AdminState {
         );
 
         let mut state = Self {
-            admin_sq: SubmissionQueue::new(&admin_cq, 0, asq, asqs),
+            admin_sq: SubmissionQueue::new(
+                handler.config.doorbells.clone(),
+                0,
+                asq,
+                asqs,
+                handler.config.mem.clone(),
+            ),
             admin_cq,
             io_sqs: Vec::new(),
             io_cqs: Vec::new(),

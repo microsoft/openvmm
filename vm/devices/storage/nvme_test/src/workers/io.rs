@@ -72,19 +72,7 @@ impl IoState {
         namespaces: BTreeMap<u32, Arc<Namespace>>,
     ) -> Self {
         Self {
-            sq: SubmissionQueue::new(
-                &CompletionQueue::new(
-                    doorbell.clone(),
-                    cq_id * 2 + 1,
-                    mem.clone(),
-                    interrupt.clone(),
-                    cq_gpa,
-                    cq_len,
-                ),
-                sq_id * 2,
-                sq_gpa,
-                sq_len,
-            ),
+            sq: SubmissionQueue::new(doorbell.clone(), sq_id * 2, sq_gpa, sq_len, mem.clone()),
             cq: CompletionQueue::new(
                 doorbell,
                 cq_id * 2 + 1,
