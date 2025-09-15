@@ -3,22 +3,6 @@
 
 //! A header + concatenated UTF-8 string buffer for storing logs over a buffer
 //! sized in 4K pages.
-//!
-//! New Format (little-endian):
-//! - Header (6 bytes total)
-//!   - u16: total length in bytes of the data region (capacity usable for UTF-8
-//!     data)
-//!   - u16: next insertion offset (number of valid bytes currently used)
-//!   - u16: number of messages that were dropped because there was insufficient
-//!     space
-//! - Data region: raw UTF-8 bytes, representing the simple concatenation of all
-//!   appended strings.
-//!
-//! Invariants:
-//! - next_insert <= data_len
-//! - Data bytes [0, next_insert) always form valid UTF-8
-//! - Appends never partially write data
-//! - On insufficient space, the append is dropped and `dropped` is incremented
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -41,11 +25,22 @@ struct Header {
     dropped: u16,     // number of dropped messages
 }
 
-/// A length-prefixed string buffer that stores strings in a 4K buffer.
+/// A string buffer that stores UTF-8 data in a 4K aligned buffer.
 ///
-/// The buffer format is a sequence of length-prefixed strings where each
-/// string is prefixed by a u16 length value in little-endian format,
-/// followed by the UTF-8 string data.
+/// Format:
+/// - Header (6 bytes total)
+///   - u16: total length in bytes of the data region (capacity usable for UTF-8
+///     data)
+///   - u16: next insertion offset (number of valid bytes currently used)
+///   - u16: number of messages that were dropped because there was insufficient
+///     space
+/// - Data region: UTF-8 bytes
+///
+/// Invariants:
+/// - next_insert <= data_len
+/// - Data bytes [0, next_insert) always form valid UTF-8
+/// - Appends never partially write data
+/// - On insufficient space, the append is dropped and `dropped` is incremented
 ///
 /// The in-memory representation stores:
 /// - A reference to the 4K storage buffer
@@ -64,10 +59,13 @@ pub enum StringBufferError {
     /// The string exceeds the maximum encodable u16 length.
     #[error("string is too long to write to buffer")]
     StringTooLong,
+    /// The provided buffer is not u16 aligned to read the header.
+    #[error("buffer is not u16 aligned")]
+    BufferAlignment,
     /// The provided backing buffer length is not 4K aligned.
     #[error("buffer is not 4k aligned")]
-    BufferAlignment,
-    /// The provided backing buffer size is outside the allowed range (4K - 60K, inclusive) or invalid.
+    BufferSizeAlignment,
+    /// The provided backing buffer size is outside the allowed range.
     #[error("buffer size is invalid")]
     BufferSize,
     /// The header's recorded data length does not match the actual data region length.
@@ -91,7 +89,7 @@ impl<'a> StringBuffer<'a> {
 
         // Must be 4k aligned.
         if buffer.len() % PAGE_SIZE_4K != 0 {
-            return Err(StringBufferError::BufferAlignment);
+            return Err(StringBufferError::BufferSizeAlignment);
         }
 
         Ok(())
@@ -99,14 +97,12 @@ impl<'a> StringBuffer<'a> {
 
     /// Creates a new empty string buffer from a 4K aligned buffer. The buffer
     /// must be between 4K or 60K.
-    ///
-    /// # Arguments
-    /// * `buffer` - A mutable reference to a 4K aligned byte array for storage
     pub fn new(buffer: &'a mut [u8]) -> Result<Self, StringBufferError> {
         Self::validate_buffer(buffer)?;
 
         let (header, data) = buffer.split_at_mut(size_of::<Header>());
-        let header = Header::mut_from_bytes(header).expect("BUGBUG return error");
+        let header =
+            Header::mut_from_bytes(header).map_err(|_| StringBufferError::BufferAlignment)?;
         header.data_len = data.len() as u16;
         header.next_insert = 0;
         header.dropped = 0;
@@ -114,13 +110,9 @@ impl<'a> StringBuffer<'a> {
         Ok(Self { header, data })
     }
 
-    /// Creates a string buffer from an existing array that may contain data
+    /// Creates a string buffer from an existing buffer that may contain data.
     ///
     /// This function parses the existing buffer to verify the data is valid.
-    ///
-    /// # Arguments
-    /// * `buffer` - A mutable reference to a 4K aligned byte array that may
-    ///   contain existing data
     pub fn from_existing(buffer: &'a mut [u8]) -> Result<Self, StringBufferError> {
         Self::validate_buffer(buffer)?;
 
@@ -137,7 +129,7 @@ impl<'a> StringBuffer<'a> {
             return Err(StringBufferError::InvalidHeaderNextInsert);
         }
 
-        // Validate concatenated UTF-8 over used bytes
+        // Validate utf8 data is valid
         let used = &data[..next_insert];
         str::from_utf8(used).map_err(StringBufferError::InvalidUtf8)?;
 
@@ -146,8 +138,8 @@ impl<'a> StringBuffer<'a> {
 
     /// Appends a string to the buffer.
     ///
-    /// The string is appended directly as raw UTF-8 bytes to the end of the
-    /// current data payload (no delimiters).
+    /// The string is appended directly as UTF-8 bytes to the end of the current
+    /// data payload (no delimiters).
     ///
     /// # Arguments
     /// * `s` - The string to append
@@ -196,8 +188,6 @@ impl<'a> StringBuffer<'a> {
     }
 }
 
-// Iterator removed: entries are no longer individually length-prefixed.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,7 +202,7 @@ mod tests {
         let mut storage = [0u8; TEST_BUFFER_SIZE];
         let buffer = StringBuffer::new(&mut storage).unwrap();
         let header_size = size_of::<Header>();
-        // With current implementation, next_insert starts at header_size inside data region.
+        // next_insert starts at header_size inside data region.
         // data_len == data capacity (storage - header_size)
         let expected_remaining = TEST_BUFFER_SIZE - header_size;
         assert_eq!(buffer.remaining_capacity(), expected_remaining);
@@ -308,7 +298,7 @@ mod tests {
         // size not a multiple of 4K but within range
         let mut storage = vec![0u8; PAGE_SIZE_4K * 2 + 1];
         let res = StringBuffer::new(&mut storage);
-        assert!(matches!(res, Err(StringBufferError::BufferAlignment)));
+        assert!(matches!(res, Err(StringBufferError::BufferSizeAlignment)));
     }
 
     #[test]
