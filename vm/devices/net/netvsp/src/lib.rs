@@ -3604,10 +3604,10 @@ impl Adapter {
                         primary.offload_config.checksum_rx.ipv4_header = rx;
                     }
                     "*LsoV2IPv4" => {
-                        primary.offload_config.lso4 = as_num != 0 && self.offload_support.lso4;
+                        primary.offload_config.lso4 = as_num != 0;
                     }
                     "*LsoV2IPv6" => {
-                        primary.offload_config.lso6 = as_num != 0 && self.offload_support.lso6;
+                        primary.offload_config.lso6 = as_num != 0;
                     }
                     "*TCPChecksumOffloadIPv4" => {
                         primary.offload_config.checksum_tx.tcp4 = tx;
