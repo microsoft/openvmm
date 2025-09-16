@@ -121,6 +121,18 @@ impl MemStat {
                 .unwrap();
         assert!(baseline_usage >= (self.meminfo["MemTotal"] - self.total_free_memory_per_zone));
 
+        let baseline_reservation = baseline_json[arch][vps]["reservation"]["baseline"]
+            .as_u64()
+            .unwrap()
+            + baseline_json[arch][vps]["reservation"]["threshold"]
+                .as_u64()
+                .unwrap();
+
+        assert!(
+            baseline_reservation
+                >= (baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"])
+        );
+
         for prs in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
             let baseline_pss = baseline_json[arch][vps][prs]["Pss"]["baseline"]
                 .as_u64()

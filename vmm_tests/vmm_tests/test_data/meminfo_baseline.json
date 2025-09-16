@@ -1,12 +1,13 @@
 {
     "aarch64": {
+        "vtl2_total": 524288,
         "2vp": {
             "usage": {
                 "baseline": 59922,
                 "threshold": 200
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 18348,
                 "threshold": 0
             },
             "underhill_init": {
@@ -46,7 +47,7 @@
                 "threshold": 1000
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 23872,
                 "threshold": 0
             },
             "underhill_init": {
@@ -82,13 +83,14 @@
         }
     },
     "intel-x64": {
+        "vtl2_total": 524288,
         "2vp": {
             "usage": {
                 "baseline": 0,
                 "threshold": 0
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 17648,
                 "threshold": 0
             },
             "underhill_init": {
@@ -122,55 +124,56 @@
                 }
             }
         },
-        "64vp": {
+        "32vp": {
             "usage": {
-                "baseline": 0,
-                "threshold": 0
+                "baseline": 260505,
+                "threshold": 1500
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 24648,
                 "threshold": 0
             },
             "underhill_init": {
                 "Pss": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 4535,
+                    "threshold": 50
                 },
                 "Pss_Anon": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 3762,
+                    "threshold": 50
                 }
             },
             "openvmm_hcl": {
                 "Pss": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 14886,
+                    "threshold": 300
                 },
                 "Pss_Anon": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 4833,
+                    "threshold": 50
                 }
             },
             "underhill_vm": {
                 "Pss": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 41627,
+                    "threshold": 400
                 },
                 "Pss_Anon": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 19711,
+                    "threshold": 350
                 }
             }
         }
     },
     "amd-x64": {
+        "vtl2_total": 524288,
         "2vp": {
             "usage": {
                 "baseline": 0,
                 "threshold": 0
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 17648,
                 "threshold": 0
             },
             "underhill_init": {
@@ -204,13 +207,13 @@
                 }
             }
         },
-        "64vp": {
+        "32vp": {
             "usage": {
                 "baseline": 0,
                 "threshold": 0
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 24648,
                 "threshold": 0
             },
             "underhill_init": {
@@ -246,13 +249,14 @@
         }
     },
     "intel-tdx": {
+        "vtl2_total": 655360,
         "2vp": {
             "usage": {
                 "baseline": 232228,
                 "threshold": 200
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 28936,
                 "threshold": 0
             },
             "underhill_init": {
@@ -292,7 +296,7 @@
                 "threshold": 1000
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 41660,
                 "threshold": 0
             },
             "underhill_init": {
@@ -328,13 +332,14 @@
         }
     },
     "amd-snp": {
+        "vtl2_total": 655360,
         "2vp": {
             "usage": {
                 "baseline": 234379,
                 "threshold": 150
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 28872,
                 "threshold": 0
             },
             "underhill_init": {
@@ -374,7 +379,7 @@
                 "threshold": 2000
             },
             "reservation": {
-                "baseline": 0,
+                "baseline": 42340,
                 "threshold": 0
             },
             "underhill_init": {

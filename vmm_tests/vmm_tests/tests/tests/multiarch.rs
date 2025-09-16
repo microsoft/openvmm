@@ -780,7 +780,7 @@ async fn boot_expect_fail(
     openvmm_openhcl_linux_direct_x64,
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn validate_mnf_usage_in_guest_reboot(
+async fn validate_mnf_usage_in_guest(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     // So far, NetVSC uses MNF, StorVSC doesn't hence attach a nic to the vm.
@@ -957,12 +957,9 @@ async fn meminfo_status_snp_64_proc_no_agent<T: PetriVmmBackend>(
     Ok(())
 }
 
-#[vmm_test(
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
-)]
+#[vmm_test(hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn meminfo_status_2_proc<T: PetriVmmBackend>(
+async fn meminfo_status_x64_2_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
@@ -989,12 +986,14 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
     );
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
+    memstat.compare_to_baseline("intel-x64", "2vp");
+
     Ok(())
 }
 
 #[vmm_test(hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn meminfo_status_32_proc<T: PetriVmmBackend>(
+async fn meminfo_status_x64_32_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
@@ -1022,12 +1021,14 @@ async fn meminfo_status_32_proc<T: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
+    memstat.compare_to_baseline("intel-x64", "32vp");
+
     Ok(())
 }
 
 #[vmm_test(hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn meminfo_status_2_proc_arm<T: PetriVmmBackend>(
+async fn meminfo_status_arm_2_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
@@ -1062,7 +1063,7 @@ async fn meminfo_status_2_proc_arm<T: PetriVmmBackend>(
 
 #[vmm_test(hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn meminfo_status_64_proc_arm<T: PetriVmmBackend>(
+async fn meminfo_status_arm_64_proc<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
