@@ -62,7 +62,6 @@ use pal_async::timer::PolledTimer;
 use ring::gparange::MultiPagedRangeIter;
 use rx_bufs::RxBuffers;
 use rx_bufs::SubAllocationInUse;
-use std::cell::Cell;
 use std::cmp;
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -211,11 +210,10 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 // Sync the coalesced packet count from the underlying queue
                 if let Some(queue_state) = &self.queue_state {
                     if let Some(current_count) = queue_state.queue.tx_packets_coalesced() {
-                        let last_count = state.state.last_tx_packets_coalesced.get();
+                        let last_count = state.state.stats.tx_packets_coalesced.get();
                         let diff = current_count.saturating_sub(last_count);
                         if diff > 0 {
                             state.state.stats.tx_packets_coalesced.add(diff);
-                            state.state.last_tx_packets_coalesced.set(current_count);
                         }
                     }
                 }
@@ -460,9 +458,6 @@ struct ActiveState {
     rx_bufs: RxBuffers,
 
     stats: QueueStats,
-
-    /// Last known coalesced packet count from the underlying queue
-    last_tx_packets_coalesced: Cell<u64>,
 }
 
 #[derive(Inspect, Default)]
@@ -957,7 +952,6 @@ impl ActiveState {
             pending_rx_packets: VecDeque::new(),
             rx_bufs: RxBuffers::new(recv_buffer_count),
             stats: Default::default(),
-            last_tx_packets_coalesced: Cell::new(0),
         }
     }
 
