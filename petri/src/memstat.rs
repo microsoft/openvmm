@@ -139,7 +139,7 @@ impl MemStat {
             assert!(baseline_pss_anon >= self[prs].smaps_rollup["Pss_Anon"]);
         }
 
-        return true;
+        true
     }
 
     fn parse_memfile(
