@@ -833,12 +833,9 @@ async fn validate_mnf_usage_in_guest_reboot(
     Ok(())
 }
 
-#[vmm_test_no_agent(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
-)]
+#[vmm_test_no_agent(hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
+async fn meminfo_status_tdx_2_proc_no_agent<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let mut vm = config
@@ -862,15 +859,14 @@ async fn meminfo_status_2_proc_no_agent<T: PetriVmmBackend>(
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
+    assert!(memstat.compare_to_baseline(&"intel-tdx".to_string(), &"2vp".to_string()));
+
     Ok(())
 }
 
-#[vmm_test_no_agent(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
-)]
+#[vmm_test_no_agent(hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
+async fn meminfo_status_tdx_64_proc_no_agent<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let mut vm = config
@@ -894,6 +890,70 @@ async fn meminfo_status_64_proc_no_agent<T: PetriVmmBackend>(
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
+    assert!(memstat.compare_to_baseline(&"intel-tdx".to_string(), &"64vp".to_string()));
+
+    Ok(())
+}
+
+#[vmm_test_no_agent(hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)))]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn meminfo_status_snp_2_proc_no_agent<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 2,
+            ..Default::default()
+        })
+        .with_memory(MemoryConfig {
+            startup_bytes: 16 * (1024 * 1024 * 1024),
+            dynamic_memory_range: None,
+        })
+        .run_without_agent()
+        .await?;
+    std::thread::sleep(Duration::from_secs(60));
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+    let memstat = MemStat::new(&vtl2_agent).await;
+    tracing::info!(
+        "MEMSTAT_START:\n{}\n:MEMSTAT_END",
+        to_string_pretty(&memstat).unwrap()
+    );
+
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    vm.wait_for_clean_teardown().await?;
+    assert!(memstat.compare_to_baseline(&"amd-snp".to_string(), &"2vp".to_string()));
+
+    Ok(())
+}
+
+#[vmm_test_no_agent(hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)))]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn meminfo_status_snp_64_proc_no_agent<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 64,
+            ..Default::default()
+        })
+        .with_memory(MemoryConfig {
+            startup_bytes: 16 * (1024 * 1024 * 1024),
+            dynamic_memory_range: None,
+        })
+        .run_without_agent()
+        .await?;
+    std::thread::sleep(Duration::from_secs(60));
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+    let memstat = MemStat::new(&vtl2_agent).await;
+    tracing::info!(
+        "MEMSTAT_START:\n{}\n:MEMSTAT_END",
+        to_string_pretty(&memstat).unwrap()
+    );
+
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    vm.wait_for_clean_teardown().await?;
+    assert!(memstat.compare_to_baseline(&"amd-snp".to_string(), &"64vp".to_string()));
+
     Ok(())
 }
 
@@ -926,10 +986,6 @@ async fn meminfo_status_2_proc<T: PetriVmmBackend>(
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()
-    );
-    tracing::info!(
-        "PATH IN MULTIARCH:{}",
-        std::env::current_dir().unwrap().to_str().unwrap()
     );
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
@@ -971,6 +1027,41 @@ async fn meminfo_status_32_proc<T: PetriVmmBackend>(
 
 #[vmm_test(hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
+async fn meminfo_status_2_proc_arm<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (mut vm, agent) = config
+        .with_processor_topology({
+            ProcessorTopology {
+                vp_count: 2,
+                ..Default::default()
+            }
+        })
+        .with_memory({
+            MemoryConfig {
+                startup_bytes: 16 * (1024 * 1024 * 1024),
+                dynamic_memory_range: None,
+            }
+        })
+        .run()
+        .await?;
+    std::thread::sleep(Duration::from_secs(60));
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+    let memstat = MemStat::new(&vtl2_agent).await;
+    tracing::info!(
+        "MEMSTAT_START:\n{}\n:MEMSTAT_END",
+        to_string_pretty(&memstat).unwrap()
+    );
+    agent.power_off().await?;
+    vm.wait_for_teardown().await?;
+
+    assert!(memstat.compare_to_baseline(&"aarch64".to_string(), &"2vp".to_string()));
+
+    Ok(())
+}
+
+#[vmm_test(hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
+#[cfg_attr(not(windows), expect(dead_code))]
 async fn meminfo_status_64_proc_arm<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -999,5 +1090,7 @@ async fn meminfo_status_64_proc_arm<T: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
+    assert!(memstat.compare_to_baseline(&"aarch64".to_string(), &"64vp".to_string()));
+
     Ok(())
 }

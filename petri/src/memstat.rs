@@ -6,7 +6,14 @@
 use pipette_client::PipetteClient;
 use pipette_client::cmd;
 use serde::Serialize;
+use serde_json::Value;
+use serde_json::from_reader;
 use std::collections::HashMap;
+use std::env::current_dir;
+use std::fs::File;
+use std::ops::Index;
+use std::ops::IndexMut;
+use std::path::Path;
 
 /// PerProcessMemstat struct collects statistics from a single process relevant to memory validation
 #[derive(Serialize, Clone, Default)]
@@ -40,10 +47,6 @@ pub struct MemStat {
 impl MemStat {
     /// Construction of a MemStat object takes the vtl2 Pipette agent to query OpenHCL for memory statistics for VTL2 as a whole and for VTL2's processes
     pub async fn new(vtl2_agent: &PipetteClient) -> Self {
-        tracing::info!(
-            "PATH IN MEMSTAT: {}",
-            std::env::current_dir().unwrap().to_str().unwrap()
-        );
         let sh = vtl2_agent.unix_shell();
         let meminfo = Self::parse_memfile(sh.read_file("/proc/meminfo").await.unwrap(), 0, 0, 1);
         let total_free_memory_per_zone = sh
@@ -101,6 +104,44 @@ impl MemStat {
         }
     }
 
+    /// Compares current statistics against baseline
+    pub fn compare_to_baseline(self, arch: &String, vps: &String) -> bool {
+        let path_str = format!(
+            "{}/test_data/meminfo_baseline.json",
+            current_dir().unwrap().to_str().unwrap()
+        );
+        let baseline_json =
+            from_reader::<File, Value>(File::open(Path::new(&path_str)).expect("file not found"))
+                .unwrap();
+        let baseline_usage = baseline_json[arch][vps]["usage"]["baseline"]
+            .as_u64()
+            .unwrap()
+            + baseline_json[arch][vps]["usage"]["threshold"]
+                .as_u64()
+                .unwrap();
+        assert!(baseline_usage >= (self.meminfo["MemTotal"] - self.total_free_memory_per_zone));
+
+        for prs in vec!["underhill_init", "openvmm_hcl", "underhill_vm"] {
+            let baseline_pss = baseline_json[arch][vps][prs]["Pss"]["baseline"]
+                .as_u64()
+                .unwrap()
+                + baseline_json[arch][vps][prs]["Pss"]["threshold"]
+                    .as_u64()
+                    .unwrap();
+            let baseline_pss_anon = baseline_json[arch][vps][prs]["Pss_Anon"]["baseline"]
+                .as_u64()
+                .unwrap()
+                + baseline_json[arch][vps][prs]["Pss_Anon"]["threshold"]
+                    .as_u64()
+                    .unwrap();
+
+            assert!(baseline_pss >= self[prs].smaps_rollup["Pss"]);
+            assert!(baseline_pss_anon >= self[prs].smaps_rollup["Pss_Anon"]);
+        }
+
+        return true;
+    }
+
     fn parse_memfile(
         input: String,
         start_row: usize,
@@ -138,5 +179,28 @@ impl MemStat {
             split_arr[6].parse::<u64>().unwrap(),
         );
         statm
+    }
+}
+
+impl Index<&'_ str> for MemStat {
+    type Output = PerProcessMemstat;
+    fn index(&self, s: &str) -> &PerProcessMemstat {
+        match s {
+            "underhill_init" => &self.underhill_init,
+            "openvmm_hcl" => &self.openvmm_hcl,
+            "underhill_vm" => &self.underhill_vm,
+            _ => panic!("unknown field: {}", s),
+        }
+    }
+}
+
+impl IndexMut<&'_ str> for MemStat {
+    fn index_mut(&mut self, s: &str) -> &mut PerProcessMemstat {
+        match s {
+            "underhill_init" => &mut self.underhill_init,
+            "openvmm_hcl" => &mut self.openvmm_hcl,
+            "underhill_vm" => &mut self.underhill_vm,
+            _ => panic!("unknown field: {}", s),
+        }
     }
 }
