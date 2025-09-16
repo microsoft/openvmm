@@ -196,7 +196,19 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 worker.channel.can_use_ring_size_opt,
             );
 
-            if let WorkerState::Ready(state) = &worker.state {
+            if let WorkerState::Ready(state) = &mut worker.state {
+                // Sync the coalesced packet count from the underlying queue
+                if let Some(queue_state) = &self.queue_state {
+                    if let Some(current_count) = queue_state.queue.num_pkts_coalesced() {
+                        let diff =
+                            current_count.saturating_sub(state.state.last_queue_coalesced_count);
+                        if diff > 0 {
+                            state.state.stats.num_pkts_coalesced.add(diff);
+                            state.state.last_queue_coalesced_count = current_count;
+                        }
+                    }
+                }
+
                 resp.field(
                     "outstanding_tx_packets",
                     state.state.pending_tx_packets.len() - state.state.free_tx_packets.len(),
@@ -435,6 +447,9 @@ struct ActiveState {
     rx_bufs: RxBuffers,
 
     stats: QueueStats,
+
+    /// Last known coalesced packet count from the underlying queue
+    last_queue_coalesced_count: u64,
 }
 
 #[derive(Inspect, Default)]
@@ -448,6 +463,7 @@ struct QueueStats {
     tx_checksum_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
+    num_pkts_coalesced: Counter,
 }
 
 #[derive(Debug)]
@@ -893,6 +909,7 @@ impl ActiveState {
             pending_tx_completions: VecDeque::new(),
             rx_bufs: RxBuffers::new(recv_buffer_count),
             stats: Default::default(),
+            last_queue_coalesced_count: 0,
         }
     }
 

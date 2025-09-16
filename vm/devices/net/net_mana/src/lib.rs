@@ -616,6 +616,8 @@ struct QueueStats {
     rx_errors: u64,
 
     interrupts: u64,
+
+    num_pkts_coalesced: u64,
 }
 
 impl Inspect for QueueStats {
@@ -629,7 +631,8 @@ impl Inspect for QueueStats {
             .counter("rx_events", self.rx_events)
             .counter("rx_packets", self.rx_packets)
             .counter("rx_errors", self.rx_errors)
-            .counter("interrupts", self.interrupts);
+            .counter("interrupts", self.interrupts)
+            .counter("num_pkts_coalesced", self.num_pkts_coalesced);
     }
 }
 
@@ -984,6 +987,10 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
         Some(self.pool.as_mut())
     }
+
+    fn num_pkts_coalesced(&self) -> Option<u64> {
+        Some(self.stats.num_pkts_coalesced)
+    }
 }
 
 impl<T: DeviceBacking> ManaQueue<T> {
@@ -1242,6 +1249,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         size: tail.len,
                     };
                 }
+                self.stats.num_pkts_coalesced += 1;
                 &sgl[..segment_count]
             };
 
