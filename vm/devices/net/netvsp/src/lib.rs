@@ -211,11 +211,11 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 // Sync the coalesced packet count from the underlying queue
                 if let Some(queue_state) = &self.queue_state {
                     if let Some(current_count) = queue_state.queue.tx_packets_coalesced() {
-                        let last_count = state.state.last_queue_coalesced_count.get();
+                        let last_count = state.state.last_tx_packets_coalesced.get();
                         let diff = current_count.saturating_sub(last_count);
                         if diff > 0 {
                             state.state.stats.tx_packets_coalesced.add(diff);
-                            state.state.last_queue_coalesced_count.set(current_count);
+                            state.state.last_tx_packets_coalesced.set(current_count);
                         }
                     }
                 }
@@ -462,7 +462,7 @@ struct ActiveState {
     stats: QueueStats,
 
     /// Last known coalesced packet count from the underlying queue
-    last_queue_coalesced_count: Cell<u64>,
+    last_tx_packets_coalesced: Cell<u64>,
 }
 
 #[derive(Inspect, Default)]
@@ -957,7 +957,7 @@ impl ActiveState {
             pending_rx_packets: VecDeque::new(),
             rx_bufs: RxBuffers::new(recv_buffer_count),
             stats: Default::default(),
-            last_queue_coalesced_count: Cell::new(0),
+            last_tx_packets_coalesced: Cell::new(0),
         }
     }
 
