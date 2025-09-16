@@ -49,7 +49,14 @@ pub trait CpuIo {
     #[must_use]
     fn write_io(&self, vp: VpIndex, port: u16, data: &[u8]) -> impl Future<Output = ()>;
 
-    /// Report an internal fatal error
+    /// Report an internal fatal error.
+    ///
+    /// The intention behind this method is to allow the top-level VMM
+    /// to specify an error handling policy, while still being able to capture
+    /// stacks and other context from the point of failure. We previously would
+    /// return a `VpHaltReason::Panic` here, but that meant the stack trace
+    /// would be from the point of the panic handler, which lost context.
+    /// See vmotherboard's `FatalErrorPolicy` for an example.
     #[track_caller]
     fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> VpHaltReason;
 }
