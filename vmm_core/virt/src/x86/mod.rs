@@ -197,7 +197,7 @@ impl X86PartitionCapabilities {
             this.xsave.compact_len = this.xsave.compact_len_for(!0);
             this.xsave.standard_len = this.xsave.standard_len_for(!0);
 
-            if this.xsave.standard_len <= standard_len {
+            if this.xsave.standard_len > standard_len {
                 return Err(X86PartitionCapabilitiesError::XSaveLengthTooSmall {
                     advertised: standard_len,
                     required: this.xsave.standard_len,
