@@ -28,7 +28,6 @@ impl RunContext<'_> {
             topology: &self.state.processor_topology,
             cvm_cpuid_info: None,
             snp_secrets: None,
-            env_cvm_guest_vsm: false,
             vtom: None,
             handle_synic: true,
             no_sidecar_hotplug: false,
@@ -57,6 +56,8 @@ impl RunContext<'_> {
                     m.vtl1().cloned().unwrap_or(GuestMemory::empty()),
                 ]
                 .into(),
+                vtl0_kernel_exec_gm: m.vtl0().clone(),
+                vtl0_user_exec_gm: m.vtl0().clone(),
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: Vec::new(),
                 crash_notification_send: mesh::channel().0,

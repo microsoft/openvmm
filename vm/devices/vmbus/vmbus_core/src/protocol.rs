@@ -81,6 +81,7 @@ vmbus_messages! {
             InitiateContact 0
         },
         15 VERSION_RESPONSE {
+            VersionResponse3 0 check_size:true,
             VersionResponse2 0 check_size:true,
             VersionResponse 0
         },
@@ -156,27 +157,40 @@ pub struct FeatureFlags {
     /// Feature which allows the guest to specify an event flag and connection ID when opening
     /// a channel. If not used, the event flag defaults to the channel ID and the connection ID
     /// is specified by the host in the offer channel message.
-    pub guest_specified_signal_parameters: bool,
+    pub guest_specified_signal_parameters: bool, // 0x1
 
     /// Indicates the `REDIRECT_INTERRUPT` flag is supported in the OpenChannel flags.
-    pub channel_interrupt_redirection: bool,
+    pub channel_interrupt_redirection: bool, // 0x2
 
     /// Indicates the `MODIFY_CONNECTION` and `MODIFY_CONNECTION_RESPONSE` messages are supported.
-    pub modify_connection: bool,
+    pub modify_connection: bool, // 0x4
 
     /// Feature which allows a client (Windows, Linux, MiniVMBus, etc)
     /// to specify a well-known GUID to identify itself when initiating contact.
     /// If not used, the client ID is zero.
-    pub client_id: bool,
+    pub client_id: bool, // 0x8
 
     /// Indicates the `confidential_ring_buffer` and `confidential_external_memory` offer flags are
     /// supported.
-    pub confidential_channels: bool,
+    pub confidential_channels: bool, // 0x10
 
     /// The server supports messages to pause and resume additional control messages.
-    pub pause_resume: bool,
+    pub pause_resume: bool, // 0x20
 
-    #[bits(26)]
+    /// The guest supports having the server (host or paravisor) provide monitor page GPAs.
+    ///
+    /// If this flag is present in the `InitiateContact` message, the guest may still provide its
+    /// own monitor pages, which the server may ignore if it supports the flag. The server will
+    /// only set this flag in the `VersionResponse` message if it is actually providing monitor
+    /// pages, which the guest must then use instead of its own.
+    ///
+    /// If the server sets the flag in the `VersionResponse` message, it must provide a non-zero
+    /// value for the [`VersionResponse3::child_to_parent_monitor_page_gpa`]; the
+    /// [`VersionResponse3::parent_to_child_monitor_page_gpa`] is optional and may be zero, in which
+    /// case the guest cannot cancel MNF interrupts from the host.
+    pub server_specified_monitor_pages: bool, // 0x40
+
+    #[bits(25)]
     _reserved: u32,
 }
 
@@ -344,12 +358,40 @@ pub struct VersionResponse2 {
     pub supported_features: u32,
 }
 
+/// Version response message used by [`Version::Copper`] and above if
+/// [`FeatureFlags::server_specified_monitor_pages`] is set.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct VersionResponse3 {
+    pub version_response2: VersionResponse2,
+    pub _padding: u32,
+    // Only valid with `FeatureFlags::server_specified_monitor_pages`.
+    pub parent_to_child_monitor_page_gpa: u64,
+    pub child_to_parent_monitor_page_gpa: u64,
+}
+
 impl From<VersionResponse> for VersionResponse2 {
     fn from(value: VersionResponse) -> Self {
         Self {
             version_response: value,
             ..FromZeros::new_zeroed()
         }
+    }
+}
+
+impl From<VersionResponse2> for VersionResponse3 {
+    fn from(value: VersionResponse2) -> Self {
+        Self {
+            version_response2: value,
+            ..FromZeros::new_zeroed()
+        }
+    }
+}
+
+impl From<VersionResponse> for VersionResponse3 {
+    fn from(value: VersionResponse) -> Self {
+        let version_response: VersionResponse2 = value.into();
+        version_response.into()
     }
 }
 

@@ -171,7 +171,7 @@ impl<'a> ProcessorRunner<'a, MshvX64<'a>> {
 
 impl<'a> BackingPrivate<'a> for MshvX64<'a> {
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
-        let BackingState::Mshv { reg_page } = &vp.backing else {
+        let BackingState::MshvX64 { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
         };
 

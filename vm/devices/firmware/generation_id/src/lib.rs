@@ -3,6 +3,8 @@
 
 //! Implementation of Generation ID services (shared across both PCAT and UEFI)
 
+#![forbid(unsafe_code)]
+
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use mesh::RecvError;

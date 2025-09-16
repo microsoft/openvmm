@@ -3,6 +3,8 @@
 
 //! Vmbus UI devices (mouse, keyboard, video).
 
+#![forbid(unsafe_code)]
+
 pub mod keyboard;
 pub mod mouse;
 pub mod resolver;

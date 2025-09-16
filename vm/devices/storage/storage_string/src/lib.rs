@@ -34,9 +34,9 @@ impl<const N: usize> std::fmt::Debug for AsciiString<N> {
 impl<const N: usize> Inspect for AsciiString<N> {
     fn inspect(&self, req: inspect::Request<'_>) {
         if let Some(s) = self.as_str() {
-            req.value(s.into())
+            req.value(s)
         } else {
-            req.value(self.as_bytes().to_vec().into())
+            req.value(self.as_bytes().to_vec())
         }
     }
 }

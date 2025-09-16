@@ -39,8 +39,6 @@ macro_rules! multitest {
     ($tests:expr) => {
         const _: () = {
             use $crate::test_macro_support::linkme;
-            // UNSAFETY: linkme uses manual link sections, which are unsafe.
-            #[expect(unsafe_code)]
             #[linkme::distributed_slice($crate::test_macro_support::TESTS)]
             #[linkme(crate = linkme)]
             static TEST: fn() -> (&'static str, Vec<$crate::TestCase>) =

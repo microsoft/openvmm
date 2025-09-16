@@ -629,10 +629,10 @@ pub fn main() -> anyhow::Result<()> {
 
                     while let Some(data) = file_stream.next().await {
                         match data {
-                            Ok(data) => {
-                                let message = kmsg::KmsgParsedEntry::new(&data)?;
-                                println!("{}", message.display(is_terminal));
-                            }
+                            Ok(data) => match kmsg::KmsgParsedEntry::new(&data) {
+                                Ok(message) => println!("{}", message.display(is_terminal)),
+                                Err(e) => println!("Invalid kmsg entry: {e:?}"),
+                            },
                             Err(err) if reconnect && err.kind() == ErrorKind::ConnectionReset => {
                                 if verbose {
                                     eprintln!(
@@ -895,7 +895,7 @@ fn create_or_stderr(path: &Option<PathBuf>) -> std::io::Result<fs_err::File> {
 
 async fn capture_packets(
     client: DiagClient,
-    streams: Vec<impl std::future::Future<Output = Result<u64, std::io::Error>>>,
+    streams: Vec<impl Future<Output = Result<u64, std::io::Error>>>,
     capture_duration: Duration,
 ) {
     let mut capture_streams = FuturesUnordered::from_iter(streams);

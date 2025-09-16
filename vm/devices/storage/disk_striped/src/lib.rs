@@ -125,7 +125,7 @@ enum IoError {
 
 impl From<IoError> for DiskError {
     fn from(err: IoError) -> Self {
-        DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+        DiskError::Io(std::io::Error::other(err))
     }
 }
 
@@ -549,7 +549,7 @@ impl DiskIo for StripedDisk {
 async fn await_all_and_check<T, E>(futures: T) -> Result<(), E>
 where
     T: IntoIterator,
-    T::Item: core::future::Future<Output = Result<(), E>>,
+    T::Item: Future<Output = Result<(), E>>,
 {
     // Use join_all to wait for all IOs even if one fails. This is necessary to
     // avoid dropping IOs while they are in flight.

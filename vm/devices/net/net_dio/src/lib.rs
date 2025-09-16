@@ -5,6 +5,7 @@
 
 #![cfg(windows)]
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod resolver;
 

@@ -48,7 +48,6 @@ use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
 use vmbus_channel::bus::OpenRequest;
-use vmbus_channel::bus::OpenResult;
 use vmbus_client as client;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
@@ -59,7 +58,7 @@ use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_server::HvsockRelayChannelHalf;
 use vmbus_server::MnfUsage;
-use vmbus_server::ModifyConnectionResponse;
+use vmbus_server::ModifyRelayResponse;
 use vmbus_server::OfferInfo;
 use vmbus_server::OfferParamsInternal;
 use vmbus_server::Update;
@@ -282,7 +281,7 @@ struct RelayChannelTask {
 
 impl RelayChannelTask {
     /// Relay open channel request from VTL0 to Host, responding with Open Result
-    async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<OpenResult> {
+    async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<()> {
         // If the guest uses the channel bitmap, the host can't send interrupts
         // directly and they must be relayed.
         let redirect_interrupt = self.channel.use_interrupt_relay.load(Ordering::SeqCst);
@@ -320,9 +319,7 @@ impl RelayChannelTask {
 
         self.channel.is_open = true;
 
-        Ok(OpenResult {
-            guest_to_host_interrupt: opened.guest_to_host_signal,
-        })
+        Ok(())
     }
 
     async fn handle_close_channel(&mut self) {
@@ -395,7 +392,7 @@ impl RelayChannelTask {
                                 "failed to open channel"
                             );
                         })
-                        .ok()
+                        .is_ok()
                 })
                 .await;
             }
@@ -556,7 +553,7 @@ struct RelayTask {
     intercept_channels: HashMap<Guid, mesh::Sender<InterceptChannelRequest>>,
     use_interrupt_relay: Arc<AtomicBool>,
     #[inspect(skip)]
-    server_response_send: mesh::Sender<ModifyConnectionResponse>,
+    server_response_send: mesh::Sender<ModifyRelayResponse>,
     #[inspect(skip)]
     hvsock_relay: HvsockRelayChannelHalf,
     #[inspect(skip)]
@@ -571,7 +568,7 @@ impl RelayTask {
     fn new(
         spawner: Arc<dyn SpawnDriver>,
         vmbus_control: Arc<VmbusServerControl>,
-        server_response_send: mesh::Sender<ModifyConnectionResponse>,
+        server_response_send: mesh::Sender<ModifyRelayResponse>,
         hvsock_relay: HvsockRelayChannelHalf,
         vmbus_client: client::VmbusClientAccess,
         version: VersionInfo,
@@ -702,6 +699,7 @@ impl RelayTask {
         let key = params.key();
         let new_offer = OfferInfo {
             params,
+            event: offer.guest_to_host_interrupt,
             request_send,
             server_request_recv,
         };
@@ -759,12 +757,12 @@ impl RelayTask {
     async fn handle_modify(
         &mut self,
         request: vmbus_server::ModifyRelayRequest,
-    ) -> ModifyConnectionResponse {
+    ) -> ModifyRelayResponse {
         // If the guest is requesting a version change, check whether that version is not newer
         // than what the host supports.
         if let Some(version) = request.version {
             if (self.version.version as u32) < version {
-                return ModifyConnectionResponse::Unsupported;
+                return ModifyRelayResponse::Unsupported;
             }
         }
 
@@ -792,7 +790,12 @@ impl RelayTask {
             }
         };
 
-        ModifyConnectionResponse::Supported(state, self.version.feature_flags)
+        // Use Supported only for new connections (which have a version).
+        if request.version.is_some() {
+            ModifyRelayResponse::Supported(state, self.version.feature_flags)
+        } else {
+            ModifyRelayResponse::Modified(state)
+        }
     }
 
     async fn handle_server_request(&mut self, request: vmbus_server::ModifyRelayRequest) {

@@ -175,6 +175,13 @@ impl CancelContext {
             Err(reason) => Err(ErrorOrCancelled::Cancelled(reason)),
         }
     }
+
+    /// Returns true if the context has been cancelled.
+    pub fn is_cancelled(&mut self) -> bool {
+        Pin::new(&mut self.cancelled())
+            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+            .is_ready()
+    }
 }
 
 impl Default for CancelContext {

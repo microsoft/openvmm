@@ -7,7 +7,6 @@
 //! and send any vmbus notifications for that device to the
 //! SimpleVmbusClientDeviceWrapper instance.
 
-#![cfg(target_os = "linux")]
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
@@ -215,9 +214,7 @@ struct SimpleVmbusClientDeviceTaskState {
     offer: Option<OfferInfo>,
     #[inspect(skip)]
     recv_relay: mesh::Receiver<InterceptChannelRequest>,
-    #[inspect(
-        with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()).map_value(inspect::AsHex))"
-    )]
+    #[inspect(hex, with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()))")]
     vtl_pages: Option<MemoryBlock>,
 }
 
@@ -298,14 +295,14 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             .reserve_memory(state, &offer.request_send, 4)
             .await
             .context("reserve memory")?;
+        let guest_to_host_interrupt = offer.guest_to_host_interrupt.clone();
         state.offer = Some(offer);
         let offer = state.offer.as_ref().unwrap();
-        let opened = self
-            .open_channel(&offer.request_send, ring_gpadl_id, &interrupt_event)
+        self.open_channel(&offer.request_send, ring_gpadl_id, &interrupt_event)
             .await
             .context("open channel")?;
         let channel = self
-            .create_vmbus_channel(&memory, &interrupt_event, opened.guest_to_host_signal)
+            .create_vmbus_channel(&memory, &interrupt_event, guest_to_host_interrupt)
             .context("create vmbus queue")?;
 
         let save_restore = self.device.task_mut().0.supports_save_restore();
@@ -519,8 +516,8 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
     fn handle_save(&mut self) -> SavedStateBlob {
         let saved_state = self.saved_state.take();
-        if saved_state.is_some() {
-            let blob = SavedStateBlob::new(saved_state.unwrap());
+        if let Some(saved_state) = saved_state {
+            let blob = SavedStateBlob::new(saved_state);
             self.handle_restore(&blob);
             blob
         } else {
@@ -545,6 +542,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     /// device wrapper.
     pub async fn process_messages(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
         loop {
+            #[expect(clippy::large_enum_variant)]
             enum Event {
                 Request(InterceptChannelRequest),
                 Revoke(()),

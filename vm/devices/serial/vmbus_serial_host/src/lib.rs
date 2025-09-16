@@ -3,6 +3,8 @@
 
 //! The host (server) side implementation of a VMBUS based serial device.
 
+#![forbid(unsafe_code)]
+
 pub mod resolver;
 
 use async_trait::async_trait;

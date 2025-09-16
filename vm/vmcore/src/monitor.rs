@@ -3,6 +3,8 @@
 
 //! Types for supporting hypervisor monitor pages.
 
+#![forbid(unsafe_code)]
+
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvMonitorPage;
 use hvdef::HvMonitorPageSmall;
@@ -98,7 +100,7 @@ impl MonitorPage {
 
     /// Sets the GPA of the monitor page currently in use.
     pub fn set_gpa(&self, gpa: Option<u64>) -> Option<u64> {
-        assert!(gpa.is_none() || gpa.unwrap() % HV_PAGE_SIZE == 0);
+        assert!(gpa.is_none_or(|gpa| gpa % HV_PAGE_SIZE == 0));
         let old = self
             .gpa
             .swap(gpa.unwrap_or(INVALID_MONITOR_GPA), Ordering::Relaxed);
@@ -182,6 +184,22 @@ impl MonitorPage {
             }
         }
 
+        true
+    }
+
+    /// Checks if a read if inside the monitor page, and fills the buffer if it is.
+    /// N.B. This is used to handle cases where the instruction emulator needs to read the monitor
+    ///      page. The guest should have read access to the page so doesn't need to go through this
+    ///      path.
+    pub fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        let page_gpa = self.gpa.load(Ordering::Relaxed);
+        if page_gpa != gpa & !(HV_PAGE_SIZE - 1) {
+            return false;
+        }
+
+        // Since this implementation does not use the distinct armed and pending states, always
+        // returning a zero-filled buffer is sufficient.
+        bytes.fill(0);
         true
     }
 }

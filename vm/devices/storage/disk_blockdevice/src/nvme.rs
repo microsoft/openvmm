@@ -305,10 +305,7 @@ pub fn check_nvme_status(status: i32) -> io::Result<()> {
         let errno = match nvme_spec::Status(status as u16) {
             nvme_spec::Status::RESERVATION_CONFLICT => libc::EBADE,
             status => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("nvme error {:#x?}", status),
-                ));
+                return Err(io::Error::other(format!("nvme error {:#x?}", status)));
             }
         };
         Err(io::Error::from_raw_os_error(errno))

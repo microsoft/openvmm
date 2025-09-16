@@ -38,8 +38,8 @@ impl FuzzNvmeDriver {
         let pages = 512; // 2MB TODO: [use-arbitrary-input]
         let mem = DeviceTestMemory::new(pages, false, "fuzz_nvme_driver");
 
-        // Trasfer buffer
-        let payload_mem = mem.guest_memory();
+        // Transfer buffer
+        let payload_mem = mem.payload_mem();
 
         // Nvme device and driver setup
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -64,7 +64,7 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem.dma_client());
-        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device).await?; // TODO: [use-arbitrary-input]
+        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?; // TODO: [use-arbitrary-input]
         let namespace = nvme_driver.namespace(1).await?; // TODO: [use-arbitrary-input]
 
         Ok(Self {

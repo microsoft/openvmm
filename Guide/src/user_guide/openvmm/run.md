@@ -122,7 +122,7 @@ in, the fact DOS is able to boot in OpenVMM serves as a testament to OpenVMM's
 solid support of legacy x86 devices and infrastructure.
 
 The following command will boot a copy of DOS from a virtual floppy disk, using
-the [Hyper-V PCAT BIOS](../../../reference/devices/firmware/pcat_bios.md).
+the [Hyper-V PCAT BIOS](../../reference/devices/firmware/pcat_bios.md).
 
 Booting via PCAT is not just for DOS though! Many older operating systems,
 including older copies of Windows / Linux, require booting via BIOS.

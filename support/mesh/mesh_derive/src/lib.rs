@@ -4,6 +4,7 @@
 //! Derive macro for `mesh::MeshPayload` and `mesh_protobuf::Protobuf`.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use heck::ToSnakeCase;
 use proc_macro2::Span;
@@ -177,7 +178,7 @@ impl Parse for Attr {
         } else if ident == "rename" {
             Ok(Self::Rename(parse_string_attr(input)?))
         } else {
-            return Err(syn::Error::new_spanned(ident, "unknown attribute"));
+            Err(syn::Error::new_spanned(ident, "unknown attribute"))
         }
     }
 }
@@ -253,7 +254,7 @@ impl Parse for ItemAttr {
         } else if ident == "transparent" {
             Ok(Self::Transparent)
         } else {
-            return Err(syn::Error::new_spanned(ident, "unknown attribute"));
+            Err(syn::Error::new_spanned(ident, "unknown attribute"))
         }
     }
 }

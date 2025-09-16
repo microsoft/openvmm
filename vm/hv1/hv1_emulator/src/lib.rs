@@ -36,3 +36,18 @@ impl<T: FnMut(u32, bool)> RequestInterrupt for T {
         self(vector, auto_eoi)
     }
 }
+
+/// A trait for managing the vtl protections on pages.
+pub trait VtlProtectAccess {
+    /// Check if the given GPN has the specified VTL permissions, optionally
+    /// modify them, then lock them.
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        check_perms: hvdef::HvMapGpaFlags,
+        new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, hvdef::HvError>;
+
+    /// Unlocks an overlay page by its GPN, restoring its previous permissions.
+    fn unlock_overlay_page(&mut self, gpn: u64) -> Result<(), hvdef::HvError>;
+}

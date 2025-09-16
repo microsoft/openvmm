@@ -3,9 +3,6 @@
 
 //! Container data structures indexable by [`Vtl`].
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-
 use bitvec::array::BitArray;
 use core::ops::Deref;
 use core::ops::DerefMut;
@@ -120,15 +117,7 @@ where
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
         for (i, data) in self.data.iter_mut().enumerate() {
-            resp.field_mut(
-                match i {
-                    0 => "0",
-                    1 => "1",
-                    2 => "2",
-                    _ => unreachable!(),
-                },
-                data,
-            );
+            resp.field_mut(&i.to_string(), data);
         }
     }
 }

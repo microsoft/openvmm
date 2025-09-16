@@ -60,6 +60,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
             AttestationType::Tdx => Some(tee_call::TeeType::Tdx),
+            AttestationType::Vbs => Some(tee_call::TeeType::Vbs),
             AttestationType::Host => None,
         };
         let ak_cert_request_helper =
@@ -215,6 +216,7 @@ pub mod resources {
             let tee_call: Option<Arc<dyn tee_call::TeeCall>> = match handle.attestation_type {
                 AttestationType::Snp => Some(Arc::new(tee_call::SnpCall)),
                 AttestationType::Tdx => Some(Arc::new(tee_call::TdxCall)),
+                AttestationType::Vbs => Some(Arc::new(tee_call::VbsCall)),
                 AttestationType::Host => None,
             };
 

@@ -4,14 +4,15 @@
 //! Abstractions to support pluggable UEFI nvram storage backends (e.g: in memory, file backed, etc...)
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub use uefi_specs::uefi::time::EFI_TIME;
 
 pub mod in_memory;
 
 use guid::Guid;
-#[cfg(feature = "inspect")]
-pub use inspect_ext::InspectableNvramStorage;
+#[cfg(feature = "save_restore")]
+pub use save_restore::VmmNvramStorage;
 use std::fmt::Debug;
 use thiserror::Error;
 use ucs2::Ucs2LeSlice;
@@ -168,18 +169,26 @@ impl NvramStorage for Box<dyn NvramStorage> {
     }
 }
 
-/// Defines a trait that combines NvramStorage and Inspect
-#[cfg(feature = "inspect")]
-mod inspect_ext {
+/// Defines a trait that combines NvramStorage, Inspect, and SaveRestore
+#[cfg(feature = "save_restore")]
+mod save_restore {
     use super::*;
     use inspect::Inspect;
+    use vmcore::save_restore::SaveRestore;
 
-    /// Extends [`NvramStorage`] with a bound on [`Inspect`]
-    pub trait InspectableNvramStorage: NvramStorage + Inspect {}
-    impl<T: NvramStorage + Inspect> InspectableNvramStorage for T {}
+    type NvramSavedState = <in_memory::InMemoryNvram as SaveRestore>::SavedState;
+
+    pub trait VmmNvramStorage:
+        NvramStorage + Inspect + SaveRestore<SavedState = NvramSavedState>
+    {
+    }
+    impl<T> VmmNvramStorage for T where
+        T: NvramStorage + Inspect + SaveRestore<SavedState = NvramSavedState>
+    {
+    }
 
     #[async_trait::async_trait]
-    impl NvramStorage for Box<dyn InspectableNvramStorage> {
+    impl NvramStorage for Box<dyn VmmNvramStorage> {
         async fn get_variable(
             &mut self,
             name: &Ucs2LeSlice,
@@ -226,6 +235,21 @@ mod inspect_ext {
             name_vendor: Option<(&Ucs2LeSlice, Guid)>,
         ) -> Result<NextVariable, NvramStorageError> {
             (**self).next_variable(name_vendor).await
+        }
+    }
+
+    impl SaveRestore for Box<dyn VmmNvramStorage<SavedState = NvramSavedState>> {
+        type SavedState = NvramSavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
+            (**self).save()
+        }
+
+        fn restore(
+            &mut self,
+            state: Self::SavedState,
+        ) -> Result<(), vmcore::save_restore::RestoreError> {
+            (**self).restore(state)
         }
     }
 }

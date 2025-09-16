@@ -6,8 +6,6 @@
 //! To be clear: PCI devices are not required to use these helpers, and may
 //! choose to implement configuration space accesses manually.
 
-#![warn(missing_docs)]
-
 use crate::PciInterruptPin;
 use crate::bar_mapping::BarMappings;
 use crate::capabilities::PciCapability;
@@ -148,9 +146,7 @@ mod inspect_helpers {
     use super::*;
 
     pub(crate) fn bars(bars: &[u32; 6]) -> impl Inspect + '_ {
-        inspect::iter_by_index(bars)
-            .prefix("bar")
-            .map_value(inspect::AsHex)
+        inspect::AsHex(inspect::iter_by_index(bars).prefix("bar"))
     }
 }
 

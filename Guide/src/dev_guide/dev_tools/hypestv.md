@@ -21,6 +21,7 @@ Currently, it can:
   terminal window
 * Enable paravisor log output to standard output or another terminal window
 * Inspect paravisor state
+* Modify the paravisor (update the paravisor command line, reload the paravisor)
 
 In the future, it might be able to:
 

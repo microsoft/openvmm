@@ -200,6 +200,19 @@ impl SynicMonitorAccess for SynicPorts {
             .unwrap()
             .set_monitor_page(vtl, gpa.map(|mp| mp.child_to_parent))
     }
+
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<MonitorPageGpas>> {
+        self.partition
+            .monitor_support()
+            .unwrap()
+            .allocate_monitor_page(vtl)
+            .map(|gpa| {
+                gpa.map(|child_to_parent| MonitorPageGpas {
+                    parent_to_child: 0,
+                    child_to_parent,
+                })
+            })
+    }
 }
 
 struct PortHandle {

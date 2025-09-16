@@ -145,9 +145,7 @@ open_enum::open_enum! {
 /// Newtype around `[u8; 256]` that only supports indexing via [`CmosReg`]
 #[derive(Debug, Clone, Inspect)]
 #[inspect(transparent)]
-struct CmosData(
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")] [u8; 256],
-);
+struct CmosData(#[inspect(hex, iter_by_index)] [u8; 256]);
 
 impl CmosData {
     fn empty() -> CmosData {

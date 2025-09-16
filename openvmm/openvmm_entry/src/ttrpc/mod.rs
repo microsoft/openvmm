@@ -498,8 +498,7 @@ impl VmService {
             vmbus_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_disk: None,
-            format_vmgs: false,
+            vmgs: None,
             secure_boot_enabled: false,
             custom_uefi_vars: Default::default(),
             firmware_event_send: None,
@@ -507,6 +506,7 @@ impl VmService {
             chipset_devices: chipset.chipset_devices,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
+            automatic_guest_reset: true,
         };
 
         let mut scsi_rpc = None;

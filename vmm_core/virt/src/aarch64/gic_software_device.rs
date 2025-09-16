@@ -9,9 +9,9 @@ use pci_core::msi::MsiInterruptTarget;
 use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 
 pub struct GicSoftwareDevice {
     irqcon: Arc<dyn ControlGic>,
@@ -25,30 +25,33 @@ impl GicSoftwareDevice {
 
 #[derive(Debug, Error)]
 enum GicInterruptError {
-    #[error("invalid vector count")]
-    InvalidVectorCount,
-    #[error("invalid vector")]
-    InvalidVector,
+    #[error("invalid vector count {0}")]
+    InvalidVectorCount(u32),
+    #[error("invalid {count} vectors at {start}")]
+    InvalidVector { start: u32, count: u32 },
 }
 
 const SPI_RANGE: Range<u32> = 32..1020;
 
-impl VpciInterruptMapper for GicSoftwareDevice {
-    fn register_interrupt(
+impl MapVpciInterrupt for GicSoftwareDevice {
+    async fn register_interrupt(
         &self,
         vector_count: u32,
         params: &vmcore::vpci_msi::VpciInterruptParameters<'_>,
     ) -> Result<MsiAddressData, RegisterInterruptError> {
         if !vector_count.is_power_of_two() {
             return Err(RegisterInterruptError::new(
-                GicInterruptError::InvalidVectorCount,
+                GicInterruptError::InvalidVectorCount(vector_count),
             ));
         }
         if params.vector < SPI_RANGE.start
             || params.vector.saturating_add(vector_count) > SPI_RANGE.end
         {
             return Err(RegisterInterruptError::new(
-                GicInterruptError::InvalidVector,
+                GicInterruptError::InvalidVector {
+                    start: params.vector,
+                    count: vector_count,
+                },
             ));
         }
         Ok(MsiAddressData {
@@ -57,7 +60,7 @@ impl VpciInterruptMapper for GicSoftwareDevice {
         })
     }
 
-    fn unregister_interrupt(&self, address: u64, data: u32) {
+    async fn unregister_interrupt(&self, address: u64, data: u32) {
         let _ = (address, data);
     }
 }

@@ -38,6 +38,7 @@ use sidecar_defs::ControlPage;
 use sidecar_defs::CpuContextX64;
 use sidecar_defs::CpuStatus;
 use sidecar_defs::GetSetVpRegisterRequest;
+use sidecar_defs::PAGE_SIZE;
 use sidecar_defs::RunVpResponse;
 use sidecar_defs::SidecarCommand;
 use sidecar_defs::TranslateGvaRequest;
@@ -84,6 +85,25 @@ pub unsafe fn ap_entry() -> ! {
             x86defs::apic::ApicRegister::SVR.x2apic_msr(),
             u32::from(x86defs::apic::Svr::new().with_enable(true).with_vector(!0)).into(),
         )
+    }
+
+    // Zero the register page, since it has not yet been mapped (and may never
+    // be mapped if the hypervisor does not support it).
+    //
+    // Note that it is not safe to access the register page after this point,
+    // since it is owned by the VMM.
+    //
+    // SAFETY: we are still booting, so the VMM is not using this yet.
+    unsafe {
+        (*addr_space::register_page().cast::<[u8; PAGE_SIZE]>()).fill(0);
+    }
+
+    // Zero the command page, too, so that it doesn't leak data to the VMM from
+    // a previous boot.
+    //
+    // SAFETY: we are still booting, so the VMM is not using this yet.
+    unsafe {
+        (*addr_space::command_page().cast::<[u8; PAGE_SIZE]>()).fill(0);
     }
 
     // Notify the BSP that we are ready.
@@ -147,7 +167,7 @@ fn map_overlays(globals: &mut VpGlobals) {
         HvX64RegisterName::RegisterPage.into(),
         u64::from(
             hvdef::HvSynicSimpSiefp::new()
-                .with_base_gpn(globals.reg_page_pa >> HV_PAGE_SHIFT)
+                .with_base_gpn(addr_space::register_page_pa() >> HV_PAGE_SHIFT)
                 .with_enabled(true),
         )
         .into(),

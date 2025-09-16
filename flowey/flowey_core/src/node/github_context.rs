@@ -19,11 +19,24 @@ pub mod state {
     pub enum Event {}
 }
 
-#[derive(Clone)]
-pub struct GhVarState {
-    pub raw_name: Option<String>,
+pub struct GhOutput {
     pub backing_var: String,
     pub is_secret: bool,
+    pub is_object: bool,
+}
+
+#[derive(Clone)]
+pub struct GhToRust {
+    pub raw_name: String,
+    pub backing_var: String,
+    pub is_secret: bool,
+    pub is_object: bool,
+}
+
+#[derive(Clone)]
+pub struct RustToGh {
+    pub raw_name: String,
+    pub backing_var: String,
     pub is_object: bool,
 }
 
@@ -39,14 +52,14 @@ impl<S> GhContextVarReader<'_, S> {
         is_secret: bool,
         is_object: bool,
     ) -> ReadVar<T> {
-        let (var, write_var) = self.ctx.new_maybe_secret_var(is_secret, "");
+        let (var, write_var) = self.ctx.new_prefixed_var("");
         let write_var = write_var.claim(&mut StepCtx {
             backend: self.ctx.backend.clone(),
         });
-        let var_state = GhVarState {
-            raw_name: Some(var_name.as_ref().to_string()),
+        let var_state = GhToRust {
+            raw_name: var_name.as_ref().to_string(),
             backing_var: write_var.backing_var,
-            is_secret: write_var.is_secret,
+            is_secret,
             is_object,
         };
         let gh_to_rust = vec![var_state];
@@ -106,7 +119,12 @@ impl GhContextVarReader<'_, state::Global> {
 
     /// `github.token`
     pub fn token(self) -> ReadVar<String> {
-        self.read_var("github.token", true, false)
+        // TODO: change is_secret parameter to true.
+        // N.B. Flowey core treats all variables as secrets after a secret variable is read from. Secrecy is viral this way.
+        // This causes unintended consequences in the job, as all subsequent variables are also treated as secrets.
+        // We don't have a good way of fixing this issue yet. Hence, the change in parameter value here.
+        // GitHub redacts access tokens from being printed to logs anyways, so by flipping the is_secret parameter to false, the token won't be leaked.
+        self.read_var("github.token", false, false)
     }
 }
 

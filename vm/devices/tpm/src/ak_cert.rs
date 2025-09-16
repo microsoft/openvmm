@@ -11,6 +11,9 @@ use vm_resource::CanResolveTo;
 pub enum TpmAkCertType {
     /// No Ak cert.
     None,
+    /// Expects an AK cert that is not hardware-attested
+    /// to be pre-provisioned. Used by TVM
+    TrustedPreProvisionedOnly,
     /// Authorized AK cert that is not hardware-attested.
     /// Used by TVM
     Trusted(Arc<dyn RequestAkCert>),
@@ -18,6 +21,10 @@ pub enum TpmAkCertType {
     /// a TEE attestation report).
     /// Used by CVM
     HwAttested(Arc<dyn RequestAkCert>),
+    /// Authorized and software-attested AK cert (backed by
+    /// a software-based VM attestation report).
+    /// Used by Vbs VM
+    SwAttested(Arc<dyn RequestAkCert>),
 }
 
 impl TpmAkCertType {
@@ -25,8 +32,19 @@ impl TpmAkCertType {
     pub fn get_ak_cert_helper(&self) -> Option<&Arc<dyn RequestAkCert>> {
         match self {
             TpmAkCertType::HwAttested(helper) => Some(helper),
+            TpmAkCertType::SwAttested(helper) => Some(helper),
             TpmAkCertType::Trusted(helper) => Some(helper),
+            TpmAkCertType::TrustedPreProvisionedOnly => None,
             TpmAkCertType::None => None,
+        }
+    }
+
+    pub fn attested(&self) -> bool {
+        match self {
+            TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_) => true,
+            TpmAkCertType::Trusted(_)
+            | TpmAkCertType::TrustedPreProvisionedOnly
+            | TpmAkCertType::None => false,
         }
     }
 }

@@ -4,6 +4,7 @@
 //!  UEFI NVRAM structures.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use thiserror::Error;
 
