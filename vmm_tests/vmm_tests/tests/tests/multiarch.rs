@@ -859,7 +859,7 @@ async fn meminfo_status_tdx_2_proc_no_agent<T: PetriVmmBackend>(
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
-    assert!(memstat.compare_to_baseline(&"intel-tdx".to_string(), &"2vp".to_string()));
+    assert!(memstat.compare_to_baseline("intel-tdx", "2vp"));
 
     Ok(())
 }
@@ -890,7 +890,7 @@ async fn meminfo_status_tdx_64_proc_no_agent<T: PetriVmmBackend>(
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
-    assert!(memstat.compare_to_baseline(&"intel-tdx".to_string(), &"64vp".to_string()));
+    assert!(memstat.compare_to_baseline("intel-tdx", "64vp"));
 
     Ok(())
 }
@@ -921,7 +921,7 @@ async fn meminfo_status_snp_2_proc_no_agent<T: PetriVmmBackend>(
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
-    assert!(memstat.compare_to_baseline(&"amd-snp".to_string(), &"2vp".to_string()));
+    assert!(memstat.compare_to_baseline("amd-snp", "2vp"));
 
     Ok(())
 }
@@ -952,7 +952,7 @@ async fn meminfo_status_snp_64_proc_no_agent<T: PetriVmmBackend>(
 
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_clean_teardown().await?;
-    assert!(memstat.compare_to_baseline(&"amd-snp".to_string(), &"64vp".to_string()));
+    assert!(memstat.compare_to_baseline("amd-snp", "64vp"));
 
     Ok(())
 }
@@ -1055,7 +1055,7 @@ async fn meminfo_status_2_proc_arm<T: PetriVmmBackend>(
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
 
-    assert!(memstat.compare_to_baseline(&"aarch64".to_string(), &"2vp".to_string()));
+    assert!(memstat.compare_to_baseline("aarch64", "2vp"));
 
     Ok(())
 }
@@ -1090,7 +1090,7 @@ async fn meminfo_status_64_proc_arm<T: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_teardown().await?;
-    assert!(memstat.compare_to_baseline(&"aarch64".to_string(), &"64vp".to_string()));
+    assert!(memstat.compare_to_baseline("aarch64", "64vp"));
 
     Ok(())
 }

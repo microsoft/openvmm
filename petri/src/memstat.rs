@@ -105,7 +105,7 @@ impl MemStat {
     }
 
     /// Compares current statistics against baseline
-    pub fn compare_to_baseline(self, arch: &String, vps: &String) -> bool {
+    pub fn compare_to_baseline(self, arch: &str, vps: &str) -> bool {
         let path_str = format!(
             "{}/test_data/meminfo_baseline.json",
             current_dir().unwrap().to_str().unwrap()
@@ -121,7 +121,7 @@ impl MemStat {
                 .unwrap();
         assert!(baseline_usage >= (self.meminfo["MemTotal"] - self.total_free_memory_per_zone));
 
-        for prs in vec!["underhill_init", "openvmm_hcl", "underhill_vm"] {
+        for prs in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
             let baseline_pss = baseline_json[arch][vps][prs]["Pss"]["baseline"]
                 .as_u64()
                 .unwrap()
