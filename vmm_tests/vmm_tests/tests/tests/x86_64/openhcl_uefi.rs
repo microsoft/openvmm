@@ -10,7 +10,6 @@ use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 
@@ -27,37 +26,6 @@ async fn nvme_relay_test_core(
         })
         .run()
         .await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
-/// Servicing tests with NVMe devices attached.
-async fn nvme_relay_servicing_core(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    openhcl_cmdline: &str,
-    new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-    flags: OpenHclServicingFlags,
-) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config
-        .with_openhcl_command_line(openhcl_cmdline)
-        .with_vmbus_redirect(true)
-        .run()
-        .await?;
-
-    agent.ping().await?;
-
-    // Test that inspect serialization works with the old version.
-    vm.test_inspect_openhcl().await?;
-
-    vm.restart_openhcl(new_openhcl, flags).await?;
-
-    agent.ping().await?;
-
-    // Test that inspect serialization works with the new version.
-    vm.test_inspect_openhcl().await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
