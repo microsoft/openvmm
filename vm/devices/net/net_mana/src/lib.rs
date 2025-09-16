@@ -952,7 +952,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             "invalid rx cqe type"
                         );
                         self.trace_rx_wqe_from_offset(rx_oob.rx_wqe_offset);
-                        elf.stats.rx_errors.increment();
+                        self.stats.rx_errors.increment();
                         self.avail_rx.push_back(rx.id);
                     }
                 }
@@ -1018,8 +1018,8 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                     CQE_TX_GDMA_ERR => {
                         // Hardware hit an error with the packet coming from the Guest.
                         // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
-                        self.stats.tx_errors += 1;
-                        self.stats.tx_stuck += 1;
+                        self.stats.tx_errors.increment();
+                        self.stats.tx_stuck.increment();
                         self.trace_tx_error(cqe.params, tx_oob, done.len());
                         // Return a TryRestart error to indicate that the queue needs to be restarted.
                         return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
@@ -1027,7 +1027,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                     CQE_TX_INVALID_OOB => {
                         // Invalid OOB means the metadata didn't match how the Hardware parsed the packet.
                         // This is somewhat common, usually due to Encapsulation, and only the affects the specific packet.
-                        self.stats.tx_errors += 1;
+                        self.stats.tx_errors.increment();
                         self.trace_tx_error(cqe.params, tx_oob, done.len());
                     }
                     ty => {
