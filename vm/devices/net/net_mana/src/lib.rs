@@ -23,6 +23,7 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect::SensitivityLevel;
+use inspect_counters::Counter;
 use mana_driver::mana::BnicEq;
 use mana_driver::mana::BnicWq;
 use mana_driver::mana::ResourceArena;
@@ -603,37 +604,21 @@ struct PostedTx {
     bounced_len_with_padding: u32,
 }
 
-#[derive(Default)]
+#[derive(Default, Inspect)]
 struct QueueStats {
-    tx_events: u64,
-    tx_packets: u64,
-    tx_errors: u64,
-    tx_dropped: u64,
-    tx_stuck: u64,
+    tx_events: Counter,
+    tx_packets: Counter,
+    tx_errors: Counter,
+    tx_dropped: Counter,
+    tx_stuck: Counter,
 
-    rx_events: u64,
-    rx_packets: u64,
-    rx_errors: u64,
+    rx_events: Counter,
+    rx_packets: Counter,
+    rx_errors: Counter,
 
-    interrupts: u64,
+    interrupts: Counter,
 
-    num_pkts_coalesced: u64,
-}
-
-impl Inspect for QueueStats {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond()
-            .counter("tx_events", self.tx_events)
-            .counter("tx_packets", self.tx_packets)
-            .counter("tx_errors", self.tx_errors)
-            .counter("tx_dropped", self.tx_dropped)
-            .counter("tx_stuck", self.tx_stuck)
-            .counter("rx_events", self.rx_events)
-            .counter("rx_packets", self.rx_packets)
-            .counter("rx_errors", self.rx_errors)
-            .counter("interrupts", self.interrupts)
-            .counter("num_pkts_coalesced", self.num_pkts_coalesced);
-    }
+    tx_packets_coalesced: Counter,
 }
 
 impl<T: DeviceBacking> InspectMut for ManaQueue<T> {
@@ -784,10 +769,10 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         let cq_id =
                             u32::from_le_bytes(eqe.data[..4].try_into().unwrap()) & 0xffffff;
                         if cq_id == self.tx_cq.id() {
-                            self.stats.tx_events += 1;
+                            self.stats.tx_events.increment();
                             self.tx_cq_armed = false;
                         } else if cq_id == self.rx_cq.id() {
-                            self.stats.rx_events += 1;
+                            self.stats.rx_events.increment();
                             self.rx_cq_armed = false;
                         } else {
                             tracing::error!(cq_id, "unknown cq id");
@@ -812,7 +797,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
             }
             std::task::ready!(self.interrupt.poll(cx));
 
-            self.stats.interrupts += 1;
+            self.stats.interrupts.increment();
         }
     }
 
@@ -874,13 +859,13 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                                 .atomic_read(&mut data);
                             self.pool.write_data(rx.id, &data);
                         }
-                        self.stats.rx_packets += 1;
+                        self.stats.rx_packets.increment();
                         packets[i] = rx.id;
                         i += 1;
                     }
                     ty => {
                         tracelimit::error_ratelimited!(ty, "invalid rx cqe type");
-                        self.stats.rx_errors += 1;
+                        self.stats.rx_errors.increment();
                         self.avail_rx.push_back(rx.id);
                     }
                 }
@@ -942,21 +927,21 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 match tx_oob.cqe_hdr.cqe_type() {
                     CQE_TX_OKAY => {
-                        self.stats.tx_packets += 1;
+                        self.stats.tx_packets.increment();
                     }
                     CQE_TX_GDMA_ERR => {
                         queue_stuck = true;
                     }
                     ty => {
                         tracelimit::error_ratelimited!(ty, "tx completion error");
-                        self.stats.tx_errors += 1;
+                        self.stats.tx_errors.increment();
                     }
                 }
                 if queue_stuck {
                     // Hardware hit an error with the packet coming from the Guest.
                     // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
-                    self.stats.tx_errors += 1;
-                    self.stats.tx_stuck += 1;
+                    self.stats.tx_errors.increment();
+                    self.stats.tx_stuck.increment();
                     self.trace_tx_wqe(tx_oob, done.len());
                     // Return a TryRestart error to indicate that the queue needs to be restarted.
                     return Err(TxError::TryRestart(anyhow::anyhow!("GDMA error")));
@@ -968,7 +953,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 }
                 packet.id
             } else if let Some(id) = self.dropped_tx.pop_front() {
-                self.stats.tx_dropped += 1;
+                self.stats.tx_dropped.increment();
                 id
             } else {
                 if !self.tx_cq_armed {
@@ -988,8 +973,8 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         Some(self.pool.as_mut())
     }
 
-    fn num_pkts_coalesced(&self) -> Option<u64> {
-        Some(self.stats.num_pkts_coalesced)
+    fn tx_packets_coalesced(&self) -> Option<u64> {
+        Some(self.stats.tx_packets_coalesced.get())
     }
 }
 
@@ -1249,7 +1234,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         size: tail.len,
                     };
                 }
-                self.stats.num_pkts_coalesced += 1;
+                self.stats.tx_packets_coalesced.increment();
                 &sgl[..segment_count]
             };
 

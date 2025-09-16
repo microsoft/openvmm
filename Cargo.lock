@@ -4377,6 +4377,7 @@ dependencies = [
  "gdma_defs",
  "guestmem",
  "inspect",
+ "inspect_counters",
  "mana_driver",
  "mesh",
  "net_backend",

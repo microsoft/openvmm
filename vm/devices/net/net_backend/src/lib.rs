@@ -174,7 +174,7 @@ pub trait Queue: Send + InspectMut {
 
     /// Get the number of packets that have been coalesced by this queue.
     /// Returns None if the queue implementation doesn't support packet coalescing.
-    fn num_pkts_coalesced(&self) -> Option<u64> {
+    fn tx_packets_coalesced(&self) -> Option<u64> {
         None
     }
 }

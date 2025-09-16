@@ -46,6 +46,7 @@ use inspect::InspectMut;
 use inspect::SensitivityLevel;
 use inspect_counters::Counter;
 use inspect_counters::Histogram;
+use inspect_counters::SharedCounter;
 use mesh::rpc::Rpc;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
@@ -61,6 +62,7 @@ use pal_async::timer::PolledTimer;
 use ring::gparange::MultiPagedRangeIter;
 use rx_bufs::RxBuffers;
 use rx_bufs::SubAllocationInUse;
+use std::cell::Cell;
 use std::cmp;
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -196,15 +198,15 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 worker.channel.can_use_ring_size_opt,
             );
 
-            if let WorkerState::Ready(state) = &mut worker.state {
+            if let WorkerState::Ready(state) = &worker.state {
                 // Sync the coalesced packet count from the underlying queue
                 if let Some(queue_state) = &self.queue_state {
-                    if let Some(current_count) = queue_state.queue.num_pkts_coalesced() {
-                        let diff =
-                            current_count.saturating_sub(state.state.last_queue_coalesced_count);
+                    if let Some(current_count) = queue_state.queue.tx_packets_coalesced() {
+                        let last_count = state.state.last_queue_coalesced_count.get();
+                        let diff = current_count.saturating_sub(last_count);
                         if diff > 0 {
-                            state.state.stats.num_pkts_coalesced.add(diff);
-                            state.state.last_queue_coalesced_count = current_count;
+                            state.state.stats.tx_packets_coalesced.add(diff);
+                            state.state.last_queue_coalesced_count.set(current_count);
                         }
                     }
                 }
@@ -449,7 +451,7 @@ struct ActiveState {
     stats: QueueStats,
 
     /// Last known coalesced packet count from the underlying queue
-    last_queue_coalesced_count: u64,
+    last_queue_coalesced_count: Cell<u64>,
 }
 
 #[derive(Inspect, Default)]
@@ -463,7 +465,7 @@ struct QueueStats {
     tx_checksum_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
-    num_pkts_coalesced: Counter,
+    tx_packets_coalesced: SharedCounter,
 }
 
 #[derive(Debug)]
@@ -909,7 +911,7 @@ impl ActiveState {
             pending_tx_completions: VecDeque::new(),
             rx_bufs: RxBuffers::new(recv_buffer_count),
             stats: Default::default(),
-            last_queue_coalesced_count: 0,
+            last_queue_coalesced_count: Cell::new(0),
         }
     }
 
