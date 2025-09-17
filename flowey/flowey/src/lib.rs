@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 //! The user-facing flowey API.
 //!
@@ -30,6 +31,9 @@ pub mod node {
         pub trait FloweyPathExt {
             /// Alias for [`std::path::absolute`]
             fn absolute(&self) -> std::io::Result<PathBuf>;
+
+            /// Helper to make files executable on unix-like platforms
+            fn make_executable(&self) -> std::io::Result<()>;
         }
 
         impl<T> FloweyPathExt for T
@@ -38,6 +42,20 @@ pub mod node {
         {
             fn absolute(&self) -> std::io::Result<PathBuf> {
                 std::path::absolute(self)
+            }
+
+            fn make_executable(&self) -> std::io::Result<()> {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let path = self.as_ref();
+                    let old_mode = path.metadata()?.permissions().mode();
+                    fs_err::set_permissions(
+                        path,
+                        std::fs::Permissions::from_mode(old_mode | 0o111),
+                    )?;
+                }
+                Ok(())
             }
         }
     }
@@ -54,4 +72,9 @@ pub mod pipeline {
 pub mod patch {
     pub use flowey_core::patch::*;
     pub use flowey_core::register_patch;
+}
+
+/// Utility functions.
+pub mod util {
+    pub use flowey_core::util::*;
 }

@@ -49,7 +49,7 @@ mod instead_of_builtins {
     fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
         crate::boot_logger::log!("{panic}");
         // The stack is identity mapped.
-        minimal_rt::enlightened_panic::report(panic, |va| Some(va as usize));
+        minimal_rt::enlightened_panic::report(*b"OHCLBOOT", panic, |va| Some(va as usize));
         minimal_rt::arch::fault();
     }
 }

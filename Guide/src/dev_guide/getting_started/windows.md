@@ -9,7 +9,7 @@ than developing on Windows directly.
 
 Developing in WSL2 offers a smoother development experience, while still
 allowing you to build and run OpenVMM on Windows through the use of
-[cross compilation](./suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows).
+[cross compilation](./cross_compile.md).
 
 Additionally, it allows you to have a single clone of the OpenVMM repo
 suitable for both OpenVMM and OpenHCL development.

@@ -28,6 +28,8 @@
 //! This model allows for asynchronous, highly concurrent state changes, and it
 //! works across process boundaries thanks to `mesh`.
 
+#![forbid(unsafe_code)]
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -331,9 +333,10 @@ impl Inspect for Inner {
                             .join(",")
                     });
                 }
-                resp.field("unit_state", unit.state);
-                unit.send
-                    .send(StateRequest::Inspect(resp.request().defer()))
+                resp.field("unit_state", unit.state)
+                    .merge(inspect::adhoc(|req| {
+                        unit.send.send(StateRequest::Inspect(req.defer()))
+                    }));
             });
         }
     }

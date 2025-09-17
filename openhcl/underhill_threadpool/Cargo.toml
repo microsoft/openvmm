@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+cvm_tracing.workspace = true
 inspect = { workspace = true, features = ["std"] }
 loan_cell.workspace = true
 pal.workspace = true

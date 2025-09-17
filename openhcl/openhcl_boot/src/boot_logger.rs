@@ -19,12 +19,6 @@ use core::fmt::Write;
 use minimal_rt::arch::InstrIoAccess;
 use minimal_rt::arch::Serial;
 
-/// The logging type to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoggerType {
-    Serial,
-}
-
 enum Logger {
     #[cfg(target_arch = "x86_64")]
     Serial(Serial<InstrIoAccess>),
@@ -55,19 +49,16 @@ pub static BOOT_LOGGER: BootLogger = BootLogger {
 };
 
 /// Initialize the boot logger. This replaces any previous init calls.
-///
-/// If a given `logger_type` is unavailable on a given isolation type, the
-/// logger will ignore it, and no logging will be initialized.
-pub fn boot_logger_init(isolation_type: IsolationType, logger_type: LoggerType) {
+pub fn boot_logger_init(isolation_type: IsolationType, com3_serial_available: bool) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
 
-    *logger = match (isolation_type, logger_type) {
+    *logger = match (isolation_type, com3_serial_available) {
         #[cfg(target_arch = "x86_64")]
-        (IsolationType::None, LoggerType::Serial) => Logger::Serial(Serial::init(InstrIoAccess)),
+        (IsolationType::None, true) => Logger::Serial(Serial::init(InstrIoAccess)),
         #[cfg(target_arch = "aarch64")]
-        (IsolationType::None, LoggerType::Serial) => Logger::Serial(Serial::init()),
+        (IsolationType::None, true) => Logger::Serial(Serial::init()),
         #[cfg(target_arch = "x86_64")]
-        (IsolationType::Tdx, LoggerType::Serial) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
+        (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
         _ => Logger::None,
     };
 }

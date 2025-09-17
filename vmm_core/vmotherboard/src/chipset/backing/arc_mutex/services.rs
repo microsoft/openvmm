@@ -9,8 +9,10 @@ use super::state_unit::ArcMutexChipsetDeviceUnit;
 use crate::BusIdPci;
 use crate::ChipsetBuilder;
 use crate::VmmChipsetDevice;
+use crate::chipset::io_ranges::IoRanges;
 use crate::chipset::line_sets::LineSetTargetDevice;
 use chipset_device::ChipsetDevice;
+use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device_resources::LineSetId;
 use closeable_mutex::CloseableMutex;
 use std::ops::RangeInclusive;
@@ -182,7 +184,7 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
 
     pub fn new_line(&mut self, id: LineSetId, name: &str, vector: u32) -> LineInterrupt {
         let (line_set, _) = self.builder.line_set(id.clone());
-        let line = match line_set.new_line(vector, format!("{}:{}", self.dev_name, name)) {
+        match line_set.new_line(vector, format!("{}:{}", self.dev_name, name)) {
             Ok(line) => {
                 self.line_set_dependencies.push(id);
                 line
@@ -193,8 +195,7 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
                 self.line_error.get_or_insert(err);
                 LineInterrupt::detached()
             }
-        };
-        line
+        }
     }
 
     pub fn add_line_target(
@@ -204,6 +205,18 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
         target_start: u32,
     ) {
         self.line_set_targets.push((id, source_range, target_start));
+    }
+}
+
+pub(crate) fn register_mmio_for_device(
+    dev_name: Arc<str>,
+    dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+    ranges: IoRanges<u64>,
+) -> impl RegisterMmioIntercept {
+    DeviceRangeMapper {
+        dev,
+        dev_name,
+        ranges,
     }
 }
 

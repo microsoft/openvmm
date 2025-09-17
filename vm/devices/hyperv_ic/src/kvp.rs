@@ -67,6 +67,7 @@ pub struct KvpChannel {
     state: ChannelState,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Inspect)]
 #[inspect(external_tag)]
 enum ChannelState {

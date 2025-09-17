@@ -13,10 +13,10 @@ use net_backend_resources::mac_address::MacAddress;
 use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
 
@@ -43,8 +43,7 @@ pub struct Config {
     pub virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
-    pub format_vmgs: bool,
-    pub vmgs_disk: Option<Resource<DiskHandleKind>>,
+    pub vmgs: Option<VmgsResource>,
     pub secure_boot_enabled: bool,
     pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
@@ -55,6 +54,8 @@ pub struct Config {
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
+    /// allow the guest to reset without notifying the client
+    pub automatic_guest_reset: bool,
 }
 
 // ARM64 needs a larger low gap.
@@ -166,6 +167,8 @@ pub enum Vtl2BaseAddressType {
 #[derive(Debug, MeshPayload)]
 pub struct VpciDeviceConfig {
     pub vtl: DeviceVtl,
+    /// The ID of the device. Vpci devices are identified by a portion of `data2` and `data3` of the
+    /// instance ID, which is used to generate the guest-visible device ID.
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
 }
@@ -200,8 +203,18 @@ pub enum X2ApicConfig {
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
+pub enum PmuGsivConfig {
+    #[default]
+    /// Use the hypervisor's platform GSIV value for the PMU.
+    Platform,
+    /// Use the specified GSIV value for the PMU.
+    Gsiv(u32),
+}
+
+#[derive(Debug, Protobuf, Default, Clone)]
 pub struct Aarch64TopologyConfig {
     pub gic_config: Option<GicConfig>,
+    pub pmu_gsiv: PmuGsivConfig,
 }
 
 #[derive(Debug, Protobuf, Clone)]

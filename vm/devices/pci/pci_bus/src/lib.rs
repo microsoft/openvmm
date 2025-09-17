@@ -14,6 +14,8 @@
 //! Incoming config space accesses are then routed to connected
 //! [`GenericPciBusDevice`] devices.
 
+#![forbid(unsafe_code)]
+
 use bitfield_struct::bitfield;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
@@ -326,6 +328,7 @@ impl GenericPciBus {
         };
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
+            offset = self.state.pio_addr_reg.register(),
             "pci config space {} operation error: {}",
             operation,
             error
@@ -335,6 +338,7 @@ impl GenericPciBus {
     fn trace_recv_error(&self, e: mesh::RecvError, operation: &'static str) {
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
+            offset = self.state.pio_addr_reg.register(),
             "pci config space {} operation recv error: {:?}",
             operation,
             e,

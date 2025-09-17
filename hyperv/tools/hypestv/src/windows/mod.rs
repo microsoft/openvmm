@@ -95,6 +95,13 @@ pub(crate) enum VmCommand {
         /// The serial output mode.
         mode: Option<SerialMode>,
     },
+
+    /// Injects an NMI.
+    Nmi {
+        /// The target VTL.
+        #[clap(long, default_value = "0")]
+        vtl: u32,
+    },
 }
 
 #[derive(Parser)]
@@ -144,6 +151,9 @@ pub(crate) enum ParavisorCommand {
 
     /// Get or set the paravisor command line.
     CommandLine { command_line: Option<String> },
+
+    /// Reload the paravisor.
+    Reload,
 }
 
 #[derive(ValueEnum, Copy, Clone)]

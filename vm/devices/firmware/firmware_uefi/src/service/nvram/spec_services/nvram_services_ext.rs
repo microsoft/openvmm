@@ -6,7 +6,7 @@ use super::NvramResult;
 use super::NvramSpecServices;
 use guid::Guid;
 use ucs2::Ucs2LeSlice;
-use uefi_nvram_storage::InspectableNvramStorage;
+use uefi_nvram_storage::VmmNvramStorage;
 use uefi_specs::uefi::common::EfiStatus;
 
 /// Extension trait around `NvramServices` that makes it easier to use the API
@@ -28,6 +28,7 @@ pub trait NvramServicesExt {
 
     /// Get a variable identified by `name` (as a UCS-2 string) + `vendor`,
     /// returning the variable's attributes and data.
+    #[allow(dead_code)]
     async fn get_variable_ucs2(
         &mut self,
         vendor: Guid,
@@ -56,7 +57,7 @@ pub trait NvramServicesExt {
 }
 
 #[async_trait::async_trait]
-impl<S: InspectableNvramStorage> NvramServicesExt for NvramSpecServices<S> {
+impl<S: VmmNvramStorage> NvramServicesExt for NvramSpecServices<S> {
     async fn get_variable(
         &mut self,
         vendor: Guid,

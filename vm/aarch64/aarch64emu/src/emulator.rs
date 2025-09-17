@@ -34,7 +34,7 @@ pub struct InterceptState {
     pub instruction_bytes: [u8; 4],
     pub instruction_byte_count: u8,
     pub gpa: Option<u64>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     pub syndrome: EsrEl2,
     pub interruption_pending: bool,
 }

@@ -3,7 +3,7 @@
 
 //! Protocol definitions for the VSS (Volume Shadow Service) IC.
 
-#![allow(missing_docs)]
+#![expect(missing_docs)]
 
 use crate::Version;
 use guid::Guid;

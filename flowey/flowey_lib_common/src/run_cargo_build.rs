@@ -219,7 +219,7 @@ impl FlowNode for Node {
                     let CargoBuildCommand {
                         argv0,
                         params,
-                        with_env,
+                        mut with_env,
                         cargo_work_dir,
                         out_name,
                         crate_type,
@@ -231,15 +231,28 @@ impl FlowNode for Node {
 
                     sh.change_dir(cargo_work_dir);
                     let mut cmd = xshell::cmd!(sh, "{argv0} {params...}");
-                    // if running in CI, no need to waste time with incremental
-                    // build artifacts
                     if !matches!(rt.backend(), FlowBackend::Local) {
-                        cmd = cmd.env("CARGO_INCREMENTAL", "0");
+                        // if running in CI, no need to waste time with incremental
+                        // build artifacts
+                        with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
+                    } else {
+                        // if build locally, use per-package target dirs
+                        // to avoid rebuilding
+                        // TODO: remove this once cargo's caching improves
+                        cmd = cmd
+                            .arg("--target-dir")
+                            .arg(in_folder.join("target").join(&crate_name));
                     }
-                    for (key, val) in with_env {
-                        log::info!("extra_env: {key}={val}");
-                        cmd = cmd.env(key, val);
-                    }
+                    cmd = cmd.envs(&with_env);
+
+                    log::info!(
+                        "$ {}{cmd}",
+                        with_env
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v} "))
+                            .collect::<Vec<_>>()
+                            .concat()
+                    );
                     let json = cmd.read()?;
                     let messages: Vec<cargo_output::Message> =
                         serde_json::Deserializer::from_str(&json)

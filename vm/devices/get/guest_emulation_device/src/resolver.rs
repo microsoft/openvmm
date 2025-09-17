@@ -5,6 +5,7 @@ use crate::GuestEmulationDevice;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
+use get_protocol::dps_json::GuestStateLifetime;
 use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
 use get_resources::ged::GuestSecureBootTemplateType;
@@ -22,6 +23,7 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
 use vmbus_channel::simple::SimpleDeviceWrapper;
+use vmgs_resources::VmgsResource;
 
 pub struct GuestEmulationDeviceResolver;
 
@@ -70,14 +72,23 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             .await
             .map_err(Error::Power)?;
 
-        let vmgs_disk = if let Some(disk) = resource.vmgs_disk {
+        let (vmgs_disk, guest_state_lifetime) = match resource.vmgs {
+            VmgsResource::Disk(disk) => (Some(disk), GuestStateLifetime::Default),
+            VmgsResource::ReprovisionOnFailure(disk) => {
+                (Some(disk), GuestStateLifetime::ReprovisionOnFailure)
+            }
+            VmgsResource::Reprovision(disk) => (Some(disk), GuestStateLifetime::Reprovision),
+            VmgsResource::Ephemeral => (None, GuestStateLifetime::Ephemeral),
+        };
+
+        let vmgs_disk = if let Some(disk) = vmgs_disk {
             Some(
                 resolver
                     .resolve(
                         disk,
                         ResolveDiskParameters {
                             read_only: false,
-                            _async_trait_workaround: &(),
+                            driver_source: input.driver_source,
                         },
                     )
                     .await
@@ -139,12 +150,17 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     GuestSecureBootTemplateType::MicrosoftWindows => {
                         SecureBootTemplateType::MICROSOFT_WINDOWS
                     }
-                    GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy => {
+                    GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
                         SecureBootTemplateType::MICROSOFT_UEFI_CERTIFICATE_AUTHORITY
                     }
                 },
                 enable_battery: resource.enable_battery,
                 no_persistent_secrets: resource.no_persistent_secrets,
+                guest_state_lifetime,
+                // TODO: pass these from OpenVMM config/command line
+                guest_state_encryption_policy:
+                    get_protocol::dps_json::GuestStateEncryptionPolicy::default(),
+                management_vtl_features: get_protocol::dps_json::ManagementVtlFeatures::default(),
             },
             halt,
             resource.firmware_event_send,

@@ -6,7 +6,9 @@
 //! This crate provides cross-process message-based communication over channels.
 
 #![expect(missing_docs)]
-#[allow(unused_extern_crates)]
+#![forbid(unsafe_code)]
+
+#[expect(unused_extern_crates)]
 extern crate self as mesh;
 
 pub mod payload {

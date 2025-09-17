@@ -3,31 +3,38 @@
 
 //! Functions for interacting with Hyper-V VMs.
 
-use super::CommandError;
+use super::vm::CommandError;
 use anyhow::Context;
 use guid::Guid;
-use jiff::Timestamp;
-use std::ffi::OsStr;
-use std::process::Stdio;
 
-pub fn hvc_start(vmid: &Guid) -> Result<(), CommandError> {
-    hvc_output(|cmd| cmd.arg("start").arg(vmid.to_string())).map(|_| ())
+pub async fn hvc_start(vmid: &Guid) -> Result<(), CommandError> {
+    hvc_output(|cmd| cmd.arg("start").arg(vmid.to_string()))
+        .await
+        .map(|_| ())
 }
 
-pub fn hvc_stop(vmid: &Guid) -> Result<(), CommandError> {
-    hvc_output(|cmd| cmd.arg("stop").arg(vmid.to_string())).map(|_| ())
+pub async fn hvc_stop(vmid: &Guid) -> Result<(), CommandError> {
+    hvc_output(|cmd| cmd.arg("stop").arg(vmid.to_string()))
+        .await
+        .map(|_| ())
 }
 
-pub fn hvc_kill(vmid: &Guid) -> Result<(), CommandError> {
-    hvc_output(|cmd| cmd.arg("kill").arg(vmid.to_string())).map(|_| ())
+pub async fn hvc_kill(vmid: &Guid) -> Result<(), CommandError> {
+    hvc_output(|cmd| cmd.arg("kill").arg(vmid.to_string()))
+        .await
+        .map(|_| ())
 }
 
-pub fn hvc_restart(vmid: &Guid) -> Result<(), CommandError> {
-    hvc_output(|cmd| cmd.arg("restart").arg(vmid.to_string())).map(|_| ())
+pub async fn hvc_restart(vmid: &Guid) -> Result<(), CommandError> {
+    hvc_output(|cmd| cmd.arg("restart").arg(vmid.to_string()))
+        .await
+        .map(|_| ())
 }
 
-pub fn hvc_reset(vmid: &Guid) -> Result<(), CommandError> {
-    hvc_output(|cmd| cmd.arg("reset").arg(vmid.to_string())).map(|_| ())
+pub async fn hvc_reset(vmid: &Guid) -> Result<(), CommandError> {
+    hvc_output(|cmd| cmd.arg("reset").arg(vmid.to_string()))
+        .await
+        .map(|_| ())
 }
 
 /// HyperV VM state as reported by hvc
@@ -55,9 +62,10 @@ pub enum VmState {
     Resuming,
 }
 
-pub fn hvc_state(vmid: &Guid) -> anyhow::Result<VmState> {
+pub async fn hvc_state(vmid: &Guid) -> anyhow::Result<VmState> {
     Ok(
         match hvc_output(|cmd| cmd.arg("state").arg(vmid.to_string()))
+            .await
             .context("hvc_state")?
             .as_str()
         {
@@ -76,12 +84,12 @@ pub fn hvc_state(vmid: &Guid) -> anyhow::Result<VmState> {
     )
 }
 
-pub fn hvc_ensure_off(vmid: &Guid) -> anyhow::Result<()> {
+pub async fn hvc_ensure_off(vmid: &Guid) -> anyhow::Result<()> {
     for _ in 0..5 {
-        if matches!(hvc_state(vmid)?, VmState::Off) {
+        if matches!(hvc_state(vmid).await?, VmState::Off) {
             return Ok(());
         }
-        if let Err(e) = hvc_kill(vmid) {
+        if let Err(e) = hvc_kill(vmid).await {
             tracing::warn!("hvc_kill attempt failed: {e}")
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -91,41 +99,11 @@ pub fn hvc_ensure_off(vmid: &Guid) -> anyhow::Result<()> {
 }
 
 /// Runs hvc with the given arguments and returns the output.
-fn hvc_output(
+async fn hvc_output(
     f: impl FnOnce(&mut std::process::Command) -> &mut std::process::Command,
 ) -> Result<String, CommandError> {
     let mut cmd = std::process::Command::new("hvc.exe");
-    cmd.stderr(Stdio::piped()).stdin(Stdio::null());
     f(&mut cmd);
 
-    let hvc_cmd = format!(
-        "{} {}",
-        cmd.get_program().to_string_lossy(),
-        cmd.get_args()
-            .collect::<Vec<_>>()
-            .join(OsStr::new(" "))
-            .to_string_lossy()
-    );
-    tracing::debug!(hvc_cmd, "executing hvc command");
-
-    let start = Timestamp::now();
-    let output = cmd.output()?;
-    let time_elapsed = Timestamp::now() - start;
-
-    let hvc_stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let hvc_stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    tracing::debug!(
-        hvc_cmd,
-        hvc_stdout,
-        hvc_stderr,
-        "hvc command exited in {:.3}s with status {}",
-        time_elapsed.total(jiff::Unit::Second).unwrap_or(-1.0),
-        output.status
-    );
-
-    if !output.status.success() {
-        return Err(CommandError::Command(output.status, hvc_stderr));
-    }
-
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    super::vm::run_cmd(cmd).await
 }

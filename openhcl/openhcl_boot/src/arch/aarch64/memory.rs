@@ -11,6 +11,7 @@ use aarch64defs::IntermPhysAddrSize;
 pub fn setup_vtl2_memory(_shim_params: &ShimParams, _partition_info: &PartitionInfo) {
     // TODO: memory acceptance isn't currently supported in the boot shim for aarch64.
     let _ = _shim_params.bounce_buffer;
+    let _ = _shim_params.page_tables;
 
     // Enable VTL protection so that vtl 2 protections can be applied. All other config
     // should be set by the user mode

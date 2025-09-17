@@ -4,6 +4,7 @@
 //! The schema defined in this file must match the one defined in
 //! `onecore/vm/schema/mars/Config/Config.Devices.Chipset.mars`.
 
+use bitfield_struct::bitfield;
 use guid::Guid;
 use serde::Deserialize;
 use serde::Serialize;
@@ -90,6 +91,62 @@ pub enum PcatBootDevice {
     Network,
 }
 
+/// Guest state lifetime
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, Default)]
+pub enum GuestStateLifetime {
+    #[default]
+    Default,
+    ReprovisionOnFailure,
+    Reprovision,
+    Ephemeral,
+}
+
+/// Guest state encryption policy
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, Default)]
+pub enum GuestStateEncryptionPolicy {
+    /// Use the best encryption available, allowing fallback.
+    ///
+    /// VMs will be created as or migrated to the best encryption available,
+    /// attempting GspKey, then GspById, and finally leaving the data
+    /// unencrypted if neither are available.
+    #[default]
+    Auto,
+    /// Prefer (or require, if strict) no encryption.
+    ///
+    /// Do not encrypt the guest state unless it is already encrypted and
+    /// strict encryption policy is disabled.
+    None,
+    /// Prefer (or require, if strict) GspById.
+    ///
+    /// This prevents a VM from being created as or migrated to GspKey even
+    /// if it is available. Exisiting GspKey encryption will be used unless
+    /// strict encryption policy is enabled. Fails if the data cannot be
+    /// encrypted.
+    GspById,
+    /// Require GspKey.
+    ///
+    /// VMs will be created as or migrated to GspKey. Fails if GspKey is
+    /// not available. Strict encryption policy has no effect here since
+    /// GspKey is currently the most secure policy.
+    GspKey,
+    /// Use hardware sealing
+    // TODO: update this doc comment once hardware sealing is implemented
+    HardwareSealing,
+}
+
+/// Management VTL Feature Flags
+#[bitfield(u64)]
+#[derive(Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct ManagementVtlFeatures {
+    pub strict_encryption_policy: bool,
+    pub _reserved1: bool,
+    pub control_ak_cert_provisioning: bool,
+    pub attempt_ak_cert_callback: bool,
+    #[bits(60)]
+    pub _reserved2: u64,
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct HclDevicePlatformSettingsV2Static {
@@ -138,6 +195,12 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub imc_enabled: bool,
     #[serde(default)]
     pub cxl_memory_enabled: bool,
+    #[serde(default)]
+    pub guest_state_lifetime: GuestStateLifetime,
+    #[serde(default)]
+    pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
+    #[serde(default)]
+    pub management_vtl_features: ManagementVtlFeatures,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

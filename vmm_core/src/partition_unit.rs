@@ -473,6 +473,7 @@ impl PartitionUnitRunner {
 
     fn try_start(&mut self) {
         if self.unit_started && self.halt_reason.is_none() && self.vp_stop_count == 0 {
+            self.needs_reset = true;
             self.vp_set.start();
         }
     }
@@ -490,7 +491,6 @@ impl Drop for StopGuard {
 impl StateUnit for PartitionUnitRunner {
     async fn start(&mut self) {
         self.unit_started = true;
-        self.needs_reset = true;
         self.try_start();
     }
 

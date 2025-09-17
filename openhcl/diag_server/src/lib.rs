@@ -12,6 +12,7 @@ pub use diag_service::DiagRequest;
 pub use diag_service::StartParams;
 
 use anyhow::Context;
+use cvm_tracing::CVM_ALLOWED;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use mesh::CancelReason;
@@ -48,11 +49,11 @@ pub struct DiagServer {
 impl DiagServer {
     /// Creates a server over VmSockets and starts listening.
     pub fn new_vsock(control_address: VmAddress, data_address: VmAddress) -> anyhow::Result<Self> {
-        tracing::info!(?control_address, "control starting");
+        tracing::info!(CVM_ALLOWED, ?control_address, "control starting");
         let control_listener =
             VmListener::bind(control_address).context("failed to bind socket")?;
 
-        tracing::info!(?data_address, "data starting");
+        tracing::info!(CVM_ALLOWED, ?data_address, "data starting");
         let data_listener = VmListener::bind(data_address).context("failed to bind socket")?;
 
         Ok(Self::new_generic(
@@ -63,11 +64,11 @@ impl DiagServer {
 
     /// Creates a server over Unix sockets and starts listening.
     pub fn new_unix(control_address: &Path, data_address: &Path) -> anyhow::Result<Self> {
-        tracing::info!(?control_address, "control starting");
+        tracing::info!(CVM_ALLOWED, ?control_address, "control starting");
         let control_listener =
             UnixListener::bind(control_address).context("failed to bind socket")?;
 
-        tracing::info!(?data_address, "data starting");
+        tracing::info!(CVM_ALLOWED, ?data_address, "data starting");
         let data_listener = UnixListener::bind(data_address).context("failed to bind socket")?;
 
         Ok(Self::new_generic(

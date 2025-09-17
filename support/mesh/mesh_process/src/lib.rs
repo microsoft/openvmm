@@ -153,14 +153,17 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
     // Clear the string to avoid leaking the invitation information into child
     // processes.
     //
-    // TODO: this function will become unsafe in a future Rust edition because
+    // TODO: this function is unsafe because
     // it can cause UB if non-Rust code is concurrently accessing the
-    // environment in another thread. To be completely sound (even in the
-    // current edition), either this function and its callers need to become
+    // environment in another thread. To be completely sound,
+    // either this function and its callers need to become
     // `unsafe`, or we need to avoid using the environment to propagate the
     // invitation so that we can avoid this call.
-    #[expect(deprecated_safe_2024)]
-    std::env::remove_var(INVITATION_ENV_NAME);
+    //
+    // SAFETY: Seems to work so far.
+    unsafe {
+        std::env::remove_var(INVITATION_ENV_NAME);
+    }
 
     let invitation: Invitation = mesh::payload::decode(
         &base64::engine::general_purpose::STANDARD
@@ -535,17 +538,19 @@ impl MeshInner {
                                         &host.pid.to_string(),
                                         SensitivityLevel::Safe,
                                         &mut inspect::adhoc(|req| {
-                                            let mut resp = req.respond();
-                                            resp.merge(&HostInspect {
-                                                name: &host.name,
-                                                node_id: host.node_id,
-                                                #[cfg(target_os = "linux")]
-                                                rlimit: inspect_rlimit::InspectRlimit::for_pid(
-                                                    host.pid,
-                                                ),
-                                            });
-                                            host.send
-                                                .send(HostRequest::Inspect(resp.request().defer()));
+                                            req.respond()
+                                                .merge(&HostInspect {
+                                                    name: &host.name,
+                                                    node_id: host.node_id,
+                                                    #[cfg(target_os = "linux")]
+                                                    rlimit: inspect_rlimit::InspectRlimit::for_pid(
+                                                        host.pid,
+                                                    ),
+                                                })
+                                                .merge(inspect::adhoc(|req| {
+                                                    host.send
+                                                        .send(HostRequest::Inspect(req.defer()));
+                                                }));
                                         }),
                                     );
                                 }

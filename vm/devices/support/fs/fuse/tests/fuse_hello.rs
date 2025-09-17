@@ -16,6 +16,7 @@ use zerocopy::FromZeros;
 // This test is excluded from CI because it requires root.
 #[cfg_attr(not(feature = "ci"), test_with_tracing::test)]
 #[cfg_attr(feature = "ci", expect(dead_code))]
+#[ignore]
 fn fuse_hello() {
     let mount_point = tempfile::tempdir().unwrap();
 

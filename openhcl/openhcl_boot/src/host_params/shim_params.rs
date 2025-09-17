@@ -11,16 +11,12 @@ use loader_defs::shim::ShimParamsRaw;
 use memory_range::MemoryRange;
 
 /// Isolation type of the partition
-///
-/// TODO: Fix arch specific abstractions across the bootloader so we can remove
-/// target_arch here and elsewhere.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum IsolationType {
     None,
     Vbs,
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     Snp,
-    #[cfg(target_arch = "x86_64")]
     Tdx,
 }
 
@@ -29,9 +25,7 @@ impl IsolationType {
         match self {
             IsolationType::None => false,
             IsolationType::Vbs => false,
-            #[cfg(target_arch = "x86_64")]
             IsolationType::Snp => true,
-            #[cfg(target_arch = "x86_64")]
             IsolationType::Tdx => true,
         }
     }
@@ -107,6 +101,8 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
+    /// Page tables region used by the shim.
+    pub page_tables: Option<MemoryRange>,
 }
 
 impl ShimParams {
@@ -133,6 +129,8 @@ impl ShimParams {
             used_end,
             bounce_buffer_start,
             bounce_buffer_size,
+            page_tables_start,
+            page_tables_size,
         } = raw;
 
         let isolation_type = get_isolation_type(supported_isolation_type);
@@ -142,6 +140,13 @@ impl ShimParams {
         } else {
             let base = shim_base_address.wrapping_add_signed(bounce_buffer_start);
             Some(MemoryRange::new(base..base + bounce_buffer_size))
+        };
+
+        let page_tables = if page_tables_size == 0 {
+            None
+        } else {
+            let base = shim_base_address.wrapping_add_signed(page_tables_start);
+            Some(MemoryRange::new(base..base + page_tables_size))
         };
 
         Self {
@@ -166,6 +171,7 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
+            page_tables,
         }
     }
 

@@ -16,9 +16,9 @@ use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
 use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use igvmfilegen_config::ResourceType;
@@ -80,6 +80,7 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum OpenhclIgvmRecipe {
     LocalOnlyCustom(OpenhclIgvmRecipeDetails),
@@ -94,13 +95,13 @@ pub enum OpenhclIgvmRecipe {
 }
 
 impl OpenhclIgvmRecipe {
-    pub fn recipe_details(&self, profile: OpenvmmHclBuildProfile) -> OpenhclIgvmRecipeDetails {
+    pub fn recipe_details(&self, release_cfg: bool) -> OpenhclIgvmRecipeDetails {
         let base_openvmm_hcl_features = || {
             let mut m = BTreeSet::new();
 
             m.insert(OpenvmmHclFeature::Tpm);
 
-            if matches!(profile, OpenvmmHclBuildProfile::Debug) {
+            if !release_cfg {
                 m.insert(OpenvmmHclFeature::Gdb);
             }
 
@@ -108,15 +109,15 @@ impl OpenhclIgvmRecipe {
         };
 
         let in_repo_template = |debug_manifest: &'static str, release_manifest: &'static str| {
-            IgvmManifestPath::InTree(if matches!(profile, OpenvmmHclBuildProfile::Debug) {
-                debug_manifest.into()
-            } else {
+            IgvmManifestPath::InTree(if release_cfg {
                 release_manifest.into()
+            } else {
+                debug_manifest.into()
             })
         };
 
-        // Debug builds include --interactive by default, for busybox, gdbserver, and perf.
-        let with_interactive = matches!(profile, OpenvmmHclBuildProfile::Debug);
+        // Debug configurations include --interactive by default, for busybox, gdbserver, and perf.
+        let with_interactive = !release_cfg;
 
         match self {
             Self::LocalOnlyCustom(details) => details.clone(),
@@ -129,7 +130,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: None,
                 with_uefi: true,
                 with_interactive,
-                with_sidecar: false,
+                with_sidecar: true,
             },
             Self::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -168,7 +169,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: Some(Vtl0KernelType::Example),
                 with_uefi: false,
                 with_interactive,
-                with_sidecar: false,
+                with_sidecar: true,
             },
             Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -182,7 +183,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: Some(Vtl0KernelType::Example),
                 with_uefi: false,
                 with_interactive,
-                with_sidecar: false,
+                with_sidecar: true,
             },
             Self::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -228,16 +229,12 @@ impl OpenhclIgvmRecipe {
             },
         }
     }
-
-    pub fn to_custom_mut(&mut self, profile: OpenvmmHclBuildProfile) {
-        let details = self.recipe_details(profile);
-        *self = Self::LocalOnlyCustom(details);
-    }
 }
 
 flowey_request! {
     pub struct Request {
-        pub profile: OpenvmmHclBuildProfile,
+        pub build_profile: OpenvmmHclBuildProfile,
+        pub release_cfg: bool,
         pub recipe: OpenhclIgvmRecipe,
         pub custom_target: Option<CommonTriple>,
 
@@ -269,7 +266,8 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
-            profile,
+            build_profile,
+            release_cfg,
             recipe,
             custom_target,
             built_openvmm_hcl,
@@ -288,7 +286,7 @@ impl SimpleFlowNode for Node {
             with_uefi,
             with_interactive,
             with_sidecar,
-        } = recipe.recipe_details(profile);
+        } = recipe.recipe_details(release_cfg);
 
         let OpenhclIgvmRecipeDetailsLocalOnly {
             openvmm_hcl_no_strip,
@@ -422,7 +420,7 @@ impl SimpleFlowNode for Node {
                 ctx.reqv(|v| crate::build_sidecar::Request {
                     build_params: crate::build_sidecar::SidecarBuildParams {
                         arch,
-                        profile: match profile {
+                        profile: match build_profile {
                             OpenvmmHclBuildProfile::Debug => {
                                 crate::build_sidecar::SidecarBuildProfile::Debug
                             }
@@ -447,7 +445,7 @@ impl SimpleFlowNode for Node {
             crate::build_openvmm_hcl::Request {
                 build_params: crate::build_openvmm_hcl::OpenvmmHclBuildParams {
                     target: target.clone(),
-                    profile,
+                    profile: build_profile,
                     features: openvmm_hcl_features,
                     // manually strip later, depending on provided igvm flags
                     no_split_dbg_info: true,
@@ -463,17 +461,15 @@ impl SimpleFlowNode for Node {
             arch => anyhow::bail!("unsupported arch {arch}"),
         };
 
-        let igvmfilegen = ctx.reqv(|v| {
-            crate::build_igvmfilegen::Request {
-                build_params: crate::build_igvmfilegen::IgvmfilegenBuildParams {
-                    target: CommonTriple::Common {
-                        arch: igvmfilegen_arch,
-                        platform: CommonPlatform::LinuxGnu,
-                    },
-                    profile: CommonProfile::Release, // debug igvmfilegen is real slow
+        let igvmfilegen = ctx.reqv(|v| crate::build_igvmfilegen::Request {
+            build_params: crate::build_igvmfilegen::IgvmfilegenBuildParams {
+                target: CommonTriple::Common {
+                    arch: igvmfilegen_arch,
+                    platform: CommonPlatform::LinuxGnu,
                 },
-                igvmfilegen: v,
-            }
+                profile: BuildProfile::Light,
+            },
+            igvmfilegen: v,
         });
 
         // build openhcl_boot
@@ -493,7 +489,7 @@ impl SimpleFlowNode for Node {
             ctx.reqv(|v| crate::build_openhcl_boot::Request {
                 build_params: crate::build_openhcl_boot::OpenhclBootBuildParams {
                     arch,
-                    profile: match profile {
+                    profile: match build_profile {
                         OpenvmmHclBuildProfile::Debug => {
                             crate::build_openhcl_boot::OpenhclBootBuildProfile::Debug
                         }

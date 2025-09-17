@@ -1,0 +1,101 @@
+name: Upload Petri Test Results
+
+on:
+  workflow_run:
+    types:
+      - completed
+    workflows:
+      - '\[flowey\] OpenVMM CI'
+      - '\[flowey\] OpenVMM PR'
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read  # Needed to download artifacts from other runs
+  pull-requests: write # Needed to create PR comments
+
+jobs:
+  upload-logs:
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://openvmmghtestresults.blob.core.windows.net/results
+
+    steps:
+      - name: Authenticate to Azure
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.OPENVMM_TEST_RESULT_CLIENT_ID }}
+          tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
+          subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
+
+      - name: Download matching artifacts
+        run: |
+          if [ "$event" = "pull_request" ]; then
+            # Get the associated PR number. Work around GitHub Actions often not
+            # populating the `pull_requests` array. See
+            # <https://github.com/orgs/community/discussions/25220>.
+            pr=$(gh pr view --repo "${repo}" "${head_branch}" --json number --jq .number)
+            echo "SOURCE_PR=$pr" >> "$GITHUB_ENV"
+          else
+            echo "SOURCE_PR=" >> "$GITHUB_ENV"
+          fi
+          mkdir -p results
+          gh run \
+            -R "$repo" \
+            download "$run_id" \
+            -p "*-vmm-tests-logs" \
+            -D results
+          test_count=$(find results -name petri.jsonl | wc -l)
+          PASS_COUNT=$(find results -name petri.passed | wc -l)
+          FAIL_COUNT=$((test_count - PASS_COUNT))
+          echo "FAIL_COUNT=$FAIL_COUNT" >> "$GITHUB_ENV"
+          echo "PASS_COUNT=$PASS_COUNT" >> "$GITHUB_ENV"
+          echo "SOURCE_BRANCH=$head_branch" >> "$GITHUB_ENV"
+        env:
+          event: ${{ github.event.workflow_run.event }}
+          repo: ${{ github.event.workflow_run.repository.full_name }}
+          run_id: ${{ github.event.workflow_run.id }}
+          # If the PR is from a fork, prefix it with `<owner-login>:`.
+          head_branch: |-
+            ${{
+              (github.event.workflow_run.head_repository.owner.login != github.event.workflow_run.repository.owner.login)
+                && format('{0}:{1}', github.event.workflow_run.head_repository.owner.login, github.event.workflow_run.head_branch)
+                || github.event.workflow_run.head_branch
+            }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Azure Blob Storage
+        run: |
+          az storage blob upload-batch \
+            --destination "$BASE_URL" \
+            --destination-path "$run_id" \
+            --source results \
+            --auth-mode login
+
+          # Store a metadata blob in a separate portion of the hierarchy so that
+          # it can be cheaply queried.
+          az storage blob upload \
+            --blob-url "$BASE_URL/runs/$run_id" \
+            --file /dev/null \
+            --metadata \
+              "petrifailed=$FAIL_COUNT" \
+              "petripassed=$PASS_COUNT" \
+              "ghbranch=$SOURCE_BRANCH" \
+              "ghpr=$SOURCE_PR" \
+            --auth-mode login
+        env:
+          run_id: ${{ github.event.workflow_run.id }}
+
+      - name: Report failing tests
+        if: ${{ env.SOURCE_PR && env.FAIL_COUNT > 0 }}
+        run: |
+          gh pr comment \
+            -R "$repo" \
+            "$SOURCE_PR" \
+            -F - <<EOF
+          [At least one Petri test failed.](https://openvmm.dev/test-results/?run=$run_id)
+          EOF
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          repo: ${{ github.event.workflow_run.repository.full_name }}
+          run_id: ${{ github.event.workflow_run.id }}

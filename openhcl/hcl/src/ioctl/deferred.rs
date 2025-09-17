@@ -6,6 +6,7 @@
 use super::Hcl;
 use crate::protocol;
 use crate::protocol::hcl_run;
+use cvm_tracing::CVM_ALLOWED;
 use std::cell::Cell;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
@@ -129,6 +130,7 @@ impl DeferredAction {
             DeferredAction::SignalEvent { vp, sint, flag } => {
                 if let Err(err) = hcl.hvcall_signal_event_direct(vp, sint, flag) {
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         error = &err as &dyn std::error::Error,
                         vp,
                         sint,
