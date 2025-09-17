@@ -5,10 +5,8 @@
 
 use anyhow::Context;
 use futures::StreamExt;
-use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
-use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
