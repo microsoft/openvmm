@@ -16,7 +16,6 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::PciFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
@@ -295,14 +294,13 @@ async fn keepalive_with_nvme_fault(
 
     let mut fault_start_updater = CellUpdater::new(false);
 
-    let fault_configuration = FaultConfiguration {
-        fault_active: fault_start_updater.cell(),
-        admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
-            CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
-            QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
-        ),
-        pci_fault: PciFaultConfig::new(),
-    };
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0).build(),
+                QueueFaultBehavior::Panic("Received a CREATE_IO_COMPLETION_QUEUE command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+            ),
+        );
 
     let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
 
@@ -350,22 +348,21 @@ async fn keepalive_with_nvme_identify_namespace_fault(
     let mut buf: u64 = 256;
     let buf = buf.as_mut_bytes();
 
-    let fault_configuration = FaultConfiguration {
-        fault_active: fault_start_updater.cell(),
-        admin_fault: AdminQueueFaultConfig::new().with_completion_queue_fault(
-            CommandMatchBuilder::new()
-                .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
-                .match_cdw10(
-                    nvme_spec::Cdw10Identify::new()
-                        .with_cns(nvme_spec::Cns::NAMESPACE.0)
-                        .into(),
-                    nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into(),
-                )
-                .build(),
-            QueueFaultBehavior::CustomPayload(buf.to_vec()),
-        ),
-        pci_fault: PciFaultConfig::new(),
-    };
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
+                    .match_cdw10(
+                        nvme_spec::Cdw10Identify::new()
+                            .with_cns(nvme_spec::Cns::NAMESPACE.0)
+                            .into(),
+                        nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into(),
+                    )
+                    .build(),
+                QueueFaultBehavior::CustomPayload(buf.to_vec()),
+            ),
+        );
 
     let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
 

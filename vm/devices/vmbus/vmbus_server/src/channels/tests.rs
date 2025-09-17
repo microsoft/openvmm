@@ -4,6 +4,7 @@
 use crate::MESSAGE_CONNECTION_ID;
 
 use super::*;
+use crate::channels::ConnectionState;
 use guid::Guid;
 use protocol::VmbusMessage;
 use std::collections::VecDeque;
@@ -17,7 +18,12 @@ fn test_version_negotiation_not_supported() {
     let (mut notifier, _recv) = TestNotifier::new();
     let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
 
-    test_initiate_contact(&mut server, &mut notifier, 0xffffffff, 0, false, 0);
+    test_initiate_contact(
+        &mut server,
+        &mut notifier,
+        TestVersion::Unsupported(0xffffffff),
+        0,
+    );
 }
 
 #[test]
@@ -28,9 +34,10 @@ fn test_version_negotiation_success() {
     test_initiate_contact(
         &mut server,
         &mut notifier,
-        Version::Win10 as u32,
-        0,
-        true,
+        TestVersion::Supported {
+            version: Version::Win10,
+            expected_features: 0,
+        },
         0,
     );
 }
@@ -79,10 +86,11 @@ fn test_version_negotiation_multiclient_sint() {
     test_initiate_contact(
         &mut server,
         &mut notifier,
-        Version::Win10Rs3_1 as u32,
+        TestVersion::Supported {
+            version: Version::Win10Rs3_1,
+            expected_features: 0,
+        },
         target_info.into(),
-        true,
-        0,
     );
 }
 
@@ -123,10 +131,11 @@ fn test_version_negotiation_multiclient_vtl() {
     test_initiate_contact(
         &mut server,
         &mut notifier,
-        Version::Win10Rs4 as u32,
+        TestVersion::Supported {
+            version: Version::Win10Rs4,
+            expected_features: 0,
+        },
         target_info.into(),
-        true,
-        0,
     );
 
     assert!(notifier.forward_request.is_none());
@@ -144,10 +153,11 @@ fn test_version_negotiation_feature_flags() {
     test_initiate_contact(
         &mut env.server,
         &mut env.notifier,
-        Version::Copper as u32,
+        TestVersion::Supported {
+            version: Version::Copper,
+            expected_features: 0,
+        },
         target_info.into(),
-        true,
-        0,
     );
 
     env.c().handle_unload();
@@ -162,12 +172,13 @@ fn test_version_negotiation_feature_flags() {
     test_initiate_contact(
         &mut env.server,
         &mut env.notifier,
-        Version::Copper as u32,
+        TestVersion::Supported {
+            version: Version::Copper,
+            expected_features: FeatureFlags::new()
+                .with_guest_specified_signal_parameters(true)
+                .into(),
+        },
         target_info.into(),
-        true,
-        FeatureFlags::new()
-            .with_guest_specified_signal_parameters(true)
-            .into(),
     );
 
     env.c().handle_unload();
@@ -180,12 +191,13 @@ fn test_version_negotiation_feature_flags() {
     test_initiate_contact(
         &mut env.server,
         &mut env.notifier,
-        Version::Copper as u32,
+        TestVersion::Supported {
+            version: Version::Copper,
+            expected_features: FeatureFlags::new()
+                .with_guest_specified_signal_parameters(true)
+                .into(),
+        },
         target_info.into(),
-        true,
-        FeatureFlags::new()
-            .with_guest_specified_signal_parameters(true)
-            .into(),
     );
 
     env.c().handle_unload();
@@ -196,10 +208,11 @@ fn test_version_negotiation_feature_flags() {
     test_initiate_contact(
         &mut env.server,
         &mut env.notifier,
-        Version::Copper as u32,
+        TestVersion::Supported {
+            version: Version::Copper,
+            expected_features: FeatureFlags::new().with_client_id(true).into(),
+        },
         target_info.into(),
-        true,
-        FeatureFlags::new().with_client_id(true).into(),
     );
 }
 
@@ -210,10 +223,11 @@ fn test_version_negotiation_interrupt_page() {
     test_initiate_contact(
         &mut server,
         &mut notifier,
-        Version::V1 as u32,
+        TestVersion::Supported {
+            version: Version::V1,
+            expected_features: 0,
+        },
         1234,
-        true,
-        0,
     );
 
     let (mut notifier, _recv) = TestNotifier::new();
@@ -221,10 +235,11 @@ fn test_version_negotiation_interrupt_page() {
     test_initiate_contact(
         &mut server,
         &mut notifier,
-        Version::Win7 as u32,
+        TestVersion::Supported {
+            version: Version::Win7,
+            expected_features: 0,
+        },
         1234,
-        true,
-        0,
     );
 
     let (mut notifier, _recv) = TestNotifier::new();
@@ -232,28 +247,39 @@ fn test_version_negotiation_interrupt_page() {
     test_initiate_contact(
         &mut server,
         &mut notifier,
-        Version::Win8 as u32,
+        TestVersion::Supported {
+            version: Version::Win8,
+            expected_features: 0,
+        },
         1234,
-        true,
-        0,
     );
+}
+
+enum TestVersion {
+    Unsupported(u32),
+    Supported {
+        version: Version,
+        expected_features: u32,
+    },
 }
 
 fn test_initiate_contact(
     server: &mut Server,
     notifier: &mut TestNotifier,
-    version: u32,
+    version: TestVersion,
     target_info: u64,
-    expect_supported: bool,
-    expected_features: u32,
 ) {
+    let raw_version = match version {
+        TestVersion::Unsupported(version) => version,
+        TestVersion::Supported { version, .. } => version as u32,
+    };
     server
         .with_notifier(notifier)
         .handle_synic_message(in_msg(
             protocol::MessageType::INITIATE_CONTACT,
             protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
-                    version_requested: version,
+                    version_requested: raw_version,
                     target_message_vp: 1,
                     interrupt_page_or_target_info: target_info,
                     parent_to_child_monitor_page_gpa: 0,
@@ -264,46 +290,57 @@ fn test_initiate_contact(
         ))
         .unwrap();
 
-    let selected_version_or_connection_id = if expect_supported {
-        let request = notifier.next_action();
-        let interrupt_page = if version < Version::Win8 as u32 {
-            Update::Set(target_info)
+    let (expect_supported, selected_version_or_connection_id, expected_features) =
+        if let TestVersion::Supported {
+            version,
+            expected_features,
+        } = version
+        {
+            let request = notifier.next_action();
+            let interrupt_page = if raw_version < Version::Win8 as u32 {
+                Update::Set(target_info)
+            } else {
+                Update::Reset
+            };
+
+            let target_message_vp = if raw_version < Version::Win8_1 as u32 {
+                Some(0)
+            } else {
+                Some(1)
+            };
+
+            assert_eq!(
+                request,
+                ModifyConnectionRequest {
+                    version: Some(VersionInfo {
+                        version,
+                        feature_flags: expected_features.into()
+                    }),
+                    monitor_page: Update::Reset,
+                    interrupt_page,
+                    target_message_vp,
+                    ..Default::default()
+                }
+            );
+
+            server.with_notifier(notifier).complete_initiate_contact(
+                ModifyConnectionResponse::Supported(
+                    protocol::ConnectionState::SUCCESSFUL,
+                    SUPPORTED_FEATURE_FLAGS,
+                    None,
+                ),
+            );
+
+            let selected_version_or_connection_id = if raw_version >= Version::Win10Rs3_1 as u32 {
+                1
+            } else {
+                raw_version
+            };
+
+            (true, selected_version_or_connection_id, expected_features)
         } else {
-            Update::Reset
+            (false, 0, 0)
         };
-
-        let target_message_vp = if version < Version::Win8_1 as u32 {
-            Some(0)
-        } else {
-            Some(1)
-        };
-
-        assert_eq!(
-            request,
-            ModifyConnectionRequest {
-                version: Some(version),
-                monitor_page: Update::Reset,
-                interrupt_page,
-                target_message_vp,
-                ..Default::default()
-            }
-        );
-
-        server.with_notifier(notifier).complete_initiate_contact(
-            ModifyConnectionResponse::Supported(
-                protocol::ConnectionState::SUCCESSFUL,
-                SUPPORTED_FEATURE_FLAGS,
-            ),
-        );
-
-        if version >= Version::Win10Rs3_1 as u32 {
-            1
-        } else {
-            version
-        }
-    } else {
-        0
-    };
 
     let version_response = protocol::VersionResponse {
         version_supported: if expect_supported { 1 } else { 0 },
@@ -312,7 +349,7 @@ fn test_initiate_contact(
         selected_version_or_connection_id,
     };
 
-    if version >= Version::Copper as u32 && expect_supported {
+    if raw_version >= Version::Copper as u32 && expect_supported {
         notifier.check_message(OutgoingMessage::new(&protocol::VersionResponse2 {
             version_response,
             supported_features: expected_features,
@@ -325,7 +362,7 @@ fn test_initiate_contact(
     assert!(notifier.messages.is_empty());
     if expect_supported {
         assert!(matches!(server.state, ConnectionState::Connected { .. }));
-        if version < Version::Win8_1 as u32 {
+        if raw_version < Version::Win8_1 as u32 {
             assert_eq!(Some(0), notifier.target_message_vp);
         } else {
             assert_eq!(Some(1), notifier.target_message_vp);
@@ -335,7 +372,7 @@ fn test_initiate_contact(
         assert!(notifier.target_message_vp.is_none());
     }
 
-    if version < Version::Win8 as u32 {
+    if raw_version < Version::Win8 as u32 {
         assert_eq!(notifier.interrupt_page, Some(target_info));
     } else {
         assert!(notifier.interrupt_page.is_none());
@@ -414,7 +451,10 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
     assert_eq!(
         request,
         ModifyConnectionRequest {
-            version: Some(version as u32),
+            version: Some(VersionInfo {
+                version,
+                feature_flags
+            }),
             monitor_page: Update::Reset,
             interrupt_page: Update::Reset,
             target_message_vp: Some(0),
@@ -427,6 +467,7 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
         .complete_initiate_contact(ModifyConnectionResponse::Supported(
             protocol::ConnectionState::SUCCESSFUL,
             SUPPORTED_FEATURE_FLAGS,
+            None,
         ));
 
     let version_response = protocol::VersionResponse {
@@ -450,7 +491,7 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
         .unwrap();
 
     let channel_id = ChannelId(1);
-    notifier.check_messages(&[
+    notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
             interface_id,
             instance_id,
@@ -612,7 +653,10 @@ fn test_hvsock_helper(version: Version, force_small_message: bool) {
     assert_eq!(
         request,
         ModifyConnectionRequest {
-            version: Some(version as u32),
+            version: Some(VersionInfo {
+                version,
+                feature_flags: FeatureFlags::new()
+            }),
             monitor_page: Update::Reset,
             interrupt_page: Update::Reset,
             target_message_vp: Some(0),
@@ -625,6 +669,7 @@ fn test_hvsock_helper(version: Version, force_small_message: bool) {
         .complete_initiate_contact(ModifyConnectionResponse::Supported(
             protocol::ConnectionState::SUCCESSFUL,
             SUPPORTED_FEATURE_FLAGS,
+            None,
         ));
 
     // Discard the version response message.
@@ -701,6 +746,7 @@ fn test_hot_add() {
         .complete_initiate_contact(ModifyConnectionResponse::Supported(
             protocol::ConnectionState::SUCCESSFUL,
             SUPPORTED_FEATURE_FLAGS,
+            None,
         ));
     let offer_id3 = env.offer(3);
     env.c().handle_request_offers().unwrap();
@@ -875,7 +921,7 @@ fn test_save_restore_connecting() {
     let offer_id1 = env.offer_with_mnf(1);
     let _offer_id2 = env.offer(2);
 
-    env.start_connect(Version::Win10, FeatureFlags::new(), false);
+    env.start_connect(Version::Win10, FeatureFlags::new(), false, true);
     assert_eq!(
         env.notifier.monitor_page,
         Some(MonitorPageGpas {
@@ -907,7 +953,10 @@ fn test_save_restore_connecting() {
     assert_eq!(
         request,
         ModifyConnectionRequest {
-            version: Some(Version::Win10 as u32),
+            version: Some(VersionInfo {
+                version: Version::Win10,
+                feature_flags: FeatureFlags::new()
+            }),
             monitor_page: Update::Set(MonitorPageGpas {
                 child_to_parent: 0x123f000,
                 parent_to_child: 0x321f000,
@@ -976,9 +1025,8 @@ fn test_save_restore_modifying() {
 
     // We can complete the modify request after restore.
     env.c()
-        .complete_modify_connection(ModifyConnectionResponse::Supported(
+        .complete_modify_connection(ModifyConnectionResponse::Modified(
             protocol::ConnectionState::SUCCESSFUL,
-            SUPPORTED_FEATURE_FLAGS,
         ));
 
     env.notifier
@@ -1051,7 +1099,7 @@ fn test_save_restore_offers_not_sent() {
 
     // When the guest requests offers, they should be all be sent.
     env.c().handle_request_offers().unwrap();
-    env.notifier.check_messages(&[
+    env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
             interface_id: Guid {
                 data1: 1,
@@ -1262,9 +1310,8 @@ fn test_modify_connection() {
     );
 
     env.c()
-        .complete_modify_connection(ModifyConnectionResponse::Supported(
+        .complete_modify_connection(ModifyConnectionResponse::Modified(
             protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-            SUPPORTED_FEATURE_FLAGS,
         ));
 
     env.notifier
@@ -1435,14 +1482,8 @@ fn test_mnf_channel() {
     let _offer_id2 = env.offer_with_mnf(2);
     let _offer_id3 = env.offer_with_preset_mnf(3, 5);
 
-    env.connect(Version::Copper, FeatureFlags::new());
-    env.c().handle_request_offers().unwrap();
-
-    // Preset monitor ID should not be in the bitmap.
-    assert_eq!(env.server.assigned_monitors.bitmap(), 1);
-
-    env.notifier.check_messages(&[
-        OutgoingMessage::new(&protocol::OfferChannel {
+    let mut expected_channels = [
+        protocol::OfferChannel {
             interface_id: Guid {
                 data1: 1,
                 ..Guid::ZERO
@@ -1456,8 +1497,8 @@ fn test_mnf_channel() {
             is_dedicated: 1,
             monitor_id: 0xff,
             ..protocol::OfferChannel::new_zeroed()
-        }),
-        OutgoingMessage::new(&protocol::OfferChannel {
+        },
+        protocol::OfferChannel {
             interface_id: Guid {
                 data1: 2,
                 ..Guid::ZERO
@@ -1469,11 +1510,10 @@ fn test_mnf_channel() {
             channel_id: ChannelId(2),
             connection_id: 0x2002,
             is_dedicated: 1,
-            monitor_id: 0,
-            monitor_allocated: 1,
+            monitor_id: 0xff,
             ..protocol::OfferChannel::new_zeroed()
-        }),
-        OutgoingMessage::new(&protocol::OfferChannel {
+        },
+        protocol::OfferChannel {
             interface_id: Guid {
                 data1: 3,
                 ..Guid::ZERO
@@ -1485,12 +1525,173 @@ fn test_mnf_channel() {
             channel_id: ChannelId(3),
             connection_id: 0x2003,
             is_dedicated: 1,
-            monitor_id: 5,
+            monitor_id: 0xff,
+            ..protocol::OfferChannel::new_zeroed()
+        },
+    ];
+
+    fn make_messages(
+        channels: &[protocol::OfferChannel],
+    ) -> impl Iterator<Item = OutgoingMessage> + '_ {
+        channels
+            .iter()
+            .map(OutgoingMessage::new)
+            .chain([OutgoingMessage::new(&protocol::AllOffersDelivered {})])
+    }
+
+    // If the guest does not send monitor pages, the monitor ID is not sent with the offers.
+    env.connect_without_mnf(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier
+        .check_messages(make_messages(&expected_channels));
+    env.reset();
+
+    // If the guest sends monitor pages, but the server does not allow it, the monitor ID is
+    // still not sent.
+    env.server.set_require_server_allocated_mnf(true);
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+    env.notifier
+        .check_messages(make_messages(&expected_channels));
+    env.reset();
+
+    // Now we connect with regular MNF support, and the monitor IDs are sent.
+    env.server.set_require_server_allocated_mnf(false);
+    expected_channels[1].monitor_id = 0;
+    expected_channels[1].monitor_allocated = 1;
+    expected_channels[2].monitor_id = 5;
+    expected_channels[2].monitor_allocated = 1;
+
+    env.connect(Version::Copper, FeatureFlags::new());
+    env.c().handle_request_offers().unwrap();
+
+    // Preset monitor ID should not be in the bitmap.
+    assert_eq!(env.server.assigned_monitors.bitmap(), 1);
+
+    env.notifier
+        .check_messages(make_messages(&expected_channels));
+}
+
+#[test]
+fn test_server_monitor_page() {
+    // Guest pages provided, but overridden by server-allocated pages.
+    test_server_monitor_page_helper(true);
+
+    // No guest pages supplied, server will allocate them.
+    test_server_monitor_page_helper(false);
+}
+
+fn test_server_monitor_page_helper(provide_guest_pages: bool) {
+    let mut env = TestEnv::new();
+    let _offer_id1 = env.offer_with_mnf(1);
+
+    let version = Version::Copper;
+    let feature_flags = FeatureFlags::new().with_server_specified_monitor_pages(true);
+    env.c()
+        .handle_synic_message(in_msg(
+            protocol::MessageType::INITIATE_CONTACT,
+            protocol::InitiateContact {
+                version_requested: version as u32,
+                interrupt_page_or_target_info: TargetInfo::new()
+                    .with_sint(SINT)
+                    .with_vtl(0)
+                    .with_feature_flags(feature_flags.into())
+                    .into(),
+                child_to_parent_monitor_page_gpa: if provide_guest_pages { 0x123f000 } else { 0 },
+                parent_to_child_monitor_page_gpa: if provide_guest_pages { 0x321f000 } else { 0 },
+                ..FromZeros::new_zeroed()
+            },
+        ))
+        .unwrap();
+
+    // The server will notify with the guest-provided pages (if present).
+    let request = env.notifier.next_action();
+    assert_eq!(
+        request,
+        ModifyConnectionRequest {
+            version: Some(VersionInfo {
+                version,
+                feature_flags
+            }),
+            monitor_page: if provide_guest_pages {
+                Update::Set(MonitorPageGpas {
+                    child_to_parent: 0x123f000,
+                    parent_to_child: 0x321f000,
+                })
+            } else {
+                Update::Reset
+            },
+            interrupt_page: Update::Reset,
+            target_message_vp: Some(0),
+            ..Default::default()
+        }
+    );
+
+    // Specify server-allocated pages when completing the request.
+    env.c()
+        .complete_initiate_contact(ModifyConnectionResponse::Supported(
+            protocol::ConnectionState::SUCCESSFUL,
+            feature_flags,
+            Some(MonitorPageGpas {
+                parent_to_child: 0x456f000,
+                child_to_parent: 0x654f000,
+            }),
+        ));
+
+    // This is reflected in the server state.
+    assert!(matches!(
+        env.server.state,
+        ConnectionState::Connected(ConnectionInfo {
+            monitor_page: Some(MonitorPageGpaInfo {
+                gpas: MonitorPageGpas {
+                    parent_to_child: 0x456f000,
+                    child_to_parent: 0x654f000
+                },
+                server_allocated: true,
+            }),
+            ..
+        })
+    ));
+
+    // The version response should include the server-allocated pages.
+    env.notifier
+        .check_message(OutgoingMessage::new(&protocol::VersionResponse3 {
+            version_response2: protocol::VersionResponse2 {
+                version_response: protocol::VersionResponse {
+                    version_supported: 1,
+                    connection_state: protocol::ConnectionState::SUCCESSFUL,
+                    padding: 0,
+                    selected_version_or_connection_id: 1,
+                },
+                supported_features: feature_flags.into(),
+            },
+            _padding: 0,
+            parent_to_child_monitor_page_gpa: 0x456f000,
+            child_to_parent_monitor_page_gpa: 0x654f000,
+        }));
+
+    // Make sure the monitor ID is sent for the channel, even if the guest didn't try to supply its
+    // own monitor pages.
+    env.c().handle_request_offers().unwrap();
+    env.notifier.check_messages([
+        OutgoingMessage::new(&protocol::OfferChannel {
+            interface_id: Guid {
+                data1: 1,
+                ..Guid::ZERO
+            },
+            instance_id: Guid {
+                data1: 1,
+                ..Guid::ZERO
+            },
+            channel_id: ChannelId(1),
+            connection_id: 0x2001,
+            is_dedicated: 1,
+            monitor_id: 0,
             monitor_allocated: 1,
             ..protocol::OfferChannel::new_zeroed()
         }),
         OutgoingMessage::new(&protocol::AllOffersDelivered {}),
-    ])
+    ]);
 }
 
 #[test]
@@ -1508,7 +1709,7 @@ fn test_channel_id_order() {
     env.connect(Version::Win10, FeatureFlags::new());
     env.c().handle_request_offers().unwrap();
 
-    env.notifier.check_messages(&[
+    env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
             interface_id: Guid {
                 data1: 3,
@@ -1874,7 +2075,10 @@ fn test_reinitiate_contact() {
     assert_eq!(
         req,
         ModifyConnectionRequest {
-            version: Some(Version::Win10 as u32),
+            version: Some(VersionInfo {
+                version: Version::Win10,
+                feature_flags: FeatureFlags::new()
+            }),
             monitor_page: Update::Set(MonitorPageGpas {
                 child_to_parent: 0x123f000,
                 parent_to_child: 0x321f000,
@@ -2041,9 +2245,9 @@ impl TestNotifier {
         T::read_from_prefix(data).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
-    fn check_messages(&mut self, messages: &[OutgoingMessage]) {
+    fn check_messages(&mut self, messages: impl IntoIterator<Item = OutgoingMessage>) {
         let messages: Vec<_> = messages
-            .iter()
+            .into_iter()
             .map(|m| (m.clone(), MessageTarget::Default))
             .collect();
         assert_eq!(self.messages, messages.as_slice());
@@ -2147,12 +2351,18 @@ impl TestEnv {
 
     // Completes a reset operation if the server sends a modify request as part of it.
     fn complete_reset(&mut self) {
-        let _ = self.next_action();
-        self.c()
-            .complete_modify_connection(ModifyConnectionResponse::Supported(
+        let request = self.next_action();
+        let response = if request.version.is_some() {
+            ModifyConnectionResponse::Supported(
                 protocol::ConnectionState::SUCCESSFUL,
                 SUPPORTED_FEATURE_FLAGS,
-            ));
+                None,
+            )
+        } else {
+            ModifyConnectionResponse::Modified(protocol::ConnectionState::SUCCESSFUL)
+        };
+
+        self.c().complete_modify_connection(response);
     }
 
     fn offer(&mut self, id: u32) -> OfferId {
@@ -2301,16 +2511,27 @@ impl TestEnv {
     }
 
     fn connect(&mut self, version: Version, feature_flags: FeatureFlags) {
-        self.start_connect(version, feature_flags, false);
+        self.start_connect(version, feature_flags, false, true);
         self.complete_connect();
     }
 
     fn connect_trusted(&mut self, version: Version, feature_flags: FeatureFlags) {
-        self.start_connect(version, feature_flags, true);
+        self.start_connect(version, feature_flags, true, true);
         self.complete_connect();
     }
 
-    fn start_connect(&mut self, version: Version, feature_flags: FeatureFlags, trusted: bool) {
+    fn connect_without_mnf(&mut self, version: Version, feature_flags: FeatureFlags) {
+        self.start_connect(version, feature_flags, false, false);
+        self.complete_connect();
+    }
+
+    fn start_connect(
+        &mut self,
+        version: Version,
+        mut feature_flags: FeatureFlags,
+        trusted: bool,
+        use_mnf: bool,
+    ) {
         self.version = Some(VersionInfo {
             version,
             feature_flags,
@@ -2326,8 +2547,8 @@ impl TestEnv {
                         .with_vtl(0)
                         .with_feature_flags(feature_flags.into())
                         .into(),
-                    child_to_parent_monitor_page_gpa: 0x123f000,
-                    parent_to_child_monitor_page_gpa: 0x321f000,
+                    child_to_parent_monitor_page_gpa: if use_mnf { 0x123f000 } else { 0 },
+                    parent_to_child_monitor_page_gpa: if use_mnf { 0x321f000 } else { 0 },
                     ..FromZeros::new_zeroed()
                 },
                 client_id: Guid::ZERO,
@@ -2338,14 +2559,25 @@ impl TestEnv {
         assert!(result.is_ok());
 
         let request = self.notifier.next_action();
+        if !trusted {
+            feature_flags.set_confidential_channels(false);
+        }
+
         assert_eq!(
             request,
             ModifyConnectionRequest {
-                version: Some(version as u32),
-                monitor_page: Update::Set(MonitorPageGpas {
-                    child_to_parent: 0x123f000,
-                    parent_to_child: 0x321f000,
+                version: Some(VersionInfo {
+                    version,
+                    feature_flags
                 }),
+                monitor_page: if use_mnf && !self.server.require_server_allocated_mnf {
+                    Update::Set(MonitorPageGpas {
+                        child_to_parent: 0x123f000,
+                        parent_to_child: 0x321f000,
+                    })
+                } else {
+                    Update::Reset
+                },
                 interrupt_page: Update::Reset,
                 target_message_vp: Some(0),
                 ..Default::default()
@@ -2358,6 +2590,7 @@ impl TestEnv {
             .complete_initiate_contact(ModifyConnectionResponse::Supported(
                 protocol::ConnectionState::SUCCESSFUL,
                 SUPPORTED_FEATURE_FLAGS,
+                None,
             ));
 
         let version = self.version.unwrap();
@@ -2384,6 +2617,19 @@ impl TestEnv {
 
     fn next_action(&mut self) -> ModifyConnectionRequest {
         self.notifier.next_action()
+    }
+
+    fn reset(&mut self) {
+        self.c().reset();
+        assert!(self.notifier.next_action().version.is_none());
+        self.c()
+            .complete_modify_connection(ModifyConnectionResponse::Supported(
+                protocol::ConnectionState::SUCCESSFUL,
+                FeatureFlags::from_bits(u32::MAX),
+                None,
+            ));
+
+        assert!(self.notifier.is_reset());
     }
 }
 

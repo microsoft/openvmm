@@ -132,6 +132,10 @@ pub struct Server {
     // This must be separate from the connection state because e.g. the UnloadComplete message,
     // or messages for reserved channels, can be pending even when disconnected.
     pending_messages: PendingMessages,
+    // If this is set, the server cannot utilize monitor pages provided by the guest. This is
+    // typically the case for OpenHCL in hardware-isolated VMs because the monitor pages must be in
+    // shared memory and we cannot set protections on shared memory.
+    require_server_allocated_mnf: bool,
 }
 
 pub struct ServerWithNotifier<'a, T> {
@@ -198,6 +202,31 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
     }
 }
 
+/// Stores the monitor page GPAs along with their source.
+#[derive(Debug, Copy, Clone, Inspect)]
+struct MonitorPageGpaInfo {
+    gpas: MonitorPageGpas,
+    server_allocated: bool,
+}
+
+impl MonitorPageGpaInfo {
+    /// Creates a new MonitorPageGpaInfo from guest-provided GPAs.
+    fn from_guest_gpas(gpas: MonitorPageGpas) -> Self {
+        Self {
+            gpas,
+            server_allocated: false,
+        }
+    }
+
+    /// Creates a new MonitorPageGpaInfo from server-allocated GPAs.
+    fn from_server_gpas(gpas: MonitorPageGpas) -> Self {
+        Self {
+            gpas,
+            server_allocated: true,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Inspect)]
 struct ConnectionInfo {
     version: VersionInfo,
@@ -206,7 +235,7 @@ struct ConnectionInfo {
     trusted: bool,
     offers_sent: bool,
     interrupt_page: Option<u64>,
-    monitor_page: Option<MonitorPageGpas>,
+    monitor_page: Option<MonitorPageGpaInfo>,
     target_message_vp: u32,
     modifying: bool,
     client_id: Guid,
@@ -243,6 +272,15 @@ impl ConnectionState {
     fn get_version(&self) -> Option<VersionInfo> {
         if let ConnectionState::Connected(info) = self {
             Some(info.version)
+        } else {
+            None
+        }
+    }
+
+    /// Gets the `ConnectionInfo` if currently connected.
+    fn get_connected_info(&self) -> Option<&ConnectionInfo> {
+        if let ConnectionState::Connected(info) = self {
+            Some(info)
         } else {
             None
         }
@@ -325,7 +363,7 @@ impl<T: std::fmt::Debug + Copy + Clone> From<Option<T>> for Update<T> {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct ModifyConnectionRequest {
-    pub version: Option<u32>,
+    pub version: Option<VersionInfo>,
     pub monitor_page: Update<MonitorPageGpas>,
     pub interrupt_page: Update<u64>,
     pub target_message_vp: Option<u32>,
@@ -366,14 +404,21 @@ impl From<protocol::ModifyConnection> for ModifyConnectionRequest {
 /// Response to a ModifyConnectionRequest.
 #[derive(Debug, Copy, Clone)]
 pub enum ModifyConnectionResponse {
-    /// No version change was was requested, or the requested version is supported. Includes all the
-    /// feature flags supported by the relay host, so that supported flags reported to the guest can
-    /// be limited to that. The FeatureFlags field is not relevant if no version change was
-    /// requested.
-    Supported(protocol::ConnectionState, FeatureFlags),
-    /// A version change was requested but the relay host doesn't support that version. This
-    /// response cannot be returned for a request with no version change set.
+    /// The requested version change is supported, and the relay completed the connection
+    /// modification with the specified status and supports the specified feature flags. All of the
+    /// feature flags supported by the relay host are included, regardless of what features were
+    /// requested. If the server allocated monitor pages that are to be used for this connection,
+    /// they will be included as well.
+    Supported(
+        protocol::ConnectionState,
+        FeatureFlags,
+        Option<MonitorPageGpas>,
+    ),
+    /// A version change was requested but the relay host doesn't support that version.
     Unsupported,
+    /// The connection modification completed with the specified status. This response type must be
+    /// sent if and only if no version change was requested.
+    Modified(protocol::ConnectionState),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1267,7 +1312,8 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_channel_interrupt_redirection(true)
     .with_modify_connection(true)
     .with_client_id(true)
-    .with_pause_resume(true);
+    .with_pause_resume(true)
+    .with_server_specified_monitor_pages(true);
 
 /// Trait for sending requests to devices and the guest.
 pub trait Notifier: Send {
@@ -1318,6 +1364,7 @@ impl Server {
             max_version: None,
             delayed_max_version: None,
             pending_messages: PendingMessages(VecDeque::new()),
+            require_server_allocated_mnf: false,
         }
     }
 
@@ -1331,6 +1378,12 @@ impl Server {
             inner: self,
             notifier,
         }
+    }
+
+    /// Requires that the server allocates monitor pages. If this is enabled, the server will ignore
+    /// guest-specified monitor pages and act as if none of the channels use MNF.
+    pub fn set_require_server_allocated_mnf(&mut self, require: bool) {
+        self.require_server_allocated_mnf = require;
     }
 
     fn validate(&self) {
@@ -1609,13 +1662,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     // guest if it has not already been sent (which could have happened if the
                     // channel was offered after restore() but before revoke_unclaimed_channels()).
                     // Offers should only be sent if the guest has already sent RequestOffers.
-                    if let ConnectionState::Connected(ConnectionInfo {
-                        offers_sent: true,
-                        version,
-                        ..
-                    }) = &self.inner.state
-                    {
-                        if matches!(channel.state, ChannelState::ClientReleased) {
+                    if let ConnectionState::Connected(info) = &self.inner.state {
+                        if info.offers_sent && matches!(channel.state, ChannelState::ClientReleased)
+                        {
                             channel.prepare_channel(
                                 offer_id,
                                 &mut self.inner.assigned_channels,
@@ -1625,7 +1674,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             self.inner
                                 .pending_messages
                                 .sender(self.notifier, self.inner.state.is_paused())
-                                .send_offer(channel, *version);
+                                .send_offer(channel, info);
                         }
                     }
                 }
@@ -1755,20 +1804,17 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return Ok(offer_id);
         }
 
-        let mut connected_version = None;
-        let state = match self.inner.state {
-            ConnectionState::Connected(ConnectionInfo {
-                offers_sent: true,
-                version,
-                ..
-            }) => {
-                connected_version = Some(version);
-                ChannelState::Closed
+        let mut connected_info = None;
+        let state = match &self.inner.state {
+            ConnectionState::Connected(info) => {
+                if info.offers_sent {
+                    connected_info = Some(info);
+                    ChannelState::Closed
+                } else {
+                    ChannelState::ClientReleased
+                }
             }
-            ConnectionState::Connected(ConnectionInfo {
-                offers_sent: false, ..
-            })
-            | ConnectionState::Connecting { .. }
+            ConnectionState::Connecting { .. }
             | ConnectionState::Disconnecting { .. }
             | ConnectionState::Disconnected => ChannelState::ClientReleased,
         };
@@ -1789,7 +1835,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         let offer_id = self.inner.channels.offer(channel);
-        if let Some(version) = connected_version {
+        if let Some(info) = connected_info {
             let channel = &mut self.inner.channels[offer_id];
             channel.prepare_channel(
                 offer_id,
@@ -1800,7 +1846,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             self.inner
                 .pending_messages
                 .sender(self.notifier, self.inner.state.is_paused())
-                .send_offer(channel, version);
+                .send_offer(channel, info);
         }
 
         tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
@@ -2199,11 +2245,23 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Make sure we can receive incoming interrupts on the monitor page. The parent to child
         // page is not used as this server doesn't send monitored interrupts.
         let monitor_page = match request.monitor_page {
-            MonitorPageRequest::Some(mp) => Some(mp),
+            MonitorPageRequest::Some(mp) => {
+                if self.inner.require_server_allocated_mnf {
+                    if !version.feature_flags.server_specified_monitor_pages() {
+                        tracelimit::warn_ratelimited!(
+                            "guest-supplied monitor pages not supported; MNF will be disabled"
+                        );
+                    }
+
+                    None
+                } else {
+                    Some(mp)
+                }
+            }
             MonitorPageRequest::None => None,
             MonitorPageRequest::Invalid => {
                 // Do not notify the relay in this case.
-                self.send_version_response(Some((
+                self.send_version_response(Some(VersionResponseData::new(
                     version,
                     protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
                 )));
@@ -2217,7 +2275,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 version,
                 trusted: request.trusted,
                 interrupt_page: request.interrupt_page,
-                monitor_page,
+                monitor_page: monitor_page.map(MonitorPageGpaInfo::from_guest_gpas),
                 target_message_vp: request.target_message_vp,
                 modifying: false,
                 offers_sent: false,
@@ -2230,7 +2288,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Update server state and notify the relay, if any. When complete,
         // complete_initiate_contact will be invoked.
         if let Err(err) = self.notifier.modify_connection(ModifyConnectionRequest {
-            version: Some(request.version_requested),
+            version: Some(version),
             monitor_page: monitor_page.into(),
             interrupt_page: request.interrupt_page.into(),
             target_message_vp: Some(request.target_message_vp),
@@ -2238,7 +2296,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }) {
             tracelimit::error_ratelimited!(?err, "server failed to change state");
             self.inner.state = ConnectionState::Disconnected;
-            self.send_version_response(Some((
+            self.send_version_response(Some(VersionResponseData::new(
                 version,
                 protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
             )));
@@ -2255,19 +2313,26 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         // Some features are handled locally without needing relay support.
+        // N.B. Server-specified monitor pages are also handled locally but are only conditionally
+        //      supported.
         const LOCAL_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
             .with_client_id(true)
             .with_confidential_channels(true);
 
-        let relay_feature_flags = match response {
+        let (relay_feature_flags, server_specified_monitor_page) = match response {
             // There is no relay, or it successfully processed our request.
             ModifyConnectionResponse::Supported(
                 protocol::ConnectionState::SUCCESSFUL,
                 feature_flags,
-            ) => feature_flags,
+                server_specified_monitor_page,
+            ) => (feature_flags, server_specified_monitor_page),
             // The relay supports the requested version, but encountered an error, so pass it
             // along to the guest.
-            ModifyConnectionResponse::Supported(connection_state, feature_flags) => {
+            ModifyConnectionResponse::Supported(
+                connection_state,
+                feature_flags,
+                server_specified_monitor_page,
+            ) => {
                 tracelimit::error_ratelimited!(
                     ?connection_state,
                     "initiate contact failed because relay request failed"
@@ -2275,9 +2340,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
                 // We still report the supported feature flags with an error, so make sure those
                 // are correct.
-                info.version.feature_flags &= feature_flags | LOCAL_FEATURE_FLAGS;
+                info.version.feature_flags &= (feature_flags | LOCAL_FEATURE_FLAGS)
+                    .with_server_specified_monitor_pages(server_specified_monitor_page.is_some());
 
-                self.send_version_response(Some((info.version, connection_state)));
+                self.send_version_response(Some(VersionResponseData::new(
+                    info.version,
+                    connection_state,
+                )));
                 self.inner.state = ConnectionState::Disconnected;
                 return;
             }
@@ -2288,14 +2357,42 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 self.inner.state = ConnectionState::Disconnected;
                 return;
             }
+            ModifyConnectionResponse::Modified(_) => {
+                panic!("Invalid response for completing InitiateContact.");
+            }
         };
+
+        // The server may not provide its own monitor pages if the guest didn't request them.
+        assert!(
+            info.version.feature_flags.server_specified_monitor_pages()
+                || server_specified_monitor_page.is_none()
+        );
 
         // The relay responds with all the feature flags it supports, so limit the flags reported to
         // the guest to include only those handled by the relay or locally.
         info.version.feature_flags &= relay_feature_flags | LOCAL_FEATURE_FLAGS;
+
+        // If the server allocated a monitor page, also report that feature is supported, and store
+        // the server pages. The feature bit must be re-enabled because the relay may not report
+        // support for it.
+        if let Some(gpas) = server_specified_monitor_page {
+            info.monitor_page = Some(MonitorPageGpaInfo::from_server_gpas(gpas));
+            info.version
+                .feature_flags
+                .set_server_specified_monitor_pages(true);
+        } else {
+            info.version
+                .feature_flags
+                .set_server_specified_monitor_pages(false);
+        }
+
+        let version = info.version;
         self.inner.state = ConnectionState::Connected(info);
 
-        self.send_version_response(Some((info.version, protocol::ConnectionState::SUCCESSFUL)));
+        self.send_version_response(Some(
+            VersionResponseData::new(version, protocol::ConnectionState::SUCCESSFUL)
+                .with_monitor_pages(server_specified_monitor_page),
+        ));
         if !matches!(next_action, ConnectionAction::None) && self.request_disconnect(next_action) {
             self.do_next_action(next_action);
         }
@@ -2347,42 +2444,66 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         })
     }
 
-    fn send_version_response(&mut self, data: Option<(VersionInfo, protocol::ConnectionState)>) {
+    fn send_version_response(&mut self, data: Option<VersionResponseData>) {
         self.send_version_response_with_target(data, MessageTarget::Default);
     }
 
     fn send_version_response_with_target(
         &mut self,
-        data: Option<(VersionInfo, protocol::ConnectionState)>,
+        data: Option<VersionResponseData>,
         target: MessageTarget,
     ) {
-        let mut response2 = protocol::VersionResponse2::new_zeroed();
-        let response = &mut response2.version_response;
-        let mut send_response2 = false;
-        if let Some((version, state)) = data {
+        enum VersionResponseType {
+            PreCopper,
+            Copper,
+            CopperWithServerMnf,
+        }
+
+        let mut response_copper_with_mnf = protocol::VersionResponse3::new_zeroed();
+        let response_copper = &mut response_copper_with_mnf.version_response2;
+        let response = &mut response_copper.version_response;
+        let mut response_type = VersionResponseType::PreCopper;
+        if let Some(data) = data {
             // Pre-Win8, there is no way to report failures to the guest, so those should be treated
             // as unsupported.
-            if state == protocol::ConnectionState::SUCCESSFUL || version.version >= Version::Win8 {
+            if data.state == protocol::ConnectionState::SUCCESSFUL
+                || data.version.version >= Version::Win8
+            {
                 response.version_supported = 1;
-                response.connection_state = state;
+                response.connection_state = data.state;
                 response.selected_version_or_connection_id =
-                    if version.version >= Version::Win10Rs3_1 {
+                    if data.version.version >= Version::Win10Rs3_1 {
                         self.inner.child_connection_id
                     } else {
-                        version.version as u32
+                        data.version.version as u32
                     };
 
-                if version.version >= Version::Copper {
-                    response2.supported_features = version.feature_flags.into();
-                    send_response2 = true;
+                if data.version.version >= Version::Copper {
+                    response_copper.supported_features = data.version.feature_flags.into();
+                    response_type = VersionResponseType::Copper;
+                    if let Some(monitor_page) = data.monitor_pages {
+                        assert!(data.version.feature_flags.server_specified_monitor_pages());
+                        response_copper_with_mnf.child_to_parent_monitor_page_gpa =
+                            monitor_page.child_to_parent;
+                        response_copper_with_mnf.parent_to_child_monitor_page_gpa =
+                            monitor_page.parent_to_child;
+                        response_type = VersionResponseType::CopperWithServerMnf;
+                    }
                 }
             }
         }
 
-        if send_response2 {
-            self.sender().send_message_with_target(&response2, target);
-        } else {
-            self.sender().send_message_with_target(response, target);
+        // Send the correct type of response based on the negotiated version and flags.
+        match response_type {
+            VersionResponseType::PreCopper => {
+                self.sender().send_message_with_target(response, target)
+            }
+            VersionResponseType::Copper => self
+                .sender()
+                .send_message_with_target(response_copper, target),
+            VersionResponseType::CopperWithServerMnf => self
+                .sender()
+                .send_message_with_target(&response_copper_with_mnf, target),
         }
     }
 
@@ -2555,7 +2676,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             self.inner
                 .pending_messages
                 .sender(self.notifier, info.paused)
-                .send_offer(channel, info.version);
+                .send_offer(channel, info);
         }
         self.sender().send_message(&protocol::AllOffersDelivered {});
 
@@ -3033,7 +3154,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         gpadls: &mut GpadlMap,
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
-        version: Option<VersionInfo>,
+        info: Option<&ConnectionInfo>,
     ) -> bool {
         // Release any GPADLs that remain for this channel.
         gpadls.retain(|&(gpadl_id, gpadl_offer_id), gpadl| {
@@ -3072,10 +3193,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 false
             }
             ChannelState::Reoffered => {
-                if let Some(version) = version {
+                if let Some(info) = info {
                     channel.state = ChannelState::Closed;
                     channel.restore_state = RestoreState::New;
-                    sender.send_offer(channel, version);
+                    sender.send_offer(channel, info);
                     // Do not release the channel ID.
                     return false;
                 }
@@ -3136,7 +3257,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
-                    self.inner.state.get_version(),
+                    self.inner.state.get_connected_info(),
                 ) {
                     self.inner.channels.remove(offer_id);
                 }
@@ -3299,9 +3420,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     fn handle_modify_connection(&mut self, request: protocol::ModifyConnection) {
         if let Err(err) = self.modify_connection(request) {
             tracelimit::error_ratelimited!(?err, "modifying connection failed");
-            self.complete_modify_connection(ModifyConnectionResponse::Supported(
+            self.complete_modify_connection(ModifyConnectionResponse::Modified(
                 protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-                FeatureFlags::new(),
             ));
         }
     }
@@ -3321,17 +3441,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
         }
 
+        if matches!(
+            info.monitor_page,
+            Some(MonitorPageGpaInfo {
+                server_allocated: true,
+                ..
+            })
+        ) {
+            anyhow::bail!("Cannot modify server-allocated monitor pages");
+        }
+
         if (request.child_to_parent_monitor_page_gpa == 0)
             != (request.parent_to_child_monitor_page_gpa == 0)
         {
             anyhow::bail!("Guest must specify either both or no monitor pages, {request:?}");
         }
 
-        let monitor_page =
-            (request.child_to_parent_monitor_page_gpa != 0).then_some(MonitorPageGpas {
+        let monitor_page = (request.child_to_parent_monitor_page_gpa != 0).then_some(
+            MonitorPageGpaInfo::from_guest_gpas(MonitorPageGpas {
                 child_to_parent: request.child_to_parent_monitor_page_gpa,
                 parent_to_child: request.parent_to_child_monitor_page_gpa,
-            });
+            }),
+        );
 
         info.modifying = true;
         info.monitor_page = monitor_page;
@@ -3351,7 +3482,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             ConnectionState::Connecting { .. } => self.complete_initiate_contact(response),
             ConnectionState::Disconnecting { .. } => self.complete_disconnect(),
             ConnectionState::Connected(info) => {
-                let ModifyConnectionResponse::Supported(connection_state, ..) = response else {
+                let ModifyConnectionResponse::Modified(connection_state) = response else {
                     panic!(
                         "Relay should not return {:?} for a modify request with no version.",
                         response
@@ -3461,6 +3592,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | Message::GpadlTorndown(..)
             | Message::VersionResponse(..)
             | Message::VersionResponse2(..)
+            | Message::VersionResponse3(..)
             | Message::UnloadComplete(..)
             | Message::CloseReservedChannelResponse(..)
             | Message::TlConnectResult(..)
@@ -3723,14 +3855,25 @@ impl<N: Notifier> MessageSender<'_, N> {
     }
 
     /// Sends a channel offer message to the guest.
-    fn send_offer(&mut self, channel: &mut Channel, version: VersionInfo) {
+    fn send_offer(&mut self, channel: &mut Channel, connection_info: &ConnectionInfo) {
         let info = channel.info.as_ref().expect("assigned");
         let mut flags = channel.offer.flags;
-        if !version.feature_flags.confidential_channels() {
+        if !connection_info
+            .version
+            .feature_flags
+            .confidential_channels()
+        {
             flags.set_confidential_ring_buffer(false);
             flags.set_confidential_external_memory(false);
         }
 
+        // Send the monitor ID only if the guest supports MNF. MNF may also be disabled if the guest
+        // provided monitor pages but this server can only use server-allocated monitor pages
+        // (typically the case for OpenHCL on a hardware-isolated VM), but the guest didn't support
+        // that. Since we cannot tell the guest to stop using MNF completely, sending the channel
+        // without a monitor ID will prevent the guest from trying to use MNF to send interrupts for
+        // it.
+        let monitor_id = connection_info.monitor_page.and(info.monitor_id);
         let msg = protocol::OfferChannel {
             interface_id: channel.offer.interface_id,
             instance_id: channel.offer.instance_id,
@@ -3741,8 +3884,8 @@ impl<N: Notifier> MessageSender<'_, N> {
             subchannel_index: channel.offer.subchannel_index,
             mmio_megabytes_optional: channel.offer.mmio_megabytes_optional,
             channel_id: info.channel_id,
-            monitor_id: info.monitor_id.unwrap_or(MonitorId::INVALID).0,
-            monitor_allocated: info.monitor_id.is_some() as u8,
+            monitor_id: monitor_id.unwrap_or(MonitorId::INVALID).0,
+            monitor_allocated: monitor_id.is_some().into(),
             // All channels are dedicated with Win8+ hosts.
             // These fields are sent to V1 guests as well, which will ignore them.
             is_dedicated: 1,
@@ -3796,5 +3939,29 @@ impl<N: Notifier> MessageSender<'_, N> {
         self.send_message(&protocol::RescindChannelOffer {
             channel_id: info.channel_id,
         });
+    }
+}
+
+/// Provides information needed to send a VersionResponse message for a supported version.
+struct VersionResponseData {
+    version: VersionInfo,
+    state: protocol::ConnectionState,
+    monitor_pages: Option<MonitorPageGpas>,
+}
+
+impl VersionResponseData {
+    /// Creates a new `VersionResponseData` with the negotiated version and connection state.
+    fn new(version: VersionInfo, state: protocol::ConnectionState) -> Self {
+        VersionResponseData {
+            version,
+            state,
+            monitor_pages: None,
+        }
+    }
+
+    /// Attaches server-allocated monitor pages to be sent with the response.
+    fn with_monitor_pages(mut self, monitor_pages: Option<MonitorPageGpas>) -> Self {
+        self.monitor_pages = monitor_pages;
+        self
     }
 }

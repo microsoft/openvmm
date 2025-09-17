@@ -52,6 +52,7 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
 use std::sync::atomic::Ordering::Relaxed;
+use virt::EmulatorMonitorSupport;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -1358,13 +1359,8 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        self.vp
-            .partition
-            .monitor_page
-            .check_write(gpa, bytes, |connection_id| {
-                signal_mnf(self.devices, connection_id)
-            })
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
