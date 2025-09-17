@@ -797,6 +797,7 @@ impl PrimaryChannelState {
         pending_link_action: Option<bool>,
     ) -> Result<Self, NetRestoreError> {
         // Restore control messages.
+        // Add comment for test
         let control_messages_len = control_messages.iter().map(|msg| msg.data.len()).sum();
 
         let control_messages = control_messages
