@@ -1195,7 +1195,9 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             .ranges
             .iter_mut()
             .enumerate()
-            .find(|(_, range)| range.as_ref().map(|r| (r.guest_pfn, r.size)) == Some((addr, size)))
+            .find(|(_, range)| {
+                range.as_ref().map(|r| (r.guest_pfn, r.size)) == Some((addr >> HV_PAGE_SHIFT, size))
+            })
             .expect("can only unmap existing ranges of exact size");
 
         self.vmfd.unmap_user_memory(range.unwrap())?;

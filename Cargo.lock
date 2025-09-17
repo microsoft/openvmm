@@ -8290,6 +8290,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "anyhow",
+ "build_rs_guest_arch",
  "guestmem",
  "hv1_emulator",
  "hv1_hypercall",
