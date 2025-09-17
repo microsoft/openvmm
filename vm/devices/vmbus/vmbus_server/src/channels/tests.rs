@@ -1690,23 +1690,21 @@ fn test_channel_id_order() {
 }
 
 #[test]
-fn test_assign_channel_id_on_offer() {
+fn test_channel_id_order_absolute() {
     let mut env = TestEnv::with_params(true);
 
-    let _offer_id1 = env.offer(3);
-    let _offer_id2 = env.offer(10);
-    let _offer_id3 = env.offer(5);
-    let _offer_id4 = env.offer(17);
-
-    // The "order" values are completely ignored in this mode.
-    let _offer_id5 = env.offer_with_order(5, 6, Some(2));
-    let _offer_id6 = env.offer_with_order(5, 8, Some(1));
+    let _offer_id1 = env.offer_with_order(3, 3, Some(1));
+    let _offer_id3 = env.offer_with_order(5, 5, Some(3));
+    let _offer_id4 = env.offer_with_order(17, 17, Some(4));
     let _offer_id7 = env.offer_with_order(5, 1, None);
+    let _offer_id5 = env.offer_with_order(5, 6, Some(5));
+    let _offer_id2 = env.offer_with_order(10, 10, Some(2));
+    let _offer_id6 = env.offer_with_order(5, 8, Some(6));
 
     env.connect(Version::Win10, FeatureFlags::new());
     env.c().handle_request_offers().unwrap();
 
-    // Channel IDs are assigned in the order the offers were created.
+    // Channel IDs are assigned by the order values first.
     env.notifier.check_messages([
         OutgoingMessage::new(&protocol::OfferChannel {
             interface_id: guid_from_id(3),

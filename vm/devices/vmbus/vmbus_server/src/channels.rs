@@ -136,7 +136,7 @@ pub struct Server {
     // typically the case for OpenHCL in hardware-isolated VMs because the monitor pages must be in
     // shared memory and we cannot set protections on shared memory.
     require_server_allocated_mnf: bool,
-    assign_channel_id_on_offer: bool,
+    use_absolute_channel_order: bool,
 }
 
 pub struct ServerWithNotifier<'a, T> {
@@ -1357,7 +1357,7 @@ impl Server {
         vtl: Vtl,
         child_connection_id: u32,
         channel_id_offset: u16,
-        assign_channel_id_on_offer: bool,
+        use_absolute_channel_order: bool,
     ) -> Self {
         Server {
             state: ConnectionState::Disconnected,
@@ -1371,7 +1371,7 @@ impl Server {
             delayed_max_version: None,
             pending_messages: PendingMessages(VecDeque::new()),
             require_server_allocated_mnf: false,
-            assign_channel_id_on_offer,
+            use_absolute_channel_order,
         }
     }
 
@@ -1396,7 +1396,7 @@ impl Server {
     fn validate(&self) {
         #[cfg(debug_assertions)]
         for (_, channel) in self.channels.iter() {
-            let should_have_info = !channel.state.is_released() || self.assign_channel_id_on_offer;
+            let should_have_info = !channel.state.is_released();
             if channel.info.is_some() != should_have_info {
                 panic!("channel invariant violation: {channel:?}");
             }
@@ -1672,13 +1672,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     if let ConnectionState::Connected(info) = &self.inner.state {
                         if info.offers_sent && matches!(channel.state, ChannelState::ClientReleased)
                         {
-                            if !self.inner.assign_channel_id_on_offer {
-                                channel.prepare_channel(
-                                    offer_id,
-                                    &mut self.inner.assigned_channels,
-                                    &mut self.inner.assigned_monitors,
-                                );
-                            }
+                            channel.prepare_channel(
+                                offer_id,
+                                &mut self.inner.assigned_channels,
+                                &mut self.inner.assigned_monitors,
+                            );
                             channel.state = ChannelState::Closed;
                             self.inner
                                 .pending_messages
@@ -1844,9 +1842,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         let offer_id = self.inner.channels.offer(channel);
-
-        // Assign a channel ID if this is a hot-added offer, or if we are assigned IDs on offer.
-        if connected_info.is_some() || self.inner.assign_channel_id_on_offer {
+        if let Some(info) = connected_info {
             let channel = &mut self.inner.channels[offer_id];
             channel.prepare_channel(
                 offer_id,
@@ -1854,13 +1850,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 &mut self.inner.assigned_monitors,
             );
 
-            // If this is a hot-added channel, send the offer to the guest.
-            if let Some(info) = connected_info {
-                self.inner
-                    .pending_messages
-                    .sender(self.notifier, self.inner.state.is_paused())
-                    .send_offer(channel, info);
-            }
+            self.inner
+                .pending_messages
+                .sender(self.notifier, self.inner.state.is_paused())
+                .send_offer(channel, info);
         }
 
         tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
@@ -2058,7 +2051,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         &mut self.inner.assigned_channels,
                         &mut self.inner.assigned_monitors,
                         None,
-                        self.inner.assign_channel_id_on_offer,
                     ) {
                         self.inner.channels.remove(offer_id);
                     }
@@ -2543,7 +2535,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     None,
-                    self.inner.assign_channel_id_on_offer,
                 )
         });
 
@@ -2661,6 +2652,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         info.offers_sent = true;
 
+        // Some guests expects channel IDs to stay consistent across hibernation and resume, so sort
+        // the current offers before assigning channel IDs.
         let mut sorted_channels: Vec<_> = self
             .inner
             .channels
@@ -2668,14 +2661,15 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .filter(|(_, channel)| !channel.state.is_reserved())
             .collect();
 
-        if self.inner.assign_channel_id_on_offer {
-            // The channels already have channel IDs, so send them in that order.
-            sorted_channels
-                .sort_unstable_by_key(|(_, channel)| channel.info.expect("assigned").channel_id);
+        if self.inner.use_absolute_channel_order {
+            sorted_channels.sort_unstable_by_key(|(_, channel)| {
+                (
+                    channel.offer.offer_order.unwrap_or(u32::MAX),
+                    channel.offer.interface_id,
+                    channel.offer.instance_id,
+                )
+            });
         } else {
-            // Some guests expect channel IDs to stay consistent across hibernation and resume, so
-            // sort the current offers before assigning channel IDs, to ensure a deterministic
-            // order.
             sorted_channels.sort_unstable_by_key(|(_, channel)| {
                 (
                     channel.offer.interface_id,
@@ -2688,13 +2682,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         for (offer_id, channel) in sorted_channels {
             assert!(matches!(channel.state, ChannelState::ClientReleased));
 
-            if !self.inner.assign_channel_id_on_offer {
-                channel.prepare_channel(
-                    offer_id,
-                    &mut self.inner.assigned_channels,
-                    &mut self.inner.assigned_monitors,
-                );
-            }
+            channel.prepare_channel(
+                offer_id,
+                &mut self.inner.assigned_channels,
+                &mut self.inner.assigned_monitors,
+            );
 
             channel.state = ChannelState::Closed;
             self.inner
@@ -3179,7 +3171,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
         info: Option<&ConnectionInfo>,
-        assign_channel_id_on_offer: bool,
     ) -> bool {
         // Release any GPADLs that remain for this channel.
         gpadls.retain(|&(gpadl_id, gpadl_offer_id), gpadl| {
@@ -3253,10 +3244,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         assert!(channel.state.is_released());
 
-        if !assign_channel_id_on_offer {
-            channel.release_channel(offer_id, assigned_channels, assigned_monitors);
-        }
-
+        channel.release_channel(offer_id, assigned_channels, assigned_monitors);
         remove
     }
 
@@ -3286,7 +3274,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     self.inner.state.get_connected_info(),
-                    self.inner.assign_channel_id_on_offer,
                 ) {
                     self.inner.channels.remove(offer_id);
                 }
