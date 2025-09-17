@@ -28,6 +28,7 @@ use chipset_resources::battery::HostBatteryUpdate;
 use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
+use clap_complete;
 use cli_args::DiskCliKind;
 use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
@@ -1690,6 +1691,12 @@ fn do_main() -> anyhow::Result<()> {
         mesh::payload::protofile::DescriptorWriter::new(vmcore::save_restore::saved_state_roots())
             .write_to_path(path)
             .context("failed to write protobuf descriptors")?;
+        return Ok(());
+    }
+
+    if let Some(shell) = opt.generate_completions {
+        let mut cmd = Options::command();
+        clap_complete::generate(shell, &mut cmd, "openvmm", &mut std::io::stdout());
         return Ok(());
     }
 
