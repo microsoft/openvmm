@@ -146,7 +146,7 @@ async fn basic<T: PetriVmmBackend>(
 
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+#[openvmm_test(openhcl_linux_direct_x64[LATEST_LINUX_DIRECT_TEST_X64])]
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
 async fn keepalive<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -202,6 +202,7 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
+            .with_vmbus_redirect(true)
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
         "",
         to_igvm,
