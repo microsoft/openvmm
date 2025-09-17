@@ -97,6 +97,7 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
 
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
+        .with_vmbus_redirect(true)
         .run()
         .await?;
 
@@ -202,7 +203,6 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
     openhcl_servicing_core(
         config
             .with_custom_openhcl(from_igvm)
-            .with_vmbus_redirect(true)
             .with_guest_state_lifetime(PetriGuestStateLifetime::Disk),
         "",
         to_igvm,
