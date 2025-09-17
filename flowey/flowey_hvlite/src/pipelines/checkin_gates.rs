@@ -974,7 +974,8 @@ impl IntoPipeline for CheckinGatesCli {
                 label: "aarch64-windows",
                 target: CommonTriple::AARCH64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
-                nextest_filter_expr: "all()".to_string(),
+                // disable hyper-v tests for now until runners are updated
+                nextest_filter_expr: "all() & !test(hyperv)".to_string(),
                 test_artifacts: vec![
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
                     KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
