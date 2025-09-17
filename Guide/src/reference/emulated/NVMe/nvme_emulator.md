@@ -20,7 +20,7 @@
 Queues are the core component that NVMe leverages to provide fast parallel compute.
 
 ### Queue Architecture
-*Under construction: A brief overfiew of the queues structs (both submission and completion)*
+*Under construction: A brief overview of the queues structs (both submission and completion)*
 
 ### Doorbell
 The doorbell notification system in the NVMe emulator is built around two core structures: `DoorbellMemory` and `DoorbellState`. These components work together to coordinate doorbell updates between the guest and the device, following a server-client model.
