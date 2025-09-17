@@ -135,6 +135,7 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
     channel_unstick_delay: Option<Duration>,
+    assign_channel_id_on_offer: bool,
 }
 
 #[derive(mesh::MeshPayload)]
@@ -311,6 +312,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             force_confidential_external_memory: false,
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
+            assign_channel_id_on_offer: false,
         }
     }
 
@@ -438,6 +440,18 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         self
     }
 
+    /// Sets whether the server should assign channel IDs when a channel is offered, rather than
+    /// the default behavior of assigning them in a deterministic order when the offers are sent to
+    /// the guest.
+    ///
+    /// When this option is set to `true`, it's up to the source of the offers to ensure that they
+    /// are in a consistent order, as some guests may rely on stable channel IDs across hibernate
+    /// and resume.
+    pub fn assign_channel_id_on_offer(mut self, assign: bool) -> Self {
+        self.assign_channel_id_on_offer = assign;
+        self
+    }
+
     /// Creates a new instance of the server.
     ///
     /// When the object is dropped, all channels will be closed and revoked
@@ -502,7 +516,12 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             force_confidential_external_memory: self.force_confidential_external_memory,
         });
 
-        let mut server = channels::Server::new(self.vtl, connection_id, self.channel_id_offset);
+        let mut server = channels::Server::new(
+            self.vtl,
+            connection_id,
+            self.channel_id_offset,
+            self.assign_channel_id_on_offer,
+        );
 
         // If MNF is handled by this server and this is a paravisor for an isolated VM, the monitor
         // pages must be allocated by the server, not the guest, since the guest will provide shared
