@@ -48,31 +48,46 @@ impl MemStat {
     /// Construction of a MemStat object takes the vtl2 Pipette agent to query OpenHCL for memory statistics for VTL2 as a whole and for VTL2's processes
     pub async fn new(vtl2_agent: &PipetteClient) -> Self {
         let sh = vtl2_agent.unix_shell();
-        let meminfo = Self::parse_memfile(sh.read_file("/proc/meminfo").await.unwrap(), 0, 0, 1);
+        let meminfo = Self::parse_memfile(
+            sh.read_file("/proc/meminfo")
+                .await
+                .expect("VTL2 should have meminfo file"),
+            0,
+            0,
+            1,
+        );
         let total_free_memory_per_zone = sh
             .read_file("/proc/zoneinfo")
             .await
-            .unwrap()
+            .expect("VTL2 should have zoneinfo file")
             .lines()
             .filter(|&line| line.contains("nr_free_pages") || line.contains("count:"))
             .map(|line| {
                 line.split_whitespace()
                     .nth(1)
-                    .unwrap()
+                    .expect("'nr_free_pages' and 'count:' lines are expected to have at least 2 words split by whitespace")
                     .parse::<u64>()
-                    .unwrap()
+                    .expect("The word at position 1 on the filtered lines is expected to contain a numbre value")
             })
             .sum::<u64>()
             * 4;
         let mut per_process_data: HashMap<String, PerProcessMemstat> = HashMap::new();
-        for (key, value) in Self::parse_memfile(cmd!(sh, "ps").read().await.unwrap(), 1, 3, 0)
-            .iter()
-            .filter(|(key, _)| key.contains("underhill") || key.contains("openvmm"))
+        for (key, value) in Self::parse_memfile(
+            cmd!(sh, "ps")
+                .read()
+                .await
+                .expect("'ps' command is expected to succeed and produce output"),
+            1,
+            3,
+            0,
+        )
+        .iter()
+        .filter(|(key, _)| key.contains("underhill") || key.contains("openvmm"))
         {
             let process_name = key
                 .split('/')
                 .next_back()
-                .unwrap()
+                .expect("process names are expected to be non-empty")
                 .trim_matches(|c| c == '{' || c == '}')
                 .replace("-", "_");
             per_process_data.insert(
@@ -81,7 +96,10 @@ impl MemStat {
                     smaps_rollup: Self::parse_memfile(
                         sh.read_file(&format!("/proc/{}/smaps_rollup", value))
                             .await
-                            .unwrap(),
+                            .expect(&format!(
+                                "process {} is expected to have a 'smaps_rollup' file",
+                                process_name
+                            )),
                         1,
                         0,
                         1,
@@ -89,7 +107,10 @@ impl MemStat {
                     statm: Self::parse_statm(
                         sh.read_file(&format!("/proc/{}/statm", value))
                             .await
-                            .unwrap(),
+                            .expect(&format!(
+                                "process {} is expected to have a 'statm' file",
+                                process_name
+                            )),
                     ),
                 },
             );
@@ -98,9 +119,18 @@ impl MemStat {
         Self {
             meminfo,
             total_free_memory_per_zone,
-            underhill_init: per_process_data.get("underhill_init").unwrap().clone(),
-            openvmm_hcl: per_process_data.get("openvmm_hcl").unwrap().clone(),
-            underhill_vm: per_process_data.get("underhill_vm").unwrap().clone(),
+            underhill_init: per_process_data
+                .get("underhill_init")
+                .expect("per_process_data should have underhill_init data if the process exists")
+                .clone(),
+            openvmm_hcl: per_process_data
+                .get("openvmm_hcl")
+                .expect("per_process_data should have openvmm_hcl data if the process exists")
+                .clone(),
+            underhill_vm: per_process_data
+                .get("underhill_vm")
+                .expect("per_process_data should have underhill_vm data if the process exists")
+                .clone(),
         }
     }
 
@@ -108,11 +138,18 @@ impl MemStat {
     pub fn compare_to_baseline(self, arch: &str, vps: &str) -> bool {
         let path_str = format!(
             "{}/test_data/meminfo_baseline.json",
-            current_dir().unwrap().to_str().unwrap()
+            current_dir()
+                .expect("current_dir is expected to return a path string")
+                .to_str()
+                .unwrap()
         );
-        let baseline_json =
-            from_reader::<File, Value>(File::open(Path::new(&path_str)).expect("file not found"))
-                .unwrap();
+        let baseline_json = from_reader::<File, Value>(
+            File::open(Path::new(&path_str)).expect(&format!("{} file not found", path_str)),
+        )
+        .expect(&format!(
+            "memstat json is expected to exist within the file {}",
+            path_str
+        ));
         let baseline_usage = baseline_json[arch][vps]["usage"]["baseline"]
             .as_u64()
             .unwrap()
@@ -165,32 +202,55 @@ impl MemStat {
             let split_line = line.split_whitespace().collect::<Vec<&str>>();
             let field = split_line
                 .get(field_col)
-                .unwrap()
+                .expect(&format!(
+                    "in line {} column {} does not exist",
+                    line, field_col
+                ))
                 .trim_matches(':')
                 .to_string();
-            let value: u64 = split_line.get(value_col).unwrap_or(&"0").parse().unwrap();
+            let value: u64 = split_line
+                .get(value_col)
+                .expect(&format!(
+                    "in line {} column {} does not exist",
+                    line, value_col
+                ))
+                .parse::<u64>()
+                .expect(&format!(
+                    "value column {} in line {} is expected to be a parsable u64",
+                    value_col, line
+                ));
             parsed_data.insert(field, value);
         }
         parsed_data
     }
 
     fn parse_statm(raw: String) -> HashMap<String, u64> {
-        let mut statm: HashMap<String, u64> = HashMap::new();
-        let split_arr = raw.split_whitespace().collect::<Vec<&str>>();
-        statm.insert("vm_size".to_string(), split_arr[0].parse::<u64>().unwrap());
-        statm.insert("vm_rss".to_string(), split_arr[1].parse::<u64>().unwrap());
-        statm.insert(
-            "vm_shared".to_string(),
-            split_arr[2].parse::<u64>().unwrap(),
-        );
-        statm.insert("text".to_string(), split_arr[3].parse::<u64>().unwrap());
-        statm.insert("lib".to_string(), split_arr[4].parse::<u64>().unwrap());
-        statm.insert("data".to_string(), split_arr[5].parse::<u64>().unwrap());
-        statm.insert(
-            "dirty_pages".to_string(),
-            split_arr[6].parse::<u64>().unwrap(),
-        );
-        statm
+        let statm_fields = vec![
+            "vm_size",
+            "vm_rss",
+            "vm_shared",
+            "text",
+            "lib",
+            "data",
+            "dirty_pages",
+        ];
+        raw.split_whitespace()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    statm_fields
+                        .get(index)
+                        .expect(&format!(
+                            "statm file is expected to contain at most {} items",
+                            statm_fields.len()
+                        ))
+                        .to_string(),
+                    value
+                        .parse::<u64>()
+                        .expect("all items in statm file are expected to be parsable u64 numbers"),
+                )
+            })
+            .collect::<HashMap<String, u64>>()
     }
 }
 
