@@ -25,7 +25,7 @@ Queues are the core component that NVMe leverages to provide fast parallel compu
 ### Doorbell
 The doorbell notification system in the NVMe emulator is built around two core structures: `DoorbellMemory` and `DoorbellState`. These components work together to coordinate doorbell updates between the guest and the device, following a server-client model.
 
-![Figure that shows the basic layout of the doorbell memory and dooorbell state. There is 1 doorbell memory struct containing a vector of registered wakers and a pointer in to guest memory at "offset". There are 3 doorbell state structs that each track a different doorbell but all have pointers to the doorbell memory struct](images/Doorbell%20Setup.png "Doorbell Setup")
+![Figure that shows the basic layout of the doorbell memory and doorbell state. There is 1 doorbell memory struct containing a vector of registered wakers and a pointer in to guest memory at "offset". There are 3 doorbell state structs that each track a different doorbell but all have pointers to the doorbell memory struct](images/Doorbell%20Setup.png "Doorbell Setup")
 Fig: Basic layout of `DoorbellMemory` and `DoorbellStates` in relation to the controller.
 
 ### `DoorbellMemory`
