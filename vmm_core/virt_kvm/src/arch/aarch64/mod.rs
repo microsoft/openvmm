@@ -8,7 +8,7 @@
 //! KVM/aarch64.
 
 #![expect(dead_code)]
-#![cfg(all(target_os = "linux", guest_is_native, guest_arch = "aarch64"))]
+#![cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 
 use crate::KvmError;
 use crate::KvmPartition;
