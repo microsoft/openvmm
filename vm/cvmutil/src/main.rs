@@ -1,13 +1,5 @@
 //! CvmUtil is a tool to create and manage vTPM blobs.
 //! vTPM blobs are used to provide TPM functionality to trusted and confidential VMs.
-extern crate base64;
-extern crate clap;
-extern crate ms_tpm_20_ref;
-extern crate openssl;
-extern crate sha2;
-extern crate tpm;
-extern crate zerocopy;
-
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use tpm::TPM_RSA_SRK_HANDLE;
 use tpm::tpm_helper::{self, TpmEngineHelper};
