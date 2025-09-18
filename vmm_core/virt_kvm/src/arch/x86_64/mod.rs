@@ -297,7 +297,8 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let mut caps = virt::PartitionCapabilities::from_cpuid(
             self.config.processor_topology,
             &mut |function, index| cpuid.result(function, index, &[0; 4]),
-        );
+        )
+        .map_err(KvmError::Capabilities)?;
 
         caps.can_freeze_time = false;
 

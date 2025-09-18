@@ -707,6 +707,8 @@ pub enum Error {
     AcceptPages(#[source] anyhow::Error),
     #[error("invalid apic base")]
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 trait WhpResultExt<T> {
@@ -1004,7 +1006,8 @@ impl WhpPartitionInner {
                         &[output.Eax, output.Ebx, output.Ecx, output.Edx],
                     )
                 },
-            );
+            )
+            .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
