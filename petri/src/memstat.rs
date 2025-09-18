@@ -141,7 +141,7 @@ impl MemStat {
     /// Compares current statistics against baseline
     pub fn compare_to_baseline(self, arch: &str, vps: &str) -> bool {
         let path_str = format!(
-            "{}/test_data/meminfo_baseline.json",
+            "{}/test_data/memstat_baseline.json",
             current_dir()
                 .expect("current_dir is expected to return a path string")
                 .to_str()
@@ -272,6 +272,7 @@ impl MemStat {
                                 statm_fields.len()
                             )
                         })
+                        .to_owned()
                         .to_string(),
                     value
                         .parse::<u64>()

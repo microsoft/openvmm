@@ -95,32 +95,32 @@
             },
             "underhill_init": {
                 "Pss": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 4511,
+                    "threshold": 100
                 },
                 "Pss_Anon": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 3754,
+                    "threshold": 50
                 }
             },
             "openvmm_hcl": {
                 "Pss": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 14859,
+                    "threshold": 250
                 },
                 "Pss_Anon": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 4805,
+                    "threshold": 50
                 }
             },
             "underhill_vm": {
                 "Pss": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 30196,
+                    "threshold": 400
                 },
                 "Pss_Anon": {
-                    "baseline": 0,
-                    "threshold": 0
+                    "baseline": 9364,
+                    "threshold": 50
                 }
             }
         },
