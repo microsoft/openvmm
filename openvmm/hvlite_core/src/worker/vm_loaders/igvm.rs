@@ -99,7 +99,7 @@ pub enum Error {
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
-    assert!(range.len() % HV_PAGE_SIZE == 0);
+    assert!(range.len().is_multiple_of(HV_PAGE_SIZE));
     IGVM_VHS_MEMORY_RANGE {
         starting_gpa_page_number: range.start() / HV_PAGE_SIZE,
         number_of_pages: range.len() / HV_PAGE_SIZE,
@@ -107,7 +107,7 @@ fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
 }
 
 fn memory_map_entry(range: &MemoryRange) -> IGVM_VHS_MEMORY_MAP_ENTRY {
-    assert!(range.len() % HV_PAGE_SIZE == 0);
+    assert!(range.len().is_multiple_of(HV_PAGE_SIZE));
     IGVM_VHS_MEMORY_MAP_ENTRY {
         starting_gpa_page_number: range.start() / HV_PAGE_SIZE,
         number_of_pages: range.len() / HV_PAGE_SIZE,
@@ -879,7 +879,7 @@ fn load_igvm_x86(
                 data_type,
                 ref data,
             } => {
-                debug_assert!(data.len() as u64 % HV_PAGE_SIZE == 0);
+                debug_assert!((data.len() as u64).is_multiple_of(HV_PAGE_SIZE));
 
                 // TODO: only 4k or empty page data supported right now
                 assert!(data.len() as u64 == HV_PAGE_SIZE || data.is_empty());

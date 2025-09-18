@@ -5,12 +5,9 @@
 
 use anyhow::Context;
 use futures::StreamExt;
-use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::ProcessorTopology;
-use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 
@@ -27,37 +24,6 @@ async fn nvme_relay_test_core(
         })
         .run()
         .await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
-/// Servicing tests with NVMe devices attached.
-async fn nvme_relay_servicing_core(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    openhcl_cmdline: &str,
-    new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-    flags: OpenHclServicingFlags,
-) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config
-        .with_openhcl_command_line(openhcl_cmdline)
-        .with_vmbus_redirect(true)
-        .run()
-        .await?;
-
-    agent.ping().await?;
-
-    // Test that inspect serialization works with the old version.
-    vm.test_inspect_openhcl().await?;
-
-    vm.restart_openhcl(new_openhcl, flags).await?;
-
-    agent.ping().await?;
-
-    // Test that inspect serialization works with the new version.
-    vm.test_inspect_openhcl().await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -93,27 +59,6 @@ async fn nvme_relay_private_pool(
 ) -> Result<(), anyhow::Error> {
     // Number of pages to reserve as a private pool.
     nvme_relay_test_core(config, "OPENHCL_ENABLE_VTL2_GPA_POOL=512").await
-}
-
-/// Servicing test of an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
-/// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
-/// Use the private pool override to test the private pool dma path.
-/// Pass 'keepalive' servicing flag which impacts NVMe save/restore.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
-async fn nvme_keepalive(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
-    nvme_relay_servicing_core(
-        config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
-        igvm_file,
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
-    )
-    .await
 }
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by

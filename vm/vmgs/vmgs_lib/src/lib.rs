@@ -297,7 +297,9 @@ async fn do_create(
         }
     }
 
-    if file_size != 0 && file_size < (VMGS_BYTES_PER_BLOCK * 4) as u64 || file_size % 512 != 0 {
+    if file_size != 0 && file_size < (VMGS_BYTES_PER_BLOCK * 4) as u64
+        || !file_size.is_multiple_of(512)
+    {
         return Err(VmgsError::InvalidFileSize);
     }
     let file_size = if file_size == 0 {

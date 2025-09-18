@@ -379,7 +379,7 @@ impl SparseMapping {
 
     fn validate_offset_len(&self, offset: usize, len: usize) -> io::Result<usize> {
         let end = offset.checked_add(len).ok_or(io::ErrorKind::InvalidInput)?;
-        if offset % PAGE_SIZE != 0 || end % PAGE_SIZE != 0 || end > self.len {
+        if !offset.is_multiple_of(PAGE_SIZE) || !end.is_multiple_of(PAGE_SIZE) || end > self.len {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         Ok(end)
