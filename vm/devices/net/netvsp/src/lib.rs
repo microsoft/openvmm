@@ -46,7 +46,6 @@ use inspect::InspectMut;
 use inspect::SensitivityLevel;
 use inspect_counters::Counter;
 use inspect_counters::Histogram;
-use inspect_counters::SharedCounter;
 use mesh::rpc::Rpc;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
@@ -207,17 +206,6 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
             );
 
             if let WorkerState::Ready(state) = &worker.state {
-                // Sync the coalesced packet count from the underlying queue
-                if let Some(queue_state) = &self.queue_state {
-                    if let Some(current_count) = queue_state.queue.tx_packets_coalesced() {
-                        let last_count = state.state.stats.tx_packets_coalesced.get();
-                        let diff = current_count.saturating_sub(last_count);
-                        if diff > 0 {
-                            state.state.stats.tx_packets_coalesced.add(diff);
-                        }
-                    }
-                }
-
                 resp.field(
                     "outstanding_tx_packets",
                     state.state.pending_tx_packets.len() - state.state.free_tx_packets.len(),
@@ -472,7 +460,6 @@ struct QueueStats {
     tx_checksum_packets: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
-    tx_packets_coalesced: SharedCounter,
 }
 
 #[derive(Debug)]

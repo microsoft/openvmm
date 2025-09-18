@@ -172,12 +172,6 @@ pub trait Queue: Send + InspectMut {
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
-
-    /// Get the number of packets that have been coalesced by this queue.
-    /// Returns None if the queue implementation doesn't support packet coalescing.
-    fn tx_packets_coalesced(&self) -> Option<u64> {
-        None
-    }
 }
 
 /// A trait for providing access to guest memory buffers.

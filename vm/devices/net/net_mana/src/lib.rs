@@ -1065,10 +1065,6 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
         Some(self.pool.as_mut())
     }
-
-    fn tx_packets_coalesced(&self) -> Option<u64> {
-        Some(self.stats.tx_packets_coalesced.get())
-    }
 }
 
 impl<T: DeviceBacking> ManaQueue<T> {
