@@ -271,12 +271,12 @@ impl MemStat {
     }
 
     fn get_baseline_value(baseline_json: &Value) -> u64 {
-        return baseline_json["baseline"].as_u64().unwrap_or_else(|| {
+        baseline_json["baseline"].as_u64().unwrap_or_else(|| {
             panic!("all values in the memstat_baseline.json file are expected to be parsable u64 numbers")
         }) +
             baseline_json["threshold"].as_u64().unwrap_or_else(|| {
                 panic!("all values in the memstat_baseline.json file are expected to be parsable u64 numbers")
-            });
+            })
     }
 }
 
