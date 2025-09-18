@@ -718,7 +718,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         for ns in &saved_state.namespaces {
             // TODO: Current approach is to re-query namespace data after servicing
             // and this array will be empty. Once we confirm that we can process
-            // namespace change notification AER, the restore code will be re-added.
+            // namespace change notification AEN, the restore code will be re-added.
             this.namespaces.push(Arc::new(Namespace::restore(
                 &driver,
                 admin.issuer().clone(),
