@@ -4,7 +4,7 @@
 ## Component Overview
 *Under construction: This should be a high level architecture diagram followed by a brief description of each component like the worker, coordinator, admin handler, io handler etc*
 
-## Pci Interface
+## PCI Interface
 *Under construction: This section will talk about how/what PCI capabilities are exposed by the NVMe emulator, how they are used and how the enable/disable workflow functions within the device. Also things like the reset flow and error cases.*
 
 ### Register Interface
