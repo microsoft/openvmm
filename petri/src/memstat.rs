@@ -42,6 +42,9 @@ pub struct MemStat {
 
     /// underhill_vm corresponds to the memory usage statistics for the underhill-vm process
     pub underhill_vm: PerProcessMemstat,
+
+    /// json object to hold baseline values that test results are compared against
+    baseline_json: Value,
 }
 
 impl MemStat {
@@ -67,7 +70,7 @@ impl MemStat {
                     .nth(1)
                     .expect("'nr_free_pages' and 'count:' lines are expected to have at least 2 words split by whitespace")
                     .parse::<u64>()
-                    .expect("The word at position 1 on the filtered lines is expected to contain a numbre value")
+                    .expect("The word at position 1 on the filtered lines is expected to contain a number value")
             })
             .sum::<u64>()
             * 4;
@@ -120,26 +123,6 @@ impl MemStat {
             );
         }
 
-        Self {
-            meminfo,
-            total_free_memory_per_zone,
-            underhill_init: per_process_data
-                .get("underhill_init")
-                .expect("per_process_data should have underhill_init data if the process exists")
-                .clone(),
-            openvmm_hcl: per_process_data
-                .get("openvmm_hcl")
-                .expect("per_process_data should have openvmm_hcl data if the process exists")
-                .clone(),
-            underhill_vm: per_process_data
-                .get("underhill_vm")
-                .expect("per_process_data should have underhill_vm data if the process exists")
-                .clone(),
-        }
-    }
-
-    /// Compares current statistics against baseline
-    pub fn compare_to_baseline(self, arch: &str, vps: &str) -> bool {
         let path_str = format!(
             "{}/test_data/memstat_baseline.json",
             current_dir()
@@ -157,12 +140,29 @@ impl MemStat {
                 path_str
             )
         });
-        let baseline_usage = baseline_json[arch][vps]["usage"]["baseline"]
-            .as_u64()
-            .unwrap()
-            + baseline_json[arch][vps]["usage"]["threshold"]
-                .as_u64()
-                .unwrap();
+
+        Self {
+            meminfo,
+            total_free_memory_per_zone,
+            underhill_init: per_process_data
+                .get("underhill_init")
+                .expect("per_process_data should have underhill_init data if the process exists")
+                .clone(),
+            openvmm_hcl: per_process_data
+                .get("openvmm_hcl")
+                .expect("per_process_data should have openvmm_hcl data if the process exists")
+                .clone(),
+            underhill_vm: per_process_data
+                .get("underhill_vm")
+                .expect("per_process_data should have underhill_vm data if the process exists")
+                .clone(),
+            baseline_json,
+        }
+    }
+
+    /// Compares current statistics against baseline
+    pub fn compare_to_baseline(self, arch: &str, vps: &str) -> bool {
+        let baseline_usage = Self::get_baseline_value(&self.baseline_json[arch][vps]["usage"]);
         let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
         assert!(
             baseline_usage >= cur_usage,
@@ -171,14 +171,10 @@ impl MemStat {
             cur_usage
         );
 
-        let baseline_reservation = baseline_json[arch][vps]["reservation"]["baseline"]
-            .as_u64()
-            .unwrap()
-            + baseline_json[arch][vps]["reservation"]["threshold"]
-                .as_u64()
-                .unwrap();
+        let baseline_reservation =
+            Self::get_baseline_value(&self.baseline_json[arch][vps]["reservation"]);
         let cur_reservation =
-            baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
+            self.baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
         assert!(
             baseline_reservation >= cur_reservation,
             "baseline reservation is less than current reservation: {} < {}",
@@ -187,31 +183,23 @@ impl MemStat {
         );
 
         for prs in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
-            let baseline_pss = baseline_json[arch][vps][prs]["Pss"]["baseline"]
-                .as_u64()
-                .unwrap()
-                + baseline_json[arch][vps][prs]["Pss"]["threshold"]
-                    .as_u64()
-                    .unwrap();
+            let baseline_pss = Self::get_baseline_value(&self.baseline_json[arch][vps][prs]["Pss"]);
             let cur_pss = self[prs].smaps_rollup["Pss"];
-            let baseline_pss_anon = baseline_json[arch][vps][prs]["Pss_Anon"]["baseline"]
-                .as_u64()
-                .unwrap()
-                + baseline_json[arch][vps][prs]["Pss_Anon"]["threshold"]
-                    .as_u64()
-                    .unwrap();
+
+            let baseline_pss_anon =
+                Self::get_baseline_value(&self.baseline_json[arch][vps][prs]["Pss_Anon"]);
             let cur_pss_anon = self[prs].smaps_rollup["Pss_Anon"];
 
             assert!(
                 baseline_pss >= cur_pss,
-                "process {}: baseline PSS is less than current PSS: {} < {}",
+                "[process {}]: baseline PSS is less than current PSS: {} < {}",
                 prs,
                 baseline_pss,
                 cur_pss
             );
             assert!(
                 baseline_pss_anon >= cur_pss_anon,
-                "process {}: baseline PSS Anon is less than current PSS Anon: {} < {}",
+                "[process {}]: baseline PSS Anon is less than current PSS Anon: {} < {}",
                 prs,
                 baseline_pss_anon,
                 cur_pss_anon
@@ -280,6 +268,15 @@ impl MemStat {
                 )
             })
             .collect::<HashMap<String, u64>>()
+    }
+
+    fn get_baseline_value(baseline_json: &Value) -> u64 {
+        return baseline_json["baseline"].as_u64().unwrap_or_else(|| {
+            panic!("all values in the memstat_baseline.json file are expected to be parsable u64 numbers")
+        }) +
+            baseline_json["threshold"].as_u64().unwrap_or_else(|| {
+                panic!("all values in the memstat_baseline.json file are expected to be parsable u64 numbers")
+            });
     }
 }
 
