@@ -1896,7 +1896,8 @@ pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
 
     //let mut unique: [u8; 102] = [0; 102]; // Initialize the unique field with zeros
     //unique[0] = 0x01; // Set the first byte to 1 to indicate a valid unique value, required for Ubuntu.
-    let unique = &[0u8; crate::RSA_2K_MODULUS_SIZE];
+    let mut unique = [0u8; crate::RSA_2K_MODULUS_SIZE];
+    unique[0] = 0x01; // Set the first byte to 1 to indicate a valid unique value, required for Ubuntu.
     
     let in_public = TpmtPublic::new(
         AlgIdEnum::RSA.into(),

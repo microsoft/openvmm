@@ -1,29 +1,37 @@
 //! CvmUtil is a tool to create and manage vTPM blobs.
 //! vTPM blobs are used to provide TPM functionality to trusted and confidential VMs.
-use ms_tpm_20_ref;
+extern crate base64;
+extern crate clap;
+extern crate ms_tpm_20_ref;
+extern crate openssl;
+extern crate sha2;
+extern crate tpm;
+extern crate zerocopy;
+
 use ms_tpm_20_ref::MsTpm20RefPlatform;
+use tpm::TPM_RSA_SRK_HANDLE;
+use tpm::tpm_helper::{self, TpmEngineHelper};
 use tpm::tpm20proto::protocol::{
     Tpm2bBuffer, Tpm2bPublic, TpmsRsaParams, TpmtPublic, TpmtRsaScheme, TpmtSymDefObject,
 };
 use tpm::tpm20proto::{AlgId, AlgIdEnum, TpmaObjectBits};
-use tpm::tpm_helper::{self, TpmEngineHelper};
-use tpm::TPM_RSA_SRK_HANDLE;
 mod marshal;
-use marshal::TpmtSensitive;
-use zerocopy::FromZeros;
-use std::sync::{Arc, Mutex};
-use ms_tpm_20_ref::DynResult;
-use std::io::Read;
-use std::io::Write;
-use std::time::Instant;
-use std::{fs, fs::File, vec};
 use base64::Engine;
+use marshal::TpmtSensitive;
+use ms_tpm_20_ref::DynResult;
 use openssl::ec::EcGroup;
 use openssl::ec::EcKey;
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
 use sha2::{Digest, Sha256};
+use std::convert::TryInto;
+use std::io::Read;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use std::{fs, fs::File, vec};
+use zerocopy::FromZeros;
 
 use clap::Parser;
 
@@ -43,22 +51,59 @@ struct CmdArgs {
     )]
     createvtpmblob: Option<String>,
 
-    #[clap(short='w', long = "writeSrk", value_names = &["path-to-blob-file", "path-to-srk-out-file"], long_help="Write the SRK public key in TPM2B format.\n./cvmutil --writeSrk vTpm.blob srk.pub")]
+    /// Write the SRK public key in TPM2B format. Example: ./cvmutil --writeSrk vTpm.blob srk.pub
+    #[arg(
+        short = 'w',
+        long = "writeSrk",
+        value_names = &["path-to-blob-file", "path-to-srk-out-file"],
+        long_help = "Write the SRK public key in TPM2B format.\n./cvmutil --writeSrk vTpm.blob srk.pub"
+    )]
     write_srk: Option<Vec<String>>,
 
-    #[arg(short = 'p', long = "printKeyName", value_name = "path-to-srkPub", long_help="Print the TPM key name \n./cvmutil --printKeyName srk.pub")]
+    /// Print the TPM key name of the SRK public key file. Example: ./cvmutil --printKeyName srk.pub
+    #[arg(
+        short = 'p',
+        long = "printKeyName",
+        value_name = "path-to-srkPub",
+        long_help = "Print the TPM key name \n./cvmutil --printKeyName srk.pub"
+    )]
     print_key_name: Option<String>,
 
-    #[arg(short = 's', long = "createRandomKeyInTpm2ImportBlobFormat", value_names = &["algorithm", "publicKey", "output-file"], long_help="Create random RSA/ECC key in Tpm2 import blob format:TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED \n./cvmutil --createRandomKeyInTpm2ImportBlobFormat rsa rsa_pub.der rsa_priv_marshalled.tpm2b")]
+    /// Create random RSA/ECC key in Tpm2 import blob format:TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED
+    /// Example: ./cvmutil --createRandomKeyInTpm2ImportBlobFormat rsa rsa_pub.der rsa_priv_marshalled.tpm2b
+    #[arg(
+        short = 's',
+        long = "createRandomKeyInTpm2ImportBlobFormat",
+        value_names = &["algorithm", "publicKey", "output-file"],
+        long_help = "Create random RSA/ECC key in Tpm2 import blob format:TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED \n./cvmutil --createRandomKeyInTpm2ImportBlobFormat rsa rsa_pub.der rsa_priv_marshalled.tpm2b"
+    )]
     create_random_key_in_tpm2_import_blob_format: Option<Vec<String>>,
 
-    #[arg(short = 'd', long = "printDER", value_name = "path-to-pubKey-der", long_help="Print info about DER key \n./cvmutil --printDER rsa_pub.der")]
+    /// Print info about public key in DER format. Example: ./cvmutil --printDER rsa_pub.der
+    #[arg(
+        short = 'd',
+        long = "printDER",
+        value_name = "path-to-pubKey-der",
+        long_help = "Print info about DER key \n./cvmutil --printDER rsa_pub.der"
+    )]
     print_pub_key_der: Option<String>,
 
-    #[arg(short = 't', long = "printTPM2B", value_name = "path-to-privKey-tpm2b", long_help="Print info about TPM2B import file: TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED. \n./cvmutil --printTPM2B marshalled_import_blob.tpm2b")]
+    /// Print info about private key in TPM2B format: TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED
+    #[arg(
+        short = 't',
+        long = "printTPM2B",
+        value_name = "path-to-privKey-tpm2b",
+        long_help = "Print info about TPM2B import file: TPM2B_PUBLIC || TP2B_PRIVATE || TP2B_ENCRYPTED_SEED. \n./cvmutil --printTPM2B marshalled_import_blob.tpm2b"
+    )]
     print_priv_key_tpm2b: Option<String>,
 
-    #[arg(short = 'i', long = "testTPM2BImportKeys", value_names = &["path-to-pubKey-der", "path-to-privKey-tpm2b"], long_help="Import the public in DER and private in TPM2B format. Make sure they form a keypair. \n./cvmutil --testTPM2BImportKeys rsa_pub.der marshalled_import_blob.tpm2b")]
+    /// Test importing public key in DER format and private key in TPM2B format. Make sure they form a keypair.
+    #[arg(
+        short = 'i',
+        long = "testTPM2BImportKeys",
+        value_names = &["path-to-pubKey-der", "path-to-privKey-tpm2b"],
+        long_help = "Import the public in DER and private in TPM2B format. Make sure they form a keypair. \n./cvmutil --testTPM2BImportKeys rsa_pub.der marshalled_import_blob.tpm2b"
+    )]
     test_tpm2b_import_keys: Option<Vec<String>>,
 }
 
@@ -67,6 +112,7 @@ fn main() {
     // Parse the command line arguments.
     let args = CmdArgs::parse();
 
+    // Initialize tracing subscriber for logging.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .log_internal_errors(true)
@@ -90,22 +136,25 @@ fn main() {
 
         // if the vtpm file exists, delet it and create a new one
         if std::path::Path::new(&path).exists() {
-            tracing::info!("vTPM file already exists. Deleting the existing file and creating a new one.");
+            tracing::info!(
+                "vTPM file already exists. Deleting the existing file and creating a new one."
+            );
             fs::remove_file(&path).expect("failed to delete existing vtpm file");
         }
         fs::write(&path, state.as_slice()).expect("Failed to write vtpm state to blob file");
         tracing::info!("vTPM blob created and saved to file: {}", path);
-
     } else if let Some(paths) = args.write_srk {
         if paths.len() == 2 {
             let vtpm_blob_path = &paths[0];
             // Read the vtpm file content.
-            let vtpm_blob_content = fs::read(vtpm_blob_path)
-                .expect("failed to read vtpm blob file");
+            let vtpm_blob_content =
+                fs::read(vtpm_blob_path).expect("failed to read vtpm blob file");
             // Restore the TPM engine from the vTPM blob.
             let (mut vtpm_engine_helper, _nv_blob_accessor) = create_tpm_engine_helper();
 
-            let result = vtpm_engine_helper.tpm_engine.reset(Some(&vtpm_blob_content));
+            let result = vtpm_engine_helper
+                .tpm_engine
+                .reset(Some(&vtpm_blob_content));
             assert!(result.is_ok());
 
             let result = vtpm_engine_helper.initialize_tpm_engine();
@@ -115,7 +164,8 @@ fn main() {
             let srk_out_path = &paths[1];
             tracing::info!(
                 "WriteSrk: blob file: {}, Srk out file: {}",
-                vtpm_blob_path, srk_out_path
+                vtpm_blob_path,
+                srk_out_path
             );
             export_vtpm_srk_pub(vtpm_engine_helper, srk_out_path);
         } else {
@@ -132,7 +182,9 @@ fn main() {
                 private_key_tpm2b_file,
             );
         } else {
-            tracing::error!("Invalid number of arguments for --createRandomKeyInTpm2ImportBlobFormat. Expected 3 values.");
+            tracing::error!(
+                "Invalid number of arguments for --createRandomKeyInTpm2ImportBlobFormat. Expected 3 values."
+            );
         }
     } else if let Some(srkpub_path) = args.print_key_name {
         print_vtpm_srk_pub_key_name(srkpub_path);
@@ -146,7 +198,9 @@ fn main() {
             let private_key_file = &key_files[1];
             test_import_tpm2b_keys(public_key_file, private_key_file);
         } else {
-            tracing::error!("Invalid number of arguments for --testTPM2BImportKeys. Expected 2 values.");
+            tracing::error!(
+                "Invalid number of arguments for --testTPM2BImportKeys. Expected 2 values."
+            );
         }
     } else {
         tracing::error!("No command specified. Please re-run with --help for usage information.");
@@ -154,7 +208,10 @@ fn main() {
 }
 
 /// Create vtpm and return its state as a byte vector.
-fn create_vtpm_blob(mut tpm_engine_helper: TpmEngineHelper, nvm_state_blob: Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
+fn create_vtpm_blob(
+    mut tpm_engine_helper: TpmEngineHelper,
+    nvm_state_blob: Arc<Mutex<Vec<u8>>>,
+) -> Vec<u8> {
     // Create a vTPM instance.
     tracing::info!("Initializing TPM engine.");
     // Create a primary key: SRK
@@ -220,12 +277,11 @@ fn export_vtpm_srk_pub(mut tpm_engine_helper: TpmEngineHelper, srk_out_path: &st
 
     // Extract SRK primary key public area.
     let result = tpm_engine_helper.read_public(TPM_RSA_SRK_HANDLE);
-    match result {  
+    match result {
         Ok(response) => {
             tracing::trace!("SRK public area: {:?}", response.out_public.public_area);
 
             // Write the SRK pub to a file.
-            //let srk_pub_file = Use the input.
             let mut srk_pub_file = File::create(srk_out_path).expect("failed to create file");
             let srk_pub = response.out_public.serialize();
             let srk_pub = srk_pub.as_slice();
@@ -236,7 +292,11 @@ fn export_vtpm_srk_pub(mut tpm_engine_helper: TpmEngineHelper, srk_out_path: &st
             let mut hasher = Sha256::new();
             hasher.update(response.out_public.public_area.serialize());
             let public_area_hash = hasher.finalize();
-            tracing::trace!("SRK public area SHA256 hash: {:x} is written to file {}", public_area_hash, srk_out_path);
+            tracing::trace!(
+                "SRK public area SHA256 hash: {:x} is written to file {}",
+                public_area_hash,
+                srk_out_path
+            );
         }
         Err(e) => {
             tracing::error!("Error in read_public: {:?}", e);
@@ -271,7 +331,10 @@ fn print_vtpm_srk_pub_key_name(srkpub_path: String) {
     tracing::trace!("Printing key properties.\n");
     tracing::trace!("Public key type: {:?}", public_area.my_type);
     tracing::trace!("Public hash alg: {:?}", public_area.name_alg);
-    tracing::trace!("Public key size in bits: {:?}", public_area.parameters.key_bits);
+    tracing::trace!(
+        "Public key size in bits: {:?}",
+        public_area.parameters.key_bits
+    );
     print_sha256_hash(rsa_key.buffer.as_slice());
 
     // Compute the key name
@@ -309,7 +372,10 @@ fn create_random_key_in_tpm2_import_blob_format(
             let modulus_bytes = rsa.n().to_vec();
             tracing::trace!("RSA modulus size: {} bytes", modulus_bytes.len());
             let modulus_buffer = Tpm2bBuffer::new(modulus_bytes.as_slice()).unwrap();
-            tracing::trace!("Tpm2bBuffer modulus size field: {} bytes", modulus_buffer.size.get());
+            tracing::trace!(
+                "Tpm2bBuffer modulus size field: {} bytes",
+                modulus_buffer.size.get()
+            );
 
             let public_key_der = rsa.public_key_to_der_pkcs1().unwrap();
             let pkey = PKey::from_rsa(rsa).unwrap();
@@ -327,7 +393,9 @@ fn create_random_key_in_tpm2_import_blob_format(
             // Save the TPM2B private key to a file
             let mut priv_file = File::create(private_key_tpm2b_file).unwrap();
             priv_file.write_all(&tpm2_import_blob).unwrap();
-            tracing::info!("RSA private key is saved to {private_key_tpm2b_file} in TPM2B import format.");
+            tracing::info!(
+                "RSA private key is saved to {private_key_tpm2b_file} in TPM2B import format."
+            );
             let private_key_der = pkey.private_key_to_der().unwrap();
 
             print_sha256_hash(&private_key_der.as_slice());
@@ -353,7 +421,9 @@ fn create_random_key_in_tpm2_import_blob_format(
             let mut priv_file = File::create(private_key_tpm2b_file).unwrap();
             priv_file.write_all(&tpm2_import_blob).unwrap();
 
-            tracing::info!("ECC private key in TPM2B import format saved to {private_key_tpm2b_file}.");
+            tracing::info!(
+                "ECC private key in TPM2B import format saved to {private_key_tpm2b_file}."
+            );
         }
         _ => {
             tracing::error!("Invalid algorithm. Supported algorithms are rsa and ecc.");
@@ -378,8 +448,8 @@ fn get_key_in_tpm2_import_format_rsa(priv_key: &PKey<openssl::pkey::Private>) ->
         AlgIdEnum::RSA.into(),
         AlgIdEnum::SHA256.into(),
         TpmaObjectBits::new()
-        .with_user_with_auth(true)
-        .with_decrypt(true),
+            .with_user_with_auth(true)
+            .with_decrypt(true),
         &auth_policy,
         TpmsRsaParams::new(symmetric_def, rsa_scheme, key_bits, exponent),
         &rsa.n().to_vec(),
@@ -389,7 +459,10 @@ fn get_key_in_tpm2_import_format_rsa(priv_key: &PKey<openssl::pkey::Private>) ->
     let tpm2b_public = Tpm2bPublic::new(tpmt_public_area);
     // Debug: Check TPM2B_PUBLIC size breakdown
     tracing::trace!("TPM2B_PUBLIC size {} bytes", tpm2b_public.size.get());
-    tracing::trace!("TPM2B_PUBLIC serialized size: {} bytes", tpm2b_public.serialize().len());
+    tracing::trace!(
+        "TPM2B_PUBLIC serialized size: {} bytes",
+        tpm2b_public.serialize().len()
+    );
 
     // Create a TPM2B_PRIVATE structure
     // For RSA import format, use the first prime factor (p), not the private exponent (d)
@@ -398,9 +471,9 @@ fn get_key_in_tpm2_import_format_rsa(priv_key: &PKey<openssl::pkey::Private>) ->
     let sensitive_rsa = Tpm2bBuffer::new(&prime1_bytes).unwrap();
 
     let tpmt_sensitive = TpmtSensitive {
-        sensitive_type: tpmt_public_area.my_type,  // TPM_ALG_RSA
-        auth_value: Tpm2bBuffer::new_zeroed(),     // Empty auth value
-        seed_value: Tpm2bBuffer::new_zeroed(),     // Empty seed value 
+        sensitive_type: tpmt_public_area.my_type, // TPM_ALG_RSA
+        auth_value: Tpm2bBuffer::new_zeroed(),    // Empty auth value
+        seed_value: Tpm2bBuffer::new_zeroed(),    // Empty seed value
         sensitive: sensitive_rsa,
     };
 
@@ -409,39 +482,57 @@ fn get_key_in_tpm2_import_format_rsa(priv_key: &PKey<openssl::pkey::Private>) ->
 
     // Create TPM2B_PRIVATE structure: size + marshaled_data
     let mut tpm2b_private_buffer = Vec::new();
-    
+
     // Add the TPM2B size field (total size of the buffer excluding this size field)
     tpm2b_private_buffer.extend_from_slice(&marshaled_size.to_be_bytes());
-    
+
     // Add the marshaled sensitive data
     tpm2b_private_buffer.extend_from_slice(&marshaled_tpmt_sensitive);
 
-    tracing::trace!("TPM2B_PRIVATE total buffer size: {} bytes", tpm2b_private_buffer.len());
+    tracing::trace!(
+        "TPM2B_PRIVATE total buffer size: {} bytes",
+        tpm2b_private_buffer.len()
+    );
     tracing::trace!("  - Size field: 2 bytes");
-    tracing::trace!("  - Marshaled sensitive data: {} bytes", marshaled_tpmt_sensitive.len());
+    tracing::trace!(
+        "  - Marshaled sensitive data: {} bytes",
+        marshaled_tpmt_sensitive.len()
+    );
     tracing::trace!("    - sensitive_type: 2 bytes");
-    tracing::trace!("    - auth_value: {} bytes (size + data)", 2 + tpmt_sensitive.auth_value.size.get());
-    tracing::trace!("    - seed_value: {} bytes (size + data)", 2 + tpmt_sensitive.seed_value.size.get()); 
-    tracing::trace!("    - sensitive (RSA private exp): {} bytes (size + data)", 2 + tpmt_sensitive.sensitive.size.get());
+    tracing::trace!(
+        "    - auth_value: {} bytes (size + data)",
+        2 + tpmt_sensitive.auth_value.size.get()
+    );
+    tracing::trace!(
+        "    - seed_value: {} bytes (size + data)",
+        2 + tpmt_sensitive.seed_value.size.get()
+    );
+    tracing::trace!(
+        "    - sensitive (RSA private exp): {} bytes (size + data)",
+        2 + tpmt_sensitive.sensitive.size.get()
+    );
 
     // Create the final import blob: TPM2B_PUBLIC || TPM2B_PRIVATE || TPM2B_ENCRYPTED_SECRET
     let mut final_import_blob = Vec::new();
-    
+
     // Add TPM2B_PUBLIC
     let serialized_public = tpm2b_public.serialize();
     final_import_blob.extend_from_slice(&serialized_public);
-    
-    // Add TPM2B_PRIVATE 
+
+    // Add TPM2B_PRIVATE
     final_import_blob.extend_from_slice(&tpm2b_private_buffer);
-    
+
     // Add TPM2B_ENCRYPTED_SECRET (empty - just 2 bytes of zeros for size)
     final_import_blob.extend_from_slice(&[0u8, 0u8]);
-    
-    tracing::trace!("Final TPM2B import format size: {} bytes", final_import_blob.len());
+
+    tracing::trace!(
+        "Final TPM2B import format size: {} bytes",
+        final_import_blob.len()
+    );
     tracing::trace!("  - TPM2B_PUBLIC: {} bytes", serialized_public.len());
     tracing::trace!("  - TPM2B_PRIVATE: {} bytes", tpm2b_private_buffer.len());
     tracing::trace!("  - TPM2B_ENCRYPTED_SECRET: 2 bytes (empty)");
-    
+
     final_import_blob
 }
 
@@ -518,19 +609,20 @@ fn test_import_tpm2b_keys(public_key_file: &str, private_key_file: &str) {
     tracing::info!("Testing TPM2B key import...");
     tracing::info!("Public key file: {}", public_key_file);
     tracing::info!("Private key file: {}", private_key_file);
-    
+
     // Read the public key file
     let mut pub_key_file = fs::OpenOptions::new()
         .read(true)
         .open(public_key_file)
         .expect("Failed to open public key file");
-    
+
     let mut pub_key_content = Vec::new();
-    pub_key_file.read_to_end(&mut pub_key_content)
+    pub_key_file
+        .read_to_end(&mut pub_key_content)
         .expect("Failed to read public key file");
-    
+
     tracing::info!("Public key file size: {} bytes", pub_key_content.len());
-    
+
     // Try to determine the format and parse accordingly
     // First, try DER format (most likely for .pub files from your tool)
     let rsa_public_opt = if let Ok(rsa) = Rsa::public_key_from_der_pkcs1(&pub_key_content) {
@@ -543,13 +635,13 @@ fn test_import_tpm2b_keys(public_key_file: &str, private_key_file: &str) {
         tracing::info!("Failed to parse as DER formats, trying TPM2B format...");
         None
     };
-    
+
     if let Some(rsa_public) = rsa_public_opt {
         tracing::info!("RSA public key successfully parsed:");
         tracing::info!("  Key size: {} bits", rsa_public.size() * 8);
         tracing::info!("  Modulus size: {} bytes", rsa_public.n().to_vec().len());
         tracing::info!("  Exponent size: {} bytes", rsa_public.e().to_vec().len());
-        
+
         // Continue with DER format validation
         validate_der_format_keys(&rsa_public, private_key_file);
     } else {
@@ -566,66 +658,79 @@ fn validate_der_format_keys(rsa_public: &Rsa<openssl::pkey::Public>, private_key
         .read(true)
         .open(private_key_file)
         .expect("Failed to open private key file");
-    
+
     let mut priv_key_content = Vec::new();
-    priv_key_file.read_to_end(&mut priv_key_content)
+    priv_key_file
+        .read_to_end(&mut priv_key_content)
         .expect("Failed to read private key file");
-    
+
     tracing::info!("Private key file size: {} bytes", priv_key_content.len());
-    
+
     // Parse the TPM2B import format: TPM2B_PUBLIC || TPM2B_PRIVATE || TPM2B_ENCRYPTED_SEED
-    
+
     // 1. Parse TPM2B_PUBLIC
-    let tmp2b_public = Tpm2bPublic::deserialize(&priv_key_content)
-        .expect("Failed to deserialize TPM2B_PUBLIC");
-    
+    let tmp2b_public =
+        Tpm2bPublic::deserialize(&priv_key_content).expect("Failed to deserialize TPM2B_PUBLIC");
+
     let public_size = tmp2b_public.size.get() as usize + 2; // +2 for size field
     tracing::info!("TPM2B_PUBLIC parsed:");
     tracing::info!("  Size: {} bytes", public_size);
     tracing::info!("  Algorithm: {:?}", tmp2b_public.public_area.my_type);
     tracing::info!("  Name algorithm: {:?}", tmp2b_public.public_area.name_alg);
-    tracing::info!("  Key bits: {:?}", tmp2b_public.public_area.parameters.key_bits);
-    
+    tracing::info!(
+        "  Key bits: {:?}",
+        tmp2b_public.public_area.parameters.key_bits
+    );
+
     // 2. Parse TPM2B_PRIVATE
     let remaining_data = &priv_key_content[public_size..];
-    let tmp2b_private = Tpm2bBuffer::deserialize(remaining_data)
-        .expect("Failed to deserialize TPM2B_PRIVATE");
-    
+    let tmp2b_private =
+        Tpm2bBuffer::deserialize(remaining_data).expect("Failed to deserialize TPM2B_PRIVATE");
+
     let private_size = tmp2b_private.size.get() as usize + 2; // +2 for size field
     tracing::info!("TPM2B_PRIVATE parsed:");
     tracing::info!("  Size: {} bytes", private_size);
     tracing::info!("  Data size: {} bytes", tmp2b_private.size.get());
-    
+
     // 3. Parse TPM2B_ENCRYPTED_SECRET (should be empty - 2 zero bytes)
     let encrypted_seed_data = &remaining_data[private_size..];
     if encrypted_seed_data.len() >= 2 {
-        let encrypted_seed_size = u16::from_be_bytes([encrypted_seed_data[0], encrypted_seed_data[1]]);
+        let encrypted_seed_size =
+            u16::from_be_bytes([encrypted_seed_data[0], encrypted_seed_data[1]]);
         tracing::info!("TPM2B_ENCRYPTED_SECRET parsed:");
         tracing::info!("  Size: {} bytes (should be 0)", encrypted_seed_size);
-        
+
         if encrypted_seed_size == 0 {
             tracing::info!("Encrypted seed is empty as expected");
         } else {
             tracing::warn!("Encrypted seed is not empty");
         }
     }
-    
+
     // Validation: Compare the modulus from the DER public key with the TPM2B public key
     let der_modulus = rsa_public.n().to_vec();
-    let tpm2b_modulus: &[u8; 256] = &tmp2b_public.public_area.unique.buffer[0..256].try_into().expect("Modulus size mismatch");
-    
+    let tpm2b_modulus: &[u8; 256] = tmp2b_public.public_area.unique.buffer[0..256]
+        .try_into()
+        .expect("Modulus size mismatch");
+
     tracing::info!("Validation:");
     tracing::info!("  DER modulus size: {} bytes", der_modulus.len());
     tracing::info!("  TPM2B modulus size: {} bytes", tpm2b_modulus.len());
-    
+
     if der_modulus == *tpm2b_modulus {
         tracing::info!("  Modulus values match between DER and TPM2B formats");
     } else {
         tracing::error!("  Modulus values do NOT match");
-        tracing::error!("  First 16 bytes of DER modulus: {:02X?}", &der_modulus[..16.min(der_modulus.len())]);
-        tracing::error!("  First 16 bytes of TPM2B modulus: {:02X?}", &tpm2b_modulus[..16.min(tpm2b_modulus.len())]);
+        tracing::error!(
+            "  First 16 bytes of DER modulus: {:02X?}",
+            &der_modulus[..16.min(der_modulus.len())]
+        );
+        tracing::error!(
+            "  First 16 bytes of TPM2B modulus: {:02X?}",
+            &tpm2b_modulus[..16.min(tpm2b_modulus.len())]
+        );
     }
-    
+
     // Calculate expected total size
     let expected_total = public_size + private_size + 2; // +2 for encrypted seed
     tracing::info!("Size breakdown:");
@@ -634,13 +739,13 @@ fn validate_der_format_keys(rsa_public: &Rsa<openssl::pkey::Public>, private_key
     tracing::info!("  TPM2B_ENCRYPTED_SECRET: 2 bytes");
     tracing::info!("  Expected total: {} bytes", expected_total);
     tracing::info!("  Actual file size: {} bytes", priv_key_content.len());
-    
+
     if expected_total == priv_key_content.len() {
         tracing::info!("File size matches expected TPM2B import format");
     } else {
         tracing::error!("File size does NOT match expected format");
     }
-    
+
     tracing::info!("DER pub and TPM2B priv key validation completed successfully!");
 }
 
@@ -690,13 +795,10 @@ impl ms_tpm_20_ref::PlatformCallbacks for TestPlatformCallbacks {
 
 /// Create a new TPM engine with blank state and return the helper and NV state blob.
 pub fn create_tpm_engine_helper() -> (TpmEngineHelper, Arc<Mutex<Vec<u8>>>) {
-
     let (callbacks, nv_blob_accessor) = TestPlatformCallbacks::new();
 
-    let result = MsTpm20RefPlatform::initialize(
-        Box::new(callbacks),
-        ms_tpm_20_ref::InitKind::ColdInit,
-    );
+    let result =
+        MsTpm20RefPlatform::initialize(Box::new(callbacks), ms_tpm_20_ref::InitKind::ColdInit);
     assert!(result.is_ok());
 
     let tpm_engine: MsTpm20RefPlatform = result.unwrap();

@@ -3,13 +3,12 @@
 
 [package]
 name = "cvmutil"
-edition = "2021"
 rust-version.workspace = true
 
 [features]
 
 [dependencies]
-ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
+ms-tpm-20-ref.workspace = true
 inspect.workspace = true
 getrandom.workspace = true
 tracing.workspace = true
