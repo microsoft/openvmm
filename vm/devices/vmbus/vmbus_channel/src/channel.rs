@@ -162,8 +162,11 @@ impl ChannelControl {
 ///
 /// The channel will be revoked when this is dropped.
 #[must_use]
+#[derive(Inspect)]
 pub(crate) struct GenericChannelHandle {
+    #[inspect(flatten, send = "StateRequest::Inspect")]
     state_req: mesh::Sender<StateRequest>,
+    #[inspect(skip)]
     task: Task<Box<dyn VmbusDevice>>,
 }
 
@@ -238,12 +241,6 @@ impl GenericChannelHandle {
             .await
             .expect("critical channel failure")
             .map_err(|err| err.into())
-    }
-}
-
-impl Inspect for GenericChannelHandle {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.state_req.send(StateRequest::Inspect(req.defer()));
     }
 }
 
