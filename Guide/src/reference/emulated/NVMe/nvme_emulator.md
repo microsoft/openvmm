@@ -1,4 +1,4 @@
-# Nvme Emulator
+# NVMe Emulator
 *Under construction*
 
 ## Component Overview
