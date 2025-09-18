@@ -135,6 +135,7 @@ pub struct VmbusServerBuilder<T: SpawnDriver> {
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
     channel_unstick_delay: Option<Duration>,
+    use_absolute_channel_order: bool,
 }
 
 #[derive(mesh::MeshPayload)]
@@ -311,6 +312,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             force_confidential_external_memory: false,
             send_messages_while_stopped: false,
             channel_unstick_delay: Some(Duration::from_millis(100)),
+            use_absolute_channel_order: false,
         }
     }
 
@@ -438,6 +440,14 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         self
     }
 
+    /// Sets whether the channel order value provided in an offer is the primary way of ordering
+    /// channels when assigning channel IDs, rather than the default behavior of ordering by
+    /// interface ID first.
+    pub fn use_absolute_channel_order(mut self, assign: bool) -> Self {
+        self.use_absolute_channel_order = assign;
+        self
+    }
+
     /// Creates a new instance of the server.
     ///
     /// When the object is dropped, all channels will be closed and revoked
@@ -502,7 +512,12 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             force_confidential_external_memory: self.force_confidential_external_memory,
         });
 
-        let mut server = channels::Server::new(self.vtl, connection_id, self.channel_id_offset);
+        let mut server = channels::Server::new(
+            self.vtl,
+            connection_id,
+            self.channel_id_offset,
+            self.use_absolute_channel_order,
+        );
 
         // If MNF is handled by this server and this is a paravisor for an isolated VM, the monitor
         // pages must be allocated by the server, not the guest, since the guest will provide shared
