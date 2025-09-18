@@ -1610,7 +1610,7 @@ impl ScsiController {
         tracing::info!(
             ?instance_id,
             poll_mode_queue_depth = pmqd,
-            "choose the different poll mode queue depth based on SCSI controller instance id."
+            "poll mode queue depth chosen based on controller instance id"
         );
         Self {
             state: Arc::new(ScsiControllerState {
