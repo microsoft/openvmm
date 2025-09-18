@@ -443,8 +443,8 @@ pub trait RingMem: Send {
     ///
     /// `read_at` may be faster for large or variable-sized reads.
     fn read_aligned(&self, addr: usize, data: &mut [u8]) {
-        debug_assert!(addr % 8 == 0);
-        debug_assert!(data.len() % 8 == 0);
+        debug_assert!(addr.is_multiple_of(8));
+        debug_assert!(data.len().is_multiple_of(8));
         self.read_at(addr, data)
     }
 
@@ -457,8 +457,8 @@ pub trait RingMem: Send {
     ///
     /// `write_at` may be faster for large or variable-sized writes.
     fn write_aligned(&self, addr: usize, data: &[u8]) {
-        debug_assert!(addr % 8 == 0);
-        debug_assert!(data.len() % 8 == 0);
+        debug_assert!(addr.is_multiple_of(8));
+        debug_assert!(data.len().is_multiple_of(8));
         self.write_at(addr, data)
     }
 
@@ -671,8 +671,8 @@ impl<T: PagedMemory> RingMem for PagedRingMem<T> {
 
     #[inline]
     fn read_aligned(&self, addr: usize, data: &mut [u8]) {
-        debug_assert!(addr % 8 == 0);
-        debug_assert!(data.len() % 8 == 0);
+        debug_assert!(addr.is_multiple_of(8));
+        debug_assert!(data.len().is_multiple_of(8));
         for (i, b) in data.chunks_exact_mut(8).enumerate() {
             let addr = (addr & !7) + i * 8;
             let page = addr / PAGE_SIZE;
@@ -689,8 +689,8 @@ impl<T: PagedMemory> RingMem for PagedRingMem<T> {
 
     #[inline]
     fn write_aligned(&self, addr: usize, data: &[u8]) {
-        debug_assert!(addr % 8 == 0);
-        debug_assert!(data.len() % 8 == 0);
+        debug_assert!(addr.is_multiple_of(8));
+        debug_assert!(data.len().is_multiple_of(8));
         for (i, b) in data.chunks_exact(8).enumerate() {
             let addr = (addr & !7) + i * 8;
             let page = addr / PAGE_SIZE;
@@ -1274,7 +1274,7 @@ impl<M: RingMem> InnerRing<M> {
     }
 
     fn validate(&self, p: u32) -> Result<u32, Error> {
-        if p >= self.size || p % 8 != 0 {
+        if p >= self.size || !p.is_multiple_of(8) {
             Err(Error::InvalidRingPointer)
         } else {
             Ok(p)

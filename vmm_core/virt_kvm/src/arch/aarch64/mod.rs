@@ -506,7 +506,9 @@ impl KvmProtoPartition<'_> {
         const GIC_ALIGNMENT: u64 = 0x10000;
         let gic_dist_base: u64 = self.config.processor_topology.gic_distributor_base();
         let gic_redist_base: u64 = self.config.processor_topology.gic_redistributors_base();
-        if gic_dist_base % GIC_ALIGNMENT != 0 || gic_redist_base % GIC_ALIGNMENT != 0 {
+        if !gic_dist_base.is_multiple_of(GIC_ALIGNMENT)
+            || !gic_redist_base.is_multiple_of(GIC_ALIGNMENT)
+        {
             return Err(KvmError::Misaligned);
         }
 

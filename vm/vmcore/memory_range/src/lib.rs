@@ -232,7 +232,7 @@ impl MemoryRange {
     #[track_caller]
     pub fn split_at_offset(&self, offset: u64) -> (Self, Self) {
         assert!(offset <= self.len());
-        assert!(offset % PAGE_SIZE == 0);
+        assert!(offset.is_multiple_of(PAGE_SIZE));
         (
             Self {
                 start: self.start,

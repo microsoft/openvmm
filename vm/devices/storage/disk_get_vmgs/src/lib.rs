@@ -123,7 +123,7 @@ impl GetVmgsDisk {
             Err(NewGetVmgsDiskError::InvalidPhysicalSectorSize)
         } else if sector_count.checked_mul(sector_size as u64).is_none() {
             Err(NewGetVmgsDiskError::InvalidSectorCount)
-        } else if sector_count % (physical_sector_size / sector_size) as u64 != 0 {
+        } else if !sector_count.is_multiple_of((physical_sector_size / sector_size) as u64) {
             Err(NewGetVmgsDiskError::IncompletePhysicalSector)
         } else if max_transfer_size < physical_sector_size {
             Err(NewGetVmgsDiskError::InvalidMaxTransferSize)

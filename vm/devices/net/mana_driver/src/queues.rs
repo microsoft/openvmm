@@ -291,7 +291,7 @@ impl Wq {
 
     /// Advances the head, indicating that `n` more bytes are available in the ring.
     pub fn advance_head(&mut self, n: u32) {
-        assert!(n % WQE_ALIGNMENT as u32 == 0);
+        assert!(n.is_multiple_of(WQE_ALIGNMENT as u32));
         self.head = self.head.wrapping_add(n);
     }
 

@@ -171,6 +171,8 @@ pub enum Error {
     InvalidDebugConfiguration,
     #[error("failed to allocate TLB flush page")]
     AllocateTlbFlushPage(#[source] anyhow::Error),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 /// Error revoking guest VSM.
@@ -1797,7 +1799,8 @@ impl<'a> UhProtoPartition<'a> {
             &cpuid,
             isolation,
             params.hide_isolation,
-        );
+        )
+        .map_err(Error::Capabilities)?;
 
         if params.handle_synic && !matches!(isolation, IsolationType::Tdx) {
             // The hypervisor will manage the untrusted SINTs (or the whole
@@ -2175,7 +2178,7 @@ impl UhPartition {
         cpuid: &virt::CpuidLeafSet,
         isolation: IsolationType,
         hide_isolation: bool,
-    ) -> virt::x86::X86PartitionCapabilities {
+    ) -> Result<virt::x86::X86PartitionCapabilities, virt::x86::X86PartitionCapabilitiesError> {
         let mut native_cpuid_fn;
         let mut cvm_cpuid_fn;
 
@@ -2195,7 +2198,7 @@ impl UhPartition {
         };
 
         // Compute and validate capabilities.
-        let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn);
+        let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn)?;
         match isolation {
             IsolationType::Tdx => {
                 assert_eq!(caps.vtom.is_some(), !hide_isolation);
@@ -2210,7 +2213,7 @@ impl UhPartition {
             }
         }
 
-        caps
+        Ok(caps)
     }
 }
 
