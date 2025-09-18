@@ -277,16 +277,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             None
         };
 
-        match vm.openhcl_diag() {
-            Ok(diag) => {
-                if with_agent {
-                    diag.kmsg().await?;
-                    diag.run_vtl2_command("dmesg", &["-n", "3"]).await?;
-                }
-            }
-            Err(e) => {
-                tracing::warn!("failed to open VTl2 diagnostic channel: {}", e);
-            }
+        if with_agent {
+            vm.set_console_loglevel(3).await?;
         }
 
         vm.wait_for_expected_boot_event().await?;
@@ -697,17 +689,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     pub async fn wait_for_reset(&mut self) -> anyhow::Result<PipetteClient> {
         self.wait_for_reset_no_agent().await?;
         let client = self.wait_for_agent().await?;
-
-        match self.openhcl_diag() {
-            Ok(diag) => {
-                diag.kmsg().await?;
-                diag.run_vtl2_command("dmesg", &["-n", "3"]).await?;
-            }
-            Err(e) => {
-                tracing::warn!("failed to open VTl2 diagnostic channel: {}", e);
-            }
-        }
-
+        self.set_console_loglevel(3).await?;
         Ok(client)
     }
 
@@ -898,6 +880,26 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         } else {
             anyhow::bail!("VM is not configured with OpenHCL")
         }
+    }
+
+    async fn set_console_loglevel(&self, level: u8) -> anyhow::Result<()> {
+        match self.openhcl_diag() {
+            Ok(diag) => {
+                diag.kmsg().await?;
+                let res = diag
+                    .run_vtl2_command("dmesg", &["-n", &level.to_string()])
+                    .await?;
+
+                if !res.exit_status.success() {
+                    anyhow::bail!("failed to set console loglevel: {:?}", res);
+                }
+            }
+            Err(e) => {
+                anyhow::bail!("failed to open VTl2 diagnostic channel: {}", e);
+            }
+        };
+
+        Ok(())
     }
 }
 
