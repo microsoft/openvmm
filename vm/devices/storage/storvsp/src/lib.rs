@@ -110,7 +110,8 @@ use zerocopy::KnownLayout;
 /// controller with this specific id.
 const DEFAULT_POLL_MODE_QUEUE_DEPTH: u32 = 1;
 const REMOTE_DISK_POLL_MODE_QUEUE_DEPTH: u32 = 4;
-const REMOTE_DISK_SCSI_CONTROLLER_INSTNACE_ID: Guid = guid::guid!("f8b3781b-1e82-4818-a1c3-63d806ec15bb");
+const REMOTE_DISK_SCSI_CONTROLLER_INSTANCE_ID: Guid =
+    guid::guid!("f8b3781b-1e82-4818-a1c3-63d806ec15bb");
 
 pub struct StorageDevice {
     instance_id: Guid,
@@ -1601,7 +1602,7 @@ pub struct ScsiController {
 
 impl ScsiController {
     pub fn new(instance_id: Option<Guid>) -> Self {
-        let pmqd = if instance_id == Some(REMOTE_DISK_SCSI_CONTROLLER_INSTNACE_ID) {
+        let pmqd = if instance_id == Some(REMOTE_DISK_SCSI_CONTROLLER_INSTANCE_ID) {
             REMOTE_DISK_POLL_MODE_QUEUE_DEPTH
         } else {
             DEFAULT_POLL_MODE_QUEUE_DEPTH
