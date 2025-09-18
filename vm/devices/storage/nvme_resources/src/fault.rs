@@ -128,7 +128,7 @@ impl AdminQueueFaultConfig {
         if self
             .admin_submission_queue_faults
             .iter()
-            .any(|(c, _)| (pattern == *c))
+            .any(|(c, _)| pattern == *c)
         {
             panic!(
                 "Duplicate submission queue fault for Compare {:?} and Mask {:?}",
@@ -153,7 +153,7 @@ impl AdminQueueFaultConfig {
         if self
             .admin_completion_queue_faults
             .iter()
-            .any(|(c, _)| (pattern == *c))
+            .any(|(c, _)| pattern == *c)
         {
             panic!(
                 "Duplicate completion queue fault for Compare {:?} and Mask {:?}",

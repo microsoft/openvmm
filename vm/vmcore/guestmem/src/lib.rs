@@ -1406,7 +1406,7 @@ impl GuestMemory {
         op: GuestMemoryOperation,
         err: GuestMemoryBackingError,
     ) -> GuestMemoryError {
-        let range = gpa_len.map(|(gpa, len)| (gpa..gpa.wrapping_add(len)));
+        let range = gpa_len.map(|(gpa, len)| gpa..gpa.wrapping_add(len));
         GuestMemoryError::new(&self.inner.debug_name, range, op, err)
     }
 
@@ -1948,7 +1948,7 @@ impl GuestMemory {
             let mut byte_index = 0;
             let mut len = range.len();
             let mut page = 0;
-            if offset % PAGE_SIZE != 0 {
+            if !offset.is_multiple_of(PAGE_SIZE) {
                 let head_len = std::cmp::min(len, PAGE_SIZE - (offset % PAGE_SIZE));
                 let addr = gpn_to_gpa(gpns[page]).map_err(GuestMemoryBackingError::gpn)?
                     + offset as u64 % PAGE_SIZE64;

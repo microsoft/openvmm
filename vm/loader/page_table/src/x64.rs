@@ -347,12 +347,12 @@ impl PageTableBuilder {
             panic!("more than 512 gb size not supported");
         }
 
-        if self.size % X64_LARGE_PAGE_SIZE != 0 {
+        if !self.size.is_multiple_of(X64_LARGE_PAGE_SIZE) {
             panic!("size not 2mb aligned");
         }
 
         // start_gpa and size must be 2MB aligned.
-        if self.start_gpa % X64_LARGE_PAGE_SIZE != 0 {
+        if !self.start_gpa.is_multiple_of(X64_LARGE_PAGE_SIZE) {
             panic!("start_gpa not 2mb aligned");
         }
 
