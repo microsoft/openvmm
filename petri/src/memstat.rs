@@ -96,10 +96,12 @@ impl MemStat {
                     smaps_rollup: Self::parse_memfile(
                         sh.read_file(&format!("/proc/{}/smaps_rollup", value))
                             .await
-                            .expect(&format!(
-                                "process {} is expected to have a 'smaps_rollup' file",
-                                process_name
-                            )),
+                            .unwrap_or_else(|_| {
+                                panic!(
+                                    "process {} is expected to have a 'smaps_rollup' file",
+                                    process_name
+                                )
+                            }),
                         1,
                         0,
                         1,
@@ -107,10 +109,12 @@ impl MemStat {
                     statm: Self::parse_statm(
                         sh.read_file(&format!("/proc/{}/statm", value))
                             .await
-                            .expect(&format!(
-                                "process {} is expected to have a 'statm' file",
-                                process_name
-                            )),
+                            .unwrap_or_else(|_| {
+                                panic!(
+                                    "process {} is expected to have a 'statm' file",
+                                    process_name
+                                )
+                            }),
                     ),
                 },
             );
@@ -144,19 +148,28 @@ impl MemStat {
                 .unwrap()
         );
         let baseline_json = from_reader::<File, Value>(
-            File::open(Path::new(&path_str)).expect(&format!("{} file not found", path_str)),
+            File::open(Path::new(&path_str))
+                .unwrap_or_else(|_| panic!("{} file not found", path_str)),
         )
-        .expect(&format!(
-            "memstat json is expected to exist within the file {}",
-            path_str
-        ));
+        .unwrap_or_else(|_| {
+            panic!(
+                "memstat json is expected to exist within the file {}",
+                path_str
+            )
+        });
         let baseline_usage = baseline_json[arch][vps]["usage"]["baseline"]
             .as_u64()
             .unwrap()
             + baseline_json[arch][vps]["usage"]["threshold"]
                 .as_u64()
                 .unwrap();
-        assert!(baseline_usage >= (self.meminfo["MemTotal"] - self.total_free_memory_per_zone));
+        let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
+        assert!(
+            baseline_usage >= cur_usage,
+            "baseline usage is less than current usage: {} < {}",
+            baseline_usage,
+            cur_usage
+        );
 
         let baseline_reservation = baseline_json[arch][vps]["reservation"]["baseline"]
             .as_u64()
@@ -164,10 +177,13 @@ impl MemStat {
             + baseline_json[arch][vps]["reservation"]["threshold"]
                 .as_u64()
                 .unwrap();
-
+        let cur_reservation =
+            baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
         assert!(
-            baseline_reservation
-                >= (baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"])
+            baseline_reservation >= cur_reservation,
+            "baseline reservation is less than current reservation: {} < {}",
+            baseline_reservation,
+            cur_reservation
         );
 
         for prs in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
@@ -177,15 +193,29 @@ impl MemStat {
                 + baseline_json[arch][vps][prs]["Pss"]["threshold"]
                     .as_u64()
                     .unwrap();
+            let cur_pss = self[prs].smaps_rollup["Pss"];
             let baseline_pss_anon = baseline_json[arch][vps][prs]["Pss_Anon"]["baseline"]
                 .as_u64()
                 .unwrap()
                 + baseline_json[arch][vps][prs]["Pss_Anon"]["threshold"]
                     .as_u64()
                     .unwrap();
+            let cur_pss_anon = self[prs].smaps_rollup["Pss_Anon"];
 
-            assert!(baseline_pss >= self[prs].smaps_rollup["Pss"]);
-            assert!(baseline_pss_anon >= self[prs].smaps_rollup["Pss_Anon"]);
+            assert!(
+                baseline_pss >= cur_pss,
+                "process {}: baseline PSS is less than current PSS: {} < {}",
+                prs,
+                baseline_pss,
+                cur_pss
+            );
+            assert!(
+                baseline_pss_anon >= cur_pss_anon,
+                "process {}: baseline PSS Anon is less than current PSS Anon: {} < {}",
+                prs,
+                baseline_pss_anon,
+                cur_pss_anon
+            );
         }
 
         true
@@ -202,30 +232,26 @@ impl MemStat {
             let split_line = line.split_whitespace().collect::<Vec<&str>>();
             let field = split_line
                 .get(field_col)
-                .expect(&format!(
-                    "in line {} column {} does not exist",
-                    line, field_col
-                ))
+                .unwrap_or_else(|| panic!("in line {} column {} does not exist", line, field_col))
                 .trim_matches(':')
                 .to_string();
             let value: u64 = split_line
                 .get(value_col)
-                .expect(&format!(
-                    "in line {} column {} does not exist",
-                    line, value_col
-                ))
+                .unwrap_or_else(|| panic!("in line {} column {} does not exist", line, value_col))
                 .parse::<u64>()
-                .expect(&format!(
-                    "value column {} in line {} is expected to be a parsable u64",
-                    value_col, line
-                ));
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "value column {} in line {} is expected to be a parsable u64",
+                        value_col, line
+                    )
+                });
             parsed_data.insert(field, value);
         }
         parsed_data
     }
 
     fn parse_statm(raw: String) -> HashMap<String, u64> {
-        let statm_fields = vec![
+        let statm_fields = [
             "vm_size",
             "vm_rss",
             "vm_shared",
@@ -240,10 +266,12 @@ impl MemStat {
                 (
                     statm_fields
                         .get(index)
-                        .expect(&format!(
-                            "statm file is expected to contain at most {} items",
-                            statm_fields.len()
-                        ))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "statm file is expected to contain at most {} items",
+                                statm_fields.len()
+                            )
+                        })
                         .to_string(),
                     value
                         .parse::<u64>()
