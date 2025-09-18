@@ -1631,7 +1631,7 @@ mod tests {
 
             let mut segments = Vec::new();
             let segment_len = packet_len / num_segments;
-            assert!(packet_len % num_segments == 0);
+            assert!(packet_len.is_multiple_of(num_segments));
             assert!(sent_data.len() == packet_len);
             segments.push(TxSegment {
                 ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {

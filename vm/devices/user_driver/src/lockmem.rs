@@ -90,7 +90,7 @@ impl Drop for Mapping {
 
 impl LockedMemory {
     pub fn new(len: usize) -> anyhow::Result<Self> {
-        if len % PAGE_SIZE != 0 {
+        if !len.is_multiple_of(PAGE_SIZE) {
             anyhow::bail!("not a page-size multiple");
         }
         let mapping = Mapping::new(len).context("failed to create mapping")?;

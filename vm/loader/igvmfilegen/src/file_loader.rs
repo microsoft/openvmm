@@ -1109,29 +1109,29 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
             );
         }
 
-        if size_bytes % PAGE_SIZE_4K != 0 {
+        if !size_bytes.is_multiple_of(PAGE_SIZE_4K) {
             anyhow::bail!("relocation size {size_bytes:#x} must be a multiple of 4K");
         }
 
-        if relocation_alignment % PAGE_SIZE_4K != 0 {
+        if !relocation_alignment.is_multiple_of(PAGE_SIZE_4K) {
             anyhow::bail!(
                 "relocation alignment {relocation_alignment:#x} must be a multiple of 4K"
             );
         }
 
-        if gpa % relocation_alignment != 0 {
+        if !gpa.is_multiple_of(relocation_alignment) {
             anyhow::bail!(
                 "relocation base {gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}"
             );
         }
 
-        if minimum_relocation_gpa % relocation_alignment != 0 {
+        if !minimum_relocation_gpa.is_multiple_of(relocation_alignment) {
             anyhow::bail!(
                 "relocation minimum GPA {minimum_relocation_gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}"
             );
         }
 
-        if maximum_relocation_gpa % relocation_alignment != 0 {
+        if !maximum_relocation_gpa.is_multiple_of(relocation_alignment) {
             anyhow::bail!(
                 "relocation maximum GPA {maximum_relocation_gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}"
             );

@@ -147,11 +147,11 @@ where
     // --- Low memory, 2MB aligned ---
 
     // Paravisor memory ranges must be 2MB (large page) aligned.
-    if memory_start_address % X64_LARGE_PAGE_SIZE != 0 {
+    if !memory_start_address.is_multiple_of(X64_LARGE_PAGE_SIZE) {
         return Err(Error::MemoryUnaligned(memory_start_address));
     }
 
-    if memory_size % X64_LARGE_PAGE_SIZE != 0 {
+    if !memory_size.is_multiple_of(X64_LARGE_PAGE_SIZE) {
         return Err(Error::MemoryUnaligned(memory_size));
     }
 
@@ -423,7 +423,7 @@ where
 
     let page_table = page_table_builder.build();
 
-    assert!(page_table.len() as u64 % HV_PAGE_SIZE == 0);
+    assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
     assert!(page_table.len() as u64 <= page_table_region_size);
 
@@ -898,11 +898,11 @@ where
     let memory_size = memory_page_count * HV_PAGE_SIZE;
 
     // Paravisor memory ranges must be 2MB (large page) aligned.
-    if memory_start_address % u64::from(Arm64PageSize::Large) != 0 {
+    if !memory_start_address.is_multiple_of(u64::from(Arm64PageSize::Large)) {
         return Err(Error::MemoryUnaligned(memory_start_address));
     }
 
-    if memory_size % u64::from(Arm64PageSize::Large) != 0 {
+    if !memory_size.is_multiple_of(u64::from(Arm64PageSize::Large)) {
         return Err(Error::MemoryUnaligned(memory_size));
     }
 
@@ -1153,7 +1153,7 @@ where
         memory_attribute_indirection,
         page_table_region_size as usize,
     );
-    assert!(page_tables.len() as u64 % HV_PAGE_SIZE == 0);
+    assert!((page_tables.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
     assert!(page_tables.len() as u64 <= page_table_region_size);
     assert!(page_table_region_size as usize > page_tables.len());
