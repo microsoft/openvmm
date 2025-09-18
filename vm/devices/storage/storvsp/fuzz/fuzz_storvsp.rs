@@ -206,7 +206,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
         let guest_queue = Queue::new(guest_channel).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(u.int_in_range(1..=256)? * PAGE_SIZE);
-        let controller = ScsiController::new();
+        let controller = ScsiController::new(None);
         let disk_len_sectors = u.int_in_range(1..=1048576)?; // up to 512mb in 512 byte sectors
         let disk = scsidisk::SimpleScsiDisk::new(
             disklayer_ram::ram_disk(disk_len_sectors * 512, false).unwrap(),
