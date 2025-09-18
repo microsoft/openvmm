@@ -582,7 +582,13 @@ fn vm_config_from_command_line(
                     subordinate_instance_id: None,
                     max_sub_channels: None,
                 });
-                (vpci_instance_id, GdmaDeviceHandle { vports: Vec::new() })
+                (
+                    vpci_instance_id,
+                    GdmaDeviceHandle {
+                        vports: Vec::new(),
+                        is_firmware_managed: false,
+                    },
+                )
             });
             mana.1.vports.push(VportDefinition {
                 mac_address: vport.mac_address,
@@ -656,7 +662,15 @@ fn vm_config_from_command_line(
     for vport in &opt.mana {
         let vport = parse_endpoint(vport, &mut nic_index, &mut resources)?;
         mana_nics[vport.vtl as usize]
-            .get_or_insert_with(|| (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() }))
+            .get_or_insert_with(|| {
+                (
+                    Guid::new_random(),
+                    GdmaDeviceHandle {
+                        vports: Vec::new(),
+                        is_firmware_managed: false,
+                    },
+                )
+            })
             .1
             .vports
             .push(VportDefinition {
