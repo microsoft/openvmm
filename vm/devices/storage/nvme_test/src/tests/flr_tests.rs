@@ -3,6 +3,8 @@
 
 //! Tests for Function Level Reset (FLR) functionality.
 
+use std::time::Duration;
+
 use super::test_helpers::TestNvmeMmioRegistration;
 use crate::NvmeFaultController;
 use crate::NvmeFaultControllerCaps;
@@ -14,6 +16,7 @@ use mesh::CellUpdater;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::PciFaultConfig;
+use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::capabilities::pci_express::PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK;
@@ -95,7 +98,7 @@ async fn test_no_flr_capability_when_disabled(driver: DefaultDriver) {
 #[async_test]
 async fn test_flr_trigger(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut controller = instantiate_controller_with_flr(driver, &gm, true);
+    let mut controller = instantiate_controller_with_flr(driver.clone(), &gm, true);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x2000.
     let mut qword = 0x1000;
@@ -137,7 +140,10 @@ async fn test_flr_trigger(driver: DefaultDriver) {
         .pci_cfg_write(device_ctl_sts_offset, new_ctl_sts)
         .unwrap();
 
-    // The FLR bit should be self-clearing, so read it back to verify
+    // According to the spec, we must wait at least 100ms after issuing an FLR before accessing the device again.
+    PolledTimer::new(&driver).sleep(Duration::from_millis(100)).await;
+
+    // The FLR bit should always read 0, even during the reset.
     let mut post_flr_ctl_sts = 0u32;
     controller
         .pci_cfg_read(device_ctl_sts_offset, &mut post_flr_ctl_sts)
@@ -145,7 +151,7 @@ async fn test_flr_trigger(driver: DefaultDriver) {
     assert_eq!(
         post_flr_ctl_sts & flr_bit,
         0,
-        "FLR bit should be self-clearing"
+        "FLR bit should always read 0, even during the reset."
     );
 
     // Check that the controller is disabled after FLR
