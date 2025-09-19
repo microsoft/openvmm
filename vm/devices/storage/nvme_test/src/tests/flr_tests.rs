@@ -143,7 +143,7 @@ async fn test_flr_trigger(driver: DefaultDriver) {
     // According to the spec, we must wait at least 100ms after issuing an FLR before accessing the device again.
     PolledTimer::new(&driver).sleep(Duration::from_millis(100)).await;
 
-    // The FLR bit should always read 0, even during the reset.
+    // The FLR bit should always read 0, even after the reset.
     let mut post_flr_ctl_sts = 0u32;
     controller
         .pci_cfg_read(device_ctl_sts_offset, &mut post_flr_ctl_sts)
@@ -151,7 +151,7 @@ async fn test_flr_trigger(driver: DefaultDriver) {
     assert_eq!(
         post_flr_ctl_sts & flr_bit,
         0,
-        "FLR bit should always read 0, even during the reset."
+        "FLR bit should always read 0, even after the reset."
     );
 
     // Check that the controller is disabled after FLR
