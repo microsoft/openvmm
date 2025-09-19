@@ -563,7 +563,7 @@ options:
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_root_complex: Vec<PcieRootComplexCli>,
 
-    /// Attach a PCI Express root root port to the VM
+    /// Attach a PCI Express root port to the VM
     #[clap(long_help = r#"
 e.g: --pcie-root-port rc0:rc0rp0
 
@@ -1397,6 +1397,9 @@ impl FromStr for PcieRootComplexCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 4 * 1024 * 1024; // 4M
+        const DEFAULT_PCIE_CRS_HIGH_SIZE: u64 = 1024 * 1024 * 1024; // 1G
+
         let mut opts = s.split(',');
         let name = opts.next().context("expected root complex name")?;
         if name.is_empty() {
@@ -1406,8 +1409,8 @@ impl FromStr for PcieRootComplexCli {
         let mut segment = 0;
         let mut start_bus = 0;
         let mut end_bus = 255;
-        let mut low_mmio = 4 * 1024 * 1024;
-        let mut high_mmio = 1024 * 1024 * 1024;
+        let mut low_mmio = DEFAULT_PCIE_CRS_LOW_SIZE;
+        let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
         for opt in opts {
             let mut s = opt.split('=');
             let opt = s.next().context("expected option")?;
@@ -1441,7 +1444,7 @@ impl FromStr for PcieRootComplexCli {
         }
 
         if start_bus >= end_bus {
-            anyhow::bail!("start_bus must be below end_bus");
+            anyhow::bail!("start_bus must be less than or equal to end_bus");
         }
 
         Ok(PcieRootComplexCli {
@@ -1468,12 +1471,12 @@ impl FromStr for PcieRootPortCli {
         let mut opts = s.split(',');
         let names = opts.next().context("expected root port identifiers")?;
         if names.is_empty() {
-            anyhow::bail!("must provide a root port identifiers");
+            anyhow::bail!("must provide root port identifiers");
         }
 
         let mut s = names.split(':');
         let rc_name = s.next().context("expected name of parent root complex")?;
-        let rp_name = s.next().context("expect root port name")?;
+        let rp_name = s.next().context("expected root port name")?;
 
         if let Some(extra) = s.next() {
             anyhow::bail!("unexpected token: '{extra}'")
