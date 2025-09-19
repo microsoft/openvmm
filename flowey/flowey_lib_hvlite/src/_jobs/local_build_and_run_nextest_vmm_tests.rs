@@ -86,7 +86,7 @@ macro_rules! define_vmm_test_selection_flags {
 define_vmm_test_selection_flags! {
     tdx: true,
     snp: true,
-    hyperv_vbs: false,
+    hyperv_vbs: true,
     windows: true,
     ubuntu: true,
     freebsd: true,

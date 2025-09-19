@@ -788,7 +788,7 @@ fn build_requirements_builder(
     if name.contains("hyperv") && name.contains("vbs") {
         let hyperv_vbs_requirement_expr = quote!(
             ::petri::requirements::TestRequirement::ExecutionEnvironment(
-                ::petri::requirements::ExecutionEnvironment::Nested
+                ::petri::requirements::ExecutionEnvironment::Baremetal
             )
         );
         requirement_expr = match requirement_expr {
