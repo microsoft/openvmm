@@ -7,6 +7,7 @@ use super::vm::CommandError;
 use super::vm::run_cmd;
 use crate::OpenHclServicingFlags;
 use crate::VmScreenshotMeta;
+use crate::requirements::HyperVGetVmHost;
 use anyhow::Context;
 use core::str;
 use guid::Guid;
@@ -38,20 +39,37 @@ impl ps::AsVal for HyperVGeneration {
 }
 
 /// Hyper-V Guest State Isolation Type
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(try_from = "i32")]
 pub enum HyperVGuestStateIsolationType {
     /// Trusted Launch (OpenHCL, SecureBoot, TPM)
-    TrustedLaunch,
+    TrustedLaunch = 0,
     /// VBS
-    Vbs,
+    Vbs = 1,
     /// SNP
-    Snp,
+    Snp = 2,
     /// TDX
-    Tdx,
+    Tdx = 3,
     /// OpenHCL but no isolation
-    OpenHCL,
+    OpenHCL = 16,
     /// No HCL and no isolation
-    Disabled,
+    Disabled = -1,
+}
+
+impl TryFrom<i32> for HyperVGuestStateIsolationType {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            -1 => Ok(HyperVGuestStateIsolationType::Disabled),
+            0 => Ok(HyperVGuestStateIsolationType::TrustedLaunch),
+            1 => Ok(HyperVGuestStateIsolationType::Vbs),
+            2 => Ok(HyperVGuestStateIsolationType::Snp),
+            3 => Ok(HyperVGuestStateIsolationType::Tdx),
+            16 => Ok(HyperVGuestStateIsolationType::OpenHCL),
+            _ => Err(format!("Unknown isolation type: {}", value)),
+        }
+    }
 }
 
 impl ps::AsVal for HyperVGuestStateIsolationType {
@@ -1006,4 +1024,23 @@ pub async fn run_set_turn_off_on_guest_restart(
     .await
     .map(|_| ())
     .context("set_turn_off_on_guest_restart")
+}
+
+/// Gets the VM host information and returns the output string
+pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
+    let output = run_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VMHost")
+            .pipeline()
+            .cmdlet("ConvertTo-Json")
+            .arg("Depth", 3)
+            .flag("Compress")
+            .finish()
+            .build(),
+    )
+    .await
+    .context("get_vm_host")?;
+
+    serde_json::from_str::<HyperVGetVmHost>(&output)
+        .map_err(|e| anyhow::anyhow!("failed to parse HyperVGetVmHost: {}", e))
 }

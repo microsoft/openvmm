@@ -575,9 +575,6 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `vbs`: Use VBS isolation.
 /// - `snp`: Use SNP isolation.
 /// - `tdx`: Use TDX isolation.
-///
-/// Each configuration can be optionally followed by a square-bracketed, comma-separated
-/// list of additional artifacts required for that particular configuration.
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
@@ -653,6 +650,10 @@ fn make_vmm_test(
     for config in args.configs {
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
+        // Build requirements based on the configuration
+        let requirements_builder = build_requirements_builder(&config, specific_vmm, &name);
+
+        // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
 
         let firmware = FirmwareAndArch {
@@ -699,7 +700,8 @@ fn make_vmm_test(
                         let config = #petri_vm_config;
                         #original_name(#original_args).await
                     })
-                }
+                },
+                Some(#requirements_builder)
             ).into(),
         };
 
@@ -710,4 +712,101 @@ fn make_vmm_test(
         ::petri::multitest!(vec![#tests]);
         #item
     })
+}
+
+// Helper to build requirements_builder TokenStream for a config and specific_vmm
+fn build_requirements_builder(
+    config: &Config,
+    specific_vmm: Option<Vmm>,
+    name: &str,
+) -> TokenStream {
+    let mut requirement_expr: Option<TokenStream> = None;
+
+    // Add isolation requirement if specified
+    if let Firmware::OpenhclUefi(
+        OpenhclUefiOptions {
+            isolation: Some(isolation),
+            ..
+        },
+        _,
+    ) = &config.firmware
+    {
+        let vmm_type = match (specific_vmm, config.vmm) {
+            (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => {
+                quote!(::petri::requirements::VmmType::HyperV)
+            }
+            (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => {
+                quote!(::petri::requirements::VmmType::OpenVmm)
+            }
+            _ => quote!(::petri::requirements::VmmType::OpenVmm), // Default to OpenVmm
+        };
+
+        let isolation_requirement = match isolation {
+            IsolationType::Vbs => quote!(::petri::requirements::TestRequirement::Isolation {
+                isolation_type: ::petri::requirements::IsolationType::Vbs,
+                vmm_type: #vmm_type
+            }),
+            IsolationType::Snp => quote!(::petri::requirements::TestRequirement::Isolation {
+                isolation_type: ::petri::requirements::IsolationType::Snp,
+                vmm_type: #vmm_type
+            }),
+            IsolationType::Tdx => quote!(::petri::requirements::TestRequirement::Isolation {
+                isolation_type: ::petri::requirements::IsolationType::Tdx,
+                vmm_type: #vmm_type
+            }),
+        };
+
+        requirement_expr = Some(isolation_requirement);
+    }
+
+    // Special case for "servicing" tests
+    if name.contains("servicing") {
+        let servicing_expr = quote!(::petri::requirements::TestRequirement::Not(Box::new(
+            ::petri::requirements::TestRequirement::And(
+                Box::new(::petri::requirements::TestRequirement::Vendor(
+                    ::petri::requirements::Vendor::Amd
+                )),
+                Box::new(
+                    ::petri::requirements::TestRequirement::ExecutionEnvironment(
+                        ::petri::requirements::ExecutionEnvironment::Nested
+                    )
+                )
+            )
+        )));
+
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#servicing_expr)
+                )
+            )),
+            None => Some(servicing_expr),
+        };
+    }
+
+    if name.contains("hyperv") && name.contains("vbs") {
+        let hyperv_vbs_requirement_expr = quote!(
+            ::petri::requirements::TestRequirement::ExecutionEnvironment(
+                ::petri::requirements::ExecutionEnvironment::Baremetal
+            )
+        );
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#hyperv_vbs_requirement_expr)
+                )
+            )),
+            None => Some(hyperv_vbs_requirement_expr),
+        };
+    }
+
+    // Default to "no requirements" if nothing was set
+    let final_expr =
+        requirement_expr.unwrap_or_else(|| quote!(::petri::requirements::TestRequirement::None));
+
+    quote! {
+        ::petri::requirements::TestCaseRequirements::new(#final_expr)
+    }
 }
