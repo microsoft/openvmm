@@ -103,15 +103,8 @@ use zerocopy::KnownLayout;
 /// The IO queue depth at which the controller switches from guest-signal-driven
 /// to poll-mode operation. This optimization reduces the guest exit rate by
 /// relying on (typically-interrupt-driven) IO completions to drive polling for
-/// new IO requests. Choose the different queue depth for remote disk since its
-/// IO latency is different from local disk.
-/// Azure VMs have the fixed SCSI controller ids. Both host and guest agents rely
-/// on the fixed ids. It is assumed that data (remote) disks are attached to SCSI
-/// controller with this specific id.
+/// new IO requests.
 const DEFAULT_POLL_MODE_QUEUE_DEPTH: u32 = 1;
-const REMOTE_DISK_POLL_MODE_QUEUE_DEPTH: u32 = 4;
-const REMOTE_DISK_SCSI_CONTROLLER_INSTANCE_ID: Guid =
-    guid::guid!("f8b3781b-1e82-4818-a1c3-63d806ec15bb");
 
 pub struct StorageDevice {
     instance_id: Guid,
@@ -1464,7 +1457,7 @@ impl StorageDevice {
             lun: 0,
         };
 
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
         controller.attach(path, disk).unwrap();
 
         // Construct the specific GUID that drivers in the guest expect for this
@@ -1601,22 +1594,18 @@ pub struct ScsiController {
 }
 
 impl ScsiController {
-    pub fn new(instance_id: Option<Guid>) -> Self {
-        let pmqd = if instance_id == Some(REMOTE_DISK_SCSI_CONTROLLER_INSTANCE_ID) {
-            REMOTE_DISK_POLL_MODE_QUEUE_DEPTH
-        } else {
-            DEFAULT_POLL_MODE_QUEUE_DEPTH
-        };
-        tracing::info!(
-            ?instance_id,
-            poll_mode_queue_depth = pmqd,
-            "poll mode queue depth chosen based on controller instance id"
-        );
+    pub fn new() -> Self {
+        Self::new_with_poll_mode_queue_depth(None)
+    }
+
+    pub fn new_with_poll_mode_queue_depth(poll_mode_queue_depth: Option<u32>) -> Self {
         Self {
             state: Arc::new(ScsiControllerState {
                 disks: Default::default(),
                 rescan_notification_source: Mutex::new(Vec::new()),
-                poll_mode_queue_depth: AtomicU32::new(pmqd),
+                poll_mode_queue_depth: AtomicU32::new(
+                    poll_mode_queue_depth.unwrap_or(DEFAULT_POLL_MODE_QUEUE_DEPTH),
+                ),
             }),
         }
     }
@@ -1810,7 +1799,7 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(16384);
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
         let disk = scsidisk::SimpleScsiDisk::new(
             disklayer_ram::ram_disk(10 * 1024 * 1024, false).unwrap(),
             Default::default(),
@@ -1879,7 +1868,7 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
 
         let _worker = TestWorker::start(
             controller.clone(),
@@ -1951,7 +1940,7 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
 
         let _worker = TestWorker::start(
             controller.clone(),
@@ -2001,7 +1990,7 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
 
         let worker = TestWorker::start(
             controller.clone(),
@@ -2041,7 +2030,7 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
 
         let _worker = TestWorker::start(
             controller.clone(),
@@ -2126,7 +2115,7 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
 
         let _worker = TestWorker::start(
             controller.clone(),
@@ -2172,7 +2161,7 @@ mod tests {
 
         let test_guest_mem = GuestMemory::allocate(16384);
         // create a controller with no disk yet.
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
 
         let test_worker = TestWorker::start(
             controller.clone(),
@@ -2330,7 +2319,7 @@ mod tests {
     #[async_test]
     pub async fn test_async_disk(driver: DefaultDriver) {
         let device = disklayer_ram::ram_disk(64 * 1024, false).unwrap();
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
         let disk = ScsiControllerDisk::new(Arc::new(scsidisk::SimpleScsiDisk::new(
             device,
             Default::default(),

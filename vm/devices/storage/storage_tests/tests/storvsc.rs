@@ -84,7 +84,7 @@ async fn test_request_response(driver: DefaultDriver) {
     let (host, guest) = connected_async_channels(16 * 1024);
 
     let mut test_guest_mem = GuestMemory::allocate(0x4000);
-    let controller = ScsiController::new(None);
+    let controller = ScsiController::new();
     let disk = scsidisk::SimpleScsiDisk::new(
         disklayer_ram::ram_disk(0x4000, false).unwrap(),
         Default::default(),

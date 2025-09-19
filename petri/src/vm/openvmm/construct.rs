@@ -896,6 +896,7 @@ impl PetriVmConfigSetupCore<'_> {
                                 .into_resource(),
                             }],
                             requests: None,
+                            poll_mode_queue_depth: None,
                         }
                         .into_resource(),
                     )]);

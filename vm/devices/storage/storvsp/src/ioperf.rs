@@ -28,7 +28,7 @@ impl PerfTester {
     pub async fn new(driver: impl SpawnDriver + Clone) -> Self {
         let io_queue_depth = None;
         let device = ram_disk(64 * 1024, true).unwrap();
-        let controller = ScsiController::new(None);
+        let controller = ScsiController::new();
         let disk =
             ScsiControllerDisk::new(Arc::new(SimpleScsiDisk::new(device, Default::default())));
         controller

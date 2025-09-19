@@ -1382,6 +1382,22 @@ async fn make_scsi_controller_config(
         scsi_disks.push(disk_cfg);
     }
 
+    // Set poll_mode_queue_depth = 4 for remote disk based on experiment results.
+    // Azure VMs have the fixed SCSI controller ids. Both host and guest agents
+    // rely on the fixed ids. It is assumed that data (remote) disks are attached
+    // to SCSI controller with this specific id.
+    let poll_mode_queue_depth =
+        if instance_id == guid::guid!("f8b3781b-1e82-4818-a1c3-63d806ec15bb") {
+            Some(4)
+        } else {
+            None
+        };
+    tracing::info!(
+        ?instance_id,
+        poll_mode_queue_depth,
+        "poll mode queue depth chosen based on controller instance id",
+    );
+
     let (send, recv) = mesh::channel();
     // The choice of max 256 scsi subchannels is somewhat arbitrary. But
     // for now, it provides a decent trade off between unbounded number of
@@ -1393,6 +1409,7 @@ async fn make_scsi_controller_config(
             devices: scsi_disks,
             io_queue_depth: Some(controller.io_queue_depth.unwrap_or(default_io_queue_depth)),
             requests: Some(recv),
+            poll_mode_queue_depth,
         },
         request: send,
         dvds,

@@ -46,6 +46,8 @@ pub struct ScsiControllerHandle {
     pub devices: Vec<ScsiDeviceAndPath>,
     /// Runtime request channel.
     pub requests: Option<mesh::Receiver<ScsiControllerRequest>>,
+    /// poll mode queue depth.
+    pub poll_mode_queue_depth: Option<u32>,
 }
 
 impl ResourceId<VmbusDeviceHandleKind> for ScsiControllerHandle {

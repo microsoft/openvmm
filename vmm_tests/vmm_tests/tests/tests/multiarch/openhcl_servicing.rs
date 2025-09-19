@@ -247,6 +247,7 @@ async fn shutdown_ic(
                         }],
                         io_queue_depth: None,
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));
