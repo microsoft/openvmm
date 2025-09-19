@@ -1,8 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Utilities for encoding various resource types into ACPI Machine Language (AML).
+
 use super::objects::*;
 
+/// An AML resource.
 pub trait ResourceObject {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>);
 
@@ -13,6 +16,7 @@ pub trait ResourceObject {
     }
 }
 
+/// A 32-bit, fixed-address AML memory resource.
 pub struct Memory32Fixed {
     is_writeable: bool,
     base_address: u32,
@@ -20,6 +24,7 @@ pub struct Memory32Fixed {
 }
 
 impl Memory32Fixed {
+    /// Construct a new [`Memory32Fixed`].
     pub fn new(base_address: u32, length: u32, is_writeable: bool) -> Self {
         Self {
             is_writeable,
@@ -40,6 +45,7 @@ impl ResourceObject for Memory32Fixed {
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
+/// Attributes for AML memory resources.
 pub enum MemoryAttribute {
     Memory = 0,
     _Reserved = 8,
@@ -49,6 +55,7 @@ pub enum MemoryAttribute {
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
+/// Cache types for AML memory resources.
 pub enum MemoryCacheType {
     _NonCacheable = 0,
     Cacheable = 2,
@@ -56,6 +63,7 @@ pub enum MemoryCacheType {
     _CacheableAndPrefetchable = 6,
 }
 
+/// A 32-bit AML memory resource.
 pub struct DwordMemory {
     pub length: u32,
     pub translation_offset: u32,
@@ -89,8 +97,8 @@ impl ResourceObject for DwordMemory {
     }
 }
 
-#[cfg(test)]
 impl DwordMemory {
+    /// Construct a new [`DwordMemory`].
     pub fn new(address: u32, length: u32) -> Self {
         assert!(address as u64 + length as u64 - 1 <= u32::MAX as u64);
         Self {
@@ -109,6 +117,7 @@ impl DwordMemory {
     }
 }
 
+/// A 64-bit AML memory resource.
 pub struct QwordMemory {
     pub is_io_backed: bool,
     pub attributes: MemoryAttribute,
@@ -120,6 +129,7 @@ pub struct QwordMemory {
 }
 
 impl QwordMemory {
+    /// Construct a new [`QwordMemory`].
     pub fn new(address: u64, length: u64) -> Self {
         assert!(address as u128 + length as u128 - 1 <= u64::MAX as u128);
         Self {
@@ -183,6 +193,7 @@ impl ResourceObject for BusNumber {
     }
 }
 
+/// An ACPI interrupt.
 pub struct Interrupt {
     pub is_wake_capable: bool,
     pub is_shared: bool,
@@ -193,6 +204,7 @@ pub struct Interrupt {
 }
 
 impl Interrupt {
+    /// Construct a new [`Interrupt`].
     pub fn new(number: u32) -> Self {
         Self {
             is_wake_capable: false,
@@ -220,6 +232,7 @@ impl ResourceObject for Interrupt {
     }
 }
 
+/// An ACPI IO port.
 pub struct IoPort {
     pub is_16bit_aware: bool,
     pub base_address: u16,
@@ -229,6 +242,7 @@ pub struct IoPort {
 }
 
 impl IoPort {
+    /// Construct a new [`IoPort`].
     pub fn new(start: u16, end: u16, length: u8) -> Self {
         Self {
             is_16bit_aware: true,
@@ -251,21 +265,24 @@ impl ResourceObject for IoPort {
     }
 }
 
+/// A group of current ACPI resources (CRS)
 pub struct CurrentResourceSettings {
     resources: Vec<u8>,
 }
 
 impl CurrentResourceSettings {
+    /// Construct a new [`CurrentResourceSettings`].
     pub fn new() -> Self {
         Self { resources: vec![] }
     }
 
+    /// Add a resource to the collection.
     pub fn add_resource(&mut self, resource: &impl ResourceObject) {
         resource.append_to_vec(&mut self.resources);
     }
 }
 
-impl DsdtObject for CurrentResourceSettings {
+impl AmlObject for CurrentResourceSettings {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
         let mut resource_bytes = self.resources.clone();
         // Add end of resource marker
@@ -280,7 +297,7 @@ impl DsdtObject for CurrentResourceSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsdt::tests::verify_expected_bytes;
+    use crate::aml::test_helpers::verify_expected_bytes;
 
     #[test]
     fn verify_memory_resource_object() {
