@@ -32,6 +32,8 @@ pub struct TpmDeviceHandle {
     pub logger: Option<Resource<TpmLoggerKind>>,
     /// Whether or not the TPM is in a confidential VM
     pub is_confidential_vm: bool,
+    /// BIOS GUID (for logging purposes)
+    pub bios_guid: String,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {

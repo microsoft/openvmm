@@ -6,6 +6,7 @@ use super::process_loop::msg::IgvmAttestRequestData;
 use crate::api::GuestSaveRequest;
 use crate::api::platform_settings;
 use chipset_resources::battery::HostBatteryUpdate;
+use cvm_tracing::CVM_ALLOWED;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
 use guid::Guid;
@@ -351,7 +352,14 @@ impl GuestEmulationTransportClient {
         gsp_extended_status: crate::api::GspExtendedStatusFlags,
     ) -> crate::api::GuestStateProtection {
         let mut buffer = [0; get_protocol::GSP_CLEARTEXT_MAX as usize * 2];
+        let start_time = std::time::SystemTime::now();
         getrandom::fill(&mut buffer).expect("rng failure");
+
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = "BeginGspCallback",
+            "Getting guest state protection data"
+        );
 
         let gsp_request = get_protocol::GuestStateProtectionRequest::new(
             buffer,
@@ -363,6 +371,15 @@ impl GuestEmulationTransportClient {
             .control
             .call(msg::Msg::GuestStateProtection, Box::new(gsp_request))
             .await;
+
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = "GspCallback",
+            latency = std::time::SystemTime::now()
+                .duration_since(start_time)
+                .map_or(0, |d| d.as_millis()),
+            "Got guest state protection data"
+        );
 
         crate::api::GuestStateProtection {
             encrypted_gsp: response.encrypted_gsp,
