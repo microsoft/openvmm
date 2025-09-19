@@ -2516,6 +2516,7 @@ dependencies = [
 name = "get_resources"
 version = "0.0.0"
 dependencies = [
+ "inspect",
  "mesh",
  "thiserror 2.0.16",
  "vm_resource",
@@ -2714,6 +2715,7 @@ dependencies = [
  "get_protocol",
  "getrandom 0.3.3",
  "guest_emulation_device",
+ "guestmem",
  "guid",
  "hvdef",
  "inspect",
@@ -7752,6 +7754,7 @@ dependencies = [
  "disklayer_ram",
  "get_protocol",
  "getrandom 0.3.3",
+ "guest_emulation_device",
  "guest_emulation_transport",
  "guid",
  "mesh",
@@ -7763,9 +7766,11 @@ dependencies = [
  "serde_json",
  "static_assertions",
  "tee_call",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "time",
  "tracing",
+ "user_driver_emulated_mock",
  "vmgs",
  "vmgs_format",
  "zerocopy 0.8.25",

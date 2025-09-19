@@ -11,6 +11,7 @@ vm_resource.workspace = true
 vmgs_resources.workspace = true
 
 mesh.workspace = true
+inspect.workspace = true
 
 thiserror.workspace = true
 
