@@ -270,6 +270,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         processor_topology,
         mem_layout,
         cache_topology: None,
+        pcie_host_bridges: &vec![],
         with_ioapic: true, // underhill always runs with ioapic
         with_pic: false,
         with_pit: false,
@@ -464,6 +465,7 @@ pub fn write_uefi_config(
             processor_topology,
             mem_layout,
             cache_topology: None,
+            pcie_host_bridges: &vec![],
             with_ioapic: cfg!(guest_arch = "x86_64"), // OpenHCL always runs with ioapic on x64
             with_pic: false,                          // uefi never runs with pic or pit
             with_pit: false,

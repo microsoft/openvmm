@@ -13,6 +13,7 @@ use std::io::Seek;
 use thiserror::Error;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ProcessorTopology;
 use zerocopy::IntoBytes;
 
@@ -47,9 +48,11 @@ pub fn load_uefi(
     gm: &GuestMemory,
     processor_topology: &ProcessorTopology,
     mem_layout: &MemoryLayout,
+    pcie_host_bridges: &Vec<PcieHostBridge>,
     load_settings: UefiLoadSettings,
     madt: &[u8],
     srat: &[u8],
+    mcfg: Option<&[u8]>,
     pptt: Option<&[u8]>,
 ) -> Result<Vec<Register>, Error> {
     if mem_layout.mmio().len() < 2 {
@@ -155,8 +158,27 @@ pub fn load_uefi(
         });
     }
 
+    if let Some(mcfg) = mcfg {
+        cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);
+    }
+
     if let Some(pptt) = pptt {
         cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+    }
+
+    if !pcie_host_bridges.is_empty() {
+        let mut ssdt = acpi::ssdt::Ssdt::new();
+        for bridge in pcie_host_bridges {
+            ssdt.add_pcie(
+                bridge.index,
+                bridge.segment,
+                bridge.start_bus,
+                bridge.end_bus,
+                bridge.low_mmio,
+                bridge.high_mmio,
+            );
+        }
+        cfg.add_raw(config::BlobStructureType::Ssdt, &ssdt.to_bytes());
     }
 
     let mut loader = Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);

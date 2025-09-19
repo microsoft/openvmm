@@ -2032,6 +2032,7 @@ async fn new_underhill_vm(
                 processor_topology: &processor_topology,
                 mem_layout: &mem_layout,
                 cache_topology: None,
+                pcie_host_bridges: &vec![],
                 with_ioapic: true, // underhill always runs with ioapic
                 with_pic: true,    // pcat always runs with pic and pit
                 with_pit: true,
