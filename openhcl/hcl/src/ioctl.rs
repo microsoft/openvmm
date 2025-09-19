@@ -89,6 +89,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+// TODO: Chunk this up into smaller per-interface errors.
 /// Error returned by HCL operations.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
@@ -136,8 +137,6 @@ pub enum Error {
     NumSignalEvent(#[source] io::Error),
     #[error("failed to create vtl")]
     CreateVTL(#[source] nix::Error),
-    #[error("Gva to gpa translation failed")]
-    TranslateGvaToGpa(#[source] TranslateGvaToGpaError),
     #[error("gpa failed vtl access check")]
     CheckVtlAccess(#[source] HvError),
     #[error("failed to set registers using set_vp_registers hypercall")]
@@ -1300,7 +1299,7 @@ impl MshvHvcall {
             assert!(size_of::<O>() <= HV_PAGE_SIZE as usize);
         }
         assert_size::<I, O>();
-        assert!(variable_input.len() % 8 == 0);
+        assert!(variable_input.len().is_multiple_of(8));
 
         let input = [input.as_bytes(), variable_input].concat();
         if input.len() > HV_PAGE_SIZE as usize {
@@ -1560,6 +1559,42 @@ impl MshvHvcall {
         };
 
         status.result()
+    }
+
+    /// Request a VBS VM report from the host VSM.
+    ///
+    /// # Arguments
+    /// - `report_data`: The data to include in the report.
+    ///
+    /// Returns a result containing the report or an error.
+    pub fn vbs_vm_call_report(
+        &self,
+        report_data: &[u8],
+    ) -> Result<[u8; hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE], HvError> {
+        if report_data.len() > hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let mut header = hvdef::hypercall::VbsVmCallReport {
+            report_data: [0; hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE],
+        };
+
+        header.report_data[..report_data.len()].copy_from_slice(report_data);
+
+        let mut output: hvdef::hypercall::VbsVmCallReportOutput = FromZeros::new_zeroed();
+
+        // SAFETY: The input header and slice are the correct types for this hypercall.
+        //         The hypercall output is validated right after the hypercall is issued.
+        let status = unsafe {
+            self.hvcall(HypercallCode::HvCallVbsVmCallReport, &header, &mut output)
+                .expect("submitting hypercall should not fail")
+        };
+
+        if status.result().is_ok() {
+            Ok(output.report)
+        } else {
+            Err(status.result().unwrap_err())
+        }
     }
 }
 

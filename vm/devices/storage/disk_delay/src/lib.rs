@@ -23,7 +23,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 /// A disk with delay on every I/O operation.
 #[derive(Inspect)]
 pub struct DelayDisk {
-    #[inspect(hex, with = "|x| inspect::AsDebug(x.get())")]
+    #[inspect(with = "|x| x.get()")]
     delay: Cell<Duration>,
     inner: Disk,
     driver: VmTaskDriver,
@@ -117,7 +117,7 @@ impl DiskIo for DelayDisk {
         sector: u64,
         count: u64,
         block_level_only: bool,
-    ) -> impl std::future::Future<Output = Result<(), DiskError>> + Send {
+    ) -> impl Future<Output = Result<(), DiskError>> + Send {
         self.inner.unmap(sector, count, block_level_only)
     }
 

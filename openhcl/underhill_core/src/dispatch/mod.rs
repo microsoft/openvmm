@@ -10,7 +10,7 @@ use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::netvsp::RuntimeSavedState;
-use crate::nvme_manager::NvmeManager;
+use crate::nvme_manager::manager::NvmeManager;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -38,6 +38,7 @@ use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
+use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerRpc;
@@ -86,10 +87,11 @@ pub enum UhVmRpc {
 pub trait LoadedVmNetworkSettings: Inspect {
     /// Callback to prepare for guest hibernation. This should remove any
     /// directly assigned devices before the guest saves state.
-    ///
-    /// When rollback is 'true' it means the hibernate request was vetoed, so
-    /// any changes can be undone.
-    async fn prepare_for_hibernate(&self, rollback: bool);
+    async fn prepare_for_hibernate(&self);
+
+    /// Callback to cancel preparation for guest hibernation. This should
+    /// restore any state updated via prepare_for_hibernate().
+    async fn cancel_prepare_for_hibernate(&self);
 
     /// Callback when network settings are modified externally.
     async fn modify_network_settings(
@@ -135,7 +137,7 @@ pub(crate) struct LoadedVm {
     pub firmware_type: FirmwareType,
     pub isolation: IsolationType,
     // contain task handles which must be kept live
-    pub _chipset_devices: ChipsetDevices,
+    pub chipset_devices: ChipsetDevices,
     // keep the unit task alive
     pub _vmtime: SpawnedUnit<VmTimeKeeper>,
     pub _halt_task: Task<()>,
@@ -145,6 +147,8 @@ pub(crate) struct LoadedVm {
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
     pub vmbus_client: Option<vmbus_client::VmbusClient>,
+    pub vmbus_filter: Option<vmbus_client::filter::ClientFilter>,
+    pub vpci_relay: Option<vpci_relay::VpciRelay>,
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
@@ -238,6 +242,14 @@ impl LoadedVm {
             .await
             .expect("no failure");
 
+        struct PendingShutdown {
+            guest_response: PendingRpc<ShutdownResult>,
+            send_result: Rpc<(), ShutdownResult>,
+            is_hibernate: bool,
+        }
+
+        let mut pending_shutdown_response: Option<PendingShutdown> = None;
+
         let state = loop {
             enum Event<T> {
                 WorkerRpc(WorkerRpc<T>),
@@ -247,6 +259,8 @@ impl LoadedVm {
                 VtlCrash(VtlCrash),
                 ServicingRequest(GuestSaveRequest),
                 ShutdownRequest(Rpc<ShutdownParams, ShutdownResult>),
+                ShutdownResponse(<PendingRpc<ShutdownResult> as Future>::Output),
+                VpciRelayReady,
             }
 
             let event: Event<T> = futures::select! { // merge semantics
@@ -255,6 +269,13 @@ impl LoadedVm {
                 message = vm_rpc.select_next_some() => Event::UhVmRpc(message),
                 message = self.crash_notification_recv.select_next_some() => Event::VtlCrash(message),
                 message = save_request_recv.select_next_some() => Event::ServicingRequest(message),
+                _ = async {
+                    if let Some(vpci_relay) = &mut self.vpci_relay {
+                        vpci_relay.wait_ready().await
+                    } else {
+                        std::future::pending().await
+                    }
+                }.fuse() => Event::VpciRelayReady,
                 message = async {
                     if self.shutdown_relay.is_none() {
                         std::future::pending::<()>().await;
@@ -262,6 +283,13 @@ impl LoadedVm {
                     let (recv, _) = self.shutdown_relay.as_mut().unwrap();
                     recv.select_next_some().await
                 }.fuse() => Event::ShutdownRequest(message),
+                message = async {
+                    if let Some(PendingShutdown{guest_response, ..}) = &mut pending_shutdown_response {
+                        guest_response.await
+                    } else {
+                        std::future::pending().await
+                    }
+                }.fuse() => Event::ShutdownResponse(message),
             };
 
             match event {
@@ -312,6 +340,9 @@ impl LoadedVm {
                         );
                         resp.field("memory", &self.memory);
                         resp.field("dma_manager", &self.dma_manager);
+                        resp.field("vmbus_client", &self.vmbus_client);
+                        resp.field("vmbus_filter", &self.vmbus_filter);
+                        resp.field("vpci_relay", &self.vpci_relay);
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
@@ -386,33 +417,67 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    rpc.handle(async |msg| {
-                        if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
-                            self.handle_hibernate_request(false).await;
+                    if pending_shutdown_response.is_some() {
+                        rpc.complete(ShutdownResult::AlreadyInProgress);
+                        continue;
+                    }
+                    let (msg, send_result) = rpc.split();
+                    let is_hibernate = matches!(msg.shutdown_type, ShutdownType::Hibernate);
+                    if is_hibernate {
+                        self.handle_hibernate_request().await;
+                    }
+                    let (_, send_guest) =
+                        self.shutdown_relay.as_mut().expect("active shutdown_relay");
+                    tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
+                    pending_shutdown_response = Some(PendingShutdown {
+                        guest_response: send_guest.call(ShutdownRpc::Shutdown, msg),
+                        send_result,
+                        is_hibernate,
+                    });
+                }
+                Event::ShutdownResponse(result) => {
+                    let response = match result {
+                        Ok(result) => result,
+                        Err(err) => {
+                            tracing::error!(
+                                CVM_ALLOWED,
+                                error = &err as &dyn std::error::Error,
+                                "Failed to relay shutdown notification to guest"
+                            );
+                            ShutdownResult::Failed(0x80004005)
                         }
-                        let (_, send_guest) =
-                            self.shutdown_relay.as_mut().expect("active shutdown_relay");
-                        tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
-                        let result = match send_guest.call(ShutdownRpc::Shutdown, msg).await {
-                            Ok(result) => result,
-                            Err(err) => {
-                                tracing::error!(
-                                    CVM_ALLOWED,
-                                    error = &err as &dyn std::error::Error,
-                                    "Failed to relay shutdown notification to guest"
-                                );
-                                ShutdownResult::Failed(0x80000001)
-                            }
-                        };
-                        if !matches!(result, ShutdownResult::Ok) {
-                            tracing::warn!(CVM_ALLOWED, ?result, "Shutdown request failed");
-                            self.handle_hibernate_request(true).await;
+                    };
+                    let PendingShutdown {
+                        send_result,
+                        is_hibernate,
+                        ..
+                    } = pending_shutdown_response
+                        .take()
+                        .expect("no pending shutdown response");
+                    if !matches!(response, ShutdownResult::Ok) {
+                        tracing::warn!(CVM_ALLOWED, ?response, "Shutdown request failed");
+                        if is_hibernate {
+                            self.cancel_hibernate_request().await;
                         }
-                        result
-                    })
-                    .await
+                    }
+                    send_result.complete(response);
                 }
                 Event::VtlCrash(vtl_crash) => self.notify_of_vtl_crash(vtl_crash),
+                Event::VpciRelayReady => {
+                    if let Err(err) = self
+                        .vpci_relay
+                        .as_mut()
+                        .unwrap()
+                        .process(&self.chipset_devices, &mut self.state_units)
+                        .await
+                    {
+                        tracing::error!(
+                            CVM_ALLOWED,
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "failed to process VPCI relay"
+                        );
+                    }
+                }
             }
         };
 
@@ -523,7 +588,7 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED))
+                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id))
                         .await;
                 }
             };
@@ -542,7 +607,7 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED))
+                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id))
                     .await
             };
 
@@ -594,25 +659,27 @@ impl LoadedVm {
         Ok(state)
     }
 
-    async fn handle_hibernate_request(&self, rollback: bool) {
+    async fn handle_hibernate_request(&self) {
         if let Some(network_settings) = &self.network_settings {
-            if !rollback {
-                network_settings
-                    .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!(
-                        "prepare_for_guest_hibernate",
-                        CVM_ALLOWED
-                    ))
-                    .await;
-            } else {
-                network_settings
-                    .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!(
-                        "rollback_prepare_for_guest_hibernate",
-                        CVM_ALLOWED
-                    ))
-                    .await;
-            };
+            network_settings
+                .prepare_for_hibernate()
+                .instrument(tracing::info_span!(
+                    "prepare_for_guest_hibernate",
+                    CVM_ALLOWED
+                ))
+                .await;
+        }
+    }
+
+    async fn cancel_hibernate_request(&self) {
+        if let Some(network_settings) = &self.network_settings {
+            network_settings
+                .cancel_prepare_for_hibernate()
+                .instrument(tracing::info_span!(
+                    "rollback_prepare_for_guest_hibernate",
+                    CVM_ALLOWED
+                ))
+                .await;
         }
     }
 

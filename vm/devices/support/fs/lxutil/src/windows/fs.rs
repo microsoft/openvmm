@@ -517,7 +517,7 @@ pub fn allocation_size_to_block_count(allocation_size: i64, block_size: u32) -> 
 
     if size >= block_size as u64 {
         result = size / LX_UTIL_FS_ALLOCATION_BLOCK_SIZE;
-        if size % LX_UTIL_FS_ALLOCATION_BLOCK_SIZE != 0 {
+        if !size.is_multiple_of(LX_UTIL_FS_ALLOCATION_BLOCK_SIZE) {
             result += 1;
         }
     }

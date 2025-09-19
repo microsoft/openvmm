@@ -199,16 +199,16 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
                         info,
                         next_action: _,
                     } => Some(super::ModifyConnectionRequest {
-                        version: Some(info.version.version as u32),
+                        version: Some(info.version),
                         interrupt_page: info.interrupt_page.into(),
-                        monitor_page: info.monitor_page.into(),
+                        monitor_page: info.monitor_page.map(|mp| mp.gpas).into(),
                         target_message_vp: Some(info.target_message_vp),
                         notify_relay: true,
                     }),
                     super::ConnectionState::Connected(info) => {
                         Some(super::ModifyConnectionRequest {
                             version: None,
-                            monitor_page: info.monitor_page.into(),
+                            monitor_page: info.monitor_page.map(|mp| mp.gpas).into(),
                             interrupt_page: info.interrupt_page.into(),
                             target_message_vp: Some(info.target_message_vp),
                             // If the save didn't happen while modifying, the relay doesn't need to be notified
@@ -782,18 +782,22 @@ struct MonitorPageGpas {
 }
 
 impl MonitorPageGpas {
-    fn save(value: super::MonitorPageGpas) -> Self {
+    fn save(value: super::MonitorPageGpaInfo) -> Self {
+        assert!(
+            !value.server_allocated,
+            "cannot save with server-allocated monitor pages"
+        );
         Self {
-            child_to_parent: value.child_to_parent,
-            parent_to_child: value.parent_to_child,
+            child_to_parent: value.gpas.child_to_parent,
+            parent_to_child: value.gpas.parent_to_child,
         }
     }
 
-    fn restore(self) -> super::MonitorPageGpas {
-        super::MonitorPageGpas {
+    fn restore(self) -> super::MonitorPageGpaInfo {
+        super::MonitorPageGpaInfo::from_guest_gpas(super::MonitorPageGpas {
             child_to_parent: self.child_to_parent,
             parent_to_child: self.parent_to_child,
-        }
+        })
     }
 }
 
@@ -812,9 +816,9 @@ impl MonitorPageRequest {
     fn save(value: super::MonitorPageRequest) -> Self {
         match value {
             super::MonitorPageRequest::None => MonitorPageRequest::None,
-            super::MonitorPageRequest::Some(mp) => {
-                MonitorPageRequest::Some(MonitorPageGpas::save(mp))
-            }
+            super::MonitorPageRequest::Some(mp) => MonitorPageRequest::Some(MonitorPageGpas::save(
+                super::MonitorPageGpaInfo::from_guest_gpas(mp),
+            )),
             super::MonitorPageRequest::Invalid => MonitorPageRequest::Invalid,
         }
     }
@@ -822,7 +826,7 @@ impl MonitorPageRequest {
     fn restore(self) -> super::MonitorPageRequest {
         match self {
             MonitorPageRequest::None => super::MonitorPageRequest::None,
-            MonitorPageRequest::Some(mp) => super::MonitorPageRequest::Some(mp.restore()),
+            MonitorPageRequest::Some(mp) => super::MonitorPageRequest::Some(mp.restore().gpas),
             MonitorPageRequest::Invalid => super::MonitorPageRequest::Invalid,
         }
     }

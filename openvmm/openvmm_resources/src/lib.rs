@@ -61,6 +61,7 @@ vm_resource::register_static_resolvers! {
     // PCI devices
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
+    nvme_test::resolver::NvmeFaultControllerResolver,
     virtio::resolver::VirtioPciResolver,
 
     // SCSI

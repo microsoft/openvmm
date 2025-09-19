@@ -147,7 +147,10 @@
                     i++; // skip '>'
                     return { type: 'bytes', value: input.slice(start, i) };
                 }
-                if (input[i] === '_') return { type: 'unevaluated' };
+                if (input[i] === '_') {
+                    i++; // skip '_'
+                    return { type: 'unevaluated' };
+                }
                 if (input[i] === 't') {
                     if (input.slice(i, i + 4) !== 'true') {
                         throw new Error(`Expected 'true' at position ${i}, saw '${input.slice(i, i + 10)}'`);

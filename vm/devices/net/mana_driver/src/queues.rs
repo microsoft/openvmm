@@ -291,8 +291,20 @@ impl Wq {
 
     /// Advances the head, indicating that `n` more bytes are available in the ring.
     pub fn advance_head(&mut self, n: u32) {
-        assert!(n % WQE_ALIGNMENT as u32 == 0);
+        assert!(n.is_multiple_of(WQE_ALIGNMENT as u32));
         self.head = self.head.wrapping_add(n);
+    }
+
+    fn get_offset_in_buffer_in_bytes(&self, offset: u32) -> usize {
+        (offset as usize * WQE_ALIGNMENT) & self.mask as usize
+    }
+
+    /// Reads from the offset, the first `n` bytes.
+    pub fn read(&mut self, offset: u32, n: usize) -> Vec<u8> {
+        let mut buf = vec![0; n];
+        let offset_in_buffer = self.get_offset_in_buffer_in_bytes(offset);
+        self.mem.read_at(offset_in_buffer, &mut buf);
+        buf
     }
 
     fn write_tail(&self, offset: u32, data: &[u8]) {

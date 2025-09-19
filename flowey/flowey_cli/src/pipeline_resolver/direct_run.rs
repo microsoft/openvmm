@@ -14,6 +14,8 @@ use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
 use flowey_core::node::RuntimeVarDb;
 use flowey_core::node::steps::rust::RustRuntimeServices;
+use flowey_core::pipeline::HostExt;
+use flowey_core::pipeline::PipelineBackendHint;
 use flowey_core::pipeline::internal::Parameter;
 use petgraph::prelude::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -117,16 +119,7 @@ fn direct_run_do_work(
             continue;
         }
 
-        // xtask-fmt allow-target-arch oneoff-flowey
-        let flow_arch = if cfg!(target_arch = "x86_64") {
-            FlowArch::X86_64
-        // xtask-fmt allow-target-arch oneoff-flowey
-        } else if cfg!(target_arch = "aarch64") {
-            FlowArch::Aarch64
-        } else {
-            unreachable!("flowey only runs on X86_64 or Aarch64 at the moment")
-        };
-
+        let flow_arch = FlowArch::host(PipelineBackendHint::Local);
         match (arch, flow_arch) {
             (FlowArch::X86_64, FlowArch::X86_64) | (FlowArch::Aarch64, FlowArch::Aarch64) => (),
             _ => {
@@ -135,11 +128,13 @@ fn direct_run_do_work(
             }
         }
 
-        let platform_ok = match platform {
-            FlowPlatform::Windows => cfg!(windows) || (cfg!(target_os = "linux") && windows_as_wsl),
-            FlowPlatform::Linux(_) => cfg!(target_os = "linux"),
-            FlowPlatform::MacOs => cfg!(target_os = "macos"),
-            platform => panic!("unknown platform {platform}"),
+        let flow_platform = FlowPlatform::host(PipelineBackendHint::Local);
+        let platform_ok = match (platform, flow_platform) {
+            (FlowPlatform::Windows, FlowPlatform::Windows) => true,
+            (FlowPlatform::Windows, FlowPlatform::Linux(_)) if windows_as_wsl => true,
+            (FlowPlatform::Linux(_), FlowPlatform::Linux(_)) => true,
+            (FlowPlatform::MacOs, FlowPlatform::MacOs) => true,
+            _ => false,
         };
 
         if !platform_ok {

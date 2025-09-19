@@ -85,10 +85,12 @@ macro_rules! define_vmm_test_selection_flags {
 
 define_vmm_test_selection_flags! {
     tdx: false,
+    snp: false,
     hyperv_vbs: false,
     windows: true,
     ubuntu: true,
     freebsd: true,
+    linux: true,
     openhcl: true,
     openvmm: true,
     hyperv: true,
@@ -162,6 +164,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
+        ctx.import::<crate::download_release_igvm_files_from_gh::resolve::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
@@ -211,10 +214,12 @@ impl SimpleFlowNode for Node {
             } => (filter, artifacts, build, deps),
             VmmTestSelections::Flags(VmmTestSelectionFlags {
                 tdx,
+                snp,
                 hyperv_vbs,
                 windows,
                 mut ubuntu,
                 freebsd,
+                linux,
                 mut openhcl,
                 openvmm,
                 hyperv,
@@ -245,12 +250,14 @@ impl SimpleFlowNode for Node {
                 if !tdx {
                     filter.push_str(" & !test(tdx)");
                 }
+                if !snp {
+                    filter.push_str(" & !test(snp)");
+                }
                 if !hyperv_vbs {
                     filter.push_str(" & !(test(vbs) & test(hyperv))");
                 }
                 if !ubuntu {
                     filter.push_str(" & !test(ubuntu)");
-                    build.pipette_linux = false;
                 }
                 if !windows {
                     filter.push_str(" & !test(windows)");
@@ -258,6 +265,12 @@ impl SimpleFlowNode for Node {
                 }
                 if !freebsd {
                     filter.push_str(" & !test(freebsd)");
+                }
+                if !linux {
+                    filter.push_str(" & !test(linux)");
+                }
+                if !linux && !ubuntu {
+                    build.pipette_linux = false;
                 }
                 if !openhcl {
                     filter.push_str(" & !test(openhcl)");
@@ -291,19 +304,22 @@ impl SimpleFlowNode for Node {
                     CommonArch::X86_64 => {
                         let mut artifacts = Vec::new();
 
-                        if windows && (tdx || hyperv_vbs) {
+                        if windows && (tdx || snp || hyperv_vbs) {
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
+                        }
+                        if ubuntu && (tdx || snp || hyperv_vbs) {
+                            artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
                         }
                         if ubuntu {
                             artifacts.push(KnownTestArtifacts::Ubuntu2204ServerX64Vhd);
                         }
-                        if windows {
-                            artifacts.extend_from_slice(&[
-                                KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
-                                KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
-                            ]);
+                        if windows && uefi {
+                            artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
                         }
-                        if freebsd {
+                        if windows && pcat {
+                            artifacts.push(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd);
+                        }
+                        if freebsd && pcat {
                             artifacts.extend_from_slice(&[
                                 KnownTestArtifacts::FreeBsd13_2X64Vhd,
                                 KnownTestArtifacts::FreeBsd13_2X64Iso,
@@ -336,7 +352,7 @@ impl SimpleFlowNode for Node {
                     target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
                         hyperv,
                         whp: openvmm,
-                        hardware_isolation: tdx,
+                        hardware_isolation: tdx || snp,
                     },
                     target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
                     _ => unreachable!(),
@@ -381,7 +397,8 @@ impl SimpleFlowNode for Node {
                 let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
                 let (read_built_sidecar, built_sidecar) = ctx.new_var();
                 ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
-                    profile: openvmm_hcl_profile,
+                    build_profile: openvmm_hcl_profile,
+                    release_cfg: release,
                     recipe: recipe.clone(),
                     custom_target: None,
                     built_openvmm_hcl,
@@ -648,6 +665,16 @@ impl SimpleFlowNode for Node {
         copy_to_dir.push((nextest_bin.to_owned(), nextest_bin_src));
         let nextest_bin = test_content_dir.join(nextest_bin);
 
+        let release_igvm_files =
+            ctx.reqv(
+                |v| crate::download_release_igvm_files_from_gh::resolve::Request {
+                    arch,
+                    release_igvm_files: v,
+                    release_version:
+                        crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
+                },
+            );
+
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
             vmm_tests_target: target.clone(),
@@ -662,6 +689,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,
+            release_igvm_files: Some(release_igvm_files),
             use_relative_paths: build_only,
         });
 

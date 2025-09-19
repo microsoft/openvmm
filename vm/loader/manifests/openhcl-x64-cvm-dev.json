@@ -26,13 +26,13 @@
             "max_vtl": 2,
             "isolation_type": {
                 "tdx": {
-                    "enable_debug": true,
+                    "enable_debug": false,
                     "sept_ve_disable": true
                 }
             },
             "image": {
                 "openhcl": {
-                    "command_line": "",
+                    "command_line": "OPENHCL_CONFIDENTIAL_DEBUG=1",
                     "memory_page_count": 163840,
                     "memory_page_base": 32768,
                     "uefi": true

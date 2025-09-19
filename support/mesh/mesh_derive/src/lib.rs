@@ -178,7 +178,7 @@ impl Parse for Attr {
         } else if ident == "rename" {
             Ok(Self::Rename(parse_string_attr(input)?))
         } else {
-            return Err(syn::Error::new_spanned(ident, "unknown attribute"));
+            Err(syn::Error::new_spanned(ident, "unknown attribute"))
         }
     }
 }
@@ -254,7 +254,7 @@ impl Parse for ItemAttr {
         } else if ident == "transparent" {
             Ok(Self::Transparent)
         } else {
-            return Err(syn::Error::new_spanned(ident, "unknown attribute"));
+            Err(syn::Error::new_spanned(ident, "unknown attribute"))
         }
     }
 }

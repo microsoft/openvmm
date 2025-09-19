@@ -186,6 +186,22 @@ impl MonitorPage {
 
         true
     }
+
+    /// Checks if a read if inside the monitor page, and fills the buffer if it is.
+    /// N.B. This is used to handle cases where the instruction emulator needs to read the monitor
+    ///      page. The guest should have read access to the page so doesn't need to go through this
+    ///      path.
+    pub fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        let page_gpa = self.gpa.load(Ordering::Relaxed);
+        if page_gpa != gpa & !(HV_PAGE_SIZE - 1) {
+            return false;
+        }
+
+        // Since this implementation does not use the distinct armed and pending states, always
+        // returning a zero-filled buffer is sufficient.
+        bytes.fill(0);
+        true
+    }
 }
 
 // Represents a registered monitor ID, which will be unregistered when the struct is dropped.

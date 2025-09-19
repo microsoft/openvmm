@@ -216,7 +216,7 @@ mod save_restore {
         #[mesh(package = "firmware.in_memory_nvram")]
         pub struct SavedState {
             #[mesh(1)]
-            pub nvram: Vec<NvramEntry>,
+            pub nvram: Option<Vec<NvramEntry>>,
         }
     }
 
@@ -225,39 +225,41 @@ mod save_restore {
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
-                nvram: self
-                    .nvram
-                    .iter()
-                    .map(|(k, v)| state::NvramEntry {
-                        vendor: k.vendor,
-                        name: k.name.clone().into_inner(),
-                        data: v.data.clone(),
-                        timestamp: v.timestamp,
-                        attr: v.attr,
-                    })
-                    .collect(),
+                nvram: Some(
+                    self.nvram
+                        .iter()
+                        .map(|(k, v)| state::NvramEntry {
+                            vendor: k.vendor,
+                            name: k.name.clone().into_inner(),
+                            data: v.data.clone(),
+                            timestamp: v.timestamp,
+                            attr: v.attr,
+                        })
+                        .collect(),
+                ),
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { nvram } = state;
-            self.nvram = nvram
-                .into_iter()
-                .map::<Result<(VariableKey, Variable), RestoreError>, _>(|e| {
-                    Ok((
-                        VariableKey {
-                            vendor: e.vendor,
-                            name: Ucs2LeVec::from_vec_with_nul(e.name)
-                                .map_err(|e| RestoreError::InvalidSavedState(e.into()))?,
-                        },
-                        Variable {
-                            data: e.data,
-                            timestamp: e.timestamp,
-                            attr: e.attr,
-                        },
-                    ))
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()?;
+            if let state::SavedState { nvram: Some(nvram) } = state {
+                self.nvram = nvram
+                    .into_iter()
+                    .map::<Result<(VariableKey, Variable), RestoreError>, _>(|e| {
+                        Ok((
+                            VariableKey {
+                                vendor: e.vendor,
+                                name: Ucs2LeVec::from_vec_with_nul(e.name)
+                                    .map_err(|e| RestoreError::InvalidSavedState(e.into()))?,
+                            },
+                            Variable {
+                                data: e.data,
+                                timestamp: e.timestamp,
+                                attr: e.attr,
+                            },
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+            }
             Ok(())
         }
     }

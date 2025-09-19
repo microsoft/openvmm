@@ -690,6 +690,11 @@ builtin_field_type!(i32, SignedVarintField, "sint32");
 builtin_field_type!(i16, SignedVarintField, "sint32");
 builtin_field_type!(i8, SignedVarintField, "sint32");
 builtin_field_type!(isize, SignedVarintField, "sint64");
+builtin_field_type!(NonZeroI64, SignedVarintField, "sint64");
+builtin_field_type!(NonZeroI32, SignedVarintField, "sint32");
+builtin_field_type!(NonZeroI16, SignedVarintField, "sint32");
+builtin_field_type!(NonZeroI8, SignedVarintField, "sint32");
+builtin_field_type!(NonZeroIsize, SignedVarintField, "sint64");
 
 impl<T: ToNumber, R> FieldEncode<T, R> for SignedVarintField {
     fn write_field(item: T, writer: FieldWriter<'_, '_, R>) {
@@ -733,7 +738,7 @@ impl<'a, T: FromNumber, R> FieldDecode<'a, T, R> for SignedVarintField {
     }
 
     fn default_field(item: &mut InplaceOption<'_, T>) -> Result<()> {
-        item.set(T::from_i64(0).unwrap());
+        item.set(T::from_i64(0)?);
         Ok(())
     }
 

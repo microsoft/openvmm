@@ -19,7 +19,10 @@ use crate::DebugEventHandler;
 use crate::VmmChipsetDevice;
 use crate::chipset::Chipset;
 use crate::chipset::io_ranges::IoRanges;
+use anyhow::Context as _;
+use arc_cyclic_builder::ArcCyclicBuilderExt as _;
 use chipset_device::ChipsetDevice;
+use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device_resources::LineSetId;
 use closeable_mutex::CloseableMutex;
 use pal_async::task::Spawn;
@@ -40,6 +43,7 @@ pub struct ChipsetDevices {
     _chipset_task: Task<()>,
     _arc_mutex_device_units: Vec<SpawnedUnit<ArcMutexChipsetDeviceUnit>>,
     _line_set_units: Vec<SpawnedUnit<()>>,
+    mmio_ranges: IoRanges<u64>,
 }
 
 impl ChipsetDevices {
@@ -49,6 +53,44 @@ impl ChipsetDevices {
     /// dependency on this handle.
     pub fn chipset_unit(&self) -> &UnitHandle {
         &self.chipset_unit
+    }
+
+    /// Adds a dynamically managed device to the chipset at runtime.
+    pub async fn add_dyn_device<T: VmmChipsetDevice>(
+        &self,
+        driver_source: &VmTaskDriverSource,
+        units: &StateUnits,
+        name: impl Into<Arc<str>>,
+        f: impl AsyncFnOnce(&mut dyn RegisterMmioIntercept) -> anyhow::Result<T>,
+    ) -> anyhow::Result<(DynamicDeviceUnit, Arc<CloseableMutex<T>>)> {
+        let name = name.into();
+        let arc_builder = Arc::<CloseableMutex<T>>::new_cyclic_builder();
+        let device = f(
+            &mut super::backing::arc_mutex::services::register_mmio_for_device(
+                name.clone(),
+                arc_builder.weak(),
+                self.mmio_ranges.clone(),
+            ),
+        )
+        .await?;
+        let device = arc_builder.build(CloseableMutex::new(device));
+        let device_unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+        let builder = units.add(name).dependency_of(self.chipset_unit());
+        let unit = builder
+            .spawn(driver_source.simple(), |recv| device_unit.run(recv))
+            .context("name in use")?;
+
+        Ok((DynamicDeviceUnit(unit), device))
+    }
+}
+
+/// A unit handle for a dynamically managed device.
+pub struct DynamicDeviceUnit(SpawnedUnit<ArcMutexChipsetDeviceUnit>);
+
+impl DynamicDeviceUnit {
+    /// Removes and drops the dynamically managed device.
+    pub async fn remove(self) {
+        self.0.remove().await;
     }
 }
 
@@ -227,6 +269,8 @@ impl<'a> ChipsetBuilder<'a> {
             return Err(FinalChipsetBuilderError(err));
         }
 
+        let mmio_ranges = self.vm_chipset.mmio_ranges.clone();
+
         // Spawn a task for the chipset unit.
         let vm_chipset = Arc::new(self.vm_chipset);
         let chipset_task = self.driver_source.simple().spawn("chipset-unit", {
@@ -244,6 +288,7 @@ impl<'a> ChipsetBuilder<'a> {
             _chipset_task: chipset_task,
             _arc_mutex_device_units: self.arc_mutex_device_units,
             _line_set_units: self.line_sets.units,
+            mmio_ranges,
         };
 
         Ok((vm_chipset, devices))

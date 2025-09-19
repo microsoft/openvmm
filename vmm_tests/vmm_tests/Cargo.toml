@@ -29,11 +29,14 @@ vtl2_settings_proto.workspace = true
 disk_backend_resources.workspace = true
 hyperv_ic_resources.workspace = true
 hvdef.workspace = true
+net_backend_resources.workspace = true
 nvme_resources.workspace = true
+nvme_spec.workspace = true
+nvme_test.workspace = true
 scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
+virtio_resources.workspace = true
 vm_resource.workspace = true
-vmm_core_defs.workspace = true
 
 guid.workspace = true
 kmsg.workspace = true
@@ -49,6 +52,7 @@ cfg-if.workspace = true
 futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true
+zerocopy.workspace = true
 
 hvlite_ttrpc_vmservice.workspace = true
 

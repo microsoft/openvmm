@@ -57,7 +57,6 @@ use vmbus_channel::bus::OfferInput;
 use vmbus_channel::bus::OfferResources;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::bus::OpenRequest;
-use vmbus_channel::bus::OpenResult;
 use vmbus_channel::bus::ParentBus;
 use vmbus_channel::channel::ChannelHandle;
 use vmbus_channel::channel::VmbusDevice;
@@ -87,7 +86,7 @@ use zerocopy::KnownLayout;
 const VMNIC_CHANNEL_TYPE_GUID: Guid = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
 
 enum ChannelResponse {
-    Open(Option<OpenResult>),
+    Open(bool),
     Close,
     Gpadl(bool),
     // TeardownGpadl(GpadlId),
@@ -334,20 +333,24 @@ impl NetQueue for TestNicQueue {
         if self.rx_ids.is_empty() {
             return Poll::Pending;
         }
-        let recv = std::pin::pin!(self.rx.recv());
-        self.next_rx_packet = Some(std::task::ready!(recv.poll(cx)).unwrap());
+        if self.next_rx_packet.is_none() {
+            let recv = std::pin::pin!(self.rx.recv());
+            self.next_rx_packet = Some(std::task::ready!(recv.poll(cx)).unwrap());
+        }
         Poll::Ready(())
     }
 
     fn rx_avail(&mut self, done: &[RxId]) {
-        for rx_id in done.iter() {
-            self.rx_ids.push_back(*rx_id);
-        }
+        self.rx_ids.extend(done);
     }
 
     fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
-        if packets.is_empty() {
+        if packets.is_empty() || self.rx_ids.is_empty() {
             return Ok(0);
+        }
+
+        if self.next_rx_packet.is_none() {
+            self.next_rx_packet = self.rx.try_recv().ok();
         }
 
         if let Some(packet) = self.next_rx_packet.take() {
@@ -576,18 +579,19 @@ impl TestNicDevice {
             .await
             .expect("open successful");
 
-        let ChannelResponse::Open(Some(result)) = open_response else {
+        let ChannelResponse::Open(true) = open_response else {
             panic!("Unexpected return value");
         };
 
         let mem = self.mock_vmbus.memory.clone();
+        let guest_to_host_interrupt = self.offer_input.event.clone();
         TestNicChannel::new(
             self,
             &mem,
             gpadl_map,
             ring_gpadl_id,
             host_to_guest_event,
-            result.guest_to_host_interrupt,
+            guest_to_host_interrupt,
         )
     }
 
@@ -631,16 +635,17 @@ impl TestNicDevice {
             .await
             .expect("open successful");
 
-        let ChannelResponse::Open(Some(result)) = open_response else {
+        let ChannelResponse::Open(true) = open_response else {
             panic!("Unexpected return value");
         };
 
+        let guest_to_host_interrupt = self.offer_input.event.clone();
         TestNicSubchannel::new(
             &self.mock_vmbus.memory,
             gpadl_map,
             ring_gpadl_id,
             host_to_guest_event,
-            result.guest_to_host_interrupt,
+            guest_to_host_interrupt,
         )
     }
 
@@ -690,7 +695,7 @@ impl TestNicDevice {
         next_avail_guest_page: usize,
         next_avail_gpadl_id: u32,
         host_to_guest_interrupt: Interrupt,
-    ) -> anyhow::Result<Option<Interrupt>> {
+    ) -> anyhow::Result<()> {
         // Restore the previous memory settings
         assert_eq!(self.next_avail_gpadl_id, 1);
         self.next_avail_gpadl_id = next_avail_gpadl_id;
@@ -709,7 +714,6 @@ impl TestNicDevice {
             })
             .collect::<Vec<(GpadlId, MultiPagedRangeBuf<Vec<u64>>)>>();
 
-        let mut guest_to_host_interrupt = None;
         mesh::CancelContext::new()
             .with_timeout(Duration::from_millis(1000))
             .until_cancelled(async {
@@ -732,8 +736,7 @@ impl TestNicDevice {
                                             accepted: true,
                                         }
                                     }).collect::<Vec<vmbus_channel::bus::RestoredGpadl>>();
-                                    rpc.handle_sync(|open| {
-                                        guest_to_host_interrupt = open.map(|open| open.guest_to_host_interrupt);
+                                    rpc.handle_sync(|_open| {
                                         Ok(vmbus_channel::bus::RestoreResult {
                                             open_request: Some(OpenRequest {
                                                 open_data: OpenData {
@@ -761,7 +764,7 @@ impl TestNicDevice {
             .await
             .unwrap()?;
 
-        Ok(guest_to_host_interrupt)
+        Ok(())
     }
 }
 
@@ -1275,6 +1278,7 @@ impl<'a> TestNicChannel<'a> {
         buffer: SavedStateBlob,
     ) -> anyhow::Result<TestNicChannel<'_>> {
         let mem = self.nic.mock_vmbus.memory.clone();
+        let guest_to_host_interrupt = nic.offer_input.event.clone();
         let host_to_guest_interrupt = {
             let event = self.host_to_guest_event.clone();
             Interrupt::from_fn(move || event.signal())
@@ -1285,17 +1289,15 @@ impl<'a> TestNicChannel<'a> {
         let next_avail_guest_page = self.nic.next_avail_guest_page;
         let next_avail_gpadl_id = self.nic.next_avail_gpadl_id;
 
-        let guest_to_host_interrupt = nic
-            .restore(
-                buffer,
-                gpadl_map.clone(),
-                channel_id,
-                next_avail_guest_page,
-                next_avail_gpadl_id,
-                host_to_guest_interrupt,
-            )
-            .await?
-            .expect("should be open");
+        nic.restore(
+            buffer,
+            gpadl_map.clone(),
+            channel_id,
+            next_avail_guest_page,
+            next_avail_gpadl_id,
+            host_to_guest_interrupt,
+        )
+        .await?;
 
         Ok(TestNicChannel::new(
             nic,
@@ -3675,13 +3677,11 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(50))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
@@ -3709,19 +3709,17 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(250))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
 
     // Sending the same state as the current is considered a toggle.
-    // For example, if the link is up, sending a up is a toggle up->down->up and vice versa.
+    // For example, if the link is up, sending an up is a toggle up->down->up and vice versa.
     // And, there is a time delay in between the transition.
     TestNicEndpointState::update_link_status(&endpoint_state, [true].as_slice());
     let link_status_msg: rndisprot::IndicateStatus = channel
@@ -3729,13 +3727,11 @@ async fn link_status_update(driver: DefaultDriver) {
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_DISCONNECT);
-    // The rndis read will wait for the link timeout duration. Just add a bit more delay as to
-    // allow the notification to come through with higher reliability.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(50))
-        .await;
     let link_status_msg: rndisprot::IndicateStatus = channel
-        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG)
+        .read_rndis_control_message_with_timeout(
+            rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
+            LINK_DELAY_DURATION * 2,
+        )
         .await
         .unwrap();
     assert_eq!(link_status_msg.status, rndisprot::STATUS_MEDIA_CONNECT);
@@ -3792,7 +3788,7 @@ async fn link_status_update(driver: DefaultDriver) {
     let link_status_msg: Option<rndisprot::IndicateStatus> = channel
         .read_rndis_control_message_with_timeout(
             rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG,
-            Duration::from_millis(10),
+            LINK_DELAY_DURATION / 10,
         )
         .await;
     assert!(link_status_msg.is_none());
@@ -3872,6 +3868,290 @@ async fn send_rndis_indicate_status_message(driver: DefaultDriver) {
             &[],
         )
         .await;
+}
+
+#[async_test]
+async fn send_rndis_set_packet_filter(driver: DefaultDriver) {
+    const TOTAL_QUEUES: u32 = 4;
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(
+            TOTAL_QUEUES as usize - 1,
+            protocol::NdisConfigCapabilities::new().with_sriov(true),
+        )
+        .await;
+
+    let rndis_parser = channel.rndis_message_parser();
+
+    // Send and verify Initialization
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(_) => (),
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("association packet");
+
+    // Allocate subchannels
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+        },
+        data: protocol::Message5SubchannelRequest {
+            operation: protocol::SubchannelOperation::ALLOCATE,
+            num_sub_channels: TOTAL_QUEUES - 1,
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 123,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::SUCCESS);
+                assert_eq!(completion_data.num_sub_channels, TOTAL_QUEUES - 1);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
+
+    for idx in 1..TOTAL_QUEUES {
+        channel.connect_subchannel(idx).await;
+    }
+
+    // Send Indirection Table
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let mut reader = packet.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE5_TYPE_SEND_INDIRECTION_TABLE
+                );
+                packet.transaction_id()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("indirection table message after all channels connected");
+    if let Some(transaction_id) = transaction_id {
+        channel
+            .write(OutgoingPacket {
+                transaction_id,
+                packet_type: OutgoingPacketType::Completion,
+                payload: &NvspMessage {
+                    header: protocol::MessageHeader {
+                        message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                    },
+                    data: protocol::Message1SendRndisPacketComplete {
+                        status: protocol::Status::SUCCESS,
+                    },
+                    padding: &[],
+                }
+                .payload(),
+            })
+            .await;
+    }
+
+    // Send a packet on every queue.
+    {
+        let locked_state = endpoint_state.lock();
+        for (idx, queue) in locked_state.queues.iter().enumerate() {
+            queue.send(vec![idx as u8]);
+        }
+    }
+
+    // Expect no packets
+    for idx in 0..TOTAL_QUEUES {
+        channel
+            .read_subchannel_with(idx, |_| panic!("Unexpected packet on subchannel {}", idx))
+            .await
+            .expect_err("Packet should have been filtered");
+    }
+
+    // Set packet filter
+    let request_id = 456;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Send a packet on every queue.
+    {
+        let locked_state = endpoint_state.lock();
+        for (idx, queue) in locked_state.queues.iter().enumerate() {
+            queue.send(vec![idx as u8]);
+        }
+    }
+
+    // Receive and complete the data packets.
+    for idx in 0..TOTAL_QUEUES {
+        let txid = channel
+            .read_subchannel_with(idx, |packet| match packet {
+                IncomingPacket::Data(packet) => {
+                    let (_, external_ranges) = rndis_parser.parse_data_message(packet);
+                    let data: u8 = rndis_parser.get_data_packet_content(&external_ranges);
+                    assert_eq!(idx, data as u32);
+                    packet
+                        .transaction_id()
+                        .expect("data packets should have txid")
+                }
+                _ => panic!("Unexpected packet on subchannel {}", idx),
+            })
+            .await
+            .expect("Data packet");
+        channel
+            .write_subchannel(
+                idx,
+                OutgoingPacket {
+                    transaction_id: txid,
+                    packet_type: OutgoingPacketType::Completion,
+                    payload: &NvspMessage {
+                        header: protocol::MessageHeader {
+                            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                        },
+                        data: protocol::Message1SendRndisPacketComplete {
+                            status: protocol::Status::SUCCESS,
+                        },
+                        padding: &[],
+                    }
+                    .payload(),
+                },
+            )
+            .await;
+    }
+
+    // Set packet filter to None
+    let request_id = 789;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NDIS_PACKET_TYPE_NONE.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    // Test sending packets with the filter set to None.
+    for _ in 0..2 {
+        let locked_state = endpoint_state.lock();
+        for (idx, queue) in locked_state.queues.iter().enumerate() {
+            queue.send(vec![idx as u8]);
+        }
+    }
+
+    // Expect no packets
+    for idx in 0..TOTAL_QUEUES {
+        channel
+            .read_subchannel_with(idx, |_| panic!("Unexpected packet on subchannel {}", idx))
+            .await
+            .expect_err("Packet should have been filtered");
+    }
+
+    // Set packet filter to receive new packets.
+    let request_id = 456;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let _: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    // Expect processing of rx packets to have stopped because of the filter
+    // state. For the test queues, this means they should still have pending
+    // data, so rx packets should be available.
+    for idx in 0..TOTAL_QUEUES {
+        channel
+            .read_subchannel_with(idx, |_| ())
+            .await
+            .expect("Data packet");
+    }
 }
 
 #[async_test]
@@ -4437,6 +4717,29 @@ async fn set_rss_parameter_bufs_not_evenly_divisible(driver: DefaultDriver) {
             })
             .await;
     }
+
+    // Set packet filter
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &rndisprot::NPROTO_PACKET_FILTER.to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+
+    assert_eq!(set_complete.request_id, 0);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
 
     // Receive a packet on every queue.
     {

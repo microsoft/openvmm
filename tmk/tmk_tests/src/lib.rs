@@ -9,8 +9,11 @@ use anyhow::Context as _;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn as _;
+use petri::PetriVm;
+use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
+use petri::openvmm::OpenVmmPetriBackend;
 use petri_artifacts_common::tags::MachineArch;
 
 petri::test!(host_tmks, |resolver| resolve_host_tmks(resolver, false));
@@ -71,7 +74,7 @@ fn host_tmks_core(
     driver
         .spawn(
             "log",
-            petri::log_stream(params.logger.log_file("tmk_vmm")?, stdout),
+            petri::log_task(params.logger.log_file("tmk_vmm")?, stdout, "tmk_vmm stdout"),
         )
         .detach();
 
@@ -136,10 +139,10 @@ fn resolve_paravisor_tmk_artifacts(
 const OPENHCL_COMMAND_LINE: &str =
     "OPENHCL_WAIT_FOR_START=1 OPENHCL_SIGNAL_VTL0_STARTED=1 OPENHCL_WAIT_FOR_MODULES=1";
 
-async fn openhcl_tmks(
+async fn openhcl_tmks_inner<T: PetriVmmBackend>(
     driver: &DefaultDriver,
     params: &petri::PetriTestParams<'_>,
-    vm: &mut dyn petri::PetriVm,
+    vm: &mut PetriVm<T>,
 ) -> anyhow::Result<()> {
     let agent = vm.wait_for_vtl2_agent().await?;
     let mut child = agent
@@ -156,9 +159,10 @@ async fn openhcl_tmks(
     driver
         .spawn(
             "log",
-            petri::log_stream(
+            petri::log_task(
                 params.logger.log_file("tmk_vmm")?,
                 child.stdout.take().unwrap(),
+                "tmk_vmm stdout",
             ),
         )
         .detach();
@@ -175,51 +179,66 @@ async fn openhcl_tmks(
     Ok(())
 }
 
-petri::test!(openvmm_openhcl_tmks, resolve_openvmm_openhcl_tmks);
+petri::test!(
+    openvmm_openhcl_tmks,
+    resolve_openhcl_tmks::<OpenVmmPetriBackend>
+);
 
-struct OpenvmmOpenhclArtifacts {
-    vm: petri::openvmm::PetriVmArtifactsOpenVmm,
+struct OpenhclTmkArtifacts<T: PetriVmmBackend> {
+    vm: petri::PetriVmArtifacts<T>,
     tmk_vmm: ResolvedArtifact,
     tmk: ResolvedArtifact,
 }
 
-fn resolve_openvmm_openhcl_tmks(
+fn resolve_openhcl_tmks<T: PetriVmmBackend>(
     resolver: &petri::ArtifactResolver<'_>,
-) -> Option<OpenvmmOpenhclArtifacts> {
+) -> Option<OpenhclTmkArtifacts<T>> {
     let arch = MachineArch::host();
+    if MachineArch::host() != MachineArch::X86_64 {
+        // TODO: aarch64 currently hangs on hyperv, fix
+        // not supported with OpenVMM
+        return None;
+    }
+
     let (igvm_path, tmk_vmm, tmk) = resolve_paravisor_tmk_artifacts(resolver, arch);
 
-    let vm = petri::openvmm::PetriVmArtifactsOpenVmm::new(
+    let vm = petri::PetriVmArtifacts::new(
         resolver,
         petri::Firmware::OpenhclUefi {
             guest: petri::UefiGuest::None,
             isolation: None,
-            vtl2_nvme_boot: false,
             igvm_path,
+            uefi_config: Default::default(),
+            openhcl_config: Default::default(),
         },
         arch,
+        false,
     )?;
-    Some(OpenvmmOpenhclArtifacts { vm, tmk_vmm, tmk })
+    Some(OpenhclTmkArtifacts { vm, tmk_vmm, tmk })
 }
 
 fn openvmm_openhcl_tmks(
     params: petri::PetriTestParams<'_>,
-    artifacts: OpenvmmOpenhclArtifacts,
+    artifacts: OpenhclTmkArtifacts<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
     DefaultPool::run_with(async |driver| {
-        let mut vm = petri::openvmm::PetriVmConfigOpenVmm::new(&params, artifacts.vm, &driver)?
+        let mut vm = petri::PetriVmBuilder::new(&params, artifacts.vm, &driver)?
             .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
+            .with_expect_no_boot_event()
             .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
             .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
             .with_processor_topology(ProcessorTopology {
                 vp_count: 1,
                 ..Default::default()
             })
-            .with_allow_early_vtl0_access(true) // TODO: remove once the TMK VMM initializes memory properly.
+            // TODO: remove once the TMK VMM initializes memory properly.
+            // and unify test functions into one generic function
+            .modify_backend(|b| b.with_allow_early_vtl0_access(true))
             .run_without_agent()
             .await?;
 
-        openhcl_tmks(&driver, &params, &mut vm).await?;
+        tracing::info!("started vm");
+        openhcl_tmks_inner(&driver, &params, &mut vm).await?;
 
         Ok(())
     })
@@ -227,53 +246,22 @@ fn openvmm_openhcl_tmks(
 
 #[cfg(windows)]
 mod hyperv {
-    use super::OPENHCL_COMMAND_LINE;
-    use crate::openhcl_tmks;
-    use crate::resolve_paravisor_tmk_artifacts;
+    use crate::OPENHCL_COMMAND_LINE;
+    use crate::OpenhclTmkArtifacts;
+    use crate::openhcl_tmks_inner;
+    use crate::resolve_openhcl_tmks;
     use pal_async::DefaultPool;
     use petri::ProcessorTopology;
-    use petri::ResolvedArtifact;
-    use petri_artifacts_common::tags::MachineArch;
-
-    petri::test!(hyperv_openhcl_tmks, resolve_hyperv_openhcl_tmks);
-
-    struct HypervOpenhclArtifacts {
-        vm: petri::hyperv::PetriVmArtifactsHyperV,
-        tmk_vmm: ResolvedArtifact,
-        tmk: ResolvedArtifact,
-    }
-
-    fn resolve_hyperv_openhcl_tmks(
-        resolver: &petri::ArtifactResolver<'_>,
-    ) -> Option<HypervOpenhclArtifacts> {
-        let arch = MachineArch::host();
-        if MachineArch::host() != MachineArch::X86_64 {
-            // TODO: aarch64 currently hangs, fix
-            return None;
-        }
-
-        let (igvm_path, tmk_vmm, tmk) = resolve_paravisor_tmk_artifacts(resolver, arch);
-
-        let vm = petri::hyperv::PetriVmArtifactsHyperV::new(
-            resolver,
-            petri::Firmware::OpenhclUefi {
-                guest: petri::UefiGuest::None,
-                isolation: None,
-                vtl2_nvme_boot: false,
-                igvm_path,
-            },
-            arch,
-        )?;
-        Some(HypervOpenhclArtifacts { vm, tmk_vmm, tmk })
-    }
+    use petri::hyperv::HyperVPetriBackend;
 
     fn hyperv_openhcl_tmks(
         params: petri::PetriTestParams<'_>,
-        artifacts: HypervOpenhclArtifacts,
+        artifacts: OpenhclTmkArtifacts<HyperVPetriBackend>,
     ) -> anyhow::Result<()> {
         DefaultPool::run_with(async |driver| {
-            let mut vm = petri::hyperv::PetriVmConfigHyperV::new(&params, artifacts.vm, &driver)?
+            let mut vm = petri::PetriVmBuilder::new(&params, artifacts.vm, &driver)?
                 .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
+                .with_expect_no_boot_event()
                 .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
                 .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
                 .with_processor_topology(ProcessorTopology {
@@ -284,8 +272,14 @@ mod hyperv {
                 .await?;
 
             tracing::info!("started vm");
-            openhcl_tmks(&driver, &params, &mut vm).await?;
+            openhcl_tmks_inner(&driver, &params, &mut vm).await?;
+
             Ok(())
         })
     }
+
+    petri::test!(
+        hyperv_openhcl_tmks,
+        resolve_openhcl_tmks::<HyperVPetriBackend>
+    );
 }

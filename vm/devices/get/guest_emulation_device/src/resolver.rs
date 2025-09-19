@@ -150,13 +150,17 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     GuestSecureBootTemplateType::MicrosoftWindows => {
                         SecureBootTemplateType::MICROSOFT_WINDOWS
                     }
-                    GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy => {
+                    GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
                         SecureBootTemplateType::MICROSOFT_UEFI_CERTIFICATE_AUTHORITY
                     }
                 },
                 enable_battery: resource.enable_battery,
                 no_persistent_secrets: resource.no_persistent_secrets,
                 guest_state_lifetime,
+                // TODO: pass these from OpenVMM config/command line
+                guest_state_encryption_policy:
+                    get_protocol::dps_json::GuestStateEncryptionPolicy::default(),
+                management_vtl_features: get_protocol::dps_json::ManagementVtlFeatures::default(),
             },
             halt,
             resource.firmware_event_send,

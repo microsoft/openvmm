@@ -94,7 +94,7 @@ impl KeyProtectorExt for KeyProtector {
         let found_ingress_dek = !self.dek[ingress_idx].dek_buffer.iter().all(|&x| x == 0);
         let found_egress_dek = !self.dek[egress_idx].dek_buffer.iter().all(|&x| x == 0);
         let mut ingress_key = [0u8; AES_GCM_KEY_LENGTH];
-        let mut egress_key = [0u8; AES_GCM_KEY_LENGTH];
+        let mut encrypt_egress_key = [0u8; AES_GCM_KEY_LENGTH];
         let use_des_key = wrapped_des_key.is_some(); // whether the wrapped key from DiskEncryptionSettings payload is used
         let modulus_size = ingress_kek.size() as usize;
 
@@ -201,15 +201,17 @@ impl KeyProtectorExt for KeyProtector {
             None
         };
 
-        if found_egress_dek {
+        let decrypt_egress_key = if found_egress_dek {
             tracing::info!(CVM_ALLOWED, "found egress dek");
 
-            // Key rolling did not complete successfully last time (normally egress should be empty)
+            // Key rolling did not complete successfully last time (normally egress should be empty).
+            // Any existing egress key can be used to decrypt the VMGS but must not be used to
+            // re-encrypt the VMGS, as its value can be controlled by the host.
             let dek_buffer = self.dek[egress_idx].dek_buffer;
-            let new_egress_key = if let Some(unwrapping_key) = des_key {
+            let old_egress_key = if let Some(unwrapping_key) = &des_key {
                 // The DEK buffer should contain an AES-wrapped key.
                 crypto::aes_key_unwrap_with_padding(
-                    &unwrapping_key,
+                    unwrapping_key,
                     &dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
                 )
                 .map_err(GetKeysFromKeyProtectorError::EgressDekAesUnwrap)?
@@ -222,48 +224,53 @@ impl KeyProtectorExt for KeyProtector {
                 )
                 .map_err(GetKeysFromKeyProtectorError::EgressDekRsaUnwrap)?
             };
-            egress_key[..new_egress_key.len()].copy_from_slice(&new_egress_key);
+            let mut key = [0u8; AES_GCM_KEY_LENGTH];
+            key[..old_egress_key.len()].copy_from_slice(&old_egress_key);
+            Some(key)
         } else {
             tracing::info!(CVM_ALLOWED, "there is no egress dek");
+            None
+        };
 
-            // There is no egress DEK, so create a new key value and encrypt it.
-            getrandom::fill(&mut egress_key).expect("rng failure");
+        // Always generate a new "encrypt egress key". This is generated randomly by
+        // OpenHCL, and so cannot be controlled by the host, and is safe to use to
+        // encrypt the VMGS.
+        getrandom::fill(&mut encrypt_egress_key).expect("rng failure");
 
-            let new_egress_key = if let Some(wrapping_key) = des_key {
-                // Create an AES wrapped key
-                crypto::aes_key_wrap_with_padding(&wrapping_key, &egress_key)
-                    .map_err(GetKeysFromKeyProtectorError::EgressKeyAesWrap)?
-            } else {
-                // Create an RSA wrapped key
-                crypto::rsa_oaep_encrypt(
-                    ingress_kek,
-                    &egress_key,
-                    crypto::RsaOaepHashAlgorithm::Sha256,
-                )
-                .map_err(GetKeysFromKeyProtectorError::EgressKeyRsaWrap)?
-            };
+        let new_egress_key = if let Some(wrapping_key) = des_key {
+            // Create an AES wrapped key
+            crypto::aes_key_wrap_with_padding(&wrapping_key, &encrypt_egress_key)
+                .map_err(GetKeysFromKeyProtectorError::EgressKeyAesWrap)?
+        } else {
+            // Create an RSA wrapped key
+            crypto::rsa_oaep_encrypt(
+                ingress_kek,
+                &encrypt_egress_key,
+                crypto::RsaOaepHashAlgorithm::Sha256,
+            )
+            .map_err(GetKeysFromKeyProtectorError::EgressKeyRsaWrap)?
+        };
 
-            if new_egress_key.len() > DEK_BUFFER_SIZE {
-                Err(GetKeysFromKeyProtectorError::InvalidWrappedEgressKeySize {
-                    key_size: new_egress_key.len(),
-                    expected_size: DEK_BUFFER_SIZE,
-                })?
-            }
-
-            self.dek[egress_idx].dek_buffer[..new_egress_key.len()]
-                .copy_from_slice(&new_egress_key);
-
-            tracing::info!(
-                CVM_CONFIDENTIAL,
-                egress_idx = egress_idx,
-                egress_key_len = new_egress_key.len(),
-                "store new egress key to dek"
-            );
+        if new_egress_key.len() > DEK_BUFFER_SIZE {
+            Err(GetKeysFromKeyProtectorError::InvalidWrappedEgressKeySize {
+                key_size: new_egress_key.len(),
+                expected_size: DEK_BUFFER_SIZE,
+            })?
         }
+
+        self.dek[egress_idx].dek_buffer[..new_egress_key.len()].copy_from_slice(&new_egress_key);
+
+        tracing::info!(
+            CVM_CONFIDENTIAL,
+            egress_idx = egress_idx,
+            egress_key_len = new_egress_key.len(),
+            "store new egress key to dek"
+        );
 
         Ok(Keys {
             ingress: ingress_key,
-            egress: egress_key,
+            decrypt_egress: decrypt_egress_key,
+            encrypt_egress: encrypt_egress_key,
         })
     }
 }
@@ -355,8 +362,8 @@ mod tests {
         );
         assert!(result.is_ok());
         let plaintext = result.unwrap();
-        assert_eq!(plaintext, keys.egress);
-        let key_egress_first_boot = keys.egress;
+        assert_eq!(plaintext, keys.encrypt_egress);
+        let key_egress_first_boot = keys.encrypt_egress;
 
         // Test key rotation for reboot
 
@@ -389,7 +396,7 @@ mod tests {
         );
         assert!(result.is_ok());
         let plaintext = result.unwrap();
-        assert_eq!(plaintext, keys.egress);
+        assert_eq!(plaintext, keys.encrypt_egress);
     }
 
     #[test]
@@ -473,8 +480,8 @@ mod tests {
         );
         assert!(result.is_ok());
         let unwrapped_key = result.unwrap();
-        assert_eq!(unwrapped_key, keys.egress);
-        let key_egress_first_boot = keys.egress;
+        assert_eq!(unwrapped_key, keys.encrypt_egress);
+        let key_egress_first_boot = keys.encrypt_egress;
 
         // Test key rotation for reboot
 
@@ -516,7 +523,7 @@ mod tests {
         );
         assert!(result.is_ok());
         let unwrapped_key = result.unwrap();
-        assert_eq!(unwrapped_key, keys.egress);
+        assert_eq!(unwrapped_key, keys.encrypt_egress);
     }
 
     #[test]

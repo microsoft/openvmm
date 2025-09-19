@@ -10,7 +10,6 @@ use super::HardwareIsolatedBacking;
 use super::InterceptMessageOptionalState;
 use super::InterceptMessageState;
 use super::UhEmulationState;
-use super::UhRunVpError;
 use super::hardware_cvm;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
@@ -49,6 +48,7 @@ use hvdef::hypercall::HypercallOutput;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -75,12 +75,29 @@ use x86defs::snp::SevInvlpgbEcx;
 use x86defs::snp::SevInvlpgbEdx;
 use x86defs::snp::SevInvlpgbRax;
 use x86defs::snp::SevIoAccessInfo;
+use x86defs::snp::SevNpfInfo;
 use x86defs::snp::SevSelector;
 use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
 use x86defs::snp::Vmpl;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+#[derive(Debug, Error)]
+#[error("invalid vmcb")]
+struct InvalidVmcb;
+
+#[derive(Debug, Error)]
+enum SnpGhcbError {
+    #[error("failed to access GHCB page")]
+    GhcbPageAccess(#[source] guestmem::GuestMemoryError),
+    #[error("ghcb page used for vmgexit does not match overlay page")]
+    GhcbMisconfiguration,
+}
+
+#[derive(Debug, Error)]
+#[error("failed to run")]
+struct SnpRunVpError(#[source] hcl::ioctl::Error);
 
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
@@ -280,8 +297,15 @@ impl HardwareIsolatedBacking for SnpBacked {
     ) -> InterceptMessageState {
         let vmsa = this.runner.vmsa(vtl);
 
+        // next_rip may not be set properly for NPFs, so don't read it.
+        let instr_len = if SevExitCode(vmsa.guest_error_code()) == SevExitCode::NPF {
+            0
+        } else {
+            (vmsa.next_rip() - vmsa.rip()) as u8
+        };
+
         InterceptMessageState {
-            instruction_length_and_cr8: (vmsa.next_rip() - vmsa.rip()) as u8,
+            instruction_length_and_cr8: instr_len,
             cpl: vmsa.cpl(),
             efer_lma: vmsa.efer() & x86defs::X64_EFER_LMA != 0,
             cs: virt_seg_from_snp(vmsa.cs()).into(),
@@ -523,15 +547,11 @@ impl BackingPrivate for SnpBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         this.run_vp_snp(dev).await
     }
 
-    fn poll_apic(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
+    fn poll_apic(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool) {
         // Clear any pending interrupt.
         this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
@@ -595,10 +615,7 @@ impl BackingPrivate for SnpBacked {
         Some(&mut self.cvm.hv[vtl])
     }
 
-    fn handle_vp_start_enable_vtl_wake(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
+    fn handle_vp_start_enable_vtl_wake(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
         this.hcvm_handle_vp_start_enable_vtl(vtl)
     }
 
@@ -611,7 +628,7 @@ impl BackingPrivate for SnpBacked {
         scan_irr: VtlArray<bool, 2>,
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+    ) -> bool {
         this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
     }
 }
@@ -854,17 +871,16 @@ impl<'b> ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
         self
     }
 
-    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) {
         let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.v_intr_cntrl_mut().set_vector(vector);
         vmsa.v_intr_cntrl_mut().set_priority((vector >> 4).into());
         vmsa.v_intr_cntrl_mut().set_ignore_tpr(false);
         vmsa.v_intr_cntrl_mut().set_irq(true);
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
-        Ok(())
     }
 
-    fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+    fn handle_nmi(&mut self, vtl: GuestVtl) {
         // TODO SNP: support virtual NMI injection
         // For now, just inject an NMI and hope for the best.
         // Don't forget to update handle_cross_vtl_interrupts if this code changes.
@@ -881,16 +897,13 @@ impl<'b> ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
         );
         self.backing.cvm.lapics[vtl].nmi_pending = false;
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
-        Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError> {
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) {
         let mut vmsa = self.runner.vmsa_mut(vtl);
         vmsa.set_cs(virt_seg_to_snp(cs));
         vmsa.set_rip(0);
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
-
-        Ok(())
     }
 }
 
@@ -916,7 +929,7 @@ impl UhProcessor<'_, SnpBacked> {
         &mut self,
         dev: &impl CpuIo,
         intercepted_vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
+    ) -> Result<(), SnpGhcbError> {
         let message = self
             .runner
             .exit_message()
@@ -942,9 +955,7 @@ impl UhProcessor<'_, SnpBacked> {
                         "ghcb page used for vmgexit does not match overlay page"
                     );
 
-                    return Err(UhRunVpError::EmulationState(
-                        hcl::ioctl::Error::InvalidRegisterValue,
-                    ));
+                    return Err(SnpGhcbError::GhcbMisconfiguration);
                 }
 
                 match x86defs::snp::GhcbUsage(message.ghcb_page.ghcb_usage) {
@@ -961,7 +972,7 @@ impl UhProcessor<'_, SnpBacked> {
                                 overlay_base
                                     + x86defs::snp::GHCB_PAGE_HYPERCALL_PARAMETERS_OFFSET as u64,
                             )
-                            .map_err(UhRunVpError::HypercallParameters)?;
+                            .map_err(SnpGhcbError::GhcbPageAccess)?;
 
                         let mut handler = GhcbEnlightenedHypercall {
                             handler: UhHypercallHandler {
@@ -992,7 +1003,7 @@ impl UhProcessor<'_, SnpBacked> {
                                     + x86defs::snp::GHCB_PAGE_HYPERCALL_OUTPUT_OFFSET as u64,
                                 handler.result.as_bytes(),
                             )
-                            .map_err(UhRunVpError::HypercallResult)?;
+                            .map_err(SnpGhcbError::GhcbPageAccess)?;
                     }
                     usage => unimplemented!("ghcb usage {usage:?}"),
                 }
@@ -1178,7 +1189,7 @@ impl UhProcessor<'_, SnpBacked> {
         false
     }
 
-    async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
+    async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
         let mut vmsa = self.runner.vmsa_mut(next_vtl);
@@ -1207,7 +1218,7 @@ impl UhProcessor<'_, SnpBacked> {
         let mut has_intercept = self
             .runner
             .run()
-            .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::Run(err)))?;
+            .map_err(|e| VpHaltReason::Hypervisor(SnpRunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
@@ -1418,11 +1429,12 @@ impl UhProcessor<'_, SnpBacked> {
                 // #VC inside the guest for accesses to unmapped memory. This
                 // means that accesses to unmapped memory for lower VTLs will be
                 // forwarded to underhill as a #VC exception.
-                let exit_info2 = vmsa.exit_info2();
+                let gpa = vmsa.exit_info2();
                 let interruption_pending = vmsa.event_inject().valid()
                     || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
+                let exit_info = SevNpfInfo::from(vmsa.exit_info1());
                 let exit_message = self.runner.exit_message();
-                let emulate = match exit_message.header.typ {
+                let real = match exit_message.header.typ {
                     HvMessageType::HvMessageTypeExceptionIntercept => {
                         let exception_message =
                             exit_message.as_message::<hvdef::HvX64ExceptionInterceptMessage>();
@@ -1433,23 +1445,23 @@ impl UhProcessor<'_, SnpBacked> {
                     HvMessageType::HvMessageTypeUnmappedGpa
                     | HvMessageType::HvMessageTypeGpaIntercept
                     | HvMessageType::HvMessageTypeUnacceptedGpa => {
-                        // TODO GUEST VSM:
-                        // - determine whether the intercept message should be delivered to VTL 1
-                        // - determine whether emulation is appropriate for this gpa
                         let gpa_message =
                             exit_message.as_message::<hvdef::HvX64MemoryInterceptMessage>();
 
                         // Only the page numbers need to match.
                         (gpa_message.guest_physical_address >> hvdef::HV_PAGE_SHIFT)
-                            == (exit_info2 >> hvdef::HV_PAGE_SHIFT)
+                            == (gpa >> hvdef::HV_PAGE_SHIFT)
                     }
                     _ => false,
                 };
 
-                if emulate {
+                if real {
                     has_intercept = false;
-                    self.emulate(dev, interruption_pending, entered_from_vtl, ())
-                        .await?;
+                    if self.check_mem_fault(entered_from_vtl, gpa, exit_info.is_write(), exit_info)
+                    {
+                        self.emulate(dev, interruption_pending, entered_from_vtl, ())
+                            .await?;
+                    }
                     &mut self.backing.exit_stats[entered_from_vtl].npf
                 } else {
                     &mut self.backing.exit_stats[entered_from_vtl].npf_spurious
@@ -1466,7 +1478,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::INVALID_VMCB => {
-                return Err(VpHaltReason::InvalidVmState(UhRunVpError::InvalidVmcb));
+                return Err(VpHaltReason::InvalidVmState(InvalidVmcb.into()));
             }
 
             SevExitCode::INVLPGB | SevExitCode::ILLEGAL_INVLPGB => {
@@ -1506,7 +1518,7 @@ impl UhProcessor<'_, SnpBacked> {
                 match self.runner.exit_message().header.typ {
                     HvMessageType::HvMessageTypeX64SevVmgexitIntercept => {
                         self.handle_vmgexit(dev, entered_from_vtl)
-                            .map_err(VpHaltReason::InvalidVmState)?;
+                            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
                     }
                     _ => has_intercept = true,
                 }
@@ -1660,10 +1672,7 @@ impl UhProcessor<'_, SnpBacked> {
 }
 
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
-    type Error = UhRunVpError;
-
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+    fn flush(&mut self) {
         //AMD SNP does not require an emulation cache
     }
 
@@ -1723,12 +1732,11 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         self.vp.runner.vmsa_mut(self.vtl).xmm_registers(index)
     }
 
-    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, index: usize, v: u128) {
         self.vp
             .runner
             .vmsa_mut(self.vtl)
             .set_xmm_registers(index, v);
-        Ok(())
     }
 
     fn rip(&mut self) -> u64 {
@@ -1796,7 +1804,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         &mut self,
         _gpa: u64,
         _mode: virt_support_x86emu::emulate::TranslateMode,
-    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError> {
         // Nothing to do here, the guest memory object will handle the check.
         Ok(())
     }
@@ -1806,11 +1814,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         gva: u64,
         mode: virt_support_x86emu::emulate::TranslateMode,
     ) -> Result<
-        Result<
-            virt_support_x86emu::emulate::EmuTranslateResult,
-            virt_support_x86emu::emulate::EmuTranslateError,
-        >,
-        Self::Error,
+        virt_support_x86emu::emulate::EmuTranslateResult,
+        virt_support_x86emu::emulate::EmuTranslateError,
     > {
         emulate_translate_gva(self, gva, mode)
     }
@@ -1868,6 +1873,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
                 vtl,
             })
             .mmio_write(address, data);
+    }
+
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
     }
 }
 
