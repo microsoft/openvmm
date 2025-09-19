@@ -278,7 +278,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         };
 
         if with_agent {
-            vm.set_console_loglevel(3).await?;
+            let result = vm.set_console_loglevel(3).await;
+            if result.is_err() {
+                tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
+            }
         }
 
         vm.wait_for_expected_boot_event().await?;
@@ -689,7 +692,10 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     pub async fn wait_for_reset(&mut self) -> anyhow::Result<PipetteClient> {
         self.wait_for_reset_no_agent().await?;
         let client = self.wait_for_agent().await?;
-        self.set_console_loglevel(3).await?;
+        let result = self.set_console_loglevel(3).await;
+        if result.is_err() {
+            tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
+        }
         Ok(client)
     }
 
