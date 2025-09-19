@@ -1784,6 +1784,15 @@ async fn initialize_rndis_no_sendbuffer_no_recvbuffer(driver: DefaultDriver) {
 
 #[async_test]
 async fn initialize_rndis_with_vf(driver: DefaultDriver) {
+    test_initialize_rndis_with_vf_common(driver, true).await;
+}
+
+#[async_test]
+async fn initialize_rndis_with_vf_without_completion(driver: DefaultDriver) {
+    test_initialize_rndis_with_vf_common(driver, false).await;
+}
+
+async fn test_initialize_rndis_with_vf_common(driver: DefaultDriver, with_vf_completion: bool) {
     let endpoint_state = TestNicEndpointState::new();
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
     let test_vf = Box::new(TestVirtualFunction::new(123));
@@ -1853,13 +1862,15 @@ async fn initialize_rndis_with_vf(driver: DefaultDriver) {
             .is_ok()
     );
 
-    channel
-        .write(OutgoingPacket {
-            transaction_id,
-            packet_type: OutgoingPacketType::Completion,
-            payload: &[],
-        })
-        .await;
+    if with_vf_completion {
+        channel
+            .write(OutgoingPacket {
+                transaction_id,
+                packet_type: OutgoingPacketType::Completion,
+                payload: &[],
+            })
+            .await;
+    }
 
     assert!(test_vf_state.is_ready_unchanged());
 

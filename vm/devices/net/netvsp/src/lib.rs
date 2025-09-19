@@ -5344,6 +5344,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     );
                     return Err(WorkerError::BufferRevoked);
                 }
+                // No operation for VF association completion packets as not all clients send them
                 PacketData::SendVfAssociationCompletion if state.primary.is_some() => (),
                 PacketData::SwitchDataPath(switch_data_path) if state.primary.is_some() => {
                     self.switch_data_path(
