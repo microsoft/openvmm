@@ -25,7 +25,9 @@ struct Header {
     dropped: u16,     // number of dropped messages
 }
 
-/// A string buffer that stores UTF-8 data in a 4K aligned buffer.
+/// A string buffer that stores UTF-8 data in a 4K aligned buffer. Note that the
+/// header and data region are stored within the same buffer, as the header
+/// precedes the data region.
 ///
 /// Format:
 /// - Header (6 bytes total)
@@ -88,7 +90,7 @@ impl<'a> StringBuffer<'a> {
         }
 
         // Must be 4k aligned.
-        if buffer.len() % PAGE_SIZE_4K != 0 {
+        if !buffer.len().is_multiple_of(PAGE_SIZE_4K) {
             return Err(StringBufferError::BufferSizeAlignment);
         }
 
@@ -117,7 +119,8 @@ impl<'a> StringBuffer<'a> {
         Self::validate_buffer(buffer)?;
 
         let (header, data) = buffer.split_at_mut(size_of::<Header>());
-        let header = Header::mut_from_bytes(header).expect("BUGBUG return error");
+        let header =
+            Header::mut_from_bytes(header).map_err(|_| StringBufferError::BufferAlignment)?;
 
         // Validate header fields are valid
         if header.data_len as usize != data.len() {

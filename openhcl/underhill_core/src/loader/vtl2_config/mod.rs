@@ -24,7 +24,7 @@ use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use sparse_mmap::SparseMapping;
-use stringbuf::StringBuffer;
+use string_page_buf::StringBuffer;
 use vm_topology::memory::MemoryRangeWithNode;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -287,7 +287,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
 
         let bootshim_log_dropped = buf.dropped_messages();
         if bootshim_log_dropped != 0 {
-            tracing::info!(bootshim_log_dropped, "bootshim logger dropped messages");
+            tracing::warn!(bootshim_log_dropped, "bootshim logger dropped messages");
         }
 
         (

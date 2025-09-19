@@ -19,7 +19,7 @@ use memory_range::MemoryRange;
 #[cfg(target_arch = "x86_64")]
 use minimal_rt::arch::InstrIoAccess;
 use minimal_rt::arch::Serial;
-use stringbuf::StringBuffer;
+use string_page_buf::StringBuffer;
 
 enum Logger {
     #[cfg(target_arch = "x86_64")]

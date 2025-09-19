@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "stringbuf"
+name = "string_page_buf"
 edition.workspace = true
 rust-version.workspace = true
 
