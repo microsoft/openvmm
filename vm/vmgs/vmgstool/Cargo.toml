@@ -14,6 +14,8 @@ encryption_win = ["vmgs/encryption_win"]
 # Use OpenSSL crypto APIs
 encryption_ossl = ["vmgs/encryption_ossl"]
 
+test_helpers = ["vmgs/test_helpers"]
+
 [dependencies]
 disk_backend.workspace = true
 disk_vhd1.workspace = true
