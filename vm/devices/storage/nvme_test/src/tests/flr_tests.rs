@@ -16,9 +16,9 @@ use mesh::CellUpdater;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::PciFaultConfig;
-use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::timer::PolledTimer;
 use pci_core::capabilities::pci_express::PCI_EXPRESS_DEVICE_CAPS_FLR_BIT_MASK;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::spec::caps::CapabilityId;
@@ -141,7 +141,9 @@ async fn test_flr_trigger(driver: DefaultDriver) {
         .unwrap();
 
     // According to the spec, we must wait at least 100ms after issuing an FLR before accessing the device again.
-    PolledTimer::new(&driver).sleep(Duration::from_millis(100)).await;
+    PolledTimer::new(&driver)
+        .sleep(Duration::from_millis(100))
+        .await;
 
     // The FLR bit should always read 0, even after the reset.
     let mut post_flr_ctl_sts = 0u32;
