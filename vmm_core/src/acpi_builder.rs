@@ -615,6 +615,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 mod test {
     use super::*;
     use acpi_spec::madt::MadtParser;
+    use acpi_spec::mcfg::parse_mcfg;
     use memory_range::MemoryRange;
     use virt::VpIndex;
     use virt::VpInfo;
@@ -638,11 +639,13 @@ mod test {
     fn new_builder<'a>(
         mem_layout: &'a MemoryLayout,
         processor_topology: &'a ProcessorTopology<X86Topology>,
+        pcie_host_bridges: &'a Vec<PcieHostBridge>,
     ) -> AcpiTablesBuilder<'a, X86Topology> {
         AcpiTablesBuilder {
             processor_topology,
             mem_layout,
             cache_topology: None,
+            pcie_host_bridges,
             with_ioapic: true,
             with_pic: false,
             with_pit: false,
@@ -657,7 +660,8 @@ mod test {
     fn test_basic_madt_cpu() {
         let mem = new_mem();
         let topology = TopologyBuilder::new_x86().build(16).unwrap();
-        let builder = new_builder(&mem, &topology);
+        let pcie = vec![];
+        let builder = new_builder(&mem, &topology, &pcie);
         let madt = builder.build_madt();
 
         let entries = MadtParser::new(&madt).unwrap().parse_apic_ids().unwrap();
@@ -667,7 +671,7 @@ mod test {
             .apic_id_offset(13)
             .build(16)
             .unwrap();
-        let builder = new_builder(&mem, &topology);
+        let builder = new_builder(&mem, &topology, &pcie);
         let madt = builder.build_madt();
 
         let entries = MadtParser::new(&madt).unwrap().parse_apic_ids().unwrap();
@@ -683,7 +687,7 @@ mod test {
                 apic_id: *apic,
             }))
             .unwrap();
-        let builder = new_builder(&mem, &topology);
+        let builder = new_builder(&mem, &topology, &pcie);
         let madt = builder.build_madt();
 
         let entries = MadtParser::new(&madt).unwrap().parse_apic_ids().unwrap();
@@ -691,5 +695,54 @@ mod test {
             entries,
             apic_ids.iter().map(|e| Some(*e)).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_basic_pcie_topology() {
+        let mem = new_mem();
+        let topology = TopologyBuilder::new_x86().build(16).unwrap();
+        let pcie_host_bridges = vec![
+            PcieHostBridge {
+                index: 0,
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                ecam_range: MemoryRange::new(0..256 * 256 * 4096),
+                low_mmio: MemoryRange::new(0..0),
+                high_mmio: MemoryRange::new(0..0),
+            },
+            PcieHostBridge {
+                index: 1,
+                segment: 1,
+                start_bus: 32,
+                end_bus: 63,
+                ecam_range: MemoryRange::new(5 * GB..5 * GB + 32 * 256 * 4096),
+                low_mmio: MemoryRange::new(0..0),
+                high_mmio: MemoryRange::new(0..0),
+            },
+        ];
+
+        let builder = new_builder(&mem, &topology, &pcie_host_bridges);
+        let mcfg = builder.build_mcfg();
+
+        let mut i = 0;
+        let _ = parse_mcfg(&mcfg, |sbr| match i {
+            0 => {
+                assert_eq!(sbr.ecam_base, 0);
+                assert_eq!(sbr.segment, 0);
+                assert_eq!(sbr.start_bus, 0);
+                assert_eq!(sbr.end_bus, 255);
+                i += 1;
+            }
+            1 => {
+                assert_eq!(sbr.ecam_base, 5 * GB - 32 * 256 * 4096);
+                assert_eq!(sbr.segment, 1);
+                assert_eq!(sbr.start_bus, 32);
+                assert_eq!(sbr.end_bus, 63);
+                i += 1;
+            }
+            _ => panic!("only expected two MCFG segment bus range entries"),
+        })
+        .unwrap();
     }
 }
