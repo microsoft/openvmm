@@ -139,6 +139,7 @@ safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
 sparse_mmap = { path = "support/sparse_mmap" }
+string_page_buf = { path = "support/string_page_buf" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
 term = { path = "support/term" }

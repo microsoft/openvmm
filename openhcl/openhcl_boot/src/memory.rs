@@ -43,6 +43,8 @@ pub enum ReservedMemoryType {
     Vtl2GpaPool,
     /// Page tables that are used for AP startup, on TDX.
     TdxPageTables,
+    /// In-memory bootshim log buffer.
+    BootshimLogBuffer,
 }
 
 impl From<ReservedMemoryType> for MemoryVtlType {
@@ -54,6 +56,7 @@ impl From<ReservedMemoryType> for MemoryVtlType {
             ReservedMemoryType::Vtl2Reserved => MemoryVtlType::VTL2_RESERVED,
             ReservedMemoryType::Vtl2GpaPool => MemoryVtlType::VTL2_GPA_POOL,
             ReservedMemoryType::TdxPageTables => MemoryVtlType::VTL2_TDX_PAGE_TABLES,
+            ReservedMemoryType::BootshimLogBuffer => MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER,
         }
     }
 }
@@ -125,6 +128,7 @@ pub struct AddressSpaceManagerBuilder<'a, I: Iterator<Item = MemoryRange>> {
     reserved_range: Option<MemoryRange>,
     sidecar_image: Option<MemoryRange>,
     page_tables: Option<MemoryRange>,
+    log_buffer: Option<MemoryRange>,
 }
 
 impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
@@ -150,6 +154,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             reserved_range: None,
             sidecar_image: None,
             page_tables: None,
+            log_buffer: None,
         }
     }
 
@@ -171,6 +176,12 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
         self
     }
 
+    /// Log buffer that is reported as type [`MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER`].
+    pub fn with_log_buffer(mut self, log_buffer: MemoryRange) -> Self {
+        self.log_buffer = Some(log_buffer);
+        self
+    }
+
     /// Consume the builder and initialize the address space manager.
     pub fn init(self) -> Result<&'a mut AddressSpaceManager, Error> {
         let Self {
@@ -181,6 +192,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             reserved_range,
             sidecar_image,
             page_tables,
+            log_buffer,
         } = self;
 
         if vtl2_ram.len() > MAX_VTL2_RAM_RANGES {
@@ -211,6 +223,11 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             page_tables
                 .into_iter()
                 .map(|r| (r, ReservedMemoryType::TdxPageTables)),
+        );
+        reserved.extend(
+            log_buffer
+                .into_iter()
+                .map(|r| (r, ReservedMemoryType::BootshimLogBuffer)),
         );
         reserved.sort_unstable_by_key(|(r, _)| r.start());
 

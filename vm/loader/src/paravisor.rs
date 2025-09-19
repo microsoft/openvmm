@@ -136,6 +136,7 @@ where
     // free space
     //
     // page tables
+    // 8K bootshim logs
     // IGVM parameters
     // reserved vtl2 ranges
     // initrd
@@ -335,6 +336,20 @@ where
 
     tracing::debug!(parameter_region_start);
 
+    // Reserve 8K for the bootshim log buffer. Import these pages so they are
+    // available early without extra acceptance calls.
+    let bootshim_log_size = HV_PAGE_SIZE * 2;
+    let bootshim_log_start = offset;
+    offset += bootshim_log_size;
+
+    importer.import_pages(
+        bootshim_log_start / HV_PAGE_SIZE,
+        bootshim_log_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-log-buffer",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
 
@@ -491,6 +506,8 @@ where
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
         page_tables_start: calculate_shim_offset(page_table_region_start),
         page_tables_size: page_table_region_size,
+        log_buffer_start: calculate_shim_offset(bootshim_log_start),
+        log_buffer_size: bootshim_log_size,
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -1032,6 +1049,19 @@ where
 
     tracing::debug!(parameter_region_start);
 
+    // Reserve 8K for the bootshim log buffer.
+    let bootshim_log_size = HV_PAGE_SIZE * 2;
+    let bootshim_log_start = next_addr;
+    next_addr += bootshim_log_size;
+
+    importer.import_pages(
+        bootshim_log_start / HV_PAGE_SIZE,
+        bootshim_log_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-log-buffer",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
 
@@ -1083,6 +1113,8 @@ where
         bounce_buffer_size: 0,
         page_tables_start: 0,
         page_tables_size: 0,
+        log_buffer_start: calculate_shim_offset(bootshim_log_start),
+        log_buffer_size: bootshim_log_size,
     };
 
     importer
