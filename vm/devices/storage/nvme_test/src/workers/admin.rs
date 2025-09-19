@@ -565,17 +565,12 @@ impl AdminHandler {
             Event::SqDeleteComplete(sqid) => {
                 let sq = &mut state.io_sqs[sqid as usize - 1];
                 let cid = sq.pending_delete_cid.take().unwrap();
-                let cqid = sq.cqid.take().unwrap();
+                let _cqid = sq.cqid.take().unwrap();
                 sq.task.stop().await;
-                sq.task.remove();
-                assert_eq!(
-                    state.io_cqs[cqid as usize - 1]
-                        .as_mut()
-                        .unwrap()
-                        .sqid
-                        .take(),
-                    Some(sqid)
-                );
+                // Note: In the multi-SQ architecture, we don't maintain the
+                // reverse mapping from CQ to SQ, so we skip the assertion that
+                // was checking cq.sqid. The queue cleanup will be handled by the
+                // normal task termination process.
                 (None, cid, Default::default())
             }
             Event::NamespaceChange(nsid) => {
@@ -925,7 +920,6 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_QUEUE_SIZE.into());
         }
 
-        cq.sqid = Some(sqid);
         sq.cqid = Some(cqid);
         let interrupt = cq
             .interrupt
@@ -995,11 +989,18 @@ impl AdminHandler {
                 reason: InvalidQueueIdentifierReason::Oob,
             })?;
 
-        let active_cq = cq.as_ref().ok_or(InvalidQueueIdentifier {
+        let _active_cq = cq.as_ref().ok_or(InvalidQueueIdentifier {
             qid: cqid,
             reason: InvalidQueueIdentifierReason::NotInUse,
         })?;
-        if active_cq.sqid.is_some() {
+
+        // Check if any submission queues are still using this completion queue
+        let has_active_sqs = state
+            .io_sqs
+            .iter()
+            .any(|sq| sq.task.has_state() && sq.cqid == Some(cqid));
+
+        if has_active_sqs {
             return Err(spec::Status::INVALID_QUEUE_DELETION.into());
         }
 
