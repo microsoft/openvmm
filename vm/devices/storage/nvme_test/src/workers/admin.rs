@@ -165,22 +165,18 @@ impl AdminState {
             })
             .collect();
 
+        let admin_cq = CompletionQueue::new(
+            handler.config.doorbells.clone(),
+            1,
+            handler.config.mem.clone(),
+            Some(handler.config.interrupts[0].clone()),
+            acq,
+            acqs,
+        );
+
         let mut state = Self {
-            admin_sq: SubmissionQueue::new(
-                handler.config.doorbells.clone(),
-                0,
-                asq,
-                asqs,
-                handler.config.mem.clone(),
-            ),
-            admin_cq: CompletionQueue::new(
-                handler.config.doorbells.clone(),
-                1,
-                handler.config.mem.clone(),
-                Some(handler.config.interrupts[0].clone()),
-                acq,
-                acqs,
-            ),
+            admin_sq: SubmissionQueue::new(&admin_cq, 0, asq, asqs),
+            admin_cq,
             io_sqs: Vec::new(),
             io_cqs: Vec::new(),
             sq_delete_response: Default::default(),
@@ -202,7 +198,7 @@ impl AdminState {
         for sq in &mut self.io_sqs {
             sq.task.stop().await;
             if let Some(state) = sq.task.state_mut() {
-                state.drain().await;
+                state.drain();
                 sq.task.remove();
             }
         }
@@ -922,14 +918,6 @@ impl AdminHandler {
             .get_mut((cqid as usize).wrapping_sub(1))
             .and_then(|x| x.as_mut())
             .ok_or(spec::Status::COMPLETION_QUEUE_INVALID)?;
-
-        // Don't allow sharing completion queues. This isn't spec compliant
-        // but it simplifies the device significantly and OSes don't seem to
-        // mind. This could be fixed by having a slower path when completion
-        // queues are shared.
-        if cq.sqid.is_some() {
-            return Err(spec::Status::COMPLETION_QUEUE_INVALID.into());
-        }
 
         let sq_gpa = command.dptr[0] & PAGE_MASK;
         let len0 = cdw10.qsize_z();

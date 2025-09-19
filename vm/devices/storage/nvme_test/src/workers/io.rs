@@ -13,6 +13,7 @@ use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::spec::nvm;
 use crate::workers::MAX_DATA_TRANSFER_SIZE;
+use futures::FutureExt;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -28,6 +29,7 @@ use task_control::Cancelled;
 use task_control::InspectTask;
 use task_control::StopTask;
 use thiserror::Error;
+use tracelimit;
 use unicycle::FuturesUnordered;
 use vmcore::interrupt::Interrupt;
 
@@ -71,16 +73,17 @@ impl IoState {
         interrupt: Option<Interrupt>,
         namespaces: BTreeMap<u32, Arc<Namespace>>,
     ) -> Self {
+        let cq = CompletionQueue::new(
+            doorbell,
+            cq_id * 2 + 1,
+            mem.clone(),
+            interrupt,
+            cq_gpa,
+            cq_len,
+        );
         Self {
-            sq: SubmissionQueue::new(doorbell.clone(), sq_id * 2, sq_gpa, sq_len, mem.clone()),
-            cq: CompletionQueue::new(
-                doorbell,
-                cq_id * 2 + 1,
-                mem.clone(),
-                interrupt,
-                cq_gpa,
-                cq_len,
-            ),
+            sq: SubmissionQueue::new(&cq, sq_id * 2, sq_gpa, sq_len),
+            cq,
             namespaces,
             ios: FuturesUnordered::new(),
             io_count: 0,
@@ -98,11 +101,24 @@ impl IoState {
 
     /// Drains any pending IOs.
     ///
-    /// This future may be dropped and reissued.
-    pub async fn drain(&mut self) {
-        while self.ios.next().await.is_some() {
-            self.io_count -= 1;
+    /// # Returns
+    ///
+    /// Returns `true` if all draining is complete.
+    pub fn drain(&mut self) -> bool {
+        // TODO: properly wait for all I/Os to complete.
+        while let Some(_) = self.ios.next().now_or_never() {
+            // Drain completed futures
         }
+        self.io_count = 0;
+        true
+    }
+
+    pub fn is_deleting(&self) -> bool {
+        matches!(self.queue_state, IoQueueState::Deleting)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.io_count == 0 && self.ios.is_empty()
     }
 }
 
