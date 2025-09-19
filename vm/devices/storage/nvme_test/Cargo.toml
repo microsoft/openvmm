@@ -30,6 +30,7 @@ async-trait.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true
+slab.workspace = true
 task_control.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
