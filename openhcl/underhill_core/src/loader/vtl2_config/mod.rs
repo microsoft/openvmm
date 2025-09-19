@@ -11,6 +11,7 @@
 use anyhow::Context;
 use bootloader_fdt_parser::IsolationType;
 use bootloader_fdt_parser::ParsedBootDtInfo;
+use cvm_tracing::CVM_ALLOWED;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use loader_defs::paravisor::PARAVISOR_CONFIG_PPTT_PAGE_INDEX;
@@ -287,7 +288,11 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
 
         let bootshim_log_dropped = buf.dropped_messages();
         if bootshim_log_dropped != 0 {
-            tracing::warn!(bootshim_log_dropped, "bootshim logger dropped messages");
+            tracing::warn!(
+                CVM_ALLOWED,
+                bootshim_log_dropped,
+                "bootshim logger dropped messages"
+            );
         }
 
         (
@@ -297,7 +302,7 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
     };
 
     for line in &bootshim_logs {
-        tracing::info!(line, "openhcl_boot log");
+        tracing::info!(CVM_ALLOWED, line, "openhcl_boot log");
     }
 
     let accepted_regions = if parsed_openhcl_boot.isolation != IsolationType::None {
