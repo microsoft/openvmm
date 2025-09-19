@@ -101,8 +101,8 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
-    /// Page tables region used by the shim.
-    pub page_tables: Option<MemoryRange>,
+    /// AP page tables region used by the shim.
+    pub ap_page_tables: Option<MemoryRange>,
 }
 
 impl ShimParams {
@@ -129,8 +129,8 @@ impl ShimParams {
             used_end,
             bounce_buffer_start,
             bounce_buffer_size,
-            page_tables_start,
-            page_tables_size,
+            ap_page_tables_start,
+            ap_page_tables_size,
         } = raw;
 
         let isolation_type = get_isolation_type(supported_isolation_type);
@@ -142,11 +142,11 @@ impl ShimParams {
             Some(MemoryRange::new(base..base + bounce_buffer_size))
         };
 
-        let page_tables = if page_tables_size == 0 {
+        let ap_page_tables = if ap_page_tables_size == 0 {
             None
         } else {
-            let base = shim_base_address.wrapping_add_signed(page_tables_start);
-            Some(MemoryRange::new(base..base + page_tables_size))
+            let base = shim_base_address.wrapping_add_signed(ap_page_tables_start);
+            Some(MemoryRange::new(base..base + ap_page_tables_size))
         };
 
         Self {
@@ -171,7 +171,7 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
-            page_tables,
+            ap_page_tables,
         }
     }
 

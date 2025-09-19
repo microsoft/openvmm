@@ -426,6 +426,7 @@ pub mod x86_64 {
                     shared_gpa_boundary,
                     IdentityMapSize::Size4Gb,
                     None,
+                    false,
                 );
 
                 let page_tables = build_page_tables_64(
@@ -433,12 +434,18 @@ pub mod x86_64 {
                     0,
                     IdentityMapSize::Size4Gb,
                     Some((shared_vis_page_table_gpa, shared_gpa_boundary)),
+                    false,
                 );
 
                 (page_tables, Some(shared_vis_page_tables))
             } else {
-                let page_tables =
-                    build_page_tables_64(PAGE_TABLE_GPA_BASE, 0, IdentityMapSize::Size4Gb, None);
+                let page_tables = build_page_tables_64(
+                    PAGE_TABLE_GPA_BASE,
+                    0,
+                    IdentityMapSize::Size4Gb,
+                    None,
+                    false,
+                );
 
                 (page_tables, None)
             };

@@ -130,9 +130,13 @@ impl PageTableEntry {
     const VALID_BITS: u64 = 0x000f_ffff_ffff_f000;
 
     /// Set an AMD64 PDE to either represent a leaf 2MB page or PDE.
-    /// This sets the PTE to preset, accessed, dirty, read write execute.
-    pub fn set_entry(&mut self, entry_type: PageTableEntryType) {
-        self.entry = X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE;
+    /// This sets the PTE to preset, accessed, dirty, execute.
+    pub fn set_entry(&mut self, entry_type: PageTableEntryType, read_only: bool) {
+        if read_only {
+            self.entry = X64_PTE_PRESENT | X64_PTE_ACCESSED;
+        } else {
+            self.entry = X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE;
+        }
 
         match entry_type {
             PageTableEntryType::Leaf1GbPage(address) => {
@@ -282,6 +286,7 @@ pub struct PageTableBuilder {
     local_map: Option<(u64, u64)>,
     confidential_bit: Option<u32>,
     map_reset_vector: bool,
+    read_only: bool,
 }
 
 impl PteOps for PageTableBuilder {
@@ -307,6 +312,7 @@ impl PageTableBuilder {
             size: 0,
             local_map: None,
             confidential_bit: None,
+            read_only: false,
             map_reset_vector: false,
         }
     }
@@ -330,6 +336,12 @@ impl PageTableBuilder {
     /// Map the reset vector at page 0xFFFFF with a single page.
     pub fn with_reset_vector(mut self, map_reset_vector: bool) -> Self {
         self.map_reset_vector = map_reset_vector;
+        self
+    }
+
+    /// Map all pages as read only
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
         self
     }
 
@@ -504,6 +516,7 @@ pub fn build_page_tables_64(
     address_bias: u64,
     identity_map_size: IdentityMapSize,
     pml4e_link: Option<(u64, u64)>,
+    read_only: bool,
 ) -> Vec<u8> {
     // Allocate page tables. There are up to 6 total page tables:
     //      1 PML4E (Level 4) (omitted if the address bias is non-zero)
@@ -532,13 +545,13 @@ pub fn build_page_tables_64(
 
         // Set PML4E entry linking PML4E to PDPTE.
         let output_address = page_table_gpa + pdpte_table_index as u64 * X64_PAGE_SIZE;
-        pml4e_table[0].set_entry(PageTableEntryType::Pde(output_address));
+        pml4e_table[0].set_entry(PageTableEntryType::Pde(output_address), read_only);
 
         // Set PML4E entry to link the additional entry if specified.
         if let Some((link_target_gpa, linkage_gpa)) = pml4e_link {
             assert!((linkage_gpa & 0x7FFFFFFFFF) == 0);
             pml4e_table[linkage_gpa as usize >> 39]
-                .set_entry(PageTableEntryType::Pde(link_target_gpa));
+                .set_entry(PageTableEntryType::Pde(link_target_gpa), read_only);
         }
 
         pdpte_table
@@ -568,11 +581,14 @@ pub fn build_page_tables_64(
         let output_address = page_table_gpa + pde_table_index as u64 * X64_PAGE_SIZE;
         let pdpte_entry = &mut pdpte_table[pdpte_index as usize];
         assert!(!pdpte_entry.is_present());
-        pdpte_entry.set_entry(PageTableEntryType::Pde(output_address));
+        pdpte_entry.set_entry(PageTableEntryType::Pde(output_address), read_only);
 
         // Set all 2MB entries in this PDE table.
         for entry in pde_table.iter_mut() {
-            entry.set_entry(PageTableEntryType::Leaf2MbPage(current_va + address_bias));
+            entry.set_entry(
+                PageTableEntryType::Leaf2MbPage(current_va + address_bias),
+                read_only,
+            );
             current_va += X64_LARGE_PAGE_SIZE;
         }
     }
