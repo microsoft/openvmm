@@ -12,6 +12,7 @@ use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
+use crate::host_params::mmio::select_vtl2_mmio_range;
 use crate::host_params::shim_params::IsolationType;
 use crate::memory::AddressSpaceManager;
 use crate::memory::AddressSpaceManagerBuilder;
@@ -405,11 +406,15 @@ impl PartitionInfo {
             );
 
             // Decide what mmio vtl2 should use.
-            let vtl2_mmio = storage.select_vtl2_mmio_range(mmio_size)?;
+            let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
+            let selected_vtl2_mmio = select_vtl2_mmio_range(mmio, mmio_size)?;
 
             // Update vtl0 mmio to exclude vtl2 mmio.
-            let vtl0_mmio = subtract_ranges(storage.vmbus_vtl0.mmio.iter().cloned(), [vtl2_mmio])
-                .collect::<ArrayVec<MemoryRange, 2>>();
+            let vtl0_mmio = subtract_ranges(
+                storage.vmbus_vtl0.mmio.iter().cloned(),
+                [selected_vtl2_mmio],
+            )
+            .collect::<ArrayVec<MemoryRange, 2>>();
 
             // TODO: For now, if we have only a single vtl0_mmio range left,
             // panic. In the future decide if we want to report this as a start
@@ -423,7 +428,7 @@ impl PartitionInfo {
             );
 
             storage.vmbus_vtl2.mmio.clear();
-            storage.vmbus_vtl2.mmio.push(vtl2_mmio);
+            storage.vmbus_vtl2.mmio.push(selected_vtl2_mmio);
             storage.vmbus_vtl0.mmio = vtl0_mmio;
         }
 

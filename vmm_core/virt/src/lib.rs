@@ -21,6 +21,7 @@ mod arch {
     mod x86 {
         pub use crate::x86::X86InitialRegs as InitialRegs;
         pub use crate::x86::X86PartitionCapabilities as PartitionCapabilities;
+        pub use crate::x86::X86PartitionCapabilitiesError as PartitionCapabilitiesError;
         pub use crate::x86::vm;
         pub use crate::x86::vp;
     }
@@ -28,6 +29,7 @@ mod arch {
     mod aarch64 {
         pub use crate::aarch64::Aarch64InitialRegs as InitialRegs;
         pub use crate::aarch64::Aarch64PartitionCapabilities as PartitionCapabilities;
+        pub use crate::aarch64::Aarch64PartitionCapabilitiesError as PartitionCapabilitiesError;
         pub use crate::aarch64::vm;
         pub use crate::aarch64::vp;
     }

@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::DOORBELL_STRIDE_BITS;
 use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
-use crate::queue::ShadowDoorbell;
 use crate::spec;
 use crate::tests::controller_tests::instantiate_and_build_admin_queue;
 use crate::tests::controller_tests::wait_for_msi;
@@ -13,9 +11,7 @@ use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
 use guestmem::GuestMemory;
 use mesh::CellUpdater;
-use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::PciFaultConfig;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::test_helpers::TestPciInterruptController;
@@ -40,11 +36,9 @@ async fn setup_shadow_doorbells(
     int_controller: &TestPciInterruptController,
     dq_bases: Option<(u64, u64)>,
 ) -> crate::NvmeFaultController {
-    let fault_configuration = FaultConfiguration {
-        fault_active: CellUpdater::new(false).cell(),
-        admin_fault: AdminQueueFaultConfig::new(),
-        pci_fault: PciFaultConfig::new(),
-    }; // Build a controller with 64 entries in the admin queue (just so that the ASQ fits in one page).
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
+
+    // Build a controller with 64 entries in the admin queue (just so that the ASQ fits in one page).
     let mut nvmec = instantiate_and_build_admin_queue(
         cq_buf,
         64,
@@ -174,22 +168,19 @@ async fn test_setup_sq_ring_with_shadow(driver: DefaultDriver) {
     let sq_buf = PrpRange::new(vec![SQ_BASE], 0, PAGE_SIZE64).unwrap();
     let gm = test_memory();
     let int_controller = TestPciInterruptController::new();
-    let sdb_base = ShadowDoorbell {
-        shadow_db_gpa: DOORBELL_BUFFER_BASE,
-        event_idx_gpa: EVT_IDX_BUFFER_BASE,
-    };
-    let sq_sdb = ShadowDoorbell::new(sdb_base, 0, true, DOORBELL_STRIDE_BITS.into());
     let mut backoff = Backoff::new(&driver);
 
     // Check that the old value was 0, just to be sure.
-    let sdb = gm.read_plain::<u32>(sq_sdb.shadow_db_gpa).unwrap();
+    let sdb = gm.read_plain::<u32>(DOORBELL_BUFFER_BASE).unwrap();
     assert_eq!(sdb, 0);
 
     let mut nvmec =
         setup_shadow_doorbells(driver.clone(), &cq_buf, &sq_buf, &gm, &int_controller, None).await;
 
-    let sdb = gm.read_plain::<u32>(sq_sdb.shadow_db_gpa).unwrap();
-    assert_eq!(sdb, crate::queue::ILLEGAL_DOORBELL_VALUE);
+    let sdb = gm.read_plain::<u32>(DOORBELL_BUFFER_BASE).unwrap();
+    // The doorbell value should be current (one admin queue command has been
+    // issued).
+    assert_eq!(sdb, 1);
 
     /* From the NVMe Spec (ver. 2.0a):
     B.5 Updating Controller Doorbell Properties using a Shadow Doorbell Buffer
@@ -235,15 +226,16 @@ async fn test_setup_sq_ring_with_shadow(driver: DefaultDriver) {
 
     let new_sq_db = 2u32;
     // Update the shadow.
-    gm.write_plain::<u32>(sq_sdb.shadow_db_gpa, &new_sq_db)
+    gm.write_plain::<u32>(DOORBELL_BUFFER_BASE, &new_sq_db)
         .unwrap();
 
     // Ring the admin queue doorbell.
     nvmec.write_bar0(0x1000, new_sq_db.as_bytes()).unwrap();
     backoff.back_off().await;
 
-    let sq_evt_idx = gm.read_plain::<u32>(sq_sdb.event_idx_gpa).unwrap();
-    assert_eq!(sq_evt_idx, 2);
+    // The current implementation will advance the event index immediately.
+    let sq_evt_idx = gm.read_plain::<u32>(EVT_IDX_BUFFER_BASE).unwrap();
+    assert_eq!(sq_evt_idx, new_sq_db);
 }
 
 #[async_test]

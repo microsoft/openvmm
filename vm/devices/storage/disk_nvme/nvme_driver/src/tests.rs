@@ -12,7 +12,6 @@ use mesh::CellUpdater;
 use nvme::NvmeControllerCaps;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
-use nvme_resources::fault::PciFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_spec::AdminOpcode;
 use nvme_spec::Cap;
@@ -46,16 +45,14 @@ async fn test_nvme_command_fault(driver: DefaultDriver) {
 
     test_nvme_fault_injection(
         driver,
-        FaultConfiguration {
-            fault_active: CellUpdater::new(true).cell(),
-            admin_fault: AdminQueueFaultConfig::new().with_submission_queue_fault(
+        FaultConfiguration::new(CellUpdater::new(true).cell()).with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
                 CommandMatchBuilder::new()
                     .match_cdw0_opcode(AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
                     .build(),
                 QueueFaultBehavior::Update(output_cmd),
             ),
-            pci_fault: PciFaultConfig::new(),
-        },
+        ),
     )
     .await;
 }

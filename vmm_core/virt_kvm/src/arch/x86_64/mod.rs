@@ -3,7 +3,7 @@
 
 //! This module implements support for KVM on x86_64.
 
-#![cfg(all(target_os = "linux", guest_is_native, guest_arch = "x86_64"))]
+#![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
 mod regs;
 mod vm_state;
@@ -297,7 +297,8 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let mut caps = virt::PartitionCapabilities::from_cpuid(
             self.config.processor_topology,
             &mut |function, index| cpuid.result(function, index, &[0; 4]),
-        );
+        )
+        .map_err(KvmError::Capabilities)?;
 
         caps.can_freeze_time = false;
 

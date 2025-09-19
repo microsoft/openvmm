@@ -113,7 +113,7 @@ impl RamDiskLayer {
             if size == 0 {
                 return Err(Error::EmptyDisk);
             }
-            if size % SECTOR_SIZE as u64 != 0 {
+            if !size.is_multiple_of(SECTOR_SIZE as u64) {
                 return Err(Error::NotSectorMultiple {
                     disk_size: size,
                     sector_size: SECTOR_SIZE,

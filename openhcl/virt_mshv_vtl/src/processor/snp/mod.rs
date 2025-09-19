@@ -48,6 +48,7 @@ use hvdef::hypercall::HypercallOutput;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -246,7 +247,7 @@ impl HardwareIsolatedBacking for SnpBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: VpIndex,
+        vp_index: Option<VpIndex>,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
@@ -1873,6 +1874,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
             })
             .mmio_write(address, data);
     }
+
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
+    }
 }
 
 impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, SnpBacked> {
@@ -2634,7 +2639,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
 }
 
 struct SnpTlbLockFlushAccess<'a> {
-    vp_index: VpIndex,
+    vp_index: Option<VpIndex>,
     partition: &'a UhPartitionInner,
     shared: &'a SnpBackedShared,
 }
@@ -2671,11 +2676,13 @@ impl TlbFlushLockAccess for SnpTlbLockFlushAccess<'_> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        hardware_cvm::tlb_lock::TlbLockAccess {
-            vp_index: self.vp_index,
-            cvm_partition: &self.shared.cvm,
+        if let Some(vp_index) = self.vp_index {
+            hardware_cvm::tlb_lock::TlbLockAccess {
+                vp_index,
+                cvm_partition: &self.shared.cvm,
+            }
+            .set_wait_for_tlb_locks(vtl);
         }
-        .set_wait_for_tlb_locks(vtl);
     }
 }
 

@@ -676,4 +676,27 @@ pub trait SynicMonitor: Synic {
 
     /// Sets the GPA of the monitor page currently in use.
     fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()>;
+
+    /// Allocates a monitor page and sets it as the monitor page currently in use. If allocating
+    /// monitor pages is not supported, returns `Ok(None)`.
+    ///
+    /// The page will be deallocated if the monitor page is subsequently changed or cleared using
+    /// [`SynicMonitor::set_monitor_page`].
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<u64>> {
+        let _ = vtl;
+        Ok(None)
+    }
+}
+
+/// MNF support routines for the emulator
+pub trait EmulatorMonitorSupport {
+    /// Check if the specified write is inside the monitor page, and signal the associated
+    /// connection ID if it is.
+    #[must_use]
+    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool;
+
+    /// Check if the specified read is inside the monitor page, and fill the provided buffer
+    /// if it is.
+    #[must_use]
+    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool;
 }
