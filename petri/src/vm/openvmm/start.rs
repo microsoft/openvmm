@@ -78,6 +78,7 @@ impl PetriVmConfigOpenVmm {
                             .into_resource(),
                         }],
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));
@@ -169,6 +170,7 @@ impl PetriVmConfigOpenVmm {
                             .into_resource(),
                         }],
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));

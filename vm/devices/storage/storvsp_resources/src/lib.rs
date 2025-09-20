@@ -46,6 +46,14 @@ pub struct ScsiControllerHandle {
     pub devices: Vec<ScsiDeviceAndPath>,
     /// Runtime request channel.
     pub requests: Option<mesh::Receiver<ScsiControllerRequest>>,
+    /// Poll mode queue depth. To reduce jitter, storvsp will avoid unmasking the vmbus interrupt (to the guest) if
+    /// there are IOs outstanding to any of the disks backing a device attached to that storvsp controller. This
+    /// controls the number of outstanding IOs that trigger when to switch between masking interrupts and just
+    /// assuming that some other activity will trigger a check of the queue.
+    ///
+    /// Higher numbers mean that there must be _more_ IOs outstanding to backing storage devices before storvsp
+    /// decides to keep interrupts masked.
+    pub poll_mode_queue_depth: Option<u32>,
 }
 
 impl ResourceId<VmbusDeviceHandleKind> for ScsiControllerHandle {

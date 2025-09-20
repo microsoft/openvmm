@@ -300,6 +300,7 @@ impl StorageBuilder {
                     devices: std::mem::take(&mut self.vtl0_scsi_devices),
                     io_queue_depth: None,
                     requests: Some(recv),
+                    poll_mode_queue_depth: None,
                 }
                 .into_resource(),
             ));
@@ -323,6 +324,7 @@ impl StorageBuilder {
                     devices: std::mem::take(&mut self.vtl2_scsi_devices),
                     io_queue_depth: None,
                     requests: None,
+                    poll_mode_queue_depth: None,
                 }
                 .into_resource(),
             ));
