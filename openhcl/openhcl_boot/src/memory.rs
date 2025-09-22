@@ -138,6 +138,7 @@ pub struct AddressSpaceManagerBuilder<'a, I: Iterator<Item = MemoryRange>> {
     sidecar_image: Option<MemoryRange>,
     page_tables: Option<MemoryRange>,
     log_buffer: Option<MemoryRange>,
+    pool_range: Option<MemoryRange>,
 }
 
 impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
@@ -170,6 +171,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             sidecar_image: None,
             page_tables: None,
             log_buffer: None,
+            pool_range: None,
         }
     }
 
@@ -197,6 +199,12 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
         self
     }
 
+    /// Existing VTL2 GPA pool ranges, reported as type [`MemoryVtlType::VTL2_GPA_POOL`].
+    pub fn with_pool_range(mut self, pool_range: MemoryRange) -> Self {
+        self.pool_range = Some(pool_range);
+        self
+    }
+
     /// Consume the builder and initialize the address space manager.
     pub fn init(self) -> Result<&'a mut AddressSpaceManager, Error> {
         let Self {
@@ -209,6 +217,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             sidecar_image,
             page_tables,
             log_buffer,
+            pool_range,
         } = self;
 
         if vtl2_ram.len() > MAX_VTL2_RAM_RANGES {
@@ -229,7 +238,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             persisted_state_region.split_at_offset(PAGE_SIZE_4K);
 
         // The other ranges are reserved, and must overlap with the used range.
-        let mut reserved: ArrayVec<(MemoryRange, ReservedMemoryType), 7> = ArrayVec::new();
+        let mut reserved: ArrayVec<(MemoryRange, ReservedMemoryType), 20> = ArrayVec::new();
         reserved.push((persisted_header, ReservedMemoryType::PersistedStateHeader));
         reserved.push((persisted_payload, ReservedMemoryType::PersistedStatePayload));
         reserved.extend(vtl2_config.map(|r| (r, ReservedMemoryType::Vtl2Config)));
@@ -280,6 +289,16 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
                 RangeWalkResult::Neither => {}
             }
         }
+
+        // Add any existing pool range as reserved.
+        if let Some(range) = pool_range {
+            used_ranges.push((
+                range,
+                AddressUsage::Reserved(ReservedMemoryType::Vtl2GpaPool),
+            ));
+            manager.vtl2_pool = true;
+        }
+        used_ranges.sort_unstable_by_key(|(r, _)| r.start());
 
         // Construct the initial state of VTL2 address space by walking ram and reserved ranges
         assert!(manager.address_space.is_empty());
@@ -855,4 +874,6 @@ mod tests {
             assert_eq!(*expected, actual);
         }
     }
+
+    // FIXME: test pool ranges
 }
