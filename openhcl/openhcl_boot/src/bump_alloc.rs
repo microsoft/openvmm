@@ -75,7 +75,7 @@ impl BumpAllocator {
     }
 
     /// Enable allocations. This panics if allocations were ever previously
-    /// allocated.
+    /// enabled.
     pub fn enable_alloc(&self) {
         let mut inner = self.inner.borrow_mut();
 
@@ -147,14 +147,8 @@ unsafe impl GlobalAlloc for BumpAllocator {
             return core::ptr::null_mut();
         }
 
-        log!(
-            "bump_alloc: allocating {} bytes with alignment {} at with offset {} alloc_start {:#x?}, alloc_end {:#x?}",
-            layout.size(),
-            layout.align(),
-            align_offset,
-            alloc_start,
-            alloc_end,
-        );
+        // TODO: renable allocation tracing when we support tracing levels via
+        // the log crate.
 
         if alloc_end > inner.end {
             core::ptr::null_mut() // out of memory
@@ -165,8 +159,9 @@ unsafe impl GlobalAlloc for BumpAllocator {
         }
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        log!("dealloc called on {:#x?} of size {}", ptr, layout.size());
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // TODO: renable allocation tracing when we support tracing levels via
+        // the log crate.
     }
 
     // TODO: consider implementing realloc for the Vec grow case, which is the
@@ -175,7 +170,9 @@ unsafe impl GlobalAlloc for BumpAllocator {
 }
 
 #[cfg(nightly)]
-unsafe impl core::alloc::Allocator for BumpAllocator {
+// SAFETY: The allocator points to a valid identity VA range via the
+// construction at init, the same as for `GlobalAlloc`.
+unsafe impl core::alloc::Allocator for &BumpAllocator {
     fn allocate(
         &self,
         layout: Layout,
@@ -235,7 +232,7 @@ mod tests {
         }
 
         {
-            let mut vec: Vec<u8, BumpAllocator> = Vec::new_in(allocator);
+            let mut vec: Vec<u8, &BumpAllocator> = Vec::new_in(&allocator);
 
             // Push 4096 bytes, which should force a vec realloc.
             for i in 0..4096 {
@@ -248,5 +245,7 @@ mod tests {
 
         // Recreate the box, then drop it so miri is satisfied.
         let _buf = unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(addr, 0x1000 * 20)) };
+
+        allocator.log_stats();
     }
 }
