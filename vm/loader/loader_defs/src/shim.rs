@@ -69,6 +69,10 @@ pub struct ShimParamsRaw {
     pub heap_start_offset: i64,
     /// The size of the bootshim heap.
     pub heap_size: u64,
+    /// The offset to the start of the supported persisted state region.
+    pub persisted_state_region_offset: i64,
+    /// The size of the supported persisted state region.
+    pub persisted_state_region_size: u64,
 }
 
 open_enum! {
