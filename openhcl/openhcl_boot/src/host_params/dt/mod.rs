@@ -579,6 +579,8 @@ fn topology_from_persisted_state(
     ALLOCATOR.disable_alloc();
     ALLOCATOR.log_stats();
 
+    log!("read saved state {:#x?}", parsed_protobuf);
+
     let loader_defs::shim::SavedState {
         partition_memory,
         partition_mmio,
@@ -622,6 +624,19 @@ fn topology_from_persisted_state(
             vnode,
         }),
     );
+
+    log!("restored vtl2 ram {:#x?}", vtl2_ram.as_slice());
+
+    // If the host was responsible for allocating VTL2 ram, verify the ram
+    // parsed from the previous instance matches.
+    if matches!(memory_allocation_mode, MemoryAllocationMode::Host) {
+        let host_vtl2_ram = parse_host_vtl2_ram(params, &parsed.memory);
+        assert_eq!(
+            vtl2_ram.as_slice(),
+            host_vtl2_ram.as_ref(),
+            "vtl2 ram from persisted state does not match host provided ram"
+        );
+    }
 
     // Merge the persisted state header and protobuf region, and report that as
     // the persisted region.
