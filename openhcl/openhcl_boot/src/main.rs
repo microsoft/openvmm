@@ -542,7 +542,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     }
 
     // Enable the in-memory log.
-    boot_logger_init(p.isolation_type, true);
     boot_logger_memory_init(p.log_buffer);
 
     let boot_reftime = get_ref_time(p.isolation_type);
