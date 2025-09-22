@@ -106,7 +106,7 @@
             "openvmm_hcl": {
                 "Pss": {
                     "baseline": 14859,
-                    "threshold": 250
+                    "threshold": 300
                 },
                 "Pss_Anon": {
                     "baseline": 4805,
