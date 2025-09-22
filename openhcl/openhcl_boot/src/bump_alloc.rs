@@ -90,7 +90,7 @@ impl BumpAllocator {
         };
     }
 
-    /// Disable allocations. Panis if the allocator was not previously enabled.
+    /// Disable allocations. Panics if the allocator was not previously enabled.
     pub fn disable_alloc(&self) {
         let mut inner = self.inner.borrow_mut();
         inner.allow_alloc = match inner.allow_alloc {
@@ -141,7 +141,7 @@ unsafe impl GlobalAlloc for BumpAllocator {
         // If end overflowed this allocation is too large. If start overflowed,
         // end will also overflow.
         //
-        // Rust `Layout` guarnantees that the size is not larger than `isize`,
+        // Rust `Layout` guarantees that the size is not larger than `isize`,
         // so it's not possible to wrap around twice.
         if alloc_end < alloc_start {
             return core::ptr::null_mut();
@@ -176,10 +176,13 @@ unsafe impl GlobalAlloc for BumpAllocator {
 
 #[cfg(nightly)]
 unsafe impl core::alloc::Allocator for BumpAllocator {
-    fn allocate(&self, layout: Layout) -> Result<core::ptr::NonNull<[u8]>, std::alloc::AllocError> {
+    fn allocate(
+        &self,
+        layout: Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
         let ptr = unsafe { self.alloc(layout) };
         if ptr.is_null() {
-            Err(std::alloc::AllocError)
+            Err(core::alloc::AllocError)
         } else {
             unsafe {
                 Ok(core::ptr::NonNull::slice_from_raw_parts(
@@ -243,7 +246,7 @@ mod tests {
             vec.resize(10000, 0);
         }
 
-        // Recreate the box, then drop it so miri is satisifed.
+        // Recreate the box, then drop it so miri is satisfied.
         let _buf = unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(addr, 0x1000 * 20)) };
     }
 }
