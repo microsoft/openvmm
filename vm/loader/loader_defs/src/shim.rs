@@ -262,7 +262,10 @@ pub struct PersistedStateHeader {
     /// The gpa for the start of the protobuf region. This must be 4K aligned.
     pub protobuf_base: u64,
     /// The size of the protobuf region in bytes.
-    pub protobuf_len: u64,
+    pub protobuf_region_len: u64,
+    /// The size of the protobuf payload in bytes.
+    /// This must be less than or equal to `protobuf_region_len`.
+    pub protobuf_payload_len: u64,
 }
 
 impl PersistedStateHeader {

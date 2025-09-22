@@ -544,11 +544,21 @@ fn topology_from_persisted_state(
     // persisted region. We expect it to live there as today we rely on the
     // build time generated pagetable to identiy map the protobuf region.
     let protobuf_region =
-        MemoryRange::new(header.protobuf_base..(header.protobuf_base + header.protobuf_len));
+        MemoryRange::new(header.protobuf_base..(header.protobuf_base + header.protobuf_region_len));
     assert!(
         params.persisted_state.contains(&protobuf_region),
         "protobuf region {protobuf_region:#x?} is not contained within the persisted state region {:#x?}",
         params.persisted_state
+    );
+
+    log!("using persisted state protobuf region {protobuf_region:#x?}");
+
+    // verify protobuf payload len is smaller than region.
+    assert!(
+        header.protobuf_payload_len <= header.protobuf_region_len,
+        "protobuf payload len {} is larger than region len {}",
+        header.protobuf_payload_len,
+        header.protobuf_region_len
     );
 
     // SAFETY: The region lies within the persisted state region, which is
@@ -556,12 +566,13 @@ fn topology_from_persisted_state(
     let protobuf_raw = unsafe {
         core::slice::from_raw_parts(
             header.protobuf_base as *const u8,
-            header.protobuf_len as usize,
+            header.protobuf_payload_len as usize,
         )
     };
 
     ALLOCATOR.enable_alloc();
 
+    log!("decoding protobuf of size {}", protobuf_raw.len());
     let parsed_protobuf: loader_defs::shim::SavedState =
         mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf");
 
