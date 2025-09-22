@@ -283,7 +283,7 @@ impl Controller {
     fn read(&mut self, reg: u16) -> Result<u8, IoError> {
         let res = if reg < 8 {
             let channel = reg as usize / 2;
-            let data = if reg % 2 == 0 {
+            let data = if reg.is_multiple_of(2) {
                 // Address port.
                 if !self.flip_flop_high {
                     self.latched_address = self.channels[channel].address;
@@ -328,7 +328,7 @@ impl Controller {
     fn write(&mut self, reg: u16, data: u8) -> IoResult {
         if reg < 8 {
             let channel = reg as usize / 2;
-            let mem = if reg % 2 == 0 {
+            let mem = if reg.is_multiple_of(2) {
                 // Address port.
                 &mut self.channels[channel].address
             } else {

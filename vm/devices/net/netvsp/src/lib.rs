@@ -4344,12 +4344,7 @@ impl Coordinator {
                 );
 
                 initial_rx = (RX_RESERVED_CONTROL_BUFFERS..state.buffers.recv_buffer.count)
-                    .filter(|&n| {
-                        states
-                            .clone()
-                            .flatten()
-                            .all(|s| (s.state.rx_bufs.is_free(n)))
-                    })
+                    .filter(|&n| states.clone().flatten().all(|s| s.state.rx_bufs.is_free(n)))
                     .map(RxId)
                     .collect::<Vec<_>>();
 

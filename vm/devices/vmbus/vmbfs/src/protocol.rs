@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![allow(dead_code)]
+
 use bitfield_struct::bitfield;
 use guid::Guid;
 use open_enum::open_enum;

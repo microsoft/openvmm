@@ -167,7 +167,7 @@ impl SynicPortAccess for MockSynic {
         _vtl: Vtl,
         _vp: u32,
         _sint: u8,
-    ) -> Result<Box<(dyn GuestMessagePort)>, vmcore::synic::HypervisorError> {
+    ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::HypervisorError> {
         Ok(Box::new(MockGuestMessagePort {
             send: self.message_send.clone(),
             spawner: self.spawner.clone(),
@@ -183,7 +183,7 @@ impl SynicPortAccess for MockSynic {
         _sint: u8,
         _flag: u16,
         _monitor_info: Option<MonitorInfo>,
-    ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
+    ) -> Result<Box<dyn GuestEventPort>, vmcore::synic::HypervisorError> {
         Ok(Box::new(MockGuestPort {}))
     }
 

@@ -604,7 +604,11 @@ impl<T: Backing> UhProcessor<'_, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn handle_debug_exception(&mut self, vtl: GuestVtl) -> Result<(), VpHaltReason> {
+    fn handle_debug_exception(
+        &mut self,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+    ) -> Result<(), VpHaltReason> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
         if vtl == GuestVtl::Vtl0 {
             let debug_regs: virt::x86::vp::DebugRegisters = self
@@ -628,7 +632,7 @@ impl<T: Backing> UhProcessor<'_, T> {
             let i = debug_regs.dr6.trailing_zeros() as usize;
             if i >= BREAKPOINT_INDEX_OFFSET {
                 // Received a debug exception not triggered by a breakpoint or single step.
-                return Err(VpHaltReason::InvalidVmState(
+                return Err(dev.fatal_error(
                     UnexpectedDebugException {
                         dr6: debug_regs.dr6,
                     }

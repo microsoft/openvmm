@@ -57,6 +57,10 @@ pub struct ShimParamsRaw {
     pub page_tables_start: i64,
     /// The size of the openhcl_boot page tables. This is 0 if unavailable.
     pub page_tables_size: u64,
+    /// The offset to the persisted bootshim log buffer.
+    pub log_buffer_start: i64,
+    /// The size of the persisted bootshim log buffer.
+    pub log_buffer_size: u64,
 }
 
 open_enum! {
@@ -108,6 +112,9 @@ open_enum! {
         /// This memory is used by VTL2 for TDX AP startup page tables, and is
         /// marked as reserved to the kernel.
         VTL2_TDX_PAGE_TABLES = 9,
+        /// This memory is used by VTL2 to store in-memory bootshim logs. It is
+        /// marked as reserved to the kernel.
+        VTL2_BOOTSHIM_LOG_BUFFER = 10,
     }
 }
 
@@ -124,6 +131,7 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
                 | MemoryVtlType::VTL2_TDX_PAGE_TABLES
+                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
         )
     }
 }

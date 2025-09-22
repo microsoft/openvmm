@@ -136,6 +136,7 @@ pub struct Server {
     // typically the case for OpenHCL in hardware-isolated VMs because the monitor pages must be in
     // shared memory and we cannot set protections on shared memory.
     require_server_allocated_mnf: bool,
+    use_absolute_channel_order: bool,
 }
 
 pub struct ServerWithNotifier<'a, T> {
@@ -1352,7 +1353,12 @@ pub trait Notifier: Send {
 
 impl Server {
     /// Creates a new VMBus server.
-    pub fn new(vtl: Vtl, child_connection_id: u32, channel_id_offset: u16) -> Self {
+    pub fn new(
+        vtl: Vtl,
+        child_connection_id: u32,
+        channel_id_offset: u16,
+        use_absolute_channel_order: bool,
+    ) -> Self {
         Server {
             state: ConnectionState::Disconnected,
             channels: ChannelList::new(),
@@ -1365,6 +1371,7 @@ impl Server {
             delayed_max_version: None,
             pending_messages: PendingMessages(VecDeque::new()),
             require_server_allocated_mnf: false,
+            use_absolute_channel_order,
         }
     }
 
@@ -1755,7 +1762,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         self.notifier.reset_complete();
     }
 
-    /// Creates a new channel, returning its channel ID.
+    /// Creates a new channel, returning its offer ID.
     pub fn offer_channel(&mut self, offer: OfferParamsInternal) -> Result<OfferId, OfferError> {
         // Ensure no channel with this interface and instance ID exists.
         if let Some((offer_id, channel)) = self.inner.channels.get_by_key_mut(&offer.key()) {
@@ -2645,8 +2652,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         info.offers_sent = true;
 
-        // The guest expects channel IDs to stay consistent across hibernation and
-        // resume, so sort the current offers before assigning channel IDs.
+        // Some guests expects channel IDs to stay consistent across hibernation and resume, so sort
+        // the current offers before assigning channel IDs.
         let mut sorted_channels: Vec<_> = self
             .inner
             .channels
@@ -2654,17 +2661,26 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .filter(|(_, channel)| !channel.state.is_reserved())
             .collect();
 
-        sorted_channels.sort_unstable_by_key(|(_, channel)| {
-            (
-                channel.offer.interface_id,
-                channel.offer.offer_order.unwrap_or(u32::MAX),
-                channel.offer.instance_id,
-            )
-        });
+        if self.inner.use_absolute_channel_order {
+            sorted_channels.sort_unstable_by_key(|(_, channel)| {
+                (
+                    channel.offer.offer_order.unwrap_or(u32::MAX),
+                    channel.offer.interface_id,
+                    channel.offer.instance_id,
+                )
+            });
+        } else {
+            sorted_channels.sort_unstable_by_key(|(_, channel)| {
+                (
+                    channel.offer.interface_id,
+                    channel.offer.offer_order.unwrap_or(u32::MAX),
+                    channel.offer.instance_id,
+                )
+            });
+        }
 
         for (offer_id, channel) in sorted_channels {
             assert!(matches!(channel.state, ChannelState::ClientReleased));
-            assert!(channel.info.is_none());
 
             channel.prepare_channel(
                 offer_id,

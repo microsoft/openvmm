@@ -30,14 +30,6 @@ pub enum HaltReason {
         // Arc'ed for size and cheap clones.
         registers: Option<Arc<virt::vp::Registers>>,
     },
-    InvalidVmState {
-        #[inspect(rename = "failing_vp")]
-        vp: u32,
-    },
-    VpError {
-        #[inspect(rename = "failing_vp")]
-        vp: u32,
-    },
     SingleStep {
         #[inspect(rename = "failing_vp")]
         vp: u32,
