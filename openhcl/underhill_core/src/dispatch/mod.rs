@@ -34,6 +34,7 @@ use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
+use mana_driver::save_restore::ManaSavedState;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
@@ -127,6 +128,9 @@ pub trait LoadedVmNetworkSettings: Inspect {
         &self,
         mut params: PacketCaptureParams<Socket>,
     ) -> anyhow::Result<PacketCaptureParams<Socket>>;
+
+    /// Save the network state for restoration after servicing.
+    async fn save(&mut self) -> Vec<ManaSavedState>;
 }
 
 /// A VM that has been loaded and can be run.
@@ -580,6 +584,8 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
+            tracing::info!("state units stopped");
+
             let mut state = self.save(Some(deadline), true).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
@@ -759,6 +765,12 @@ impl LoadedVm {
             None
         };
 
+        let mana_state = if let Some(network_settings) = &mut self.network_settings {
+            Some(network_settings.save().await)
+        } else {
+            None
+        };
+
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
             Some((
@@ -798,7 +810,7 @@ impl LoadedVm {
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,
-                mana_state: None,
+                mana_state,
             },
             units,
         };

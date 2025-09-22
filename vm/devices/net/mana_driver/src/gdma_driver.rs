@@ -513,10 +513,14 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     #[allow(dead_code)]
-    pub async fn save(mut self) -> anyhow::Result<GdmaDriverSavedState> {
+    pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
+        tracing::info!("saving gdma driver state");
+
         self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
+
+        self.unmap_all_msix()?;
 
         Ok(GdmaDriverSavedState {
             mem: SavedMemoryState {

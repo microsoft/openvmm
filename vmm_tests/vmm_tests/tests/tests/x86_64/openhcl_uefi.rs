@@ -116,6 +116,27 @@ async fn nvme_keepalive(
     .await
 }
 
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
+async fn mana_keepalive(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(|b| b.with_nic())
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off")
+        .run()
+        .await?;
+
+    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
 /// hvlite.
 #[openvmm_test_no_agent(openhcl_uefi_x64(none))]

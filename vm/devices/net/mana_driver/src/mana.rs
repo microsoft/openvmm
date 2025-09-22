@@ -5,6 +5,7 @@
 
 pub use crate::bnic_driver::RxConfig;
 pub use crate::resources::ResourceArena;
+pub use crate::save_restore::ManaDeviceSavedState;
 
 use crate::bnic_driver::BnicDriver;
 use crate::bnic_driver::WqConfig;
@@ -142,6 +143,16 @@ impl<T: DeviceBacking> ManaDevice<T> {
             hwc_task: None,
         };
         Ok(device)
+    }
+
+    /// Saves the device's state for servicing
+    pub async fn save(&self) -> anyhow::Result<ManaDeviceSavedState> {
+        let mut gdma = self.inner.gdma.lock().await;
+        let gdma_saved_state = gdma.save().await?;
+        let saved_state = ManaDeviceSavedState {
+            gdma: gdma_saved_state,
+        };
+        Ok(saved_state)
     }
 
     /// Returns the number of vports the device supports.

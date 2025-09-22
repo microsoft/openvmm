@@ -90,6 +90,7 @@ use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
+use mana_driver::save_restore::ManaSavedState;
 use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::MeshPayload;
@@ -999,6 +1000,68 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             params = manager.packet_capture(params).await?;
         }
         Ok(params)
+    }
+
+    async fn save(&mut self) -> Vec<ManaSavedState> {
+        let vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> = self.vf_managers.drain().collect();
+
+        // Collect the instance_id of every vf_manager being shutdown
+        let instance_ids: Vec<Guid> = vf_managers
+            .iter()
+            .map(|(instance_id, _)| *instance_id)
+            .collect();
+
+        // Only remove the vmbus channels and NICs from the VF Managers
+        let mut nic_channels = Vec::new();
+        let mut i = 0;
+        while i < self.nics.len() {
+            if instance_ids.contains(&self.nics[i].0) {
+                let val = self.nics.remove(i);
+                nic_channels.push(val);
+            } else {
+                i += 1;
+            }
+        }
+
+        for instance_id in instance_ids {
+            if !nic_channels.iter().any(|(id, _)| *id == instance_id) {
+                tracing::error!(
+                    "No vmbus channel found that matches VF Manager instance_id: {instance_id}"
+                );
+            }
+        }
+
+        let mut endpoints: Vec<_> =
+            join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
+                async {
+                    let nic = channel.remove().await.revoke().await;
+                    nic.shutdown()
+                }
+                .instrument(tracing::info_span!("nic_shutdown", %instance_id))
+                .await
+            }))
+            .await;
+
+        let run_endpoints = async {
+            loop {
+                let _ = endpoints
+                    .iter_mut()
+                    .map(|endpoint| endpoint.wait_for_endpoint_action())
+                    .collect::<Vec<_>>()
+                    .race()
+                    .await;
+            }
+        };
+
+        let save_vf_managers = join_all(vf_managers.into_iter().map(|(_, vf_manager)| {
+            let manager = vf_manager.clone();
+            async move { manager.save().await }
+        }));
+
+        let state = (run_endpoints, save_vf_managers).race().await;
+        tracing::info!("save returned: {state:?}");
+
+        state
     }
 }
 

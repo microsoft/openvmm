@@ -14,6 +14,7 @@ use guid::Guid;
 use inspect::Inspect;
 use mana_driver::mana::ManaDevice;
 use mana_driver::mana::VportState;
+use mana_driver::save_restore::ManaSavedState;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -58,6 +59,7 @@ enum HclNetworkVfManagerMessage {
     HideVtl0VF(Rpc<bool, ()>),
     Inspect(inspect::Deferred),
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
+    SaveState(Rpc<(), ManaSavedState>),
 }
 
 async fn create_mana_device(
@@ -643,6 +645,25 @@ impl HclNetworkVFManagerWorker {
                     })
                     .await;
                 }
+                NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
+                    drop(self.messages.take().unwrap());
+
+                    rpc.handle(|_| async move {
+                        let mana_device = self
+                            .mana_device
+                            .take()
+                            .expect("should have a device present to save state");
+
+                        let saved_state = mana_device.save().await.unwrap();
+
+                        ManaSavedState {
+                            pci_id: self.vtl2_pci_id.clone(),
+                            mana_device: saved_state,
+                        }
+                    })
+                    .await;
+                    return;
+                }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::ShutdownBegin(
                     remove_vtl0_vf,
                 )) => {
@@ -967,6 +988,16 @@ impl HclNetworkVFManager {
             endpoints,
             runtime_save_state,
         ))
+    }
+
+    pub async fn save(&self) -> ManaSavedState {
+        let save_state = self
+            .shared_state
+            .worker_channel
+            .call(HclNetworkVfManagerMessage::SaveState, ())
+            .await;
+
+        save_state.unwrap()
     }
 
     pub async fn packet_capture(
