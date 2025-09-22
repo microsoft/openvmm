@@ -449,13 +449,12 @@ fn topology_from_host_dt(
             ..(params.parameter_region_start + params.parameter_region_size),
     );
 
-    // FIXME: decide how much to shrink the persisted range. This will
-    // require some experimentation with figuring out how large the range
-    // should be based on VP count + ram size and configuration, along with
-    // accounting for potential growth in the future.
-    //
-    // For now, just use 1MB, even if the max supported size is 2MB.
-    const PERSISTED_REGION_SIZE: u64 = 1024 * 1024;
+    // NOTE: Size the region as 20 pages. This should be plenty enough for the
+    // worst case encoded size (about 50 bytes worst case per memory entry, with
+    // the max number of ram ranges), and is small enough that we can reserve it
+    // on all sizes. Revisit this calculation if we persist more state in the
+    // future.
+    const PERSISTED_REGION_SIZE: u64 = 20 * 4096;
     let (persisted_state_region, remainder) = params
         .persisted_state
         .split_at_offset(PERSISTED_REGION_SIZE);
