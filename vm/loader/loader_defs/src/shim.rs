@@ -156,6 +156,24 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
         )
     }
+
+    /// Returns true if this range is used by VTL2.
+    pub fn vtl2(&self) -> bool {
+        matches!(
+            *self,
+            MemoryVtlType::VTL2_RAM
+                | MemoryVtlType::VTL2_CONFIG
+                | MemoryVtlType::VTL2_SIDECAR_IMAGE
+                | MemoryVtlType::VTL2_SIDECAR_NODE
+                | MemoryVtlType::VTL2_MMIO
+                | MemoryVtlType::VTL2_RESERVED
+                | MemoryVtlType::VTL2_GPA_POOL
+                | MemoryVtlType::VTL2_TDX_PAGE_TABLES
+                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
+        )
+    }
 }
 
 /// This structure describes the initial state of the TD VP. When a VP (both BSP and AP)

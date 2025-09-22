@@ -31,6 +31,7 @@ use host_fdt_parser::VmbusInfo;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
+use loader_defs::shim::MemoryVtlType;
 use loader_defs::shim::PersistedStateHeader;
 use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
@@ -327,18 +328,6 @@ fn init_heap(params: &ShimParams) {
     unsafe {
         bump_alloc::ALLOCATOR.init(params.heap);
     }
-
-    // TODO: test using heap, as no mesh decode yet.
-    {
-        use alloc::boxed::Box;
-        bump_alloc::ALLOCATOR.enable_alloc();
-
-        let box_int = Box::new(42);
-        log!("box int {box_int}");
-        drop(box_int);
-        bump_alloc::ALLOCATOR.disable_alloc();
-        bump_alloc::ALLOCATOR.log_stats();
-    }
 }
 
 type ParsedDt =
@@ -363,28 +352,24 @@ fn topology_from_host_dt(
 
     // TODO: Decide if isolated guests always use VTL2 allocation mode.
 
-    let memory_allocation_mode = match parsed.memory_allocation_mode {
+    let memory_allocation_mode = parsed.memory_allocation_mode;
+    match memory_allocation_mode {
         MemoryAllocationMode::Host => {
             vtl2_ram
                 .try_extend_from_slice(parse_host_vtl2_ram(params, &parsed.memory).as_ref())
                 .expect("vtl2 ram should only be 64 big");
-            MemoryAllocationMode::Host
         }
         MemoryAllocationMode::Vtl2 {
             memory_size,
-            mmio_size,
+            mmio_size: _,
         } => {
             vtl2_ram
                 .try_extend_from_slice(
                     allocate_vtl2_ram(params, &parsed.memory, memory_size).as_ref(),
                 )
                 .expect("vtl2 ram should only be 64 big");
-            MemoryAllocationMode::Vtl2 {
-                memory_size,
-                mmio_size,
-            }
         }
-    };
+    }
 
     // The host is responsible for allocating MMIO ranges for non-isolated
     // guests when it also provides the ram VTL2 should use.
@@ -545,19 +530,218 @@ fn topology_from_host_dt(
     })
 }
 
+// FIXME: seems like maybe we could take the host provided, merge in the pool
+// region (since that's the only thing we really care about that doesn't get
+// overwritten), then instead verify what we got matches what the host reported?
 fn topology_from_persisted_state(
     header: PersistedStateHeader,
     params: &ShimParams,
     parsed: &ParsedDt,
     address_space: &mut AddressSpaceManager,
 ) -> Result<PartitionTopology, DtError> {
-    todo!()
+    // Verify the header describes a protobuf region within the bootshim
+    // persisted region. We expect it to live there as today we rely on the
+    // build time generated pagetable to identiy map the protobuf region.
+    let protobuf_region =
+        MemoryRange::new(header.protobuf_base..(header.protobuf_base + header.protobuf_len));
+    assert!(
+        params.persisted_state.contains(&protobuf_region),
+        "protobuf region {protobuf_region:#x?} is not contained within the persisted state region {:#x?}",
+        params.persisted_state
+    );
+
+    // SAFETY: The region lies within the persisted state region, which is
+    // identity mapped via the build time generated pagetable.
+    let protobuf_raw = unsafe {
+        core::slice::from_raw_parts(
+            header.protobuf_base as *const u8,
+            header.protobuf_len as usize,
+        )
+    };
+
+    ALLOCATOR.enable_alloc();
+
+    let parsed_protobuf: loader_defs::shim::SavedState =
+        mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf");
+
+    ALLOCATOR.disable_alloc();
+    ALLOCATOR.log_stats();
+
+    let loader_defs::shim::SavedState {
+        partition_memory,
+        partition_mmio,
+    } = parsed_protobuf;
+
+    // FIXME: verify the saved state and host provided values match, via walking
+    // the ranges for both and making sure they all overlap.
+
+    // FIXME: memory allocation mode should persist in saved state and compare
+    // against host?
+    let memory_allocation_mode = parsed.memory_allocation_mode;
+
+    let mut vtl2_ram =
+        off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
+
+    // Determine which ranges are memory ranges used by VTL2.
+    let previous_vtl2_ram = partition_memory.iter().filter_map(|entry| {
+        if entry.vtl_type.ram() && entry.vtl_type.vtl2() {
+            Some(MemoryEntry {
+                range: entry.range,
+                mem_type: entry.igvm_type.clone().into(),
+                vnode: entry.vnode,
+            })
+        } else {
+            None
+        }
+    });
+
+    // Merge adjacent ranges as saved state reports the final usage of ram which
+    // includes reserved in separate ranges, but here we want the whole
+    // underlying ram ranges, merged with adjacent types if they share the same
+    // igvm types.
+    let previous_vtl2_ram = memory_range::merge_adjacent_ranges(
+        previous_vtl2_ram.map(|entry| (entry.range, (entry.mem_type, entry.vnode))),
+    );
+
+    vtl2_ram.extend(
+        previous_vtl2_ram.map(|(range, (mem_type, vnode))| MemoryEntry {
+            range,
+            mem_type,
+            vnode,
+        }),
+    );
+
+    // Merge the persisted state header and protobuf region, and report that as
+    // the persisted region.
+    //
+    // NOTE: We could choose to resize the persisted region at this point, which
+    // we would need to do if we expect the saved state to grow larger.
+    let persisted_header = partition_memory
+        .iter()
+        .find(|entry| entry.vtl_type == MemoryVtlType::VTL2_PERSISTED_STATE_HEADER)
+        .expect("BUGBUG return error - persisted state header missing");
+    let persisted_protobuf = partition_memory
+        .iter()
+        .find(|entry| entry.vtl_type == MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF)
+        .expect("BUGBUG return error - persisted state protobuf missing");
+    assert_eq!(persisted_header.range.end(), protobuf_region.start());
+    let persisted_state_region =
+        MemoryRange::new(persisted_header.range.start()..persisted_protobuf.range.end());
+
+    // The host provided device tree is marked as normal ram, as the
+    // bootshim is responsible for constructing anything usermode needs from
+    // it, and passing it via the device tree provided to the kernel.
+    let reclaim_base = params.dt_start();
+    let reclaim_end = params.dt_start() + params.dt_size();
+    let vtl2_config_region_reclaim =
+        MemoryRange::try_new(reclaim_base..reclaim_end).expect("range is valid");
+
+    log!("reclaim device tree memory {reclaim_base:x}-{reclaim_end:x}");
+
+    let vtl2_config_region = MemoryRange::new(
+        params.parameter_region_start
+            ..(params.parameter_region_start + params.parameter_region_size),
+    );
+
+    let mut address_space_builder = AddressSpaceManagerBuilder::new(
+        address_space,
+        &vtl2_ram,
+        params.used,
+        persisted_state_region,
+        subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
+    )
+    .with_log_buffer(params.log_buffer);
+
+    // NOTE: The only other region we take from the previous instance is any
+    // allocated vtl2 pool. Today, we do not allocate a new/larger pool if the
+    // command line arguments or host device tree changed, as that's not
+    // something we expect to happen in practice.
+    let mut pool_ranges = partition_memory.iter().filter_map(|entry| {
+        if entry.vtl_type == MemoryVtlType::VTL2_GPA_POOL {
+            Some(entry.range)
+        } else {
+            None
+        }
+    });
+    let pool_range = pool_ranges.next();
+    assert!(
+        pool_ranges.next().is_none(),
+        "previous instance had multiple pool ranges"
+    );
+
+    if let Some(pool_range) = pool_range {
+        address_space_builder = address_space_builder.with_pool_range(pool_range);
+    }
+
+    // As described above, other ranges come from this current boot.
+    if params.vtl2_reserved_region_size != 0 {
+        address_space_builder = address_space_builder.with_reserved_range(MemoryRange::new(
+            params.vtl2_reserved_region_start
+                ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
+        ));
+    }
+
+    if params.sidecar_size != 0 {
+        address_space_builder = address_space_builder.with_sidecar_image(MemoryRange::new(
+            params.sidecar_base..(params.sidecar_base + params.sidecar_size),
+        ));
+    }
+
+    // Only specify pagetables as a reserved region on TDX, as they are used
+    // for AP startup via the mailbox protocol. On other platforms, the
+    // memory is free to be reclaimed.
+    if params.isolation_type == IsolationType::Tdx {
+        assert!(params.page_tables.is_some());
+        address_space_builder = address_space_builder
+            .with_page_tables(params.page_tables.expect("always present on tdx"));
+    }
+
+    address_space_builder
+        .init()
+        .expect("failed to initialize address space manager");
+
+    // Read previous mmio for VTL0 and VTL2.
+    let vtl0_mmio = partition_mmio
+        .iter()
+        .filter_map(|entry| {
+            if entry.vtl_type == MemoryVtlType::VTL0_MMIO {
+                Some(entry.range)
+            } else {
+                None
+            }
+        })
+        .collect::<ArrayVec<MemoryRange, 2>>();
+    let vtl2_mmio = partition_mmio
+        .iter()
+        .filter_map(|entry| {
+            if entry.vtl_type == MemoryVtlType::VTL2_MMIO {
+                Some(entry.range)
+            } else {
+                None
+            }
+        })
+        .collect::<ArrayVec<MemoryRange, 2>>();
+
+    Ok(PartitionTopology {
+        vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+        vtl0_mmio,
+        vtl2_mmio,
+        memory_allocation_mode,
+    })
 }
 
 /// Read the persisted header from the start of the persisted state region
 /// described at file build time. If the magic value is not set, `None` is
 /// returned.
 fn read_persisted_region_header(params: &ShimParams) -> Option<PersistedStateHeader> {
+    // TODO CVM: On an isolated guest, these pages may not be accepted. We need
+    // to rethink how this will work in order to handle this correctly, as on a
+    // first boot we'd need to accept them early, but subsequent boots should
+    // not accept any pages.
+    if params.isolation_type != IsolationType::None {
+        return None;
+    }
+
     // SAFETY: The header lies at the start of the shim described persisted state
     // region. This range is guaranteed to be identity mapped at file build
     // time.
