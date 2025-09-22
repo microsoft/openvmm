@@ -7855,6 +7855,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "mesh_process",
+ "mesh_protobuf",
  "mesh_tracing",
  "mesh_worker",
  "net_backend",
