@@ -138,6 +138,13 @@ impl virt::Hypervisor for LinuxMshv {
             break;
         }
 
+        match vmfd.initialize() {
+            Ok(()) => {}
+            Err(_) => {
+                return Err(Error::CreateVMFailed);
+            }
+        }
+
         // Create virtual CPUs.
         let mut vps: Vec<MshvVpInner> = Vec::new();
         for vp in config.processor_topology.vps_arch() {
