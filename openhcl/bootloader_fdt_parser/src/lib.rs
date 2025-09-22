@@ -463,7 +463,7 @@ fn parse_memory(node: &Node<'_>) -> anyhow::Result<MemoryRangeWithNode> {
     let base = reg[0];
     let len = reg[1];
     let numa_node_id = try_find_property(node, "numa-node-id")
-        .context("{node.name} missing numa-node-id")?
+        .context(format!("{} missing numa-node-id", node.name))?
         .read_u32(0)
         .map_err(err_to_owned)
         .context("unable to read numa-node-id")?;

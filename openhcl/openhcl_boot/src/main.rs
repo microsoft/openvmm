@@ -27,8 +27,6 @@ mod rt;
 mod sidecar;
 mod single_threaded;
 
-extern crate alloc;
-
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
 #[cfg(target_arch = "x86_64")]

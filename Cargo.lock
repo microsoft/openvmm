@@ -4976,6 +4976,7 @@ dependencies = [
  "igvm_defs",
  "loader_defs",
  "memory_range",
+ "mesh_protobuf",
  "minimal_rt",
  "minimal_rt_build",
  "safe_intrinsics",
