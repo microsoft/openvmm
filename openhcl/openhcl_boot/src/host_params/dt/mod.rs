@@ -480,10 +480,23 @@ impl PartitionInfo {
                 ..(params.parameter_region_start + params.parameter_region_size),
         );
 
+        // FIXME: deciede how much to shrink the persisted range. This will
+        // require some experimentation with figuring out how large the range
+        // should be based on VP count + ram size and configuration, along with
+        // accounting for potential growth in the future.
+        //
+        // For now, just use 1MB, even if the max supported size is 2MB.
+        const PERSISTED_REGION_SIZE: u64 = 1024 * 1024;
+        let (persisted_state_region, remainder) = params
+            .persisted_state
+            .split_at_offset(PERSISTED_REGION_SIZE);
+        log!("persisted state region {persisted_state_region:#x?}, remainder {remainder:#x?}");
+
         let mut address_space_builder = AddressSpaceManagerBuilder::new(
             address_space,
             &storage.vtl2_ram,
             params.used,
+            persisted_state_region,
             subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
         )
         .with_log_buffer(params.log_buffer);
