@@ -34,6 +34,8 @@ use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
 use thiserror::Error;
 
+mod bump_alloc;
+
 /// Errors when reading the host device tree.
 #[derive(Debug, Error)]
 pub enum DtError {
@@ -320,20 +322,20 @@ fn init_heap(params: &ShimParams) {
     // SAFETY: The heap range is reserved at file build time, and is
     // guaranteed to be unused by anything else.
     unsafe {
-        crate::bump_alloc::ALLOCATOR.init(params.heap);
+        bump_alloc::ALLOCATOR.init(params.heap);
     }
 
     // TODO: test using heap, as no mesh decode yet.
     #[cfg(debug_assertions)]
     {
         use alloc::boxed::Box;
-        crate::bump_alloc::ALLOCATOR.enable_alloc();
+        bump_alloc::ALLOCATOR.enable_alloc();
 
         let box_int = Box::new(42);
         log!("box int {box_int}");
         drop(box_int);
-        crate::bump_alloc::ALLOCATOR.disable_alloc();
-        crate::bump_alloc::ALLOCATOR.log_stats();
+        bump_alloc::ALLOCATOR.disable_alloc();
+        bump_alloc::ALLOCATOR.log_stats();
     }
 }
 

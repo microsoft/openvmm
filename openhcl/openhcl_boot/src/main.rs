@@ -8,16 +8,16 @@
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
-// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`.
+// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`. This
+// is used for some miri tests for testing the bump allocator.
 //
-// Do not use a normal feature, as that shows errors rust-analyzer since most
-// people are using stable. We could remove this once the allocator_api feature
-// is stable.
+// Do not use a normal feature, as that shows errors with rust-analyzer since
+// most people are using stable and enable all features. We could remove this
+// once the allocator_api feature is stable.
 #![cfg_attr(nightly, feature(allocator_api))]
 
 mod arch;
 mod boot_logger;
-mod bump_alloc;
 mod cmdline;
 mod dt;
 mod host_params;
