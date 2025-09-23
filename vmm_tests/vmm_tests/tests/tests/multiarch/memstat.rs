@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Memory Validation Data Collection for Petri Tests
+//! Memory Validation Data Collection for VMM Tests
 
 use pipette_client::PipetteClient;
 use pipette_client::cmd;
@@ -49,6 +49,7 @@ pub struct MemStat {
 
 impl MemStat {
     /// Construction of a MemStat object takes the vtl2 Pipette agent to query OpenHCL for memory statistics for VTL2 as a whole and for VTL2's processes
+    /// This also caches the baseline data into the struct for later comparison
     pub async fn new(vtl2_agent: &PipetteClient) -> Self {
         let sh = vtl2_agent.unix_shell();
         let meminfo = Self::parse_memfile(
@@ -171,6 +172,32 @@ impl MemStat {
             cur_usage
         );
 
+        for underhill_process in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
+            let baseline_pss =
+                Self::get_baseline_value(&self.baseline_json[arch][vps][underhill_process]["Pss"]);
+            let cur_pss = self[underhill_process].smaps_rollup["Pss"];
+
+            let baseline_pss_anon = Self::get_baseline_value(
+                &self.baseline_json[arch][vps][underhill_process]["Pss_Anon"],
+            );
+            let cur_pss_anon = self[underhill_process].smaps_rollup["Pss_Anon"];
+
+            assert!(
+                baseline_pss >= cur_pss,
+                "[process {}]: baseline PSS is less than current PSS: {} < {}",
+                underhill_process,
+                baseline_pss,
+                cur_pss
+            );
+            assert!(
+                baseline_pss_anon >= cur_pss_anon,
+                "[process {}]: baseline PSS Anon is less than current PSS Anon: {} < {}",
+                underhill_process,
+                baseline_pss_anon,
+                cur_pss_anon
+            );
+        }
+
         let baseline_reservation =
             Self::get_baseline_value(&self.baseline_json[arch][vps]["reservation"]);
         let cur_reservation =
@@ -181,30 +208,6 @@ impl MemStat {
             baseline_reservation,
             cur_reservation
         );
-
-        for prs in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
-            let baseline_pss = Self::get_baseline_value(&self.baseline_json[arch][vps][prs]["Pss"]);
-            let cur_pss = self[prs].smaps_rollup["Pss"];
-
-            let baseline_pss_anon =
-                Self::get_baseline_value(&self.baseline_json[arch][vps][prs]["Pss_Anon"]);
-            let cur_pss_anon = self[prs].smaps_rollup["Pss_Anon"];
-
-            assert!(
-                baseline_pss >= cur_pss,
-                "[process {}]: baseline PSS is less than current PSS: {} < {}",
-                prs,
-                baseline_pss,
-                cur_pss
-            );
-            assert!(
-                baseline_pss_anon >= cur_pss_anon,
-                "[process {}]: baseline PSS Anon is less than current PSS Anon: {} < {}",
-                prs,
-                baseline_pss_anon,
-                cur_pss_anon
-            );
-        }
 
         true
     }
@@ -271,7 +274,7 @@ impl MemStat {
     }
 
     fn get_baseline_value(baseline_json: &Value) -> u64 {
-        baseline_json["baseline"].as_u64().unwrap_or_else(|| {
+        baseline_json["base"].as_u64().unwrap_or_else(|| {
             panic!("all values in the memstat_baseline.json file are expected to be parsable u64 numbers")
         }) +
             baseline_json["threshold"].as_u64().unwrap_or_else(|| {
