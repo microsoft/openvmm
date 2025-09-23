@@ -1003,7 +1003,22 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
     }
 
     async fn save(&mut self) -> Vec<ManaSavedState> {
-        let vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> = self.vf_managers.drain().collect();
+        let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
+            self.vf_managers.drain().collect();
+
+        // Notify VF managers of shutdown so that the subsequent teardown of
+        // the NICs does not modify VF state.
+        let vf_managers = vf_managers
+            .drain(..)
+            .map(move |(instance_id, manager)| {
+                (
+                    instance_id,
+                    Arc::into_inner(manager)
+                        .unwrap()
+                        .shutdown_begin(false),
+                )
+            })
+            .collect::<Vec<(Guid, HclNetworkVFManagerShutdownInProgress)>>();
 
         // Collect the instance_id of every vf_manager being shutdown
         let instance_ids: Vec<Guid> = vf_managers
@@ -1054,8 +1069,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         };
 
         let save_vf_managers = join_all(vf_managers.into_iter().map(|(_, vf_manager)| {
-            let manager = vf_manager.clone();
-            async move { manager.save().await }
+            vf_manager.save()
         }));
 
         let state = (run_endpoints, save_vf_managers).race().await;

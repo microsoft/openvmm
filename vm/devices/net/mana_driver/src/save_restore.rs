@@ -6,7 +6,7 @@
 use mesh::payload::Protobuf;
 
 /// Mana saved state
-#[derive(Debug, Protobuf, Clone)]
+#[derive(Debug, Protobuf, Clone, Default)]
 #[mesh(package = "mana_driver")]
 pub struct ManaSavedState {
     /// The saved state of the MANA device driver
@@ -19,7 +19,7 @@ pub struct ManaSavedState {
 }
 
 /// Mana device saved state
-#[derive(Debug, Protobuf, Clone)]
+#[derive(Debug, Protobuf, Clone, Default)]
 #[mesh(package = "mana_driver")]
 pub struct ManaDeviceSavedState {
     /// Saved state for restoration of the GDMA driver
@@ -28,7 +28,7 @@ pub struct ManaDeviceSavedState {
 }
 
 /// Top level saved state for the GDMA driver's saved state
-#[derive(Protobuf, Clone, Debug)]
+#[derive(Protobuf, Clone, Debug, Default)]
 #[mesh(package = "mana_driver")]
 pub struct GdmaDriverSavedState {
     /// Memory to be restored by a DMA client
@@ -85,7 +85,7 @@ pub struct GdmaDriverSavedState {
 
 /// The saved state of a completion queue or event queue for restoration
 /// during servicing
-#[derive(Clone, Protobuf, Debug)]
+#[derive(Clone, Protobuf, Debug, Default)]
 #[mesh(package = "mana_driver")]
 pub struct CqEqSavedState {
     /// The doorbell state of the queue, which is how the device is notified
@@ -114,7 +114,7 @@ pub struct CqEqSavedState {
 }
 
 /// Saved state of a doorbell for restoration during servicing
-#[derive(Clone, Protobuf, Debug)]
+#[derive(Clone, Protobuf, Debug, Default)]
 #[mesh(package = "mana_driver")]
 pub struct DoorbellSavedState {
     /// The doorbell's id
@@ -127,7 +127,7 @@ pub struct DoorbellSavedState {
 }
 
 /// Saved state of a work queue for restoration during servicing
-#[derive(Debug, Protobuf, Clone)]
+#[derive(Debug, Protobuf, Clone, Default)]
 #[mesh(package = "mana_driver")]
 pub struct WqSavedState {
     /// The doorbell state of the queue, which is how the device is notified
@@ -157,7 +157,7 @@ pub struct WqSavedState {
 
 /// Saved state for a memory region used by the driver
 /// to be restored by a DMA client during servicing
-#[derive(Debug, Protobuf, Clone)]
+#[derive(Debug, Protobuf, Clone, Default)]
 #[mesh(package = "mana_driver")]
 pub struct SavedMemoryState {
     /// The base page frame number of the memory region

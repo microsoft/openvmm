@@ -646,22 +646,47 @@ impl HclNetworkVFManagerWorker {
                     .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
+                    tracing::info!("saving state and shutting down VTL2 device");
+
+                    assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
+                    rpc.handle(async |_| {
+                        futures::future::join_all(self.endpoint_controls.iter_mut().map(
+                            async |control| match control.disconnect().await {
+                                Ok(Some(mut endpoint)) => {
+                                    tracing::info!("Network endpoint disconnected");
+                                    endpoint.stop().await;
+                                }
+                                Ok(None) => (),
+                                Err(err) => {
+                                    tracing::error!(
+                                        err = err.as_ref() as &dyn std::error::Error,
+                                        "Failed to disconnect endpoint"
+                                    );
+                                }
+                            },
+                        ))
+                        .await;
 
-                    rpc.handle(|_| async move {
-                        let mana_device = self
-                            .mana_device
-                            .take()
-                            .expect("should have a device present to save state");
+                        let device = self.mana_device.take().expect("device should be present when saving");
 
-                        let saved_state = mana_device.save().await.unwrap();
+                        let saved_state = if let Ok((saved_state, device)) = device.save().await {
+                            std::mem::forget(device);
+                            ManaSavedState {
+                                mana_device: saved_state,
+                                pci_id: self.vtl2_pci_id.clone(),
+                            }
+                        } else {
+                            tracing::warn!("Failed to save MANA device state");
+                            ManaSavedState::default()
+                        };
 
-                        ManaSavedState {
-                            pci_id: self.vtl2_pci_id.clone(),
-                            mana_device: saved_state,
-                        }
+                        tracing::info!(?saved_state, "MANA device state saved");
+
+                        saved_state
                     })
                     .await;
+                    // Exit worker thread.
                     return;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::ShutdownBegin(
@@ -673,6 +698,7 @@ impl HclNetworkVFManagerWorker {
                     self.is_shutdown_active = true;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::ShutdownComplete(rpc)) => {
+                    tracing::info!("shutting down VTL2 device");
                     assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
                     rpc.handle(async |keep_vf_alive| {
@@ -1096,6 +1122,12 @@ impl HclNetworkVFManagerShutdownInProgress {
             );
         }
         self.complete = true;
+    }
+
+    pub async fn save(mut self) -> ManaSavedState {
+        let result = self.inner.save().await;
+        self.complete = true;
+        result
     }
 }
 

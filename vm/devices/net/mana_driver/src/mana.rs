@@ -146,13 +146,23 @@ impl<T: DeviceBacking> ManaDevice<T> {
     }
 
     /// Saves the device's state for servicing
-    pub async fn save(&self) -> anyhow::Result<ManaDeviceSavedState> {
-        let mut gdma = self.inner.gdma.lock().await;
-        let gdma_saved_state = gdma.save().await?;
+    pub async fn save(self) -> anyhow::Result<(ManaDeviceSavedState, T)> {
+        self.inspect_task.cancel().await;
+        if let Some(hwc_task) = self.hwc_task {
+            hwc_task.cancel().await;
+        }
+        let inner = Arc::into_inner(self.inner).unwrap();
+        let mut driver = inner.gdma.into_inner();
+
+        let _result = driver.deregister_device(inner.dev_id).await;
+
         let saved_state = ManaDeviceSavedState {
-            gdma: gdma_saved_state,
+            gdma: driver.save().await?,
         };
-        Ok(saved_state)
+
+        let device = driver.into_device();
+
+        Ok((saved_state, device))
     }
 
     /// Returns the number of vports the device supports.
