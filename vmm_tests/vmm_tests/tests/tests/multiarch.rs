@@ -17,7 +17,6 @@ use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
-use petri::memstat::MemStat;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
@@ -34,6 +33,8 @@ use vmm_test_macros::vmm_test_no_agent;
 
 // Servicing tests.
 pub(crate) mod openhcl_servicing;
+
+pub mod memstat;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
 #[vmm_test_no_agent(
@@ -851,7 +852,7 @@ async fn meminfo_status_tdx_2_proc_no_agent<T: PetriVmmBackend>(
         .await?;
     std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let memstat = MemStat::new(&vtl2_agent).await;
+    let memstat = memstat::MemStat::new(&vtl2_agent).await;
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()
@@ -882,7 +883,7 @@ async fn meminfo_status_tdx_64_proc_no_agent<T: PetriVmmBackend>(
         .await?;
     std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let memstat = MemStat::new(&vtl2_agent).await;
+    let memstat = memstat::MemStat::new(&vtl2_agent).await;
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()
@@ -913,7 +914,7 @@ async fn meminfo_status_snp_2_proc_no_agent<T: PetriVmmBackend>(
         .await?;
     std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let memstat = MemStat::new(&vtl2_agent).await;
+    let memstat = memstat::MemStat::new(&vtl2_agent).await;
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()
@@ -944,7 +945,7 @@ async fn meminfo_status_snp_64_proc_no_agent<T: PetriVmmBackend>(
         .await?;
     std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let memstat = MemStat::new(&vtl2_agent).await;
+    let memstat = memstat::MemStat::new(&vtl2_agent).await;
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()
@@ -979,7 +980,7 @@ async fn meminfo_status_x64_2_proc<T: PetriVmmBackend>(
         .await?;
     std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let memstat = MemStat::new(&vtl2_agent).await;
+    let memstat = memstat::MemStat::new(&vtl2_agent).await;
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()
@@ -1013,7 +1014,7 @@ async fn meminfo_status_x64_32_proc<T: PetriVmmBackend>(
         .await?;
     std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let memstat = MemStat::new(&vtl2_agent).await;
+    let memstat = memstat::MemStat::new(&vtl2_agent).await;
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()
@@ -1048,7 +1049,7 @@ async fn meminfo_status_arm_2_proc<T: PetriVmmBackend>(
         .await?;
     std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let memstat = MemStat::new(&vtl2_agent).await;
+    let memstat = memstat::MemStat::new(&vtl2_agent).await;
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()
@@ -1083,7 +1084,7 @@ async fn meminfo_status_arm_64_proc<T: PetriVmmBackend>(
         .await?;
     std::thread::sleep(Duration::from_secs(60));
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
-    let memstat = MemStat::new(&vtl2_agent).await;
+    let memstat = memstat::MemStat::new(&vtl2_agent).await;
     tracing::info!(
         "MEMSTAT_START:\n{}\n:MEMSTAT_END",
         to_string_pretty(&memstat).unwrap()

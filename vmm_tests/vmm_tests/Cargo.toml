@@ -63,3 +63,7 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+pipette_client.workspace = true
+serde.workspace = true

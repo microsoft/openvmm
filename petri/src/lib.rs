@@ -10,7 +10,6 @@
 
 pub mod disk_image;
 mod linux_direct_serial_agent;
-pub mod memstat;
 // TODO: Add docs and maybe a trait interface for this, or maybe this can
 // remain crate-local somehow without violating interface privacy.
 #[expect(missing_docs)]
