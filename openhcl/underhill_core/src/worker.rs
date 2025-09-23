@@ -1688,11 +1688,11 @@ async fn new_underhill_vm(
         vm_unique_id: dps.general.bios_guid.to_string(),
     };
 
-    let attestation_type = match isolation {
-        virt::IsolationType::Snp => AttestationType::Snp,
-        virt::IsolationType::Tdx => AttestationType::Tdx,
-        virt::IsolationType::Vbs => AttestationType::Vbs,
-        virt::IsolationType::None => AttestationType::Host,
+    let tee_call: Option<Box<dyn tee_call::TeeCall>> = match isolation {
+        virt::IsolationType::Snp => Some(Box::new(tee_call::SnpCall)),
+        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall)),
+        virt::IsolationType::Vbs => Some(Box::new(tee_call::VbsCall)),
+        virt::IsolationType::None => None,
     };
 
     // use the encryption policy from the command line if it is provided
@@ -1745,7 +1745,7 @@ async fn new_underhill_vm(
                 dps.general.bios_guid,
                 &attestation_vm_config,
                 &mut vmgs.as_mut().unwrap().1,
-                attestation_type,
+                tee_call.as_deref(),
                 suppress_attestation,
                 early_init_driver,
                 guest_state_encryption_policy,
@@ -2583,6 +2583,14 @@ async fn new_underhill_vm(
                 VmgsFileHandle::new(vmgs::FileId::TPM_PPI, true).into_resource(),
                 VmgsFileHandle::new(vmgs::FileId::TPM_NVRAM, true).into_resource(),
             )
+        };
+
+        // Map the isolation type to the attestation type with Mesh derive so it can be used in resources
+        let attestation_type = match isolation {
+            virt::IsolationType::Snp => AttestationType::Snp,
+            virt::IsolationType::Tdx => AttestationType::Tdx,
+            virt::IsolationType::Vbs => AttestationType::Vbs,
+            virt::IsolationType::None => AttestationType::Host,
         };
 
         let ak_cert_type = {

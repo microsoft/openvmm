@@ -44,6 +44,7 @@ pub mod crash {
 
 /// Guest Emulation Device resources.
 pub mod ged {
+    use inspect::Inspect;
     use mesh::MeshPayload;
     use mesh::error::RemoteError;
     use mesh::payload::Protobuf;
@@ -223,7 +224,7 @@ pub mod ged {
 
     /// Configuration to the GED's IGVM Attest request handler
     /// for test scenarios.
-    #[derive(Debug, MeshPayload, Copy, Clone)]
+    #[derive(Debug, MeshPayload, Copy, Clone, Inspect)]
     pub enum IgvmAttestTestConfig {
         /// Config for testing AK cert retry after failure.
         AkCertRequestFailureAndRetry,

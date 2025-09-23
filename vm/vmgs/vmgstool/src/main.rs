@@ -340,7 +340,7 @@ fn main() {
                 Error::NotEncrypted => ExitCode::ErrorNotEncrypted,
                 Error::EmptyFile => ExitCode::ErrorEmpty,
                 Error::ZeroSize => ExitCode::ErrorEmpty,
-                Error::Vmgs(VmgsError::FileInfoAllocated) => ExitCode::ErrorNotFound,
+                Error::Vmgs(VmgsError::FileInfoNotAllocated) => ExitCode::ErrorNotFound,
                 Error::V1Format => ExitCode::ErrorV1,
                 Error::GspByIdEncryption => ExitCode::ErrorGspById,
                 _ => ExitCode::Error,

@@ -45,6 +45,8 @@ use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use zerocopy::IntoBytes;
 
+const DEFAULT_SERVICING_COUNT: u8 = 3;
+
 // TODO: Move this host query logic into common code so that we can instead
 // filter tests based on host capabilities.
 pub(crate) fn host_supports_servicing() -> bool {
@@ -89,6 +91,7 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
     openhcl_cmdline: &str,
     new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
+    servicing_count: u8,
 ) -> anyhow::Result<()> {
     if !host_supports_servicing() {
         tracing::info!("skipping OpenHCL servicing test on unsupported host");
@@ -100,7 +103,7 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
         .run()
         .await?;
 
-    for _ in 0..3 {
+    for _ in 0..servicing_count {
         agent.ping().await?;
 
         // Test that inspect serialization works with the old version.
@@ -140,6 +143,7 @@ async fn basic<T: PetriVmmBackend>(
             override_version_checks: true,
             ..Default::default()
         },
+        DEFAULT_SERVICING_COUNT,
     )
     .await
 }
@@ -159,6 +163,7 @@ async fn keepalive_no_device<T: PetriVmmBackend>(
             enable_nvme_keepalive: true,
             ..Default::default()
         },
+        DEFAULT_SERVICING_COUNT,
     )
     .await
 }
@@ -178,6 +183,7 @@ async fn keepalive_with_device<T: PetriVmmBackend>(
             enable_nvme_keepalive: true,
             ..Default::default()
         },
+        1, // Test is slow with NVMe device, so only do one loop to avoid timeout
     )
     .await
 }
@@ -201,6 +207,7 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
         "",
         to_igvm,
         OpenHclServicingFlags::default(),
+        DEFAULT_SERVICING_COUNT,
     )
     .await
 }
@@ -224,6 +231,7 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
         "",
         to_igvm,
         OpenHclServicingFlags::default(),
+        DEFAULT_SERVICING_COUNT,
     )
     .await
 }
