@@ -1393,7 +1393,7 @@ async fn make_scsi_controller_config(
             None
         };
     tracing::info!(
-        ?instance_id,
+        %instance_id,
         poll_mode_queue_depth,
         "poll mode queue depth chosen based on controller instance id",
     );
