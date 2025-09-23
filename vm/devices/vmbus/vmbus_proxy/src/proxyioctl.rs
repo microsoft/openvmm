@@ -1,24 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
+#![expect(
     dead_code,
     non_snake_case,
     non_upper_case_globals,
-    non_camel_case_types,
-    clippy::upper_case_acronyms
+    non_camel_case_types
 )]
 
 use super::vmbusioctl::VMBUS_CHANNEL_OFFER;
 use super::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use bitfield_struct::bitfield;
+use guid::Guid;
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::System::Ioctl::FILE_DEVICE_UNKNOWN;
 use windows::Win32::System::Ioctl::FILE_READ_ACCESS;
 use windows::Win32::System::Ioctl::FILE_WRITE_ACCESS;
 use windows::Win32::System::Ioctl::METHOD_BUFFERED;
 use windows::core::GUID;
-use windows_sys::Win32::Foundation::BOOLEAN;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 
@@ -136,16 +135,15 @@ pub struct VMBUS_PROXY_OPEN_CHANNEL_OUTPUT {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, IntoBytes, Immutable)]
 pub struct VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
-    pub InterfaceType: GUID,
-    pub InterfaceInstance: GUID,
+    pub InterfaceType: Guid,
+    pub InterfaceInstance: Guid,
     pub SubchannelIndex: u16,
     pub TargetVtl: u8,
-    pub Padding: u8,
+    pub Open: u8,
     pub OpenParameters: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
-    pub Open: BOOLEAN,
-    pub Padding2: [u8; 3],
+    pub GpadlCount: u32,
 }
 
 #[repr(C)]

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use thiserror::Error;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
@@ -14,6 +15,7 @@ use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdGlaVmAndFlags;
+use x86defs::tdx::TdReport;
 use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdVmCallSubFunction;
 use x86defs::tdx::TdgMemPageAcceptRcx;
@@ -77,6 +79,43 @@ pub struct TdcallOutput {
 pub trait Tdcall {
     /// Perform a tdcall instruction with the specified inputs.
     fn tdcall(&mut self, input: TdcallInput) -> TdcallOutput;
+}
+
+/// Perform a tdcall based Hypercall. This is done by issuing a TDG.VP.VMCALL.
+pub fn tdcall_hypercall(
+    call: &mut impl Tdcall,
+    control: hvdef::hypercall::Control,
+    input_gpa: u64,
+    output_gpa: u64,
+) -> HypercallOutput {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VP_VMCALL,
+        rcx: 0x0d04, // pass RDX, R8, R10, R11
+        rdx: input_gpa,
+        r8: output_gpa,
+        r9: 0,
+        r10: u64::from(control), // hypercall control code
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    if output.rax.code() != TdCallResultCode::SUCCESS {
+        // This means something has gone horribly wrong with the TDX module, as
+        // this call should always succeed with hypercall errors returned in
+        // r11.
+        panic!(
+            "unexpected nonzero rax {:x} on tdcall_hypercall",
+            u64::from(output.rax)
+        );
+    }
+
+    // TD.VMCALL for Hypercall passes return code in r11
+    HypercallOutput::from(output.r11)
 }
 
 /// Perform a tdcall based MSR read. This is done by issuing a TDG.VP.VMCALL.
@@ -449,7 +488,7 @@ pub fn accept_pages<T: Tdcall>(
     let mut range = range;
     while !range.is_empty() {
         // Attempt to accept in large page chunks if possible.
-        if range.start() % x86defs::X64_LARGE_PAGE_SIZE == 0
+        if range.start().is_multiple_of(x86defs::X64_LARGE_PAGE_SIZE)
             && range.len() >= x86defs::X64_LARGE_PAGE_SIZE
         {
             match tdcall_accept_pages(call, range.start_4k_gpn(), true) {
@@ -527,7 +566,7 @@ pub fn set_page_attributes(
     let mut range = range;
     while !range.is_empty() {
         // Attempt to set in large page chunks if possible.
-        if range.start() % x86defs::X64_LARGE_PAGE_SIZE == 0
+        if range.start().is_multiple_of(x86defs::X64_LARGE_PAGE_SIZE)
             && range.len() >= x86defs::X64_LARGE_PAGE_SIZE
         {
             let mapping = TdgMemPageAttrWriteRcx::new()
@@ -704,6 +743,40 @@ pub fn tdcall_vp_invgla(
         r10: 0,
         r11: 0,
         r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+#[repr(C, align(64))]
+struct AddlData {
+    /// Report data buffer for TDG.MR.REPORT call.
+    pub report_data: [u8; 64],
+}
+
+/// Issue a TDG.MR.REPORT call with empty additional data.
+pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result<(), TdCallResult> {
+    let addl_data = AddlData {
+        report_data: [0; 64],
+    };
+
+    let input = TdcallInput {
+        leaf: TdCallLeaf::MR_REPORT,
+        rcx: core::ptr::from_mut::<TdReport>(report) as u64,
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: addl_data.report_data.as_ptr() as u64,
         r13: 0,
         r14: 0,
         r15: 0,

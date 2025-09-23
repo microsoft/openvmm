@@ -13,10 +13,11 @@ extern crate alloc;
 pub mod aspt;
 pub mod fadt;
 pub mod madt;
+pub mod mcfg;
 pub mod pptt;
 pub mod srat;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u16_ne = zerocopy::U16<zerocopy::NativeEndian>;
     pub type u32_ne = zerocopy::U32<zerocopy::NativeEndian>;

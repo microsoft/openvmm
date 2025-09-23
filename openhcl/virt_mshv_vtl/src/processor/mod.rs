@@ -18,7 +18,6 @@ cfg_if::cfg_if! {
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use cvm_tracing::CVM_CONFIDENTIAL;
         use hv1_emulator::synic::ProcessorSynic;
         use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
@@ -42,7 +41,8 @@ use super::UhVpInner;
 use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
-use guestmem::GuestMemory;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
@@ -69,6 +69,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -103,6 +104,7 @@ pub struct UhProcessor<'a, T: Backing> {
     timer: PollImpl<dyn PollTimer>,
     #[inspect(mut)]
     force_exit_sidecar: bool,
+    signaled_sidecar_exit: bool,
     /// The VTLs on this VP that are currently locked, per requesting VTL.
     vtls_tlb_locked: VtlsTlbLocked,
     #[inspect(skip)]
@@ -179,7 +181,6 @@ struct BackingParams<'a, 'b, T: Backing> {
 
 mod private {
     use super::BackingParams;
-    use super::UhRunVpError;
     use super::vp_state;
     use crate::BackingShared;
     use crate::Error;
@@ -216,11 +217,16 @@ mod private {
             vtl: GuestVtl,
         ) -> Self::StateAccess<'p, 'a>;
 
+        /// Called before the first `run_vp` call to allow the backing to
+        /// perform any pre-run tasks. Must be idempotent--may be called again
+        /// before some subsequent `run_vp` calls.
+        fn pre_run_vp(_this: &mut UhProcessor<'_, Self>) {}
+
         fn run_vp(
             this: &mut UhProcessor<'_, Self>,
             dev: &impl CpuIo,
             stop: &mut StopVp<'_>,
-        ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
+        ) -> impl Future<Output = Result<(), VpHaltReason>>;
 
         /// Process any pending interrupts. Returns true if reprocessing is required.
         fn process_interrupts(
@@ -228,14 +234,10 @@ mod private {
             scan_irr: VtlArray<bool, 2>,
             first_scan_irr: &mut bool,
             dev: &impl CpuIo,
-        ) -> Result<bool, VpHaltReason<UhRunVpError>>;
+        ) -> bool;
 
         /// Process any pending APIC work.
-        fn poll_apic(
-            this: &mut UhProcessor<'_, Self>,
-            vtl: GuestVtl,
-            scan_irr: bool,
-        ) -> Result<(), UhRunVpError>;
+        fn poll_apic(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool);
 
         /// Requests the VP to exit when an external interrupt is ready to be
         /// delivered.
@@ -249,10 +251,7 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        fn handle_vp_start_enable_vtl_wake(
-            _this: &mut UhProcessor<'_, Self>,
-            _vtl: GuestVtl,
-        ) -> Result<(), UhRunVpError>;
+        fn handle_vp_start_enable_vtl_wake(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl);
 
         fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
@@ -271,7 +270,6 @@ impl<T: BackingPrivate> Backing for T {}
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub(crate) struct BackingSharedParams<'a> {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
-    pub guest_memory: VtlArray<GuestMemory, 2>,
     #[cfg(guest_arch = "x86_64")]
     pub cpuid: &'a virt::CpuidLeafSet,
     pub hcl: &'a Hcl,
@@ -300,7 +298,7 @@ enum InterceptMessageType {
 
 /// Per-arch state required to generate an intercept message.
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-struct InterceptMessageState {
+pub(crate) struct InterceptMessageState {
     instruction_length_and_cr8: u8,
     cpl: u8,
     efer_lma: bool,
@@ -417,7 +415,7 @@ impl InterceptMessageType {
 
 /// Trait for processor backings that have hardware isolation support.
 #[cfg(guest_arch = "x86_64")]
-trait HardwareIsolatedBacking: Backing {
+pub(crate) trait HardwareIsolatedBacking: Backing {
     /// Gets CVM specific VP state.
     fn cvm_state(&self) -> &crate::UhCvmVpState;
     /// Gets CVM specific VP state.
@@ -426,8 +424,14 @@ trait HardwareIsolatedBacking: Backing {
     fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;
     /// Gets a struct that can be used to interact with TLB flushing and
     /// locking.
+    ///
+    /// If a `vp_index` is provided, it will be used to cause the specified VP
+    /// to wait for all TLB locks to be released before returning to a lower VTL.
+    //
+    // FUTURE: This probably shouldn't be optional, but right now MNF doesn't know
+    // what VP it's set from and probably doesn't need it?
     fn tlb_flush_lock_access<'a>(
-        vp_index: VpIndex,
+        vp_index: Option<VpIndex>,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a;
@@ -563,73 +567,11 @@ impl UhVpInner {
 
     pub fn set_sidecar_exit_reason(&self, reason: SidecarExitReason) {
         self.sidecar_exit_reason.lock().get_or_insert_with(|| {
-            tracing::info!(?reason, "sidecar exit");
+            tracing::info!(CVM_ALLOWED, "sidecar exit");
+            tracing::info!(CVM_CONFIDENTIAL, ?reason, "sidecar exit");
             reason
         });
     }
-}
-
-/// Underhill-specific run VP error
-#[derive(Debug, Error)]
-pub enum UhRunVpError {
-    /// Failed to run
-    #[error("failed to run")]
-    Run(#[source] hcl::ioctl::Error),
-    #[error("sidecar run error")]
-    Sidecar(#[source] sidecar_client::SidecarError),
-    /// Failed to access state for emulation
-    #[error("failed to access state for emulation")]
-    EmulationState(#[source] hcl::ioctl::Error),
-    /// Failed to translate GVA
-    #[error("failed to translate GVA")]
-    TranslateGva(#[source] hcl::ioctl::Error),
-    /// Failed VTL access check
-    #[error("failed VTL access check")]
-    VtlAccess(#[source] hcl::ioctl::Error),
-    /// Failed to advance rip
-    #[error("failed to advance rip")]
-    AdvanceRip(#[source] hcl::ioctl::Error),
-    /// Failed to set pending event
-    #[error("failed to set pending event")]
-    Event(#[source] hcl::ioctl::Error),
-    /// Guest accessed unaccepted gpa
-    #[error("guest accessed unaccepted gpa {0}")]
-    UnacceptedMemoryAccess(u64),
-    /// State access error
-    #[error("state access error")]
-    State(#[source] vp_state::Error),
-    /// Invalid vmcb
-    #[error("invalid vmcb")]
-    InvalidVmcb,
-    #[error("unknown exit {0:#x?}")]
-    UnknownVmxExit(x86defs::vmx::VmxExit),
-    #[error("bad guest state on VP.ENTER")]
-    VmxBadGuestState,
-    #[error("failed to read hypercall parameters")]
-    HypercallParameters(#[source] guestmem::GuestMemoryError),
-    #[error("failed to write hypercall result")]
-    HypercallResult(#[source] guestmem::GuestMemoryError),
-    #[error("unexpected debug exception with dr6 value {0:#x}")]
-    UnexpectedDebugException(u64),
-    /// Handling an intercept on behalf of an invalid Lower VTL
-    #[error("invalid intercepted vtl {0:?}")]
-    InvalidInterceptedVtl(u8),
-    #[error("access to state blocked by another vtl")]
-    StateAccessDenied,
-}
-
-/// Underhill processor run error
-#[derive(Debug, Error)]
-pub enum ProcessorError {
-    /// IOCTL error
-    #[error("hcl error")]
-    Ioctl(#[from] hcl::ioctl::Error),
-    /// State access error
-    #[error("state access error")]
-    State(#[from] vp_state::Error),
-    /// Not supported
-    #[error("operation not supported")]
-    NotSupported,
 }
 
 impl<T: Backing> UhProcessor<'_, T> {
@@ -662,7 +604,11 @@ impl<T: Backing> UhProcessor<'_, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn handle_debug_exception(&mut self, vtl: GuestVtl) -> Result<(), VpHaltReason<UhRunVpError>> {
+    fn handle_debug_exception(
+        &mut self,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+    ) -> Result<(), VpHaltReason> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
         if vtl == GuestVtl::Vtl0 {
             let debug_regs: virt::x86::vp::DebugRegisters = self
@@ -686,8 +632,11 @@ impl<T: Backing> UhProcessor<'_, T> {
             let i = debug_regs.dr6.trailing_zeros() as usize;
             if i >= BREAKPOINT_INDEX_OFFSET {
                 // Received a debug exception not triggered by a breakpoint or single step.
-                return Err(VpHaltReason::InvalidVmState(
-                    UhRunVpError::UnexpectedDebugException(debug_regs.dr6),
+                return Err(dev.fatal_error(
+                    UnexpectedDebugException {
+                        dr6: debug_regs.dr6,
+                    }
+                    .into(),
                 ));
             }
             let bp = virt::x86::HardwareBreakpoint::from_dr7(debug_regs.dr7, dr[i], i);
@@ -699,9 +648,14 @@ impl<T: Backing> UhProcessor<'_, T> {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
+#[derive(Debug, Error)]
+#[error("unexpected debug exception with dr6 value {dr6:#x}")]
+struct UnexpectedDebugException {
+    dr6: u64,
+}
+
 impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
-    type Error = ProcessorError;
-    type RunVpError = UhRunVpError;
     type StateAccess<'a>
         = T::StateAccess<'p, 'a>
     where
@@ -712,8 +666,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
-        Err(ProcessorError::NotSupported)
+    ) -> Result<(), <T::StateAccess<'p, '_> as virt::vp::AccessVpState>::Error> {
+        unimplemented!()
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -721,12 +675,13 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         &mut self,
         vtl: Vtl,
         state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <T::StateAccess<'p, '_> as AccessVpState>::Error> {
         // FUTURE: Underhill does not yet support VTL1 so this is only tested with VTL0.
         if vtl == Vtl::Vtl0 {
             let mut db: [u64; 4] = [0; 4];
-            let mut rflags =
-                x86defs::RFlags::from(self.access_state(Vtl::Vtl0).registers().unwrap().rflags);
+            let mut access_state = self.access_state(vtl);
+            let mut registers = access_state.registers()?;
+            let mut rflags = x86defs::RFlags::from(registers.rflags);
             let mut dr7: u64 = 0;
 
             if let Some(state) = state {
@@ -747,18 +702,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 dr6: 0,
                 dr7,
             };
-
-            let mut access_state = self.access_state(vtl);
-
             access_state.set_debug_regs(&debug_registers)?;
 
-            let registers = {
-                let mut registers = access_state.registers().unwrap();
-                registers.rflags = rflags.into();
-                registers
-            };
+            registers.rflags = rflags.into();
             access_state.set_registers(&registers)?;
-
             return Ok(());
         }
 
@@ -769,11 +716,14 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         &mut self,
         mut stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<UhRunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
+        T::pre_run_vp(self);
+
         if self.runner.is_sidecar() {
-            if self.force_exit_sidecar {
+            if self.force_exit_sidecar && !self.signaled_sidecar_exit {
                 self.inner
                     .set_sidecar_exit_reason(SidecarExitReason::ManualRequest);
+                self.signaled_sidecar_exit = true;
                 return Err(VpHaltReason::Cancel);
             }
         } else {
@@ -823,12 +773,12 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
 
                     // Process wakes.
                     let scan_irr = if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
-                        self.handle_wake().map_err(VpHaltReason::Hypervisor)?
+                        self.handle_wake()
                     } else {
                         [false, false].into()
                     };
 
-                    if T::process_interrupts(self, scan_irr, &mut first_scan_irr, dev)? {
+                    if T::process_interrupts(self, scan_irr, &mut first_scan_irr, dev) {
                         continue;
                     }
 
@@ -840,7 +790,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         }
                     }
 
-                    return <Result<_, VpHaltReason<_>>>::Ok(()).into();
+                    return <Result<_, VpHaltReason>>::Ok(()).into();
                 }
             })
             .await?;
@@ -870,17 +820,16 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
+    fn flush_async_requests(&mut self) {
         if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
-            let scan_irr = self.handle_wake()?;
+            let scan_irr = self.handle_wake();
             for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
                 if scan_irr[vtl] {
-                    T::poll_apic(self, vtl, true)?;
+                    T::poll_apic(self, vtl, true);
                 }
             }
         }
         self.runner.flush_deferred_state();
-        Ok(())
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
@@ -935,6 +884,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 .access(format!("vp-{}", vp_info.base.vp_index.index())),
             timer: driver.new_dyn_timer(),
             force_exit_sidecar: false,
+            signaled_sidecar_exit: false,
             vtls_tlb_locked: VtlsTlbLocked {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),
@@ -948,7 +898,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     /// Returns true if the interrupt controller has work to do.
-    fn handle_wake(&mut self) -> Result<VtlArray<bool, 2>, UhRunVpError> {
+    fn handle_wake(&mut self) -> VtlArray<bool, 2> {
         let wake_reasons_raw = self.inner.wake_reasons.swap(0, Ordering::SeqCst);
         let wake_reasons_vtl: [WakeReason; 2] = zerocopy::transmute!(wake_reasons_raw);
         for (vtl, wake_reasons) in [
@@ -996,7 +946,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 
             #[cfg(guest_arch = "x86_64")]
             if wake_reasons.hv_start_enable_vtl_vp() {
-                T::handle_vp_start_enable_vtl_wake(self, vtl)?;
+                T::handle_vp_start_enable_vtl_wake(self, vtl);
             }
 
             #[cfg(guest_arch = "x86_64")]
@@ -1007,7 +957,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             }
         }
 
-        Ok(wake_reasons_vtl.map(|w| w.intcon()).into())
+        wake_reasons_vtl.map(|w| w.intcon()).into()
     }
 
     fn request_sint_notifications(&mut self, vtl: GuestVtl, sints: u16) {
@@ -1044,11 +994,15 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     control: hvdef::GuestCrashCtl::from(value),
                     parameters: self.crash_reg,
                 };
-                tracelimit::warn_ratelimited!(?crash, "Guest has reported system crash");
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?crash,
+                    "Guest has reported system crash"
+                );
 
                 if crash.control.crash_message() {
                     let message_gpa = crash.parameters[3];
-                    let message_size = crash.parameters[4];
+                    let message_size = std::cmp::min(crash.parameters[4], hvdef::HV_PAGE_SIZE);
                     let mut message = vec![0; message_size as usize];
                     match self.partition.gm[vtl].read_at(message_gpa, &mut message) {
                         Ok(()) => {
@@ -1060,7 +1014,11 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                             );
                         }
                         Err(e) => {
-                            tracelimit::warn_ratelimited!(?e, "Failed to read crash message");
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                ?e,
+                                "Failed to read crash message"
+                            );
                         }
                     }
                 }
@@ -1106,12 +1064,23 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         interruption_pending: bool,
         vtl: GuestVtl,
         cache: T::EmulationCache,
-    ) -> Result<(), VpHaltReason<UhRunVpError>>
+    ) -> Result<(), VpHaltReason>
     where
-        for<'b> UhEmulationState<'b, 'a, D, T>:
-            virt_support_x86emu::emulate::EmulatorSupport<Error = UhRunVpError>,
+        for<'b> UhEmulationState<'b, 'a, D, T>: virt_support_x86emu::emulate::EmulatorSupport,
     {
         let guest_memory = &self.partition.gm[vtl];
+        let (kx_guest_memory, ux_guest_memory) = match vtl {
+            GuestVtl::Vtl0 => (
+                &self.partition.vtl0_kernel_exec_gm,
+                &self.partition.vtl0_user_exec_gm,
+            ),
+            GuestVtl::Vtl1 => (guest_memory, guest_memory),
+        };
+        let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+            gm: guest_memory,
+            kx_gm: kx_guest_memory,
+            ux_gm: ux_guest_memory,
+        };
         let mut emulation_state = UhEmulationState {
             vp: &mut *self,
             interruption_pending,
@@ -1119,7 +1088,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             vtl,
             cache,
         };
-        virt_support_x86emu::emulate::emulate(&mut emulation_state, guest_memory, devices).await
+
+        virt_support_x86emu::emulate::emulate(&mut emulation_state, &emu_mem, devices).await
     }
 
     /// Emulates an instruction due to a memory access exit.
@@ -1130,10 +1100,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         intercept_state: &aarch64emu::InterceptState,
         vtl: GuestVtl,
         cache: T::EmulationCache,
-    ) -> Result<(), VpHaltReason<UhRunVpError>>
+    ) -> Result<(), VpHaltReason>
     where
-        for<'b> UhEmulationState<'b, 'a, D, T>:
-            virt_support_aarch64emu::emulate::EmulatorSupport<Error = UhRunVpError>,
+        for<'b> UhEmulationState<'b, 'a, D, T>: virt_support_aarch64emu::emulate::EmulatorSupport,
     {
         let guest_memory = &self.partition.gm[vtl];
         virt_support_aarch64emu::emulate::emulate(
@@ -1181,6 +1150,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {
     if let Err(err) = dev.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
         tracelimit::warn_ratelimited!(
+            CVM_ALLOWED,
             error = &err as &dyn std::error::Error,
             connection_id,
             "failed to signal mnf"
@@ -1210,6 +1180,21 @@ struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     devices: &'a T,
     vtl: GuestVtl,
     cache: U::EmulationCache,
+}
+
+impl<T: CpuIo, U: Backing> EmulatorMonitorSupport for UhEmulationState<'_, '_, T, U> {
+    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+        self.vp
+            .partition
+            .monitor_page
+            .check_write(gpa, bytes, |connection_id| {
+                signal_mnf(self.devices, connection_id);
+            })
+    }
+
+    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        self.vp.partition.monitor_page.check_read(gpa, bytes)
+    }
 }
 
 struct UhHypercallHandler<'a, 'b, T, B: Backing> {

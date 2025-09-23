@@ -10,7 +10,6 @@ use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
-use super::UhRunVpError;
 use super::hardware_cvm;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
@@ -23,6 +22,9 @@ use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::UhProcessor;
 use crate::WakeReason;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
+use guestmem::GuestMemory;
 use hcl::ioctl::ProcessorRunner;
 use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::tdx::TdxPrivateRegs;
@@ -49,9 +51,11 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
+use thiserror::Error;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -74,7 +78,6 @@ use virt_support_x86emu::emulate::emulate_insn_memory_op;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
-use vm_topology::memory::AddressType;
 use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
 use x86defs::X64_CR0_ET;
@@ -155,6 +158,18 @@ const MSR_ALLOWED_READ_WRITE: &[u32] = &[
     x86defs::X86X_IA32_MSR_XFD,
     x86defs::X86X_IA32_MSR_XFD_ERR,
 ];
+
+#[derive(Debug, Error)]
+#[error("unknown exit {0:#x?}")]
+struct UnknownVmxExit(VmxExit);
+
+#[derive(Debug, Error)]
+#[error("bad guest state on VP.ENTER")]
+struct VmxBadGuestState;
+
+#[derive(Debug, Error)]
+#[error("failed to run")]
+struct TdxRunVpError(#[source] hcl::ioctl::Error);
 
 #[derive(Debug)]
 struct TdxExit<'a>(&'a tdx_tdg_vp_enter_exit_info);
@@ -498,7 +513,7 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: VpIndex,
+        vp_index: Option<VpIndex>,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
@@ -757,12 +772,7 @@ impl TdxBackedShared {
         // performance would be poor for cases where the L1 implements
         // high-performance devices.
         let untrusted_synic = (partition_params.handle_synic && !partition_params.hide_isolation)
-            .then(|| {
-                GlobalSynic::new(
-                    params.guest_memory[GuestVtl::Vtl0].clone(),
-                    partition_params.topology.vp_count(),
-                )
-            });
+            .then(|| GlobalSynic::new(partition_params.topology.vp_count()));
 
         // TODO TDX: Consider just using MSR kernel module instead of explicit ioctl.
         let cr4_fixed1 = params.hcl.read_vmx_cr4_fixed1();
@@ -802,6 +812,28 @@ impl TdxBacked {
     }
 }
 
+// The memory used to back the untrusted synic is not guest-visible, but rather
+// is allocated from our shared pool. Therefore it does not need to go through
+// the normal memory protections path.
+struct UntrustedSynicVtlProts<'a>(&'a GuestMemory);
+
+impl hv1_emulator::VtlProtectAccess for UntrustedSynicVtlProts<'_> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, HvError> {
+        self.0
+            .lock_gpns(false, &[gpn])
+            .map_err(|_| HvError::OperationFailed)
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), HvError> {
+        Ok(())
+    }
+}
+
 #[expect(private_interfaces)]
 impl BackingPrivate for TdxBacked {
     type HclBacking<'tdx> = Tdx<'tdx>;
@@ -837,20 +869,18 @@ impl BackingPrivate for TdxBacked {
                 .into(),
         );
 
+        let controls = TdxL2Ctls::new()
+            // Configure L2 controls to permit shared memory.
+            .with_enable_shared_ept(!shared.cvm.hide_isolation)
+            // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
+            .with_enable_tdvmcall(shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation);
+
+        params
+            .runner
+            .set_l2_ctls(GuestVtl::Vtl0, controls)
+            .map_err(crate::Error::FailedToSetL2Ctls)?;
+
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
-            let controls = TdxL2Ctls::new()
-                // Configure L2 controls to permit shared memory.
-                .with_enable_shared_ept(!shared.cvm.hide_isolation)
-                // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
-                .with_enable_tdvmcall(
-                    shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation,
-                );
-
-            params
-                .runner
-                .set_l2_ctls(vtl, controls)
-                .map_err(crate::Error::FailedToSetL2Ctls)?;
-
             // Set guest/host masks for CR0 and CR4. These enable shadowing these
             // registers since TDX requires certain bits to be set at all times.
             let initial_cr0 = params
@@ -1020,11 +1050,13 @@ impl BackingPrivate for TdxBacked {
         ];
 
         let reg_count = if let Some(synic) = &mut this.backing.untrusted_synic {
+            let prot_access = &mut UntrustedSynicVtlProts(&this.partition.gm[GuestVtl::Vtl0]);
+
             synic
-                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]))
+                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]), prot_access)
                 .unwrap();
             synic
-                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]))
+                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]), prot_access)
                 .unwrap();
             // Set the SIEFP in the hypervisor so that the hypervisor can
             // directly signal synic events. Don't set the SIMP, since the
@@ -1072,17 +1104,13 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
         _stop: &mut virt::StopVp<'_>,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         this.run_vp_tdx(dev).await
     }
 
-    fn poll_apic(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        scan_irr: bool,
-    ) -> Result<(), UhRunVpError> {
-        if !this.try_poll_apic(vtl, scan_irr)? {
-            tracing::info!("disabling APIC offload due to auto EOI");
+    fn poll_apic(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, scan_irr: bool) {
+        if !this.try_poll_apic(vtl, scan_irr) {
+            tracing::info!(CVM_ALLOWED, "disabling APIC offload due to auto EOI");
             let page = this.runner.tdx_apic_page_mut(vtl);
             let (irr, isr) = pull_apic_offload(page);
 
@@ -1090,10 +1118,8 @@ impl BackingPrivate for TdxBacked {
                 .lapic
                 .disable_offload(&irr, &isr);
             this.set_apic_offload(vtl, false);
-            this.try_poll_apic(vtl, false)?;
+            this.try_poll_apic(vtl, false);
         }
-
-        Ok(())
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -1104,7 +1130,7 @@ impl BackingPrivate for TdxBacked {
         if let Some(synic) = &mut this.backing.untrusted_synic {
             synic.request_sint_readiness(sints);
         } else {
-            tracelimit::error_ratelimited!("untrusted synic is not configured");
+            tracelimit::error_ratelimited!(CVM_ALLOWED, "untrusted synic is not configured");
         }
     }
 
@@ -1116,10 +1142,7 @@ impl BackingPrivate for TdxBacked {
         Some(&mut self.cvm.hv[vtl])
     }
 
-    fn handle_vp_start_enable_vtl_wake(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
+    fn handle_vp_start_enable_vtl_wake(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
         this.hcvm_handle_vp_start_enable_vtl(vtl)
     }
 
@@ -1132,7 +1155,7 @@ impl BackingPrivate for TdxBacked {
         scan_irr: VtlArray<bool, 2>,
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+    ) -> bool {
         this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
     }
 }
@@ -1140,7 +1163,7 @@ impl BackingPrivate for TdxBacked {
 impl UhProcessor<'_, TdxBacked> {
     /// Returns `Ok(false)` if the APIC offload needs to be disabled and the
     /// poll retried.
-    fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> Result<bool, UhRunVpError> {
+    fn try_poll_apic(&mut self, vtl: GuestVtl, scan_irr: bool) -> bool {
         let mut scan = TdxApicScanner {
             processor_controls: self.backing.vtls[vtl]
                 .processor_controls
@@ -1151,7 +1174,7 @@ impl UhProcessor<'_, TdxBacked> {
         };
 
         // TODO TDX: filter proxy IRRs by setting the `proxy_irr_blocked` field of the run page
-        hardware_cvm::apic::poll_apic_core(&mut scan, vtl, scan_irr)?;
+        hardware_cvm::apic::poll_apic_core(&mut scan, vtl, scan_irr);
 
         let TdxApicScanner {
             vp: _,
@@ -1237,7 +1260,7 @@ impl UhProcessor<'_, TdxBacked> {
             if let Err(OffloadNotSupported) = r {
                 // APIC needs offloading to be disabled to support auto-EOI. The caller
                 // will disable offload and try again.
-                return Ok(false);
+                return false;
             }
 
             if update_rvi {
@@ -1267,7 +1290,7 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.cvm.lapics[vtl].activity = MpState::Running;
         }
 
-        Ok(true)
+        true
     }
 
     fn access_apic_without_offload<R>(
@@ -1341,7 +1364,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
         self.vp
     }
 
-    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
+    fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) {
         // Exit idle when an interrupt is received, regardless of IF
         if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
             self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
@@ -1356,7 +1379,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
                 != INTERRUPT_TYPE_EXTERNAL
         {
             self.processor_controls.set_interrupt_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         // Ensure the interrupt is not blocked by RFLAGS.IF or interrupt shadow.
@@ -1372,14 +1395,14 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             || interruptibility.blocked_by_movss()
         {
             self.processor_controls.set_interrupt_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         let priority = vector >> 4;
         let apic = self.vp.runner.tdx_apic_page(vtl);
         if (apic.tpr.value as u8 >> 4) >= priority {
             self.tpr_threshold = priority;
-            return Ok(());
+            return;
         }
 
         self.vp.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
@@ -1388,10 +1411,9 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             .with_interruption_type(INTERRUPT_TYPE_EXTERNAL);
 
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-        Ok(())
     }
 
-    fn handle_nmi(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
+    fn handle_nmi(&mut self, vtl: GuestVtl) {
         // Exit idle when an interrupt is received, regardless of IF
         // TODO: Investigate lifting more activity management into poll_apic_core
         if self.vp.backing.cvm.lapics[vtl].activity == MpState::Idle {
@@ -1407,7 +1429,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
                 != INTERRUPT_TYPE_EXTERNAL
         {
             self.processor_controls.set_nmi_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         let interruptibility: Interruptibility = self
@@ -1421,7 +1443,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             || interruptibility.blocked_by_movss()
         {
             self.processor_controls.set_nmi_window_exiting(true);
-            return Ok(());
+            return;
         }
 
         self.vp.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
@@ -1430,20 +1452,17 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
             .with_interruption_type(INTERRUPT_TYPE_NMI);
 
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-        Ok(())
     }
 
-    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) -> Result<(), UhRunVpError> {
+    fn handle_sipi(&mut self, vtl: GuestVtl, cs: SegmentRegister) {
         self.vp.write_segment(vtl, TdxSegmentReg::Cs, cs).unwrap();
         self.vp.backing.vtls[vtl].private_regs.rip = 0;
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
-
-        Ok(())
     }
 }
 
 impl UhProcessor<'_, TdxBacked> {
-    async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
+    async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
         if self.backing.vtls[next_vtl].interruption_information.valid() {
@@ -1528,7 +1547,7 @@ impl UhProcessor<'_, TdxBacked> {
                 .private_regs
                 .vp_entry_flags
                 .invd_translations()
-                != 0;
+                == 0;
         let x2apic_enabled = self.backing.cvm.lapics[next_vtl].lapic.x2apic_enabled();
 
         let offload_flags = hcl_intr_offload_flags::new()
@@ -1546,7 +1565,7 @@ impl UhProcessor<'_, TdxBacked> {
         let has_intercept = self
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(UhRunVpError::Run(e)))?;
+            .map_err(|e| dev.fatal_error(TdxRunVpError(e).into()))?;
 
         // TLB flushes can only target lower VTLs, so it is fine to use a relaxed
         // ordering here. The worst that can happen is some spurious wakes, due
@@ -1568,6 +1587,7 @@ impl UhProcessor<'_, TdxBacked> {
                     (false, true) => MpState::Idle,
                     (true, true) => {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             "Kernel indicates VP is both halted and idle!"
                         );
                         activity
@@ -1637,13 +1657,13 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         dev: &impl CpuIo,
         intercepted_vtl: GuestVtl,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
 
         // First, check that the VM entry was even successful.
         let vmx_exit = exit_info.code().vmx_exit();
         if vmx_exit.vm_enter_failed() {
-            return Err(self.handle_vm_enter_failed(intercepted_vtl, vmx_exit));
+            return Err(self.handle_vm_enter_failed(dev, intercepted_vtl, vmx_exit));
         }
 
         let next_interruption = exit_info.idt_vectoring_info();
@@ -1818,7 +1838,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let value = match result {
                     Ok(v) => Some(v),
                     Err(MsrError::Unknown) => {
-                        tracelimit::warn_ratelimited!(msr, "unknown tdx vm msr read");
+                        tracelimit::warn_ratelimited!(CVM_ALLOWED, msr, "unknown tdx vm msr read");
                         Some(0)
                     }
                     Err(MsrError::InvalidAccess) => None,
@@ -1870,7 +1890,16 @@ impl UhProcessor<'_, TdxBacked> {
                     let inject_gp = match result {
                         Ok(()) => false,
                         Err(MsrError::Unknown) => {
-                            tracelimit::warn_ratelimited!(msr, value, "unknown tdx vm msr write");
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                msr,
+                                "unknown tdx vm msr write"
+                            );
+                            tracelimit::warn_ratelimited!(
+                                CVM_CONFIDENTIAL,
+                                value,
+                                "unknown tdx vm msr write"
+                            );
                             false
                         }
                         Err(MsrError::InvalidAccess) => true,
@@ -1961,7 +1990,12 @@ impl UhProcessor<'_, TdxBacked> {
                         self.update_execution_mode(intercepted_vtl);
                         self.advance_to_next_instruction(intercepted_vtl);
                     } else {
-                        tracelimit::warn_ratelimited!(?cr, value, "failed to write cr");
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            ?cr,
+                            value,
+                            "failed to write cr"
+                        );
                         self.inject_gpf(intercepted_vtl);
                     }
                 }
@@ -1985,9 +2019,7 @@ impl UhProcessor<'_, TdxBacked> {
                     ) {
                         self.runner
                             .set_vp_register(intercepted_vtl, HvX64RegisterName::Xfem, value.into())
-                            .map_err(|err| {
-                                VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
-                            })?;
+                            .unwrap();
                         self.advance_to_next_instruction(intercepted_vtl);
                     }
                 } else {
@@ -2026,7 +2058,18 @@ impl UhProcessor<'_, TdxBacked> {
                         .into();
                     assert!(!old_interruptibility.blocked_by_nmi());
                 } else {
-                    self.handle_ept(intercepted_vtl, dev, gpa, ept_info).await?;
+                    let is_write = ept_info.access_mask() & 0b10 != 0;
+                    if self.check_mem_fault(intercepted_vtl, gpa, is_write, ept_info) {
+                        self.emulate(
+                            dev,
+                            self.backing.vtls[intercepted_vtl]
+                                .interruption_information
+                                .valid(),
+                            intercepted_vtl,
+                            TdxEmulationCache::default(),
+                        )
+                        .await?;
+                    }
                 }
 
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.ept_violation
@@ -2138,9 +2181,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .descriptor_table
             }
             _ => {
-                return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
-                    exit_info.code().vmx_exit(),
-                )));
+                return Err(dev.fatal_error(UnknownVmxExit(exit_info.code().vmx_exit()).into()));
             }
         };
         stat.increment();
@@ -2148,7 +2189,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Breakpoint exceptions may return a non-fatal error.
         // We dispatch here to correctly increment the counter.
         if cfg!(feature = "gdb") && breakpoint_debug_exception {
-            self.handle_debug_exception(intercepted_vtl)?;
+            self.handle_debug_exception(dev, intercepted_vtl)?;
         }
 
         Ok(())
@@ -2157,10 +2198,10 @@ impl UhProcessor<'_, TdxBacked> {
     /// Trace processor state for debugging purposes.
     fn trace_processor_state(&self, vtl: GuestVtl) {
         let raw_exit = self.runner.tdx_vp_enter_exit_info();
-        tracing::error!(?raw_exit, "raw tdx vp enter exit info");
+        tracing::error!(CVM_CONFIDENTIAL, ?raw_exit, "raw tdx vp enter exit info");
 
         let gprs = self.runner.tdx_enter_guest_gps();
-        tracing::error!(?gprs, "guest gpr list");
+        tracing::error!(CVM_CONFIDENTIAL, ?gprs, "guest gpr list");
 
         let TdxPrivateRegs {
             rflags,
@@ -2178,6 +2219,7 @@ impl UhProcessor<'_, TdxBacked> {
             vp_entry_flags,
         } = self.backing.vtls[vtl].private_regs;
         tracing::error!(
+            CVM_CONFIDENTIAL,
             rflags,
             rip,
             rsp,
@@ -2201,7 +2243,13 @@ impl UhProcessor<'_, TdxBacked> {
         let cr0_guest_host_mask: u64 = self
             .runner
             .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK);
-        tracing::error!(physical_cr0, shadow_cr0, cr0_guest_host_mask, "cr0 values");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            physical_cr0,
+            shadow_cr0,
+            cr0_guest_host_mask,
+            "cr0 values"
+        );
 
         let physical_cr4 = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4);
         let shadow_cr4 = self
@@ -2210,18 +2258,24 @@ impl UhProcessor<'_, TdxBacked> {
         let cr4_guest_host_mask = self
             .runner
             .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK);
-        tracing::error!(physical_cr4, shadow_cr4, cr4_guest_host_mask, "cr4 values");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            physical_cr4,
+            shadow_cr4,
+            cr4_guest_host_mask,
+            "cr4 values"
+        );
 
         let cr3 = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR3);
-        tracing::error!(cr3, "cr3");
+        tracing::error!(CVM_CONFIDENTIAL, cr3, "cr3");
 
         let cached_efer = self.backing.vtls[vtl].efer;
         let vmcs_efer = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_EFER);
         let entry_controls = self
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
-        tracing::error!(cached_efer, vmcs_efer, "efer");
-        tracing::error!(entry_controls, "entry controls");
+        tracing::error!(CVM_CONFIDENTIAL, cached_efer, vmcs_efer, "efer");
+        tracing::error!(CVM_CONFIDENTIAL, entry_controls, "entry controls");
 
         let cs = self.read_segment(vtl, TdxSegmentReg::Cs);
         let ds = self.read_segment(vtl, TdxSegmentReg::Ds);
@@ -2232,12 +2286,23 @@ impl UhProcessor<'_, TdxBacked> {
         let tr = self.read_segment(vtl, TdxSegmentReg::Tr);
         let ldtr = self.read_segment(vtl, TdxSegmentReg::Ldtr);
 
-        tracing::error!(?cs, ?ds, ?es, ?fs, ?gs, ?ss, ?tr, ?ldtr, "segment values");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            ?cs,
+            ?ds,
+            ?es,
+            ?fs,
+            ?gs,
+            ?ss,
+            ?tr,
+            ?ldtr,
+            "segment values"
+        );
 
         let exception_bitmap = self
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_EXCEPTION_BITMAP);
-        tracing::error!(exception_bitmap, "exception bitmap");
+        tracing::error!(CVM_CONFIDENTIAL, exception_bitmap, "exception bitmap");
 
         let cached_processor_controls = self.backing.vtls[vtl].processor_controls;
         let vmcs_processor_controls = ProcessorControls::from(
@@ -2249,6 +2314,7 @@ impl UhProcessor<'_, TdxBacked> {
                 .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS),
         );
         tracing::error!(
+            CVM_CONFIDENTIAL,
             ?cached_processor_controls,
             ?vmcs_processor_controls,
             ?vmcs_secondary_processor_controls,
@@ -2256,14 +2322,19 @@ impl UhProcessor<'_, TdxBacked> {
         );
 
         if cached_processor_controls != vmcs_processor_controls {
-            tracing::error!("BUGBUG: processor controls mismatch");
+            tracing::error!(CVM_ALLOWED, "BUGBUG: processor controls mismatch");
         }
 
         let cached_tpr_threshold = self.backing.vtls[vtl].tpr_threshold;
         let vmcs_tpr_threshold = self
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_TPR_THRESHOLD);
-        tracing::error!(cached_tpr_threshold, vmcs_tpr_threshold, "tpr threshold");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            cached_tpr_threshold,
+            vmcs_tpr_threshold,
+            "tpr threshold"
+        );
 
         let cached_eoi_exit_bitmap = self.backing.eoi_exit_bitmap;
         let vmcs_eoi_exit_bitmap = {
@@ -2279,6 +2350,7 @@ impl UhProcessor<'_, TdxBacked> {
                 .collect::<Vec<_>>()
         };
         tracing::error!(
+            CVM_CONFIDENTIAL,
             ?cached_eoi_exit_bitmap,
             ?vmcs_eoi_exit_bitmap,
             "eoi exit bitmap"
@@ -2293,6 +2365,7 @@ impl UhProcessor<'_, TdxBacked> {
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_EXCEPTION_ERROR_CODE);
         tracing::error!(
+            CVM_CONFIDENTIAL,
             ?cached_interrupt_information,
             cached_interruption_set,
             vmcs_interrupt_information,
@@ -2303,7 +2376,11 @@ impl UhProcessor<'_, TdxBacked> {
         let guest_interruptibility = self
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY);
-        tracing::error!(guest_interruptibility, "guest interruptibility");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            guest_interruptibility,
+            "guest interruptibility"
+        );
 
         let vmcs_sysenter_cs = self
             .runner
@@ -2315,6 +2392,7 @@ impl UhProcessor<'_, TdxBacked> {
             .runner
             .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_SYSENTER_EIP_MSR);
         tracing::error!(
+            CVM_CONFIDENTIAL,
             vmcs_sysenter_cs,
             vmcs_sysenter_esp,
             vmcs_sysenter_eip,
@@ -2322,26 +2400,26 @@ impl UhProcessor<'_, TdxBacked> {
         );
 
         let vmcs_pat = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT);
-        tracing::error!(vmcs_pat, "guest PAT");
+        tracing::error!(CVM_CONFIDENTIAL, vmcs_pat, "guest PAT");
     }
 
     fn handle_vm_enter_failed(
         &self,
+        dev: &impl CpuIo,
         vtl: GuestVtl,
         vmx_exit: VmxExit,
-    ) -> VpHaltReason<UhRunVpError> {
+    ) -> VpHaltReason {
         assert!(vmx_exit.vm_enter_failed());
         match vmx_exit.basic_reason() {
             VmxExitBasic::BAD_GUEST_STATE => {
                 // Log system register state for debugging why we were
                 // unable to enter the guest. This is a VMM bug.
-                tracing::error!("VP.ENTER failed with bad guest state");
+                tracing::error!(CVM_ALLOWED, "VP.ENTER failed with bad guest state");
                 self.trace_processor_state(vtl);
 
-                // TODO: panic instead?
-                VpHaltReason::Hypervisor(UhRunVpError::VmxBadGuestState)
+                dev.fatal_error(VmxBadGuestState.into())
             }
-            _ => VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(vmx_exit)),
+            _ => dev.fatal_error(UnknownVmxExit(vmx_exit).into()),
         }
     }
 
@@ -2371,111 +2449,6 @@ impl UhProcessor<'_, TdxBacked> {
         self.backing.vtls[vtl].exception_error_code = 0;
     }
 
-    fn inject_mc(&mut self, vtl: GuestVtl) {
-        self.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
-            .with_valid(true)
-            .with_vector(x86defs::Exception::MACHINE_CHECK.0)
-            .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION);
-    }
-
-    async fn handle_ept(
-        &mut self,
-        intercepted_vtl: GuestVtl,
-        dev: &impl CpuIo,
-        gpa: u64,
-        ept_info: VmxEptExitQualification,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let vtom = self.partition.caps.vtom.unwrap_or(0);
-        let is_shared = (gpa & vtom) == vtom && vtom != 0;
-        let canonical_gpa = gpa & !vtom;
-
-        // Only emulate the access if the gpa is mmio or outside of ram.
-        let address_type = self
-            .partition
-            .lower_vtl_memory_layout
-            .probe_address(canonical_gpa);
-
-        match address_type {
-            Some(AddressType::Mmio) => {
-                // Emulate the access.
-                self.emulate(
-                    dev,
-                    self.backing.vtls[intercepted_vtl]
-                        .interruption_information
-                        .valid(),
-                    intercepted_vtl,
-                    TdxEmulationCache::default(),
-                )
-                .await?;
-            }
-            Some(AddressType::Ram) => {
-                // TODO TDX: This path changes when we support VTL page
-                // protections and MNF. That will require injecting events to
-                // VTL1 or other handling.
-                //
-                // For now, we just check if the exit was suprious or if we
-                // should inject a machine check. An exit is considered spurious
-                // if the gpa is accessible.
-                if self.partition.gm[intercepted_vtl].check_gpa_readable(gpa) {
-                    tracelimit::warn_ratelimited!(gpa, "possible spurious EPT violation, ignoring");
-                } else {
-                    // TODO: It would be better to show what exact bitmap check
-                    // failed, but that requires some refactoring of how the
-                    // different bitmaps are stored. Do this when we support VTL
-                    // protections or MNF.
-                    //
-                    // If we entered this path, it means the bitmap check on
-                    // `check_gpa_readable` failed, so we can assume that if the
-                    // address is shared, the actual state of the page is
-                    // private, and vice versa. This is because the address
-                    // should have already been checked to be valid memory
-                    // described to the guest or not.
-                    tracelimit::warn_ratelimited!(
-                        gpa,
-                        is_shared,
-                        ?ept_info,
-                        "guest accessed inaccessible gpa, injecting MC"
-                    );
-
-                    // TODO: Implement IA32_MCG_STATUS MSR for more reporting
-                    self.inject_mc(intercepted_vtl);
-                }
-            }
-            None => {
-                if !self.cvm_partition().hide_isolation {
-                    // TODO: Addresses outside of ram and mmio probably should
-                    // not be accessed by the guest, if it has been told about
-                    // isolation. While it's okay as we will return FFs or
-                    // discard writes for addresses that are not mmio, we should
-                    // consider if instead we should also inject a machine check
-                    // for such accesses. The guest should not access any
-                    // addresses not described to it.
-                    //
-                    // For now, log that the guest did this.
-                    tracelimit::warn_ratelimited!(
-                        gpa,
-                        is_shared,
-                        ?ept_info,
-                        "guest accessed gpa not described in memory layout, emulating anyways"
-                    );
-                }
-
-                // Emulate the access.
-                self.emulate(
-                    dev,
-                    self.backing.vtls[intercepted_vtl]
-                        .interruption_information
-                        .valid(),
-                    intercepted_vtl,
-                    TdxEmulationCache::default(),
-                )
-                .await?;
-            }
-        }
-
-        Ok(())
-    }
-
     fn handle_tdvmcall(&mut self, dev: &impl CpuIo, intercepted_vtl: GuestVtl) {
         let regs = self.runner.tdx_enter_guest_gps();
         if regs[TdxGp::R10] == 0 {
@@ -2491,9 +2464,14 @@ impl UhProcessor<'_, TdxBacked> {
                         }
                         Err(err) => {
                             tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
                                 msr,
-                                value,
                                 ?err,
+                                "failed tdvmcall msr write"
+                            );
+                            tracelimit::warn_ratelimited!(
+                                CVM_CONFIDENTIAL,
+                                value,
                                 "failed tdvmcall msr write"
                             );
                             TdVmCallR10Result::OPERAND_INVALID
@@ -2509,13 +2487,19 @@ impl UhProcessor<'_, TdxBacked> {
                             TdVmCallR10Result::SUCCESS
                         }
                         Err(err) => {
-                            tracelimit::warn_ratelimited!(msr, ?err, "failed tdvmcall msr read");
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                msr,
+                                ?err,
+                                "failed tdvmcall msr read"
+                            );
                             TdVmCallR10Result::OPERAND_INVALID
                         }
                     }
                 }
                 subfunction => {
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         ?subfunction,
                         "architectural vmcall not supported"
                     );
@@ -2579,7 +2563,11 @@ impl UhProcessor<'_, TdxBacked> {
                     .untrusted_synic
                     .as_mut()
                     .unwrap()
-                    .write_nontimer_msr(msr, value)?;
+                    .write_nontimer_msr(
+                        msr,
+                        value,
+                        &mut UntrustedSynicVtlProts(&self.partition.gm[GuestVtl::Vtl0]),
+                    )?;
                 // Propagate sint MSR writes to the hypervisor as well
                 // so that the hypervisor can directly inject events.
                 if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
@@ -2591,6 +2579,7 @@ impl UhProcessor<'_, TdxBacked> {
                         value.into(),
                     ) {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             error = &err as &dyn std::error::Error,
                             "failed to set sint register"
                         );
@@ -2796,15 +2785,12 @@ impl UhProcessor<'_, TdxBacked> {
 }
 
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
-    type Error = UhRunVpError;
-
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
+    fn flush(&mut self) {
         // no cached registers are modifiable by the emulator for TDX
-        Ok(())
     }
 
     fn vendor(&self) -> x86defs::cpuid::Vendor {
@@ -2823,9 +2809,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         u128::from_ne_bytes(self.vp.runner.fx_state().xmm[index])
     }
 
-    fn set_xmm(&mut self, index: usize, v: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, index: usize, v: u128) {
         self.vp.runner.fx_state_mut().xmm[index] = v.to_ne_bytes();
-        Ok(())
     }
 
     fn rip(&mut self) -> u64 {
@@ -2926,9 +2911,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
-    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
-        // Lock Vtl TLB
-        // TODO TDX GUEST VSM: VTL1 not yet supported
+    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError> {
+        // Nothing to do here, the guest memory object will handle the check.
         Ok(())
     }
 
@@ -2937,11 +2921,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         gva: u64,
         mode: TranslateMode,
     ) -> Result<
-        Result<
-            virt_support_x86emu::emulate::EmuTranslateResult,
-            virt_support_x86emu::emulate::EmuTranslateError,
-        >,
-        Self::Error,
+        virt_support_x86emu::emulate::EmuTranslateResult,
+        virt_support_x86emu::emulate::EmuTranslateError,
     > {
         emulate_translate_gva(self, gva, mode)
     }
@@ -2999,6 +2980,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                 vtl: self.vtl,
             })
             .mmio_write(address, data);
+    }
+
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
     }
 }
 
@@ -3192,7 +3177,7 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         vtl: GuestVtl,
         dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         assert_eq!(
             exit_info.code().vmx_exit().basic_reason(),
@@ -3298,7 +3283,7 @@ impl UhProcessor<'_, TdxBacked> {
         &mut self,
         vtl: GuestVtl,
         dev: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
         assert_eq!(
             exit_info.code().vmx_exit().basic_reason(),
@@ -4266,7 +4251,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: self.vp.vp_index(),
+            vp_index: Some(self.vp.vp_index()),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -4321,7 +4306,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: self.vp.vp_index(),
+            vp_index: Some(self.vp.vp_index()),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -4396,9 +4381,7 @@ impl TdxTlbLockFlushAccess<'_> {
         std::sync::atomic::fence(Ordering::SeqCst);
         self.partition.hcl.kick_cpus(
             processors.into_iter().filter(|&vp| {
-                vp != self.vp_index.index()
-                    && self.shared.active_vtl[vp as usize].load(Ordering::Relaxed)
-                        == target_vtl as u8
+                self.shared.active_vtl[vp as usize].load(Ordering::Relaxed) == target_vtl as u8
             }),
             true,
             true,
@@ -4407,7 +4390,7 @@ impl TdxTlbLockFlushAccess<'_> {
 }
 
 struct TdxTlbLockFlushAccess<'a> {
-    vp_index: VpIndex,
+    vp_index: Option<VpIndex>,
     partition: &'a UhPartitionInner,
     shared: &'a TdxBackedShared,
 }
@@ -4435,11 +4418,13 @@ impl TlbFlushLockAccess for TdxTlbLockFlushAccess<'_> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        hardware_cvm::tlb_lock::TlbLockAccess {
-            vp_index: self.vp_index,
-            cvm_partition: &self.shared.cvm,
+        if let Some(vp_index) = self.vp_index {
+            hardware_cvm::tlb_lock::TlbLockAccess {
+                vp_index,
+                cvm_partition: &self.shared.cvm,
+            }
+            .set_wait_for_tlb_locks(vtl);
         }
-        .set_wait_for_tlb_locks(vtl);
     }
 }
 

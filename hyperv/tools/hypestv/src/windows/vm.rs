@@ -346,6 +346,27 @@ impl Vm {
                 .context("failed to update vssd")?;
                 println!("{}", output.trim());
             }
+            ParavisorCommand::Reload => {
+                let output = powershell_script(
+                    r#"
+                    param([string]$id)
+                    $ErrorActionPreference = "Stop"
+                    $guestManagementService = Get-CimInstance -namespace "root\virtualization\v2" -ClassName "Msvm_VirtualSystemGuestManagementService"
+                    $options = 1; # Override version checks
+                    $TimeoutHintSecs = 15; # Ends up as the deadline in GuestSaveRequest (see the handling of SaveGuestVtl2StateNotification in guest_emulation_transport). Keep O(15 seconds).
+                    $result = $guestManagementService | Invoke-CimMethod -name "ReloadManagementVtl" -Arguments @{
+                        "VmId"            = $id
+                        "Options"         = $options
+                        "TimeoutHintSecs" = $TimeoutHintSecs
+                    }
+                    "#,
+                    &[&self.inner.id.to_string()],
+                )
+                .context("failed to reload paravisor")?;
+                // TODO: the result here is a Msvm_ConcreteJob, which this code should inspect to wait for completion and check for success.
+                // For now, we just print the output.
+                println!("{}", output.trim());
+            }
         }
         Ok(())
     }
@@ -486,9 +507,8 @@ impl VmInner {
 
                 while let Some(data) = kmsg.next().await {
                     match data {
-                        Ok(data) => {
-                            let message = kmsg::KmsgParsedEntry::new(&data)?;
-                            match &mut target {
+                        Ok(data) => match kmsg::KmsgParsedEntry::new(&data) {
+                            Ok(message) => match &mut target {
                                 IoTarget::Printer => {
                                     writeln!(
                                         self.printer.out(),
@@ -501,8 +521,18 @@ impl VmInner {
                                     let line = format!("{}\r\n", message.display(true));
                                     console.write_all(line.as_bytes()).await?;
                                 }
-                            }
-                        }
+                            },
+                            Err(e) => match &mut target {
+                                IoTarget::Printer => {
+                                    writeln!(self.printer.out(), "[kmsg]: invalid entry: {:?}", e)
+                                        .ok();
+                                }
+                                IoTarget::Console(console) => {
+                                    let line = format!("invalid kmsg entry: {:?}\r\n", e);
+                                    console.write_all(line.as_bytes()).await?;
+                                }
+                            },
+                        },
                         Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => {
                             break;
                         }

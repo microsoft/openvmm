@@ -22,8 +22,6 @@ struct MockSupport {
 }
 
 impl EmulatorSupport for MockSupport {
-    type Error = std::convert::Infallible;
-
     fn vp_index(&self) -> VpIndex {
         VpIndex::BSP
     }
@@ -64,12 +62,10 @@ impl EmulatorSupport for MockSupport {
     fn xmm(&mut self, _reg: usize) -> u128 {
         todo!()
     }
-    fn set_xmm(&mut self, _reg: usize, _v: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, _reg: usize, _v: u128) {
         todo!()
     }
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    fn flush(&mut self) {}
 
     fn instruction_bytes(&self) -> &[u8] {
         &self.instruction_bytes
@@ -79,7 +75,7 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         _gpa: u64,
         _mode: virt_support_x86emu::emulate::TranslateMode,
-    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError> {
         Ok(())
     }
 
@@ -87,11 +83,11 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         gva: u64,
         _mode: virt_support_x86emu::emulate::TranslateMode,
-    ) -> Result<Result<EmuTranslateResult, EmuTranslateError>, Self::Error> {
-        Ok(Ok(EmuTranslateResult {
+    ) -> Result<EmuTranslateResult, EmuTranslateError> {
+        Ok(EmuTranslateResult {
             gpa: gva,
             overlay_page: None,
-        }))
+        })
     }
 
     fn physical_address(&self) -> Option<u64> {
@@ -137,6 +133,11 @@ async fn basic_mov() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -155,7 +156,7 @@ async fn basic_mov() {
         interruption_pending: false,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
@@ -166,6 +167,11 @@ async fn not_enough_bytes() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -187,7 +193,7 @@ async fn not_enough_bytes() {
 
     gm.write_at(support.state.rip, &instruction_bytes).unwrap();
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
 }
@@ -199,6 +205,11 @@ async fn trap_from_interrupt() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -217,7 +228,7 @@ async fn trap_from_interrupt() {
         interruption_pending: true,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 }
 
 #[async_test]
@@ -227,6 +238,11 @@ async fn trap_from_debug() {
     const TEST_VALUE: u64 = 0x123456789abcdef0;
 
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
     gm.write_at(TEST_ADDRESS, &TEST_VALUE.to_le_bytes())
         .unwrap();
 
@@ -248,5 +264,5 @@ async fn trap_from_debug() {
         interruption_pending: false,
     };
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 }

@@ -1109,29 +1109,29 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
             );
         }
 
-        if size_bytes % PAGE_SIZE_4K != 0 {
+        if !size_bytes.is_multiple_of(PAGE_SIZE_4K) {
             anyhow::bail!("relocation size {size_bytes:#x} must be a multiple of 4K");
         }
 
-        if relocation_alignment % PAGE_SIZE_4K != 0 {
+        if !relocation_alignment.is_multiple_of(PAGE_SIZE_4K) {
             anyhow::bail!(
                 "relocation alignment {relocation_alignment:#x} must be a multiple of 4K"
             );
         }
 
-        if gpa % relocation_alignment != 0 {
+        if !gpa.is_multiple_of(relocation_alignment) {
             anyhow::bail!(
                 "relocation base {gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}"
             );
         }
 
-        if minimum_relocation_gpa % relocation_alignment != 0 {
+        if !minimum_relocation_gpa.is_multiple_of(relocation_alignment) {
             anyhow::bail!(
                 "relocation minimum GPA {minimum_relocation_gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}"
             );
         }
 
-        if maximum_relocation_gpa % relocation_alignment != 0 {
+        if !maximum_relocation_gpa.is_multiple_of(relocation_alignment) {
             anyhow::bail!(
                 "relocation maximum GPA {maximum_relocation_gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}"
             );
@@ -1287,9 +1287,9 @@ mod tests {
     #[test]
     fn test_tdx_measurement() {
         let ref_mrtd: [u8; 48] = [
-            206, 60, 73, 121, 202, 230, 0, 246, 193, 182, 64, 108, 252, 152, 1, 222, 218, 63, 165,
-            202, 194, 205, 221, 12, 173, 76, 101, 161, 30, 223, 51, 124, 51, 125, 184, 32, 80, 57,
-            85, 211, 87, 66, 249, 4, 184, 213, 34, 57,
+            142, 235, 138, 197, 222, 36, 154, 25, 110, 198, 217, 131, 116, 129, 48, 146, 248, 99,
+            83, 133, 144, 128, 224, 130, 253, 243, 85, 35, 71, 246, 197, 202, 172, 193, 152, 184,
+            115, 127, 55, 3, 169, 107, 164, 126, 128, 145, 203, 28,
         ];
 
         let mut loader = IgvmLoader::<X86Register>::new(

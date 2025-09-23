@@ -72,6 +72,7 @@ mod pipe_protocol {
 mod protocol {
     use crate::CONTROL_WORD_COUNT;
     use inspect::Inspect;
+    use safeatomic::AtomicSliceOps;
     use std::fmt::Debug;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
@@ -97,7 +98,14 @@ mod protocol {
     /// A control page accessor.
     pub struct Control<'a>(pub &'a [AtomicU32; CONTROL_WORD_COUNT]);
 
-    impl Control<'_> {
+    impl<'a> Control<'a> {
+        pub fn from_page(page: &'a guestmem::Page) -> Option<Self> {
+            let slice = page.as_atomic_slice()?[..CONTROL_WORD_COUNT]
+                .try_into()
+                .unwrap();
+            Some(Self(slice))
+        }
+
         pub fn inp(&self) -> &AtomicU32 {
             &self.0[0]
         }
@@ -435,8 +443,8 @@ pub trait RingMem: Send {
     ///
     /// `read_at` may be faster for large or variable-sized reads.
     fn read_aligned(&self, addr: usize, data: &mut [u8]) {
-        debug_assert!(addr % 8 == 0);
-        debug_assert!(data.len() % 8 == 0);
+        debug_assert!(addr.is_multiple_of(8));
+        debug_assert!(data.len().is_multiple_of(8));
         self.read_at(addr, data)
     }
 
@@ -449,8 +457,8 @@ pub trait RingMem: Send {
     ///
     /// `write_at` may be faster for large or variable-sized writes.
     fn write_aligned(&self, addr: usize, data: &[u8]) {
-        debug_assert!(addr % 8 == 0);
-        debug_assert!(data.len() % 8 == 0);
+        debug_assert!(addr.is_multiple_of(8));
+        debug_assert!(data.len().is_multiple_of(8));
         self.write_at(addr, data)
     }
 
@@ -479,6 +487,60 @@ impl<T: RingMem + Sync> RingMem for &'_ T {
 
     fn write_aligned(&self, addr: usize, data: &[u8]) {
         (*self).write_aligned(addr, data)
+    }
+}
+
+#[derive(Debug)]
+pub struct SingleMappedRingMem<T>(pub T);
+
+impl<T: AsRef<[AtomicU8]>> SingleMappedRingMem<T> {
+    fn control_range(&self) -> &[AtomicU8; PAGE_SIZE] {
+        self.0.as_ref()[..PAGE_SIZE].try_into().unwrap()
+    }
+
+    fn data(&self) -> &[AtomicU8] {
+        &self.0.as_ref()[PAGE_SIZE..]
+    }
+}
+
+impl<T: AsRef<[AtomicU8]> + Send> RingMem for SingleMappedRingMem<T> {
+    fn read_at(&self, mut addr: usize, data: &mut [u8]) {
+        if addr >= self.len() {
+            addr -= self.len();
+        }
+        let this_data = self.data();
+        if addr + data.len() <= self.len() {
+            this_data[addr..addr + data.len()].atomic_read(data);
+        } else {
+            let data_len = data.len();
+            let (first, last) = data.split_at_mut(self.len() - addr);
+            this_data[addr..].atomic_read(first);
+            this_data[..data_len - (self.len() - addr)].atomic_read(last);
+        }
+    }
+
+    fn write_at(&self, mut addr: usize, data: &[u8]) {
+        if addr > self.len() {
+            addr -= self.len();
+        }
+        let this_data = self.data();
+        if addr + data.len() <= self.len() {
+            this_data[addr..addr + data.len()].atomic_write(data);
+        } else {
+            let (first, last) = data.split_at(self.len() - addr);
+            this_data[addr..].atomic_write(first);
+            this_data[..data.len() - (self.len() - addr)].atomic_write(last);
+        }
+    }
+
+    fn control(&self) -> &[AtomicU32; CONTROL_WORD_COUNT] {
+        self.control_range().as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
+            .try_into()
+            .unwrap()
+    }
+
+    fn len(&self) -> usize {
+        self.data().len()
     }
 }
 
@@ -609,8 +671,8 @@ impl<T: PagedMemory> RingMem for PagedRingMem<T> {
 
     #[inline]
     fn read_aligned(&self, addr: usize, data: &mut [u8]) {
-        debug_assert!(addr % 8 == 0);
-        debug_assert!(data.len() % 8 == 0);
+        debug_assert!(addr.is_multiple_of(8));
+        debug_assert!(data.len().is_multiple_of(8));
         for (i, b) in data.chunks_exact_mut(8).enumerate() {
             let addr = (addr & !7) + i * 8;
             let page = addr / PAGE_SIZE;
@@ -627,8 +689,8 @@ impl<T: PagedMemory> RingMem for PagedRingMem<T> {
 
     #[inline]
     fn write_aligned(&self, addr: usize, data: &[u8]) {
-        debug_assert!(addr % 8 == 0);
-        debug_assert!(data.len() % 8 == 0);
+        debug_assert!(addr.is_multiple_of(8));
+        debug_assert!(data.len().is_multiple_of(8));
         for (i, b) in data.chunks_exact(8).enumerate() {
             let addr = (addr & !7) + i * 8;
             let page = addr / PAGE_SIZE;
@@ -1149,15 +1211,19 @@ impl<M: RingMem> Inspect for InnerRing<M> {
 
 /// Inspects ring buffer state without creating an IncomingRing or OutgoingRing
 /// structure.
-pub fn inspect_ring<M: RingMem>(mem: M, req: inspect::Request<'_>) {
-    let _ = InnerRing::new(mem).map(|ring| ring.inspect(req));
+///
+/// # Panics
+///
+/// Panics if control_page is not aligned.
+pub fn inspect_ring(control_page: &guestmem::Page, response: &mut inspect::Response<'_>) {
+    let control = Control::from_page(control_page).expect("control page is not aligned");
+    response.field("control", control);
 }
 
 /// Returns whether a ring buffer is in a state where the receiving end might
 /// need a signal.
-pub fn reader_needs_signal<M: RingMem>(mem: M) -> bool {
-    InnerRing::new(mem).is_ok_and(|ring| {
-        let control = ring.control();
+pub fn reader_needs_signal(control_page: &guestmem::Page) -> bool {
+    Control::from_page(control_page).is_some_and(|control| {
         control.interrupt_mask().load(Ordering::Relaxed) == 0
             && (control.inp().load(Ordering::Relaxed) != control.outp().load(Ordering::Relaxed))
     })
@@ -1165,12 +1231,12 @@ pub fn reader_needs_signal<M: RingMem>(mem: M) -> bool {
 
 /// Returns whether a ring buffer is in a state where the sending end might need
 /// a signal.
-pub fn writer_needs_signal<M: RingMem>(mem: M) -> bool {
-    InnerRing::new(mem).is_ok_and(|ring| {
-        let control = ring.control();
+pub fn writer_needs_signal(control_page: &guestmem::Page, ring_size: u32) -> bool {
+    Control::from_page(control_page).is_some_and(|control| {
         let pending_size = control.pending_send_size().load(Ordering::Relaxed);
         pending_size != 0
-            && ring.free(
+            && ring_free(
+                ring_size,
                 control.inp().load(Ordering::Relaxed),
                 control.outp().load(Ordering::Relaxed),
             ) >= pending_size
@@ -1208,7 +1274,7 @@ impl<M: RingMem> InnerRing<M> {
     }
 
     fn validate(&self, p: u32) -> Result<u32, Error> {
-        if p >= self.size || p % 8 != 0 {
+        if p >= self.size || !p.is_multiple_of(8) {
             Err(Error::InvalidRingPointer)
         } else {
             Ok(p)
@@ -1236,16 +1302,20 @@ impl<M: RingMem> InnerRing<M> {
     }
 
     fn free(&self, inp: u32, outp: u32) -> u32 {
-        // It's not possible to fully fill the ring since that state would be
-        // indistinguishable from the empty ring. So subtract 8 bytes from the
-        // result.
-        if outp > inp {
-            // |....inp____outp.....|
-            outp - inp - 8
-        } else {
-            // |____outp....inp_____|
-            self.size - (inp - outp) - 8
-        }
+        ring_free(self.size, inp, outp)
+    }
+}
+
+fn ring_free(size: u32, inp: u32, outp: u32) -> u32 {
+    // It's not possible to fully fill the ring since that state would be
+    // indistinguishable from the empty ring. So subtract 8 bytes from the
+    // result.
+    if outp > inp {
+        // |....inp____outp.....|
+        outp - inp - 8
+    } else {
+        // |____outp....inp_____|
+        size - (inp - outp) - 8
     }
 }
 

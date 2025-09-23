@@ -136,6 +136,7 @@ where
     // free space
     //
     // page tables
+    // 8K bootshim logs
     // IGVM parameters
     // reserved vtl2 ranges
     // initrd
@@ -147,11 +148,11 @@ where
     // --- Low memory, 2MB aligned ---
 
     // Paravisor memory ranges must be 2MB (large page) aligned.
-    if memory_start_address % X64_LARGE_PAGE_SIZE != 0 {
+    if !memory_start_address.is_multiple_of(X64_LARGE_PAGE_SIZE) {
         return Err(Error::MemoryUnaligned(memory_start_address));
     }
 
-    if memory_size % X64_LARGE_PAGE_SIZE != 0 {
+    if !memory_size.is_multiple_of(X64_LARGE_PAGE_SIZE) {
         return Err(Error::MemoryUnaligned(memory_size));
     }
 
@@ -335,6 +336,20 @@ where
 
     tracing::debug!(parameter_region_start);
 
+    // Reserve 8K for the bootshim log buffer. Import these pages so they are
+    // available early without extra acceptance calls.
+    let bootshim_log_size = HV_PAGE_SIZE * 2;
+    let bootshim_log_start = offset;
+    offset += bootshim_log_size;
+
+    importer.import_pages(
+        bootshim_log_start / HV_PAGE_SIZE,
+        bootshim_log_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-log-buffer",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
 
@@ -360,10 +375,31 @@ where
         _ => None,
     };
 
+    // HACK: On TDX, the kernel uses the ACPI AP Mailbox protocol to start APs.
+    // However, the kernel assumes that all kernel ram is identity mapped, as
+    // the kernel will jump to a startup routine in any arbitrary kernel ram
+    // range.
+    //
+    // For now, describe 3GB of memory identity mapped in the page table used by
+    // the mailbox assembly stub, so the kernel can start APs regardless of how
+    // large the initial memory size was. An upcoming change will instead have
+    // the bootshim modify the pagetable at runtime to guarantee all ranges
+    // reported in the E820 map to kernel as ram are mapped.
+    //
+    // FUTURE: A future kernel change could remove this requirement entirely by
+    // making the kernel spec compliant, and only require that the reset vector
+    // page is identity mapped.
+
+    let page_table_mapping_size = if isolation_type == IsolationType::Tdx {
+        3 * 1024 * 1024 * 1024
+    } else {
+        memory_size
+    };
+
     let page_table_base_page_count = 5;
     let page_table_dynamic_page_count = {
         // Double the count to allow for simpler reconstruction.
-        calculate_pde_table_count(memory_start_address, memory_size) * 2
+        calculate_pde_table_count(memory_start_address, page_table_mapping_size) * 2
             + local_map.map_or(0, |v| calculate_pde_table_count(v.0, v.1))
     };
     let page_table_isolation_page_count = match isolation_type {
@@ -384,7 +420,7 @@ where
     tracing::debug!(page_table_region_start, page_table_region_size);
 
     let mut page_table_builder = PageTableBuilder::new(page_table_region_start)
-        .with_mapped_region(memory_start_address, memory_size);
+        .with_mapped_region(memory_start_address, page_table_mapping_size);
 
     if let Some((local_map_start, size)) = local_map {
         page_table_builder = page_table_builder.with_local_map(local_map_start, size);
@@ -402,7 +438,7 @@ where
 
     let page_table = page_table_builder.build();
 
-    assert!(page_table.len() as u64 % HV_PAGE_SIZE == 0);
+    assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
     assert!(page_table.len() as u64 <= page_table_region_size);
 
@@ -468,6 +504,10 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
+        page_tables_start: calculate_shim_offset(page_table_region_start),
+        page_tables_size: page_table_region_size,
+        log_buffer_start: calculate_shim_offset(bootshim_log_start),
+        log_buffer_size: bootshim_log_size,
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -875,11 +915,11 @@ where
     let memory_size = memory_page_count * HV_PAGE_SIZE;
 
     // Paravisor memory ranges must be 2MB (large page) aligned.
-    if memory_start_address % u64::from(Arm64PageSize::Large) != 0 {
+    if !memory_start_address.is_multiple_of(u64::from(Arm64PageSize::Large)) {
         return Err(Error::MemoryUnaligned(memory_start_address));
     }
 
-    if memory_size % u64::from(Arm64PageSize::Large) != 0 {
+    if !memory_size.is_multiple_of(u64::from(Arm64PageSize::Large)) {
         return Err(Error::MemoryUnaligned(memory_size));
     }
 
@@ -1009,6 +1049,19 @@ where
 
     tracing::debug!(parameter_region_start);
 
+    // Reserve 8K for the bootshim log buffer.
+    let bootshim_log_size = HV_PAGE_SIZE * 2;
+    let bootshim_log_start = next_addr;
+    next_addr += bootshim_log_size;
+
+    importer.import_pages(
+        bootshim_log_start / HV_PAGE_SIZE,
+        bootshim_log_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-log-buffer",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
 
@@ -1058,6 +1111,10 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
+        page_tables_start: 0,
+        page_tables_size: 0,
+        log_buffer_start: calculate_shim_offset(bootshim_log_start),
+        log_buffer_size: bootshim_log_size,
     };
 
     importer
@@ -1128,7 +1185,7 @@ where
         memory_attribute_indirection,
         page_table_region_size as usize,
     );
-    assert!(page_tables.len() as u64 % HV_PAGE_SIZE == 0);
+    assert!((page_tables.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     let page_table_page_base = page_table_region_start / HV_PAGE_SIZE;
     assert!(page_tables.len() as u64 <= page_table_region_size);
     assert!(page_table_region_size as usize > page_tables.len());

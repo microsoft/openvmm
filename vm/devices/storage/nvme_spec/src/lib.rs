@@ -14,6 +14,7 @@ pub mod nvm;
 
 use bitfield_struct::bitfield;
 use inspect::Inspect;
+use mesh::MeshPayload;
 use open_enum::open_enum;
 use storage_string::AsciiString;
 use zerocopy::FromBytes;
@@ -129,7 +130,18 @@ pub struct Aqa {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    IntoBytes,
+    Immutable,
+    KnownLayout,
+    FromBytes,
+    Inspect,
+    MeshPayload,
+    PartialEq,
+)]
 pub struct Command {
     pub cdw0: Cdw0,
     pub nsid: u32,
@@ -148,7 +160,7 @@ pub struct Command {
 
 #[derive(Inspect)]
 #[bitfield(u32)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
 pub struct Cdw0 {
     pub opcode: u8,
     #[bits(2)]
@@ -209,7 +221,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
 pub struct Completion {
     pub dw0: u32,
     pub dw1: u32,
@@ -220,7 +232,7 @@ pub struct Completion {
 }
 
 #[bitfield(u16)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, MeshPayload)]
 pub struct CompletionStatus {
     pub phase: bool,
     /// 8 bits of status code followed by 3 bits of the status code type.

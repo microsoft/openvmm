@@ -6,8 +6,6 @@
 //! To be clear: PCI devices are not required to use these helpers, and may
 //! choose to implement configuration space accesses manually.
 
-#![warn(missing_docs)]
-
 use crate::PciInterruptPin;
 use crate::bar_mapping::BarMappings;
 use crate::capabilities::PciCapability;
@@ -533,7 +531,7 @@ impl ConfigSpaceType0Emulator {
                 self.state.interrupt_line = ((val & 0xff00) >> 8) as u8;
             }
             // all other base regs are noops
-            _ if offset < 0x40 && offset % 4 == 0 => (),
+            _ if offset < 0x40 && offset.is_multiple_of(4) => (),
             // rest of the range is reserved for extended device capabilities
             _ if (0x40..0x100).contains(&offset) => {
                 if let Some((cap_index, cap_offset)) =

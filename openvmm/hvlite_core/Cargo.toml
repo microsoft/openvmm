@@ -52,10 +52,10 @@ disk_backend.workspace = true
 firmware_pcat.workspace = true
 firmware_uefi_custom_vars.workspace = true
 firmware_uefi.workspace = true
-uefi_nvram_storage.workspace = true
+uefi_nvram_storage = { workspace = true, features = ["save_restore"] }
 framebuffer.workspace = true
 get_resources.workspace = true
-hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect"] }
+hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
 ide.workspace = true
 floppy.workspace = true
 input_core.workspace = true
@@ -73,7 +73,6 @@ vmbus_core.workspace = true
 vmbus_server.workspace = true
 vpci.workspace = true
 watchdog_core.workspace = true
-watchdog_vmgs_format.workspace = true
 
 cache_topology.workspace = true
 debug_ptr.workspace = true

@@ -7,7 +7,7 @@
             "isolation_type": "none",
             "image": {
                 "openhcl": {
-                    "memory_page_count": 24576,
+                    "memory_page_count": 126976,
                     "command_line": "console=null",
                     "uefi": true
                 }

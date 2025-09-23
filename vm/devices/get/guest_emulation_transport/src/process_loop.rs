@@ -81,8 +81,6 @@ pub(crate) enum FatalError {
     VersionNegotiationFailed,
     #[error("control receive failed")]
     VersionNegotiationTryRecvFailed(#[source] RecvError),
-    #[error("received response with no pending request")]
-    NoPendingRequest,
     #[error("failed to serialize VTL2 settings error info")]
     Vtl2SettingsErrorInfoJson(#[source] serde_json::error::Error),
     #[error("received too many guest notifications of kind {0:?} prior to downstream worker init")]
@@ -100,10 +98,6 @@ pub(crate) enum FatalError {
         response_size: usize,
         maximum_size: usize,
     },
-    #[error(
-        "received a secondary host request response {0:?} with no pending secondary host request"
-    )]
-    NoPendingSecondaryHostRequest(HostRequests),
 }
 
 type HostRequestQueue = VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>;
@@ -764,7 +758,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 .map_err(|_| FatalError::InvalidResponse)?;
 
             if version_accepted {
-                tracing::info!("[GET] version negotiated: {:?}", protocol);
+                tracing::info!(?protocol, "[GET] version negotiated");
 
                 return Ok(protocol);
             }
@@ -845,27 +839,25 @@ impl<T: RingMem> ProcessLoop<T> {
                 .map(Event::Failure);
 
                 // Closure to share code between the primary and secondary host request queue.
-                let run_host_request_queue = async | request_queue: &mut HostRequestQueue, response_recv: &ExclusiveHostRequestResponseReceiverAccess | {
-                    while let Some(request) = request_queue.front_mut() {
-                        if let Err(e) = request.as_mut().await {
-                            return e;
-                        }
+                let run_host_request_queue =
+                    async |request_queue: &mut HostRequestQueue, response_recv: &ExclusiveHostRequestResponseReceiverAccess| {
+                        while let Some(request) = request_queue.front_mut() {
+                            if let Err(e) = request.as_mut().await {
+                                return e;
+                            }
 
-                        request_queue.pop_front();
+                            request_queue.pop_front();
 
-                        // Ensure there are no extra response messages that this request failed to pick up.
-                        if response_recv
-                            .lock()
-                            .as_mut()
-                            .unwrap()
-                            .try_recv()
-                            .is_ok()
-                        {
-                            return FatalError::NoPendingRequest;
+                            // Ensure there are no extra response messages that this request failed to pick up.
+                            if let Ok(resp) = response_recv.lock().as_mut().unwrap().try_recv() {
+                                let id = get_protocol::HeaderRaw::read_from_prefix(&resp)
+                                    .map(|head| HostRequests(head.0.message_id))
+                                    .unwrap_or(HostRequests::INVALID);
+                                tracing::warn!(?id, "received extra response after processing request");
+                            }
                         }
-                    }
-                    pending().await
-                };
+                        pending().await
+                    };
 
                 // Run the next host request in the primary queue. These host
                 // requests are expected to be generally fast and independent
@@ -1297,8 +1289,8 @@ impl<T: RingMem> ProcessLoop<T> {
             }
             invalid_notification => {
                 tracing::error!(
-                    "[HOST GET] ignoring invalid guest notification: {:?}",
-                    invalid_notification
+                    ?invalid_notification,
+                    "[HOST GET] ignoring invalid guest notification",
                 );
             }
         }
@@ -1315,22 +1307,22 @@ impl<T: RingMem> ProcessLoop<T> {
         header: get_protocol::HeaderHostResponse,
         buf: &[u8],
     ) -> Result<(), FatalError> {
-        if self.primary_host_requests.is_empty() && self.secondary_host_requests.is_empty() {
-            return Err(FatalError::NoPendingRequest);
-        }
         validate_response(header)?;
 
         if is_secondary_host_request(header.message_id()) {
-            if !self.secondary_host_requests.is_empty() {
-                self.secondary_host_requests_read_send.send(buf.to_vec());
+            if self.secondary_host_requests.is_empty() {
+                tracing::warn!(id = ?header.message_id(), "received secondary host response with no pending request");
                 return Ok(());
             }
-            return Err(FatalError::NoPendingSecondaryHostRequest(
-                header.message_id(),
-            ));
+            self.secondary_host_requests_read_send.send(buf.to_vec());
+        } else {
+            if self.primary_host_requests.is_empty() {
+                tracing::warn!(id = ?header.message_id(), "received primary host response with no pending request");
+                return Ok(());
+            }
+            self.read_send.send(buf.to_vec());
         }
 
-        self.read_send.send(buf.to_vec());
         Ok(())
     }
 

@@ -118,9 +118,7 @@ impl Cpu for FuzzerCpu {
     }
 
     /// Sets the value of an XMM* register.
-    fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    fn set_xmm(&mut self, _reg: usize, _value: u128) {}
 }
 
 #[derive(Debug)]

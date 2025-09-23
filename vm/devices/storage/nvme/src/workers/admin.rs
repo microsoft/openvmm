@@ -18,9 +18,8 @@ use crate::error::NvmeError;
 use crate::namespace::Namespace;
 use crate::prp::PrpRange;
 use crate::queue::CompletionQueue;
-use crate::queue::DoorbellRegister;
+use crate::queue::DoorbellMemory;
 use crate::queue::QueueError;
-use crate::queue::ShadowDoorbell;
 use crate::queue::SubmissionQueue;
 use crate::spec;
 use disk_backend::Disk;
@@ -34,9 +33,11 @@ use inspect::Inspect;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::collections::btree_map;
 use std::future::pending;
+use std::future::poll_fn;
 use std::io::Cursor;
 use std::io::Write;
 use std::sync::Arc;
@@ -67,7 +68,7 @@ pub struct AdminConfig {
     #[inspect(skip)]
     pub interrupts: Vec<Interrupt>,
     #[inspect(skip)]
-    pub doorbells: Vec<Arc<DoorbellRegister>>,
+    pub doorbells: Arc<RwLock<DoorbellMemory>>,
     #[inspect(display)]
     pub subsystem_id: Guid,
     pub max_sqs: u16,
@@ -88,13 +89,11 @@ pub struct AdminState {
     admin_sq: SubmissionQueue,
     admin_cq: CompletionQueue,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
-    io_sqs: Vec<IoSq>,
+    io_sqs: Vec<Option<IoSq>>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
-    io_cqs: Vec<Option<IoCq>>,
+    io_cqs: Vec<IoCq>,
     #[inspect(skip)]
     sq_delete_response: mesh::Receiver<u16>,
-    #[inspect(with = "Option::is_some")]
-    shadow_db_evt_gpa_base: Option<ShadowDoorbell>,
     #[inspect(iter_by_index)]
     asynchronous_event_requests: Vec<u16>,
     #[inspect(
@@ -118,23 +117,16 @@ struct ChangedNamespace {
 
 #[derive(Inspect)]
 struct IoSq {
-    #[inspect(flatten)]
-    task: TaskControl<IoHandler, IoState>,
-    driver: VmTaskDriver,
     pending_delete_cid: Option<u16>,
-    cqid: Option<u16>,
-    shadow_db_evt_idx: Option<ShadowDoorbell>,
+    sq_idx: usize,
+    cqid: u16,
 }
 
 #[derive(Inspect)]
 struct IoCq {
-    #[inspect(hex)]
-    gpa: u64,
-    #[inspect(hex)]
-    len: u16,
-    interrupt: Option<u16>,
-    sqid: Option<u16>,
-    shadow_db_evt_idx: Option<ShadowDoorbell>,
+    driver: VmTaskDriver,
+    #[inspect(flatten)]
+    task: TaskControl<IoHandler, IoState>,
 }
 
 impl AdminState {
@@ -159,19 +151,20 @@ impl AdminState {
             })
             .collect();
 
+        let admin_cq = CompletionQueue::new(
+            handler.config.doorbells.clone(),
+            1,
+            handler.config.mem.clone(),
+            Some(handler.config.interrupts[0].clone()),
+            acq,
+            acqs,
+        );
         let mut state = Self {
-            admin_sq: SubmissionQueue::new(handler.config.doorbells[0].clone(), asq, asqs, None),
-            admin_cq: CompletionQueue::new(
-                handler.config.doorbells[1].clone(),
-                Some(handler.config.interrupts[0].clone()),
-                acq,
-                acqs,
-                None,
-            ),
+            admin_sq: SubmissionQueue::new(&admin_cq, 0, asq, asqs),
+            admin_cq,
             io_sqs: Vec::new(),
             io_cqs: Vec::new(),
             sq_delete_response: Default::default(),
-            shadow_db_evt_gpa_base: None,
             asynchronous_event_requests: Vec::new(),
             changed_namespaces: Vec::new(),
             notified_changed_namespaces: false,
@@ -187,48 +180,40 @@ impl AdminState {
     ///
     /// This future may be dropped and reissued.
     pub async fn drain(&mut self) {
-        for sq in &mut self.io_sqs {
-            sq.task.stop().await;
-            if let Some(state) = sq.task.state_mut() {
+        for cq in &mut self.io_cqs {
+            cq.task.stop().await;
+            if let Some(state) = cq.task.state_mut() {
                 state.drain().await;
-                sq.task.remove();
+                cq.task.remove();
             }
         }
     }
 
     /// Caller must ensure that no queues are active.
     fn set_max_queues(&mut self, handler: &AdminHandler, num_sqs: u16, num_cqs: u16) {
-        let num_qids = 2 + num_sqs.max(num_cqs) * 2;
-        assert!(handler.config.doorbells.len() >= num_qids as usize);
-
         self.io_sqs.truncate(num_sqs.into());
-        self.io_sqs
-            .extend((self.io_sqs.len()..num_sqs.into()).map(|i| {
-                // This driver doesn't explicitly do any IO (that's handled by
-                // the storage backends), so the target VP doesn't matter. But
-                // set it anyway as a hint to the backend that this queue needs
-                // its own thread.
-                let driver = handler
-                    .config
-                    .driver_source
-                    .builder()
-                    .run_on_target(false)
-                    .target_vp(0)
-                    .build("nvme");
+        self.io_sqs.resize_with(num_sqs.into(), || None);
+        self.io_cqs.resize_with(num_cqs.into(), || {
+            // This driver doesn't explicitly do any IO (that's handled by
+            // the storage backends), so the target VP doesn't matter. But
+            // set it anyway as a hint to the backend that this queue needs
+            // its own thread.
+            let driver = handler
+                .config
+                .driver_source
+                .builder()
+                .run_on_target(false)
+                .target_vp(0)
+                .build("nvme");
 
-                IoSq {
-                    task: TaskControl::new(IoHandler::new(
-                        handler.config.mem.clone(),
-                        i as u16 + 1,
-                        self.sq_delete_response.sender(),
-                    )),
-                    pending_delete_cid: None,
-                    cqid: None,
-                    shadow_db_evt_idx: None,
-                    driver,
-                }
-            }));
-        self.io_cqs.resize_with(num_cqs.into(), || None);
+            IoCq {
+                driver,
+                task: TaskControl::new(IoHandler::new(
+                    handler.config.mem.clone(),
+                    self.sq_delete_response.sender(),
+                )),
+            }
+        });
     }
 
     fn add_changed_namespace(&mut self, nsid: u32) {
@@ -244,13 +229,13 @@ impl AdminState {
         namespace: &Arc<Namespace>,
     ) {
         // Update the IO queues.
-        for sq in &mut self.io_sqs {
-            let io_running = sq.task.stop().await;
-            if let Some(io_state) = sq.task.state_mut() {
+        for cq in &mut self.io_cqs {
+            let io_running = cq.task.stop().await;
+            if let Some(io_state) = cq.task.state_mut() {
                 io_state.add_namespace(nsid, namespace.clone());
             }
             if io_running {
-                sq.task.start();
+                cq.task.start();
             }
         }
 
@@ -272,13 +257,13 @@ impl AdminState {
 
     async fn remove_namespace(&mut self, nsid: u32) {
         // Update the IO queues.
-        for sq in &mut self.io_sqs {
-            let io_running = sq.task.stop().await;
-            if let Some(io_state) = sq.task.state_mut() {
+        for cq in &mut self.io_cqs {
+            let io_running = cq.task.stop().await;
+            if let Some(io_state) = cq.task.state_mut() {
                 io_state.remove_namespace(nsid);
             }
             if io_running {
-                sq.task.start();
+                cq.task.start();
             }
         }
 
@@ -400,12 +385,11 @@ impl AdminHandler {
         let event = loop {
             // Wait for there to be room for a completion for the next
             // command or the completed sq deletion.
-            state.admin_cq.wait_ready(&self.config.mem).await?;
+            poll_fn(|cx| state.admin_cq.poll_ready(cx)).await?;
 
             if !state.changed_namespaces.is_empty() && !state.notified_changed_namespaces {
                 if let Some(cid) = state.asynchronous_event_requests.pop() {
                     state.admin_cq.write(
-                        &self.config.mem,
                         spec::Completion {
                             dw0: spec::AsynchronousEventRequestDw0::new()
                                 .with_event_type(spec::AsynchronousEventType::NOTICE.0)
@@ -425,7 +409,7 @@ impl AdminHandler {
                 }
             }
 
-            let next_command = state.admin_sq.next(&self.config.mem).map(Event::Command);
+            let next_command = poll_fn(|cx| state.admin_sq.poll_next(cx)).map(Event::Command);
             let sq_delete_complete = async {
                 let Some(sqid) = state.sq_delete_response.next().await else {
                     pending().await
@@ -451,10 +435,6 @@ impl AdminHandler {
         state: &mut AdminState,
         event: Result<Event, QueueError>,
     ) -> Result<(), QueueError> {
-        // For the admin queue, update Evt_IDX at the beginning of command
-        // processing, just to keep it simple.
-        state.admin_sq.advance_evt_idx(&self.config.mem)?;
-
         let (cid, result) = match event? {
             Event::Command(command) => {
                 let command = command?;
@@ -464,7 +444,7 @@ impl AdminHandler {
 
                 let result = match opcode {
                     spec::AdminOpcode::IDENTIFY => self
-                        .handle_identify(&command)
+                        .handle_identify(state, &command)
                         .map(|()| Some(Default::default())),
                     spec::AdminOpcode::GET_FEATURES => {
                         self.handle_get_features(state, &command).await.map(Some)
@@ -477,12 +457,15 @@ impl AdminHandler {
                         .map(|()| Some(Default::default())),
                     spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE => self
                         .handle_create_io_submission_queue(state, &command)
+                        .await
                         .map(|()| Some(Default::default())),
                     spec::AdminOpcode::DELETE_IO_COMPLETION_QUEUE => self
                         .handle_delete_io_completion_queue(state, &command)
+                        .await
                         .map(|()| Some(Default::default())),
                     spec::AdminOpcode::DELETE_IO_SUBMISSION_QUEUE => {
                         self.handle_delete_io_submission_queue(state, &command)
+                            .await
                     }
                     spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST => {
                         self.handle_asynchronous_event_request(state, &command)
@@ -491,9 +474,13 @@ impl AdminHandler {
                     spec::AdminOpcode::GET_LOG_PAGE => self
                         .handle_get_log_page(state, &command)
                         .map(|()| Some(Default::default())),
-                    spec::AdminOpcode::DOORBELL_BUFFER_CONFIG => self
-                        .handle_doorbell_buffer_config(state, &command)
-                        .map(|()| Some(Default::default())),
+                    spec::AdminOpcode::DOORBELL_BUFFER_CONFIG
+                        if self.supports_shadow_doorbells(state) =>
+                    {
+                        self.handle_doorbell_buffer_config(state, &command)
+                            .await
+                            .map(|()| Some(Default::default()))
+                    }
                     opcode => {
                         tracelimit::warn_ratelimited!(?opcode, "unsupported opcode");
                         Err(spec::Status::INVALID_COMMAND_OPCODE.into())
@@ -517,19 +504,8 @@ impl AdminHandler {
                 (command.cdw0.cid(), result)
             }
             Event::SqDeleteComplete(sqid) => {
-                let sq = &mut state.io_sqs[sqid as usize - 1];
-                let cid = sq.pending_delete_cid.take().unwrap();
-                let cqid = sq.cqid.take().unwrap();
-                sq.task.stop().await;
-                sq.task.remove();
-                assert_eq!(
-                    state.io_cqs[cqid as usize - 1]
-                        .as_mut()
-                        .unwrap()
-                        .sqid
-                        .take(),
-                    Some(sqid)
-                );
+                let sq = state.io_sqs[sqid as usize - 1].take().unwrap();
+                let cid = sq.pending_delete_cid.unwrap();
                 (cid, Default::default())
             }
             Event::NamespaceChange(nsid) => {
@@ -549,13 +525,15 @@ impl AdminHandler {
             cid,
         };
 
-        state.admin_cq.write(&self.config.mem, completion)?;
-        // Again, for simplicity, update EVT_IDX here.
-        state.admin_cq.catch_up_evt_idx(true, 0, &self.config.mem)?;
+        state.admin_cq.write(completion)?;
         Ok(())
     }
 
-    fn handle_identify(&mut self, command: &spec::Command) -> Result<(), NvmeError> {
+    fn handle_identify(
+        &mut self,
+        state: &AdminState,
+        command: &spec::Command,
+    ) -> Result<(), NvmeError> {
         let cdw10: spec::Cdw10Identify = command.cdw10.into();
         // All identify results are 4096 bytes.
         let mut buf = [0u64; 512];
@@ -563,7 +541,7 @@ impl AdminHandler {
         match spec::Cns(cdw10.cns()) {
             spec::Cns::CONTROLLER => {
                 let id = spec::IdentifyController::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                *id = self.identify_controller();
+                *id = self.identify_controller(state);
 
                 write!(
                     Cursor::new(&mut id.subnqn[..]),
@@ -609,8 +587,7 @@ impl AdminHandler {
         Ok(())
     }
 
-    fn identify_controller(&self) -> spec::IdentifyController {
-        let oacs = spec::OptionalAdminCommandSupport::from(0).with_doorbell_buffer_config(true);
+    fn identify_controller(&self, state: &AdminState) -> spec::IdentifyController {
         spec::IdentifyController {
             vid: VENDOR_ID,
             ssvid: VENDOR_ID,
@@ -641,7 +618,8 @@ impl AdminHandler {
                 .with_present(true)
                 .with_broadcast_flush_behavior(spec::BroadcastFlushBehavior::NOT_SUPPORTED.0),
             cntrltype: spec::ControllerType::IO_CONTROLLER,
-            oacs,
+            oacs: spec::OptionalAdminCommandSupport::new()
+                .with_doorbell_buffer_config(self.supports_shadow_doorbells(state)),
             ..FromZeros::new_zeroed()
         }
     }
@@ -656,8 +634,8 @@ impl AdminHandler {
         // Note that we don't support non-zero cdw10.save, since ONCS.save == 0.
         match spec::Feature(cdw10.fid()) {
             spec::Feature::NUMBER_OF_QUEUES => {
-                if state.io_sqs.iter().any(|sq| sq.task.has_state())
-                    || state.io_cqs.iter().any(|cq| cq.is_some())
+                if state.io_sqs.iter().any(|sq| sq.is_some())
+                    || state.io_cqs.iter().any(|cq| cq.task.has_state())
                 {
                     return Err(spec::Status::COMMAND_SEQUENCE_ERROR.into());
                 }
@@ -741,7 +719,7 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
         }
         let cqid = cdw10.qid();
-        let io_queue = state
+        let cq = state
             .io_cqs
             .get_mut((cqid as usize).wrapping_sub(1))
             .ok_or(InvalidQueueIdentifier {
@@ -749,7 +727,7 @@ impl AdminHandler {
                 reason: InvalidQueueIdentifierReason::Oob,
             })?;
 
-        if io_queue.is_some() {
+        if cq.task.has_state() {
             return Err(InvalidQueueIdentifier {
                 qid: cqid,
                 reason: InvalidQueueIdentifierReason::InUse,
@@ -772,27 +750,25 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_QUEUE_SIZE.into());
         }
 
-        let mut shadow_db_evt_idx: Option<ShadowDoorbell> = None;
-        if let Some(shadow_db_evt_gpa_base) = state.shadow_db_evt_gpa_base {
-            shadow_db_evt_idx = Some(ShadowDoorbell::new(
-                shadow_db_evt_gpa_base,
-                cqid,
-                false,
-                DOORBELL_STRIDE_BITS.into(),
-            ));
-        }
+        let interrupt = interrupt.map(|iv| self.config.interrupts[iv as usize].clone());
+        let namespaces = self.namespaces.clone();
 
-        *io_queue = Some(IoCq {
+        let state = IoState::new(
+            &self.config.mem,
+            self.config.doorbells.clone(),
             gpa,
-            len: len0 + 1,
+            len0 + 1,
+            cqid,
             interrupt,
-            sqid: None,
-            shadow_db_evt_idx,
-        });
+            namespaces,
+        );
+
+        cq.task.insert(&cq.driver, "nvme-io", state);
+        cq.task.start();
         Ok(())
     }
 
-    fn handle_create_io_submission_queue(
+    async fn handle_create_io_submission_queue(
         &mut self,
         state: &mut AdminState,
         command: &spec::Command,
@@ -811,7 +787,7 @@ impl AdminHandler {
                 reason: InvalidQueueIdentifierReason::Oob,
             })?;
 
-        if sq.task.has_state() {
+        if sq.is_some() {
             return Err(InvalidQueueIdentifier {
                 qid: sqid,
                 reason: InvalidQueueIdentifierReason::InUse,
@@ -823,14 +799,9 @@ impl AdminHandler {
         let cq = state
             .io_cqs
             .get_mut((cqid as usize).wrapping_sub(1))
-            .and_then(|x| x.as_mut())
             .ok_or(spec::Status::COMPLETION_QUEUE_INVALID)?;
 
-        // Don't allow sharing completion queues. This isn't spec compliant
-        // but it simplifies the device significantly and OSes don't seem to
-        // mind. This could be fixed by having a slower path when completion
-        // queues are shared.
-        if cq.sqid.is_some() {
+        if !cq.task.has_state() {
             return Err(spec::Status::COMPLETION_QUEUE_INVALID.into());
         }
 
@@ -840,44 +811,24 @@ impl AdminHandler {
             return Err(spec::Status::INVALID_QUEUE_SIZE.into());
         }
 
-        if let Some(shadow_db_evt_gpa_base) = state.shadow_db_evt_gpa_base {
-            sq.shadow_db_evt_idx = Some(ShadowDoorbell::new(
-                shadow_db_evt_gpa_base,
-                sqid,
-                true,
-                DOORBELL_STRIDE_BITS.into(),
-            ));
+        let running = cq.task.stop().await;
+        let sq_idx = cq
+            .task
+            .state_mut()
+            .unwrap()
+            .create_sq(sqid, sq_gpa, len0 + 1);
+        if running {
+            cq.task.start();
         }
-
-        cq.sqid = Some(sqid);
-        sq.cqid = Some(cqid);
-        let sq_tail = self.config.doorbells[sqid as usize * 2].clone();
-        let cq_head = self.config.doorbells[cqid as usize * 2 + 1].clone();
-        let interrupt = cq
-            .interrupt
-            .map(|iv| self.config.interrupts[iv as usize].clone());
-        let namespaces = self.namespaces.clone();
-        let sq_len = len0 + 1;
-        let cq_gpa = cq.gpa;
-        let cq_len = cq.len;
-        let state = IoState::new(
-            sq_gpa,
-            sq_len,
-            sq_tail,
-            sq.shadow_db_evt_idx,
-            cq_gpa,
-            cq_len,
-            cq_head,
-            cq.shadow_db_evt_idx,
-            interrupt,
-            namespaces,
-        );
-        sq.task.insert(&sq.driver, "nvme-io", state);
-        sq.task.start();
+        *sq = Some(IoSq {
+            sq_idx,
+            pending_delete_cid: None,
+            cqid,
+        });
         Ok(())
     }
 
-    fn handle_delete_io_submission_queue(
+    async fn handle_delete_io_submission_queue(
         &self,
         state: &mut AdminState,
         command: &spec::Command,
@@ -890,9 +841,14 @@ impl AdminHandler {
             .ok_or(InvalidQueueIdentifier {
                 qid: sqid,
                 reason: InvalidQueueIdentifierReason::Oob,
+            })?
+            .as_mut()
+            .ok_or(InvalidQueueIdentifier {
+                qid: sqid,
+                reason: InvalidQueueIdentifierReason::NotInUse,
             })?;
 
-        if !sq.task.has_state() || sq.pending_delete_cid.is_some() {
+        if sq.pending_delete_cid.is_some() {
             return Err(InvalidQueueIdentifier {
                 qid: sqid,
                 reason: InvalidQueueIdentifierReason::NotInUse,
@@ -900,13 +856,17 @@ impl AdminHandler {
             .into());
         }
 
-        sq.task
-            .update_with(|sq, sq_state| sq.delete(sq_state.unwrap()));
+        let cq = &mut state.io_cqs[(sq.cqid as usize).wrapping_sub(1)];
+        let running = cq.task.stop().await;
+        cq.task.state_mut().unwrap().delete_sq(sq.sq_idx);
+        if running {
+            cq.task.start();
+        }
         sq.pending_delete_cid = Some(command.cdw0.cid());
         Ok(None)
     }
 
-    fn handle_delete_io_completion_queue(
+    async fn handle_delete_io_completion_queue(
         &self,
         state: &mut AdminState,
         command: &spec::Command,
@@ -921,15 +881,21 @@ impl AdminHandler {
                 reason: InvalidQueueIdentifierReason::Oob,
             })?;
 
-        let active_cq = cq.as_ref().ok_or(InvalidQueueIdentifier {
-            qid: cqid,
-            reason: InvalidQueueIdentifierReason::NotInUse,
-        })?;
-        if active_cq.sqid.is_some() {
+        if !cq.task.has_state() {
+            return Err(InvalidQueueIdentifier {
+                qid: cqid,
+                reason: InvalidQueueIdentifierReason::NotInUse,
+            }
+            .into());
+        }
+        let running = cq.task.stop().await;
+        if cq.task.state().unwrap().has_sqs() {
+            if running {
+                cq.task.start();
+            }
             return Err(spec::Status::INVALID_QUEUE_DELETION.into());
         }
-
-        *cq = None;
+        cq.task.remove();
         Ok(())
     }
 
@@ -1014,57 +980,33 @@ impl AdminHandler {
         Ok(())
     }
 
-    fn handle_doorbell_buffer_config(
+    fn supports_shadow_doorbells(&self, state: &AdminState) -> bool {
+        let num_queues = state.io_sqs.len().max(state.io_cqs.len()) + 1;
+        let len = num_queues * (2 << DOORBELL_STRIDE_BITS);
+        // The spec only allows a single shadow doorbell page.
+        len <= PAGE_SIZE
+    }
+
+    async fn handle_doorbell_buffer_config(
         &self,
         state: &mut AdminState,
         command: &spec::Command,
     ) -> Result<(), NvmeError> {
+        // Validated by caller.
+        assert!(self.supports_shadow_doorbells(state));
+
         let shadow_db_gpa = command.dptr[0];
         let event_idx_gpa = command.dptr[1];
-
-        if (shadow_db_gpa == 0)
-            || (shadow_db_gpa & 0xfff != 0)
-            || (event_idx_gpa == 0)
-            || (event_idx_gpa & 0xfff != 0)
-            || (shadow_db_gpa == event_idx_gpa)
-        {
-            return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+        if (shadow_db_gpa | event_idx_gpa) & !PAGE_MASK != 0 {
+            return Err(NvmeError::from(spec::Status::INVALID_FIELD_IN_COMMAND));
         }
 
-        // Stash the base values for use in data queue creation.
-        let sdb_base = ShadowDoorbell {
-            shadow_db_gpa,
-            event_idx_gpa,
-        };
-        state.shadow_db_evt_gpa_base = Some(sdb_base);
+        self.config
+            .doorbells
+            .write()
+            .replace_mem(self.config.mem.clone(), shadow_db_gpa, Some(event_idx_gpa))
+            .map_err(|err| NvmeError::new(spec::Status::DATA_TRANSFER_ERROR, err))?;
 
-        // Update the admin queue to use shadow doorbells.
-        state.admin_sq.update_shadow_db(
-            &self.config.mem,
-            ShadowDoorbell::new(sdb_base, 0, true, DOORBELL_STRIDE_BITS.into()),
-        );
-        state.admin_cq.update_shadow_db(
-            &self.config.mem,
-            ShadowDoorbell::new(sdb_base, 0, false, DOORBELL_STRIDE_BITS.into()),
-        );
-
-        // Update any data queues with the new shadow doorbell base.
-        for (qid, sq) in state.io_sqs.iter_mut().enumerate() {
-            if !sq.task.has_state() {
-                continue;
-            }
-            let gm = self.config.mem.clone();
-
-            // Data queue pairs are qid + 1, because the admin queue isn't in this vector.
-            let sq_sdb =
-                ShadowDoorbell::new(sdb_base, qid as u16 + 1, true, DOORBELL_STRIDE_BITS.into());
-            let cq_sdb =
-                ShadowDoorbell::new(sdb_base, qid as u16 + 1, false, DOORBELL_STRIDE_BITS.into());
-
-            sq.task.update_with(move |sq, sq_state| {
-                sq.update_shadow_db(&gm, sq_state.unwrap(), sq_sdb, cq_sdb);
-            });
-        }
         Ok(())
     }
 }

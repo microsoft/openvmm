@@ -340,6 +340,7 @@ pub mod caps {
         pub enum CapabilityId: u8 {
             #![expect(missing_docs)] // self explanatory variants
             VENDOR_SPECIFIC = 0x09,
+            PCI_EXPRESS     = 0x10,
             MSIX            = 0x11,
         }
     }
@@ -372,6 +373,96 @@ pub mod caps {
                 MSG_DATA    = 0x08,
                 VECTOR_CTL  = 0x0C,
             }
+        }
+    }
+
+    /// PCI Express
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod pci_express {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        open_enum::open_enum! {
+            /// Offsets into the PCI Express Capability Header
+            ///
+            /// Table pulled from PCI Express Base Specification Rev. 3.0
+            ///
+            /// | Offset    | Bits 31-24       | Bits 23-16       | Bits 15-8        | Bits 7-0             |
+            /// |-----------|------------------|----------------- |------------------|----------------------|
+            /// | Cap + 0x0 | PCI Express Capabilities Register   | Next Pointer     | Capability ID (0x10) |
+            /// | Cap + 0x4 | Device Capabilities Register                                                  |
+            /// | Cap + 0x8 | Device Status    | Device Control                                             |
+            pub enum PciExpressCapabilityHeader: u16 {
+                PCIE_CAPS       = 0x00,
+                DEVICE_CAPS     = 0x04,
+                DEVICE_CTL_STS  = 0x08,
+            }
+        }
+
+        /// Device Capabilities Register (From the 6.4 spec)
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceCapabilities {
+            #[bits(3)]
+            pub max_payload_size: u32,
+            #[bits(2)]
+            pub phantom_functions: u32,
+            pub ext_tag_field: bool,
+            #[bits(3)]
+            pub endpoint_l0s_latency: u32,
+            #[bits(3)]
+            pub endpoint_l1_latency: u32,
+            #[bits(3)]
+            _reserved1: u32,
+            pub role_based_error: bool,
+            pub err_cor_subclass_capable: bool,
+            pub rx_mps_fixed: bool,
+            #[bits(8)]
+            pub captured_slot_power_limit: u32,
+            #[bits(2)]
+            pub captured_slot_power_scale: u32,
+            pub function_level_reset: bool,
+            pub mixed_mps_supported: bool,
+            pub tee_io_supported: bool,
+            _reserved3: bool,
+        }
+
+        /// Device Control Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceControl {
+            pub correctable_error_reporting_enable: bool,
+            pub non_fatal_error_reporting_enable: bool,
+            pub fatal_error_reporting_enable: bool,
+            pub unsupported_request_reporting_enable: bool,
+            pub enable_relaxed_ordering: bool,
+            #[bits(3)]
+            pub max_payload_size: u16,
+            pub extended_tag_enable: bool,
+            pub phantom_functions_enable: bool,
+            pub aux_power_pm_enable: bool,
+            pub enable_no_snoop: bool,
+            #[bits(3)]
+            pub max_read_request_size: u16,
+            pub initiate_function_level_reset: bool,
+        }
+
+        /// Device Status Register  
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceStatus {
+            pub correctable_error_detected: bool,
+            pub non_fatal_error_detected: bool,
+            pub fatal_error_detected: bool,
+            pub unsupported_request_detected: bool,
+            pub aux_power_detected: bool,
+            pub transactions_pending: bool,
+            #[bits(10)]
+            _reserved: u16,
         }
     }
 }

@@ -6,6 +6,7 @@
 use self::vtl2_config::RuntimeParameters;
 use crate::loader::vtl0_config::LinuxInfo;
 use crate::worker::FirmwareType;
+use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guest_emulation_transport::api::platform_settings::General;
 use guestmem::GuestMemory;
@@ -114,11 +115,11 @@ pub fn load(
 ) -> Result<VpContext, Error> {
     let context = match load_kind {
         LoadKind::None => {
-            tracing::info!("loading nothing into VTL0");
+            tracing::info!(CVM_ALLOWED, "loading nothing into VTL0");
             VpContext::Vbs(Vec::new())
         }
         LoadKind::Uefi => {
-            tracing::info!("loading UEFI into VTL0");
+            tracing::info!(CVM_ALLOWED, "loading UEFI into VTL0");
             // UEFI image is already loaded into guest memory, so only the
             // dynamic config needs to be written.
             let uefi_info = vtl0_info.supports_uefi.as_ref().ok_or(Error::UefiSupport)?;
@@ -152,7 +153,7 @@ pub fn load(
         }
         #[cfg(guest_arch = "x86_64")]
         LoadKind::Linux => {
-            tracing::info!("loading Linux into VTL0");
+            tracing::info!(CVM_ALLOWED, "loading Linux into VTL0");
 
             let LinuxInfo {
                 kernel_range,
@@ -190,7 +191,7 @@ pub fn load(
             })?
         }
         LoadKind::Pcat => {
-            tracing::info!("loading pcat into VTL0");
+            tracing::info!(CVM_ALLOWED, "loading pcat into VTL0");
 
             if !vtl0_info.supports_pcat {
                 return Err(Error::PcatSupport);
@@ -269,6 +270,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         processor_topology,
         mem_layout,
         cache_topology: None,
+        pcie_host_bridges: &vec![],
         with_ioapic: true, // underhill always runs with ioapic
         with_pic: false,
         with_pit: false,
@@ -463,6 +465,7 @@ pub fn write_uefi_config(
             processor_topology,
             mem_layout,
             cache_topology: None,
+            pcie_host_bridges: &vec![],
             with_ioapic: cfg!(guest_arch = "x86_64"), // OpenHCL always runs with ioapic on x64
             with_pic: false,                          // uefi never runs with pic or pit
             with_pit: false,

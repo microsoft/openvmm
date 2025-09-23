@@ -5,7 +5,7 @@
 # Validate that a tool is present.
 function check_cross_tool {
     if ! command -v "$1" >/dev/null 2>/dev/null; then
-        >&2 echo "missing $1 - Try 'sudo apt install clang-tools-14 lld-14' or check the guide."
+        >&2 echo "missing $1 - Try 'sudo apt install clang-tools-14 lld-14 llvm-dev' or check the guide."
         false
     fi
 }

@@ -28,9 +28,15 @@ pub struct KmsgParsedEntry<'a> {
 }
 
 /// An encoded message.
+#[derive(Copy, Clone, Debug)]
 pub struct EncodedMessage<'a>(&'a str);
 
-impl EncodedMessage<'_> {
+impl<'a> EncodedMessage<'a> {
+    /// Creates a new encoded message from a raw string.
+    pub fn new(raw: &'a str) -> Self {
+        EncodedMessage(raw)
+    }
+
     /// The raw encoded string.
     pub fn as_raw(&self) -> &str {
         self.0
@@ -63,12 +69,12 @@ impl Display for EncodedMessage<'_> {
 
 /// An error indicating the kmsg entry could not be parsed because it is invalid.
 #[derive(Debug, Error)]
-#[error("invalid kmsg entry")]
-pub struct InvalidKmsgEntry;
+#[error("invalid kmsg entry: {0:?}")]
+pub struct InvalidKmsgEntry<'a>(&'a [u8]);
 
 impl<'a> KmsgParsedEntry<'a> {
-    pub fn new(data: &'a [u8]) -> Result<Self, InvalidKmsgEntry> {
-        Self::new_inner(data).ok_or(InvalidKmsgEntry)
+    pub fn new(data: &'a [u8]) -> Result<Self, InvalidKmsgEntry<'a>> {
+        Self::new_inner(data).ok_or(InvalidKmsgEntry(data))
     }
 
     fn new_inner(data: &'a [u8]) -> Option<Self> {

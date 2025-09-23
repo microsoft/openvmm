@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 #![no_std]
 
+pub mod vbs;
+
 use bitfield_struct::bitfield;
 use core::fmt::Debug;
 use core::mem::size_of;
@@ -48,6 +50,11 @@ pub const VS1_PARTITION_PROPERTIES_EAX_IS_PORTABLE: u32 = 0x000000001;
 pub const VS1_PARTITION_PROPERTIES_EAX_DEBUG_DEVICE_PRESENT: u32 = 0x000000002;
 /// Extended I/O APIC RTEs are supported for the current partition.
 pub const VS1_PARTITION_PROPERTIES_EAX_EXTENDED_IOAPIC_RTE: u32 = 0x000000004;
+/// Confidential VMBus is available.
+pub const VS1_PARTITION_PROPERTIES_EAX_CONFIDENTIAL_VMBUS_AVAILABLE: u32 = 0x000000008;
+
+/// SMCCC UID for the Microsoft Hypervisor.
+pub const VENDOR_HYP_UID_MS_HYPERVISOR: [u32; 4] = [0x4d32ba58, 0xcd244764, 0x8eef6c75, 0x16597024];
 
 #[bitfield(u64)]
 pub struct HvPartitionPrivilege {
@@ -292,6 +299,7 @@ open_enum! {
         HvCallPostMessage = 0x005C,
         HvCallSignalEvent = 0x005D,
         HvCallOutputDebugCharacter = 0x0071,
+        HvCallGetSystemProperty = 0x007b,
         HvCallRetargetDeviceInterrupt = 0x007e,
         HvCallNotifyPartitionEvent = 0x0087,
         HvCallAssertVirtualInterrupt = 0x0094,
@@ -314,6 +322,9 @@ open_enum! {
 
         // Extended hypercalls.
         HvExtCallQueryCapabilities = 0x8001,
+
+        // VBS guest calls.
+        HvCallVbsVmCallReport = 0xC001,
     }
 }
 
@@ -1741,6 +1752,21 @@ pub mod hypercall {
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct QuerySparsePageVisibility {
         pub partition_id: u64,
+    }
+
+    pub const VBS_VM_REPORT_DATA_SIZE: usize = 64;
+    pub const VBS_VM_MAX_REPORT_SIZE: usize = 2048;
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VbsVmCallReport {
+        pub report_data: [u8; VBS_VM_REPORT_DATA_SIZE],
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VbsVmCallReportOutput {
+        pub report: [u8; VBS_VM_MAX_REPORT_SIZE],
     }
 
     #[bitfield(u8)]

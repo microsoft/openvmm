@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::GuestEmulationDevice;
+use crate::IgvmAgentTestSetting;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
@@ -88,7 +89,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                         disk,
                         ResolveDiskParameters {
                             read_only: false,
-                            _async_trait_workaround: &(),
+                            driver_source: input.driver_source,
                         },
                     )
                     .await
@@ -150,20 +151,26 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     GuestSecureBootTemplateType::MicrosoftWindows => {
                         SecureBootTemplateType::MICROSOFT_WINDOWS
                     }
-                    GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy => {
+                    GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority => {
                         SecureBootTemplateType::MICROSOFT_UEFI_CERTIFICATE_AUTHORITY
                     }
                 },
                 enable_battery: resource.enable_battery,
                 no_persistent_secrets: resource.no_persistent_secrets,
                 guest_state_lifetime,
+                // TODO: pass these from OpenVMM config/command line
+                guest_state_encryption_policy:
+                    get_protocol::dps_json::GuestStateEncryptionPolicy::default(),
+                management_vtl_features: get_protocol::dps_json::ManagementVtlFeatures::default(),
             },
             halt,
             resource.firmware_event_send,
             resource.guest_request_recv,
             framebuffer_control,
             vmgs_disk,
-            resource.igvm_attest_test_config,
+            resource
+                .igvm_attest_test_config
+                .map(IgvmAgentTestSetting::TestConfig),
         );
         Ok(SimpleDeviceWrapper::new(input.driver_source.simple(), device).into())
     }

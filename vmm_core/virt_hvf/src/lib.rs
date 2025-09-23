@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))] // xtask-fmt allow-target-arch sys-crate
+#![cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))]
 
 //! A hypervisor backend using macos's Hypervisor framework.
 
@@ -19,10 +19,9 @@ use aarch64defs::ExceptionClass;
 use aarch64defs::IssDataAbort;
 use aarch64defs::IssSystem;
 use aarch64defs::MpidrEl1;
-use aarch64defs::psci::FastCall;
-use aarch64defs::psci::PSCI;
-use aarch64defs::psci::PsciCall;
-use aarch64defs::psci::PsciError;
+use aarch64defs::smccc::FastCall;
+use aarch64defs::smccc::PsciError;
+use aarch64defs::smccc::SmcCall;
 use abi::HvfError;
 use anyhow::Context;
 use guestmem::GuestMemory;
@@ -123,10 +122,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         // SAFETY: no safety requirements.
         unsafe { abi::hv_vm_create(null_mut()) }.chk()?;
 
-        let hv1 = HvfHv1State::new(
-            config.guest_memory.clone(),
-            self.config.processor_topology.vp_count(),
-        );
+        let hv1 = HvfHv1State::new(self.config.processor_topology.vp_count());
         let hv1_vps = self
             .config
             .processor_topology
@@ -373,7 +369,7 @@ impl virt::PartitionMemoryMapper for HvfPartition {
 }
 
 impl virt::PartitionMemoryMap for HvfPartitionInner {
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let range = MemoryRange::new(addr..addr + size);
         self.mappings.lock().retain(|mapping| {
             if !range.overlaps(mapping) {
@@ -396,7 +392,7 @@ impl virt::PartitionMemoryMap for HvfPartitionInner {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let mut mappings = self.mappings.lock();
         let mut flags = abi::HvMemoryFlags::READ.0;
         if writable {
@@ -462,10 +458,10 @@ struct HvfHv1State {
 }
 
 impl HvfHv1State {
-    fn new(guest_memory: GuestMemory, max_vp_count: u32) -> Self {
+    fn new(max_vp_count: u32) -> Self {
         Self {
             guest_os_id: 0.into(),
-            synic: GlobalSynic::new(guest_memory, max_vp_count),
+            synic: GlobalSynic::new(max_vp_count),
         }
     }
 }
@@ -612,34 +608,52 @@ impl HvfVcpu {
         })
     }
 
-    fn gp(&self, n: u8) -> Result<u64, HvfError> {
+    fn cpsr(&self) -> Cpsr64 {
+        let cpsr = Cpsr64::from(
+            self.reg(abi::HvReg::CPSR)
+                .expect("unrecoverable error getting CPSR"),
+        );
+        assert!(!cpsr.aa32(), "ARM32 not supported");
+        cpsr
+    }
+
+    fn gp(&self, n: u8) -> u64 {
         if n < 31 {
             self.reg(abi::HvReg(abi::HvReg::X0.0 + n as u32))
+                .expect("unrecoverable error getting GP")
         } else {
-            let cpsr = Cpsr64::from(self.reg(abi::HvReg::CPSR)?);
-            assert!(!cpsr.aa32());
-            let reg = if cpsr.sp() {
+            let reg = if self.cpsr().sp() {
                 abi::HvSysReg::SP_EL1
             } else {
                 abi::HvSysReg::SP_EL0
             };
-            self.sys_reg(reg)
+            self.sys_reg(reg).expect("unrecoverable error getting SP")
         }
     }
 
-    fn set_gp(&mut self, n: u8, value: u64) -> Result<(), HvfError> {
+    fn set_gp(&mut self, n: u8, value: u64) {
         if n < 31 {
             self.set_reg(abi::HvReg(abi::HvReg::X0.0 + n as u32), value)
+                .expect("unrecoverable failure to set GP")
         } else {
-            let cpsr = Cpsr64::from(self.reg(abi::HvReg::CPSR)?);
-            assert!(!cpsr.aa32());
-            let reg = if cpsr.sp() {
+            let reg = if self.cpsr().sp() {
                 abi::HvSysReg::SP_EL1
             } else {
                 abi::HvSysReg::SP_EL0
             };
             self.set_sys_reg(reg, value)
+                .expect("unrecoverable failure to set SP")
         }
+    }
+
+    fn pc(&self) -> u64 {
+        self.reg(abi::HvReg::PC)
+            .expect("unrecoverable error getting PC")
+    }
+
+    fn set_pc(&mut self, pc: u64) {
+        self.set_reg(abi::HvReg::PC, pc)
+            .expect("unrecoverable failure to set PC")
     }
 
     fn reg(&self, reg: abi::HvReg) -> Result<u64, HvfError> {
@@ -707,34 +721,54 @@ impl HvfProcessor<'_> {
             });
     }
 
-    fn psci(&mut self, fc: FastCall) -> Result<(), VpHaltReason<Error>> {
+    fn handle_smccc(&mut self, fc: FastCall) {
+        match SmcCall(fc.with_hint(false).with_smc64(false)) {
+            SmcCall::SMCCC_VERSION => {
+                self.vcpu.set_gp(0, (1 << 16) | 1);
+            }
+            SmcCall::SMCCC_ARCH_FEATURES => {
+                let feature_bits =
+                    match SmcCall(FastCall::from(self.vcpu.gp(1) as u32).with_smc64(false)) {
+                        SmcCall::SMCCC_ARCH_FEATURES => Some(0),
+                        _ => None,
+                    };
+                self.vcpu.set_gp(0, feature_bits.unwrap_or(!0));
+            }
+            call => {
+                tracelimit::warn_ratelimited!(?call, "ignoring unknown SMCCC call");
+                self.vcpu.set_gp(0, !0);
+            }
+        }
+    }
+
+    fn handle_psci(&mut self, fc: FastCall) -> Result<(), VpHaltReason> {
         let mask = if fc.smc64() {
             u64::MAX
         } else {
             u32::MAX as u64
         };
-        let r = match PsciCall(fc.with_smc64(false).with_hint(false)) {
-            PsciCall::PSCI_VERSION => 1 << 16,
-            PsciCall::PSCI_FEATURES => {
-                let feature_bits = match PsciCall(
-                    FastCall::from(self.vcpu.gp(1).unwrap() as u32).with_smc64(false),
-                ) {
-                    PsciCall::CPU_SUSPEND => Some(0),
-                    PsciCall::CPU_ON => Some(0),
-                    PsciCall::CPU_OFF => Some(0),
-                    PsciCall::AFFINITY_INFO => Some(0),
-                    PsciCall::SYSTEM_OFF => Some(0),
-                    PsciCall::SYSTEM_RESET => Some(0),
-                    PsciCall::PSCI_FEATURES => Some(0),
-                    _ => None,
-                };
+        let r = match SmcCall(fc.with_smc64(false).with_hint(false)) {
+            SmcCall::PSCI_VERSION => 1 << 16,
+            SmcCall::PSCI_FEATURES => {
+                let feature_bits =
+                    match SmcCall(FastCall::from(self.vcpu.gp(1) as u32).with_smc64(false)) {
+                        SmcCall::SMCCC_VERSION => Some(0),
+                        SmcCall::CPU_SUSPEND => Some(0),
+                        SmcCall::CPU_ON => Some(0),
+                        SmcCall::CPU_OFF => Some(0),
+                        SmcCall::AFFINITY_INFO => Some(0),
+                        SmcCall::SYSTEM_OFF => Some(0),
+                        SmcCall::SYSTEM_RESET => Some(0),
+                        SmcCall::PSCI_FEATURES => Some(0),
+                        _ => None,
+                    };
                 feature_bits.unwrap_or(PsciError::NOT_SUPPORTED.0)
             }
-            PsciCall::CPU_SUSPEND => PsciError::INVALID_PARAMETERS.0,
-            PsciCall::CPU_ON => {
-                let target_cpu = self.vcpu.gp(1).unwrap() & mask;
-                let entry_point = self.vcpu.gp(2).unwrap() & mask;
-                let context_id = self.vcpu.gp(3).unwrap() & mask;
+            SmcCall::CPU_SUSPEND => PsciError::INVALID_PARAMETERS.0,
+            SmcCall::CPU_ON => {
+                let target_cpu = self.vcpu.gp(1) & mask;
+                let entry_point = self.vcpu.gp(2) & mask;
+                let context_id = self.vcpu.gp(3) & mask;
                 if let Some(vp) = self.partition.vps.iter().find(|vp| {
                     u64::from(vp.vp_info.mpidr) & u64::from(MpidrEl1::AFFINITY_MASK) == target_cpu
                 }) {
@@ -755,25 +789,36 @@ impl HvfProcessor<'_> {
                     PsciError::INVALID_PARAMETERS.0
                 }
             }
-            PsciCall::CPU_OFF => PsciError::DENIED.0,
-            PsciCall::AFFINITY_INFO => PsciError::INVALID_PARAMETERS.0,
-            PsciCall::SYSTEM_RESET => return Err(VpHaltReason::Reset),
-            PsciCall::SYSTEM_OFF => return Err(VpHaltReason::PowerOff),
-            PsciCall::MIGRATE_INFO_TYPE => PsciError::NOT_SUPPORTED.0,
+            SmcCall::CPU_OFF => PsciError::DENIED.0,
+            SmcCall::AFFINITY_INFO => PsciError::INVALID_PARAMETERS.0,
+            SmcCall::SYSTEM_RESET => return Err(VpHaltReason::Reset),
+            SmcCall::SYSTEM_OFF => return Err(VpHaltReason::PowerOff),
+            SmcCall::MIGRATE_INFO_TYPE => PsciError::NOT_SUPPORTED.0,
             call => {
                 tracelimit::warn_ratelimited!(?call, "ignoring unknown PSCI32 call");
                 PsciError::NOT_SUPPORTED.0
             }
         };
-        self.vcpu.set_gp(0, r as u64).expect("BUGBUG");
+        self.vcpu.set_gp(0, r as u64);
         Ok(())
+    }
+
+    fn handle_vendor_hyp(&mut self, fc: FastCall) {
+        match SmcCall(fc.with_hint(false).with_smc64(false)) {
+            SmcCall::VENDOR_HYP_UID => {
+                for (i, &v) in hvdef::VENDOR_HYP_UID_MS_HYPERVISOR.iter().enumerate() {
+                    self.vcpu.set_gp(i as u8, v.into());
+                }
+            }
+            call => {
+                tracelimit::warn_ratelimited!(?call, "ignoring unknown VENDOR_HYP call");
+                self.vcpu.set_gp(0, !0);
+            }
+        }
     }
 }
 
 impl<'p> Processor for HvfProcessor<'p> {
-    type Error = Error;
-    type RunVpError = Error;
-
     type StateAccess<'a>
         = vp_state::HvfVpStateAccess<'a, 'p>
     where
@@ -783,7 +828,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <vp_state::HvfVpStateAccess<'_, 'p> as AccessVpState>::Error> {
         Ok(())
     }
 
@@ -791,7 +836,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<Error>> {
+    ) -> Result<Infallible, VpHaltReason> {
         let vp_index = self.inner.vp_info.base.vp_index;
         let mut last_waker = None;
         loop {
@@ -814,8 +859,8 @@ impl<'p> Processor for HvfProcessor<'p> {
                             todo!("block this");
                         } else {
                             tracing::debug!(x0 = cpu_on.x0, pc = cpu_on.pc, "cpu on");
-                            self.vcpu.set_gp(0, cpu_on.x0).unwrap();
-                            self.vcpu.set_reg(abi::HvReg::PC, cpu_on.pc).unwrap();
+                            self.vcpu.set_gp(0, cpu_on.x0);
+                            self.vcpu.set_pc(cpu_on.pc);
                             self.on = true;
                         }
                     }
@@ -862,7 +907,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             )
                         }
                         .chk()
-                        .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                        .unwrap();
                         self.wfi = false;
                     }
 
@@ -875,7 +920,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                         continue;
                     }
 
-                    break Poll::Ready(Result::<_, VpHaltReason<_>>::Ok(()));
+                    break Poll::Ready(Result::<_, VpHaltReason>::Ok(()));
                 }
             })
             .await?;
@@ -885,14 +930,14 @@ impl<'p> Processor for HvfProcessor<'p> {
                 unsafe {
                     abi::hv_vcpu_set_vtimer_mask(self.vcpu.vcpu, false)
                         .chk()
-                        .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                        .unwrap();
                 }
             }
 
             // SAFETY: we are not concurrently accessing `exit`.
             unsafe { abi::hv_vcpu_run(self.vcpu.vcpu) }
                 .chk()
-                .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                .map_err(|err| dev.fatal_error(err.into()))?;
 
             match self.vcpu.exit.reason {
                 abi::HvExitReason::CANCELED => {
@@ -908,15 +953,14 @@ impl<'p> Processor for HvfProcessor<'p> {
                     );
                     let advance = |vcpu: &mut HvfVcpu| {
                         let instr_len = if exception.syndrome.il() { 4 } else { 2 };
-                        let pc = vcpu.reg(abi::HvReg::PC).expect("BUGBUG");
-                        vcpu.set_reg(abi::HvReg::PC, pc.wrapping_add(instr_len))
-                            .expect("BUGBUG");
+                        let pc = vcpu.pc();
+                        vcpu.set_pc(pc.wrapping_add(instr_len));
                     };
                     match ExceptionClass(exception.syndrome.ec()) {
                         ExceptionClass::DATA_ABORT_LOWER => {
                             let iss = IssDataAbort::from(exception.syndrome.iss());
                             if !iss.isv() {
-                                return Err(VpHaltReason::EmulationFailure(
+                                return Err(dev.fatal_error(
                                     anyhow::anyhow!("can't handle data abort without isv: {iss:?}")
                                         .into(),
                                 ));
@@ -940,7 +984,7 @@ impl<'p> Processor for HvfProcessor<'p> {
 
                             if iss.wnr() {
                                 let data = match reg {
-                                    0..=30 => self.vcpu.gp(reg).expect("BUGBUG"),
+                                    0..=30 => self.vcpu.gp(reg),
                                     31 => 0,
                                     _ => unreachable!(),
                                 }
@@ -979,7 +1023,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                                         data &= 0xffffffff;
                                     }
                                 }
-                                self.vcpu.set_gp(reg, data).expect("BUGBUG");
+                                self.vcpu.set_gp(reg, data);
                             }
                             advance(&mut self.vcpu);
                         }
@@ -998,9 +1042,9 @@ impl<'p> Processor for HvfProcessor<'p> {
                                         );
                                         0
                                     });
-                                self.vcpu.set_gp(iss.rt(), value).expect("BUGBUG");
+                                self.vcpu.set_gp(iss.rt(), value);
                             } else {
-                                let value = self.vcpu.gp(iss.rt()).expect("BUGBUG");
+                                let value = self.vcpu.gp(iss.rt());
                                 if !self.partition.gicd.write_sysreg(
                                     &mut self.gicr,
                                     reg,
@@ -1021,12 +1065,20 @@ impl<'p> Processor for HvfProcessor<'p> {
                             let mut advance_pc = ec == ExceptionClass::SMC;
                             match exception.syndrome.iss() as u16 {
                                 0 => {
-                                    let x0 = self.vcpu.gp(0).expect("BUGBUG") as u32;
+                                    let x0 = self.vcpu.gp(0) as u32;
                                     let fc = FastCall::from(x0);
                                     let handled = 'handle: {
                                         if fc.fast() {
                                             match fc.service() {
-                                                PSCI => self.psci(fc)?,
+                                                aarch64defs::smccc::Service::SMCCC => {
+                                                    self.handle_smccc(fc);
+                                                }
+                                                aarch64defs::smccc::Service::PSCI => {
+                                                    self.handle_psci(fc)?
+                                                }
+                                                aarch64defs::smccc::Service::VENDOR_HYP => {
+                                                    self.handle_vendor_hyp(fc);
+                                                }
                                                 _ => break 'handle false,
                                             }
                                         } else {
@@ -1045,13 +1097,13 @@ impl<'p> Processor for HvfProcessor<'p> {
                                     if !handled {
                                         tracing::warn!(x0, ?ec, "ignoring SMCCC HVC/SMC");
                                         // Set not supported error.
-                                        self.vcpu.set_gp(0, !0).expect("BUGBUG");
+                                        self.vcpu.set_gp(0, !0);
                                     }
                                 }
                                 1 => self.hypercall(dev, false),
                                 immed => {
                                     tracing::warn!(immed, ?ec, "ignoring HVC/SMC");
-                                    self.vcpu.set_gp(0, !0).expect("BUGBUG");
+                                    self.vcpu.set_gp(0, !0);
                                 }
                             }
                             if advance_pc {
@@ -1063,7 +1115,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             advance(&mut self.vcpu);
                         }
                         class => {
-                            return Err(VpHaltReason::Hypervisor(
+                            return Err(dev.fatal_error(
                                 anyhow::anyhow!(
                                     "unsupported exception class: {class:?} {iss:#x}",
                                     iss = exception.syndrome.iss()
@@ -1077,7 +1129,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                     self.gicr.raise(PPI_VTIMER);
                 }
                 reason => {
-                    return Err(VpHaltReason::Hypervisor(
+                    return Err(dev.fatal_error(
                         anyhow::anyhow!("unsupported exit reason: {reason:?}").into(),
                     ));
                 }
@@ -1085,9 +1137,7 @@ impl<'p> Processor for HvfProcessor<'p> {
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
-        Ok(())
-    }
+    fn flush_async_requests(&mut self) {}
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);

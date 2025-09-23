@@ -46,6 +46,7 @@ watchdog_core.workspace = true
 address_filter.workspace = true
 arc_cyclic_builder.workspace = true
 closeable_mutex.workspace = true
+cvm_tracing.workspace = true
 inspect_counters.workspace = true
 inspect.workspace = true
 local_clock.workspace = true

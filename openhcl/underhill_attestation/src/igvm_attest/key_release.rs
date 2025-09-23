@@ -5,6 +5,8 @@
 //! runtime claims, which is a part of the request, and parsing the response, which
 //! can be either in JSON or JSON web token (JWT) format defined by Azure Key Vault (AKV).
 
+use crate::igvm_attest::Error as CommonError;
+use crate::igvm_attest::parse_response_header;
 use base64::Engine;
 use openhcl_attestation_protocol::igvm_attest::akv;
 use openssl::hash::MessageDigest;
@@ -18,8 +20,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub(crate) enum KeyReleaseError {
-    #[error("the response size is too small to parse")]
-    ResponseSizeTooSmall,
+    #[error("the response payload size is too small to parse")]
+    PayloadSizeTooSmall,
     #[error("failed to parse AKV JWT (API version > 7.2)")]
     ParseAkvJwt(#[source] AkvKeyReleaseJwtError),
     #[error("error occurs during AKV JWT signature verification")]
@@ -28,6 +30,8 @@ pub(crate) enum KeyReleaseError {
     VerifyAkvJwtSignatureFailed,
     #[error("failed to get wrapped key from AKV JWT body")]
     GetWrappedKeyFromAkvJwtBody(#[source] AkvKeyReleaseJwtError),
+    #[error("error in parsing response header")]
+    ParseHeader(#[source] CommonError),
 }
 
 #[derive(Debug, Error)]
@@ -119,23 +123,30 @@ pub fn parse_response(
     response: &[u8],
     rsa_modulus_size: usize,
 ) -> Result<Vec<u8>, KeyReleaseError> {
+    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
+
     // Minimum acceptable payload would look like {"ciphertext":"base64URL wrapped key"}
     const AES_IC_SIZE: usize = 8;
     const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
-    const HEADER_SIZE: usize = size_of::<
-        openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader,
-    >();
 
+    let header = parse_response_header(response).map_err(KeyReleaseError::ParseHeader)?;
+
+    // Extract payload as per header version
+    // parse_response_header above has verified the header version already
+    let header_size = match header.version {
+        IGVM_ATTEST_RESPONSE_VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
+        _ => size_of::<IgvmAttestKeyReleaseResponseHeader>(),
+    };
+    let payload = &response[header_size..header.data_size as usize];
     let wrapped_key_size = rsa_modulus_size + rsa_modulus_size + AES_IC_SIZE;
     let wrapped_key_base64_url_size = wrapped_key_size / 3 * 4;
-    let minimum_response_size =
-        CIPHER_TEXT_KEY.len() + wrapped_key_base64_url_size - 1 + HEADER_SIZE;
+    let minimum_payload_size = CIPHER_TEXT_KEY.len() + wrapped_key_base64_url_size - 1;
 
-    if response.is_empty() || response.len() < minimum_response_size {
-        Err(KeyReleaseError::ResponseSizeTooSmall)?
+    if payload.len() < minimum_payload_size {
+        Err(KeyReleaseError::PayloadSizeTooSmall)?
     }
-
-    let payload = &response[HEADER_SIZE..];
     let data_utf8 = String::from_utf8_lossy(payload);
     let wrapped_key = match serde_json::from_str::<akv::AkvKeyReleaseKeyBlob>(&data_utf8) {
         Ok(blob) => {
@@ -737,7 +748,8 @@ mod tests {
         assert!(response.is_err());
         assert_eq!(
             response.unwrap_err().to_string(),
-            KeyReleaseError::ResponseSizeTooSmall.to_string()
+            KeyReleaseError::ParseHeader(CommonError::ResponseSizeTooSmall { response_size: 0 })
+                .to_string()
         );
     }
 

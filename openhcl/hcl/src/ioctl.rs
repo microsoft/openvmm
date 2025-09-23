@@ -24,6 +24,7 @@ use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
 use bitvec::vec::BitVec;
+use cvm_tracing::CVM_ALLOWED;
 use deferred::RegisteredDeferredActions;
 use deferred::push_deferred_action;
 use deferred::register_deferred_actions;
@@ -88,6 +89,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+// TODO: Chunk this up into smaller per-interface errors.
 /// Error returned by HCL operations.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
@@ -135,8 +137,6 @@ pub enum Error {
     NumSignalEvent(#[source] io::Error),
     #[error("failed to create vtl")]
     CreateVTL(#[source] nix::Error),
-    #[error("Gva to gpa translation failed")]
-    TranslateGvaToGpa(#[source] TranslateGvaToGpaError),
     #[error("gpa failed vtl access check")]
     CheckVtlAccess(#[source] HvError),
     #[error("failed to set registers using set_vp_registers hypercall")]
@@ -940,7 +940,7 @@ impl MshvHvcall {
             - size_of::<hvdef::hypercall::AcceptGpaPages>())
             / size_of::<u64>();
 
-        let span = tracing::span!(tracing::Level::INFO, "accept_pages", ?range);
+        let span = tracing::info_span!("accept_pages", CVM_ALLOWED, ?range);
         let _enter = span.enter();
 
         let mut current_page = range.start() / HV_PAGE_SIZE;
@@ -1315,7 +1315,7 @@ impl MshvHvcall {
             assert!(size_of::<O>() <= HV_PAGE_SIZE as usize);
         }
         assert_size::<I, O>();
-        assert!(variable_input.len() % 8 == 0);
+        assert!(variable_input.len().is_multiple_of(8));
 
         let input = [input.as_bytes(), variable_input].concat();
         if input.len() > HV_PAGE_SIZE as usize {
@@ -1359,7 +1359,7 @@ impl MshvHvcall {
             - size_of::<hvdef::hypercall::ModifyVtlProtectionMask>())
             / size_of::<u64>();
 
-        let span = tracing::span!(tracing::Level::INFO, "modify_vtl_protection_mask", ?range);
+        let span = tracing::info_span!("modify_vtl_protection_mask", CVM_ALLOWED, ?range);
         let _enter = span.enter();
 
         let start = range.start() / HV_PAGE_SIZE;
@@ -1446,7 +1446,7 @@ impl MshvHvcall {
     /// Get a single VP register for the given VTL via hypercall. Only a select
     /// set of registers are supported; others will cause a panic.
     #[cfg(guest_arch = "x86_64")]
-    pub fn get_vp_register_for_vtl(
+    fn get_vp_register_for_vtl(
         &self,
         vtl: HvInputVtl,
         name: HvX64RegisterName,
@@ -1488,7 +1488,7 @@ impl MshvHvcall {
     /// Get a single VP register for the given VTL via hypercall. Only a select
     /// set of registers are supported; others will cause a panic.
     #[cfg(guest_arch = "aarch64")]
-    pub fn get_vp_register_for_vtl(
+    fn get_vp_register_for_vtl(
         &self,
         vtl: HvInputVtl,
         name: HvArm64RegisterName,
@@ -1575,6 +1575,42 @@ impl MshvHvcall {
         };
 
         status.result()
+    }
+
+    /// Request a VBS VM report from the host VSM.
+    ///
+    /// # Arguments
+    /// - `report_data`: The data to include in the report.
+    ///
+    /// Returns a result containing the report or an error.
+    pub fn vbs_vm_call_report(
+        &self,
+        report_data: &[u8],
+    ) -> Result<[u8; hvdef::hypercall::VBS_VM_MAX_REPORT_SIZE], HvError> {
+        if report_data.len() > hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let mut header = hvdef::hypercall::VbsVmCallReport {
+            report_data: [0; hvdef::hypercall::VBS_VM_REPORT_DATA_SIZE],
+        };
+
+        header.report_data[..report_data.len()].copy_from_slice(report_data);
+
+        let mut output: hvdef::hypercall::VbsVmCallReportOutput = FromZeros::new_zeroed();
+
+        // SAFETY: The input header and slice are the correct types for this hypercall.
+        //         The hypercall output is validated right after the hypercall is issued.
+        let status = unsafe {
+            self.hvcall(HypercallCode::HvCallVbsVmCallReport, &header, &mut output)
+                .expect("submitting hypercall should not fail")
+        };
+
+        if status.result().is_ok() {
+            Ok(output.report)
+        } else {
+            Err(status.result().unwrap_err())
+        }
     }
 }
 
@@ -1811,9 +1847,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             actions.flush();
         }
     }
-}
 
-impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     // Registers that are shared between VTLs need to be handled by the kernel
     // as they may require special handling there. set_reg and get_reg will
     // handle these registers using a dedicated ioctl, instead of the general-
@@ -1880,7 +1914,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         Ok(())
     }
 
-    fn get_reg(&mut self, vtl: GuestVtl, regs: &mut [HvRegisterAssoc]) -> Result<(), Error> {
+    fn get_reg(&mut self, vtl: Vtl, regs: &mut [HvRegisterAssoc]) -> Result<(), Error> {
         if regs.is_empty() {
             return Ok(());
         }
@@ -2055,9 +2089,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     pub fn is_sidecar(&self) -> bool {
         self.sidecar.is_some()
     }
-}
 
-impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     fn get_vp_registers_inner<R: Copy + Into<HvRegisterName>>(
         &mut self,
         vtl: GuestVtl,
@@ -2080,7 +2112,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
             }
         }
 
-        self.get_reg(vtl, &mut assoc)?;
+        self.get_reg(vtl.into(), &mut assoc)?;
         for (&i, assoc) in offset.iter().zip(&assoc) {
             values[i] = assoc.value;
         }
@@ -2100,6 +2132,24 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         let mut value = [0u64.into(); 1];
         self.get_vp_registers_inner(vtl, &[name], &mut value)?;
         Ok(value[0])
+    }
+
+    /// Get the following register on the current VP for VTL 2.
+    ///
+    /// This will fail for registers that are in the mmapped CPU context, i.e.
+    /// registers that are shared between VTL0 and VTL2.
+    pub fn get_vp_vtl2_register(
+        &mut self,
+        #[cfg(guest_arch = "x86_64")] name: HvX64RegisterName,
+        #[cfg(guest_arch = "aarch64")] name: HvArm64RegisterName,
+    ) -> Result<HvRegisterValue, Error> {
+        let mut assoc = [HvRegisterAssoc {
+            name: name.into(),
+            pad: Default::default(),
+            value: FromZeros::new_zeroed(),
+        }];
+        self.get_reg(Vtl::Vtl2, &mut assoc)?;
+        Ok(assoc[0].value)
     }
 
     /// Get the following VP registers on the current VP.
@@ -2580,7 +2630,7 @@ impl Hcl {
     /// Get a single VP register for the given VTL via hypercall. Only a select
     /// set of registers are supported; others will cause a panic.
     #[cfg(guest_arch = "x86_64")]
-    pub fn get_vp_register(
+    fn get_vp_register(
         &self,
         name: impl Into<HvX64RegisterName>,
         vtl: HvInputVtl,
@@ -2591,7 +2641,7 @@ impl Hcl {
     /// Get a single VP register for the given VTL via hypercall. Only a select
     /// set of registers are supported; others will cause a panic.
     #[cfg(guest_arch = "aarch64")]
-    pub fn get_vp_register(
+    fn get_vp_register(
         &self,
         name: impl Into<HvArm64RegisterName>,
         vtl: HvInputVtl,
@@ -2948,6 +2998,37 @@ impl Hcl {
         ))
     }
 
+    /// Get the [`hvdef::HvRegisterVsmPartitionStatus`] register
+    pub fn get_vsm_partition_status(&self) -> Result<hvdef::HvRegisterVsmPartitionStatus, Error> {
+        Ok(hvdef::HvRegisterVsmPartitionStatus::from(
+            self.get_vp_register(
+                HvAllArchRegisterName::VsmPartitionStatus,
+                HvInputVtl::CURRENT_VTL,
+            )?
+            .as_u64(),
+        ))
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    /// Get the [`hvdef::HvPartitionPrivilege`] register
+    pub fn get_privileges_and_features_info(&self) -> Result<hvdef::HvPartitionPrivilege, Error> {
+        Ok(hvdef::HvPartitionPrivilege::from(
+            self.get_vp_register(
+                HvArm64RegisterName::PrivilegesAndFeaturesInfo,
+                HvInputVtl::CURRENT_VTL,
+            )?
+            .as_u64(),
+        ))
+    }
+
+    /// Get the [`hvdef::hypercall::HvGuestOsId`] register for the given VTL.
+    pub fn get_guest_os_id(&self, vtl: Vtl) -> Result<hvdef::hypercall::HvGuestOsId, Error> {
+        Ok(hvdef::hypercall::HvGuestOsId::from(
+            self.get_vp_register(HvAllArchRegisterName::GuestOsId, vtl.into())?
+                .as_u64(),
+        ))
+    }
+
     /// Configure guest VSM.
     /// The only configuration attribute currently supported is changing the maximum number of
     /// guest-visible virtual trust levels for the partition. (VTL 1)
@@ -3054,8 +3135,6 @@ impl Hcl {
             .expect("check_vtl_access hypercall should not fail")
         };
 
-        // TODO GUEST_VSM: for isolated VMs, if the status is operation denied,
-        // return memory unaccepted?
         status.result().map_err(Error::CheckVtlAccess)?;
 
         let access_result = output[0];

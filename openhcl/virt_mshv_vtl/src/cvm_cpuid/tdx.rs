@@ -12,6 +12,7 @@ use super::CpuidSubtable;
 use super::ParsedCpuidEntry;
 use super::TopologyError;
 use core::arch::x86_64::CpuidResult;
+use cvm_tracing::CVM_ALLOWED;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::x86::X86Topology;
 use x86defs::cpuid;
@@ -230,6 +231,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             || (extended_topology_ecx_0.level_type() != super::CPUID_LEAF_B_LEVEL_TYPE_SMT)
         {
             tracing::error!(
+                CVM_ALLOWED,
                 "Incorrect values received: {:?}. Level Number should represent sub-leaf 0, while Level Type should represent domain type 1 for logical processor.",
                 extended_topology_ecx_0
             );
@@ -244,6 +246,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             || (extended_topology_ecx_1.level_type() != super::CPUID_LEAF_B_LEVEL_TYPE_CORE)
         {
             tracing::error!(
+                CVM_ALLOWED,
                 "Incorrect values received: {:?}. Level Number should represent sub-leaf 1, while Level Type should represent domain type 2 for Core.",
                 extended_topology_ecx_1
             );

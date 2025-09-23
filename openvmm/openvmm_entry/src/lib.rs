@@ -5,7 +5,7 @@
 //! for the worker process.
 
 #![expect(missing_docs)]
-#![forbid(unsafe_code)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
 
 mod cli_args;
 mod crash_dump;
@@ -37,6 +37,7 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
+use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
@@ -63,11 +64,14 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
+use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieRootPortConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::VirtioBus;
@@ -86,6 +90,7 @@ use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
 use mesh::CancelContext;
+use mesh::CellUpdater;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
@@ -676,6 +681,33 @@ fn vm_config_from_command_line(
         })
     }));
 
+    let pcie_root_complexes = opt
+        .pcie_root_complex
+        .iter()
+        .enumerate()
+        .map(|(i, cli)| {
+            let ports = opt
+                .pcie_root_port
+                .iter()
+                .filter(|port_cli| port_cli.root_complex_name == cli.name)
+                .map(|port_cli| PcieRootPortConfig {
+                    name: port_cli.name.clone(),
+                })
+                .collect();
+
+            PcieRootComplexConfig {
+                index: i as u32,
+                name: cli.name.clone(),
+                segment: cli.segment,
+                start_bus: cli.start_bus,
+                end_bus: cli.end_bus,
+                low_mmio_size: cli.low_mmio,
+                high_mmio_size: cli.high_mmio,
+                ports,
+            }
+        })
+        .collect();
+
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
         .device
@@ -910,18 +942,6 @@ fn vm_config_from_command_line(
         resources.ged_rpc = Some(send);
 
         let vmgs = vmgs.take().unwrap();
-        // OpenHCL doesn't support ephemeral guest state yet,
-        // so give it a memory-backed VMGS
-        let vmgs = if matches!(vmgs, VmgsResource::Ephemeral) {
-            VmgsResource::Disk(
-                disk_backend_resources::LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-                })
-                .into_resource(),
-            )
-        } else {
-            vmgs
-        };
 
         vmbus_devices.extend([
             (
@@ -984,7 +1004,7 @@ fn vm_config_from_command_line(
                             get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows
                         },
                         Some(SecureBootTemplateCli::UefiCa) => {
-                            get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy
+                            get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthority
                         }
                         None => {
                             get_resources::ged::GuestSecureBootTemplateType::None
@@ -1028,6 +1048,7 @@ fn vm_config_from_command_line(
                 register_layout,
                 guest_secret_key: None,
                 logger: None,
+                is_confidential_vm: false,
             }
             .into_resource(),
         });
@@ -1167,6 +1188,7 @@ fn vm_config_from_command_line(
         hvlite_defs::config::Aarch64TopologyConfig {
             // TODO: allow this to be configured from the command line
             gic_config: None,
+            pmu_gsiv: hvlite_defs::config::PmuGsivConfig::Platform,
         },
     );
     #[cfg(guest_arch = "x86_64")]
@@ -1313,12 +1335,14 @@ fn vm_config_from_command_line(
         chipset,
         load_mode,
         floppy_disks,
+        pcie_root_complexes,
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {
             mem_size: opt.memory,
             mmio_gaps,
             prefetch_memory: opt.prefetch,
+            pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
@@ -1380,6 +1404,7 @@ fn vm_config_from_command_line(
         debugger_rpc: None,
         generation_id_recv: None,
         rtc_delta_milliseconds: 0,
+        automatic_guest_reset: !opt.halt_on_reset,
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
@@ -1585,6 +1610,13 @@ fn disk_open_inner(
         DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
             disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
         )),
+        DiskCliKind::DelayDiskWrapper {
+            delay_ms,
+            disk: inner,
+        } => layers.push(disk(DelayDiskHandle {
+            delay: CellUpdater::new(Duration::from_millis(*delay_ms)).cell(),
+            disk: disk_open(inner, read_only)?,
+        })),
         DiskCliKind::Crypt {
             disk: inner,
             cipher,
@@ -2315,23 +2347,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             Event::Quit => break,
             Event::Halt(reason) => {
-                match reason {
-                    vmm_core_defs::HaltReason::Reset
-                        if !opt.halt_on_reset && state_change_task.is_none() =>
-                    {
-                        tracing::info!("guest-initiated reset");
-                        state_change(
-                            driver,
-                            &vm_rpc,
-                            &mut state_change_task,
-                            VmRpc::Reset,
-                            StateChange::Reset,
-                        );
-                    }
-                    _ => {
-                        tracing::info!(?reason, "guest halted");
-                    }
-                }
+                tracing::info!(?reason, "guest halted");
                 continue;
             }
             Event::PulseSaveRestore => {

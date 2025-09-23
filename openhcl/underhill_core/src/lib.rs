@@ -206,7 +206,11 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
 
     let r = run_control(driver, &mesh, opt, &mut tracing).await;
     if let Err(err) = &r {
-        tracing::error!(error = err.as_ref() as &dyn std::error::Error, "VM failure");
+        tracing::error!(
+            CVM_ALLOWED,
+            error = err.as_ref() as &dyn std::error::Error,
+            "VM failure"
+        );
     }
 
     // Wait a few seconds for child processes to terminate and tracing to finish.
@@ -238,6 +242,7 @@ fn log_boot_times() -> anyhow::Result<()> {
         sidecar_end,
     } = BootTimes::new().context("failed to parse boot times")?;
     tracing::info!(
+        CVM_ALLOWED,
         start,
         end,
         sidecar_start,
@@ -305,6 +310,8 @@ async fn launch_workers(
         vmbus_max_version: opt.vmbus_max_version,
         vmbus_enable_mnf: opt.vmbus_enable_mnf,
         vmbus_force_confidential_external_memory: opt.vmbus_force_confidential_external_memory,
+        vmbus_channel_unstick_delay: (opt.vmbus_channel_unstick_delay_ms != 0)
+            .then(|| Duration::from_millis(opt.vmbus_channel_unstick_delay_ms)),
         cmdline_append: opt.cmdline_append.clone(),
         reformat_vmgs: opt.reformat_vmgs,
         vtl0_starts_paused: opt.vtl0_starts_paused,
@@ -318,8 +325,12 @@ async fn launch_workers(
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
+        nvme_always_flr: opt.nvme_always_flr,
         test_configuration: opt.test_configuration,
         disable_uefi_frontpage: opt.disable_uefi_frontpage,
+        guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
+        enable_vpci_relay: opt.enable_vpci_relay,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
@@ -706,10 +717,10 @@ async fn run_control(
             Event::Worker(event) => match event {
                 WorkerEvent::Started => {
                     if let Some(response) = restart_rpc.take() {
-                        tracing::info!("restart complete");
+                        tracing::info!(CVM_ALLOWED, "restart complete");
                         response.complete(Ok(()));
                     } else {
-                        tracing::info!("vm worker started");
+                        tracing::info!(CVM_ALLOWED, "vm worker started");
                     }
                     state = ControlState::Started;
                 }
@@ -720,7 +731,11 @@ async fn run_control(
                     return Err(anyhow::Error::from(err)).context("vm worker failed");
                 }
                 WorkerEvent::RestartFailed(err) => {
-                    tracing::error!(error = &err as &dyn std::error::Error, "restart failed");
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        error = &err as &dyn std::error::Error,
+                        "restart failed"
+                    );
                     restart_rpc.take().unwrap().complete(Err(err));
                     state = ControlState::Started;
                 }
@@ -728,7 +743,7 @@ async fn run_control(
             Event::Control(req) => match req {
                 ControlRequest::FlushLogs(rpc) => {
                     rpc.handle(async |mut ctx| {
-                        tracing::info!("flushing logs");
+                        tracing::info!(CVM_ALLOWED, "flushing logs");
                         ctx.until_cancelled(tracing.flush()).await?;
                         Ok(())
                     })
@@ -742,7 +757,7 @@ async fn run_control(
 }
 
 async fn signal_vtl0_started(driver: &DefaultDriver) -> anyhow::Result<()> {
-    tracing::info!("signaling vtl0 started early");
+    tracing::info!(CVM_ALLOWED, "signaling vtl0 started early");
     let (client, task) = guest_emulation_transport::spawn_get_worker(driver.clone())
         .await
         .context("failed to spawn GET")?;
@@ -750,7 +765,7 @@ async fn signal_vtl0_started(driver: &DefaultDriver) -> anyhow::Result<()> {
     // Disconnect the GET so that it can be reused.
     drop(client);
     task.await.unwrap();
-    tracing::info!("signaled vtl0 start");
+    tracing::info!(CVM_ALLOWED, "signaled vtl0 start");
     Ok(())
 }
 

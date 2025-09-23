@@ -73,7 +73,7 @@ impl<T: IntoBytes + Immutable + KnownLayout> CqEq<T> {
             return Err(QueueAllocError::InvalidAlignment);
         }
         let len = region.len();
-        if !len < PAGE_SIZE64 as usize || len > u32::MAX as usize || !region.len().is_power_of_two()
+        if len < PAGE_SIZE64 as usize || len > u32::MAX as usize || !region.len().is_power_of_two()
         {
             return Err(QueueAllocError::InvalidLen);
         }
@@ -101,13 +101,16 @@ impl<T: IntoBytes + Immutable + KnownLayout> CqEq<T> {
         let mut writer = range.writer(gm);
         let (entry, last) = entry.as_bytes().split_at(entry.as_bytes().len() - 1);
         if let Err(err) = writer.write(entry) {
-            tracing::warn!(err = &err as &dyn std::error::Error, "failed to write");
+            tracing::warn!(
+                err = &err as &dyn std::error::Error,
+                "failed to write entry"
+            );
         }
         // Write the final byte last after a release fence to ensure that the
         // guest sees the entire entry before the owner count is updated.
         std::sync::atomic::fence(Release);
         if let Err(err) = writer.write(last) {
-            tracing::warn!(err = &err as &dyn std::error::Error, "failed to write");
+            tracing::warn!(err = &err as &dyn std::error::Error, "failed to write last");
         }
         // Ensure the write is flushed before sending the interrupt.
         std::sync::atomic::fence(Release);
@@ -251,7 +254,10 @@ impl Wq {
         let old_len = self.available();
         assert!(old_len <= self.cap);
         let new_len = val.wrapping_sub(self.head);
-        if self.head % WQE_ALIGNMENT as u32 == 0 && new_len > old_len && new_len <= self.cap {
+        if self.head.is_multiple_of(WQE_ALIGNMENT as u32)
+            && new_len > old_len
+            && new_len <= self.cap
+        {
             self.tail = val;
             self.waker.take()
         } else {
