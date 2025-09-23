@@ -94,6 +94,7 @@ open_enum! {
         MODIFY_VTL2_SETTINGS_REV1 = 6,
         // --- GE ---
         BATTERY_STATUS = 7,
+        INJECT_DEBUG_INTERRUPT = 8,
     }
 }
 
@@ -1755,6 +1756,24 @@ impl BatteryStatusNotification {
             max_capacity,
             remaining_capacity,
             rate,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct InjectDebugInterruptNotification {
+    pub message_header: HeaderGuestNotification,
+    pub vtl: u8,
+}
+
+impl InjectDebugInterruptNotification {
+    pub fn new(
+        vtl: u8,
+    ) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(GuestNotifications::INJECT_DEBUG_INTERRUPT),
+            vtl,
         }
     }
 }
