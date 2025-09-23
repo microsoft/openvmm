@@ -40,9 +40,6 @@ We track the state of candidates for a given release by tagging the PRs with the
     the release.
 * `backported_YYMM`: This PR (to `main`) has been cherry-picked to the `YYMM`
   release.
-* `backport_YYMM_approved`: This PR (to `main`) has been reviewed by the OpenVMM
-  maintainers, who believe this meets the bar. This is a temporary tag until the
-  PR is cherry-picked (e.g. a TODO).
 
 #### Seeking Approval for Backport
 
