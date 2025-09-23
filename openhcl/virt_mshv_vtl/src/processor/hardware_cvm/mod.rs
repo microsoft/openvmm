@@ -880,26 +880,9 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         self.vp.update_proxy_irr_filter(self.intercepted_vtl);
 
         if self.vp.partition.use_posted_redirection {
-            // Map the interrupt vector in VTL2 and issue HvCallRetargetDeviceInterrupt hypercall
-            // with posted interrupt redirection enabled.
-            // N.B. If interrupt mapping fails in kernel, we fallback to proxy interrupt delivery.
-            if let Some(redirected_vector) = self.vp.partition.hcl.map_redirected_device_interrupt(vector, true) {
-                let result = self.vp.partition.hcl.retarget_device_interrupt(
-                    device_id,
-                    entry,
-                    redirected_vector,
-                    multicast,
-                    target_processors,
-                    true,
-                );
-
-                match result {
-                    Err(HvError::InvalidVtlState) => {
-                        // Undo interrupt vector mapping in VTL2 and fallback to proxy interrupt delivery.
-                        self.vp.partition.hcl.map_redirected_device_interrupt(vector, false);
-                    }
-                    _ => return result,
-                }
+            // Try posted redirection - if any step fails, fall back to proxy delivery
+            if let Some(result) = self.try_posted_redirection(device_id, entry, vector, multicast, &target_processors) {
+                return result;
             }
         }
 
@@ -911,6 +894,61 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             target_processors,
             false,
         )
+    }
+
+    /// Attempts posted interrupt redirection. Returns Some(result) if successful, None if any step fails.
+    fn try_posted_redirection(
+        &mut self,
+        device_id: u64,
+        entry: hvdef::hypercall::InterruptEntry,
+        vector: u32,
+        multicast: bool,
+        target_processors: &ProcessorSet<'_>,
+    ) -> Option<HvResult<()>> {
+        // Posted redirection doesn't support multicast
+        if multicast {
+            return None;
+        }
+
+        // Get the first processor index from the set
+        let first_processor_index = target_processors.iter().next()?;
+        
+        // Get the APIC ID for this processor
+        let first_apic_id = self.vp.partition.vps
+            .get(first_processor_index as usize)?
+            .vp_info
+            .apic_id;
+
+        // Map the interrupt vector in VTL2
+        let redirected_vector = self.vp.partition.hcl
+            .map_redirected_device_interrupt(vector, first_apic_id, true)?;
+            
+        // Create a new ProcessorSet containing only the single target processor
+        let mask_index = first_processor_index as usize / 64;
+        let bit_position = first_processor_index % 64;
+        let mut masks = vec![0u64; mask_index + 1];
+        masks[mask_index] = 1u64 << bit_position;
+        let valid_masks = 1u64 << mask_index;
+        let redirected_processor = ProcessorSet::from_processor_masks(valid_masks, &masks)?;
+
+        // Issue HvCallRetargetDeviceInterrupt hypercall with posted interrupt redirection enabled
+        let result = self.vp.partition.hcl.retarget_device_interrupt(
+            device_id,
+            entry,
+            redirected_vector,
+            multicast,
+            redirected_processor,
+            true,
+        );
+
+        match result {
+            Err(HvError::InvalidVtlState) => {
+                // Undo interrupt vector mapping in VTL2 and fallback to proxy interrupt delivery
+                self.vp.partition.hcl.map_redirected_device_interrupt(vector, first_apic_id, false);
+                None // Fall back to proxy delivery
+            }
+            other => Some(other),
+        }
     }
 
     pub(crate) fn hcvm_validate_flush_inputs(

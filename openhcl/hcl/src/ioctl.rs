@@ -466,6 +466,7 @@ mod ioctls {
     #[derive(Copy, Clone)]
     pub struct mshv_map_device_int {
         pub vector: u32,
+        pub apic_id: u32,
         pub create_mapping: bool,
     }
 
@@ -3377,9 +3378,10 @@ impl Hcl {
     }
 
     /// Map or unmap guest device interrupt vector in VTL2 kernel
-    pub fn map_redirected_device_interrupt(&self, vector: u32, create_mapping: bool) -> Option<u32> {
+    pub fn map_redirected_device_interrupt(&self, vector: u32, apic_id: u32, create_mapping: bool) -> Option<u32> {
         let mut param = mshv_map_device_int {
             vector,
+            apic_id,
             create_mapping,
         };
 
