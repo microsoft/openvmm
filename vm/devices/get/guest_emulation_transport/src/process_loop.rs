@@ -98,6 +98,8 @@ pub(crate) enum FatalError {
         response_size: usize,
         maximum_size: usize,
     },
+    #[error("debug interrupt requested for unsupported VTL")]
+    InjectDebugInterruptError { vtl: u8 },
 }
 
 type HostRequestQueue = VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>;
@@ -223,6 +225,8 @@ pub(crate) mod msg {
         TakeVtl2SettingsReceiver(Rpc<(), Option<mesh::Receiver<ModifyVtl2SettingsRequest>>>),
         /// Take the late-bound receiver for battery status updates.
         TakeBatteryStatusReceiver(Rpc<(), Option<mesh::Receiver<HostBatteryUpdate>>>),
+        /// Take the late-bound receiver for debug interrupt inject requests.
+        TakeDebugInterruptReceiver(Rpc<(), Option<mesh::Receiver<DebugInterruptRequest>>>),
         /// Register a new VPCI bus event listener with the process loop.
         ///
         /// VPCI bus events are purely informative, no information is sent back to the host.
@@ -511,6 +515,7 @@ struct GuestNotificationListeners {
     #[inspect(skip)]
     vpci: HashMap<Guid, mesh::Sender<VpciBusEvent>>,
     battery_status: GuestNotificationSender<HostBatteryUpdate>,
+    debug_interrupt: GuestNotificationSender<DebugInterruptRequest>,
 }
 
 // DEVNOTE: The fact that we even have a notion of "guest notification
@@ -1287,6 +1292,9 @@ impl<T: RingMem> ProcessLoop<T> {
             GuestNotifications::BATTERY_STATUS => {
                 self.handle_battery_status_notification(read_guest_notification(id, buf)?)?;
             }
+            GuestNotifications::INJECT_DEBUG_INTERRUPT => {
+                self.handle_debug_interrupt_notification(read_guest_notification(id, buf)?)?;
+            }
             invalid_notification => {
                 tracing::error!(
                     ?invalid_notification,
@@ -1485,6 +1493,31 @@ impl<T: RingMem> ProcessLoop<T> {
             .map_err(|_| {
                 FatalError::TooManyGuestNotifications(
                     get_protocol::GuestNotifications::BATTERY_STATUS,
+                )
+            })
+    }
+
+    fn handle_debug_interrupt_notification(
+        &mut self,
+        notification: get_protocol::InjectDebugInterruptNotification,
+    ) -> Result<(), FatalError> {
+        tracing::debug!(
+            "Received inject debug interrupt notification, vtl = {}",
+            notification.vtl,
+        );
+
+        if notification.vtl != 0 {
+            return Err(FatalError::InjectDebugInterruptError {
+                vtl: notification.vtl,
+            });
+        }
+
+        self.guest_notification_listeners
+            .debug_interrupt
+            .send(notification.vtl)
+            .map_err(|_| {
+                FatalError::TooManyGuestNotifications(
+                    get_protocol::GuestNotifications::INJECT_DEBUG_INTERRUPT,
                 )
             })
     }
