@@ -6,7 +6,6 @@
 use std::fs::File;
 use std::io::Write;
 
-use crate::multiarch::openhcl_servicing::host_supports_servicing;
 use anyhow::Context;
 use disk_backend_resources::FileDiskHandle;
 use disk_backend_resources::LayeredDiskHandle;
@@ -100,11 +99,6 @@ async fn mana_nic_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
@@ -160,11 +154,6 @@ async fn many_nvme_devices_servicing(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
     const NUM_NVME_DEVICES: usize = 8;
     const SIZE: u64 = 0x1000;
     // Zeros make it easy to see what's going on when inspecting logs. Each device must be
