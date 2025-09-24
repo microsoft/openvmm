@@ -395,6 +395,14 @@ impl BasicNic {
                     wq_obj: assigned_handle,
                 };
 
+                tracing::info!(
+                    "Created queue: vport_num={}, wq_id={}, cq_id={}, wq_obj={}",
+                    req.vport,
+                    resp.wq_id,
+                    resp.cq_id,
+                    resp.wq_obj
+                );
+
                 write.write(resp.as_bytes())?;
 
                 // Take ownership of the DMA regions.
@@ -417,6 +425,14 @@ impl BasicNic {
                 if vport.tasks[task_idx].task.has_state() {
                     anyhow::bail!("queue still in use");
                 }
+
+                tracing::info!(
+                    "Destroying queue: vport_num={}, wq_obj={}, task_idx={}, tasks_len={}",
+                    vport_idx,
+                    handle,
+                    task_idx,
+                    vport.tasks.len()
+                );
 
                 let (wq_id, cq_id) = match req.wq_type {
                     GdmaQueueType::GDMA_RQ => vport.tasks[task_idx]
