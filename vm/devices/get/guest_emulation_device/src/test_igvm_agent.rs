@@ -620,7 +620,8 @@ impl TestSha1 {
         let mut d = self.state[3];
         let mut e = self.state[4];
 
-        for (i, &w_i) in w.iter().enumerate() { // 0..80
+        for (i, &w_i) in w.iter().enumerate() {
+            // 0..80
             let (f, k) = match i {
                 0..=19 => (((b & c) | ((!b) & d)), 0x5A827999),
                 20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
@@ -783,7 +784,8 @@ fn aes_key_wrap_with_padding(kek: &[u8; 32], key_data: &[u8]) -> Vec<u8> {
         return out;
     }
 
-    for j in 0..6 { // 6 rounds like RFC3394
+    for j in 0..6 {
+        // 6 rounds like RFC3394
         for (i, blk) in r.iter_mut().enumerate() {
             let mut block = [0u8; 16];
             block[..8].copy_from_slice(&a);
