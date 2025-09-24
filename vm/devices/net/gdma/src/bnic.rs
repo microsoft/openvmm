@@ -155,6 +155,23 @@ impl BufferAccess for GuestBuffers {
 
 pub struct BasicNic {
     vports: Vec<Vport>,
+    next_wq_handle: u64,
+}
+
+impl BasicNic {
+    fn find_task_by_handle(&mut self, handle: u64) -> Option<(usize, usize)> {
+        if handle == 0 {
+            return None;
+        }
+        for (vi, vport) in self.vports.iter().enumerate() {
+            for (ti, task) in vport.tasks.iter().enumerate() {
+                if task.handle == handle {
+                    return Some((vi, ti));
+                }
+            }
+        }
+        None
+    }
 }
 
 impl InspectMut for BasicNic {
@@ -167,21 +184,31 @@ impl InspectMut for BasicNic {
 struct Vport {
     mac_address: MacAddress,
     endpoint: Box<dyn Endpoint>,
+    tasks: Vec<VportTask>,
+    serial_no: u32,
+}
+
+struct VportTask {
     task: TaskControl<TxRxState, TxRxTask>,
     queue_cfg: QueueCfg,
-    serial_no: u32,
+    handle: u64,
 }
 
 impl InspectMut for Vport {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        req.respond()
+        let mut response = req.respond();
+        response
             .field("mac_address", self.mac_address)
-            .field_mut("endpoint", self.endpoint.as_mut())
-            .field("tx_wq", self.queue_cfg.tx.map(|(wq, _cq)| wq))
-            .field("tx_cq", self.queue_cfg.tx.map(|(_wq, cq)| cq))
-            .field("rx_wq", self.queue_cfg.tx.map(|(wq, _cq)| wq))
-            .field("rx_cq", self.queue_cfg.tx.map(|(_wq, cq)| cq))
-            .merge(&mut self.task);
+            .field_mut("endpoint", self.endpoint.as_mut());
+
+        for task in self.tasks.iter_mut() {
+            response
+                .field("tx_wq", task.queue_cfg.tx.map(|(wq, _cq)| wq))
+                .field("tx_cq", task.queue_cfg.tx.map(|(_wq, cq)| cq))
+                .field("rx_wq", task.queue_cfg.rx.map(|(wq, _cq)| wq))
+                .field("rx_cq", task.queue_cfg.rx.map(|(_wq, cq)| cq));
+            response.merge(&mut task.task);
+        }
     }
 }
 
@@ -205,15 +232,21 @@ impl BasicNic {
                     Vport {
                         mac_address,
                         endpoint,
-                        task: TaskControl::new(TxRxState),
-                        queue_cfg: QueueCfg { tx: None, rx: None },
+                        tasks: vec![VportTask {
+                            task: TaskControl::new(TxRxState),
+                            queue_cfg: QueueCfg { tx: None, rx: None },
+                            handle: 0,
+                        }],
                         serial_no: 0,
                     }
                 },
             )
             .collect();
 
-        Self { vports }
+        Self {
+            vports,
+            next_wq_handle: 1,
+        }
     }
 
     pub async fn handle_req(
@@ -275,12 +308,6 @@ impl BasicNic {
                     ty => anyhow::bail!("unsupported queue type: {:?}", ty),
                 };
 
-                if (is_send && vport.queue_cfg.tx.is_some())
-                    || (!is_send && vport.queue_cfg.rx.is_some())
-                {
-                    anyhow::bail!("queue already created");
-                }
-
                 let wq_region = state.get_dma_region(req.wq_gdma_region, req.wq_size)?;
                 let cq_region = state.get_dma_region(req.cq_gdma_region, req.cq_size)?;
 
@@ -294,17 +321,79 @@ impl BasicNic {
                     .alloc_cq(cq_region.clone(), req.cq_parent_qid)
                     .context("failed to allocate cq")?;
 
+                // Try to pair this queue with an existing VportTask that
+                // has the opposite side configured. If none exists, create
+                // a new VportTask and set the appropriate side.
+                let mut paired = false;
+                for task in vport.tasks.iter_mut() {
+                    if is_send {
+                        if task.queue_cfg.tx.is_none() && task.queue_cfg.rx.is_some() {
+                            task.queue_cfg.tx = Some((wq_id, cq_id));
+                            paired = true;
+                            break;
+                        }
+                    } else {
+                        if task.queue_cfg.rx.is_none() && task.queue_cfg.tx.is_some() {
+                            task.queue_cfg.rx = Some((wq_id, cq_id));
+                            paired = true;
+                            break;
+                        }
+                    }
+                }
+
+                let mut assigned_handle = 0u64;
+                if !paired {
+                    // Find an empty slot and reuse it, assigning a handle if needed.
+                    if let Some(task) = vport
+                        .tasks
+                        .iter_mut()
+                        .find(|t| t.queue_cfg.tx.is_none() && t.queue_cfg.rx.is_none())
+                    {
+                        if is_send {
+                            task.queue_cfg.tx = Some((wq_id, cq_id));
+                        } else {
+                            task.queue_cfg.rx = Some((wq_id, cq_id));
+                        }
+                        if task.handle == 0 {
+                            task.handle = self.next_wq_handle;
+                            self.next_wq_handle = self.next_wq_handle.wrapping_add(1);
+                        }
+                        assigned_handle = task.handle;
+                    } else {
+                        let mut queue_cfg = QueueCfg { tx: None, rx: None };
+                        if is_send {
+                            queue_cfg.tx = Some((wq_id, cq_id));
+                        } else {
+                            queue_cfg.rx = Some((wq_id, cq_id));
+                        }
+
+                        let vport_task = VportTask {
+                            task: TaskControl::new(TxRxState),
+                            queue_cfg,
+                            handle: self.next_wq_handle,
+                        };
+                        assigned_handle = self.next_wq_handle;
+                        self.next_wq_handle = self.next_wq_handle.wrapping_add(1);
+
+                        vport.tasks.push(vport_task);
+                    }
+                } else {
+                    // If we paired into an existing task, capture its handle.
+                    for task in vport.tasks.iter() {
+                        if (is_send && task.queue_cfg.tx.is_some())
+                            || (!is_send && task.queue_cfg.rx.is_some())
+                        {
+                            assigned_handle = task.handle;
+                            break;
+                        }
+                    }
+                }
+
                 let resp = ManaCreateWqobjResp {
                     wq_id,
                     cq_id,
-                    wq_obj: req.vport, // use the vport # as the handle
+                    wq_obj: assigned_handle,
                 };
-
-                *if is_send {
-                    &mut vport.queue_cfg.tx
-                } else {
-                    &mut vport.queue_cfg.rx
-                } = Some((wq_id, cq_id));
 
                 write.write(resp.as_bytes())?;
 
@@ -317,22 +406,42 @@ impl BasicNic {
                 let req: ManaDestroyWqobjReq = read
                     .read_plain()
                     .context("failed to read destroy wq obj request")?;
-                let vport = self
-                    .vports
-                    .get_mut(req.wq_obj_handle as usize)
+                let handle = req.wq_obj_handle;
+                let (vport_idx, task_idx) = self
+                    .find_task_by_handle(handle)
                     .context("invalid obj handle")?;
 
-                if vport.task.has_state() {
+                let vport = &mut self.vports[vport_idx];
+
+                // Ensure the task is not running before removing sides.
+                if vport.tasks[task_idx].task.has_state() {
                     anyhow::bail!("queue still in use");
                 }
-                let (is_send, queues) = match req.wq_type {
-                    GdmaQueueType::GDMA_RQ => (false, &mut vport.queue_cfg.rx),
-                    GdmaQueueType::GDMA_SQ => (true, &mut vport.queue_cfg.tx),
+
+                let (wq_id, cq_id) = match req.wq_type {
+                    GdmaQueueType::GDMA_RQ => vport.tasks[task_idx]
+                        .queue_cfg
+                        .rx
+                        .take()
+                        .ok_or_else(|| anyhow!("specified queue does not exist"))?,
+                    GdmaQueueType::GDMA_SQ => vport.tasks[task_idx]
+                        .queue_cfg
+                        .tx
+                        .take()
+                        .ok_or_else(|| anyhow!("specified queue does not exist"))?,
                     ty => anyhow::bail!("unsupported queue type: {:?}", ty),
                 };
-                let (wq_id, cq_id) = queues.take().context("specified queue does not exist")?;
-                state.queues.free_wq(is_send, wq_id).unwrap();
-                state.queues.free_cq(cq_id).unwrap();
+
+                // Free the underlying GDMA resources.
+                state.queues.free_wq(true, wq_id).unwrap_or(());
+                state.queues.free_cq(cq_id).unwrap_or(());
+
+                // If both sides are now empty, remove the task slot.
+                if vport.tasks[task_idx].queue_cfg.tx.is_none()
+                    && vport.tasks[task_idx].queue_cfg.rx.is_none()
+                {
+                    vport.tasks.remove(task_idx);
+                }
                 0
             }
             ManaCommandCode::MANA_CONFIG_VPORT_RX => {
@@ -346,52 +455,70 @@ impl BasicNic {
                     .context("invalid vport")?;
 
                 match req.rx_enable {
-                    Tristate::FALSE if vport.task.is_running() => {
-                        vport.task.stop().await;
-                        vport.task.remove();
-                        vport.endpoint.stop().await;
+                    Tristate::FALSE => {
+                        // Stop and remove any running tasks, then stop the endpoint.
+                        let mut any_running = false;
+                        for task in vport.tasks.iter_mut() {
+                            if task.task.is_running() {
+                                any_running = true;
+                                task.task.stop().await;
+                                task.task.remove();
+                            }
+                        }
+                        if any_running {
+                            vport.endpoint.stop().await;
+                        }
                     }
-                    Tristate::TRUE if !vport.task.is_running() => {
-                        if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =
-                            (vport.queue_cfg.tx, vport.queue_cfg.rx)
-                        {
-                            let rx_packets = Arc::new(Default::default());
+                    Tristate::TRUE => {
+                        // Start all configured queue pairs that are not running.
+                        let mut started_any = false;
+                        for task in vport.tasks.iter_mut() {
+                            if task.task.is_running() {
+                                continue;
+                            }
+                            if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =
+                                (task.queue_cfg.tx, task.queue_cfg.rx)
+                            {
+                                let rx_packets = Arc::new(Default::default());
 
-                            let mut queues = vec![];
-                            vport
-                                .endpoint
-                                .get_queues(
-                                    vec![QueueConfig {
-                                        pool: Box::new(GuestBuffers {
-                                            gm: state.queues.gm.clone(),
-                                            rx_packets: Arc::clone(&rx_packets),
-                                            buffer_segments: Vec::new(),
-                                        }),
-                                        initial_rx: &[],
-                                        driver: Box::new(state.queues.driver.clone()),
-                                    }],
-                                    None,
-                                    &mut queues,
-                                )
-                                .await?;
+                                let mut queues = vec![];
+                                vport
+                                    .endpoint
+                                    .get_queues(
+                                        vec![QueueConfig {
+                                            pool: Box::new(GuestBuffers {
+                                                gm: state.queues.gm.clone(),
+                                                rx_packets: Arc::clone(&rx_packets),
+                                                buffer_segments: Vec::new(),
+                                            }),
+                                            initial_rx: &[],
+                                            driver: Box::new(state.queues.driver.clone()),
+                                        }],
+                                        None,
+                                        &mut queues,
+                                    )
+                                    .await?;
 
-                            vport.task.insert(
-                                &state.queues.driver,
-                                "gdma-bnic",
-                                TxRxTask {
-                                    queues: state.queues.clone(),
-                                    epqueue: queues.drain(..).next().unwrap(),
-                                    rx_packets,
-                                    sq_id,
-                                    sq_cq_id,
-                                    rq_id,
-                                    rq_cq_id,
-                                    tx_segment_buffer: Vec::new(),
-                                    rx_buf_count: 0,
-                                },
-                            );
-                            vport.task.start();
-                        } else {
+                                task.task.insert(
+                                    &state.queues.driver,
+                                    "gdma-bnic",
+                                    TxRxTask {
+                                        queues: state.queues.clone(),
+                                        epqueue: queues.drain(..).next().unwrap(),
+                                        rx_packets: Arc::clone(&rx_packets),
+                                        sq_id,
+                                        sq_cq_id,
+                                        rq_id,
+                                        rq_cq_id,
+                                        tx_segment_buffer: Vec::new(),
+                                        rx_buf_count: 0,
+                                    },
+                                );
+                                task.task.start();
+                                started_any = true;
+                            }
+                        }
+                        if !started_any {
                             anyhow::bail!("queues not configured");
                         }
                     }
@@ -429,8 +556,8 @@ impl BasicNic {
                     .context("invalid vport")?;
 
                 let resp = ManaQueryVportCfgResp {
-                    max_num_sq: 1,
-                    max_num_rq: 1,
+                    max_num_sq: 64,
+                    max_num_rq: 64,
                     num_indirection_ent: 128,
                     reserved1: 0,
                     mac_addr: vport.mac_address.to_bytes(),
