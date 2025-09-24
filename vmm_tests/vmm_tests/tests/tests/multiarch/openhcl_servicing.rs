@@ -45,6 +45,8 @@ use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use zerocopy::IntoBytes;
 
+const DEFAULT_SERVICING_COUNT: u8 = 3;
+
 async fn openhcl_servicing_core<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     openhcl_cmdline: &str,
