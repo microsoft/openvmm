@@ -86,8 +86,6 @@ pub(crate) enum KeyReleaseError {
     SecretKeyNotInitialized,
     #[error("failed to convert RSA key to PKCS8 format")]
     RsaToPkcs8Error(#[source] rsa::pkcs8::Error),
-    #[error("AES key wrap error")]
-    AesKeyWrapError,
     #[error("RSA encryption error")]
     RsaEncryptionError(#[source] rsa::Error),
     #[error("JSON serialization error")]
@@ -537,8 +535,7 @@ impl TestIgvmAgent {
         let priv_key_der = secret_key
             .to_pkcs8_der()
             .map_err(KeyReleaseError::RsaToPkcs8Error)?;
-        let wrapped_key = aes_key_wrap_with_padding(&kek_bytes, priv_key_der.as_bytes())
-            .ok_or(KeyReleaseError::AesKeyWrapError)?;
+        let wrapped_key = aes_key_wrap_with_padding(&kek_bytes, priv_key_der.as_bytes());
 
         // Encrypt the KEK using RSA-OAEP
         let padding = Oaep::new::<TestSha1>();
@@ -616,12 +613,14 @@ impl TestSha1 {
         for i in 16..80 {
             w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
         }
+
         let mut a = self.state[0];
         let mut b = self.state[1];
         let mut c = self.state[2];
         let mut d = self.state[3];
         let mut e = self.state[4];
-        for i in 0..80 {
+
+        for (i, &w_i) in w.iter().enumerate() { // 0..80
             let (f, k) = match i {
                 0..=19 => (((b & c) | ((!b) & d)), 0x5A827999),
                 20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
@@ -633,13 +632,14 @@ impl TestSha1 {
                 .wrapping_add(f)
                 .wrapping_add(e)
                 .wrapping_add(k)
-                .wrapping_add(w[i]);
+                .wrapping_add(w_i);
             e = d;
             d = c;
             c = b.rotate_left(30);
             b = a;
             a = temp;
         }
+
         self.state[0] = self.state[0].wrapping_add(a);
         self.state[1] = self.state[1].wrapping_add(b);
         self.state[2] = self.state[2].wrapping_add(c);
@@ -651,6 +651,7 @@ impl TestSha1 {
         // Append 0x80
         self.buf[self.buf_len] = 0x80;
         self.buf_len += 1;
+
         // If not enough space for length (8 bytes), pad with zeros and process
         if self.buf_len > 56 {
             for b in &mut self.buf[self.buf_len..] {
@@ -661,20 +662,24 @@ impl TestSha1 {
             self.buf = [0u8; 64];
             self.buf_len = 0;
         }
+
         // Pad zeros until 56
         for b in &mut self.buf[self.buf_len..56] {
             *b = 0;
         }
+
         // Append length (before padding) in bits big-endian
         let len_bytes = self.length_bits.to_be_bytes();
         self.buf[56..64].copy_from_slice(&len_bytes);
         let final_block = self.buf;
         self.process_block(&final_block);
+
         // Produce digest
         let mut out = [0u8; 20];
         for (i, word) in self.state.iter().enumerate() {
             out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
         }
+
         out
     }
 }
@@ -697,6 +702,7 @@ impl digest::Reset for TestSha1 {
 impl digest::Update for TestSha1 {
     fn update(&mut self, data: &[u8]) {
         let mut input = data;
+
         while !input.is_empty() {
             let take = core::cmp::min(64 - self.buf_len, input.len());
             self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&input[..take]);
@@ -736,16 +742,12 @@ impl Default for TestSha1 {
 }
 
 /// Simplified, test-only implementation of AES Key Wrap with Padding based on RFC 5649 (wrap only, no unwrap).
-fn aes_key_wrap_with_padding(kek: &[u8; 32], key_data: &[u8]) -> Option<Vec<u8>> {
-    if key_data.is_empty() {
-        return None;
-    }
-
+fn aes_key_wrap_with_padding(kek: &[u8; 32], key_data: &[u8]) -> Vec<u8> {
     // Pad key_data to 8-byte multiple with zeros, record original length
     let mli = key_data.len() as u32;
     let mut padded = key_data.to_vec();
-    if padded.len() % 8 != 0 {
-        padded.resize(((padded.len() + 7) / 8) * 8, 0);
+    if !padded.len().is_multiple_of(8) {
+        padded.resize(padded.len().div_ceil(8) * 8, 0);
     }
 
     let n = padded.len() / 8; // number of 64-bit blocks
@@ -778,23 +780,21 @@ fn aes_key_wrap_with_padding(kek: &[u8; 32], key_data: &[u8]) -> Option<Vec<u8>>
         out.extend_from_slice(&a);
         out.extend_from_slice(&r[0]);
 
-        return Some(out);
+        return out;
     }
-    for j in 0..6 {
-        // 6 rounds like RFC3394
-        for i in 0..n {
-            // process each block
+
+    for j in 0..6 { // 6 rounds like RFC3394
+        for (i, blk) in r.iter_mut().enumerate() {
             let mut block = [0u8; 16];
             block[..8].copy_from_slice(&a);
-            block[8..].copy_from_slice(&r[i]);
+            block[8..].copy_from_slice(blk);
             cipher.encrypt_block(&mut block);
-            // XOR round counter t after encryption (test-only variant)
-            let t = (j * n + (i + 1)) as u64;
+            let t = (j * n + (i + 1)) as u64; // XOR round counter after encryption
             let mut a_tmp = [0u8; 8];
             a_tmp.copy_from_slice(&block[..8]);
             let a_num = u64::from_be_bytes(a_tmp) ^ t;
             a = a_num.to_be_bytes();
-            r[i].copy_from_slice(&block[8..]);
+            blk.copy_from_slice(&block[8..]);
         }
     }
 
@@ -804,7 +804,7 @@ fn aes_key_wrap_with_padding(kek: &[u8; 32], key_data: &[u8]) -> Option<Vec<u8>>
         out.extend_from_slice(&blk);
     }
 
-    Some(out)
+    out
 }
 
 /// Minimal, test-only implementation of AES-256 for ECB mode.
@@ -819,9 +819,11 @@ struct Aes256 {
 impl Aes256 {
     fn new(key: &[u8; 32]) -> Self {
         let mut w = [0u32; 60]; // 60 words (4 bytes) -> 240 bytes
-        // Load initial key (big-endian word assembly)
-        for (i, chunk) in key.chunks(4).enumerate() {
-            w[i] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+
+        // Load initial key (big-endian word assembly). Using `chunks_exact(4)` enforces 4-byte chunks.
+        for (word_index, chunk) in key.chunks_exact(4).enumerate() {
+            let bytes: [u8; 4] = chunk.try_into().expect("chunk size is always 4");
+            w[word_index] = u32::from_be_bytes(bytes);
         }
 
         let mut i = 8; // Nk = 8
@@ -894,7 +896,7 @@ const RCON: [u8; 7] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40];
 
 #[inline]
 fn rot_word(w: u32) -> u32 {
-    (w << 8) | (w >> 24)
+    w.rotate_left(8)
 }
 
 #[inline]
@@ -1034,7 +1036,7 @@ mod tests {
     fn wrap_basic_len() {
         let kek = [0x11u8; 32];
         let key = b"EXAMPLE KEY MATERIAL"; // length 20 -> padded to 24 -> 3 blocks, output 32 bytes
-        let wrapped = aes_key_wrap_with_padding(&kek, key).expect("wrap");
+        let wrapped = aes_key_wrap_with_padding(&kek, key);
         assert_eq!(wrapped.len(), 32);
     }
 
