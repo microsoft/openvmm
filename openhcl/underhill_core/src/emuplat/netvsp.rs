@@ -68,7 +68,20 @@ async fn create_mana_device(
     vp_count: u32,
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
+    mana_state: Option<&ManaSavedState>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
+    if let Some(mana_state) = mana_state {
+        tracing::info!("restoring MANA device from saved state");
+        return try_create_mana_device(
+            driver_source,
+            pci_id,
+            vp_count,
+            max_sub_channels,
+            dma_client,
+            Some(mana_state),
+        ).await
+    }
+
     // Disable FLR on vfio attach/detach; this allows faster system
     // startup/shutdown with the caveat that the device needs to be properly
     // sent through the shutdown path during servicing operations, as that is
@@ -92,6 +105,7 @@ async fn create_mana_device(
             vp_count,
             max_sub_channels,
             dma_client.clone(),
+            None,
         )
         .await
         {
@@ -121,16 +135,26 @@ async fn try_create_mana_device(
     vp_count: u32,
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
+    mana_state: Option<&ManaSavedState>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
-    let device = VfioDevice::new(driver_source, pci_id, dma_client)
-        .await
-        .context("failed to open device")?;
+    // Restore the device if we have saved state from servicing, otherwise create a new one.
+    let device = if mana_state.is_some() {
+        tracing::info!("Restoring VFIO device from saved state");
+        VfioDevice::restore(driver_source, pci_id, true, dma_client)
+            .await
+            .context("failed to restore device")?
+    } else {
+        VfioDevice::new(driver_source, pci_id, dma_client)
+            .await
+            .context("failed to open device")?
+    };
 
     ManaDevice::new(
         &driver_source.simple(),
         device,
         vp_count,
         max_sub_channels + 1,
+        mana_state.map(|state| &state.mana_device),
     )
     .instrument(tracing::info_span!("new_mana_device"))
     .await
@@ -730,6 +754,7 @@ impl HclNetworkVFManagerWorker {
                         self.vp_count,
                         self.max_sub_channels,
                         self.dma_client.clone(),
+                        None, // No saved state on new device arrival
                     )
                     .await
                     {
@@ -906,6 +931,7 @@ impl HclNetworkVFManager {
         netvsp_state: &Option<Vec<SavedState>>,
         dma_mode: GuestDmaMode,
         dma_client: Arc<dyn DmaClient>,
+        mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
@@ -917,6 +943,7 @@ impl HclNetworkVFManager {
             vp_count,
             max_sub_channels,
             dma_client.clone(),
+            mana_state,
         )
         .await?;
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())

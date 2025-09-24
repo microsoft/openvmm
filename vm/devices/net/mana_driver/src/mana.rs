@@ -78,10 +78,23 @@ impl<T: DeviceBacking> ManaDevice<T> {
         device: T,
         num_vps: u32,
         max_queues_per_vport: u16,
+        mana_state: Option<&ManaDeviceSavedState>,
     ) -> anyhow::Result<Self> {
-        let mut gdma = GdmaDriver::new(driver, device, num_vps, None)
-            .instrument(tracing::info_span!("new_gdma_driver"))
-            .await?;
+        let mut gdma = if let Some(mana_state) = mana_state {
+            let memory = device.dma_client().attach_pending_buffers()?;
+            let gdma_memory = memory
+                .iter()
+                .find(|m| m.pfns()[0] == mana_state.gdma.mem.base_pfn)
+                .expect("gdma restored memory not found")
+                .clone();
+
+            GdmaDriver::restore(mana_state.gdma.clone(), device, gdma_memory).await?
+        } else {
+            GdmaDriver::new(driver, device, num_vps, None)
+                .instrument(tracing::info_span!("new_gdma_driver"))
+                .await?
+        };
+
         gdma.test_eq().await?;
 
         gdma.verify_vf_driver_version().await?;
@@ -94,7 +107,15 @@ impl<T: DeviceBacking> ManaDevice<T> {
             .find(|dev_id| dev_id.ty == GdmaDevType::GDMA_DEVICE_MANA)
             .context("no mana device found")?;
 
-        let dev_data = gdma.register_device(dev_id).await?;
+        let dev_data = if let Some(mana_state) = mana_state {
+            GdmaRegisterDeviceResp {
+                pdid: mana_state.gdma.pdid,
+                gpa_mkey: mana_state.gdma.gpa_mkey,
+                db_id: mana_state.gdma.db_id as u32,
+            }
+        } else {
+            gdma.register_device(dev_id).await?
+        };
 
         let mut bnic = BnicDriver::new(&mut gdma, dev_id);
         let dev_config = bnic.query_dev_config().await?;
@@ -153,8 +174,6 @@ impl<T: DeviceBacking> ManaDevice<T> {
         }
         let inner = Arc::into_inner(self.inner).unwrap();
         let mut driver = inner.gdma.into_inner();
-
-        let _result = driver.deregister_device(inner.dev_id).await;
 
         let saved_state = ManaDeviceSavedState {
             gdma: driver.save().await?,

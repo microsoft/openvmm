@@ -208,6 +208,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
         tracing::info!(?self.state_saved, ?self.hwc_failure, "dropping gdma driver");
 
+         // Don't destroy anything if we're saving its state for restoration.
         if self.state_saved {
             // Unmap interrupts to prevent the device from sending interrupts during save/restore
             if let Err(e) = self.unmap_all_interrupts() {
@@ -518,8 +519,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
-
-        self.unmap_all_msix()?;
 
         Ok(GdmaDriverSavedState {
             mem: SavedMemoryState {

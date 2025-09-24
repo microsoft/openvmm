@@ -757,6 +757,7 @@ impl UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        saved_mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
@@ -787,6 +788,7 @@ impl UhVmNetworkSettings {
             servicing_netvsp_state,
             self.dma_mode,
             dma_client,
+            saved_mana_state,
         )
         .await?;
 
@@ -913,6 +915,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
             return Err(NetworkSettingsError::VFManagerExists(instance_id).into());
@@ -946,6 +949,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 vmbus_server,
                 dma_client_spawner,
                 is_isolated,
+                mana_state,
             )
             .await?;
 
@@ -3133,6 +3137,12 @@ async fn new_underhill_vm(
     if !controllers.mana.is_empty() {
         let _span = tracing::info_span!("network_settings", CVM_ALLOWED).entered();
         for nic_config in controllers.mana.into_iter() {
+            let nic_servicing_state = if let Some(ref state) = servicing_state.mana_state {
+                state.iter().find(|s| s.pci_id == nic_config.pci_id)
+            } else {
+                None
+            };
+
             let save_state = uh_network_settings
                 .add_network(
                     nic_config.instance_id,
@@ -3146,6 +3156,7 @@ async fn new_underhill_vm(
                     &vmbus_server,
                     dma_manager.client_spawner(),
                     isolation.is_isolated(),
+                    nic_servicing_state,
                 )
                 .await?;
 

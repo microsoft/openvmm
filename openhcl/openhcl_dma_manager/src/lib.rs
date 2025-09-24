@@ -387,7 +387,7 @@ impl OpenhclDmaManager {
 
         if let Some(private_pool) = &self.private_pool {
             private_pool
-                .validate_restore(true)
+                .validate_restore(false)
                 .context("failed to validate restore for private pool")?
         }
 

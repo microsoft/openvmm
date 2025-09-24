@@ -115,6 +115,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -754,6 +755,19 @@ impl LoadedVm {
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
+        // Only save dma manager state if we are expected to keep VF devices
+        // alive across save. Otherwise, don't persist the state at all, as
+        // there should be no live DMA across save.
+        //
+        // This has to happen before saving the network state, otherwise its allocations
+        // are marked as Free and are unable to be restored.
+        let dma_manager_state = if vf_keepalive_flag {
+            use vmcore::save_restore::SaveRestore;
+            Some(self.dma_manager.save().context("dma_manager save failed")?)
+        } else {
+            None
+        };
+
         // Only save NVMe state when there are NVMe controllers and keep alive
         // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
@@ -777,16 +791,6 @@ impl LoadedVm {
                 vmgs_thin_client.save().await.context("vmgs save failed")?,
                 vmgs_disk_metadata.clone(),
             ))
-        } else {
-            None
-        };
-
-        // Only save dma manager state if we are expected to keep VF devices
-        // alive across save. Otherwise, don't persist the state at all, as
-        // there should be no live DMA across save.
-        let dma_manager_state = if vf_keepalive_flag {
-            use vmcore::save_restore::SaveRestore;
-            Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
             None
         };
@@ -877,6 +881,7 @@ impl LoadedVm {
                 &self.vmbus_server,
                 self.dma_manager.client_spawner(),
                 self.isolation.is_isolated(),
+                None, // No existing mana state
             )
             .await?;
 
