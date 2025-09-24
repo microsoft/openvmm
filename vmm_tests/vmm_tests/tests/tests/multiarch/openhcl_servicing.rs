@@ -239,11 +239,6 @@ async fn servicing_keepalive_with_nvme_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    let vtl0_nvme_lun = 1;
-    let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
-    let scsi_instance = Guid::new_random();
-
     let mut fault_start_updater = CellUpdater::new(false);
 
     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
@@ -288,11 +283,6 @@ async fn servicing_keepalive_with_nvme_identify_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    let vtl0_nvme_lun = 1;
-    let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
-    let scsi_instance = Guid::new_random();
-
     let mut fault_start_updater = CellUpdater::new(false);
 
     // The first 8bytes of the response buffer correspond to the nsze field of the Identify Namespace data structure.
