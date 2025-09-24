@@ -93,6 +93,7 @@ pub enum ProxyAction {
         offer: VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
         outgoing_event: Option<Event>,
+        device_order: Option<u32>,
     },
     Revoke {
         id: u64,
@@ -237,6 +238,8 @@ impl VmbusProxy {
                     } else {
                         None
                     },
+                    device_order: (output.u.Offer.DeviceOrder != 0)
+                        .then_some(output.u.Offer.DeviceOrder),
                 })
             },
             proxyioctl::VmbusProxyActionTypeRevoke => {

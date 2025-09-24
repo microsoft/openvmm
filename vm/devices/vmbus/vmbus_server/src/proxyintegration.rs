@@ -403,8 +403,9 @@ impl ProxyTask {
         proxy_id: u64,
         offer: vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
+        device_order: Option<u32>,
     ) -> Option<mesh::Receiver<ChannelRequest>> {
-        tracing::trace!(proxy_id, ?offer, "received vmbusproxy offer");
+        tracing::debug!(proxy_id, ?offer, device_order, "received vmbusproxy offer");
         let server = match offer.TargetVtl {
             0 => self.server.as_ref(),
             2 => {
@@ -451,7 +452,12 @@ impl ProxyTask {
 
         let interface_id: Guid = offer.InterfaceType.into();
         let instance_id: Guid = offer.InterfaceInstance.into();
+        let offer_order = proxy_id
+            .try_into()
+            .ok()
+            .map(|proxy_id: u32| (device_order.unwrap_or(u32::MAX) << 32) as u64 | proxy_id as u64);
 
+        tracing::debug!(?offer_order, ?offer, "using order");
         let new_offer = OfferParams {
             interface_name: "proxy".to_owned(),
             instance_id,
@@ -464,7 +470,7 @@ impl ProxyTask {
                 .ChannelFlags
                 .request_monitored_notification()
                 .then(|| Duration::from_nanos(offer.InterruptLatencyIn100nsUnits * 100)),
-            offer_order: proxy_id.try_into().ok(),
+            offer_order,
             allow_confidential_external_memory: false,
         };
         let (request_send, request_recv) = mesh::channel();
@@ -663,8 +669,12 @@ impl ProxyTask {
                     offer,
                     incoming_event,
                     outgoing_event: _,
+                    device_order,
                 } => {
-                    if let Some(recv) = self.handle_offer(id, offer, incoming_event).await {
+                    if let Some(recv) = self
+                        .handle_offer(id, offer, incoming_event, device_order)
+                        .await
+                    {
                         send.send(TaggedStream::new(id, recv));
                     }
                 }
