@@ -45,6 +45,7 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
+use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
@@ -298,6 +299,7 @@ impl PetriVmConfigOpenVmm {
                     }
                 },
                 prefetch_memory: false,
+                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             }
         };
 
@@ -410,6 +412,7 @@ impl PetriVmConfigOpenVmm {
             // Devices
             floppy_disks,
             ide_disks,
+            pcie_root_complexes: vec![],
             vpci_devices,
             vmbus_devices,
 
@@ -896,6 +899,7 @@ impl PetriVmConfigSetupCore<'_> {
                                 .into_resource(),
                             }],
                             requests: None,
+                            poll_mode_queue_depth: None,
                         }
                         .into_resource(),
                     )]);

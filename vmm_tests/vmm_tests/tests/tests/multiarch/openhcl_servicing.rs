@@ -50,13 +50,14 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
     openhcl_cmdline: &str,
     new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
+    servicing_count: u8,
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .run()
         .await?;
 
-    for _ in 0..3 {
+    for _ in 0..servicing_count {
         agent.ping().await?;
 
         // Test that inspect serialization works with the old version.
@@ -96,14 +97,15 @@ async fn basic<T: PetriVmmBackend>(
             override_version_checks: true,
             ..Default::default()
         },
+        DEFAULT_SERVICING_COUNT,
     )
     .await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
-/// with NVMe keepalive support.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn keepalive<T: PetriVmmBackend>(
+/// with NVMe keepalive support and no vmbus redirect.
+#[openvmm_test(openhcl_linux_direct_x64[LATEST_LINUX_DIRECT_TEST_X64])]
+async fn keepalive_no_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
@@ -115,6 +117,27 @@ async fn keepalive<T: PetriVmmBackend>(
             enable_nvme_keepalive: true,
             ..Default::default()
         },
+        DEFAULT_SERVICING_COUNT,
+    )
+    .await
+}
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support.
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
+async fn keepalive_with_device<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> anyhow::Result<()> {
+    openhcl_servicing_core(
+        config.with_vmbus_redirect(true), // Need this to attach the NVMe device
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
+        igvm_file,
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+        1, // Test is slow with NVMe device, so only do one loop to avoid timeout
     )
     .await
 }
@@ -138,6 +161,7 @@ async fn servicing_upgrade<T: PetriVmmBackend>(
         "",
         to_igvm,
         OpenHclServicingFlags::default(),
+        DEFAULT_SERVICING_COUNT,
     )
     .await
 }
@@ -161,6 +185,7 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
         "",
         to_igvm,
         OpenHclServicingFlags::default(),
+        DEFAULT_SERVICING_COUNT,
     )
     .await
 }
@@ -199,6 +224,7 @@ async fn servicing_shutdown_ic(
                         }],
                         io_queue_depth: None,
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));

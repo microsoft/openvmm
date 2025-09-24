@@ -457,7 +457,8 @@ impl PartitionInfo {
             &storage.vtl2_ram,
             params.used,
             subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
-        );
+        )
+        .with_log_buffer(params.log_buffer);
 
         if params.vtl2_reserved_region_size != 0 {
             address_space_builder = address_space_builder.with_reserved_range(MemoryRange::new(

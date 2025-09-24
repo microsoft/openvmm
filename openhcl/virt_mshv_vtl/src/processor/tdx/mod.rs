@@ -1565,7 +1565,7 @@ impl UhProcessor<'_, TdxBacked> {
         let has_intercept = self
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(TdxRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(TdxRunVpError(e).into()))?;
 
         // TLB flushes can only target lower VTLs, so it is fine to use a relaxed
         // ordering here. The worst that can happen is some spurious wakes, due
@@ -1663,7 +1663,7 @@ impl UhProcessor<'_, TdxBacked> {
         // First, check that the VM entry was even successful.
         let vmx_exit = exit_info.code().vmx_exit();
         if vmx_exit.vm_enter_failed() {
-            return Err(self.handle_vm_enter_failed(intercepted_vtl, vmx_exit));
+            return Err(self.handle_vm_enter_failed(dev, intercepted_vtl, vmx_exit));
         }
 
         let next_interruption = exit_info.idt_vectoring_info();
@@ -2181,9 +2181,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .descriptor_table
             }
             _ => {
-                return Err(VpHaltReason::InvalidVmState(
-                    UnknownVmxExit(exit_info.code().vmx_exit()).into(),
-                ));
+                return Err(dev.fatal_error(UnknownVmxExit(exit_info.code().vmx_exit()).into()));
             }
         };
         stat.increment();
@@ -2191,7 +2189,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Breakpoint exceptions may return a non-fatal error.
         // We dispatch here to correctly increment the counter.
         if cfg!(feature = "gdb") && breakpoint_debug_exception {
-            self.handle_debug_exception(intercepted_vtl)?;
+            self.handle_debug_exception(dev, intercepted_vtl)?;
         }
 
         Ok(())
@@ -2405,7 +2403,12 @@ impl UhProcessor<'_, TdxBacked> {
         tracing::error!(CVM_CONFIDENTIAL, vmcs_pat, "guest PAT");
     }
 
-    fn handle_vm_enter_failed(&self, vtl: GuestVtl, vmx_exit: VmxExit) -> VpHaltReason {
+    fn handle_vm_enter_failed(
+        &self,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+        vmx_exit: VmxExit,
+    ) -> VpHaltReason {
         assert!(vmx_exit.vm_enter_failed());
         match vmx_exit.basic_reason() {
             VmxExitBasic::BAD_GUEST_STATE => {
@@ -2414,9 +2417,9 @@ impl UhProcessor<'_, TdxBacked> {
                 tracing::error!(CVM_ALLOWED, "VP.ENTER failed with bad guest state");
                 self.trace_processor_state(vtl);
 
-                VpHaltReason::InvalidVmState(VmxBadGuestState.into())
+                dev.fatal_error(VmxBadGuestState.into())
             }
-            _ => VpHaltReason::InvalidVmState(UnknownVmxExit(vmx_exit).into()),
+            _ => dev.fatal_error(UnknownVmxExit(vmx_exit).into()),
         }
     }
 

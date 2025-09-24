@@ -340,7 +340,7 @@ fn main() {
                 Error::NotEncrypted => ExitCode::ErrorNotEncrypted,
                 Error::EmptyFile => ExitCode::ErrorEmpty,
                 Error::ZeroSize => ExitCode::ErrorEmpty,
-                Error::Vmgs(VmgsError::FileInfoAllocated) => ExitCode::ErrorNotFound,
+                Error::Vmgs(VmgsError::FileInfoNotAllocated) => ExitCode::ErrorNotFound,
                 Error::V1Format => ExitCode::ErrorV1,
                 Error::GspByIdEncryption => ExitCode::ErrorGspById,
                 _ => ExitCode::Error,
@@ -509,7 +509,7 @@ fn vhdfiledisk_create(
     const SECTOR_SIZE: u64 = 512;
 
     let file_size = req_file_size.unwrap_or(VMGS_DEFAULT_CAPACITY);
-    if file_size < MIN_VMGS_FILE_SIZE || file_size % SECTOR_SIZE != 0 {
+    if file_size < MIN_VMGS_FILE_SIZE || !file_size.is_multiple_of(SECTOR_SIZE) {
         return Err(Error::InvalidVmgsFileSize(
             file_size,
             format!(

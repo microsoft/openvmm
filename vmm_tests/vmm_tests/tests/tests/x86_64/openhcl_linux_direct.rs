@@ -300,6 +300,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                         }],
                         io_queue_depth: None,
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));
@@ -436,6 +437,7 @@ async fn openhcl_linux_storvsp_dvd(
                         }],
                         io_queue_depth: None,
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));

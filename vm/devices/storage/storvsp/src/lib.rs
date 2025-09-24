@@ -1595,11 +1595,17 @@ pub struct ScsiController {
 
 impl ScsiController {
     pub fn new() -> Self {
+        Self::new_with_poll_mode_queue_depth(None)
+    }
+
+    pub fn new_with_poll_mode_queue_depth(poll_mode_queue_depth: Option<u32>) -> Self {
         Self {
             state: Arc::new(ScsiControllerState {
                 disks: Default::default(),
                 rescan_notification_source: Mutex::new(Vec::new()),
-                poll_mode_queue_depth: AtomicU32::new(DEFAULT_POLL_MODE_QUEUE_DEPTH),
+                poll_mode_queue_depth: AtomicU32::new(
+                    poll_mode_queue_depth.unwrap_or(DEFAULT_POLL_MODE_QUEUE_DEPTH),
+                ),
             }),
         }
     }

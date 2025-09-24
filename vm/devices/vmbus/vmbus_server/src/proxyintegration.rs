@@ -17,6 +17,7 @@ use crate::HvsockRelayChannelHalf;
 use crate::SavedStateRequest;
 use crate::channels::SavedState;
 use crate::channels::SavedStateData;
+use crate::channels::saved_state::GpadlState;
 use crate::event::MaybeWrappedEvent;
 use crate::event::WrappedEvent;
 use anyhow::Context;
@@ -811,11 +812,12 @@ impl ProxyTask {
             tracing::trace!(?channel, "restoring channel");
             let key = channel.key();
             let channel_gpadls = gpadls.iter().filter_map(|g| {
-                (g.channel_id == channel.channel_id()).then_some(Gpadl {
-                    gpadl_id: g.id,
-                    range_count: g.count.into(),
-                    range_buffer: &g.buf,
-                })
+                (g.channel_id == channel.channel_id() && matches!(g.state, GpadlState::Accepted))
+                    .then_some(Gpadl {
+                        gpadl_id: g.id,
+                        range_count: g.count.into(),
+                        range_buffer: &g.buf,
+                    })
             });
 
             let open_params = channel.open_request().map(|request| {
