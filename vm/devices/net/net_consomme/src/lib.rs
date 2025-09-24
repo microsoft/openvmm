@@ -75,6 +75,8 @@ impl InspectMut for ConsommeEndpoint {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         if let Some(consomme) = &mut *self.endpoint_state.lock() {
             consomme.consomme.inspect_mut(req);
+        } else {
+            req.respond();
         }
     }
 }

@@ -487,7 +487,7 @@ flags:
     `s`                            attach drive to secondary ide channel
     `dvd`                          specifies that device is cd/dvd and it is read_only
 "#)]
-    #[clap(long, value_name = "FILE")]
+    #[clap(long, value_name = "FILE", requires("pcat"))]
     pub ide: Vec<IdeDiskCli>,
 
     /// attach a floppy drive (should be able to be passed multiple times). VM must be generation 1 (no UEFI)
@@ -508,7 +508,7 @@ valid disk kinds:
 flags:
     `ro`                           open disk as read-only
 "#)]
-    #[clap(long, value_name = "FILE", requires("pcat"), conflicts_with("uefi"))]
+    #[clap(long, value_name = "FILE", requires("pcat"))]
     pub floppy: Vec<FloppyDiskCli>,
 
     /// enable guest watchdog device

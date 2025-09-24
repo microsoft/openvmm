@@ -130,7 +130,7 @@ enum InterruptType {
 
 #[derive(Debug)]
 struct InterruptResourceRequest {
-    vector: u8,
+    vector: u32,
     vector_count: u8,
     delivery_mode: InterruptType,
     target_processors: Vec<u32>,
@@ -150,7 +150,7 @@ impl InterruptResourceRequest {
             .collect();
 
         Ok(Self {
-            vector: desc.vector,
+            vector: desc.vector.into(),
             vector_count: vector_count as u8,
             delivery_mode: get_interrupt_type(desc.delivery_mode)?,
             target_processors,
@@ -158,6 +158,28 @@ impl InterruptResourceRequest {
     }
 
     fn from_protocol2(desc: &protocol::MsiResourceDescriptor2) -> Result<Self, PacketError> {
+        let vector_count = desc.vector_count;
+        let processor_count = desc.processor_count;
+        if vector_count > PCI_MAX_MSI_VECTOR_COUNT {
+            return Err(PacketError::InvalidInterrupt);
+        }
+        let target_processors = desc
+            .processor_array
+            .get(..processor_count as usize)
+            .ok_or(PacketError::InvalidInterrupt)?
+            .iter()
+            .map(|&v| v.into())
+            .collect();
+
+        Ok(Self {
+            vector: desc.vector.into(),
+            vector_count: vector_count as u8,
+            delivery_mode: get_interrupt_type(desc.delivery_mode)?,
+            target_processors,
+        })
+    }
+
+    fn from_protocol3(desc: &protocol::MsiResourceDescriptor3) -> Result<Self, PacketError> {
         let vector_count = desc.vector_count;
         let processor_count = desc.processor_count;
         if vector_count > PCI_MAX_MSI_VECTOR_COUNT {
@@ -242,6 +264,7 @@ enum DeviceRequest {
         target_state: protocol::DevicePowerState,
     },
     ReleaseResources,
+    Reset,
 }
 
 #[derive(Debug)]
@@ -276,7 +299,9 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
     tracing::trace!(?message_type, "parsing vpci packet");
 
     let data = match message_type {
-        protocol::MessageType::ASSIGNED_RESOURCES | protocol::MessageType::ASSIGNED_RESOURCES2 => {
+        protocol::MessageType::ASSIGNED_RESOURCES
+        | protocol::MessageType::ASSIGNED_RESOURCES2
+        | protocol::MessageType::ASSIGNED_RESOURCES3 => {
             let (msg, rest) = Ref::<_, protocol::DeviceTranslate>::from_prefix(buf)
                 .map_err(|_| PacketError::PacketTooSmall("translate"))?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
@@ -313,6 +338,23 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
                     .0
                     .iter()
                     .map(|rsrc| InterruptResourceRequest::from_protocol2(rsrc.descriptor()))
+                    .collect::<Result<Vec<_>, _>>()?,
+                ),
+                protocol::MessageType::ASSIGNED_RESOURCES3 => (
+                    // Weirdly enough, the reply still uses the V2 resource
+                    // format even though the request has the V3 resource type.
+                    // This is not lossy since the reply format is the same between
+                    // V2 and V3; V3 just has more padding in order to fit the V3
+                    // request format.
+                    AssignedResourcesReplyType::V2,
+                    <[protocol::MsiResource3]>::ref_from_prefix_with_elems(
+                        rest,
+                        msg.msi_resource_count as usize,
+                    )
+                    .map_err(|_| PacketError::PacketTooSmall("msi3"))?
+                    .0
+                    .iter()
+                    .map(|rsrc| InterruptResourceRequest::from_protocol3(rsrc.descriptor()))
                     .collect::<Result<Vec<_>, _>>()?,
                 ),
                 _ => unreachable!(),
@@ -358,6 +400,17 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
                 slot: msg.slot,
                 request: DeviceRequest::CreateInterrupt {
                     interrupt: InterruptResourceRequest::from_protocol2(&msg.interrupt)?,
+                },
+            }
+        }
+        protocol::MessageType::CREATE_INTERRUPT3 => {
+            let msg = protocol::CreateInterrupt3::read_from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("interrupt3"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+            PacketData::DeviceRequest {
+                slot: msg.slot,
+                request: DeviceRequest::CreateInterrupt {
+                    interrupt: InterruptResourceRequest::from_protocol3(&msg.interrupt)?,
                 },
             }
         }
@@ -417,6 +470,15 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
                 request: DeviceRequest::DevicePowerChange {
                     target_state: msg.target_state,
                 },
+            }
+        }
+        protocol::MessageType::RESET_DEVICE => {
+            let msg = protocol::PdoMessage::read_from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("reset_device"))?
+                .0;
+            PacketData::DeviceRequest {
+                slot: msg.slot,
+                request: DeviceRequest::Reset,
             }
         }
         typ => return Err(PacketError::UnknownType(typ)),
@@ -550,9 +612,11 @@ impl<T: RingMem> VpciChannelState<T> {
 
                     if let PacketData::QueryProtocolVersion { version } = packet {
                         let status = match version {
-                            protocol::ProtocolVersion::RS1 | protocol::ProtocolVersion::VB => {
-                                protocol::Status::SUCCESS
-                            }
+                            protocol::ProtocolVersion::RS1
+                            | protocol::ProtocolVersion::VB
+                            | protocol::ProtocolVersion::FE
+                            | protocol::ProtocolVersion::GE
+                            | protocol::ProtocolVersion::DT => protocol::Status::SUCCESS,
                             _ => protocol::Status::REVISION_MISMATCH,
                         };
 
@@ -724,14 +788,13 @@ impl ReadyState {
                         dev.set_bars(&resources.mmio_ranges)
                             .map_err(PacketError::InvalidBars)?;
 
-                        let mut v1 = Vec::<protocol::MsiResource>::new();
-                        let mut v2 = Vec::<protocol::MsiResource2>::new();
+                        let mut tr = Vec::<u8>::new();
                         dev.map_interrupts(&resources.interrupts, &mut |r| match reply_type {
                             AssignedResourcesReplyType::V1 => {
-                                v1.push(r.into());
+                                tr.extend(protocol::MsiResource::from(r).as_bytes());
                             }
                             AssignedResourcesReplyType::V2 => {
-                                v2.push(r.into());
+                                tr.extend(protocol::MsiResource2::from(r).as_bytes());
                             }
                         })
                         .await?;
@@ -744,12 +807,7 @@ impl ReadyState {
                             reserved: 0,
                         };
 
-                        let extra = match reply_type {
-                            AssignedResourcesReplyType::V1 => v1.as_bytes(),
-                            AssignedResourcesReplyType::V2 => v2.as_bytes(),
-                        };
-
-                        conn.send_completion(transaction_id, &translated, extra)?;
+                        conn.send_completion(transaction_id, &translated, &tr)?;
                     }
                     DeviceRequest::ReleaseResources => {
                         dev.release_all().await;
@@ -806,6 +864,13 @@ impl ReadyState {
                             _ => status = protocol::Status::BAD_DATA,
                         }
                         conn.send_completion(transaction_id, &status, &[])?;
+                    }
+                    DeviceRequest::Reset => {
+                        conn.send_completion(
+                            transaction_id,
+                            &protocol::Status::NOT_SUPPORTED,
+                            &[],
+                        )?;
                     }
                 }
             }
@@ -957,7 +1022,7 @@ impl VpciChannel {
 
         for interrupt in interrupts {
             let params = VpciInterruptParameters {
-                vector: interrupt.vector.into(),
+                vector: interrupt.vector,
                 multicast: interrupt.delivery_mode == InterruptType::Fixed
                     && interrupt.target_processors.len() > 1,
                 target_processors: &interrupt.target_processors,

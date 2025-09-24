@@ -86,18 +86,11 @@ impl TopologyBuilder<X86Topology> {
     ///
     /// Note that this only queries SMT state and the socket size, it does not
     /// otherwise affect APIC configuration.
+    #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
     pub fn from_host_topology() -> Result<Self, HostTopologyError> {
         fn cpuid(leaf: u32, sub_leaf: u32) -> [u32; 4] {
-            #[cfg(not(target_arch = "x86_64"))] // xtask-fmt allow-target-arch cpu-intrinsic
-            {
-                let (_, _) = (leaf, sub_leaf);
-                unimplemented!("cannot invoke from_host_topology: host arch is not x86_64");
-            }
-            #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
-            {
-                let result = safe_intrinsics::cpuid(leaf, sub_leaf);
-                [result.eax, result.ebx, result.ecx, result.edx]
-            }
+            let result = safe_intrinsics::cpuid(leaf, sub_leaf);
+            [result.eax, result.ebx, result.ecx, result.edx]
         }
 
         Self::from_cpuid(&mut cpuid)

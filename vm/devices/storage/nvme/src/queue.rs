@@ -252,13 +252,9 @@ pub enum QueueError {
 }
 
 impl SubmissionQueue {
-    pub fn new(
-        doorbells: Arc<RwLock<DoorbellMemory>>,
-        db_id: u16,
-        mem: GuestMemory,
-        gpa: u64,
-        len: u16,
-    ) -> Self {
+    pub fn new(cq: &CompletionQueue, db_id: u16, gpa: u64, len: u16) -> Self {
+        let doorbells = cq.head.doorbells.clone();
+        let mem = cq.mem.clone();
         doorbells.read().write(db_id, 0);
         Self {
             tail: DoorbellState::new(doorbells, db_id, len.into()),

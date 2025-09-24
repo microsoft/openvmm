@@ -1736,18 +1736,9 @@ impl GuestMemory {
                 len,
                 (),
                 |(), dest| {
-                    match len {
-                        1 | 2 | 4 | 8 => {
-                            // SAFETY: dest..dest+len is guaranteed to point to
-                            // a reserved VA range.
-                            unsafe { sparse_mmap::try_write_volatile(dest.cast(), b) }
-                        }
-                        _ => {
-                            // SAFETY: dest..dest+len is guaranteed to point to
-                            // a reserved VA range.
-                            unsafe { sparse_mmap::try_copy(b.as_bytes().as_ptr(), dest, len) }
-                        }
-                    }
+                    // SAFETY: dest..dest+len is guaranteed to point to
+                    // a reserved VA range.
+                    unsafe { sparse_mmap::try_write_volatile(dest.cast(), b) }
                 },
                 |()| {
                     // SAFETY: b is a valid buffer for reads.
@@ -1768,6 +1759,10 @@ impl GuestMemory {
         current: T,
         new: T,
     ) -> Result<Result<T, T>, GuestMemoryError> {
+        const {
+            assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+            assert!(align_of::<T>() >= size_of::<T>());
+        };
         let len = size_of_val(&new);
         self.with_op(
             Some((gpa, len as u64)),
@@ -1799,44 +1794,6 @@ impl GuestMemory {
         )
     }
 
-    /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
-    pub fn compare_exchange_bytes<T: IntoBytes + FromBytes + Immutable + KnownLayout + ?Sized>(
-        &self,
-        gpa: u64,
-        current: &mut T,
-        new: &T,
-    ) -> Result<bool, GuestMemoryError> {
-        let len = size_of_val(new);
-        assert_eq!(size_of_val(current), len);
-        self.with_op(
-            Some((gpa, len as u64)),
-            GuestMemoryOperation::CompareExchange,
-            || {
-                // Assume that if write is allowed, then read is allowed.
-                self.run_on_mapping(
-                    AccessType::Write,
-                    gpa,
-                    len,
-                    current,
-                    |current, dest| {
-                        // SAFETY: dest..dest+len is guaranteed by the caller to be a valid
-                        // buffer for writes.
-                        unsafe { sparse_mmap::try_compare_exchange_ref(dest, *current, new) }
-                    },
-                    |current| {
-                        let success = self.inner.imp.compare_exchange_fallback(
-                            gpa,
-                            current.as_mut_bytes(),
-                            new.as_bytes(),
-                        )?;
-
-                        Ok(success)
-                    },
-                )
-            },
-        )
-    }
-
     /// Reads an object from guest memory at address `gpa`.
     ///
     /// If the object is 1, 2, 4, or 8 bytes and the address is naturally
@@ -1861,21 +1818,9 @@ impl GuestMemory {
                 len,
                 (),
                 |(), src| {
-                    match len {
-                        1 | 2 | 4 | 8 => {
-                            // SAFETY: src..src+len is guaranteed to point to a reserved VA
-                            // range.
-                            unsafe { sparse_mmap::try_read_volatile(src.cast::<T>()) }
-                        }
-                        _ => {
-                            let mut obj = std::mem::MaybeUninit::<T>::zeroed();
-                            // SAFETY: src..src+len is guaranteed to point to a reserved VA
-                            // range.
-                            unsafe { sparse_mmap::try_copy(src, obj.as_mut_ptr().cast(), len)? };
-                            // SAFETY: `obj` was fully initialized by `try_copy`.
-                            Ok(unsafe { obj.assume_init() })
-                        }
-                    }
+                    // SAFETY: src..src+len is guaranteed to point to a reserved VA
+                    // range.
+                    unsafe { sparse_mmap::try_read_volatile(src.cast::<T>()) }
                 },
                 |()| {
                     let mut obj = std::mem::MaybeUninit::<T>::zeroed();

@@ -4,13 +4,14 @@
 //! Contains [`PetriVmConfigOpenVmm::new`], which builds a [`PetriVmConfigOpenVmm`] with all
 //! default settings for a given [`Firmware`] and [`MachineArch`].
 
-use super::BOOT_NVME_INSTANCE;
 use super::BOOT_NVME_LUN;
 use super::BOOT_NVME_NSID;
+use super::PARAVISOR_BOOT_NVME_INSTANCE;
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use super::SCSI_INSTANCE;
 use super::memdiff_disk_from_artifact;
+use crate::BootDeviceType;
 use crate::Firmware;
 use crate::IsolationType;
 use crate::MemoryConfig;
@@ -26,6 +27,7 @@ use crate::SecureBootTemplate;
 use crate::UefiConfig;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
+use crate::openvmm::BOOT_NVME_INSTANCE;
 use crate::openvmm::memdiff_vmgs_from_artifact;
 use crate::vm::append_cmdline;
 use anyhow::Context;
@@ -84,6 +86,7 @@ use video_core::SharedFramebufferHandle;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
@@ -103,10 +106,11 @@ impl PetriVmConfigOpenVmm {
             firmware,
             memory,
             proc_topology,
-            agent_image: _,
-            openhcl_agent_image: _,
+            agent_image,
+            openhcl_agent_image,
             vmgs,
-        } = &petri_vm_config;
+            boot_device_type,
+        } = petri_vm_config;
 
         let PetriVmResources {
             driver,
@@ -115,11 +119,12 @@ impl PetriVmConfigOpenVmm {
         } = resources;
 
         let setup = PetriVmConfigSetupCore {
-            arch: *arch,
-            firmware,
+            arch,
+            firmware: &firmware,
             driver,
             logger: log_source,
-            vmgs,
+            vmgs: &vmgs,
+            boot_device_type,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -280,7 +285,7 @@ impl PetriVmConfigOpenVmm {
             }
 
             hvlite_defs::config::MemoryConfig {
-                mem_size: *startup_bytes,
+                mem_size: startup_bytes,
                 mmio_gaps: if firmware.is_openhcl() {
                     match arch {
                         MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
@@ -305,9 +310,9 @@ impl PetriVmConfigOpenVmm {
             } = proc_topology;
 
             ProcessorTopologyConfig {
-                proc_count: *vp_count,
-                vps_per_socket: *vps_per_socket,
-                enable_smt: *enable_smt,
+                proc_count: vp_count,
+                vps_per_socket,
+                enable_smt,
                 arch: Some(match arch {
                     MachineArch::X86_64 => hvlite_defs::config::ArchTopologyConfig::X86(
                         hvlite_defs::config::X86TopologyConfig {
@@ -364,7 +369,7 @@ impl PetriVmConfigOpenVmm {
         let vmgs = if firmware.is_openhcl() {
             None
         } else {
-            Some(memdiff_vmgs_from_artifact(vmgs)?)
+            Some(memdiff_vmgs_from_artifact(&vmgs)?)
         };
 
         let config = Config {
@@ -455,9 +460,10 @@ impl PetriVmConfigOpenVmm {
         };
 
         Ok(Self {
-            firmware: petri_vm_config.firmware,
-            arch: petri_vm_config.arch,
+            firmware,
+            arch,
             config,
+            boot_device_type,
 
             resources: PetriVmResourcesOpenVmm {
                 log_stream_tasks,
@@ -470,8 +476,8 @@ impl PetriVmConfigOpenVmm {
                 linux_direct_serial_agent,
                 driver: driver.clone(),
                 output_dir: output_dir.to_owned(),
-                agent_image: petri_vm_config.agent_image,
-                openhcl_agent_image: petri_vm_config.openhcl_agent_image,
+                agent_image,
+                openhcl_agent_image,
                 openvmm_path: openvmm_path.clone(),
                 vtl2_vsock_path,
                 _vmbus_vsock_path: vmbus_vsock_path,
@@ -492,6 +498,7 @@ struct PetriVmConfigSetupCore<'a> {
     driver: &'a DefaultDriver,
     logger: &'a PetriLogSource,
     vmgs: &'a PetriVmgsResource,
+    boot_device_type: BootDeviceType,
 }
 
 struct SerialData {
@@ -660,7 +667,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_tpm: false,
                     enable_battery: false,
                     enable_serial: true,
-                    enable_vpci_boot: false,
+                    enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                     uefi_console_mode: Some(hvlite_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: false,
                 }
@@ -738,109 +745,72 @@ impl PetriVmConfigSetupCore<'_> {
         devices: &mut impl Extend<Device>,
         vtl2_settings: Option<&mut Vtl2Settings>,
     ) -> anyhow::Result<()> {
-        match &self.firmware {
-            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => {
-                // Nothing to do, everything is contained in LoadMode
+        let emulate_storage_in_openhcl = matches!(
+            self.firmware,
+            Firmware::OpenhclUefi {
+                openhcl_config: OpenHclConfig {
+                    vtl2_nvme_boot: true,
+                    ..
+                },
+                ..
             }
-            Firmware::Uefi {
+        );
+        enum Media {
+            Disk(Resource<DiskHandleKind>),
+            Dvd(Resource<DiskHandleKind>),
+        }
+        let media = match &self.firmware {
+            Firmware::LinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::Uefi {
                 guest: UefiGuest::None,
                 ..
             }
             | Firmware::OpenhclUefi {
                 guest: UefiGuest::None,
                 ..
-            } => {
-                // Nothing to do, no guest
-            }
+            } => return Ok(()),
             Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
                 let disk_path = guest.artifact();
-                let guest_media = match guest {
-                    PcatGuest::Vhd(_) => GuestMedia::Disk {
-                        read_only: false,
-                        disk_parameters: None,
-                        disk_type: memdiff_disk_from_artifact(disk_path)?,
-                    },
-                    PcatGuest::Iso(_) => GuestMedia::Dvd(
-                        SimpleScsiDvdHandle {
-                            media: Some(open_disk_type(disk_path.as_ref(), true)?),
-                            requests: None,
+                match guest {
+                    PcatGuest::Vhd(_) => Media::Disk(memdiff_disk_from_artifact(disk_path)?),
+                    PcatGuest::Iso(_) => Media::Dvd(open_disk_type(disk_path.as_ref(), true)?),
+                }
+            }
+            Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => {
+                let disk_path = guest.artifact();
+                Media::Disk(memdiff_disk_from_artifact(
+                    disk_path.expect("not uefi guest none"),
+                )?)
+            }
+        };
+
+        if emulate_storage_in_openhcl {
+            match media {
+                Media::Dvd(_) => todo!("support DVD to VTL2"),
+                Media::Disk(disk) => {
+                    devices.extend([Device::Vpci(VpciDeviceConfig {
+                        vtl: DeviceVtl::Vtl2,
+                        instance_id: PARAVISOR_BOOT_NVME_INSTANCE,
+                        resource: NvmeControllerHandle {
+                            subsystem_id: PARAVISOR_BOOT_NVME_INSTANCE,
+                            max_io_queues: 64,
+                            msix_count: 64,
+                            namespaces: vec![NamespaceDefinition {
+                                nsid: BOOT_NVME_NSID,
+                                disk,
+                                read_only: false,
+                            }],
                         }
                         .into_resource(),
-                    ),
-                };
-                devices.extend([Device::Ide(IdeDeviceConfig {
-                    path: ide_resources::IdePath {
-                        channel: 0,
-                        drive: 0,
-                    },
-                    guest_media,
-                })]);
+                    })]);
+                }
             }
-            Firmware::Uefi { guest, .. }
-            | Firmware::OpenhclUefi {
-                guest,
-                openhcl_config:
-                    OpenHclConfig {
-                        vtl2_nvme_boot: false,
-                        ..
-                    },
-                ..
-            } => {
-                let disk_path = guest.artifact();
-                devices.extend([Device::Vmbus(
-                    DeviceVtl::Vtl0,
-                    ScsiControllerHandle {
-                        instance_id: SCSI_INSTANCE,
-                        max_sub_channel_count: 1,
-                        io_queue_depth: None,
-                        devices: vec![ScsiDeviceAndPath {
-                            path: ScsiPath {
-                                path: 0,
-                                target: 0,
-                                lun: 0,
-                            },
-                            device: SimpleScsiDiskHandle {
-                                read_only: false,
-                                parameters: Default::default(),
-                                disk: memdiff_disk_from_artifact(
-                                    disk_path.expect("not uefi guest none"),
-                                )?,
-                            }
-                            .into_resource(),
-                        }],
-                        requests: None,
-                    }
-                    .into_resource(),
-                )]);
-            }
-            Firmware::OpenhclUefi {
-                guest,
-                openhcl_config:
-                    OpenHclConfig {
-                        vtl2_nvme_boot: true,
-                        ..
-                    },
-                ..
-            } => {
-                let disk_path = guest.artifact();
-                devices.extend([Device::Vpci(VpciDeviceConfig {
-                    vtl: DeviceVtl::Vtl2,
-                    instance_id: BOOT_NVME_INSTANCE,
-                    resource: NvmeControllerHandle {
-                        subsystem_id: BOOT_NVME_INSTANCE,
-                        max_io_queues: 64,
-                        msix_count: 64,
-                        namespaces: vec![NamespaceDefinition {
-                            nsid: BOOT_NVME_NSID,
-                            disk: memdiff_disk_from_artifact(
-                                disk_path.expect("not uefi guest none"),
-                            )?,
-                            read_only: false,
-                        }],
-                    }
-                    .into_resource(),
-                })]);
-                vtl2_settings
+            match self.boot_device_type {
+                BootDeviceType::None => {}
+                BootDeviceType::Ide => todo!("support IDE emulation testing"),
+                BootDeviceType::Nvme => todo!("support NVMe emulation testing"),
+                BootDeviceType::Scsi => vtl2_settings
                     .expect("openhcl config should have vtl2settings")
                     .dynamic
                     .as_mut()
@@ -865,7 +835,7 @@ impl PetriVmConfigSetupCore<'_> {
                                     device_type:
                                         vtl2_settings_proto::physical_device::DeviceType::Nvme
                                             .into(),
-                                    device_path: BOOT_NVME_INSTANCE.to_string(),
+                                    device_path: PARAVISOR_BOOT_NVME_INSTANCE.to_string(),
                                     sub_device_path: BOOT_NVME_NSID,
                                 }),
                                 devices: Vec::new(),
@@ -873,7 +843,84 @@ impl PetriVmConfigSetupCore<'_> {
                             ..Default::default()
                         }],
                         io_queue_depth: None,
-                    });
+                    }),
+            }
+        } else {
+            match self.boot_device_type {
+                BootDeviceType::None => {}
+                BootDeviceType::Ide => {
+                    let guest_media = match media {
+                        Media::Disk(disk_type) => GuestMedia::Disk {
+                            read_only: false,
+                            disk_parameters: None,
+                            disk_type,
+                        },
+                        Media::Dvd(media) => GuestMedia::Dvd(
+                            SimpleScsiDvdHandle {
+                                media: Some(media),
+                                requests: None,
+                            }
+                            .into_resource(),
+                        ),
+                    };
+                    devices.extend([Device::Ide(IdeDeviceConfig {
+                        path: ide_resources::IdePath {
+                            channel: 0,
+                            drive: 0,
+                        },
+                        guest_media,
+                    })]);
+                }
+                BootDeviceType::Scsi => {
+                    let disk = match media {
+                        Media::Disk(disk) => disk,
+                        Media::Dvd(_) => todo!("support SCSI DVD boot disks"),
+                    };
+                    devices.extend([Device::Vmbus(
+                        DeviceVtl::Vtl0,
+                        ScsiControllerHandle {
+                            instance_id: SCSI_INSTANCE,
+                            max_sub_channel_count: 1,
+                            io_queue_depth: None,
+                            devices: vec![ScsiDeviceAndPath {
+                                path: ScsiPath {
+                                    path: 0,
+                                    target: 0,
+                                    lun: 0,
+                                },
+                                device: SimpleScsiDiskHandle {
+                                    read_only: false,
+                                    parameters: Default::default(),
+                                    disk,
+                                }
+                                .into_resource(),
+                            }],
+                            requests: None,
+                        }
+                        .into_resource(),
+                    )]);
+                }
+                BootDeviceType::Nvme => {
+                    let disk = match media {
+                        Media::Disk(disk) => disk,
+                        Media::Dvd(_) => anyhow::bail!("dvd not supported on nvme"),
+                    };
+                    devices.extend([Device::Vpci(VpciDeviceConfig {
+                        vtl: DeviceVtl::Vtl0,
+                        instance_id: BOOT_NVME_INSTANCE,
+                        resource: NvmeControllerHandle {
+                            subsystem_id: BOOT_NVME_INSTANCE,
+                            max_io_queues: 64,
+                            msix_count: 64,
+                            namespaces: vec![NamespaceDefinition {
+                                nsid: BOOT_NVME_NSID,
+                                disk,
+                                read_only: false,
+                            }],
+                        }
+                        .into_resource(),
+                    })]);
+                }
             }
         }
 
@@ -944,7 +991,7 @@ impl PetriVmConfigSetupCore<'_> {
             firmware: get_resources::ged::GuestFirmwareConfig::Uefi {
                 firmware_debug: false,
                 disable_frontpage: *disable_frontpage,
-                enable_vpci_boot: false,
+                enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,
                 default_boot_always_attempt: false,
             },
