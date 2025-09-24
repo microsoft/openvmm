@@ -471,55 +471,76 @@ impl BasicNic {
                     }
                     Tristate::TRUE => {
                         // Start all configured queue pairs that are not running.
-                        let mut started_any = false;
-                        for task in vport.tasks.iter_mut() {
+                        // Build a single get_queues request sized to the number
+                        // of tasks we'll start, each with its own GuestBuffers
+                        // (and rx_packets Arc) so we can later assign the
+                        // returned epqueues to the corresponding task.
+                        let mut start_indices = Vec::new();
+                        let mut configs = Vec::new();
+                        let mut rx_packets_list: Vec<Arc<Mutex<Slab<RxPacket>>>> = Vec::new();
+
+                        for (idx, task) in vport.tasks.iter_mut().enumerate() {
                             if task.task.is_running() {
                                 continue;
                             }
-                            if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =
-                                (task.queue_cfg.tx, task.queue_cfg.rx)
-                            {
+                            if task.queue_cfg.tx.is_some() && task.queue_cfg.rx.is_some() {
+                                // prepare per-task rx packet pool and QueueConfig
                                 let rx_packets = Arc::new(Default::default());
-
-                                let mut queues = vec![];
-                                vport
-                                    .endpoint
-                                    .get_queues(
-                                        vec![QueueConfig {
-                                            pool: Box::new(GuestBuffers {
-                                                gm: state.queues.gm.clone(),
-                                                rx_packets: Arc::clone(&rx_packets),
-                                                buffer_segments: Vec::new(),
-                                            }),
-                                            initial_rx: &[],
-                                            driver: Box::new(state.queues.driver.clone()),
-                                        }],
-                                        None,
-                                        &mut queues,
-                                    )
-                                    .await?;
-
-                                task.task.insert(
-                                    &state.queues.driver,
-                                    "gdma-bnic",
-                                    TxRxTask {
-                                        queues: state.queues.clone(),
-                                        epqueue: queues.drain(..).next().unwrap(),
+                                rx_packets_list.push(Arc::clone(&rx_packets));
+                                configs.push(QueueConfig {
+                                    pool: Box::new(GuestBuffers {
+                                        gm: state.queues.gm.clone(),
                                         rx_packets: Arc::clone(&rx_packets),
-                                        sq_id,
-                                        sq_cq_id,
-                                        rq_id,
-                                        rq_cq_id,
-                                        tx_segment_buffer: Vec::new(),
-                                        rx_buf_count: 0,
-                                    },
-                                );
-                                task.task.start();
-                                started_any = true;
+                                        buffer_segments: Vec::new(),
+                                    }),
+                                    initial_rx: &[],
+                                    driver: Box::new(state.queues.driver.clone()),
+                                });
+                                start_indices.push(idx);
                             }
                         }
-                        if !started_any {
+
+                        if start_indices.is_empty() {
                             anyhow::bail!("queues not configured");
+                        }
+
+                        let mut epqueues = vec![];
+                        vport
+                            .endpoint
+                            .get_queues(configs, None, &mut epqueues)
+                            .await?;
+
+                        // Consume the returned epqueues with an iterator and
+                        // assign each epqueue to the corresponding task in the
+                        // same order as start_indices / rx_packets_list.
+                        let mut epq_iter = epqueues.into_iter();
+
+                        for (i, &task_idx) in start_indices.iter().enumerate() {
+                            let task = &mut vport.tasks[task_idx];
+                            let rx_packets = Arc::clone(&rx_packets_list[i]);
+                            let (sq_id, sq_cq_id) = task.queue_cfg.tx.unwrap();
+                            let (rq_id, rq_cq_id) = task.queue_cfg.rx.unwrap();
+
+                            let epqueue = epq_iter
+                                .next()
+                                .expect("get_queues returned fewer queues than requested");
+
+                            task.task.insert(
+                                &state.queues.driver,
+                                "gdma-bnic",
+                                TxRxTask {
+                                    queues: state.queues.clone(),
+                                    epqueue,
+                                    rx_packets: Arc::clone(&rx_packets),
+                                    sq_id,
+                                    sq_cq_id,
+                                    rq_id,
+                                    rq_cq_id,
+                                    tx_segment_buffer: Vec::new(),
+                                    rx_buf_count: 0,
+                                },
+                            );
+                            task.task.start();
                         }
                     }
                     _ => {}
