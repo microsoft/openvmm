@@ -508,7 +508,7 @@ pub struct OpenVmmInspector {
 
 #[async_trait]
 impl PetriVmInspector for OpenVmmInspector {
-    async fn inspect(&self) -> anyhow::Result<String> {
+    async fn inspect_all(&self) -> anyhow::Result<inspect::Node> {
         Ok(self.worker.inspect_all().await)
     }
 }

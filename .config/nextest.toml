@@ -40,19 +40,13 @@ store-success-output = "true"
 filter = 'test(loom)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# Reboot VMM tests take extra long
-[[profile.ci.overrides]]
-filter = 'package(~vmm_tests) & test(reboot)'
-slow-timeout = { period = "5m", terminate-after = 2 }
-
 [[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests)'
-# Allow VMM tests longer timeouts.
-# Important Note: Petri's watchdogs need to know this value too.
-# If you change it here then change it there!
-slow-timeout = { period = "3m", terminate-after = 2 }
+# VMM tests contain their own watchdog timer, but keep an extra long timer
+# here as a backup.
+slow-timeout = { period = "10m", terminate-after = 1 }
 
 # TEMP (hopefully): For reasons that continue to befuddle, running Windows
 # release-mode unit tests in flowey CI is resulting in seemingly-random
