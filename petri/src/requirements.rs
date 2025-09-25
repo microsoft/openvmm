@@ -174,7 +174,7 @@ impl TestRequirement {
             TestRequirement::None => true,
             TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
             TestRequirement::Vendor(vendor) => context.vendor == *vendor,
-            TestRequirement::Isolation { isolation_type, .. } => {
+            TestRequirement::Isolation(isolation_type) => {
                 if let Some(vm_host_info) = &context.vm_host_info {
                     match isolation_type {
                         IsolationType::Vbs => vm_host_info
@@ -190,6 +190,7 @@ impl TestRequirement {
                     false
                 }
             }
+            TestRequ
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied(context) && req2.is_satisfied(context)
             }
