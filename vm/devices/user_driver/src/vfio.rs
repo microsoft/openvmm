@@ -308,24 +308,21 @@ impl DeviceBacking for VfioDevice {
         Ok(interrupt.insert(new_interrupt).interrupt.clone())
     }
 
-    fn unmap_interrupt(&mut self, msix: u32) -> anyhow::Result<()> {
-        if msix >= self.msix_info.count {
-            anyhow::bail!("invalid msix index");
-        }
-        if self
-            .interrupts
-            .get(msix as usize)
-            .and_then(|i| i.as_ref())
-            .is_none()
-        {
-            // Already unmapped / never mapped.
+    fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
+        if self.interrupts.is_empty() {
             return Ok(());
         }
-        self.device.unmap_msix(msix, 1)?;
-        // Drop local state so future map_interrupt recreates.
-        if let Some(slot) = self.interrupts.get_mut(msix as usize) {
+
+        let count = self.interrupts.len() as u32;
+        self.device
+            .unmap_msix(0, count)
+            .context("failed to unmap all msix vectors")?;
+
+        // Clear local bookkeeping so re-mapping works correctly later.
+        for slot in &mut self.interrupts {
             *slot = None;
         }
+
         Ok(())
     }
 }

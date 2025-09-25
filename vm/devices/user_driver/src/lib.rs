@@ -45,11 +45,11 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// previous mappings. The last `cpu` value will be used as the target CPU.
     fn map_interrupt(&mut self, msix: u32, cpu: u32) -> anyhow::Result<DeviceInterrupt>;
 
-    /// Unmaps (disables) the specified MSI-X vector previously mapped via `map_interrupt`.
+    /// Unmaps and disables all previously mapped interrupts.
     ///
     /// Default implementation is a no-op for backends that do not support
     /// dynamic interrupt unmapping.
-    fn unmap_interrupt(&mut self, _msix: u32) -> anyhow::Result<()> {
+    fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 }
