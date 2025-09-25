@@ -214,7 +214,6 @@ impl<T: RunTest> DynRunTest for T {
 }
 
 /// Parameters passed to a [`RunTest`] when it is run.
-#[non_exhaustive]
 pub struct PetriTestParams<'a> {
     /// The name of the running test.
     pub test_name: &'a str,

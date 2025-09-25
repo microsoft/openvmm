@@ -176,7 +176,9 @@ impl PetriVmConfigOpenVmm {
                 ));
             }
 
-            if matches!(self.firmware.os_flavor(), OsFlavor::Windows) {
+            if matches!(self.firmware.os_flavor(), OsFlavor::Windows)
+                && self.firmware.isolation().is_none()
+            {
                 // Make a file for the IMC hive. It's not guaranteed to be at a fixed
                 // location at runtime.
                 let mut imc_hive_file =

@@ -301,6 +301,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             {
                 if agent_image.contains_pipette()
                     && matches!(firmware.os_flavor(), OsFlavor::Windows)
+                    && firmware.isolation().is_none()
                 {
                     // Make a file for the IMC hive. It's not guaranteed to be at a fixed
                     // location at runtime.
