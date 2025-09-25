@@ -3,17 +3,24 @@
 
 //! Memory Validation Data Collection for VMM Tests
 
+use petri::MemoryConfig;
+use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
+use petri::ProcessorTopology;
+use petri::ShutdownKind;
 use pipette_client::PipetteClient;
 use pipette_client::cmd;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::from_reader;
+use serde_json::to_string;
 use std::collections::HashMap;
 use std::env::current_dir;
 use std::fs::File;
 use std::ops::Index;
 use std::ops::IndexMut;
 use std::path::Path;
+use std::time::Duration;
 
 /// PerProcessMemstat struct collects statistics from a single process relevant to memory validation
 #[derive(Serialize, Clone, Default)]
@@ -304,4 +311,39 @@ impl IndexMut<&'_ str> for MemStat {
             _ => panic!("unknown field: {}", s),
         }
     }
+}
+
+pub async fn idle_test<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    arch: &str,
+    vps: u32,
+    vm_memory_gb: u64,
+    wait_time_sec: u64,
+) -> anyhow::Result<()> {
+    let mut vm = config
+        .with_processor_topology({
+            ProcessorTopology {
+                vp_count: vps,
+                ..Default::default()
+            }
+        })
+        .with_memory({
+            MemoryConfig {
+                startup_bytes: vm_memory_gb * (1024 * 1024 * 1024),
+                dynamic_memory_range: None,
+            }
+        })
+        .run_without_agent()
+        .await?;
+    let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+
+    // This wait is needed to let the idle VM fully instantiate its memory - provides more accurate memory usage results
+    std::thread::sleep(Duration::from_secs(wait_time_sec));
+    let memstat = MemStat::new(&vtl2_agent).await;
+    tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    vm.wait_for_teardown().await?;
+    assert!(memstat.compare_to_baseline(arch, &format!("{}vp", vps)));
+
+    Ok(())
 }
