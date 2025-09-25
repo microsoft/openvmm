@@ -280,8 +280,8 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     let vtl0_nvme_lun = 1;
     let vtl2_nsid = 37;
     let scsi_instance = Guid::new_random();
-    let scsi_disk_sectors = 0x2000;
-    let nvme_disk_sectors: u64 = 0x3000;
+    let scsi_disk_sectors = 0x4_0000; // make these greater than 100MB so that the below 'dd' command works without issues
+    let nvme_disk_sectors: u64 = 0x5_0000; // make these greater than 100MB so that the below 'dd' command works without issues
     let sector_size = 512;
 
     let (vm, agent) = config
@@ -386,25 +386,57 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 
     let sh = agent.unix_shell();
     // The drive ordering is not guaranteed, so we need to check all drives.
-    let output = cmd!(sh, "sh -c 'cat /sys/block/sd*/size'").read().await?;
+    let cmd = r#"
+exec 2>&1;
+for device in /sys/block/sd*; do
+    dev_name=$(basename "$device")
+    size_in_sectors=$(cat "$device/size")
+    echo "/dev/$dev_name $size_in_sectors"
+done
+"#;
+    // Run the enumeration script and log stdout+stderr
+    let output = sh.cmd("sh").arg("-c").arg(cmd).read().await?;
+    tracing::info!("guest cmd: enumerate /sys/block/sd* ->\n{}", output);
     // Make sure the disk sizes match.
     let reported_sizes = output
-        .split_ascii_whitespace()
-        .map(|x| x.parse::<u64>())
+        .split_terminator('\n')
+        .map(|x| -> Result<_, anyhow::Error> {
+            let line = x.split_ascii_whitespace().collect::<Vec<_>>();
+            if line.len() != 2 {
+                anyhow::bail!("unexpected line format: {}", x);
+            }
+            let size = line[1].parse::<u64>().context("failed to parse size")?;
+            let device = line[0];
+            Ok((device, size))
+        })
         .collect::<Result<Vec<_>, _>>()
         .context("failed to parse sizes")?;
 
     let scsi_drive_index = reported_sizes
         .iter()
-        .position(|x| *x == scsi_disk_sectors)
-        .expect("couldn't find scsi drive");
+        .position(|(_device, x)| *x == scsi_disk_sectors)
+        .ok_or_else(|| anyhow::anyhow!("couldn't find scsi drive"))?;
     let nvme_drive_index = reported_sizes
         .iter()
-        .position(|x| *x == nvme_disk_sectors)
-        .expect("couldn't find nvme drive");
+        .position(|(_device, x)| *x == nvme_disk_sectors)
+        .ok_or_else(|| anyhow::anyhow!("couldn't find nvme drive"))?;
     assert_ne!(scsi_drive_index, nvme_drive_index);
     // Account for the pipette drive too
     assert_eq!(reported_sizes.len(), 3);
+
+    let nvme_cmd = format!(
+        "exec 2>&1; dd if=/dev/urandom of={} bs=1M count=100",
+        reported_sizes[nvme_drive_index].0
+    );
+    let nvme_out = sh.cmd("sh").arg("-c").arg(nvme_cmd).read().await?;
+    tracing::info!("guest cmd: dd to NVMe ->\n{}", nvme_out);
+
+    let scsi_cmd = format!(
+        "exec 2>&1; dd if=/dev/urandom of={} bs=1M count=100",
+        reported_sizes[scsi_drive_index].0
+    );
+    let scsi_out = sh.cmd("sh").arg("-c").arg(scsi_cmd).read().await?;
+    tracing::info!("guest cmd: dd to SCSI ->\n{}", scsi_out);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
