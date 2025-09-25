@@ -227,7 +227,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     fn multiqueue_support(&self) -> net_backend::MultiQueueSupport {
         net_backend::MultiQueueSupport {
             max_queues: 64,
-            indirection_table_size: 0,
+            indirection_table_size: 128,
         }
     }
 }
