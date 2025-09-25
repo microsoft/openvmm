@@ -33,6 +33,7 @@ use vmm_test_macros::vmm_test_no_agent;
 // Servicing tests.
 pub(crate) mod openhcl_servicing;
 
+// Memory Validation tests.
 pub mod memstat;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
@@ -875,7 +876,7 @@ async fn memory_validation_snp_64_proc_no_agent<T: PetriVmmBackend>(
 
 #[vmm_test(hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_x64_2_proc<T: PetriVmmBackend>(
+async fn memory_validation_x64_2_proc_no_agent<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     memstat::idle_test(config, "intel-x64", 2, 16, 10).await?;
@@ -885,7 +886,7 @@ async fn memory_validation_x64_2_proc<T: PetriVmmBackend>(
 
 #[vmm_test(hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_x64_32_proc<T: PetriVmmBackend>(
+async fn memory_validation_x64_32_proc_no_agent<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     memstat::idle_test(config, "intel-x64", 32, 16, 10).await?;
@@ -895,7 +896,7 @@ async fn memory_validation_x64_32_proc<T: PetriVmmBackend>(
 
 #[vmm_test(hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_arm_2_proc<T: PetriVmmBackend>(
+async fn memory_validation_arm_2_proc_no_agent<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     memstat::idle_test(config, "aarch64", 2, 16, 10).await?;
@@ -905,7 +906,7 @@ async fn memory_validation_arm_2_proc<T: PetriVmmBackend>(
 
 #[vmm_test(hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_arm_64_proc<T: PetriVmmBackend>(
+async fn memory_validation_arm_64_proc_no_agent<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     memstat::idle_test(config, "aarch64", 64, 16, 15).await?;

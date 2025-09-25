@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Memory Validation Data Collection for VMM Tests
+//! Memory Validation for VMM Tests
 
 use petri::MemoryConfig;
 use petri::PetriVmBuilder;
@@ -49,14 +49,10 @@ pub struct MemStat {
 
     /// underhill_vm corresponds to the memory usage statistics for the underhill-vm process
     pub underhill_vm: PerProcessMemstat,
-
-    /// json object to hold baseline values that test results are compared against
-    baseline_json: Value,
 }
 
 impl MemStat {
     /// Construction of a MemStat object takes the vtl2 Pipette agent to query OpenHCL for memory statistics for VTL2 as a whole and for VTL2's processes
-    /// This also caches the baseline data into the struct for later comparison
     pub async fn new(vtl2_agent: &PipetteClient) -> Self {
         let sh = vtl2_agent.unix_shell();
         let meminfo = Self::parse_memfile(
@@ -131,6 +127,26 @@ impl MemStat {
             );
         }
 
+        Self {
+            meminfo,
+            total_free_memory_per_zone,
+            underhill_init: per_process_data
+                .get("underhill_init")
+                .expect("per_process_data should have underhill_init data if the process exists")
+                .clone(),
+            openvmm_hcl: per_process_data
+                .get("openvmm_hcl")
+                .expect("per_process_data should have openvmm_hcl data if the process exists")
+                .clone(),
+            underhill_vm: per_process_data
+                .get("underhill_vm")
+                .expect("per_process_data should have underhill_vm data if the process exists")
+                .clone(),
+        }
+    }
+
+    /// Compares current statistics against baseline
+    pub fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
         let path_str = format!(
             "{}/test_data/memstat_baseline.json",
             current_dir()
@@ -149,28 +165,7 @@ impl MemStat {
             )
         });
 
-        Self {
-            meminfo,
-            total_free_memory_per_zone,
-            underhill_init: per_process_data
-                .get("underhill_init")
-                .expect("per_process_data should have underhill_init data if the process exists")
-                .clone(),
-            openvmm_hcl: per_process_data
-                .get("openvmm_hcl")
-                .expect("per_process_data should have openvmm_hcl data if the process exists")
-                .clone(),
-            underhill_vm: per_process_data
-                .get("underhill_vm")
-                .expect("per_process_data should have underhill_vm data if the process exists")
-                .clone(),
-            baseline_json,
-        }
-    }
-
-    /// Compares current statistics against baseline
-    pub fn compare_to_baseline(self, arch: &str, vps: &str) -> bool {
-        let baseline_usage = Self::get_baseline_value(&self.baseline_json[arch][vps]["usage"]);
+        let baseline_usage = Self::get_baseline_value(&baseline_json[arch][vps]["usage"]);
         let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
         assert!(
             baseline_usage >= cur_usage,
@@ -181,12 +176,11 @@ impl MemStat {
 
         for underhill_process in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
             let baseline_pss =
-                Self::get_baseline_value(&self.baseline_json[arch][vps][underhill_process]["Pss"]);
+                Self::get_baseline_value(&baseline_json[arch][vps][underhill_process]["Pss"]);
             let cur_pss = self[underhill_process].smaps_rollup["Pss"];
 
-            let baseline_pss_anon = Self::get_baseline_value(
-                &self.baseline_json[arch][vps][underhill_process]["Pss_Anon"],
-            );
+            let baseline_pss_anon =
+                Self::get_baseline_value(&baseline_json[arch][vps][underhill_process]["Pss_Anon"]);
             let cur_pss_anon = self[underhill_process].smaps_rollup["Pss_Anon"];
 
             assert!(
@@ -206,9 +200,9 @@ impl MemStat {
         }
 
         let baseline_reservation =
-            Self::get_baseline_value(&self.baseline_json[arch][vps]["reservation"]);
+            Self::get_baseline_value(&baseline_json[arch][vps]["reservation"]);
         let cur_reservation =
-            self.baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
+            baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
         assert!(
             baseline_reservation >= cur_reservation,
             "baseline reservation is less than current reservation: {} < {}",
@@ -216,7 +210,7 @@ impl MemStat {
             cur_reservation
         );
 
-        true
+        Ok(())
     }
 
     fn parse_memfile(
@@ -239,7 +233,7 @@ impl MemStat {
                 .parse::<u64>()
                 .unwrap_or_else(|_| {
                     panic!(
-                        "value column {} in line {} is expected to be a parsable u64",
+                        "value column {} in line {} is expected to be a parsable u64 integer",
                         value_col, line
                     )
                 });
@@ -248,7 +242,7 @@ impl MemStat {
         parsed_data
     }
 
-    fn parse_statm(raw: String) -> HashMap<String, u64> {
+    fn parse_statm(raw_statm_data: String) -> HashMap<String, u64> {
         let statm_fields = [
             "vm_size",
             "vm_rss",
@@ -258,7 +252,8 @@ impl MemStat {
             "data",
             "dirty_pages",
         ];
-        raw.split_whitespace()
+        raw_statm_data
+            .split_whitespace()
             .enumerate()
             .map(|(index, value)| {
                 (
@@ -274,7 +269,7 @@ impl MemStat {
                         .to_string(),
                     value
                         .parse::<u64>()
-                        .expect("all items in statm file are expected to be parsable u64 numbers"),
+                        .expect("all items in statm file are expected to be parsable u64 integers"),
                 )
             })
             .collect::<HashMap<String, u64>>()
@@ -282,10 +277,10 @@ impl MemStat {
 
     fn get_baseline_value(baseline_json: &Value) -> u64 {
         baseline_json["base"].as_u64().unwrap_or_else(|| {
-            panic!("all values in the memstat_baseline.json file are expected to be parsable u64 numbers")
+            panic!("all values in the memstat_baseline.json file are expected to be parsable u64 integers")
         }) +
             baseline_json["threshold"].as_u64().unwrap_or_else(|| {
-                panic!("all values in the memstat_baseline.json file are expected to be parsable u64 numbers")
+                panic!("all values in the memstat_baseline.json file are expected to be parsable u64 integers")
             })
     }
 }
@@ -343,7 +338,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_teardown().await?;
-    assert!(memstat.compare_to_baseline(arch, &format!("{}vp", vps)));
+    memstat.compare_to_baseline(arch, &format!("{}vp", vps))?;
 
     Ok(())
 }

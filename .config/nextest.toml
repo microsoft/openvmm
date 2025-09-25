@@ -47,7 +47,7 @@ slow-timeout = { period = "5m", terminate-after = 2 }
 
 # Memory validation tests may need extended timeout
 [[profile.ci.overrides]]
-filter = 'package(~vmm_tests) & test(meminfo)'
+filter = 'package(~vmm_tests) & test(memory_validation)'
 slow-timeout = { period = "5m", terminate-after = 2 }
 
 [[profile.ci.overrides]]
