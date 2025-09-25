@@ -19,9 +19,12 @@ use anyhow::Context as _;
 use futures::StreamExt;
 use futures::future::join_all;
 use inspect::Inspect;
+use mesh::oneshot;
 use mesh::payload::Protobuf;
+use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+use mesh::OneshotReceiver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use save_restore::NvmeDriverWorkerSavedState;
@@ -139,6 +142,7 @@ impl IoQueue {
             mem_block,
             queue_data,
             bounce_buffer,
+            None,
         )?;
 
         Ok(Self {
@@ -438,7 +442,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             let admin = admin.issuer().clone();
             let rescan_event = self.rescan_event.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
+                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event, None).await {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -561,6 +565,17 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         }
     }
 
+    // If there was an outstanding AER command create and return a oneshot channel to rewire for the AER flow.
+    fn rewire_aer(saved_state: &NvmeDriverSavedState) -> Option<(mesh::OneshotSender<spec::Completion>, mesh::OneshotReceiver<spec::Completion>)> {
+        if let Some(admin_state) = &saved_state.worker_data.admin {
+            let pending_cmds = &admin_state.handler_data.pending_cmds.commands;
+            if pending_cmds.iter().any(|pending| pending.command.cdw0.opcode() == spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0) {
+                return Some(oneshot::<spec::Completion>());
+            }
+        }
+        None
+    }
+
     /// Restores NVMe driver state after servicing.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
@@ -631,6 +646,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .attach_pending_buffers()
             .context("failed to restore allocations")?;
 
+        // Find pending AER command
+        let (aer_sender, aer_receiver) = match Self::rewire_aer(saved_state) {
+            Some((sender, receiver)) => (Some(sender), Some(receiver)),
+            None => (None, None),
+        };
+
         // Restore the admin queue pair.
         let admin = saved_state
             .worker_data
@@ -650,6 +671,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     mem_block,
                     a,
                     bounce_buffer,
+                    aer_sender,
                 )
                 .unwrap()
             })
@@ -662,7 +684,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             let admin = admin.issuer().clone();
             let rescan_event = this.rescan_event.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
+                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event, aer_receiver).await {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -744,13 +766,20 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 async fn handle_asynchronous_events(
     admin: &Issuer,
     rescan_event: &event_listener::Event,
+    aer_receiver: Option<OneshotReceiver<spec::Completion>>,
 ) -> anyhow::Result<()> {
-    loop {
-        let completion = admin
+    let mut completion = if let Some(receiver) = aer_receiver {
+        // Await the completion from the AER receiver before entering the loop.
+        Issuer::extract_completion(PendingRpc(receiver).await)
+            .context("asynchronous event request failed")?
+    } else {
+        admin
             .issue_neither(admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST))
             .await
-            .context("asynchronous event request failed")?;
+            .context("asynchronous event request failed")?
+    };
 
+    loop {
         let dw0 = spec::AsynchronousEventRequestDw0::from(completion.dw0);
         match spec::AsynchronousEventType(dw0.event_type()) {
             spec::AsynchronousEventType::NOTICE => {
@@ -786,6 +815,11 @@ async fn handle_asynchronous_events(
                 );
             }
         }
+
+        completion = admin
+            .issue_neither(admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST))
+            .await
+            .context("asynchronous event request failed")?;
     }
 }
 
