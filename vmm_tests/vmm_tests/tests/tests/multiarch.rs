@@ -34,7 +34,7 @@ use vmm_test_macros::vmm_test_no_agent;
 pub(crate) mod openhcl_servicing;
 
 // Memory Validation tests.
-pub mod memstat;
+pub(crate) mod memstat;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
 #[vmm_test_no_agent(
