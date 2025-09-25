@@ -193,6 +193,7 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub nvme_keep_alive: bool,
+    pub mana_keep_alive: bool,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
 }
@@ -304,7 +305,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None, false).await {
+                            match self.save(None, false, false).await {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -369,7 +370,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self.save(None, false).await;
+                            let r = self.save(None, false, false).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -571,6 +572,7 @@ impl LoadedVm {
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
+        let mana_keepalive = self.mana_keep_alive && capabilities_flags.enable_mana_keepalive();
 
         // Do everything before the log flush under a span.
         let r = async {
@@ -587,7 +589,7 @@ impl LoadedVm {
 
             tracing::info!("state units stopped");
 
-            let mut state = self.save(Some(deadline), true).await?;
+            let mut state = self.save(Some(deadline), nvme_keepalive, mana_keepalive).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -749,7 +751,8 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
-        vf_keepalive_flag: bool,
+        nvme_keepalive_flag: bool,
+        mana_keepalive_flag: bool,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
@@ -761,7 +764,7 @@ impl LoadedVm {
         //
         // This has to happen before saving the network state, otherwise its allocations
         // are marked as Free and are unable to be restored.
-        let dma_manager_state = if vf_keepalive_flag {
+        let dma_manager_state = if nvme_keepalive_flag || mana_keepalive_flag {
             use vmcore::save_restore::SaveRestore;
             Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
@@ -771,7 +774,7 @@ impl LoadedVm {
         // Only save NVMe state when there are NVMe controllers and keep alive
         // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
-            n.save(vf_keepalive_flag)
+            n.save(nvme_keepalive_flag)
                 .instrument(tracing::info_span!("nvme_manager_save", CVM_ALLOWED))
                 .await
                 .map(|s| NvmeSavedState { nvme_state: s })
@@ -779,7 +782,7 @@ impl LoadedVm {
             None
         };
 
-        let mana_state = if let Some(network_settings) = &mut self.network_settings {
+        let mana_state = if let Some(network_settings) = &mut self.network_settings && mana_keepalive_flag {
             Some(network_settings.save().await)
         } else {
             None

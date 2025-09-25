@@ -670,8 +670,6 @@ impl HclNetworkVFManagerWorker {
                     .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
-                    tracing::info!("saving state and shutting down VTL2 device");
-
                     assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
                     rpc.handle(async |_| {
@@ -704,8 +702,6 @@ impl HclNetworkVFManagerWorker {
                             tracing::warn!("Failed to save MANA device state");
                             ManaSavedState::default()
                         };
-
-                        tracing::info!(?saved_state, "MANA device state saved");
 
                         saved_state
                     })

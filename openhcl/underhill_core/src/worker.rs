@@ -287,6 +287,8 @@ pub struct UnderhillEnvCfg {
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
+    /// Enable mana keep alive.
+    pub mana_keep_alive: bool,
     /// Don't skip FLR for NVMe devices.
     pub nvme_always_flr: bool,
     /// test configuration
@@ -3366,6 +3368,7 @@ async fn new_underhill_vm(
 
         _periodic_telemetry_task: periodic_telemetry_task,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
+        mana_keep_alive: env_cfg.mana_keep_alive,
         test_configuration: env_cfg.test_configuration,
         dma_manager,
     };

@@ -512,7 +512,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    #[allow(dead_code)]
     pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
         tracing::info!("saving gdma driver state");
 
@@ -591,7 +590,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok((bar0_mapping, map))
     }
 
-    #[allow(dead_code)]
     pub async fn restore(
         saved_state: GdmaDriverSavedState,
         mut device: T,
