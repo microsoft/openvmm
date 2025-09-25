@@ -16,6 +16,7 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use guestmem::MappableGuestMemory;
 use inspect::Inspect;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -118,8 +119,8 @@ impl ConfigSpaceType0EmulatorState {
 
 /// Emulator for the standard Type 0 PCI configuration space header.
 //
-// TODO: split + share shared registers with other (yet unimplemented)
-// header types
+// TODO: Figure out how to split this up and share the handling of common
+// registers (hardware IDs, command, status, etc.) with the type 1 emulator.
 #[derive(Inspect)]
 pub struct ConfigSpaceType0Emulator {
     // Fixed configuration
@@ -571,6 +572,322 @@ impl ConfigSpaceType0Emulator {
     }
 }
 
+#[derive(Debug, Inspect)]
+struct ConfigSpaceType1EmulatorState {
+    /// The command register
+    command: cfg_space::Command,
+    /// The subordinate bus number register. Software programs
+    /// this register with the highest bus number below the bridge.
+    subordinate_bus_number: u8,
+    /// The secondary bus number register. Software programs
+    /// this register with the bus number assigned to the secondary
+    /// side of the bridge.
+    secondary_bus_number: u8,
+    /// The primary bus number register. This is unused for PCI Express but
+    /// is supposed to be read/write for compability with legacy software.
+    primary_bus_number: u8,
+    /// The memory base register. Software programs the upper 12 bits of this
+    /// register with the upper 12 bits of a 32-bit base address of MMIO assigned
+    /// to the hierarchy under the bridge (the lower 20 bits are assumed to be 0s).
+    memory_base: u16,
+    /// The memory limit register. Software programs the upper 12 bits of this
+    /// register with the upper 12 bits of a 32-bit limit address of MMIO assigned
+    /// to the hierarchy under the bridge (the lower 20 bits are assumed to be 1s).
+    memory_limit: u16,
+    /// The prefetchable memory base register. Software programs the upper 12 bits of
+    /// this register with bits 20:31 of the base address of the prefetchable MMIO
+    /// window assigned to the hierarchy under the bridge. Bits 0:19 are assumed to
+    /// be 0s.
+    prefetch_base: u16,
+    /// The prefetchable memory limit register. Software programs the upper 12 bits of
+    /// this register with bits 20:31 of the limit address of the prefetchable MMIO
+    /// window assigned to the hierarchy under the bridge. Bits 0:19 are assumed to
+    /// be 1s.
+    prefetch_limit: u16,
+    /// The prefetchable memory base upper 32 bits register. When the bridge supports
+    /// 64-bit addressing for prefetchable memory, software programs this register
+    /// with the upper 32 bits of the base address of the prefetchable MMIO window
+    /// assigned to the hierarchy under the bridge.
+    prefetch_base_upper: u32,
+    /// The prefetchable memory limit upper 32 bits register. When the bridge supports
+    /// 64-bit addressing for prefetchable memory, software programs this register
+    /// with the upper 32 bits of the base address of the prefetchable MMIO window
+    /// assigned to the hierarchy under the bridge.
+    prefetch_limit_upper: u32,
+}
+
+impl ConfigSpaceType1EmulatorState {
+    fn new() -> Self {
+        Self {
+            command: cfg_space::Command::new(),
+            subordinate_bus_number: 0,
+            secondary_bus_number: 0,
+            primary_bus_number: 0,
+            memory_base: 0,
+            memory_limit: 0,
+            prefetch_base: 0,
+            prefetch_limit: 0,
+            prefetch_base_upper: 0,
+            prefetch_limit_upper: 0,
+        }
+    }
+}
+
+/// Emulator for the standard Type 1 PCI configuration space header.
+//
+// TODO: Figure out how to split this up and share the handling of common
+// registers (hardware IDs, command, status, etc.) with the type 0 emulator.
+// TODO: Support type 1 BARs (only two)
+#[derive(Inspect)]
+pub struct ConfigSpaceType1Emulator {
+    hardware_ids: HardwareIds,
+    #[inspect(with = "|x| inspect::iter_by_key(x.iter().map(|cap| (cap.label(), cap)))")]
+    capabilities: Vec<Box<dyn PciCapability>>,
+    state: ConfigSpaceType1EmulatorState,
+}
+
+impl ConfigSpaceType1Emulator {
+    /// Create a new [`ConfigSpaceType1Emulator`]
+    pub fn new(hardware_ids: HardwareIds, capabilities: Vec<Box<dyn PciCapability>>) -> Self {
+        Self {
+            hardware_ids,
+            capabilities,
+            state: ConfigSpaceType1EmulatorState::new(),
+        }
+    }
+
+    /// Resets the configuration space state.
+    pub fn reset(&mut self) {
+        self.state = ConfigSpaceType1EmulatorState::new();
+
+        for cap in &mut self.capabilities {
+            cap.reset();
+        }
+    }
+
+    /// Returns the range of bus numbers the bridge is programmed to decode.
+    pub fn assigned_bus_range(&self) -> RangeInclusive<u8> {
+        let secondary = self.state.secondary_bus_number;
+        let subordinate = self.state.subordinate_bus_number;
+        if secondary <= subordinate {
+            secondary..=subordinate
+        } else {
+            0..=0
+        }
+    }
+
+    fn decode_memory_range(&self, base_register: u16, limit_register: u16) -> (u32, u32) {
+        let base_addr = ((base_register & !0b1111) as u32) << 16;
+        let limit_addr = ((limit_register & !0b1111) as u32) << 16 | 0xF_FFFF;
+        (base_addr, limit_addr)
+    }
+
+    /// If memory decoding is currently enabled, and the memory window assignment is valid,
+    /// returns the 32-bit memory addresses the bridge is programmed to decode.
+    pub fn assigned_memory_range(&self) -> Option<RangeInclusive<u32>> {
+        let (base_addr, limit_addr) =
+            self.decode_memory_range(self.state.memory_base, self.state.memory_limit);
+        if self.state.command.mmio_enabled() && base_addr <= limit_addr {
+            Some(base_addr..=limit_addr)
+        } else {
+            None
+        }
+    }
+
+    /// If memory decoding is currently enabled, and the prefetchable memory window assignment
+    /// is valid, returns the 64-bit prefetchable memory addresses the bridge is programmed to decode.
+    pub fn assigned_prefetch_range(&self) -> Option<RangeInclusive<u64>> {
+        let (base_low, limit_low) =
+            self.decode_memory_range(self.state.prefetch_base, self.state.prefetch_limit);
+        let base_addr = (self.state.prefetch_base_upper as u64) << 32 | base_low as u64;
+        let limit_addr = (self.state.prefetch_limit_upper as u64) << 32 | limit_low as u64;
+        if self.state.command.mmio_enabled() && base_addr <= limit_addr {
+            Some(base_addr..=limit_addr)
+        } else {
+            None
+        }
+    }
+
+    fn get_capability_index_and_offset(&self, offset: u16) -> Option<(usize, u16)> {
+        let mut cap_offset = 0;
+        for i in 0..self.capabilities.len() {
+            let cap_size = self.capabilities[i].len() as u16;
+            if offset < cap_offset + cap_size {
+                return Some((i, offset - cap_offset));
+            }
+            cap_offset += cap_size;
+        }
+        None
+    }
+
+    /// Read from the config space. `offset` must be 32-bit aligned.
+    pub fn read_u32(&self, offset: u16, value: &mut u32) -> IoResult {
+        use cfg_space::HeaderType01;
+
+        *value = match HeaderType01(offset) {
+            HeaderType01::DEVICE_VENDOR => {
+                (self.hardware_ids.device_id as u32) << 16 | self.hardware_ids.vendor_id as u32
+            }
+            HeaderType01::STATUS_COMMAND => {
+                let status =
+                    cfg_space::Status::new().with_capabilities_list(!self.capabilities.is_empty());
+
+                (status.into_bits() as u32) << 16 | self.state.command.into_bits() as u32
+            }
+            HeaderType01::CLASS_REVISION => {
+                (u8::from(self.hardware_ids.base_class) as u32) << 24
+                    | (u8::from(self.hardware_ids.sub_class) as u32) << 16
+                    | (u8::from(self.hardware_ids.prog_if) as u32) << 8
+                    | self.hardware_ids.revision_id as u32
+            }
+            HeaderType01::BIST_HEADER => {
+                // Header type 01
+                0x00010000
+            }
+            HeaderType01::BAR0 => 0,
+            HeaderType01::BAR1 => 0,
+            HeaderType01::LATENCY_BUS_NUMBERS => {
+                (self.state.subordinate_bus_number as u32) << 16
+                    | (self.state.secondary_bus_number as u32) << 8
+                    | self.state.primary_bus_number as u32
+            }
+            HeaderType01::SEC_STATUS_IO_RANGE => 0,
+            HeaderType01::MEMORY_RANGE => {
+                (self.state.memory_limit as u32) << 16 | self.state.memory_base as u32
+            }
+            HeaderType01::PREFETCH_RANGE => {
+                // Set the low bit in both the limit and base registers to indicate
+                // support for 64-bit addressing.
+                ((self.state.prefetch_limit | 0b0001) as u32) << 16
+                    | (self.state.prefetch_base | 0b0001) as u32
+            }
+            HeaderType01::PREFETCH_BASE_UPPER => self.state.prefetch_base_upper,
+            HeaderType01::PREFETCH_LIMIT_UPPER => self.state.prefetch_limit_upper,
+            HeaderType01::IO_RANGE_UPPER => 0,
+            HeaderType01::RESERVED_CAP_PTR => {
+                if self.capabilities.is_empty() {
+                    0
+                } else {
+                    0x40
+                }
+            }
+            HeaderType01::EXPANSION_ROM_BASE => 0,
+            HeaderType01::BRDIGE_CTRL_INTERRUPT => 0,
+            // rest of the range is reserved for device capabilities
+            _ if (0x40..0x100).contains(&offset) => {
+                if let Some((cap_index, cap_offset)) =
+                    self.get_capability_index_and_offset(offset - 0x40)
+                {
+                    let mut value = self.capabilities[cap_index].read_u32(cap_offset);
+                    if cap_offset == 0 {
+                        let next = if cap_index < self.capabilities.len() - 1 {
+                            offset as u32 + self.capabilities[cap_index].len() as u32
+                        } else {
+                            0
+                        };
+                        assert!(value & 0xff00 == 0);
+                        value |= next << 8;
+                    }
+                    value
+                } else {
+                    tracelimit::warn_ratelimited!(offset, "unhandled config space read");
+                    return IoResult::Err(IoError::InvalidRegister);
+                }
+            }
+            _ if (0x100..0x1000).contains(&offset) => {
+                // TODO: properly support extended pci express configuration space
+                if offset == 0x100 {
+                    tracelimit::warn_ratelimited!(offset, "unexpected pci express probe");
+                    0x000ffff
+                } else {
+                    tracelimit::warn_ratelimited!(offset, "unhandled extended config space read");
+                    return IoResult::Err(IoError::InvalidRegister);
+                }
+            }
+            _ => {
+                tracelimit::warn_ratelimited!(offset, "unexpected config space read");
+                return IoResult::Err(IoError::InvalidRegister);
+            }
+        };
+
+        IoResult::Ok
+    }
+
+    /// Write to the config space. `offset` must be 32-bit aligned.
+    pub fn write_u32(&mut self, offset: u16, val: u32) -> IoResult {
+        use cfg_space::HeaderType01;
+
+        match HeaderType01(offset) {
+            HeaderType01::STATUS_COMMAND => {
+                let mut command = cfg_space::Command::from_bits(val as u16);
+                if command.into_bits() & !SUPPORTED_COMMAND_BITS != 0 {
+                    tracelimit::warn_ratelimited!(offset, val, "setting invalid command bits");
+                    // still do our best
+                    command =
+                        cfg_space::Command::from_bits(command.into_bits() & SUPPORTED_COMMAND_BITS);
+                };
+
+                // TODO: on MSE, sanity check the programmed memory and prefetch ranges...
+
+                self.state.command = command;
+            }
+            //HeaderType01::BAR0 => ()
+            //HeaderType01::BAR1 => ()
+            HeaderType01::LATENCY_BUS_NUMBERS => {
+                self.state.subordinate_bus_number = (val >> 16) as u8;
+                self.state.secondary_bus_number = (val >> 8) as u8;
+                self.state.primary_bus_number = val as u8;
+            }
+            HeaderType01::MEMORY_RANGE => {
+                self.state.memory_base = val as u16;
+                self.state.memory_limit = (val >> 16) as u16;
+            }
+            HeaderType01::PREFETCH_RANGE => {
+                self.state.prefetch_base = val as u16;
+                self.state.prefetch_limit = (val >> 16) as u16;
+            }
+            HeaderType01::PREFETCH_BASE_UPPER => {
+                self.state.prefetch_base_upper = val;
+            }
+            HeaderType01::PREFETCH_LIMIT_UPPER => {
+                self.state.prefetch_limit_upper = val;
+            }
+            // all other base regs are noops
+            _ if offset < 0x40 && offset % 4 == 0 => (),
+            // rest of the range is reserved for extended device capabilities
+            _ if (0x40..0x100).contains(&offset) => {
+                if let Some((cap_index, cap_offset)) =
+                    self.get_capability_index_and_offset(offset - 0x40)
+                {
+                    self.capabilities[cap_index].write_u32(cap_offset, val);
+                } else {
+                    tracelimit::warn_ratelimited!(
+                        offset,
+                        value = val,
+                        "unhandled config space write"
+                    );
+                    return IoResult::Err(IoError::InvalidRegister);
+                }
+            }
+            _ if (0x100..0x1000).contains(&offset) => {
+                // TODO: properly support extended pci express configuration space
+                tracelimit::warn_ratelimited!(
+                    offset,
+                    value = val,
+                    "unhandled extended config space write"
+                );
+                return IoResult::Err(IoError::InvalidRegister);
+            }
+            _ => {
+                tracelimit::warn_ratelimited!(offset, value = val, "unexpected config space write");
+                return IoResult::Err(IoError::InvalidRegister);
+            }
+        }
+
+        IoResult::Ok
+    }
+}
+
 mod save_restore {
     use super::*;
     use thiserror::Error;
@@ -682,5 +999,180 @@ mod save_restore {
 
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capabilities::read_only::ReadOnlyCapability;
+    use crate::spec::hwid::ClassCode;
+    use crate::spec::hwid::ProgrammingInterface;
+    use crate::spec::hwid::Subclass;
+
+    fn create_type1_emulator(caps: Vec<Box<dyn PciCapability>>) -> ConfigSpaceType1Emulator {
+        ConfigSpaceType1Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1111,
+                device_id: 0x2222,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+                base_class: ClassCode::BRIDGE,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            caps,
+        )
+    }
+
+    fn read_cfg(emulator: &ConfigSpaceType1Emulator, offset: u16) -> u32 {
+        let mut val = 0;
+        emulator.read_u32(offset, &mut val).unwrap();
+        val
+    }
+
+    #[test]
+    fn test_type1_probe() {
+        let emu = create_type1_emulator(vec![]);
+        assert_eq!(read_cfg(&emu, 0), 0x2222_1111);
+        assert_eq!(read_cfg(&emu, 4) & 0x10_0000, 0); // Capabilities pointer
+
+        let emu = create_type1_emulator(vec![Box::new(ReadOnlyCapability::new("foo", 0))]);
+        assert_eq!(read_cfg(&emu, 0), 0x2222_1111);
+        assert_eq!(read_cfg(&emu, 4) & 0x10_0000, 0x10_0000); // Capabilities pointer
+    }
+
+    #[test]
+    fn test_type1_bus_number_assignment() {
+        let mut emu = create_type1_emulator(vec![]);
+
+        // The bus number (and latency timer) registers are
+        // all default 0.
+        assert_eq!(read_cfg(&emu, 0x18), 0);
+        assert_eq!(emu.assigned_bus_range(), 0..=0);
+
+        // The bus numbers can be programmed one by one,
+        // and the range may not be valid during the middle
+        // of allocation.
+        emu.write_u32(0x18, 0x0000_1000).unwrap();
+        assert_eq!(read_cfg(&emu, 0x18), 0x0000_1000);
+        assert_eq!(emu.assigned_bus_range(), 0..=0);
+        emu.write_u32(0x18, 0x0012_1000).unwrap();
+        assert_eq!(read_cfg(&emu, 0x18), 0x0012_1000);
+        assert_eq!(emu.assigned_bus_range(), 0x10..=0x12);
+
+        // The primary bus number register is read/write for compatability
+        // but unused.
+        emu.write_u32(0x18, 0x0012_1033).unwrap();
+        assert_eq!(read_cfg(&emu, 0x18), 0x0012_1033);
+        assert_eq!(emu.assigned_bus_range(), 0x10..=0x12);
+
+        // Software can also just write the entire 4byte value at once
+        emu.write_u32(0x18, 0x0047_4411).unwrap();
+        assert_eq!(read_cfg(&emu, 0x18), 0x0047_4411);
+        assert_eq!(emu.assigned_bus_range(), 0x44..=0x47);
+
+        // The subordinate bus number can equal the secondary bus number...
+        emu.write_u32(0x18, 0x0088_8800).unwrap();
+        assert_eq!(emu.assigned_bus_range(), 0x88..=0x88);
+
+        // ... but it cannot be less, that's a confused guest OS.
+        emu.write_u32(0x18, 0x0087_8800).unwrap();
+        assert_eq!(emu.assigned_bus_range(), 0..=0);
+    }
+
+    #[test]
+    fn test_type1_memory_assignment() {
+        const MMIO_ENABLED: u32 = 0x0000_0002;
+        const MMIO_DISABLED: u32 = 0x0000_0000;
+
+        let mut emu = create_type1_emulator(vec![]);
+        assert!(emu.assigned_memory_range().is_none());
+
+        // The guest can write whatever it wants while MMIO
+        // is disabled.
+        emu.write_u32(0x20, 0xDEAD_BEEF).unwrap();
+        assert!(emu.assigned_memory_range().is_none());
+
+        // The guest can program a valid resource assignment...
+        emu.write_u32(0x20, 0xFFF0_FF00).unwrap();
+        assert!(emu.assigned_memory_range().is_none());
+        // ... enable memory decoding...
+        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        assert_eq!(emu.assigned_memory_range(), Some(0xFF00_0000..=0xFFFF_FFFF));
+        // ... then disable memory decoding it.
+        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        assert!(emu.assigned_memory_range().is_none());
+
+        // Setting memory base equal to memory limit is a valid 1MB range.
+        emu.write_u32(0x20, 0xBBB0_BBB0).unwrap();
+        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        assert_eq!(emu.assigned_memory_range(), Some(0xBBB0_0000..=0xBBBF_FFFF));
+        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        assert!(emu.assigned_memory_range().is_none());
+
+        // The guest can try to program an invalid assignment (base > limit), we
+        // just won't decode it.
+        emu.write_u32(0x20, 0xAA00_BB00).unwrap();
+        assert!(emu.assigned_memory_range().is_none());
+        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        assert!(emu.assigned_memory_range().is_none());
+        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        assert!(emu.assigned_memory_range().is_none());
+    }
+
+    #[test]
+    fn test_type1_prefetch_assignment() {
+        const MMIO_ENABLED: u32 = 0x0000_0002;
+        const MMIO_DISABLED: u32 = 0x0000_0000;
+
+        let mut emu = create_type1_emulator(vec![]);
+        assert!(emu.assigned_prefetch_range().is_none());
+
+        // The guest can program a valid prefetch range...
+        emu.write_u32(0x24, 0xFFF0_FF00).unwrap(); // limit + base
+        emu.write_u32(0x28, 0x00AA_BBCC).unwrap(); // base upper
+        emu.write_u32(0x2C, 0x00DD_EEFF).unwrap(); // limit upper
+        assert!(emu.assigned_prefetch_range().is_none());
+        // ... enable memory decoding...
+        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        assert_eq!(
+            emu.assigned_prefetch_range(),
+            Some(0x00AA_BBCC_FF00_0000..=0x00DD_EEFF_FFFF_FFFF)
+        );
+        // ... then disable memory decoding it.
+        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        assert!(emu.assigned_prefetch_range().is_none());
+
+        // The validity of the assignment is determined using the combined 64-bit
+        // address, not the lower bits or the upper bits in isolation.
+
+        // Lower bits of the limit are greater than the lower bits of the
+        // base, but the upper bits make that valid.
+        emu.write_u32(0x24, 0xFF00_FFF0).unwrap(); // limit + base
+        emu.write_u32(0x28, 0x00AA_BBCC).unwrap(); // base upper
+        emu.write_u32(0x2C, 0x00DD_EEFF).unwrap(); // limit upper
+        assert!(emu.assigned_prefetch_range().is_none());
+        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        assert_eq!(
+            emu.assigned_prefetch_range(),
+            Some(0x00AA_BBCC_FFF0_0000..=0x00DD_EEFF_FF0F_FFFF)
+        );
+        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        assert!(emu.assigned_prefetch_range().is_none());
+
+        // The base can equal the limit, which is a valid 1MB range.
+        emu.write_u32(0x24, 0xDD00_DD00).unwrap(); // limit + base
+        emu.write_u32(0x28, 0x00AA_BBCC).unwrap(); // base upper
+        emu.write_u32(0x2C, 0x00AA_BBCC).unwrap(); // limit upper
+        assert!(emu.assigned_prefetch_range().is_none());
+        emu.write_u32(0x4, MMIO_ENABLED).unwrap();
+        assert_eq!(
+            emu.assigned_prefetch_range(),
+            Some(0x00AA_BBCC_DD00_0000..=0x00AA_BBCC_DD0F_FFFF)
+        );
+        emu.write_u32(0x4, MMIO_DISABLED).unwrap();
+        assert!(emu.assigned_prefetch_range().is_none());
     }
 }
