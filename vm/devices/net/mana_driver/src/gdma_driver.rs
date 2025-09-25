@@ -206,11 +206,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
-        tracing::debug!(?self.state_saved, ?self.hwc_failure, "dropping gdma driver");
+        tracing::info!(?self.state_saved, ?self.hwc_failure, "dropping gdma driver");
 
         // Don't destroy anything if we're saving its state for restoration.
         if self.state_saved {
-            // Attempt to unmap all MSI-X vectors we may have mapped.
+            // Unmap interrupts to prevent the device from sending interrupts during save/restore
             if let Err(e) = self.unmap_all_msix() {
                 tracing::warn!(error = %e, "failed to unmap all msix vectors when dropping GdmaDriver");
             }
