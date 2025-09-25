@@ -5552,6 +5552,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "pci_bus",
+ "pci_core",
  "tracelimit",
  "tracing",
  "vmcore",

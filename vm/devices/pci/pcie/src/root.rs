@@ -12,6 +12,13 @@ use chipset_device::mmio::RegisterMmioIntercept;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_bus::GenericPciBusDevice;
+use pci_core::capabilities::pci_express::PciExpressCapability;
+use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
+use pci_core::spec::caps::pci_express::DevicePortType;
+use pci_core::spec::hwid::ClassCode;
+use pci_core::spec::hwid::HardwareIds;
+use pci_core::spec::hwid::ProgrammingInterface;
+use pci_core::spec::hwid::Subclass;
 use std::collections::HashMap;
 use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
@@ -197,7 +204,12 @@ impl MmioIntercept for GenericPcieRootComplex {
                 value = shift_read_value(cfg_offset, data.len(), value);
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
-                let _ = port.forward_cfg_read(&bus_number, &device_function, cfg_offset & !3, &mut value);
+                let _ = port.forward_cfg_read(
+                    &bus_number,
+                    &device_function,
+                    cfg_offset & !3,
+                    &mut value,
+                );
                 value = shift_read_value(cfg_offset, data.len(), value);
             }
         }
@@ -240,11 +252,21 @@ impl MmioIntercept for GenericPcieRootComplex {
                     write_value
                 } else {
                     let mut temp: u32 = 0;
-                    let _ = port.forward_cfg_read(&bus_number, &device_function, rounded_offset, &mut temp);
+                    let _ = port.forward_cfg_read(
+                        &bus_number,
+                        &device_function,
+                        rounded_offset,
+                        &mut temp,
+                    );
                     combine_old_new_values(cfg_offset, temp, write_value, data.len())
                 };
 
-                let _ = port.forward_cfg_write(&bus_number, &device_function, rounded_offset, merged_value);
+                let _ = port.forward_cfg_write(
+                    &bus_number,
+                    &device_function,
+                    rounded_offset,
+                    merged_value,
+                );
             }
         }
 
@@ -254,30 +276,33 @@ impl MmioIntercept for GenericPcieRootComplex {
 
 #[derive(Inspect)]
 struct RootPort {
-    // Minimal type 1 configuration space emulation for
-    // Linux and Windows to enumerate the port. This should
-    // be refactored into a dedicated type 1 emulator.
-    command_status_register: u32,
-    bus_number_registers: u32,
-    memory_limit_registers: u32,
-    prefetch_limit_registers: u32,
-    prefetch_base_upper_register: u32,
-    prefetch_limit_upper_register: u32,
+    cfg_space: ConfigSpaceType1Emulator,
 
     #[inspect(skip)]
     link: Option<(Arc<str>, Box<dyn GenericPciBusDevice>)>,
 }
 
 impl RootPort {
-    /// Constructs a new `RootPort` emulator.
+    /// Constructs a new [`RootPort`] emulator.
     pub fn new() -> Self {
+        let cfg_space = ConfigSpaceType1Emulator::new(
+            HardwareIds {
+                vendor_id: 0x1414,
+                device_id: 0xF111,
+                revision_id: 0,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+                base_class: ClassCode::BRIDGE,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            vec![Box::new(PciExpressCapability::new(
+                DevicePortType::RootPort,
+                None,
+            ))],
+        );
         Self {
-            command_status_register: 0,
-            bus_number_registers: 0,
-            memory_limit_registers: 0,
-            prefetch_limit_registers: 0,
-            prefetch_base_upper_register: 0,
-            prefetch_limit_upper_register: 0,
+            cfg_space,
             link: None,
         }
     }
@@ -298,92 +323,49 @@ impl RootPort {
     }
 
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-        *value = match offset {
-            0x00 => 0xF111_1414, // Device and Vendor IDs
-            0x04 => self.command_status_register | 0x0010_0000,
-            0x08 => 0x0604_0000, // Class code and revision
-            0x0C => 0x0001_0000, // Header type 1
-            0x10 => 0x0000_0000, // BAR0
-            0x14 => 0x0000_0000, // BAR1
-            0x18 => self.bus_number_registers,
-            0x1C => 0x0000_0000, // Secondary status and I/O range
-            0x20 => self.memory_limit_registers,
-            0x24 => self.prefetch_limit_registers,
-            0x28 => self.prefetch_base_upper_register,
-            0x2C => self.prefetch_limit_upper_register,
-            0x30 => 0x0000_0000, // I/O base and limit 16 bit
-            0x34 => 0x0000_0040, // Reserved and Capability pointer
-            0x38 => 0x0000_0000, // Expansion ROM
-            0x3C => 0x0000_0000, // Bridge control, interrupt pin/line
-
-            // PCI Express capability structure
-            0x40 => 0x0142_0010, // Capability header and PCI Express capabilities register
-            0x44 => 0x0000_0000, // Device capabilities register
-            0x48 => 0x0000_0000, // Device control and status registers
-            0x4C => 0x0000_0000, // Link capabilities register
-            0x50 => 0x0011_0000, // Link control and status registers
-            0x54 => 0x0000_0000, // Slot capabilities register
-            0x58 => 0x0000_0000, // Slot status and control registers
-            0x5C => 0x0000_0000, // Root capabilities and control registers
-            0x60 => 0x0000_0000, // Root status register
-            0x64 => 0x0000_0000, // Device capabilities 2 register
-            0x68 => 0x0000_0000, // Device status 2 and control 2 registers
-            0x6C => 0x0000_0000, // Link capabilities 2 register
-            0x70 => 0x0000_0000, // Link status 2 and control 2 registers
-            0x74 => 0x0000_0000, // Slot capabilities 2 register
-            0x78 => 0x0000_0000, // Slot status 2 and control 2 registers
-
-            _ => 0xFFFF,
-        };
-
-        IoResult::Ok
+        self.cfg_space.read_u32(offset, value)
     }
 
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-        match offset {
-            0x04 => self.command_status_register = value,
-            0x18 => self.bus_number_registers = value,
-            0x20 => self.memory_limit_registers = value,
-            0x24 => self.prefetch_limit_registers = value,
-            0x28 => self.prefetch_base_upper_register = value,
-            0x2C => self.prefetch_limit_upper_register = value,
-            _ => {}
-        };
-
-        IoResult::Ok
+        self.cfg_space.write_u32(offset, value)
     }
 
     fn assigned_bus_number(&self, bus: u8) -> bool {
-        let secondary_bus_number = ((self.bus_number_registers >> 8) & 0xFF) as u8;
-        let suboordinate_bus_number = ((self.bus_number_registers >> 16) & 0xFF) as u8;
-
-        bus >= secondary_bus_number && bus <= suboordinate_bus_number
+        self.cfg_space.assigned_bus_range().contains(&bus)
     }
 
-    fn forward_cfg_read(&mut self, bus: &u8, device_function: &u8, cfg_offset: u16, value: &mut u32) -> IoResult {
-        let secondary_bus_number = ((self.bus_number_registers >> 8) & 0xFF) as u8;
-        let suboordinate_bus_number = ((self.bus_number_registers >> 16) & 0xFF) as u8;
-
-        if *bus == secondary_bus_number && *device_function == 0 {
+    fn forward_cfg_read(
+        &mut self,
+        bus: &u8,
+        device_function: &u8,
+        cfg_offset: u16,
+        value: &mut u32,
+    ) -> IoResult {
+        let bus_range = self.cfg_space.assigned_bus_range();
+        if *bus == *bus_range.start() && *device_function == 0 {
             if let Some((_, device)) = &mut self.link {
                 let _ = device.pci_cfg_read(cfg_offset, value);
             }
-        } else if *bus > secondary_bus_number && *bus <= suboordinate_bus_number {
+        } else if bus_range.contains(bus) {
             tracelimit::warn_ratelimited!("multi-level hierarchies not implemented yet");
         }
 
         IoResult::Ok
     }
 
-    fn forward_cfg_write(&mut self, bus: &u8, device_function: &u8, cfg_offset: u16, value: u32) -> IoResult {
-        let secondary_bus_number = ((self.bus_number_registers >> 8) & 0xFF) as u8;
-        let suboordinate_bus_number = ((self.bus_number_registers >> 16) & 0xFF) as u8;
-
-        if *bus == secondary_bus_number && *device_function == 0 {
+    fn forward_cfg_write(
+        &mut self,
+        bus: &u8,
+        device_function: &u8,
+        cfg_offset: u16,
+        value: u32,
+    ) -> IoResult {
+        let bus_range = self.cfg_space.assigned_bus_range();
+        if *bus == *bus_range.start() && *device_function == 0 {
             if let Some((_, device)) = &mut self.link {
                 let _ = device.pci_cfg_write(cfg_offset, value);
             }
-        } else if *bus > secondary_bus_number && *bus <= suboordinate_bus_number {
+        } else if bus_range.contains(bus) {
             tracelimit::warn_ratelimited!("multi-level hierarchies not implemented yet");
         }
 
