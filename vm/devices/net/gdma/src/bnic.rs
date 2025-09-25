@@ -169,21 +169,15 @@ impl BasicNic {
             .iter()
             .enumerate()
         {
-            match task.queue_cfg.tx {
-                Some((_, _, h)) => {
-                    if h == wq_obj_handle {
-                        return Some(i);
-                    }
+            if let Some((_, _, h)) = task.queue_cfg.tx {
+                if h == wq_obj_handle {
+                    return Some(i);
                 }
-                None => {}
             }
-            match task.queue_cfg.rx {
-                Some((_, _, h)) => {
-                    if h == wq_obj_handle {
-                        return Some(i);
-                    }
+            if let Some((_, _, h)) = task.queue_cfg.rx {
+                if h == wq_obj_handle {
+                    return Some(i);
                 }
-                None => {}
             }
         }
         None
@@ -337,7 +331,7 @@ impl BasicNic {
 
                 let mut paired = false;
                 // Make the top 32 bits a the vport index
-                let mut wq_handle = (req.vport as u64) << 32;
+                let mut wq_handle = req.vport << 32;
                 wq_handle |= self.next_wq_handle.fetch_add(1, Ordering::Relaxed);
                 for task in vport.tasks.iter_mut() {
                     if is_send {
@@ -378,14 +372,6 @@ impl BasicNic {
                     wq_obj: wq_handle,
                 };
 
-                tracing::info!(
-                    "Created queue: vport_num={}, wq_id={}, cq_id={}, wq_obj={}",
-                    req.vport,
-                    resp.wq_id,
-                    resp.cq_id,
-                    resp.wq_obj
-                );
-
                 write.write(resp.as_bytes())?;
 
                 // Take ownership of the DMA regions.
@@ -408,14 +394,6 @@ impl BasicNic {
                 if vport.tasks[task_idx].task.has_state() {
                     anyhow::bail!("queue still in use");
                 }
-
-                tracing::info!(
-                    "Destroying queue: vport_num={}, wq_obj={}, task_idx={}, tasks_len={}",
-                    vport_idx,
-                    req.wq_obj_handle,
-                    task_idx,
-                    vport.tasks.len()
-                );
 
                 let (wq_id, cq_id, _) = match req.wq_type {
                     GdmaQueueType::GDMA_RQ => vport.tasks[task_idx]
