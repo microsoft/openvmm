@@ -475,7 +475,7 @@ pub mod caps {
             const fn from_bits(bits: u16) -> Self {
                 match bits {
                     0b0000 => DevicePortType::Endpoint,
-                    0b1000 => DevicePortType::RootPort,
+                    0b0100 => DevicePortType::RootPort,
                     _ => unreachable!(),
                 }
             }

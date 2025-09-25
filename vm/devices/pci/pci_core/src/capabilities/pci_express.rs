@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pci_express_capability_read_u32() {
+    fn test_pci_express_capability_read_u32_endpoint() {
         let flr_handler = TestFlrHandler::new();
         let cap = PciExpressCapability::new(DevicePortType::Endpoint, Some(flr_handler));
 
@@ -289,6 +289,17 @@ mod tests {
         // Test unhandled offset - should return 0 and not panic
         let unhandled_val = cap.read_u32(0x10);
         assert_eq!(unhandled_val, 0);
+    }
+
+    #[test]
+    fn test_pci_express_capability_read_u32_root_port() {
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        // Test PCIe Capabilities Register (offset 0x00)
+        let caps_val = cap.read_u32(0x00);
+        assert_eq!(caps_val & 0xFF, 0x10); // Capability ID = 0x10
+        assert_eq!((caps_val >> 8) & 0xFF, 0x00); // Next Pointer = 0x00
+        assert_eq!((caps_val >> 16) & 0xFFFF, 0x0042); // PCIe Caps: Version 2, Device/Port Type 4
     }
 
     #[test]
