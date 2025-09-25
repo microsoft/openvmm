@@ -225,12 +225,9 @@ impl net_backend::Endpoint for ConsommeEndpoint {
     }
 
     fn multiqueue_support(&self) -> net_backend::MultiQueueSupport {
-        // Report reasonable multiqueue capabilities for Consomme. This
-        // allows endpoints like BasicNic to request multiple queues which
-        // will each be backed by a ConsommeQueue sharing the same state.
         net_backend::MultiQueueSupport {
             max_queues: 64,
-            indirection_table_size: 128,
+            indirection_table_size: 0,
         }
     }
 }
