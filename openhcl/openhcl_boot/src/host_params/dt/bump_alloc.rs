@@ -243,6 +243,12 @@ mod tests {
             vec.resize(10000, 0);
         }
 
+        // Attempt to allocate a large chunk that is not available.
+        unsafe {
+            let ptr4 = allocator.alloc(Layout::from_size_align(0x1000 * 20, 8).unwrap());
+            assert!(ptr4.is_null());
+        }
+
         // Recreate the box, then drop it so miri is satisfied.
         let _buf = unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(addr, 0x1000 * 20)) };
 
