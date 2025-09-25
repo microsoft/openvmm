@@ -274,6 +274,7 @@ async fn shutdown_ic(
                         }],
                         io_queue_depth: None,
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));
@@ -447,6 +448,7 @@ async fn create_keepalive_test_config(
                             .into_resource(),
                         }],
                         fault_config: fault_configuration,
+                        flr_support: false,
                     }
                     .into_resource(),
                 })

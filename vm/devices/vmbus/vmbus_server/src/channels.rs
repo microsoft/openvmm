@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-mod saved_state;
+pub mod saved_state;
 #[cfg(test)]
 mod tests;
 

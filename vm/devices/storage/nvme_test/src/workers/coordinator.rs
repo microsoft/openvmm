@@ -32,9 +32,10 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
+#[derive(Clone)]
 /// An input context for the NvmeWorkers
-pub struct NvmeWorkersContext<'a> {
-    pub driver_source: &'a VmTaskDriverSource,
+pub struct NvmeWorkersContext {
+    pub driver_source: VmTaskDriverSource,
     pub mem: GuestMemory,
     pub interrupts: Vec<Interrupt>,
     pub max_sqs: u16,
@@ -66,7 +67,7 @@ impl InspectMut for NvmeWorkers {
 }
 
 impl NvmeWorkers {
-    pub fn new(context: NvmeWorkersContext<'_>) -> Self {
+    pub fn new(context: NvmeWorkersContext) -> Self {
         let NvmeWorkersContext {
             driver_source,
             mem,
@@ -85,7 +86,7 @@ impl NvmeWorkers {
         let handler: AdminHandler = AdminHandler::new(
             driver.clone(),
             AdminConfig {
-                driver_source: driver_source.clone(),
+                driver_source,
                 mem,
                 interrupts,
                 doorbells: doorbells.clone(),

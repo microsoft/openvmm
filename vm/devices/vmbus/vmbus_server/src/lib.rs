@@ -279,12 +279,12 @@ impl EventPort for ChannelEvent {
 #[mesh(package = "vmbus.server")]
 pub struct SavedState {
     #[mesh(1)]
-    server: channels::SavedState,
+    pub server: channels::SavedState,
     // Indicates if the lost synic bug is fixed or not. By default it's false.
     // During the restore process, we check if the field is not true then
     // unstick_channels() function will be called to mitigate the issue.
     #[mesh(2)]
-    lost_synic_bug_fixed: bool,
+    pub lost_synic_bug_fixed: bool,
 }
 
 const MESSAGE_CONNECTION_ID: u32 = 1;
