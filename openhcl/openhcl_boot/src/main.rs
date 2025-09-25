@@ -8,9 +8,16 @@
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
+// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`.
+//
+// Do not use a normal feature, as that shows errors rust-analyzer since most
+// people are using stable. We could remove this once the allocator_api feature
+// is stable.
+#![cfg_attr(nightly, feature(allocator_api))]
 
 mod arch;
 mod boot_logger;
+mod bump_alloc;
 mod cmdline;
 mod dt;
 mod host_params;
@@ -401,7 +408,9 @@ mod x86_boot {
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
                 | MemoryVtlType::VTL2_TDX_PAGE_TABLES
-                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER => {
+                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
+                | MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF => {
                     add_e820_entry(entries.next(), range, E820_RESERVED)?;
                     n += 1;
                 }
@@ -1032,6 +1041,7 @@ mod test {
     fn new_address_space_manager(
         ram: &[MemoryRange],
         bootshim_used: MemoryRange,
+        persisted_range: MemoryRange,
         parameter_range: MemoryRange,
         reclaim: Option<MemoryRange>,
     ) -> AddressSpaceManager {
@@ -1049,6 +1059,7 @@ mod test {
             &mut address_space,
             &ram,
             bootshim_used,
+            persisted_range,
             subtract_ranges([parameter_range], reclaim),
         )
         .init()
@@ -1077,6 +1088,7 @@ mod test {
         }
     }
 
+    const PAGE_SIZE: u64 = 0x1000;
     const ONE_MB: u64 = 0x10_0000;
 
     #[test]
@@ -1085,10 +1097,14 @@ mod test {
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
         let bootshim_used = MemoryRange::try_new(ONE_MB..3 * ONE_MB).unwrap();
+        let persisted_header_end = ONE_MB + PAGE_SIZE;
+        let persisted_end = ONE_MB + 4 * PAGE_SIZE;
+        let persisted_state = MemoryRange::try_new(ONE_MB..persisted_end).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..3 * ONE_MB).unwrap();
         let address_space = new_address_space_manager(
             &[MemoryRange::new(ONE_MB..4 * ONE_MB)],
             bootshim_used,
+            persisted_state,
             parameter_range,
             None,
         );
@@ -1099,7 +1115,9 @@ mod test {
             &boot_params,
             &ext,
             &[
-                (ONE_MB..2 * ONE_MB, E820_RAM),
+                (ONE_MB..(persisted_header_end), E820_RESERVED),
+                (persisted_header_end..persisted_end, E820_RESERVED),
+                (persisted_end..2 * ONE_MB, E820_RAM),
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
             ],
@@ -1109,11 +1127,15 @@ mod test {
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
         let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
+        let persisted_header_end = ONE_MB + PAGE_SIZE;
+        let persisted_end = ONE_MB + 4 * PAGE_SIZE;
+        let persisted_state = MemoryRange::try_new(ONE_MB..persisted_end).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
         let address_space = new_address_space_manager(
             &[MemoryRange::new(ONE_MB..6 * ONE_MB)],
             bootshim_used,
+            persisted_state,
             parameter_range,
             Some(reclaim),
         );
@@ -1124,7 +1146,9 @@ mod test {
             &boot_params,
             &ext,
             &[
-                (ONE_MB..2 * ONE_MB, E820_RAM),
+                (ONE_MB..(persisted_header_end), E820_RESERVED),
+                (persisted_header_end..persisted_end, E820_RESERVED),
+                (persisted_end..2 * ONE_MB, E820_RAM),
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
                 (4 * ONE_MB..5 * ONE_MB, E820_RESERVED),
@@ -1136,6 +1160,9 @@ mod test {
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
         let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
+        let persisted_header_end = ONE_MB + PAGE_SIZE;
+        let persisted_end = ONE_MB + 4 * PAGE_SIZE;
+        let persisted_state = MemoryRange::try_new(ONE_MB..persisted_end).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
         let address_space = new_address_space_manager(
@@ -1144,6 +1171,7 @@ mod test {
                 MemoryRange::new(4 * ONE_MB..10 * ONE_MB),
             ],
             bootshim_used,
+            persisted_state,
             parameter_range,
             Some(reclaim),
         );
@@ -1154,7 +1182,9 @@ mod test {
             &boot_params,
             &ext,
             &[
-                (ONE_MB..2 * ONE_MB, E820_RAM),
+                (ONE_MB..(persisted_header_end), E820_RESERVED),
+                (persisted_header_end..persisted_end, E820_RESERVED),
+                (persisted_end..2 * ONE_MB, E820_RAM),
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
                 (4 * ONE_MB..5 * ONE_MB, E820_RESERVED),
@@ -1166,6 +1196,9 @@ mod test {
         let mut boot_params: boot_params = FromZeros::new_zeroed();
         let mut ext = FromZeros::new_zeroed();
         let bootshim_used = MemoryRange::try_new(ONE_MB..5 * ONE_MB).unwrap();
+        let persisted_header_end = ONE_MB + PAGE_SIZE;
+        let persisted_end = ONE_MB + 4 * PAGE_SIZE;
+        let persisted_state = MemoryRange::try_new(ONE_MB..persisted_end).unwrap();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let reclaim = MemoryRange::try_new(3 * ONE_MB..4 * ONE_MB).unwrap();
         let address_space = new_address_space_manager(
@@ -1179,6 +1212,7 @@ mod test {
                 MemoryRange::new(7 * ONE_MB..8 * ONE_MB),
             ],
             bootshim_used,
+            persisted_state,
             parameter_range,
             Some(reclaim),
         );
@@ -1189,7 +1223,9 @@ mod test {
             &boot_params,
             &ext,
             &[
-                (ONE_MB..2 * ONE_MB, E820_RAM),
+                (ONE_MB..(persisted_header_end), E820_RESERVED),
+                (persisted_header_end..persisted_end, E820_RESERVED),
+                (persisted_end..2 * ONE_MB, E820_RAM),
                 (2 * ONE_MB..3 * ONE_MB, E820_RESERVED),
                 (3 * ONE_MB..4 * ONE_MB, E820_RAM),
                 (4 * ONE_MB..5 * ONE_MB, E820_RESERVED),
@@ -1218,8 +1254,9 @@ mod test {
             ranges.push(MemoryRange::new(start..end));
         }
 
-        let bootshim_used = MemoryRange::try_new(0..ONE_MB).unwrap();
-        let parameter_range = MemoryRange::try_new(0..ONE_MB).unwrap();
+        let bootshim_used = MemoryRange::try_new(0..ONE_MB * 2).unwrap();
+        let persisted_range = MemoryRange::try_new(0..ONE_MB).unwrap();
+        let parameter_range = MemoryRange::try_new(ONE_MB..2 * ONE_MB).unwrap();
 
         let mut address_space = {
             let ram = ranges
@@ -1236,6 +1273,7 @@ mod test {
                 &mut address_space,
                 &ram,
                 bootshim_used,
+                persisted_range,
                 core::iter::once(parameter_range),
             )
             .init()

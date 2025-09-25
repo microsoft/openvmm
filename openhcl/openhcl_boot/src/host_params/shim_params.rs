@@ -105,6 +105,10 @@ pub struct ShimParams {
     pub page_tables: Option<MemoryRange>,
     /// Log buffer region used by the shim.
     pub log_buffer: MemoryRange,
+    /// Memory to be used for the heap.
+    pub heap: MemoryRange,
+    /// Memory region for persisted state.
+    pub persisted_state: MemoryRange,
 }
 
 impl ShimParams {
@@ -135,6 +139,10 @@ impl ShimParams {
             page_tables_size,
             log_buffer_start,
             log_buffer_size,
+            heap_start_offset,
+            heap_size,
+            persisted_state_region_offset,
+            persisted_state_region_size,
         } = raw;
 
         let isolation_type = get_isolation_type(supported_isolation_type);
@@ -156,6 +164,16 @@ impl ShimParams {
         let log_buffer = {
             let base = shim_base_address.wrapping_add_signed(log_buffer_start);
             MemoryRange::new(base..base + log_buffer_size)
+        };
+
+        let heap = {
+            let base = shim_base_address.wrapping_add_signed(heap_start_offset);
+            MemoryRange::new(base..base + heap_size)
+        };
+
+        let persisted_state = {
+            let base = shim_base_address.wrapping_add_signed(persisted_state_region_offset);
+            MemoryRange::new(base..base + persisted_state_region_size)
         };
 
         Self {
@@ -182,6 +200,8 @@ impl ShimParams {
             bounce_buffer,
             page_tables,
             log_buffer,
+            heap,
+            persisted_state,
         }
     }
 

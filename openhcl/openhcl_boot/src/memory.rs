@@ -45,6 +45,10 @@ pub enum ReservedMemoryType {
     TdxPageTables,
     /// In-memory bootshim log buffer.
     BootshimLogBuffer,
+    /// Persisted state header.
+    PersistedStateHeader,
+    /// Persisted state payload.
+    PersistedStatePayload,
 }
 
 impl From<ReservedMemoryType> for MemoryVtlType {
@@ -57,6 +61,10 @@ impl From<ReservedMemoryType> for MemoryVtlType {
             ReservedMemoryType::Vtl2GpaPool => MemoryVtlType::VTL2_GPA_POOL,
             ReservedMemoryType::TdxPageTables => MemoryVtlType::VTL2_TDX_PAGE_TABLES,
             ReservedMemoryType::BootshimLogBuffer => MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER,
+            ReservedMemoryType::PersistedStateHeader => MemoryVtlType::VTL2_PERSISTED_STATE_HEADER,
+            ReservedMemoryType::PersistedStatePayload => {
+                MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF
+            }
         }
     }
 }
@@ -124,11 +132,13 @@ pub struct AddressSpaceManagerBuilder<'a, I: Iterator<Item = MemoryRange>> {
     manager: &'a mut AddressSpaceManager,
     vtl2_ram: &'a [MemoryEntry],
     bootshim_used: MemoryRange,
+    persisted_state_region: MemoryRange,
     vtl2_config: I,
     reserved_range: Option<MemoryRange>,
     sidecar_image: Option<MemoryRange>,
     page_tables: Option<MemoryRange>,
     log_buffer: Option<MemoryRange>,
+    pool_range: Option<MemoryRange>,
 }
 
 impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
@@ -139,22 +149,29 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
     /// `bootshim_used` is the range used by the bootshim, but may be reclaimed
     /// as ram by the kernel.
     ///
+    /// `persisted_state_region` is the range used to store the persisted state
+    /// header described by [`loader_defs::shim::PersistedStateHeader`] and
+    /// corresponding protbuf payload.
+    ///
     /// Other ranges described by other methods must lie within `bootshim_used`.
     pub fn new(
         manager: &'a mut AddressSpaceManager,
         vtl2_ram: &'a [MemoryEntry],
         bootshim_used: MemoryRange,
+        persisted_state_region: MemoryRange,
         vtl2_config: I,
     ) -> AddressSpaceManagerBuilder<'a, I> {
         AddressSpaceManagerBuilder {
             manager,
             vtl2_ram,
             bootshim_used,
+            persisted_state_region,
             vtl2_config,
             reserved_range: None,
             sidecar_image: None,
             page_tables: None,
             log_buffer: None,
+            pool_range: None,
         }
     }
 
@@ -182,17 +199,25 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
         self
     }
 
+    /// Existing VTL2 GPA pool ranges, reported as type [`MemoryVtlType::VTL2_GPA_POOL`].
+    pub fn with_pool_range(mut self, pool_range: MemoryRange) -> Self {
+        self.pool_range = Some(pool_range);
+        self
+    }
+
     /// Consume the builder and initialize the address space manager.
     pub fn init(self) -> Result<&'a mut AddressSpaceManager, Error> {
         let Self {
             manager,
             vtl2_ram,
             bootshim_used,
+            persisted_state_region,
             vtl2_config,
             reserved_range,
             sidecar_image,
             page_tables,
             log_buffer,
+            pool_range,
         } = self;
 
         if vtl2_ram.len() > MAX_VTL2_RAM_RANGES {
@@ -206,8 +231,16 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
             return Err(Error::AlreadyInitialized);
         }
 
+        // Split the persisted state region into two: the header which is the
+        // first 4K page, and the remainder which is the protobuf payload. Both
+        // are reserved ranges.
+        let (persisted_header, persisted_payload) =
+            persisted_state_region.split_at_offset(PAGE_SIZE_4K);
+
         // The other ranges are reserved, and must overlap with the used range.
-        let mut reserved: ArrayVec<(MemoryRange, ReservedMemoryType), 5> = ArrayVec::new();
+        let mut reserved: ArrayVec<(MemoryRange, ReservedMemoryType), 20> = ArrayVec::new();
+        reserved.push((persisted_header, ReservedMemoryType::PersistedStateHeader));
+        reserved.push((persisted_payload, ReservedMemoryType::PersistedStatePayload));
         reserved.extend(vtl2_config.map(|r| (r, ReservedMemoryType::Vtl2Config)));
         reserved.extend(
             reserved_range
@@ -231,7 +264,7 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
         );
         reserved.sort_unstable_by_key(|(r, _)| r.start());
 
-        let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), 10> = ArrayVec::new();
+        let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), 13> = ArrayVec::new();
 
         // Construct initial used ranges by walking both the bootshim_used range
         // and all reserved ranges that overlap.
@@ -256,6 +289,16 @@ impl<'a, I: Iterator<Item = MemoryRange>> AddressSpaceManagerBuilder<'a, I> {
                 RangeWalkResult::Neither => {}
             }
         }
+
+        // Add any existing pool range as reserved.
+        if let Some(range) = pool_range {
+            used_ranges.push((
+                range,
+                AddressUsage::Reserved(ReservedMemoryType::Vtl2GpaPool),
+            ));
+            manager.vtl2_pool = true;
+        }
+        used_ranges.sort_unstable_by_key(|(r, _)| r.start());
 
         // Construct the initial state of VTL2 address space by walking ram and reserved ranges
         assert!(manager.address_space.is_empty());
@@ -491,6 +534,7 @@ mod tests {
             &mut address_space,
             vtl2_ram,
             MemoryRange::new(0x0..0xF000),
+            MemoryRange::new(0x0..0x2000),
             [
                 MemoryRange::new(0x3000..0x4000),
                 MemoryRange::new(0x5000..0x6000),
@@ -576,6 +620,7 @@ mod tests {
             &mut address_space,
             vtl2_ram,
             MemoryRange::new(0x0..0x10000),
+            MemoryRange::new(0x0..0x2000),
             [
                 MemoryRange::new(0x3000..0x4000),
                 MemoryRange::new(0x5000..0x6000),
@@ -659,6 +704,7 @@ mod tests {
             &mut address_space,
             vtl2_ram,
             MemoryRange::new(0x0..0xF000),
+            MemoryRange::new(0x0..0x2000),
             [
                 MemoryRange::new(0x3000..0x4000),
                 MemoryRange::new(0x5000..0x6000),
@@ -717,6 +763,7 @@ mod tests {
             &mut address_space,
             &vtl2_ram,
             bootshim_used,
+            MemoryRange::new(0x0..0x2000),
             [MemoryRange::new(0x10000..0x11000)].iter().cloned(), // completely outside
         )
         .init();
@@ -733,6 +780,7 @@ mod tests {
             &mut address_space,
             &vtl2_ram,
             bootshim_used,
+            MemoryRange::new(0x0..0x2000),
             [MemoryRange::new(0xE000..0x10000)].iter().cloned(), // partially overlapping
         )
         .init();
@@ -741,5 +789,91 @@ mod tests {
             result,
             Err(Error::ReservedRangeOutsideBootshimUsed { .. })
         ));
+
+        // test persisted region outside of bootshim_used
+        let mut address_space = AddressSpaceManager::new_const();
+        let result = AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            &vtl2_ram,
+            bootshim_used,
+            MemoryRange::new(0x10000..0x14000), // outside
+            [MemoryRange::new(0xE000..0xF000)].iter().cloned(),
+        )
+        .init();
+
+        assert!(matches!(
+            result,
+            Err(Error::ReservedRangeOutsideBootshimUsed { .. })
+        ));
     }
+
+    #[test]
+    fn test_persisted_range() {
+        let vtl2_ram = [MemoryEntry {
+            range: MemoryRange::new(0x0..0x20000),
+            vnode: 0,
+            mem_type: MemoryMapEntryType::MEMORY,
+        }];
+        let bootshim_used = MemoryRange::new(0x0..0xF000);
+
+        let mut address_space = AddressSpaceManager::new_const();
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            &vtl2_ram,
+            bootshim_used,
+            MemoryRange::new(0x0..0xE000),
+            [MemoryRange::new(0xE000..0xF000)].iter().cloned(),
+        )
+        .init()
+        .unwrap();
+
+        let expected = [
+            (
+                MemoryRange::new(0x0..0x1000),
+                MemoryVtlType::VTL2_PERSISTED_STATE_HEADER,
+            ),
+            (
+                MemoryRange::new(0x1000..0xE000),
+                MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF,
+            ),
+            (MemoryRange::new(0xE000..0xF000), MemoryVtlType::VTL2_CONFIG),
+            (MemoryRange::new(0xF000..0x20000), MemoryVtlType::VTL2_RAM),
+        ];
+
+        for (expected, actual) in expected.iter().zip(address_space.vtl2_ranges()) {
+            assert_eq!(*expected, actual);
+        }
+
+        // test with free space between state region and config
+        let mut address_space = AddressSpaceManager::new_const();
+        AddressSpaceManagerBuilder::new(
+            &mut address_space,
+            &vtl2_ram,
+            bootshim_used,
+            MemoryRange::new(0x0..0xA000),
+            [MemoryRange::new(0xE000..0xF000)].iter().cloned(),
+        )
+        .init()
+        .unwrap();
+
+        let expected = [
+            (
+                MemoryRange::new(0x0..0x1000),
+                MemoryVtlType::VTL2_PERSISTED_STATE_HEADER,
+            ),
+            (
+                MemoryRange::new(0x1000..0xA000),
+                MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF,
+            ),
+            (MemoryRange::new(0xA000..0xE000), MemoryVtlType::VTL2_RAM),
+            (MemoryRange::new(0xE000..0xF000), MemoryVtlType::VTL2_CONFIG),
+            (MemoryRange::new(0xF000..0x20000), MemoryVtlType::VTL2_RAM),
+        ];
+
+        for (expected, actual) in expected.iter().zip(address_space.vtl2_ranges()) {
+            assert_eq!(*expected, actual);
+        }
+    }
+
+    // FIXME: test pool ranges
 }
