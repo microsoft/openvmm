@@ -3,7 +3,7 @@
 
 //! Test requirements framework for runtime test filtering.
 #[cfg(target_os = "windows")]
-use crate::vm::hyperv::powershell::{self, HyperVGetVmHost, HyperVGuestStateIsolationType};
+use crate::vm::hyperv::powershell::{self, HyperVGuestStateIsolationType};
 
 /// Execution environments where tests can run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,11 +45,22 @@ pub enum VmmType {
     HyperV,
 }
 
+/// Information about the VM host, retrieved via PowerShell on Windows.
+#[derive(Debug, Clone)]
+pub struct VmHostInfo {
+    /// VBS support status
+    pub vbs_supported: bool,
+    /// SNP support status
+    pub snp_status: bool,
+    /// TDX support status
+    pub tdx_status: bool,
+}
+
 /// Platform-specific host context extending the base HostContext
 #[derive(Debug, Clone)]
 pub struct HostContext {
     /// VmHost information retrieved via PowerShell
-    pub vm_host_info: Option<HyperVGetVmHost>,
+    pub vm_host_info: Option<VmHostInfo>,
     /// CPU vendor
     pub vendor: Vendor,
     /// Execution environment
@@ -111,11 +122,28 @@ impl HostContext {
             }
         };
 
-        Self {
+        let vm_host_info = {
             #[cfg(windows)]
-            vm_host_info: powershell::run_get_vm_host().await.ok(),
+            {
+                powershell::run_get_vm_host()
+                    .await
+                    .ok()
+                    .map(|info| VmHostInfo {
+                        vbs_supported: info
+                            .guest_isolation_types
+                            .contains(&HyperVGuestStateIsolationType::Vbs),
+                        snp_status: info.snp_status,
+                        tdx_status: info.tdx_status,
+                    })
+            }
             #[cfg(not(windows))]
-            vm_host_info: None,
+            {
+                None
+            }
+        };
+
+        Self {
+            vm_host_info,
             vendor,
             execution_environment: if is_nested {
                 ExecutionEnvironment::Nested
@@ -154,9 +182,7 @@ impl TestRequirement {
             TestRequirement::Isolation(isolation_type) => {
                 if let Some(vm_host_info) = &context.vm_host_info {
                     match isolation_type {
-                        IsolationType::Vbs => vm_host_info
-                            .guest_isolation_types
-                            .contains(&HyperVGuestStateIsolationType::Vbs),
+                        IsolationType::Vbs => vm_host_info.vbs_supported,
                         IsolationType::Snp => vm_host_info.snp_status,
                         IsolationType::Tdx => vm_host_info.tdx_status,
                     }
