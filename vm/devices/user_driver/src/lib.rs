@@ -47,8 +47,7 @@ pub trait DeviceBacking: 'static + Send + Inspect {
 
     /// Unmaps and disables all previously mapped interrupts.
     ///
-    /// Default implementation is a no-op for backends that do not support
-    /// dynamic interrupt unmapping.
+    /// Default implementation is a no-op for backends that do not support interrupt unmapping.
     fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
         Ok(())
     }

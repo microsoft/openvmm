@@ -4,7 +4,6 @@
 //! Types to save and restore the state of a MANA device.
 
 use mesh::payload::Protobuf;
-use std::collections::HashMap;
 
 /// Top level saved state for the GDMA driver's saved state
 #[derive(Protobuf, Clone, Debug)]
@@ -42,27 +41,23 @@ pub struct GdmaDriverSavedState {
     #[mesh(8)]
     pub pdid: u32,
 
-    /// Event queue id to msix mapping
+    /// The id of the HWC activity
     #[mesh(9)]
-    pub eq_id_msix: HashMap<u32, u32>,
-
-    /// The id of the hwc activity
-    #[mesh(10)]
     pub hwc_activity_id: u32,
 
     /// How many msix vectors are available
-    #[mesh(11)]
+    #[mesh(10)]
     pub num_msix: u32,
 
     /// Minimum number of queues available
-    #[mesh(12)]
+    #[mesh(11)]
     pub min_queue_avail: u32,
     /// Link status by vport index
-    #[mesh(13)]
+    #[mesh(12)]
     pub link_toggle: Vec<(u32, bool)>,
 
-    /// The hwc failure state
-    #[mesh(14)]
+    /// The HWC failure state
+    #[mesh(13)]
     pub hwc_failure: bool,
 }
 

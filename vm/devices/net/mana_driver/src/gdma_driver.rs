@@ -290,14 +290,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;
 
-        let dma_buffer = if let Some(dma_buffer) = dma_buffer {
-            dma_buffer
-        } else {
+        let dma_buffer = dma_buffer.map(Ok).unwrap_or_else(|| {
             let dma_client = device.dma_client();
             dma_client
                 .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
-                .context("failed to allocate DMA buffer")?
-        };
+                .context("failed to allocate DMA buffer")
+        })?;
 
         let pages = dma_buffer.pfns();
 
@@ -532,7 +530,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             db_id: doorbell.doorbell_id,
             gpa_mkey: self.gpa_mkey,
             pdid: self._pdid,
-            eq_id_msix: self.eq_id_msix.clone(),
             hwc_activity_id: self.hwc_activity_id,
             num_msix: self.num_msix,
             min_queue_avail: self.min_queue_avail,
@@ -636,6 +633,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
         let mut interrupts = vec![None; saved_state.num_msix as usize];
         interrupts[0] = Some(device.map_interrupt(0, 0)?);
+        let mut eq_id_msix = HashMap::new();
+        eq_id_msix.insert(eq.id(), 0);
 
         let mut this = Self {
             device: Some(device),
@@ -646,12 +645,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             cq,
             rq,
             sq,
+            eq_id_msix,
             test_events: 0,
             eq_armed: true,
             cq_armed: true,
             gpa_mkey: saved_state.gpa_mkey,
             _pdid: saved_state.pdid,
-            eq_id_msix: saved_state.eq_id_msix,
             num_msix: saved_state.num_msix,
             min_queue_avail: saved_state.min_queue_avail,
             hwc_activity_id: saved_state.hwc_activity_id,
