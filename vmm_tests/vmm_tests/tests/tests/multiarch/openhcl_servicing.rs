@@ -330,7 +330,7 @@ async fn keepalive_with_nvme_fault(
             ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration, mesh::CellUpdater::new(false).cell()).await?;
 
     agent.ping().await?;
     let sh = agent.unix_shell();
@@ -348,6 +348,54 @@ async fn keepalive_with_nvme_fault(
         },
     )
     .await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn keepalive_with_nvme_fault_async_notification(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    if !host_supports_servicing() {
+        tracing::info!("skipping OpenHCL servicing test on unsupported host");
+        return Ok(());
+    }
+
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell());  // Empty fault config for the time being
+
+    let mut fault_namespace_change_notification = mesh::CellUpdater::new(false);
+
+    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration, fault_namespace_change_notification.cell()).await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    // CREATE_IO_COMPLETION_QUEUE is blocked. This will panic out without keepalive enabled.
+    fault_start_updater.set(true).await;
+    let restart_openhcl = vm.restart_openhcl(
+        igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+    );
+
+    // Do something here to process the async notification in the fault controller.
+    fault_namespace_change_notification.set(true).await;
+
+    restart_openhcl.await?;
 
     fault_start_updater.set(false).await;
     agent.ping().await?;
@@ -392,7 +440,7 @@ async fn keepalive_with_nvme_identify_namespace_fault(
             ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration, mesh::CellUpdater::new(false).cell()).await?;
 
     agent.ping().await?;
     let sh = agent.unix_shell();
@@ -420,6 +468,7 @@ async fn keepalive_with_nvme_identify_namespace_fault(
 async fn create_keepalive_test_config(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
+    fake_namespace_change_notification: mesh::Cell<bool>,
 ) -> Result<(petri::PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl0_nvme_lun = 1;
@@ -448,6 +497,7 @@ async fn create_keepalive_test_config(
                             .into_resource(),
                         }],
                         fault_config: fault_configuration,
+                        fake_namespace_change_notification,
                     }
                     .into_resource(),
                 })

@@ -33,6 +33,12 @@ pub enum PciFaultBehavior {
     Default,
 }
 
+#[derive(Clone, MeshPayload)]
+/// Supported fault behaviour for asynchronous requests
+pub enum AsynchronousRequestFaultBehavior {
+    ProcessUntil(mesh::Cell<u32>),
+}
+
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
 pub struct PciFaultConfig {

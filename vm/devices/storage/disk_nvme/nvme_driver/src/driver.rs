@@ -28,6 +28,7 @@ use mesh::OneshotReceiver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use save_restore::NvmeDriverWorkerSavedState;
+use core::panic;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use task_control::AsyncRun;
@@ -684,11 +685,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             let admin = admin.issuer().clone();
             let rescan_event = this.rescan_event.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event, aer_receiver).await {
-                    tracing::error!(
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "asynchronous event failure, not processing any more"
-                    );
+                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event, None).await {
+                    panic!("AER looks like it completed after servicing: {err}");
+                    // tracing::error!(
+                    //     error = err.as_ref() as &dyn std::error::Error,
+                    //     "asynchronous event failure, not processing any more"
+                    // );
                 }
             }
         });
@@ -770,8 +772,9 @@ async fn handle_asynchronous_events(
 ) -> anyhow::Result<()> {
     let mut completion = if let Some(receiver) = aer_receiver {
         // Await the completion from the AER receiver before entering the loop.
-        Issuer::extract_completion(PendingRpc(receiver).await)
-            .context("asynchronous event request failed")?
+        let output = Issuer::extract_completion(PendingRpc(receiver).await)
+            .context("asynchronous event request failed")?;
+        panic!("AER command completed after servicing: {output:?}");
     } else {
         admin
             .issue_neither(admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST))

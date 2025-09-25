@@ -117,6 +117,9 @@ pub struct AdminState {
     send_changed_namespace: futures::channel::mpsc::Sender<u32>,
     #[inspect(skip)]
     poll_namespace_change: BTreeMap<u32, Task<()>>,
+    #[inspect(skip)]
+    fake_namespace_change_notification: mesh::Cell<bool>,
+    fake_notification_count: u32,
 }
 
 #[derive(Inspect)]
@@ -144,7 +147,7 @@ struct IoCq {
 }
 
 impl AdminState {
-    pub fn new(handler: &AdminHandler, asq: u64, asqs: u16, acq: u64, acqs: u16) -> Self {
+    pub fn new(handler: &AdminHandler, asq: u64, asqs: u16, acq: u64, acqs: u16, fake_namespace_change_notification: mesh::Cell<bool>) -> Self {
         // Start polling for namespace changes. Use a bounded channel to avoid
         // unbounded memory allocation when the queue is stuck.
         #[expect(clippy::disallowed_methods)] // TODO
@@ -190,6 +193,8 @@ impl AdminState {
             recv_changed_namespace,
             send_changed_namespace,
             poll_namespace_change,
+            fake_namespace_change_notification,
+            fake_notification_count: 0,
         };
         state.set_max_queues(handler, handler.config.max_sqs, handler.config.max_cqs);
         state
@@ -411,7 +416,8 @@ impl AdminHandler {
             // command or the completed sq deletion.
             poll_fn(|cx| state.admin_cq.poll_ready(cx)).await?;
 
-            if !state.changed_namespaces.is_empty() && !state.notified_changed_namespaces {
+            if (state.fake_namespace_change_notification.get() && state.fake_notification_count == 0) || (!state.changed_namespaces.is_empty() && !state.notified_changed_namespaces) {
+                state.fake_notification_count += 1;  // Only fake once
                 if let Some(cid) = state.asynchronous_event_requests.pop() {
                     state.admin_cq.write(
                         spec::Completion {

@@ -42,6 +42,7 @@ pub struct NvmeWorkersContext<'a> {
     pub qe_sizes: Arc<parking_lot::Mutex<IoQueueEntrySizes>>,
     pub subsystem_id: Guid,
     pub fault_configuration: FaultConfiguration,
+    pub fake_namespace_change_notification: mesh::Cell<bool>,
 }
 
 pub struct NvmeWorkers {
@@ -76,6 +77,7 @@ impl NvmeWorkers {
             max_cqs,
             qe_sizes,
             fault_configuration,
+            fake_namespace_change_notification,
         } = context;
 
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
@@ -100,6 +102,7 @@ impl NvmeWorkers {
             driver: driver.clone(),
             admin: TaskControl::new(handler),
             reset: None,
+            fake_namespace_change_notification,
         };
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
@@ -226,6 +229,8 @@ struct Coordinator {
     admin: TaskControl<AdminHandler, AdminState>,
     #[inspect(with = "Option::is_some")]
     reset: Option<Rpc<(), ()>>,
+    #[inspect(skip)]
+    fake_namespace_change_notification: mesh::Cell<bool>,
 }
 
 enum CoordinatorRequest {
@@ -281,7 +286,7 @@ impl Coordinator {
                          }| {
                             if !self.admin.has_state() {
                                 let state =
-                                    AdminState::new(self.admin.task(), asq, asqs, acq, acqs);
+                                    AdminState::new(self.admin.task(), asq, asqs, acq, acqs, self.fake_namespace_change_notification.clone());
                                 self.admin.insert(&self.driver, "nvme-admin", state);
                                 self.admin.start();
                             } else {

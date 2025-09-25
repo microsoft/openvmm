@@ -118,6 +118,7 @@ impl NvmeFaultController {
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
         fault_configuration: FaultConfiguration,
+        fake_namespace_change_notification: mesh::Cell<bool>,
     ) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
         let bars = DeviceBars::new()
@@ -159,6 +160,7 @@ impl NvmeFaultController {
             qe_sizes: Arc::clone(&qe_sizes),
             subsystem_id: caps.subsystem_id,
             fault_configuration: fault_configuration.clone(),
+            fake_namespace_change_notification,
         });
 
         Self {
