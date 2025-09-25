@@ -3,7 +3,7 @@
 
 //! Test requirements framework for runtime test filtering.
 // xtask-fmt allow-target-arch cpu-intrinsic
-#[cfg(all(windows, target_arch = "x86_64"))]
+#[cfg(all(windows))]
 use crate::vm::hyperv::powershell;
 use serde::Deserialize;
 use serde::Serialize;
@@ -65,32 +65,10 @@ impl TryFrom<i32> for IsolationType {
 /// VMM implementation types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmmType {
-    /// OpenVMM hypervisor.
+    /// OpenVMM.
     OpenVmm,
     /// Microsoft Hyper-V.
     HyperV,
-}
-
-/// Hyper-V Get VM Host Output
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct HyperVGetVmHost {
-    /// GuestIsolationTypes supported on the host
-    #[serde(rename = "GuestIsolationTypes")]
-    pub guest_isolation_types: Vec<IsolationType>,
-    /// Whether SNP is supported on the host
-    #[serde(rename = "SnpStatus", deserialize_with = "int_to_bool")]
-    pub snp_status: bool,
-    /// Whether TDX is supported on the host
-    #[serde(rename = "TdxStatus", deserialize_with = "int_to_bool")]
-    pub tdx_status: bool,
-}
-
-fn int_to_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let v = i32::deserialize(deserializer)?;
-    Ok(v == 1)
 }
 
 /// Platform-specific host context extending the base HostContext
@@ -178,12 +156,9 @@ pub enum TestRequirement {
     /// Vendor requirement.
     Vendor(Vendor),
     /// Isolation requirement.
-    Isolation {
-        /// Required isolation type.
-        isolation_type: IsolationType,
-        /// Optional VMM type restriction.
-        vmm_type: VmmType,
-    },
+    Isolation(IsolationType),
+    /// VMM type requirement.
+    VmmType(VmmType),
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -258,14 +233,6 @@ impl TestCaseRequirements {
 }
 
 /// Evaluates if a test case can be run in the current execution environment with context.
-pub fn can_run_test_with_context(
-    config: Option<&TestCaseRequirements>,
-    context: &HostContext,
-) -> bool {
-    if let Some(requirements) = config {
-        requirements.requirements.is_satisfied(context)
-    } else {
-        // No requirements means the test can run if it's built.
-        true
-    }
+pub fn can_run_test_with_context(config: &TestCaseRequirements, context: &HostContext) -> bool {
+    config.requirements.is_satisfied(context)
 }

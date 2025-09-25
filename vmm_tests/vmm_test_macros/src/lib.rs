@@ -575,6 +575,9 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `vbs`: Use VBS isolation.
 /// - `snp`: Use SNP isolation.
 /// - `tdx`: Use TDX isolation.
+///
+/// Each configuration can be optionally followed by a square-bracketed, comma-separated
+/// list of additional artifacts required for that particular configuration.
 #[proc_macro_attribute]
 pub fn vmm_test(
     attr: proc_macro::TokenStream,
