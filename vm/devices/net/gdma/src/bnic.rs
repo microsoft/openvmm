@@ -242,10 +242,7 @@ impl BasicNic {
                     Vport {
                         mac_address,
                         endpoint,
-                        tasks: vec![VportTask {
-                            task: TaskControl::new(TxRxState),
-                            queue_cfg: QueueCfg { tx: None, rx: None },
-                        }],
+                        tasks: vec![],
                         serial_no: 0,
                     }
                 },
@@ -448,11 +445,6 @@ impl BasicNic {
                         }
                     }
                     Tristate::TRUE => {
-                        // Start all configured queue pairs that are not running.
-                        // Build a single get_queues request sized to the number
-                        // of tasks we'll start, each with its own GuestBuffers
-                        // (and rx_packets Arc) so we can later assign the
-                        // returned epqueues to the corresponding task.
                         let mut start_indices = Vec::new();
                         let mut configs = Vec::new();
                         let mut rx_packets_list: Vec<Arc<Mutex<Slab<RxPacket>>>> = Vec::new();
