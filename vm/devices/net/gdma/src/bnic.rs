@@ -222,6 +222,7 @@ impl InspectMut for Vport {
 }
 
 struct QueueCfg {
+    /// (wq_id, cq_id, wq_obj_handle)
     tx: Option<(u32, u32, u64)>,
     rx: Option<(u32, u32, u64)>,
 }
@@ -241,10 +242,7 @@ impl BasicNic {
                     Vport {
                         mac_address,
                         endpoint,
-                        tasks: vec![VportTask {
-                            task: TaskControl::new(TxRxState),
-                            queue_cfg: QueueCfg { tx: None, rx: None },
-                        }],
+                        tasks: vec![],
                         serial_no: 0,
                     }
                 },
