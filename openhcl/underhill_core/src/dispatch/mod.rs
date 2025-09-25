@@ -782,7 +782,9 @@ impl LoadedVm {
             None
         };
 
-        let mana_state = if let Some(network_settings) = &mut self.network_settings && mana_keepalive_flag {
+        let mana_state = if let Some(network_settings) = &mut self.network_settings
+            && mana_keepalive_flag
+        {
             Some(network_settings.save().await)
         } else {
             None

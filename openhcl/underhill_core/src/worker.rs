@@ -1019,9 +1019,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             .map(move |(instance_id, manager)| {
                 (
                     instance_id,
-                    Arc::into_inner(manager)
-                        .unwrap()
-                        .shutdown_begin(false),
+                    Arc::into_inner(manager).unwrap().shutdown_begin(false),
                 )
             })
             .collect::<Vec<(Guid, HclNetworkVFManagerShutdownInProgress)>>();
@@ -1074,14 +1072,16 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             }
         };
 
-        let save_vf_managers = join_all(vf_managers.into_iter().map(|(_, vf_manager)| {
-            vf_manager.save()
-        }));
+        let save_vf_managers = join_all(
+            vf_managers
+                .into_iter()
+                .map(|(_, vf_manager)| vf_manager.save()),
+        );
 
         let state = (run_endpoints, save_vf_managers).race().await;
-        tracing::info!("save returned: {state:?}");
 
-        state
+        // Discard any vf_managers that failed to return valid save state.
+        state.into_iter().flatten().collect()
     }
 }
 

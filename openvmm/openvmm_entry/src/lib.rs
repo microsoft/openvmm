@@ -2769,7 +2769,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         hvlite_helpers::underhill::service_underhill(
                             &vm_rpc,
                             ged_rpc.as_ref().context("no GED")?,
-                            GuestServicingFlags::default(),
+                            GuestServicingFlags {
+                                mana_keepalive: true,
+                                ..GuestServicingFlags::default()
+                            },
                             file.into(),
                         )
                         .await?;

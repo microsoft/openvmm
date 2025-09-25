@@ -167,7 +167,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
     }
 
     /// Saves the device's state for servicing
-    pub async fn save(self) -> anyhow::Result<(ManaDeviceSavedState, T)> {
+    pub async fn save(self) -> (ManaDeviceSavedState, T) {
         self.inspect_task.cancel().await;
         if let Some(hwc_task) = self.hwc_task {
             hwc_task.cancel().await;
@@ -176,12 +176,12 @@ impl<T: DeviceBacking> ManaDevice<T> {
         let mut driver = inner.gdma.into_inner();
 
         let saved_state = ManaDeviceSavedState {
-            gdma: driver.save().await?,
+            gdma: driver.save().await,
         };
 
         let device = driver.into_device();
 
-        Ok((saved_state, device))
+        (saved_state, device)
     }
 
     /// Returns the number of vports the device supports.

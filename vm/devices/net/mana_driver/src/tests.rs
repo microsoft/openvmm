@@ -193,7 +193,7 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
 
         gdma.test_eq().await.unwrap();
         gdma.verify_vf_driver_version().await.unwrap();
-        gdma.save().await.unwrap()
+        gdma.save().await
     };
 
     let mut new_gdma = GdmaDriver::restore(saved_state, cloned_device, gdma_buffer)

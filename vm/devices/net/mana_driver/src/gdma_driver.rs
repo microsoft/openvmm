@@ -208,7 +208,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
         tracing::info!(?self.state_saved, ?self.hwc_failure, "dropping gdma driver");
 
-         // Don't destroy anything if we're saving its state for restoration.
+        // Don't destroy anything if we're saving its state for restoration.
         if self.state_saved {
             // Unmap interrupts to prevent the device from sending interrupts during save/restore
             if let Err(e) = self.unmap_all_interrupts() {
@@ -512,14 +512,14 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
+    pub async fn save(&mut self) -> GdmaDriverSavedState {
         tracing::info!("saving gdma driver state");
 
         self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
 
-        Ok(GdmaDriverSavedState {
+        GdmaDriverSavedState {
             mem: SavedMemoryState {
                 base_pfn: self.dma_buffer.pfns()[0],
                 len: self.dma_buffer.len(),
@@ -536,7 +536,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             min_queue_avail: self.min_queue_avail,
             link_toggle: self.link_toggle.clone(),
             hwc_failure: self.hwc_failure,
-        })
+        }
     }
 
     pub fn init(device: &mut T) -> anyhow::Result<(<T as DeviceBacking>::Registers, RegMap)> {

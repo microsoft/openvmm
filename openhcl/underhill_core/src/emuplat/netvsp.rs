@@ -59,7 +59,7 @@ enum HclNetworkVfManagerMessage {
     HideVtl0VF(Rpc<bool, ()>),
     Inspect(inspect::Deferred),
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
-    SaveState(Rpc<(), ManaSavedState>),
+    SaveState(Rpc<(), Option<ManaSavedState>>),
 }
 
 async fn create_mana_device(
@@ -79,7 +79,8 @@ async fn create_mana_device(
             max_sub_channels,
             dma_client,
             Some(mana_state),
-        ).await
+        )
+        .await;
     }
 
     // Disable FLR on vfio attach/detach; this allows faster system
@@ -690,20 +691,20 @@ impl HclNetworkVFManagerWorker {
                         ))
                         .await;
 
-                        let device = self.mana_device.take().expect("device should be present when saving");
-
-                        let saved_state = if let Ok((saved_state, device)) = device.save().await {
+                        if let Some(device) = self.mana_device.take() {
+                            let (saved_state, device) = device.save().await;
                             std::mem::forget(device);
-                            ManaSavedState {
+
+                            Some(ManaSavedState {
                                 mana_device: saved_state,
                                 pci_id: self.vtl2_pci_id.clone(),
-                            }
+                            })
                         } else {
-                            tracing::warn!("Failed to save MANA device state");
-                            ManaSavedState::default()
-                        };
-
-                        saved_state
+                            tracing::warn!(
+                                "no MANA device present when saving state, returning None"
+                            );
+                            None
+                        }
                     })
                     .await;
                     // Exit worker thread.
@@ -1039,14 +1040,27 @@ impl HclNetworkVFManager {
         ))
     }
 
-    pub async fn save(&self) -> ManaSavedState {
+    pub async fn save(&self) -> Option<ManaSavedState> {
         let save_state = self
             .shared_state
             .worker_channel
             .call(HclNetworkVfManagerMessage::SaveState, ())
             .await;
 
-        save_state.unwrap()
+        match save_state {
+            Ok(None) => {
+                tracing::warn!("No MANA device present when saving state, returning None");
+                None
+            }
+            Ok(Some(state)) => Some(state),
+            Err(err) => {
+                tracing::error!(
+                    err = &err as &dyn std::error::Error,
+                    "RPC failure when saving VF Manager state"
+                );
+                None
+            }
+        }
     }
 
     pub async fn packet_capture(
@@ -1147,7 +1161,7 @@ impl HclNetworkVFManagerShutdownInProgress {
         self.complete = true;
     }
 
-    pub async fn save(mut self) -> ManaSavedState {
+    pub async fn save(mut self) -> Option<ManaSavedState> {
         let result = self.inner.save().await;
         self.complete = true;
         result
