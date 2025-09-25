@@ -142,10 +142,12 @@ async fn try_create_mana_device(
     let device = if mana_state.is_some() {
         tracing::info!("Restoring VFIO device from saved state");
         VfioDevice::restore(driver_source, pci_id, true, dma_client)
+            .instrument(tracing::info_span!("restore_mana_vfio_device"))
             .await
             .context("failed to restore device")?
     } else {
         VfioDevice::new(driver_source, pci_id, dma_client)
+            .instrument(tracing::info_span!("new_mana_vfio_device"))
             .await
             .context("failed to open device")?
     };

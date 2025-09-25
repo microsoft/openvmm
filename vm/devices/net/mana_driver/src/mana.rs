@@ -88,7 +88,9 @@ impl<T: DeviceBacking> ManaDevice<T> {
                 .expect("gdma restored memory not found")
                 .clone();
 
-            GdmaDriver::restore(mana_state.gdma.clone(), device, gdma_memory).await?
+            GdmaDriver::restore(mana_state.gdma.clone(), device, gdma_memory)
+                .instrument(tracing::info_span!("restore_gdma_driver"))
+                .await?
         } else {
             GdmaDriver::new(driver, device, num_vps, None)
                 .instrument(tracing::info_span!("new_gdma_driver"))

@@ -124,12 +124,18 @@ async fn mana_keepalive(
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(|b| b.with_nic())
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off")
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off OPENHCL_MANA_KEEP_ALIVE=1")
         .run()
         .await?;
 
-    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
-        .await?;
+    vm.restart_openhcl(
+        igvm_file,
+        OpenHclServicingFlags {
+            enable_mana_keepalive: true,
+            ..OpenHclServicingFlags::default()
+        },
+    )
+    .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
