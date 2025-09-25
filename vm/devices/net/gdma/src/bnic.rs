@@ -242,7 +242,10 @@ impl BasicNic {
                     Vport {
                         mac_address,
                         endpoint,
-                        tasks: vec![],
+                        tasks: vec![VportTask {
+                            task: TaskControl::new(TxRxState),
+                            queue_cfg: QueueCfg { tx: None, rx: None },
+                        }],
                         serial_no: 0,
                     }
                 },
