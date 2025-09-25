@@ -2,11 +2,8 @@
 // Licensed under the MIT License.
 
 //! Test requirements framework for runtime test filtering.
-// xtask-fmt allow-target-arch cpu-intrinsic
-#[cfg(all(windows))]
-use crate::vm::hyperv::powershell;
-use serde::Deserialize;
-use serde::Serialize;
+#[cfg(target_os = "windows")]
+use crate::vm::hyperv::powershell::{self, HyperVGetVmHost, HyperVGuestStateIsolationType};
 
 /// Execution environments where tests can run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,37 +26,14 @@ pub enum Vendor {
 }
 
 /// Types of isolation supported.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq)]
-#[serde(try_from = "i32")]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IsolationType {
-    /// Trusted Launch (OpenHCL, SecureBoot, TPM)
-    TrustedLaunch = 0,
-    /// VBS
-    Vbs = 1,
-    /// SNP
-    Snp = 2,
-    /// TDX
-    Tdx = 3,
-    /// OpenHCL but no isolation
-    OpenHCL = 16,
-    /// No HCL and no isolation
-    Disabled = -1,
-}
-
-impl TryFrom<i32> for IsolationType {
-    type Error = String;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            -1 => Ok(IsolationType::Disabled),
-            0 => Ok(IsolationType::TrustedLaunch),
-            1 => Ok(IsolationType::Vbs),
-            2 => Ok(IsolationType::Snp),
-            3 => Ok(IsolationType::Tdx),
-            16 => Ok(IsolationType::OpenHCL),
-            _ => Err(format!("Unknown isolation type: {}", value)),
-        }
-    }
+    /// Virtualization-based Security (VBS)
+    Vbs,
+    /// Secure Nested Paging (SNP)
+    Snp,
+    /// Trusted Domain Extensions (TDX)
+    Tdx,
 }
 
 /// VMM implementation types.
@@ -83,35 +57,57 @@ pub struct HostContext {
 }
 
 impl HostContext {
-    // xtask-fmt allow-target-arch cpu-intrinsic
-    #[cfg(target_arch = "x86_64")]
     /// Create a new host context by querying host information
     pub async fn new() -> Self {
         let is_nested = {
-            let result =
-                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-            hvdef::HvEnlightenmentInformation::from(
-                result.eax as u128
-                    | (result.ebx as u128) << 32
-                    | (result.ecx as u128) << 64
-                    | (result.edx as u128) << 96,
-            )
-            .nested()
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(target_arch = "x86_64")]
+            {
+                let result = safe_intrinsics::cpuid(
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                    0,
+                );
+                hvdef::HvEnlightenmentInformation::from(
+                    result.eax as u128
+                        | (result.ebx as u128) << 32
+                        | (result.ecx as u128) << 64
+                        | (result.edx as u128) << 96,
+                )
+                .nested()
+            }
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                false
+            }
         };
 
         let vendor = {
-            let result =
-                safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
-            if x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
-                .is_amd_compatible()
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(target_arch = "x86_64")]
             {
-                Vendor::Amd
-            } else {
-                assert!(
-                    x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
-                        .is_intel_compatible()
+                let result = safe_intrinsics::cpuid(
+                    x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0,
+                    0,
                 );
-                Vendor::Intel
+                if x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
+                    .is_amd_compatible()
+                {
+                    Vendor::Amd
+                } else {
+                    assert!(
+                        x86defs::cpuid::Vendor::from_ebx_ecx_edx(
+                            result.ebx, result.ecx, result.edx
+                        )
+                        .is_intel_compatible()
+                    );
+                    Vendor::Intel
+                }
+            }
+            // xtask-fmt allow-target-arch cpu-intrinsic
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                Vendor::Arm
             }
         };
 
@@ -119,23 +115,6 @@ impl HostContext {
             #[cfg(windows)]
             vm_host_info: powershell::run_get_vm_host().await.ok(),
             #[cfg(not(windows))]
-            vm_host_info: None,
-            vendor,
-            execution_environment: if is_nested {
-                ExecutionEnvironment::Nested
-            } else {
-                ExecutionEnvironment::Baremetal
-            },
-        }
-    }
-
-    // xtask-fmt allow-target-arch cpu-intrinsic
-    #[cfg(not(target_arch = "x86_64"))]
-    /// Create a new host context by querying host information
-    pub async fn new() -> Self {
-        let is_nested = false;
-        let vendor = Vendor::Arm;
-        Self {
             vm_host_info: None,
             vendor,
             execution_environment: if is_nested {
@@ -157,8 +136,6 @@ pub enum TestRequirement {
     Vendor(Vendor),
     /// Isolation requirement.
     Isolation(IsolationType),
-    /// VMM type requirement.
-    VmmType(VmmType),
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -179,18 +156,14 @@ impl TestRequirement {
                     match isolation_type {
                         IsolationType::Vbs => vm_host_info
                             .guest_isolation_types
-                            .contains(&IsolationType::Vbs),
+                            .contains(&HyperVGuestStateIsolationType::Vbs),
                         IsolationType::Snp => vm_host_info.snp_status,
                         IsolationType::Tdx => vm_host_info.tdx_status,
-                        IsolationType::TrustedLaunch => false,
-                        IsolationType::OpenHCL => false,
-                        IsolationType::Disabled => false,
                     }
                 } else {
                     false
                 }
             }
-            TestRequ
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied(context) && req2.is_satisfied(context)
             }
