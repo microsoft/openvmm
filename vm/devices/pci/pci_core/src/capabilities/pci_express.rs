@@ -38,6 +38,7 @@ impl PciExpressState {
 #[derive(Inspect)]
 /// Configurable PCI Express capability.
 pub struct PciExpressCapability {
+    pcie_capabilites: pci_express::PciExpressCapabilities,
     device_capabilities: pci_express::DeviceCapabilities,
     state: Arc<Mutex<PciExpressState>>,
     #[inspect(skip)]
@@ -48,9 +49,13 @@ impl PciExpressCapability {
     /// Creates a new PCI Express capability with FLR support.
     ///
     /// # Arguments
+    /// * `typ` - The spec-defined device or port type.
     /// * `flr_handler` - Optional handler to be called when FLR is initiated. This emulator will report that FLR is supported if flr_handler = Some(_)
-    pub fn new(flr_handler: Option<Arc<dyn FlrHandler>>) -> Self {
+    pub fn new(typ: pci_express::DevicePortType, flr_handler: Option<Arc<dyn FlrHandler>>) -> Self {
         Self {
+            pcie_capabilites: pci_express::PciExpressCapabilities::new()
+                .with_capability_version(2)
+                .with_device_port_type(typ),
             device_capabilities: pci_express::DeviceCapabilities::new()
                 .with_function_level_reset(flr_handler.is_some()),
             state: Arc::new(Mutex::new(PciExpressState::new())),
@@ -98,9 +103,8 @@ impl PciCapability for PciExpressCapability {
         match PciExpressCapabilityHeader(offset) {
             PciExpressCapabilityHeader::PCIE_CAPS => {
                 // PCIe Capabilities Register (16 bits) + Next Pointer (8 bits) + Capability ID (8 bits)
-                // For basic endpoint: Version=2, Device/Port Type=0 (PCI Express Endpoint)
-                let pcie_caps: u16 = 0x0002; // Version 2, Device/Port Type 0
-                (pcie_caps as u32) << 16 | CapabilityId::PCI_EXPRESS.0 as u32
+                (self.pcie_capabilites.into_bits() as u32) << 16
+                    | CapabilityId::PCI_EXPRESS.0 as u32
             }
             PciExpressCapabilityHeader::DEVICE_CAPS => self.device_capabilities.into_bits(),
             PciExpressCapabilityHeader::DEVICE_CTL_STS => {
@@ -223,6 +227,7 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::caps::pci_express::DevicePortType;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Debug)]
@@ -262,7 +267,7 @@ mod tests {
     #[test]
     fn test_pci_express_capability_read_u32() {
         let flr_handler = TestFlrHandler::new();
-        let cap = PciExpressCapability::new(Some(flr_handler));
+        let cap = PciExpressCapability::new(DevicePortType::Endpoint, Some(flr_handler));
 
         // Test PCIe Capabilities Register (offset 0x00)
         let caps_val = cap.read_u32(0x00);
@@ -288,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_read_u32_no_flr() {
-        let cap = PciExpressCapability::new(None);
+        let cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
 
         // Test Device Capabilities Register (offset 0x04) - FLR should not be set
         let device_caps_val = cap.read_u32(0x04);
@@ -297,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_write_u32_readonly_registers() {
-        let mut cap = PciExpressCapability::new(None);
+        let mut cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
 
         // Try to write to read-only PCIe Capabilities Register (offset 0x00)
         let original_caps = cap.read_u32(0x00);
@@ -313,7 +318,8 @@ mod tests {
     #[test]
     fn test_pci_express_capability_write_u32_device_control() {
         let flr_handler = TestFlrHandler::new();
-        let mut cap = PciExpressCapability::new(Some(flr_handler.clone()));
+        let mut cap =
+            PciExpressCapability::new(DevicePortType::Endpoint, Some(flr_handler.clone()));
 
         // Initial state should have FLR bit clear
         let initial_ctl_sts = cap.read_u32(0x08);
@@ -345,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_write_u32_device_status() {
-        let mut cap = PciExpressCapability::new(None);
+        let mut cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
 
         // Manually set some status bits to test write-1-to-clear behavior
         {
@@ -376,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_write_u32_unhandled_offset() {
-        let mut cap = PciExpressCapability::new(None);
+        let mut cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
 
         // Writing to unhandled offset should not panic
         cap.write_u32(0x10, 0xFFFFFFFF);
@@ -387,7 +393,8 @@ mod tests {
     #[test]
     fn test_pci_express_capability_reset() {
         let flr_handler = TestFlrHandler::new();
-        let mut cap = PciExpressCapability::new(Some(flr_handler.clone()));
+        let mut cap =
+            PciExpressCapability::new(DevicePortType::Endpoint, Some(flr_handler.clone()));
 
         // Set some state
         cap.write_u32(0x08, 0x0001); // Set some device control bits
@@ -412,13 +419,13 @@ mod tests {
 
     #[test]
     fn test_pci_express_capability_length() {
-        let cap = PciExpressCapability::new(None);
+        let cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
         assert_eq!(cap.len(), 0x0C); // Should be 12 bytes
     }
 
     #[test]
     fn test_pci_express_capability_label() {
-        let cap = PciExpressCapability::new(None);
+        let cap = PciExpressCapability::new(DevicePortType::Endpoint, None);
         assert_eq!(cap.label(), "pci-express");
     }
 }
