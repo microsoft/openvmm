@@ -127,6 +127,7 @@ pub mod hwid {
             // Other values: 0x02 - 0x0A
             BRIDGE_HOST = 0x00,
             BRIDGE_ISA = 0x01,
+            BRIDGE_PCI_TO_PCI = 0x04,
             BRIDGE_OTHER = 0x80,
 
             // Base System Peripheral (Class code: 0x08)
@@ -237,6 +238,51 @@ pub mod cfg_space {
     }
 
     pub const HEADER_TYPE_00_SIZE: u16 = 0x40;
+
+    open_enum::open_enum! {
+        /// Offsets into the type 01h configuration space header.
+        ///
+        /// Table pulled from <https://wiki.osdev.org/PCI>
+        ///
+        /// | Offset | Bits 31-24                       | Bits 23-16             | Bits 15-8                | Bits 7-0             |
+        /// |--------|----------------------------------|------------------------|--------------------------|--------------------- |
+        /// | 0x0    | Device ID                        |                        | Vendor ID                |                      |
+        /// | 0x4    | Status                           |                        | Command                  |                      |
+        /// | 0x8    | Class code                       |                        |                          | Revision ID          |
+        /// | 0xC    | BIST                             | Header Type            | Latency Timer            | Cache Line Size      |
+        /// | 0x10   | Base address #0 (BAR0)           |                        |                          |                      |
+        /// | 0x14   | Base address #1 (BAR1)           |                        |                          |                      |
+        /// | 0x18   | Secondary Latency Timer          | Subordinate Bus Number | Secondary Bus Number     | Primary Bus Number   |
+        /// | 0x1C   | Secondary Status                 |                        | I/O Limit                | I/O Base             |
+        /// | 0x20   | Memory Limit                     |                        | Memory Base              |                      |
+        /// | 0x24   | Prefetchable Memory Limit        |                        | Prefetchable Memory Base |                      |
+        /// | 0x28   | Prefetchable Base Upper 32 Bits  |                        |                          |                      |
+        /// | 0x2C   | Prefetchable Limit Upper 32 Bits |                        |                          |                      |
+        /// | 0x30   | I/O Limit Upper 16 Bits          |                        | I/O Base Upper 16 Bits   |                      |
+        /// | 0x34   | Reserved                         |                        |                          | Capabilities Pointer |
+        /// | 0x38   | Expansion ROM Base Address       |                        |                          |                      |
+        /// | 0x3C   | Bridge Control                   |                        | Interrupt PIN            | Interrupt Line       |
+        pub enum HeaderType01: u16 {
+            DEVICE_VENDOR         = 0x00,
+            STATUS_COMMAND        = 0x04,
+            CLASS_REVISION        = 0x08,
+            BIST_HEADER           = 0x0C,
+            BAR0                  = 0x10,
+            BAR1                  = 0x14,
+            LATENCY_BUS_NUMBERS   = 0x18,
+            SEC_STATUS_IO_RANGE   = 0x1C,
+            MEMORY_RANGE          = 0x20,
+            PREFETCH_RANGE        = 0x24,
+            PREFETCH_BASE_UPPER   = 0x28,
+            PREFETCH_LIMIT_UPPER  = 0x2C,
+            IO_RANGE_UPPER        = 0x30,
+            RESERVED_CAP_PTR      = 0x34,
+            EXPANSION_ROM_BASE    = 0x38,
+            BRDIGE_CTRL_INTERRUPT = 0x3C,
+        }
+    }
+
+    pub const HEADER_TYPE_01_SIZE: u16 = 0x40;
 
     /// BAR in-band encoding bits.
     ///
@@ -403,6 +449,42 @@ pub mod caps {
             }
         }
 
+        /// PCI Express Capabilities Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct PciExpressCapabilities {
+            #[bits(4)]
+            pub capability_version: u16,
+            #[bits(4)]
+            pub device_port_type: DevicePortType,
+            pub slot_implemented: bool,
+            #[bits(5)]
+            pub interrupt_message_number: u16,
+            pub _undefined: bool,
+            pub flit_mode_supported: bool,
+        }
+
+        #[derive(Debug)]
+        #[repr(u16)]
+        pub enum DevicePortType {
+            Endpoint = 0b0000,
+            RootPort = 0b0100,
+        }
+
+        impl DevicePortType {
+            const fn from_bits(bits: u16) -> Self {
+                match bits {
+                    0b0000 => DevicePortType::Endpoint,
+                    0b0100 => DevicePortType::RootPort,
+                    _ => unreachable!(),
+                }
+            }
+
+            const fn into_bits(self) -> u16 {
+                self as u16
+            }
+        }
+
         /// Device Capabilities Register (From the 6.4 spec)
         #[bitfield(u32)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
@@ -451,7 +533,7 @@ pub mod caps {
             pub initiate_function_level_reset: bool,
         }
 
-        /// Device Status Register  
+        /// Device Status Register
         #[bitfield(u16)]
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
         pub struct DeviceStatus {
