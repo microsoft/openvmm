@@ -852,8 +852,8 @@ async fn memory_validation_small<T: PetriVmmBackend>(
     idle_test(
         config,
         &arch_str,
-        TestVPCount::SmallVPCount as u32,
-        WaitPeriodSec::ShortWait as u64,
+        TestVPCount::SmallVPCount,
+        WaitPeriodSec::ShortWait,
     )
     .await
 }
@@ -873,11 +873,11 @@ async fn memory_validation_large<T: PetriVmmBackend>(
         config,
         &arch_str,
         if arch_str.contains("x64") {
-            TestVPCount::LargeVPCountGP as u32
+            TestVPCount::LargeVPCountGP
         } else {
-            TestVPCount::LargeVPCount as u32
+            TestVPCount::LargeVPCount
         },
-        WaitPeriodSec::LongWait as u64,
+        WaitPeriodSec::LongWait,
     )
     .await
 }

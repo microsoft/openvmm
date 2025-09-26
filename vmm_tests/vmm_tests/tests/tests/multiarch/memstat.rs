@@ -363,13 +363,14 @@ pub fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: Machine
 pub async fn idle_test<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     arch_config: &str,
-    vps: u32,
-    wait_time_sec: u64,
+    vps: TestVPCount,
+    wait_time_sec: WaitPeriodSec,
 ) -> anyhow::Result<()> {
+    let vp_count = vps as u32;
     let mut vm = config
         .with_processor_topology({
             ProcessorTopology {
-                vp_count: vps,
+                vp_count,
                 ..Default::default()
             }
         })
@@ -386,7 +387,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
     // This wait is needed to let the idle VM fully instantiate its memory - provides more accurate memory usage results
     DefaultPool::run_with(async |driver| {
         PolledTimer::new(&driver)
-            .sleep(Duration::from_secs(wait_time_sec))
+            .sleep(Duration::from_secs(wait_time_sec as u64))
             .await;
     });
 
@@ -394,7 +395,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_teardown().await?;
-    memstat.compare_to_baseline(arch_config, &format!("{}vp", vps))?;
+    memstat.compare_to_baseline(arch_config, &format!("{}vp", vp_count))?;
 
     Ok(())
 }
