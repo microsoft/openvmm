@@ -237,12 +237,13 @@ impl BasicNic {
                 |VportConfig {
                      mac_address,
                      endpoint,
+                     queue_pairs,
                  }| {
                     assert!(endpoint.is_ordered());
                     Vport {
                         mac_address,
                         endpoint,
-                        tasks: vec![],
+                        tasks: Vec::with_capacity(queue_pairs as usize),
                         serial_no: 0,
                     }
                 },
@@ -327,42 +328,26 @@ impl BasicNic {
                     .alloc_cq(cq_region.clone(), req.cq_parent_qid)
                     .context("failed to allocate cq")?;
 
-                let mut paired = false;
+                let mut placed = false;
                 // Make the top 32 bits a the vport index
                 let mut wq_handle = req.vport << 32;
                 wq_handle |= self.next_wq_handle.fetch_add(1, Ordering::Relaxed);
                 for task in vport.tasks.iter_mut() {
                     if is_send {
-                        if task.queue_cfg.tx.is_none() && task.queue_cfg.rx.is_some() {
+                        if task.queue_cfg.tx.is_none() {
                             task.queue_cfg.tx = Some((wq_id, cq_id, wq_handle));
-                            paired = true;
+                            placed = true;
                             break;
                         }
                     } else {
-                        if task.queue_cfg.rx.is_none() && task.queue_cfg.tx.is_some() {
+                        if task.queue_cfg.rx.is_none() {
                             task.queue_cfg.rx = Some((wq_id, cq_id, wq_handle));
-                            paired = true;
+                            placed = true;
                             break;
                         }
                     }
                 }
-
-                if !paired {
-                    vport.tasks.push(VportTask {
-                        task: TaskControl::new(TxRxState),
-                        queue_cfg: if is_send {
-                            QueueCfg {
-                                tx: Some((wq_id, cq_id, wq_handle)),
-                                rx: None,
-                            }
-                        } else {
-                            QueueCfg {
-                                tx: None,
-                                rx: Some((wq_id, cq_id, wq_handle)),
-                            }
-                        },
-                    });
-                }
+                assert!(placed);
 
                 let resp = ManaCreateWqobjResp {
                     wq_id,

@@ -37,6 +37,7 @@ async fn test_gdma(driver: DefaultDriver) {
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
             endpoint: Box::new(NullEndpoint::new()),
+            queue_pairs: 1,
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
