@@ -136,6 +136,7 @@ where
     // free space
     //
     // page tables
+    // 16 pages reserved for bootshim heap
     // 8K bootshim logs
     // IGVM parameters
     // reserved vtl2 ranges
@@ -350,6 +351,23 @@ where
         &[],
     )?;
 
+    // Reserve 16 pages for a bootshim heap. This is only used to parse the
+    // protobuf payload from the previous instance in a servicing boot.
+    //
+    // Import these pages as it greatly simplifies the early startup code in the
+    // bootshim for isolated guests. This allows the bootshim to use these pages
+    // early on without extra acceptance calls.
+    let heap_start = offset;
+    let heap_size = 16 * HV_PAGE_SIZE;
+    importer.import_pages(
+        heap_start / HV_PAGE_SIZE,
+        heap_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-heap",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
+    offset += heap_size;
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = offset;
 
@@ -508,6 +526,8 @@ where
         page_tables_size: page_table_region_size,
         log_buffer_start: calculate_shim_offset(bootshim_log_start),
         log_buffer_size: bootshim_log_size,
+        heap_start_offset: calculate_shim_offset(heap_start),
+        heap_size,
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -1062,6 +1082,23 @@ where
         &[],
     )?;
 
+    // Reserve 16 pages for a bootshim heap. This is only used to parse the
+    // protobuf payload from the previous instance in a servicing boot.
+    //
+    // Import these pages as it greatly simplifies the early startup code in the
+    // bootshim for isolated guests. This allows the bootshim to use these pages
+    // early on without extra acceptance calls.
+    let heap_start = next_addr;
+    let heap_size = 16 * HV_PAGE_SIZE;
+    importer.import_pages(
+        heap_start / HV_PAGE_SIZE,
+        heap_size / HV_PAGE_SIZE,
+        "ohcl-boot-shim-heap",
+        BootPageAcceptance::Exclusive,
+        &[],
+    )?;
+    next_addr += heap_size;
+
     // The end of memory used by the loader, excluding pagetables.
     let end_of_underhill_mem = next_addr;
 
@@ -1115,6 +1152,8 @@ where
         page_tables_size: 0,
         log_buffer_start: calculate_shim_offset(bootshim_log_start),
         log_buffer_size: bootshim_log_size,
+        heap_start_offset: calculate_shim_offset(heap_start),
+        heap_size,
     };
 
     importer

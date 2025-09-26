@@ -61,6 +61,10 @@ pub struct ShimParamsRaw {
     pub log_buffer_start: i64,
     /// The size of the persisted bootshim log buffer.
     pub log_buffer_size: u64,
+    /// The offset to the start of the bootshim heap.
+    pub heap_start_offset: i64,
+    /// The size of the bootshim heap.
+    pub heap_size: u64,
 }
 
 open_enum! {
