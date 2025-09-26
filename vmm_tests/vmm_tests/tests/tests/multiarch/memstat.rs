@@ -3,32 +3,53 @@
 
 //! Memory Validation for VMM Tests
 
+use petri::IsolationType;
 use petri::MemoryConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::ShutdownKind;
+use petri_artifacts_common::tags::MachineArch;
 use pipette_client::PipetteClient;
 use pipette_client::cmd;
 use serde::Serialize;
 use serde_json::Value;
-use serde_json::from_reader;
+use serde_json::from_str;
 use serde_json::to_string;
 use std::collections::HashMap;
-use std::env::current_dir;
-use std::fs::File;
 use std::ops::Index;
 use std::ops::IndexMut;
-use std::path::Path;
 use std::time::Duration;
+
+#[repr(u32)]
+pub enum TestVPCount {
+    SmallVPCount = 2,
+    LargeVPCountGP = 32,
+    LargeVPCount = 64,
+}
+
+#[repr(u64)]
+pub enum WaitPeriodSec {
+    ShortWait = 10,
+    LongWait = 15,
+}
 
 /// PerProcessMemstat struct collects statistics from a single process relevant to memory validation
 #[derive(Serialize, Clone, Default)]
 pub struct PerProcessMemstat {
     /// HashMap generated from the contents of the /proc/{process ID}/smaps_rollup file for an OpenHCL process
+    /// sample output from /proc/{process ID}/smaps_rollup:
+    ///
+    /// 55aa6c4b7000-7fffa7f9a000 ---p 00000000 00:00 0                          [rollup]
+    /// Rss:               13300 kB
+    /// Pss:                5707 kB
+    /// Pss_Anon:           3608 kB
     pub smaps_rollup: HashMap<String, u64>,
 
     /// HashMap generated from the contents of the /proc/{process ID}/statm file for an OpenHCL process
+    /// sample output from /proc/{process ID}/statm:
+    ///
+    /// 5480 3325 2423 11 0 756 0
     pub statm: HashMap<String, u64>,
 }
 
@@ -36,9 +57,25 @@ pub struct PerProcessMemstat {
 #[derive(Serialize, Clone, Default)]
 pub struct MemStat {
     /// meminfo is a HashMap generated from the contents of the /proc/meminfo file
+    /// sample content of /proc/meminfo:
+    ///
+    /// MemTotal:       65820456 kB
+    /// MemFree:        43453176 kB
+    /// MemAvailable:   44322124 kB
     pub meminfo: HashMap<String, u64>,
 
     /// total_free_memory_per_zone is an integer calculated by aggregating the free memory from each CPU zone in the /proc/zoneinfo file
+    /// sample content of /proc/zoneinfo:
+    ///
+    /// Node 0, zone      DMA
+    ///   per-node stats
+    ///     ...
+    ///       nr_free_pages 5013074
+    ///       nr_zone_inactive_anon 0
+    ///     ...
+    ///     cpu: 0
+    ///               count: 10
+    ///               high: 14
     pub total_free_memory_per_zone: u64,
 
     /// underhill_init corresponds to the memory usage statistics for the underhill-init process
@@ -49,6 +86,9 @@ pub struct MemStat {
 
     /// underhill_vm corresponds to the memory usage statistics for the underhill-vm process
     pub underhill_vm: PerProcessMemstat,
+
+    /// baseline data to compare test results against
+    baseline_json: Value,
 }
 
 impl MemStat {
@@ -59,10 +99,13 @@ impl MemStat {
             sh.read_file("/proc/meminfo")
                 .await
                 .expect("VTL2 should have meminfo file"),
-            0,
-            0,
-            1,
+            0, // meminfo data starts at the first line of the /proc/meminfo file
+            0, // first column is the statistic (ie. MemFree)
+            1, // second column is the value in kB
         );
+
+        // total_free_memory_per_zone collects the free memory pages for each numa node and the number of free pages for each
+        // CPU zone to get the total free memory pages. This value is multiplied by four to convert to kB
         let total_free_memory_per_zone = sh
             .read_file("/proc/zoneinfo")
             .await
@@ -84,13 +127,15 @@ impl MemStat {
                 .read()
                 .await
                 .expect("'ps' command is expected to succeed and produce output"),
-            1,
-            3,
-            0,
+            1, // Skipping the first row since it contains the ps output headers
+            3, // process name is the fourth column (index 3) of ps output
+            0, // process ID is teh first column (index 0) of ps output
         )
         .iter()
         .filter(|(key, _)| key.contains("underhill") || key.contains("openvmm"))
         {
+            // process names may contain unecessary additional characters (ie. /bin/openvmm_hcl or {underhill-vm})
+            // the following cleans these strings to be more consistent and readable
             let process_name = key
                 .split('/')
                 .next_back()
@@ -109,9 +154,9 @@ impl MemStat {
                                     process_name
                                 )
                             }),
-                        1,
-                        0,
-                        1,
+                        1, // smaps data starts after the first line
+                        0, // the first column in smaps is the metric (ie. Pss_Anon)
+                        1, // the second column is the corresponding value in kB
                     ),
                     statm: Self::parse_statm(
                         sh.read_file(&format!("/proc/{}/statm", value))
@@ -126,6 +171,8 @@ impl MemStat {
                 },
             );
         }
+
+        let baseline_json = from_str(include_str!("../../../test_data/memstat_baseline.json")).expect("the contents of memstat_baseline.json are expected to be parsable into a json object");
 
         Self {
             meminfo,
@@ -142,30 +189,13 @@ impl MemStat {
                 .get("underhill_vm")
                 .expect("per_process_data should have underhill_vm data if the process exists")
                 .clone(),
+            baseline_json,
         }
     }
 
     /// Compares current statistics against baseline
     pub fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
-        let path_str = format!(
-            "{}/test_data/memstat_baseline.json",
-            current_dir()
-                .expect("current_dir is expected to return a path string")
-                .to_str()
-                .unwrap()
-        );
-        let baseline_json = from_reader::<File, Value>(
-            File::open(Path::new(&path_str))
-                .unwrap_or_else(|_| panic!("{} file not found", path_str)),
-        )
-        .unwrap_or_else(|_| {
-            panic!(
-                "memstat json is expected to exist within the file {}",
-                path_str
-            )
-        });
-
-        let baseline_usage = Self::get_baseline_value(&baseline_json[arch][vps]["usage"]);
+        let baseline_usage = Self::get_upper_limit_value(&self.baseline_json[arch][vps]["usage"]);
         let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
         assert!(
             baseline_usage >= cur_usage,
@@ -175,12 +205,14 @@ impl MemStat {
         );
 
         for underhill_process in ["underhill_init", "openvmm_hcl", "underhill_vm"] {
-            let baseline_pss =
-                Self::get_baseline_value(&baseline_json[arch][vps][underhill_process]["Pss"]);
+            let baseline_pss = Self::get_upper_limit_value(
+                &self.baseline_json[arch][vps][underhill_process]["Pss"],
+            );
             let cur_pss = self[underhill_process].smaps_rollup["Pss"];
 
-            let baseline_pss_anon =
-                Self::get_baseline_value(&baseline_json[arch][vps][underhill_process]["Pss_Anon"]);
+            let baseline_pss_anon = Self::get_upper_limit_value(
+                &self.baseline_json[arch][vps][underhill_process]["Pss_Anon"],
+            );
             let cur_pss_anon = self[underhill_process].smaps_rollup["Pss_Anon"];
 
             assert!(
@@ -200,9 +232,9 @@ impl MemStat {
         }
 
         let baseline_reservation =
-            Self::get_baseline_value(&baseline_json[arch][vps]["reservation"]);
+            Self::get_upper_limit_value(&self.baseline_json[arch][vps]["reservation"]);
         let cur_reservation =
-            baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
+            self.baseline_json[arch]["vtl2_total"].as_u64().unwrap() - self.meminfo["MemTotal"];
         assert!(
             baseline_reservation >= cur_reservation,
             "baseline reservation is less than current reservation: {} < {}",
@@ -243,6 +275,7 @@ impl MemStat {
     }
 
     fn parse_statm(raw_statm_data: String) -> HashMap<String, u64> {
+        // statm output consists of seven numbers split by spaces (ie. 5480 3325 ...) representing the following fields (in order):
         let statm_fields = [
             "vm_size",
             "vm_rss",
@@ -275,13 +308,16 @@ impl MemStat {
             .collect::<HashMap<String, u64>>()
     }
 
-    fn get_baseline_value(baseline_json: &Value) -> u64 {
-        baseline_json["base"].as_u64().unwrap_or_else(|| {
-            panic!("all values in the memstat_baseline.json file are expected to be parsable u64 integers")
-        }) +
-            baseline_json["threshold"].as_u64().unwrap_or_else(|| {
-                panic!("all values in the memstat_baseline.json file are expected to be parsable u64 integers")
-            })
+    fn get_upper_limit_value(baseline_metric_json: &Value) -> u64 {
+        const PANIC_MSG: &str =
+            "all values in the memstat_baseline.json file are expected to be parsable u64 integers";
+
+        baseline_metric_json["base"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{}", PANIC_MSG))
+            + baseline_metric_json["threshold"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{}", PANIC_MSG))
     }
 }
 
@@ -292,7 +328,7 @@ impl Index<&'_ str> for MemStat {
             "underhill_init" => &self.underhill_init,
             "openvmm_hcl" => &self.openvmm_hcl,
             "underhill_vm" => &self.underhill_vm,
-            _ => panic!("unknown field: {}", s),
+            _ => panic!("memstat field {} does not exist or is not indexible", s),
         }
     }
 }
@@ -303,16 +339,29 @@ impl IndexMut<&'_ str> for MemStat {
             "underhill_init" => &mut self.underhill_init,
             "openvmm_hcl" => &mut self.openvmm_hcl,
             "underhill_vm" => &mut self.underhill_vm,
-            _ => panic!("unknown field: {}", s),
+            _ => panic!("memstat field {} does not exist or is not indexible", s),
         }
     }
 }
 
+pub fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: MachineArch) -> String {
+    isolation_type
+        .map(|isolation_type| match isolation_type {
+            IsolationType::Vbs => "vbs-x64",
+            IsolationType::Snp => "amd-snp",
+            IsolationType::Tdx => "intel-tdx",
+        })
+        .unwrap_or_else(|| match machine_arch {
+            MachineArch::Aarch64 => "aarch64",
+            MachineArch::X86_64 => "gp-x64",
+        })
+        .to_string()
+}
+
 pub async fn idle_test<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    arch: &str,
+    arch_config: &str,
     vps: u32,
-    vm_memory_gb: u64,
     wait_time_sec: u64,
 ) -> anyhow::Result<()> {
     let mut vm = config
@@ -324,7 +373,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
         })
         .with_memory({
             MemoryConfig {
-                startup_bytes: vm_memory_gb * (1024 * 1024 * 1024),
+                startup_bytes: 16 * (1024 * 1024 * 1024),
                 dynamic_memory_range: None,
             }
         })
@@ -338,7 +387,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_teardown().await?;
-    memstat.compare_to_baseline(arch, &format!("{}vp", vps))?;
+    memstat.compare_to_baseline(arch_config, &format!("{}vp", vps))?;
 
     Ok(())
 }
