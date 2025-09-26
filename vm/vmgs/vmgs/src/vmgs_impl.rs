@@ -38,6 +38,12 @@ use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+/// Operation types for provisioning telemetry.
+#[derive(Debug)]
+enum LogOpType {
+    VmgsProvision,
+}
+
 /// Info about a specific VMGS file.
 #[derive(Debug)]
 pub struct VmgsFileInfo {
@@ -181,7 +187,11 @@ impl Vmgs {
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
         let mut storage = VmgsStorage::new(disk);
-        tracing::debug!(CVM_ALLOWED, "formatting and initializing VMGS datastore");
+        tracing::info!(
+            CVM_ALLOWED,
+            op_type = ?LogOpType::VmgsProvision,
+            "formatting and initializing VMGS datastore"
+        );
         // Errors from validate_file are fatal, as they involve invalid device metadata
         Vmgs::validate_file(&storage)?;
 
