@@ -7,6 +7,10 @@ use anyhow::Context;
 use futures::StreamExt;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
+use memstat::TestVPCount;
+use memstat::WaitPeriodSec;
+use memstat::get_arch_str;
+use memstat::idle_test;
 use mesh::rpc::RpcSend;
 use petri::MemoryConfig;
 use petri::PetriGuestStateLifetime;
@@ -32,6 +36,9 @@ use vmm_test_macros::vmm_test_no_agent;
 
 // Servicing tests.
 pub(crate) mod openhcl_servicing;
+
+// Memory Validation tests.
+pub(crate) mod memstat;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
 #[vmm_test_no_agent(
@@ -829,4 +836,48 @@ async fn validate_mnf_usage_in_guest(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
+}
+
+#[vmm_test_no_agent(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_small<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let arch_str = get_arch_str(config.isolation(), config.arch());
+    idle_test(
+        config,
+        &arch_str,
+        TestVPCount::SmallVPCount,
+        WaitPeriodSec::ShortWait,
+    )
+    .await
+}
+
+#[vmm_test_no_agent(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_large<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let arch_str = get_arch_str(config.isolation(), config.arch());
+    idle_test(
+        config,
+        &arch_str,
+        if arch_str.contains("x64") {
+            TestVPCount::LargeVPCountGP
+        } else {
+            TestVPCount::LargeVPCount
+        },
+        WaitPeriodSec::LongWait,
+    )
+    .await
 }
