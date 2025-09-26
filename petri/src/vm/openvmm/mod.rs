@@ -24,6 +24,7 @@ use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
+use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use anyhow::Context;
@@ -42,13 +43,13 @@ use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
-use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::PathBuf;
+use std::time::Duration;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vm_resource::IntoResource;
@@ -96,8 +97,14 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
             && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
     }
 
-    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner {
-        quirks.openvmm
+    fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
+        (
+            firmware.quirks().openvmm,
+            VmmQuirks {
+                // Workaround for #1684
+                flaky_boot: firmware.is_pcat().then_some(Duration::from_secs(15)),
+            },
+        )
     }
 
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
