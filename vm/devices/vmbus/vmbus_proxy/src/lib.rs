@@ -20,6 +20,7 @@ use pal_async::windows::overlapped::IoBufMut;
 use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
 use std::mem::zeroed;
+use std::num::NonZeroU32;
 use std::os::windows::prelude::*;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
@@ -93,6 +94,7 @@ pub enum ProxyAction {
         offer: VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
         outgoing_event: Option<Event>,
+        device_order: Option<NonZeroU32>,
     },
     Revoke {
         id: u64,
@@ -237,6 +239,7 @@ impl VmbusProxy {
                     } else {
                         None
                     },
+                    device_order: NonZeroU32::new(output.u.Offer.DeviceOrder),
                 })
             },
             proxyioctl::VmbusProxyActionTypeRevoke => {

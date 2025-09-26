@@ -2358,7 +2358,7 @@ impl TestEnv {
         &mut self,
         interface_id: u32,
         instance_id: u32,
-        order: Option<u32>,
+        order: Option<u64>,
     ) -> OfferId {
         self.offer_inner(
             interface_id,
@@ -2378,7 +2378,7 @@ impl TestEnv {
         interface_id: u32,
         instance_id: u32,
         use_mnf: MnfUsage,
-        offer_order: Option<u32>,
+        offer_order: Option<u64>,
         flags: OfferFlags,
     ) -> OfferId {
         self.c()
