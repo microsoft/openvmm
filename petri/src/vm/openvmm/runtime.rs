@@ -220,6 +220,20 @@ impl PetriVmOpenVmm {
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Stages the new OpenHCL file and saves the existing state.
+        pub async fn save_openhcl(
+            &mut self,
+            new_openhcl: &ResolvedArtifact,
+            flags: OpenHclServicingFlags
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Restores OpenHCL from a previously saved state.
+        pub async fn restore_openhcl(
+            &mut self
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
         /// Resets the hardware state of the VM, simulating a power cycle.
         pub async fn reset(&mut self) -> anyhow::Result<()>
     );
@@ -384,6 +398,33 @@ impl PetriVmInner {
         self.worker
             .restart_openhcl(ged_send, flags, igvm_file.into())
             .await
+    }
+
+    async fn save_openhcl(
+        &self,
+        new_openhcl: &ResolvedArtifact,
+        flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        let ged_send = self
+            .resources
+            .ged_send
+            .as_ref()
+            .context("openhcl not configured")?;
+
+        let igvm_file = fs_err::File::open(new_openhcl).context("failed to open igvm file")?;
+        self.worker
+            .save_openhcl(ged_send, flags, igvm_file.into())
+            .await
+    }
+
+    async fn restore_openhcl(&self) -> anyhow::Result<()> {
+        let ged_send = self
+            .resources
+            .ged_send
+            .as_ref()
+            .context("openhcl not configured")?;
+
+        self.worker.restore_openhcl(ged_send).await
     }
 
     async fn modify_vtl2_settings(
