@@ -240,10 +240,16 @@ impl BasicNic {
                      queue_pairs,
                  }| {
                     assert!(endpoint.is_ordered());
+                    let tasks: Vec<VportTask> = (0..queue_pairs)
+                        .map(|_| VportTask {
+                            task: TaskControl::new(TxRxState),
+                            queue_cfg: QueueCfg { tx: None, rx: None },
+                        })
+                        .collect();
                     Vport {
                         mac_address,
                         endpoint,
-                        tasks: Vec::with_capacity(queue_pairs as usize),
+                        tasks,
                         serial_no: 0,
                     }
                 },
