@@ -9,7 +9,6 @@ use crate::PAGE_SIZE64;
 use crate::command_match::CommandMatchBuilder;
 use crate::prp::PrpRange;
 use crate::spec;
-use crate::tests::test_helpers::find_pci_capability;
 use crate::tests::test_helpers::read_completion_from_queue;
 use crate::tests::test_helpers::test_memory;
 use crate::tests::test_helpers::write_command_to_queue;
@@ -51,7 +50,6 @@ fn instantiate_controller(
             msix_count: 64,
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
-            flr_support: false, // TODO: Add tests with flr support.
         },
         fault_configuration,
     );
@@ -126,23 +124,38 @@ pub async fn instantiate_and_build_admin_queue(
     nvmec.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
 
     // Find the MSI-X cap struct.
-    let cfg_dword =
-        find_pci_capability(&mut nvmec, 0x11).expect("MSI-X capability should be present");
+    let mut cfg_dword = 0;
+    nvmec.pci_cfg_read(0x34, &mut cfg_dword).unwrap();
+    cfg_dword &= 0xff;
+    loop {
+        // Read a cap struct header and pull out the fields.
+        let mut cap_header = 0;
+        nvmec
+            .pci_cfg_read(cfg_dword as u16, &mut cap_header)
+            .unwrap();
+        if cap_header & 0xff == 0x11 {
+            // Read the table BIR and offset.
+            let mut table_loc = 0;
+            nvmec
+                .pci_cfg_read(cfg_dword as u16 + 4, &mut table_loc)
+                .unwrap();
+            // Code in other places assumes that the MSI-X table is at the beginning
+            // of BAR 4.  If this becomes a fluid concept, capture the values
+            // here and use them, rather than just asserting on them.
+            assert_eq!(table_loc & 0x7, 4);
+            assert_eq!(table_loc >> 3, 0);
 
-    // Read the table BIR and offset.
-    let mut table_loc = 0;
-    nvmec
-        .pci_cfg_read(cfg_dword as u16 + 4, &mut table_loc)
-        .unwrap();
-
-    // Code in other places assumes that the MSI-X table is at the beginning
-    // of BAR 4.  If this becomes a fluid concept, capture the values
-    // here and use them, rather than just asserting on them.
-    assert_eq!(table_loc & 0x7, 4);
-    assert_eq!(table_loc >> 3, 0);
-
-    // Found MSI-X, enable it.
-    nvmec.pci_cfg_write(cfg_dword as u16, 0x80000000).unwrap();
+            // Found MSI-X, enable it.
+            nvmec.pci_cfg_write(cfg_dword as u16, 0x80000000).unwrap();
+            break;
+        }
+        // Isolate the ptr to the next cap struct.
+        cfg_dword = (cap_header >> 8) & 0xff;
+        if cfg_dword == 0 {
+            // Hit the end.
+            panic!();
+        }
+    }
 
     // Turn on MMIO access by writing to the Command register in config space.  Enable
     // MMIO and DMA.
