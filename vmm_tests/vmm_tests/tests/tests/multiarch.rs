@@ -7,6 +7,10 @@ use anyhow::Context;
 use futures::StreamExt;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
+use memstat::TestVPCount;
+use memstat::WaitPeriodSec;
+use memstat::get_arch_str;
+use memstat::idle_test;
 use mesh::rpc::RpcSend;
 use petri::MemoryConfig;
 use petri::PetriGuestStateLifetime;
@@ -834,82 +838,46 @@ async fn validate_mnf_usage_in_guest(
     Ok(())
 }
 
-#[vmm_test_no_agent(hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)))]
+#[vmm_test_no_agent(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+)]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_tdx_2_proc_no_agent<T: PetriVmmBackend>(
+async fn memory_validation_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    memstat::idle_test::<T>(config, "intel-tdx", 2, 16, 10).await?;
-
-    Ok(())
+    let arch_str = get_arch_str(config.isolation(), config.arch());
+    idle_test(
+        config,
+        &arch_str,
+        TestVPCount::SmallVPCount as u32,
+        WaitPeriodSec::ShortWait as u64,
+    )
+    .await
 }
 
-#[vmm_test_no_agent(hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)))]
+#[vmm_test_no_agent(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+)]
 #[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_tdx_64_proc_no_agent<T: PetriVmmBackend>(
+async fn memory_validation_large<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    memstat::idle_test::<T>(config, "intel-tdx", 64, 16, 15).await?;
-
-    Ok(())
-}
-
-#[vmm_test_no_agent(hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)))]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_snp_2_proc_no_agent<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    memstat::idle_test(config, "amd-snp", 2, 16, 10).await?;
-
-    Ok(())
-}
-
-#[vmm_test_no_agent(hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)))]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_snp_64_proc_no_agent<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    memstat::idle_test(config, "amd-snp", 64, 16, 15).await?;
-
-    Ok(())
-}
-
-#[vmm_test(hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_x64_2_proc_no_agent<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    memstat::idle_test(config, "intel-x64", 2, 16, 10).await?;
-
-    Ok(())
-}
-
-#[vmm_test(hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_x64_32_proc_no_agent<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    memstat::idle_test(config, "intel-x64", 32, 16, 10).await?;
-
-    Ok(())
-}
-
-#[vmm_test(hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_arm_2_proc_no_agent<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    memstat::idle_test(config, "aarch64", 2, 16, 10).await?;
-
-    Ok(())
-}
-
-#[vmm_test(hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn memory_validation_arm_64_proc_no_agent<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    memstat::idle_test(config, "aarch64", 64, 16, 15).await?;
-
-    Ok(())
+    let arch_str = get_arch_str(config.isolation(), config.arch());
+    idle_test(
+        config,
+        &arch_str,
+        if arch_str.contains("x64") {
+            TestVPCount::LargeVPCountGP as u32
+        } else {
+            TestVPCount::LargeVPCount as u32
+        },
+        WaitPeriodSec::LongWait as u64,
+    )
+    .await
 }

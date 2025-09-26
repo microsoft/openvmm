@@ -643,6 +643,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self.config.firmware.is_openhcl()
     }
 
+    /// Get the isolation type of the VM
+    pub fn isolation(&self) -> Option<IsolationType> {
+        self.config.firmware.isolation()
+    }
+
+    /// Get the machine architecture
+    pub fn arch(&self) -> MachineArch {
+        self.config.arch
+    }
+
     /// Get the backend-specific config builder
     pub fn modify_backend(
         mut self,
