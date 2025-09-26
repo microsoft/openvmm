@@ -240,7 +240,9 @@ impl BasicNic {
                      queue_pairs,
                  }| {
                     assert!(endpoint.is_ordered());
-                    let tasks: Vec<VportTask> = (0..queue_pairs)
+                    // An extra slot is needed because when setting the requested_num_queues state
+                    // in the netvsp device the subchannel count is incremented by one.
+                    let tasks: Vec<VportTask> = (0..(queue_pairs + 1))
                         .map(|_| VportTask {
                             task: TaskControl::new(TxRxState),
                             queue_cfg: QueueCfg { tx: None, rx: None },
@@ -401,13 +403,6 @@ impl BasicNic {
                 // Free the underlying GDMA resources.
                 state.queues.free_wq(true, wq_id).unwrap_or(());
                 state.queues.free_cq(cq_id).unwrap_or(());
-
-                // If both sides are now empty, remove the task slot.
-                if vport.tasks[task_idx].queue_cfg.tx.is_none()
-                    && vport.tasks[task_idx].queue_cfg.rx.is_none()
-                {
-                    vport.tasks.remove(task_idx);
-                }
                 0
             }
             ManaCommandCode::MANA_CONFIG_VPORT_RX => {
