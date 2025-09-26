@@ -44,6 +44,13 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// This can be called multiple times for the same interrupt without disconnecting
     /// previous mappings. The last `cpu` value will be used as the target CPU.
     fn map_interrupt(&mut self, msix: u32, cpu: u32) -> anyhow::Result<DeviceInterrupt>;
+
+    /// Unmaps and disables all previously mapped interrupts.
+    ///
+    /// Default implementation is a no-op for backends that do not support interrupt unmapping.
+    fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Access to device registers.
