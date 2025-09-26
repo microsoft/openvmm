@@ -9,17 +9,6 @@ use get_resources::ged::GuestServicingFlags;
 use hvlite_defs::rpc::VmRpc;
 use mesh::rpc::RpcSend;
 
-/// Replace the running version of Underhill.
-pub async fn service_underhill(
-    vm_send: &mesh::Sender<VmRpc>,
-    send: &mesh::Sender<GuestEmulationRequest>,
-    flags: GuestServicingFlags,
-    file: std::fs::File,
-) -> anyhow::Result<()> {
-    save_underhill(vm_send, send, flags, file).await?;
-    restore_underhill(vm_send, send).await
-}
-
 /// Save the running state of Underhill and stage the new version.
 pub async fn save_underhill(
     vm_send: &mesh::Sender<VmRpc>,

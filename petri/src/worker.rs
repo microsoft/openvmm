@@ -64,7 +64,7 @@ impl Worker {
         flags: OpenHclServicingFlags,
         file: std::fs::File,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::service_underhill(
+        hvlite_helpers::underhill::save_underhill(
             &self.rpc,
             send,
             GuestServicingFlags {
@@ -72,7 +72,8 @@ impl Worker {
             },
             file,
         )
-        .await
+        .await?;
+        hvlite_helpers::underhill::restore_underhill(&self.rpc, send).await
     }
 
     pub(crate) async fn save_openhcl(
