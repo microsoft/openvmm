@@ -889,8 +889,7 @@ impl IntoPipeline for CheckinGatesCli {
         // standard VM-based CI machines should be able to run all tests except
         // those that require special hardware features (tdx/snp) or need to be
         // run on a baremetal host (hyper-v vbs doesn't seem to work nested)
-        let standard_filter =
-            "all() & !test(tdx) & !test(snp) & !(test(vbs) & test(hyperv))".to_string();
+        let standard_filter = "all()".to_string();
         let standard_x64_test_artifacts = vec![
             KnownTestArtifacts::FreeBsd13_2X64Vhd,
             KnownTestArtifacts::FreeBsd13_2X64Iso,
