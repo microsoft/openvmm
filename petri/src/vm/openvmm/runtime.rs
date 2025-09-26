@@ -417,18 +417,14 @@ impl PetriVmInner {
             .await
     }
 
-    async fn restore_openhcl(
-        &self,
-    ) -> anyhow::Result<()> {
+    async fn restore_openhcl(&self) -> anyhow::Result<()> {
         let ged_send = self
             .resources
             .ged_send
             .as_ref()
             .context("openhcl not configured")?;
 
-        self.worker
-            .restore_openhcl(ged_send)
-            .await
+        self.worker.restore_openhcl(ged_send).await
     }
 
     async fn modify_vtl2_settings(

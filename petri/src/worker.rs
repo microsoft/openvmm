@@ -96,11 +96,7 @@ impl Worker {
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::restore_underhill(
-            &self.rpc,
-            send,
-        )
-        .await
+        hvlite_helpers::underhill::restore_underhill(&self.rpc, send).await
     }
 
     pub(crate) async fn inspect_all(&self) -> String {
