@@ -448,7 +448,6 @@ async fn create_keepalive_test_config(
                             .into_resource(),
                         }],
                         fault_config: fault_configuration,
-                        flr_support: false,
                     }
                     .into_resource(),
                 })

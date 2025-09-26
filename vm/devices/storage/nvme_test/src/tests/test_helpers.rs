@@ -3,14 +3,12 @@
 
 //! Mock types for unit-testing various NVMe behaviors.
 
-use crate::NvmeFaultController;
 use crate::PAGE_SIZE;
 use crate::PAGE_SIZE64;
 use crate::prp::PrpRange;
 use crate::spec;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
-use chipset_device::pci::PciConfigSpace;
 use guestmem::GuestMemory;
 use parking_lot::Mutex;
 use pci_core::msi::MsiControl;
@@ -149,33 +147,4 @@ pub fn read_completion_from_queue(
     let gpa = (dm.range().gpns()[page_in_queue] * PAGE_SIZE64) + offset_in_page as u64;
 
     gm.read_plain::<spec::Completion>(gpa).unwrap()
-}
-
-// Returns the offset for the PCI capability or None if not found. Caps the max length of the list to 100 to avoid infinite loops.
-pub fn find_pci_capability(controller: &mut NvmeFaultController, cap_id: u8) -> Option<u16> {
-    let mut cfg_dword = 0;
-    controller.pci_cfg_read(0x34, &mut cfg_dword).unwrap(); // Cap_ptr is always at 0x34
-    cfg_dword &= 0xff;
-    let mut max_caps = 100; // Limit to avoid infinite loop
-    loop {
-        if max_caps == 0 {
-            return None;
-        }
-        // Read a cap struct header and pull out the fields.
-        let mut cap_header = 0;
-        controller
-            .pci_cfg_read(cfg_dword as u16, &mut cap_header)
-            .unwrap();
-        if cap_header & 0xff == cap_id as u32 {
-            break;
-        }
-        // Isolate the ptr to the next cap struct.
-        cfg_dword = (cap_header >> 8) & 0xff;
-        if cfg_dword == 0 {
-            return None;
-        }
-        max_caps -= 1;
-    }
-
-    Some(cfg_dword as u16)
 }
