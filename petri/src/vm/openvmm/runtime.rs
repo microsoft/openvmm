@@ -386,6 +386,38 @@ impl PetriVmInner {
             .await
     }
 
+    async fn save_openhcl(
+        &self,
+        new_openhcl: &ResolvedArtifact,
+        flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        let ged_send = self
+            .resources
+            .ged_send
+            .as_ref()
+            .context("openhcl not configured")?;
+
+        let igvm_file = fs_err::File::open(new_openhcl).context("failed to open igvm file")?;
+        self.worker
+            .save_openhcl(ged_send, flags, igvm_file.into())
+            .await
+    }
+
+    
+    async fn restore_openhcl(
+        &self,
+    ) -> anyhow::Result<()> {
+        let ged_send = self
+            .resources
+            .ged_send
+            .as_ref()
+            .context("openhcl not configured")?;
+
+        self.worker
+            .restore_openhcl(ged_send)
+            .await
+    }
+
     async fn modify_vtl2_settings(
         &mut self,
         f: impl FnOnce(&mut Vtl2Settings),
