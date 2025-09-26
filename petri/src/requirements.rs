@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 //! Test requirements framework for runtime test filtering.
-#[cfg(target_os = "windows")]
-use crate::vm::hyperv::powershell::{self, HyperVGuestStateIsolationType};
 
 /// Execution environments where tests can run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,13 +123,13 @@ impl HostContext {
         let vm_host_info = {
             #[cfg(windows)]
             {
-                powershell::run_get_vm_host()
+                crate::vm::hyperv::powershell::run_get_vm_host()
                     .await
                     .ok()
                     .map(|info| VmHostInfo {
-                        vbs_supported: info
-                            .guest_isolation_types
-                            .contains(&HyperVGuestStateIsolationType::Vbs),
+                        vbs_supported: info.guest_isolation_types.contains(
+                            &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
+                        ),
                         snp_status: info.snp_status,
                         tdx_status: info.tdx_status,
                     })

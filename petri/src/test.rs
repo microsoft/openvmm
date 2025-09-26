@@ -343,10 +343,12 @@ pub fn test_main(
 
     let trials = Test::all()
         .map(|test| {
-            if !can_run_test_with_context(test.test.0.host_requirements(), &host_context) {
-                return test.trial(resolve).with_ignored_flag(true);
+            let can_run = can_run_test_with_context(test.test.0.host_requirements(), &host_context);
+            let trial = test.trial(resolve);
+            if !can_run {
+                return trial.with_ignored_flag(true);
             }
-            test.trial(resolve)
+            trial
         })
         .collect();
 
