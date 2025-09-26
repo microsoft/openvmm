@@ -417,7 +417,6 @@ impl PetriVmInner {
             .await
     }
 
-    
     async fn restore_openhcl(
         &self,
     ) -> anyhow::Result<()> {
