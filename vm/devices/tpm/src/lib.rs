@@ -301,8 +301,12 @@ pub enum TpmErrorKind {
     ReadFromNvIndex(#[source] TpmHelperError),
     #[error("failed to write to nv index")]
     WriteToNvIndex(#[source] TpmHelperError),
-    #[error("failed to get an attestation report")]
-    GetAttestationReport(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("failed to create ak cert request (is attestation report: {is_attestation_report})")]
+    CreateAkCertRequest {
+        is_attestation_report: bool,
+        #[source]
+        error: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[error("failed to clear platform hierarchy")]
     ClearPlatformHierarchy(#[source] TpmHelperError),
     #[error("failed to set pcr banks")]
@@ -848,7 +852,10 @@ impl Tpm {
     /// Create a new request needed by AK cert request callout or an attestation report exposed to the guest.
     ///
     /// This function can only be called when `ak_cert_type` is `Trusted`, `HwAttested`, or `SwAttested`.
-    fn create_ak_cert_request_or_attestation_report(&mut self, is_attestation_report: bool) -> Result<Vec<u8>, TpmError> {
+    fn create_ak_cert_request_or_attestation_report(
+        &mut self,
+        is_attestation_report: bool,
+    ) -> Result<Vec<u8>, TpmError> {
         let mut guest_attestation_input = [0u8; ATTESTATION_REPORT_DATA_SIZE];
 
         // Read the guest attestation input from `TPM_NV_INDEX_GUEST_ATTESTATION_INPUT` nv index
@@ -883,7 +890,10 @@ impl Tpm {
                 &guest_attestation_input,
                 is_attestation_report,
             )
-            .map_err(TpmErrorKind::GetAttestationReport)?;
+            .map_err(|error| TpmErrorKind::CreateAkCertRequest {
+                is_attestation_report,
+                error,
+            })?;
 
         Ok(ak_cert_request)
     }
@@ -896,7 +906,11 @@ impl Tpm {
         let attestation_report = self.create_ak_cert_request_or_attestation_report(true)?;
 
         self.tpm_engine_helper
-            .write_to_nv_index(auth_value, TPM_NV_INDEX_ATTESTATION_REPORT, &attestation_report)
+            .write_to_nv_index(
+                auth_value,
+                TPM_NV_INDEX_ATTESTATION_REPORT,
+                &attestation_report,
+            )
             .map_err(TpmErrorKind::WriteToNvIndex)?;
 
         self.attestation_report_renew_time = Some(std::time::SystemTime::now());

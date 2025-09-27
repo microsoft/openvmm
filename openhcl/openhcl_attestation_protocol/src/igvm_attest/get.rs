@@ -58,13 +58,11 @@ pub struct IgvmAttestRequest {
     pub attestation_report: [u8; ATTESTATION_REPORT_SIZE_MAX],
     /// Request data (unmeasured)
     pub request_data: IgvmAttestRequestData,
-
-    // Extended request data (unmeasured) for v2+ requests will be appended here.
-    //
-    // Variable-length [`runtime_claims::RuntimeClaims`] (JSON string) in raw bytes will be
-    // appended to here.
-    // The hash of [`runtime_claims::RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
-    // in the `report_data` or equivalent field of the TEE attestation report.
+    // Appended data:
+    // - Optional Extended request data (request version 2+).
+    // - Variable-length [`runtime_claims::RuntimeClaims`] (JSON string)
+    //   The hash of [`runtime_claims::RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
+    //   in the `report_data` or equivalent field of the TEE attestation report.
 }
 
 open_enum! {
