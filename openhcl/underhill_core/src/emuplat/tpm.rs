@@ -4,6 +4,8 @@
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_VERSION_1;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_VERSION_CURRENT;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
 use thiserror::Error;
@@ -56,6 +58,7 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         ek_pub_modulus: &[u8],
         ek_pub_exponent: &[u8],
         guest_input: &[u8],
+        is_attestation_report: bool,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let tee_type = match self.attestation_type {
             AttestationType::Snp => Some(tee_call::TeeType::Snp),
@@ -83,11 +86,19 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             vec![]
         };
 
+        let version = if is_attestation_report {
+            // If this is an attestation report, use the version 1, the stable structure exposed
+            // to the guest via NV index.
+            IGVM_ATTEST_REQUEST_VERSION_1
+        } else {
+            // Otherwise, this is an AK cert request. Use the latest version to get the latest features.
+            IGVM_ATTEST_REQUEST_VERSION_CURRENT
+        };
+
         let request = ak_cert_request_helper
-            .create_request(&attestation_report)
+            .create_request(version, &attestation_report)
             .map_err(TpmAttestationError::CreateAkCertRequest)?;
 
-        // The request will be exposed to the guest (via nv index) for isolated VMs.
         Ok(request)
     }
 
