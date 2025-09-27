@@ -3701,6 +3701,7 @@ mod tests {
             _ek_pub_modulus: &[u8],
             _ek_pub_exponent: &[u8],
             _guest_input: &[u8],
+            _is_attestation_report: bool,
         ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
             Ok(Vec::new())
         }
