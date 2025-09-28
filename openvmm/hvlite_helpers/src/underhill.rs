@@ -40,8 +40,6 @@ pub async fn service_underhill(
         return r;
     }
 
-    // todo: SPLIT HERE 
-
     // Reload the IGVM file and reset VTL2 state.
     tracing::debug!("reloading IGVM file");
     vm_send

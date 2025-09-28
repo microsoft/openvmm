@@ -24,7 +24,6 @@ use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::OneshotSender;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
@@ -140,7 +139,11 @@ impl PendingCommands {
     }
 
     /// Restore pending commands from the saved state.
-    pub fn restore(saved_state: &PendingCommandsSavedState, qid: u16, aer_sender: Option<OneshotSender<spec::Completion>>) -> anyhow::Result<Self> {
+    pub fn restore(
+        saved_state: &PendingCommandsSavedState,
+        qid: u16,
+        aer_sender: Option<mesh::OneshotSender<spec::Completion>>,
+    ) -> anyhow::Result<Self> {
         let PendingCommandsSavedState {
             commands,
             next_cid_high_bits,
@@ -148,24 +151,27 @@ impl PendingCommands {
         } = saved_state;
 
         let mut commands = commands
-                .iter()
-                .map(|state| {
-                    // To correctly restore Slab we need both the command index,
-                    // inherited from command's CID, and the command itself.
+            .iter()
+            .map(|state| {
+                // To correctly restore Slab we need both the command index,
+                // inherited from command's CID, and the command itself.
+                (
                     // Remove high CID bits to be used as a key.
-                    (
-                        (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
-                        PendingCommand {
-                            command: state.command,
-                            respond: Rpc::detached(()),
-                        },
-                    )
-                })
-                .collect::<Slab<PendingCommand>>();
+                    (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
+                    PendingCommand {
+                        command: state.command,
+                        respond: Rpc::detached(()),
+                    },
+                )
+            })
+            .collect::<Slab<PendingCommand>>();
 
-        // If aer sender was provided, place it in the first AER command found. TODO this should be based on CID and not the command opcode but will do this later.
+        // If aer sender was provided, place it in the first AER command found.
+        // TODO: This assumes that there is only one AER command pending.
         if let Some(aer_sender) = aer_sender {
-            if let Some((_, value)) = commands.iter_mut().find(|(_, cmd)| cmd.command.cdw0.opcode() == spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0) {
+            if let Some((_, value)) = commands.iter_mut().find(|(_, cmd)| {
+                cmd.command.cdw0.opcode() == spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0
+            }) {
                 value.respond = Rpc((), aer_sender);
             }
         }
@@ -243,7 +249,7 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
-        aer_sender: Option<OneshotSender<spec::Completion>>
+        aer_sender: Option<OneshotSender<spec::Completion>>,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
@@ -438,8 +444,9 @@ pub struct Issuer {
 }
 
 impl Issuer {
-    pub fn extract_completion(result: Result<spec::Completion, RpcError>) -> Result<spec::Completion, RequestError>
-    {
+    pub fn extract_completion(
+        result: Result<spec::Completion, RpcError>,
+    ) -> Result<spec::Completion, RequestError> {
         match result {
             Ok(completion) if completion.status.status() == 0 => Ok(completion),
             Ok(completion) => Err(RequestError::Nvme(NvmeError(spec::Status(

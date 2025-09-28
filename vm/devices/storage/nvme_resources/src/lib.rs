@@ -45,7 +45,6 @@ pub struct NvmeFaultControllerHandle {
     pub namespaces: Vec<NamespaceDefinition>,
     /// Configuration for the fault
     pub fault_config: FaultConfiguration,
-    pub fake_namespace_change_notification: mesh::Cell<bool>,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {

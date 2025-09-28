@@ -65,7 +65,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 subsystem_id: resource.subsystem_id,
             },
             resource.fault_config,
-            resource.fake_namespace_change_notification,
         );
         for NamespaceDefinition {
             nsid,
