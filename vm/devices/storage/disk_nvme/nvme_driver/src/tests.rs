@@ -361,6 +361,7 @@ async fn test_nvme_fault_injection(driver: DefaultDriver, fault_configuration: F
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            flr_support: false,
         },
         fault_configuration,
         mesh::CellUpdater::new(false).cell(),
