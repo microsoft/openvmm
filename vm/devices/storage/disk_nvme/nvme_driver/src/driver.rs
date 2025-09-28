@@ -691,7 +691,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             let admin = admin.issuer().clone();
             let rescan_event = this.rescan_event.clone();
             async move {
-                if let Err(err) = handle_asynchronous_events(&admin, &rescan_event, None).await {
+                if let Err(err) =
+                    handle_asynchronous_events(&admin, &rescan_event, aer_receiver).await
+                {
                     tracing::error!(
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
@@ -770,7 +772,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     }
 }
 
-/// Awaits a response on aer_receiver channel (if provided) before sending any AER commands.
+/// Awaits a response on aer_receiver channel (if provided) before issuing any AER commands.
 /// Ensures that only one AER command is outstanding at a time.
 async fn handle_asynchronous_events(
     admin: &Issuer,

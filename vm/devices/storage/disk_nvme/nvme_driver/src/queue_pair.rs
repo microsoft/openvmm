@@ -364,7 +364,7 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
-        aer_sender: Option<OneshotSender<spec::Completion>>,
+        aer_sender: Option<mesh::OneshotSender<spec::Completion>>,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -374,6 +374,13 @@ impl QueuePair {
             cq_entries,
             handler_data,
         } = saved_state;
+
+        if *qid != 0 && aer_sender.is_some() {
+            anyhow::bail!(
+                "aer_sender can only be provided for admin queue (qid=0) during restore. given qid={}",
+                qid
+            );
+        }
 
         QueuePair::new_or_restore(
             spawner,

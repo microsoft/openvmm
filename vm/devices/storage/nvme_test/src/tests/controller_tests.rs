@@ -54,7 +54,6 @@ fn instantiate_controller(
             flr_support: false, // TODO: Add tests with flr support.
         },
         fault_configuration,
-        mesh::CellUpdater::new(false).cell(),
     );
 
     if let Some(intc) = int_controller {

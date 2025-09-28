@@ -144,14 +144,7 @@ struct IoCq {
 }
 
 impl AdminState {
-    pub fn new(
-        handler: &AdminHandler,
-        asq: u64,
-        asqs: u16,
-        acq: u64,
-        acqs: u16,
-        fake_namespace_change_notification: mesh::Cell<bool>,
-    ) -> Self {
+    pub fn new(handler: &AdminHandler, asq: u64, asqs: u16, acq: u64, acqs: u16) -> Self {
         // Start polling for namespace changes. Use a bounded channel to avoid
         // unbounded memory allocation when the queue is stuck.
         #[expect(clippy::disallowed_methods)] // TODO
