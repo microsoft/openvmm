@@ -16,7 +16,6 @@ use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
 use crate::registers::DeviceRegisters;
 use anyhow::Context as _;
-use core::panic;
 use futures::StreamExt;
 use futures::future::join_all;
 use inspect::Inspect;
