@@ -59,7 +59,7 @@ const MAX_NV_INDEX_SIZE: u16 = 4096;
 // Scale this with maximum attestation payload
 const MAX_ATTESTATION_INDEX_SIZE: u16 = 2600;
 
-const RSA_2K_MODULUS_BITS: u16 = 2048;
+pub const RSA_2K_MODULUS_BITS: u16 = 2048;
 pub const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
 const RSA_2K_EXPONENT_SIZE: usize = 3;
 
@@ -1728,7 +1728,7 @@ impl TpmEngineHelper {
     /// * `duplicate` - The private part of the key to be imported.
     /// * `in_sym_seed` - The value associated with `duplicate`.
     ///
-    fn import(
+    pub fn import(
         &mut self,
         auth_handle: ReservedHandle,
         object_public: &Tpm2bPublic,
@@ -1773,7 +1773,7 @@ impl TpmEngineHelper {
     /// * `in_private` - The private part of the key to be loaded.
     /// * `in_public` - The public part of the key to be loaded.
     ///
-    fn load(
+    pub fn load(
         &mut self,
         auth_handle: ReservedHandle,
         in_private: &Tpm2bBuffer,
@@ -1871,7 +1871,8 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     Ok(in_public)
 }
 
-/// Returns the public template for SRK.
+/// Returns the public template for SRK
+/// https://github.com/canonical/snapd/blob/9cb4b26eed4e49eba34ea2838e6fec3404621729/secboot/secboot_sb_test.go#L367C2-L367C19
 pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     let symmetric = TpmtSymDefObject::new(
         AlgIdEnum::AES.into(),
@@ -1883,7 +1884,7 @@ pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     // Define the RSA scheme as TPM2_ALG_NULL for general use
     let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
 
-    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 65537);
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0); // 0 exponent means use default (2^16 + 1)
 
     let object_attributes = TpmaObjectBits::new()
         .with_fixed_tpm(true)
@@ -1893,11 +1894,6 @@ pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         .with_no_da(true)
         .with_restricted(true)
         .with_decrypt(true);
-
-    //let mut unique: [u8; 102] = [0; 102]; // Initialize the unique field with zeros
-    //unique[0] = 0x01; // Set the first byte to 1 to indicate a valid unique value, required for Ubuntu.
-    let mut unique = [0u8; crate::RSA_2K_MODULUS_SIZE];
-    unique[0] = 0x01; // Set the first byte to 1 to indicate a valid unique value, required for Ubuntu.
     
     let in_public = TpmtPublic::new(
         AlgIdEnum::RSA.into(),
@@ -1905,7 +1901,7 @@ pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         object_attributes,
         &[],
         rsa_params,
-        unique.as_ref(),
+        &[0u8; crate::RSA_2K_MODULUS_SIZE],
     )
     .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
 

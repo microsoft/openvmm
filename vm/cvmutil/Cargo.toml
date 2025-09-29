@@ -23,5 +23,8 @@ sha2.workspace = true
 base64.workspace = true
 openssl.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

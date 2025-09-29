@@ -1208,9 +1208,9 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmtSymDefObject {
-        algorithm: AlgId,
-        key_bits: u16_be,
-        mode: AlgId,
+        pub algorithm: AlgId,
+        pub key_bits: u16_be,
+        pub mode: AlgId,
     }
 
     impl TpmtSymDefObject {
@@ -1288,8 +1288,8 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmsRsaParams {
-        symmetric: TpmtSymDefObject,
-        scheme: TpmtRsaScheme,
+        pub symmetric: TpmtSymDefObject,
+        pub scheme: TpmtRsaScheme,
         pub key_bits: u16_be,
         pub exponent: u32_be,
     }
@@ -1376,7 +1376,7 @@ pub mod protocol {
         pub my_type: AlgId,
         pub name_alg: AlgId,
         pub object_attributes: TpmaObject,
-        auth_policy: Tpm2bBuffer,
+        pub auth_policy: Tpm2bBuffer,
         // `TPMS_RSA_PARAMS`
         pub parameters: TpmsRsaParams,
         // `TPM2B_PUBLIC_KEY_RSA`

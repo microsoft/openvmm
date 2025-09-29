@@ -1001,6 +1001,7 @@ dependencies = [
  "ms-tpm-20-ref",
  "openssl",
  "sha2",
+ "tempfile",
  "tpm",
  "tpm_resources",
  "tracing",
