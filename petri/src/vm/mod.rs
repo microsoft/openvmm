@@ -228,7 +228,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// event (if configured). Does not configure and start pipette. Should
     /// only be used for testing platforms that pipette does not support.
     pub async fn run_without_agent(self) -> anyhow::Result<PetriVm<T>> {
-        self.run_core().await
+        let (vm, _) = self.run_core(false).await?;
+        Ok(vm)
     }
 
     /// Build and run the VM, then wait for the VM to emit the expected boot
@@ -237,12 +238,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         assert!(self.config.agent_image.is_some());
         assert!(self.config.agent_image.as_ref().unwrap().contains_pipette());
 
-        let mut vm = self.run_core().await?;
-        let client = vm.wait_for_agent().await?;
-        Ok((vm, client))
+        let (vm, agent) = self.run_core(true).await?;
+        Ok((vm, agent.unwrap()))
     }
 
-    async fn run_core(self) -> anyhow::Result<PetriVm<T>> {
+    async fn run_core(
+        self,
+        with_agent: bool,
+    ) -> anyhow::Result<(PetriVm<T>, Option<PipetteClient>)> {
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
 
@@ -268,9 +271,22 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             vm.wait_for_reset_core().await?;
         }
 
+        let client = if with_agent {
+            Some(vm.wait_for_agent().await?)
+        } else {
+            None
+        };
+
+        if with_agent {
+            let result = vm.set_console_loglevel(3).await;
+            if result.is_err() {
+                tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
+            }
+        }
+
         vm.wait_for_expected_boot_event().await?;
 
-        Ok(vm)
+        Ok((vm, client))
     }
 
     fn expect_reset(&self) -> bool {
@@ -298,39 +314,52 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         resources: &PetriVmResources,
         runtime: &mut T::VmRuntime,
     ) -> anyhow::Result<Vec<Task<()>>> {
-        // Our CI environment will kill tests after some time. We want to save
-        // some information about the VM if it's still running at that point.
-        const TIMEOUT_DURATION_MINUTES: u64 = 6;
-        const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60 - 10);
-
         let mut tasks = Vec::new();
 
-        if let Some(inspector) = runtime.inspector() {
-            let mut timer = PolledTimer::new(&resources.driver);
+        {
+            const TIMEOUT_DURATION_MINUTES: u64 = 5;
+            const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60);
             let log_source = resources.log_source.clone();
-
-            tasks.push(resources.driver.spawn("petri-watchdog-inspect", {
-                async move {
-                    timer.sleep(TIMER_DURATION).await;
-                    tracing::warn!(
-                        "Test has been running for almost {TIMEOUT_DURATION_MINUTES} minutes,
-                     saving inspect details."
-                    );
-
-                    let info = match inspector.inspect().await {
-                        Ok(info) => info,
-                        Err(e) => {
-                            tracing::error!(?e, "Failed to get inspect contents");
+            let inspect_task =
+                |name,
+                 driver: &DefaultDriver,
+                 inspect: std::pin::Pin<Box<dyn Future<Output = _> + Send>>| {
+                    driver.spawn(format!("petri-watchdog-inspect-{name}"), async move {
+                        tracing::info!("Collecting {name} inspect details.");
+                        let node = match inspect.await {
+                            Ok(n) => n,
+                            Err(e) => {
+                                tracing::error!(?e, "Failed to get {name}");
+                                return;
+                            }
+                        };
+                        if let Err(e) = log_source.write_attachment(
+                            &format!("timeout_inspect_{name}.log"),
+                            format!("{node:#}"),
+                        ) {
+                            tracing::error!(?e, "Failed to save {name} inspect log");
                             return;
                         }
-                    };
+                        tracing::info!("{name} inspect task finished.");
+                    })
+                };
 
-                    if let Err(e) = log_source.write_attachment("timeout_inspect.log", info) {
-                        tracing::error!(?e, "Failed to save inspect log");
-                        return;
-                    }
-                    tracing::info!("Watchdog inspect task finished.");
+            let driver = resources.driver.clone();
+            let vmm_inspector = runtime.inspector();
+            let openhcl_diag_handler = runtime.openhcl_diag();
+            tasks.push(resources.driver.spawn("timer-watchdog", async move {
+                PolledTimer::new(&driver).sleep(TIMER_DURATION).await;
+                tracing::warn!("Test timeout reached after {TIMEOUT_DURATION_MINUTES} minutes, collecting diagnostics.");
+                let mut timeout_tasks = Vec::new();
+                if let Some(inspector) = vmm_inspector {
+                    timeout_tasks.push(inspect_task.clone()("vmm", &driver, Box::pin(async move { inspector.inspect_all().await })) );
                 }
+                if let Some(openhcl_diag_handler) = openhcl_diag_handler {
+                    timeout_tasks.push(inspect_task("openhcl", &driver, Box::pin(async move { openhcl_diag_handler.inspect("", None, None).await })));
+                }
+                futures::future::join_all(timeout_tasks).await;
+                tracing::error!("Test time out diagnostics collection complete, aborting.");
+                panic!("Test timed out");
             }));
         }
 
@@ -394,34 +423,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                         }
                     }),
             );
-        }
-
-        if let Some(openhcl_diag_handler) = runtime.openhcl_diag() {
-            let mut timer = PolledTimer::new(&resources.driver);
-            let driver = resources.driver.clone();
-            let log_source = resources.log_source.clone();
-            tasks.push(driver.spawn("petri-watchdog-inspect-vtl2", async move {
-                timer.sleep(TIMER_DURATION).await;
-                tracing::warn!(
-                    "Test has been running for almost {TIMEOUT_DURATION_MINUTES} minutes, saving openhcl inspect details."
-                );
-
-                let output = match openhcl_diag_handler.inspect("", None, None).await {
-                    Err(e) => {
-                        tracing::error!(?e, "Failed to inspect vtl2");
-                        return;
-                    }
-                    Ok(output) => output,
-                };
-
-                let formatted_output = format!("{output:#}");
-                if let Err(e) = log_source.write_attachment("timeout_openhcl_inspect.log", formatted_output) {
-                    tracing::error!(?e, "Failed to save ohcldiag-dev inspect log");
-                    return;
-                }
-
-                tracing::info!("Watchdog OpenHCL inspect task finished.");
-            }));
         }
 
         Ok(tasks)
@@ -685,7 +686,12 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// Wait for the VM to reset and pipette to connect.
     pub async fn wait_for_reset(&mut self) -> anyhow::Result<PipetteClient> {
         self.wait_for_reset_no_agent().await?;
-        self.wait_for_agent().await
+        let client = self.wait_for_agent().await?;
+        let result = self.set_console_loglevel(3).await;
+        if result.is_err() {
+            tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
+        }
+        Ok(client)
     }
 
     async fn wait_for_reset_core(&mut self) -> anyhow::Result<()> {
@@ -876,11 +882,31 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             anyhow::bail!("VM is not configured with OpenHCL")
         }
     }
+
+    async fn set_console_loglevel(&self, level: u8) -> anyhow::Result<()> {
+        match self.openhcl_diag() {
+            Ok(diag) => {
+                diag.kmsg().await?;
+                let res = diag
+                    .run_vtl2_command("dmesg", &["-n", &level.to_string()])
+                    .await?;
+
+                if !res.exit_status.success() {
+                    anyhow::bail!("failed to set console loglevel: {:?}", res);
+                }
+            }
+            Err(e) => {
+                anyhow::bail!("failed to open VTl2 diagnostic channel: {}", e);
+            }
+        };
+
+        Ok(())
+    }
 }
 
 /// A running VM that tests can interact with.
 #[async_trait]
-pub trait PetriVmRuntime {
+pub trait PetriVmRuntime: Send + Sync + 'static {
     /// Interface for inspecting the VM
     type VmInspector: PetriVmInspector;
     /// Interface for accessing the framebuffer
@@ -923,16 +949,16 @@ pub trait PetriVmRuntime {
 
 /// Interface for getting information about the state of the VM
 #[async_trait]
-pub trait PetriVmInspector: Send + 'static {
+pub trait PetriVmInspector: Send + Sync + 'static {
     /// Get information about the state of the VM
-    async fn inspect(&self) -> anyhow::Result<String>;
+    async fn inspect_all(&self) -> anyhow::Result<inspect::Node>;
 }
 
 /// Use this for the associated type if not supported
 pub struct NoPetriVmInspector;
 #[async_trait]
 impl PetriVmInspector for NoPetriVmInspector {
-    async fn inspect(&self) -> anyhow::Result<String> {
+    async fn inspect_all(&self) -> anyhow::Result<inspect::Node> {
         unreachable!()
     }
 }
