@@ -28,6 +28,7 @@ use mesh::rpc::get_endpoints;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use save_restore::NvmeDriverWorkerSavedState;
+use core::panic;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use task_control::AsyncRun;
@@ -575,6 +576,38 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 pending.command.cdw0.opcode() == spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0
             }) {
                 return Some(get_endpoints::<(), spec::Completion>(()));
+            }
+        }
+        None
+    }
+
+    // If there was an outstanding AER command create and return a oneshot channel to rewire for the AER flow.
+    async fn recreate_aer_channel2(
+        saved_state: &NvmeDriverSavedState,
+    ) -> Option<(Rpc<(), spec::Completion>, PendingRpc<spec::Completion>)> {
+        if let Some(admin_state) = &saved_state.worker_data.admin {
+            let pending_cmds = &admin_state.handler_data.pending_cmds.commands;
+            if pending_cmds.iter().any(|pending| {
+                pending.command.cdw0.opcode() == spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0
+            }) {
+                enum AerRpc {
+                    Restore(Rpc<(), spec::Completion>),
+                }
+                let (sender, receiver) = mesh::channel();
+                let pending = sender.call(AerRpc::Restore, ());
+                let aer_rpc = receiver
+                    .next()
+                    .await
+                    .context("failed to recreate AER channel")
+                    .unwrap();
+
+                let rpc:  = match aer_rpc {
+                    AerRpc::Restore(rpc) => {
+                        rpc.split().1
+                    }
+                };
+
+                return Some((rpc, pending));
             }
         }
         None
