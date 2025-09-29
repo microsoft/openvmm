@@ -16,10 +16,12 @@ use crate::test_crypto::TestSha1;
 use crate::test_crypto::aes_key_wrap_with_padding;
 use base64::Engine;
 use get_resources::ged::IgvmAttestTestConfig;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_VERSION_CURRENT;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
@@ -49,6 +51,8 @@ pub(crate) enum Error {
     KeyInitializationFailed(#[source] rsa::Error),
     #[error("keys not initialized")]
     KeysNotInitialized,
+    #[error("invalid igvm attest request version - expected {expected}, found {found}")]
+    InvalidIgvmAttestRequestVersion { found: u32, expected: u32 },
     #[error("invalid igvm attest request")]
     InvalidIgvmAttestRequest,
     #[error("failed to generate mock wrapped key response")]
@@ -165,8 +169,17 @@ impl TestIgvmAgent {
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         // Validate and extract runtime claims
-        // The runtime claims are appended after the fixed-size IgvmAttestRequest structure
-        let runtime_claims_start = size_of::<IgvmAttestRequest>();
+        // The version must be the current version to ensure the presence of the extension data structure.
+        if request.header.version != IGVM_ATTEST_REQUEST_VERSION_CURRENT {
+            return Err(Error::InvalidIgvmAttestRequestVersion {
+                found: request.header.version,
+                expected: IGVM_ATTEST_REQUEST_VERSION_CURRENT,
+            });
+        }
+
+        // The runtime claims are appended after the fixed-size IgvmAttestRequest and IgvmAttestRequestDataExt structures.
+        let runtime_claims_start =
+            size_of::<IgvmAttestRequest>() + size_of::<IgvmAttestRequestDataExt>();
         let runtime_claims_end =
             runtime_claims_start + request.request_data.variable_data_size as usize;
         if request_bytes.len() < runtime_claims_end {
