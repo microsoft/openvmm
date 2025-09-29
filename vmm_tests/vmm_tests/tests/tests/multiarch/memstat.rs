@@ -25,9 +25,8 @@ use std::time::Duration;
 
 #[repr(u32)]
 pub enum TestVPCount {
-    SmallVPCount = 2,
-    LargeVPCountGP = 32,
-    LargeVPCount = 64,
+    SmallVPCount,
+    LargeVPCount,
 }
 
 #[repr(u64)]
@@ -38,7 +37,7 @@ pub enum WaitPeriodSec {
 
 /// PerProcessMemstat struct collects statistics from a single process relevant to memory validation
 #[derive(Serialize, Clone, Default)]
-pub struct PerProcessMemstat {
+struct PerProcessMemstat {
     /// HashMap generated from the contents of the /proc/{process ID}/smaps_rollup file for an OpenHCL process
     /// sample output from /proc/{process ID}/smaps_rollup:
     ///
@@ -57,7 +56,7 @@ pub struct PerProcessMemstat {
 
 /// MemStat struct collects all relevant memory usage data from VTL2 in a VM
 #[derive(Serialize, Clone, Default)]
-pub struct MemStat {
+struct MemStat {
     /// meminfo is a HashMap generated from the contents of the /proc/meminfo file
     /// sample content of /proc/meminfo:
     ///
@@ -346,7 +345,7 @@ impl IndexMut<&'_ str> for MemStat {
     }
 }
 
-pub fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: MachineArch) -> String {
+fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: MachineArch) -> String {
     isolation_type
         .map(|isolation_type| match isolation_type {
             IsolationType::Vbs => "vbs-x64",
@@ -362,11 +361,22 @@ pub fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: Machine
 
 pub async fn idle_test<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    arch_config: &str,
     vps: TestVPCount,
     wait_time_sec: WaitPeriodSec,
 ) -> anyhow::Result<()> {
-    let vp_count = vps as u32;
+    let isolation_type = config.isolation();
+    let machine_arch = config.arch();
+    let arch_str = get_arch_str(isolation_type, machine_arch);
+    let vp_count = match vps {
+        TestVPCount::SmallVPCount => 2,
+        TestVPCount::LargeVPCount => {
+            if arch_str.contains("x64") {
+                32
+            } else {
+                64
+            }
+        }
+    };
     let mut vm = config
         .with_processor_topology({
             ProcessorTopology {
@@ -395,7 +405,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     vm.wait_for_teardown().await?;
-    memstat.compare_to_baseline(arch_config, &format!("{}vp", vp_count))?;
+    memstat.compare_to_baseline(&arch_str, &format!("{}vp", vp_count))?;
 
     Ok(())
 }

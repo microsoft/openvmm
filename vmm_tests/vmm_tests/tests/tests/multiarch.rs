@@ -9,7 +9,6 @@ use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use memstat::TestVPCount;
 use memstat::WaitPeriodSec;
-use memstat::get_arch_str;
 use memstat::idle_test;
 use mesh::rpc::RpcSend;
 use petri::MemoryConfig;
@@ -841,21 +840,14 @@ async fn validate_mnf_usage_in_guest(
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    let arch_str = get_arch_str(config.isolation(), config.arch());
-    idle_test(
-        config,
-        &arch_str,
-        TestVPCount::SmallVPCount,
-        WaitPeriodSec::ShortWait,
-    )
-    .await
+    idle_test(config, TestVPCount::SmallVPCount, WaitPeriodSec::ShortWait).await
 }
 
 #[vmm_test_no_agent(
@@ -868,16 +860,5 @@ async fn memory_validation_small<T: PetriVmmBackend>(
 async fn memory_validation_large<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    let arch_str = get_arch_str(config.isolation(), config.arch());
-    idle_test(
-        config,
-        &arch_str,
-        if arch_str.contains("x64") {
-            TestVPCount::LargeVPCountGP
-        } else {
-            TestVPCount::LargeVPCount
-        },
-        WaitPeriodSec::LongWait,
-    )
-    .await
+    idle_test(config, TestVPCount::LargeVPCount, WaitPeriodSec::LongWait).await
 }
