@@ -17,6 +17,7 @@ use crate::HvsockRelayChannelHalf;
 use crate::SavedStateRequest;
 use crate::channels::SavedState;
 use crate::channels::SavedStateData;
+use crate::channels::saved_state::GpadlState;
 use crate::event::MaybeWrappedEvent;
 use crate::event::WrappedEvent;
 use anyhow::Context;
@@ -42,6 +43,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::future::poll_fn;
 use std::io;
+use std::num::NonZeroU32;
 use std::os::windows::prelude::*;
 use std::pin::pin;
 use std::sync::Arc;
@@ -402,8 +404,9 @@ impl ProxyTask {
         proxy_id: u64,
         offer: vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
+        device_order: Option<NonZeroU32>,
     ) -> Option<mesh::Receiver<ChannelRequest>> {
-        tracing::trace!(proxy_id, ?offer, "received vmbusproxy offer");
+        tracing::debug!(proxy_id, ?offer, ?device_order, "received vmbusproxy offer");
         let server = match offer.TargetVtl {
             0 => self.server.as_ref(),
             2 => {
@@ -451,6 +454,18 @@ impl ProxyTask {
         let interface_id: Guid = offer.InterfaceType.into();
         let instance_id: Guid = offer.InterfaceInstance.into();
 
+        // Create an offer order by combining the device order from the proxy driver and the
+        // proxy_id. This has the effect that channels offered by the same device are ordered
+        // together, even if the use_absolute_channel_order option is enabled.
+        //
+        // Offers without a device order are ordered after all offers with a device order.
+        //
+        // N.B. No order is set if the proxy_id does not fit in a u32, which should not typically
+        //      happen.
+        let offer_order = proxy_id.try_into().ok().map(|proxy_id: u32| {
+            ((device_order.unwrap_or(NonZeroU32::MAX).get() as u64) << 32) | proxy_id as u64
+        });
+
         let new_offer = OfferParams {
             interface_name: "proxy".to_owned(),
             instance_id,
@@ -463,7 +478,7 @@ impl ProxyTask {
                 .ChannelFlags
                 .request_monitored_notification()
                 .then(|| Duration::from_nanos(offer.InterruptLatencyIn100nsUnits * 100)),
-            offer_order: proxy_id.try_into().ok(),
+            offer_order,
             allow_confidential_external_memory: false,
         };
         let (request_send, request_recv) = mesh::channel();
@@ -662,8 +677,12 @@ impl ProxyTask {
                     offer,
                     incoming_event,
                     outgoing_event: _,
+                    device_order,
                 } => {
-                    if let Some(recv) = self.handle_offer(id, offer, incoming_event).await {
+                    if let Some(recv) = self
+                        .handle_offer(id, offer, incoming_event, device_order)
+                        .await
+                    {
                         send.send(TaggedStream::new(id, recv));
                     }
                 }
@@ -811,11 +830,12 @@ impl ProxyTask {
             tracing::trace!(?channel, "restoring channel");
             let key = channel.key();
             let channel_gpadls = gpadls.iter().filter_map(|g| {
-                (g.channel_id == channel.channel_id()).then_some(Gpadl {
-                    gpadl_id: g.id,
-                    range_count: g.count.into(),
-                    range_buffer: &g.buf,
-                })
+                (g.channel_id == channel.channel_id() && matches!(g.state, GpadlState::Accepted))
+                    .then_some(Gpadl {
+                        gpadl_id: g.id,
+                        range_count: g.count.into(),
+                        range_buffer: &g.buf,
+                    })
             });
 
             let open_params = channel.open_request().map(|request| {

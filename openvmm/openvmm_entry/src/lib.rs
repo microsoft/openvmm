@@ -64,11 +64,14 @@ use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
+use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieRootPortConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::VirtioBus;
@@ -677,6 +680,33 @@ fn vm_config_from_command_line(
             resource: handle.into_resource(),
         })
     }));
+
+    let pcie_root_complexes = opt
+        .pcie_root_complex
+        .iter()
+        .enumerate()
+        .map(|(i, cli)| {
+            let ports = opt
+                .pcie_root_port
+                .iter()
+                .filter(|port_cli| port_cli.root_complex_name == cli.name)
+                .map(|port_cli| PcieRootPortConfig {
+                    name: port_cli.name.clone(),
+                })
+                .collect();
+
+            PcieRootComplexConfig {
+                index: i as u32,
+                name: cli.name.clone(),
+                segment: cli.segment,
+                start_bus: cli.start_bus,
+                end_bus: cli.end_bus,
+                low_mmio_size: cli.low_mmio,
+                high_mmio_size: cli.high_mmio,
+                ports,
+            }
+        })
+        .collect();
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
@@ -1305,12 +1335,14 @@ fn vm_config_from_command_line(
         chipset,
         load_mode,
         floppy_disks,
+        pcie_root_complexes,
         vpci_devices,
         ide_disks: Vec::new(),
         memory: MemoryConfig {
             mem_size: opt.memory,
             mmio_gaps,
             prefetch_memory: opt.prefetch,
+            pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,

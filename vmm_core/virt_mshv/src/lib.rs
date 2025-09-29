@@ -16,6 +16,7 @@ use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::X64RegisterIo;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -209,7 +210,7 @@ pub struct MshvProtoPartition<'a> {
 impl ProtoPartition for MshvProtoPartition<'_> {
     type Partition = MshvPartition;
     type ProcessorBinder = MshvProcessorBinder;
-    type Error = Infallible;
+    type Error = Error;
 
     fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
         // This call should never fail unless there is a kernel or hypervisor
@@ -239,7 +240,8 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                     .get_cpuid_values(function, index, 0, 0)
                     .expect("cpuid should not fail")
             },
-        );
+        )
+        .map_err(Error::Capabilities)?;
 
         // Attach all the resources created above to a Partition object.
         let partition = MshvPartition {
@@ -1088,6 +1090,8 @@ pub enum Error {
     Register(#[source] MshvError),
     #[error("install instercept failed")]
     InstallIntercept(#[source] MshvError),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 impl MshvPartitionInner {
@@ -1175,10 +1179,9 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         if exec {
             flags |= set_bits!(u8, MSHV_SET_MEM_BIT_EXECUTABLE);
         }
-
         let mem_region = mshv_user_mem_region {
             size: size as u64,
-            guest_pfn: addr,
+            guest_pfn: addr >> HV_PAGE_SHIFT,
             userspace_addr: data as u64,
             flags,
             rsvd: [0; 7],
@@ -1195,7 +1198,9 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             .ranges
             .iter_mut()
             .enumerate()
-            .find(|(_, range)| range.as_ref().map(|r| (r.guest_pfn, r.size)) == Some((addr, size)))
+            .find(|(_, range)| {
+                range.as_ref().map(|r| (r.guest_pfn, r.size)) == Some((addr >> HV_PAGE_SHIFT, size))
+            })
             .expect("can only unmap existing ranges of exact size");
 
         self.vmfd.unmap_user_memory(range.unwrap())?;

@@ -1688,11 +1688,11 @@ async fn new_underhill_vm(
         vm_unique_id: dps.general.bios_guid.to_string(),
     };
 
-    let attestation_type = match isolation {
-        virt::IsolationType::Snp => AttestationType::Snp,
-        virt::IsolationType::Tdx => AttestationType::Tdx,
-        virt::IsolationType::Vbs => AttestationType::Vbs,
-        virt::IsolationType::None => AttestationType::Host,
+    let tee_call: Option<Box<dyn tee_call::TeeCall>> = match isolation {
+        virt::IsolationType::Snp => Some(Box::new(tee_call::SnpCall)),
+        virt::IsolationType::Tdx => Some(Box::new(tee_call::TdxCall)),
+        virt::IsolationType::Vbs => Some(Box::new(tee_call::VbsCall)),
+        virt::IsolationType::None => None,
     };
 
     // use the encryption policy from the command line if it is provided
@@ -1745,7 +1745,7 @@ async fn new_underhill_vm(
                 dps.general.bios_guid,
                 &attestation_vm_config,
                 &mut vmgs.as_mut().unwrap().1,
-                attestation_type,
+                tee_call.as_deref(),
                 suppress_attestation,
                 early_init_driver,
                 guest_state_encryption_policy,
@@ -2032,6 +2032,7 @@ async fn new_underhill_vm(
                 processor_topology: &processor_topology,
                 mem_layout: &mem_layout,
                 cache_topology: None,
+                pcie_host_bridges: &vec![],
                 with_ioapic: true, // underhill always runs with ioapic
                 with_pic: true,    // pcat always runs with pic and pit
                 with_pit: true,
@@ -2583,6 +2584,14 @@ async fn new_underhill_vm(
                 VmgsFileHandle::new(vmgs::FileId::TPM_PPI, true).into_resource(),
                 VmgsFileHandle::new(vmgs::FileId::TPM_NVRAM, true).into_resource(),
             )
+        };
+
+        // Map the isolation type to the attestation type with Mesh derive so it can be used in resources
+        let attestation_type = match isolation {
+            virt::IsolationType::Snp => AttestationType::Snp,
+            virt::IsolationType::Tdx => AttestationType::Tdx,
+            virt::IsolationType::Vbs => AttestationType::Vbs,
+            virt::IsolationType::None => AttestationType::Host,
         };
 
         let ak_cert_type = {
@@ -3160,8 +3169,24 @@ async fn new_underhill_vm(
         );
     }
 
+    let control_send = Arc::new(Mutex::new(Some(control_send)));
+
     let (chipset, devices) = chipset_builder.build()?;
-    let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(synic.clone(), chipset);
+    let (fatal_error_send, fatal_error_recv) = mesh::channel();
+    let control_send_clone = control_send.clone();
+    let fatal_error_policy = if env_cfg.halt_on_guest_halt {
+        vmm_core::vmotherboard_adapter::FatalErrorPolicy::DebugBreak(fatal_error_send)
+    } else {
+        vmm_core::vmotherboard_adapter::FatalErrorPolicy::Panic(Arc::new(move || {
+            // TODO: Make this closure async?
+            block_on(wait_for_flush_logs(&control_send_clone));
+        }))
+    };
+    let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(
+        synic.clone(),
+        chipset,
+        fatal_error_policy,
+    );
 
     if let Some(vpci_relay) = &mut vpci_relay {
         // Relay the initial set of VPCI devices.
@@ -3170,13 +3195,12 @@ async fn new_underhill_vm(
             .await
             .context("failed to relay initial vpci channels")?;
     }
-
-    let control_send = Arc::new(Mutex::new(Some(control_send)));
     let (halt_notify_send, halt_notify_recv) = mesh::channel();
     let halt_task = tp.spawn(
         "halt",
         halt_task(
             halt_notify_recv,
+            fatal_error_recv,
             control_send.clone(),
             get_client.clone(),
             env_cfg.halt_on_guest_halt,
@@ -3427,6 +3451,7 @@ where
 /// host (when appropriate).
 async fn halt_task(
     mut halt_notify_recv: mesh::Receiver<HaltReason>,
+    mut _fatal_error_recv: mesh::Receiver<Box<dyn std::error::Error + Send + Sync>>,
     control_send: Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>,
     get_client: GuestEmulationTransportClient,
     halt_on_guest_halt: bool,
@@ -3437,7 +3462,6 @@ async fn halt_task(
         Reset,
         Hibernate,
         TripleFault { vp: u32, regs: Vec<RegisterState> },
-        Panic { string: String },
     }
 
     while let Ok(reason) = halt_notify_recv.recv().await {
@@ -3451,20 +3475,6 @@ async fn halt_task(
                 HaltRequest::TripleFault {
                     vp,
                     regs: reg_state,
-                }
-            }
-            HaltReason::InvalidVmState { vp } => {
-                // Panic so that the VM reboots back to the host,
-                // hopefully with enough context to debug things.
-                HaltRequest::Panic {
-                    string: format!("invalid vm state on vp {}", vp),
-                }
-            }
-            HaltReason::VpError { vp } => {
-                // Panic so that the VM reboots back to the host,
-                // hopefully with enough context to debug things.
-                HaltRequest::Panic {
-                    string: format!("vp error on vp {}", vp),
                 }
             }
             // Debug halts require no further processing, loop back around.
@@ -3487,14 +3497,7 @@ async fn halt_task(
             tracing::info!(CVM_ALLOWED, ?halt_request, "guest halted");
         } else {
             // All real halts require flushing logs to the host. Wait up to 5 seconds.
-            let ctx = CancelContext::new().with_timeout(Duration::from_secs(5));
-            let call = control_send
-                .lock()
-                .as_ref()
-                .map(|send| send.call(ControlRequest::FlushLogs, ctx));
-            if let Some(call) = call {
-                call.await.ok();
-            }
+            wait_for_flush_logs(&control_send).await;
 
             // Now we can notify the host about the halt.
             match halt_request {
@@ -3504,9 +3507,19 @@ async fn halt_task(
                 HaltRequest::TripleFault { vp, regs } => {
                     get_client.triple_fault(vp, TripleFaultType::UNRECOVERABLE_EXCEPTION, regs)
                 }
-                HaltRequest::Panic { string } => panic!("{}", string),
             }
         }
+    }
+}
+
+async fn wait_for_flush_logs(control_send: &Arc<Mutex<Option<mesh::Sender<ControlRequest>>>>) {
+    let ctx = CancelContext::new().with_timeout(Duration::from_secs(5));
+    let call = control_send
+        .lock()
+        .as_ref()
+        .map(|send| send.call(ControlRequest::FlushLogs, ctx));
+    if let Some(call) = call {
+        call.await.ok();
     }
 }
 

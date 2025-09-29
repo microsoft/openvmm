@@ -404,7 +404,8 @@ impl GuestMemoryBitmap {
     }
 
     fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
-        if range.start() % (PAGE_SIZE as u64 * 8) != 0 || range.end() % (PAGE_SIZE as u64 * 8) != 0
+        if !range.start().is_multiple_of(PAGE_SIZE as u64 * 8)
+            || !range.end().is_multiple_of(PAGE_SIZE as u64 * 8)
         {
             return Err(MappingError::BadAlignment(range));
         }

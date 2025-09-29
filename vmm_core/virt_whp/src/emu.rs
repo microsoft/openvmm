@@ -247,14 +247,8 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
         }
     }
 
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        self.vp
-            .vp
-            .partition
-            .monitor_page
-            .check_write(gpa, bytes, |connection_id| {
-                self.vp.signal_mnf(self.dev, connection_id)
-            })
+    fn monitor_support(&self) -> Option<&dyn virt::EmulatorMonitorSupport> {
+        Some(self)
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
@@ -303,6 +297,22 @@ impl<T: CpuIo> virt_support_x86emu::emulate::EmulatorSupport for WhpEmulationSta
 
     fn lapic_write(&mut self, address: u64, data: &[u8]) {
         self.vp.apic_write(address, data, self.dev)
+    }
+}
+
+impl<T: CpuIo> virt::EmulatorMonitorSupport for WhpEmulationState<'_, '_, T> {
+    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+        self.vp
+            .vp
+            .partition
+            .monitor_page
+            .check_write(gpa, bytes, |connection_id| {
+                self.vp.signal_mnf(self.dev, connection_id)
+            })
+    }
+
+    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        self.vp.vp.partition.monitor_page.check_read(gpa, bytes)
     }
 }
 

@@ -9,6 +9,7 @@ pub mod tlb_lock;
 use super::UhEmulationState;
 use super::UhProcessor;
 use crate::CvmVtl1State;
+use crate::GpnSource;
 use crate::GuestVsmState;
 use crate::GuestVtl;
 use crate::InitialVpContextOperation;
@@ -462,7 +463,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                                 .isolated_memory_protector
                                 .as_ref(),
                             tlb_access: &mut B::tlb_flush_lock_access(
-                                self_index,
+                                Some(self_index),
                                 self.vp.partition,
                                 self.vp.shared,
                             ),
@@ -617,7 +618,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                             .isolated_memory_protector
                             .as_ref(),
                         tlb_access: &mut B::tlb_flush_lock_access(
-                            self_index,
+                            Some(self_index),
                             self.vp.partition,
                             self.vp.shared,
                         ),
@@ -1537,6 +1538,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         self.protector.register_overlay_page(
             self.vtl,
             gpn,
+            GpnSource::GuestMemory,
             check_perms,
             new_perms,
             self.tlb_access,
@@ -1580,7 +1582,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             protector: B::cvm_partition_state(self.shared)
                 .isolated_memory_protector
                 .as_ref(),
-            tlb_access: &mut B::tlb_flush_lock_access(self_index, self.partition, self.shared),
+            tlb_access: &mut B::tlb_flush_lock_access(
+                Some(self_index),
+                self.partition,
+                self.shared,
+            ),
             guest_memory: &self.partition.gm[vtl],
         };
         let r = hv.msr_write(msr, value, &mut access);
@@ -1800,7 +1806,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Returns the appropriately backed TLB flush and lock access
     pub(crate) fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + use<'_, B> {
-        B::tlb_flush_lock_access(self.vp_index(), self.partition, self.shared)
+        B::tlb_flush_lock_access(Some(self.vp_index()), self.partition, self.shared)
     }
 
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
@@ -2522,28 +2528,44 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 false
             }
             None => {
-                if !self.cvm_partition().hide_isolation {
-                    // TODO: Addresses outside of ram and mmio probably should
-                    // not be accessed by the guest, if it has been told about
-                    // isolation. While it's okay as we will return FFs or
-                    // discard writes for addresses that are not mmio, we should
-                    // consider if instead we should also inject a machine check
-                    // for such accesses. The guest should not access any
-                    // addresses not described to it.
-                    //
-                    // For now, log that the guest did this.
-                    tracelimit::warn_ratelimited!(
-                        CVM_ALLOWED,
-                        gpa,
-                        ?vtl,
-                        is_shared,
-                        ?extra_info,
-                        "guest accessed gpa not described in memory layout, emulating anyways"
-                    );
-                }
+                if self.partition.monitor_page.gpa() == Some(gpa & !(hvdef::HV_PAGE_SIZE - 1)) {
+                    if !is_write {
+                        tracing::debug!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "spurious exit for guest monitor page read"
+                        );
+                    }
 
-                // Emulate the access.
-                true
+                    // Emulate monitor page writes, but not reads.
+                    is_write
+                } else {
+                    if !self.cvm_partition().hide_isolation {
+                        // TODO: Addresses outside of ram and mmio probably should
+                        // not be accessed by the guest, if it has been told about
+                        // isolation. While it's okay as we will return FFs or
+                        // discard writes for addresses that are not mmio, we should
+                        // consider if instead we should also inject a machine check
+                        // for such accesses. The guest should not access any
+                        // addresses not described to it.
+                        //
+                        // For now, log that the guest did this.
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "guest accessed gpa not described in memory layout, emulating anyways"
+                        );
+                    }
+
+                    // Emulate the access.
+                    true
+                }
             }
         }
     }

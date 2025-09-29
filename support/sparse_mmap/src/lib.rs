@@ -255,7 +255,8 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
 /// swap failed, or `Err(MemoryError::AccessViolation)` if the swap could not be
 /// attempted due to an access violation.
 ///
-/// Panics if the size is not 1, 2, 4, or 8 bytes.
+/// Fails at compile time if the size is not 1, 2, 4, or 8 bytes, or if the type
+/// is under-aligned.
 ///
 /// # Safety
 ///
@@ -272,6 +273,10 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
     mut current: T,
     new: T,
 ) -> Result<Result<T, T>, MemoryError> {
+    const {
+        assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+        assert!(align_of::<T>() >= size_of::<T>());
+    };
     let mut failure = MaybeUninit::uninit();
     // SAFETY: guaranteed by caller
     let ret = unsafe {
@@ -300,7 +305,7 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
                 std::mem::transmute_copy::<T, u64>(&new),
                 failure.as_mut_ptr(),
             ),
-            _ => panic!("unsupported size"),
+            _ => unreachable!(),
         }
     };
     match ret {
@@ -316,82 +321,13 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
     }
 }
 
-/// Atomically swaps the value at `dest` with `new` when `*dest` is `current`,
-/// using a sequentially-consistent memory ordering.
+/// Reads the value at `src` using one or more read instructions.
 ///
-/// Returns `Ok(true)` if the swap was successful, `Ok(false)` if the swap
-/// failed (after updating `current`), or `Err(MemoryError::AccessViolation)` if
-/// the swap could not be attempted due to an access violation.
-///
-/// Panics if `current` and `new` are not the same size or that size is not
-/// 1, 2, 4, or 8 bytes.
-///
-/// # Safety
-///
-/// This routine is safe to use if the memory pointed to by `dest` is being
-/// concurrently mutated.
-///
-/// WARNING: This routine should only be used when you know that `dest` is
-/// valid, reserved addresses but you do not know if they are mapped with the
-/// appropriate protection. For example, this routine is useful if `dest` is a
-/// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
-/// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_compare_exchange_ref<
-    T: IntoBytes + FromBytes + Immutable + KnownLayout + ?Sized,
->(
-    dest: *mut u8,
-    current: &mut T,
-    new: &T,
-) -> Result<bool, MemoryError> {
-    let mut failure = MaybeUninit::uninit();
-    // SAFETY: guaranteed by caller
-    let ret = unsafe {
-        match (size_of_val(current), size_of_val(new)) {
-            (1, 1) => try_cmpxchg8(
-                dest,
-                &mut *current.as_mut_bytes().as_mut_ptr(),
-                new.as_bytes()[0],
-                failure.as_mut_ptr(),
-            ),
-            (2, 2) => try_cmpxchg16(
-                dest.cast(),
-                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
-                u16::from_ne_bytes(new.as_bytes().try_into().unwrap()),
-                failure.as_mut_ptr(),
-            ),
-            (4, 4) => try_cmpxchg32(
-                dest.cast(),
-                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
-                u32::from_ne_bytes(new.as_bytes().try_into().unwrap()),
-                failure.as_mut_ptr(),
-            ),
-            (8, 8) => try_cmpxchg64(
-                dest.cast(),
-                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
-                u64::from_ne_bytes(new.as_bytes().try_into().unwrap()),
-                failure.as_mut_ptr(),
-            ),
-            _ => panic!("unsupported or mismatched size"),
-        }
-    };
-    if ret < 0 {
-        return Err(MemoryError::new(
-            None,
-            dest.cast(),
-            size_of_val(current),
-            // SAFETY: failure is initialized in the failure path.
-            unsafe { failure.assume_init_ref() },
-        ));
-    }
-    Ok(ret > 0)
-}
-
-/// Reads the value at `src` treating the pointer as a volatile access.
+/// If `T` is 1, 2, 4, or 8 bytes in size, then exactly one read instruction is
+/// used.
 ///
 /// Returns `Ok(T)` if the read was successful, or `Err(MemoryError)` if the
 /// read was unsuccessful.
-///
-/// Panics if the size is not 1, 2, 4, or 8 bytes.
 ///
 /// # Safety
 ///
@@ -415,7 +351,12 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
             2 => try_read16(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
             4 => try_read32(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
             8 => try_read64(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
-            _ => panic!("unsupported size"),
+            _ => try_memmove(
+                dest.as_mut_ptr().cast(),
+                src.cast::<u8>(),
+                size_of::<T>(),
+                failure.as_mut_ptr(),
+            ),
         }
     };
     match ret {
@@ -433,12 +374,13 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
     }
 }
 
-/// Writes `value` at `dest` treating the pointer as a volatile access.
+/// Writes `value` at `dest` using one or more write instructions.
+///
+/// If `T` is 1, 2, 4, or 8 bytes in size, then exactly one write instruction is
+/// used.
 ///
 /// Returns `Ok(())` if the write was successful, or `Err(MemoryError)` if the
 /// write was unsuccessful.
-///
-/// Panics if the size is not 1, 2, 4, or 8 bytes.
 ///
 /// # Safety
 ///
@@ -478,7 +420,12 @@ pub unsafe fn try_write_volatile<T: IntoBytes + Immutable + KnownLayout>(
                 std::mem::transmute_copy(value),
                 failure.as_mut_ptr(),
             ),
-            _ => panic!("unsupported size"),
+            _ => try_memmove(
+                dest.cast(),
+                std::ptr::from_ref(value).cast(),
+                size_of::<T>(),
+                failure.as_mut_ptr(),
+            ),
         }
     };
     match ret {
@@ -841,7 +788,6 @@ mod tests {
                     .unwrap(),
                 2
             );
-            assert!(try_compare_exchange_ref(base.add(8), &mut [2u8, 0], &[3, 0]).unwrap());
             try_compare_exchange(base.add(page_size), 0, 2).unwrap_err();
         }
     }

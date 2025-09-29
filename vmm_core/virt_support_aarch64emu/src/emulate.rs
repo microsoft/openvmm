@@ -17,6 +17,7 @@ use hvdef::HvAarch64PendingEventType;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
 use thiserror::Error;
+use virt::EmulatorMonitorSupport;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
 use vm_topology::processor::VpIndex;
@@ -55,11 +56,9 @@ pub trait EmulatorSupport: AccessCpuState {
     /// Generates an event (exception, guest nested page fault, etc.) in the guest.
     fn inject_pending_event(&mut self, event_info: HvAarch64PendingEvent);
 
-    /// Check if the specified write is wholly inside the monitor page, and signal the associated
-    /// connected ID if it is.
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        let _ = (gpa, bytes);
-        false
+    /// Get access to monitor support for the emulator, if it supports it.
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        None
     }
 
     /// Returns true if `gpa` is mapped for the specified permissions.
@@ -174,7 +173,7 @@ pub async fn emulate<T: EmulatorSupport>(
 ) -> Result<(), VpHaltReason> {
     emulate_core(support, intercept_state, emu_mem, dev)
         .await
-        .map_err(|e| VpHaltReason::EmulationFailure(e.into()))
+        .map_err(|e| dev.fatal_error(e.into()))
 }
 
 async fn emulate_core<T: EmulatorSupport>(
@@ -428,6 +427,22 @@ impl<T: EmulatorSupport, U> EmulatorCpu<'_, T, U> {
                 },
             })
     }
+
+    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
+        if let Some(monitor_support) = self.support.monitor_support() {
+            monitor_support.check_write(gpa, bytes)
+        } else {
+            false
+        }
+    }
+
+    fn check_monitor_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        if let Some(monitor_support) = self.support.monitor_support() {
+            monitor_support.check_read(gpa, bytes)
+        } else {
+            false
+        }
+    }
 }
 
 impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
@@ -456,14 +471,16 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
     ) -> Result<(), Self::Error> {
         self.check_vtl_access(gpa, TranslateMode::Read)?;
 
-        if self.support.is_gpa_mapped(gpa, false) {
-            self.gm.read_at(gpa, bytes).map_err(Self::Error::Memory)?;
+        if self.check_monitor_read(gpa, bytes) {
+            Ok(())
+        } else if self.support.is_gpa_mapped(gpa, false) {
+            self.gm.read_at(gpa, bytes).map_err(Self::Error::Memory)
         } else {
             self.dev
                 .read_mmio(self.support.vp_index(), gpa, bytes)
                 .await;
+            Ok(())
         }
-        Ok(())
     }
 
     async fn write_memory(&mut self, gva: u64, bytes: &[u8]) -> Result<(), Self::Error> {
@@ -501,19 +518,43 @@ impl<T: EmulatorSupport, U: CpuIo> aarch64emu::Cpu for EmulatorCpu<'_, T, U> {
 
         self.check_vtl_access(gpa, TranslateMode::Write)?;
 
-        if self.support.check_monitor_write(gpa, new) {
+        if self.check_monitor_write(gpa, new) {
             *success = true;
             Ok(())
         } else if self.support.is_gpa_mapped(gpa, true) {
-            let buf = &mut [0; 16][..current.len()];
-            buf.copy_from_slice(current);
-            match self.gm.compare_exchange_bytes(gpa, buf, new) {
-                Ok(swapped) => {
-                    *success = swapped;
-                    Ok(())
-                }
-                Err(e) => Err(Self::Error::Memory(e)),
+            *success = match (current.len(), new.len()) {
+                (1, 1) => self
+                    .gm
+                    .compare_exchange(gpa, current[0], new[0])
+                    .map(|r| r.is_ok()),
+                (2, 2) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u16::from_ne_bytes(current.try_into().unwrap()),
+                        u16::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                (4, 4) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u32::from_ne_bytes(current.try_into().unwrap()),
+                        u32::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                (8, 8) => self
+                    .gm
+                    .compare_exchange(
+                        gpa,
+                        u64::from_ne_bytes(current.try_into().unwrap()),
+                        u64::from_ne_bytes(new.try_into().unwrap()),
+                    )
+                    .map(|r| r.is_ok()),
+                _ => panic!("unsupported size for compare and write memory"),
             }
+            .map_err(Self::Error::Memory)?;
+            Ok(())
         } else {
             // Ignore the comparison aspect for device MMIO.
             *success = true;

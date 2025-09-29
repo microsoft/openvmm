@@ -69,6 +69,29 @@ pub struct FaultConfiguration {
     pub pci_fault: PciFaultConfig,
 }
 
+impl FaultConfiguration {
+    /// Create a new empty fault configuration
+    pub fn new(fault_active: Cell<bool>) -> Self {
+        Self {
+            fault_active,
+            admin_fault: AdminQueueFaultConfig::new(),
+            pci_fault: PciFaultConfig::new(),
+        }
+    }
+
+    /// Add a PCI fault configuration to the fault configuration
+    pub fn with_pci_fault(mut self, pci_fault: PciFaultConfig) -> Self {
+        self.pci_fault = pci_fault;
+        self
+    }
+
+    /// Add an admin queue fault configuration to the fault configuration
+    pub fn with_admin_queue_fault(mut self, admin_fault: AdminQueueFaultConfig) -> Self {
+        self.admin_fault = admin_fault;
+        self
+    }
+}
+
 impl PciFaultConfig {
     /// Create a new no-op fault configuration
     pub fn new() -> Self {
@@ -105,7 +128,7 @@ impl AdminQueueFaultConfig {
         if self
             .admin_submission_queue_faults
             .iter()
-            .any(|(c, _)| (pattern == *c))
+            .any(|(c, _)| pattern == *c)
         {
             panic!(
                 "Duplicate submission queue fault for Compare {:?} and Mask {:?}",
@@ -130,7 +153,7 @@ impl AdminQueueFaultConfig {
         if self
             .admin_completion_queue_faults
             .iter()
-            .any(|(c, _)| (pattern == *c))
+            .any(|(c, _)| pattern == *c)
         {
             panic!(
                 "Duplicate completion queue fault for Compare {:?} and Mask {:?}",

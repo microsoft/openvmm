@@ -55,6 +55,7 @@ use thiserror::Error;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -512,7 +513,7 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: VpIndex,
+        vp_index: Option<VpIndex>,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
@@ -1564,7 +1565,7 @@ impl UhProcessor<'_, TdxBacked> {
         let has_intercept = self
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(TdxRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(TdxRunVpError(e).into()))?;
 
         // TLB flushes can only target lower VTLs, so it is fine to use a relaxed
         // ordering here. The worst that can happen is some spurious wakes, due
@@ -1662,7 +1663,7 @@ impl UhProcessor<'_, TdxBacked> {
         // First, check that the VM entry was even successful.
         let vmx_exit = exit_info.code().vmx_exit();
         if vmx_exit.vm_enter_failed() {
-            return Err(self.handle_vm_enter_failed(intercepted_vtl, vmx_exit));
+            return Err(self.handle_vm_enter_failed(dev, intercepted_vtl, vmx_exit));
         }
 
         let next_interruption = exit_info.idt_vectoring_info();
@@ -2180,9 +2181,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .descriptor_table
             }
             _ => {
-                return Err(VpHaltReason::InvalidVmState(
-                    UnknownVmxExit(exit_info.code().vmx_exit()).into(),
-                ));
+                return Err(dev.fatal_error(UnknownVmxExit(exit_info.code().vmx_exit()).into()));
             }
         };
         stat.increment();
@@ -2190,7 +2189,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Breakpoint exceptions may return a non-fatal error.
         // We dispatch here to correctly increment the counter.
         if cfg!(feature = "gdb") && breakpoint_debug_exception {
-            self.handle_debug_exception(intercepted_vtl)?;
+            self.handle_debug_exception(dev, intercepted_vtl)?;
         }
 
         Ok(())
@@ -2404,7 +2403,12 @@ impl UhProcessor<'_, TdxBacked> {
         tracing::error!(CVM_CONFIDENTIAL, vmcs_pat, "guest PAT");
     }
 
-    fn handle_vm_enter_failed(&self, vtl: GuestVtl, vmx_exit: VmxExit) -> VpHaltReason {
+    fn handle_vm_enter_failed(
+        &self,
+        dev: &impl CpuIo,
+        vtl: GuestVtl,
+        vmx_exit: VmxExit,
+    ) -> VpHaltReason {
         assert!(vmx_exit.vm_enter_failed());
         match vmx_exit.basic_reason() {
             VmxExitBasic::BAD_GUEST_STATE => {
@@ -2413,9 +2417,9 @@ impl UhProcessor<'_, TdxBacked> {
                 tracing::error!(CVM_ALLOWED, "VP.ENTER failed with bad guest state");
                 self.trace_processor_state(vtl);
 
-                VpHaltReason::InvalidVmState(VmxBadGuestState.into())
+                dev.fatal_error(VmxBadGuestState.into())
             }
-            _ => VpHaltReason::InvalidVmState(UnknownVmxExit(vmx_exit).into()),
+            _ => dev.fatal_error(UnknownVmxExit(vmx_exit).into()),
         }
     }
 
@@ -2976,6 +2980,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                 vtl: self.vtl,
             })
             .mmio_write(address, data);
+    }
+
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
     }
 }
 
@@ -4243,7 +4251,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: self.vp.vp_index(),
+            vp_index: Some(self.vp.vp_index()),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -4298,7 +4306,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: self.vp.vp_index(),
+            vp_index: Some(self.vp.vp_index()),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -4373,9 +4381,7 @@ impl TdxTlbLockFlushAccess<'_> {
         std::sync::atomic::fence(Ordering::SeqCst);
         self.partition.hcl.kick_cpus(
             processors.into_iter().filter(|&vp| {
-                vp != self.vp_index.index()
-                    && self.shared.active_vtl[vp as usize].load(Ordering::Relaxed)
-                        == target_vtl as u8
+                self.shared.active_vtl[vp as usize].load(Ordering::Relaxed) == target_vtl as u8
             }),
             true,
             true,
@@ -4384,7 +4390,7 @@ impl TdxTlbLockFlushAccess<'_> {
 }
 
 struct TdxTlbLockFlushAccess<'a> {
-    vp_index: VpIndex,
+    vp_index: Option<VpIndex>,
     partition: &'a UhPartitionInner,
     shared: &'a TdxBackedShared,
 }
@@ -4412,11 +4418,13 @@ impl TlbFlushLockAccess for TdxTlbLockFlushAccess<'_> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        hardware_cvm::tlb_lock::TlbLockAccess {
-            vp_index: self.vp_index,
-            cvm_partition: &self.shared.cvm,
+        if let Some(vp_index) = self.vp_index {
+            hardware_cvm::tlb_lock::TlbLockAccess {
+                vp_index,
+                cvm_partition: &self.shared.cvm,
+            }
+            .set_wait_for_tlb_locks(vtl);
         }
-        .set_wait_for_tlb_locks(vtl);
     }
 }
 

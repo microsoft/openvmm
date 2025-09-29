@@ -25,6 +25,7 @@ pub struct Config {
     pub load_mode: LoadMode,
     pub floppy_disks: Vec<floppy_resources::FloppyDiskConfig>,
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
+    pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub memory: MemoryConfig,
     pub processor_topology: ProcessorTopologyConfig,
@@ -96,6 +97,8 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
+pub const DEFAULT_PCIE_ECAM_BASE: u64 = 0x8_0000_0000; // 32GB, size depends on configuration
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -162,6 +165,23 @@ pub enum Vtl2BaseAddressType {
     /// provided in the IGVM file. It must be larger than the IGVM file provided
     /// size.
     Vtl2Allocate { size: Option<u64> },
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieRootComplexConfig {
+    pub index: u32,
+    pub name: String,
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    pub low_mmio_size: u32,
+    pub high_mmio_size: u64,
+    pub ports: Vec<PcieRootPortConfig>,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieRootPortConfig {
+    pub name: String,
 }
 
 #[derive(Debug, MeshPayload)]
@@ -234,6 +254,7 @@ pub struct MemoryConfig {
     pub mem_size: u64,
     pub mmio_gaps: Vec<MemoryRange>,
     pub prefetch_memory: bool,
+    pub pcie_ecam_base: u64,
 }
 
 #[derive(Debug, MeshPayload, Default)]
