@@ -313,7 +313,6 @@ fn parse_host_vtl2_ram(
     vtl2_ram
 }
 
-#[cfg_attr(minimal_rt, allow(dead_code))]
 fn init_heap(params: &ShimParams) {
     // Initialize the temporary heap.
     //
@@ -326,7 +325,6 @@ fn init_heap(params: &ShimParams) {
     }
 
     // TODO: test using heap, as no mesh decode yet.
-    #[cfg(debug_assertions)]
     {
         use alloc::boxed::Box;
         bump_alloc::ALLOCATOR.enable_alloc();
