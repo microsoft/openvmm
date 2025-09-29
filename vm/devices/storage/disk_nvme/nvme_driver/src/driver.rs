@@ -16,6 +16,7 @@ use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
 use crate::registers::DeviceRegisters;
 use anyhow::Context as _;
+use core::panic;
 use futures::StreamExt;
 use futures::future::join_all;
 use inspect::Inspect;
@@ -28,7 +29,6 @@ use mesh::rpc::get_endpoints;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use save_restore::NvmeDriverWorkerSavedState;
-use core::panic;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use task_control::AsyncRun;
@@ -593,7 +593,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 enum AerRpc {
                     Restore(Rpc<(), spec::Completion>),
                 }
-                let (sender, receiver) = mesh::channel();
+                let (sender, mut receiver) = mesh::channel();
                 let pending = sender.call(AerRpc::Restore, ());
                 let aer_rpc = receiver
                     .next()
@@ -601,10 +601,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     .context("failed to recreate AER channel")
                     .unwrap();
 
-                let rpc:  = match aer_rpc {
-                    AerRpc::Restore(rpc) => {
-                        rpc.split().1
-                    }
+                let rpc: Rpc<(), spec::Completion> = match aer_rpc {
+                    AerRpc::Restore(rpc) => rpc.split().1,
                 };
 
                 return Some((rpc, pending));
