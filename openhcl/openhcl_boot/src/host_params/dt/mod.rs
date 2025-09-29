@@ -22,6 +22,7 @@ use crate::memory::AllocationType;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
+use bump_alloc::ALLOCATOR;
 use core::cmp::max;
 use core::fmt::Write;
 use host_fdt_parser::MemoryAllocationMode;
