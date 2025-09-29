@@ -24,6 +24,7 @@ use mesh::payload::Protobuf;
 use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+use mesh::rpc::get_endpoints;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use save_restore::NvmeDriverWorkerSavedState;
@@ -567,16 +568,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     // If there was an outstanding AER command create and return a oneshot channel to rewire for the AER flow.
     fn recreate_aer_channel(
         saved_state: &NvmeDriverSavedState,
-    ) -> Option<(
-        mesh::OneshotSender<spec::Completion>,
-        mesh::OneshotReceiver<spec::Completion>,
-    )> {
+    ) -> Option<(Rpc<(), spec::Completion>, PendingRpc<spec::Completion>)> {
         if let Some(admin_state) = &saved_state.worker_data.admin {
             let pending_cmds = &admin_state.handler_data.pending_cmds.commands;
             if pending_cmds.iter().any(|pending| {
                 pending.command.cdw0.opcode() == spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0
             }) {
-                return Some(oneshot::<spec::Completion>());
+                return Some(get_endpoints::<(), spec::Completion>(()));
             }
         }
         None
@@ -776,11 +774,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 async fn handle_asynchronous_events(
     admin: &Issuer,
     rescan_event: &event_listener::Event,
-    aer_receiver: Option<mesh::OneshotReceiver<spec::Completion>>,
+    aer_receiver: Option<PendingRpc<spec::Completion>>,
 ) -> anyhow::Result<()> {
     let mut completion = if let Some(receiver) = aer_receiver {
-        Issuer::extract_completion(PendingRpc(receiver).await)
-            .context("asynchronous event request failed")?
+        Issuer::extract_completion(receiver.await).context("asynchronous event request failed")?
     } else {
         admin
             .issue_neither(admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST))

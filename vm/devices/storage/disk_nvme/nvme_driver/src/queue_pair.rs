@@ -142,7 +142,7 @@ impl PendingCommands {
     pub fn restore(
         saved_state: &PendingCommandsSavedState,
         qid: u16,
-        aer_sender: Option<mesh::OneshotSender<spec::Completion>>,
+        aer_sender: Option<Rpc<(), spec::Completion>>,
     ) -> anyhow::Result<Self> {
         let PendingCommandsSavedState {
             commands,
@@ -172,7 +172,7 @@ impl PendingCommands {
             if let Some((_, value)) = commands.iter_mut().find(|(_, cmd)| {
                 cmd.command.cdw0.opcode() == spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0
             }) {
-                value.respond = Rpc((), aer_sender);
+                value.respond = aer_sender;
             }
         }
 
@@ -249,7 +249,7 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
-        aer_sender: Option<OneshotSender<spec::Completion>>,
+        aer_sender: Option<Rpc<(), spec::Completion>>,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
@@ -364,7 +364,7 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
-        aer_sender: Option<mesh::OneshotSender<spec::Completion>>,
+        aer_sender: Option<Rpc<(), spec::Completion>>,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -777,7 +777,7 @@ impl QueueHandler {
         sq_mem_block: MemoryBlock,
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
-        aer_sender: Option<OneshotSender<spec::Completion>>,
+        aer_sender: Option<Rpc<(), spec::Completion>>,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,

@@ -27,7 +27,7 @@ use thiserror::Error;
     bound = "I: 'static + MeshField + Send, R: 'static + MeshField + Send",
     resource = "mesh_node::resource::Resource"
 )]
-pub struct Rpc<I, R>(pub I, pub OneshotSender<R>);
+pub struct Rpc<I, R>(I, OneshotSender<R>);
 
 impl<I: Debug, R> Debug for Rpc<I, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -257,7 +257,7 @@ pub enum RpcError<E = Infallible> {
 /// The result future of an [`RpcSend::call`] call.
 #[must_use]
 #[derive(Debug)]
-pub struct PendingRpc<T>(pub OneshotReceiver<T>);
+pub struct PendingRpc<T>(OneshotReceiver<T>);
 
 impl<T: 'static + Send> Future for PendingRpc<T> {
     type Output = Result<T, RpcError<Infallible>>;
@@ -298,4 +298,12 @@ impl<T: 'static + Send> RpcSend for &mesh_channel_core::Sender<T> {
     fn send_rpc(self, message: T) {
         self.send(message);
     }
+}
+
+pub fn get_endpoints<I, R>(input: I) -> (Rpc<I, R>, PendingRpc<R>)
+where
+    R: 'static + Send,
+{
+    let (result_send, result_recv) = oneshot();
+    (Rpc(input, result_send), PendingRpc(result_recv))
 }
