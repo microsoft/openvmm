@@ -37,7 +37,7 @@ use vmm_test_macros::vmm_test_no_agent;
 pub(crate) mod openhcl_servicing;
 
 // Memory Validation tests.
-pub(crate) mod memstat;
+mod memstat;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
 #[vmm_test_no_agent(
@@ -840,7 +840,7 @@ async fn validate_mnf_usage_in_guest(
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
