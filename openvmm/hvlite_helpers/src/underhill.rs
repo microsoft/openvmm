@@ -42,7 +42,7 @@ pub async fn save_underhill(
     r
 }
 
-/// Restore uh from a previously saved state. This should always be called after save_underhill.
+/// Restore Underhill from a previously saved state. This should always be called after save_underhill.
 pub async fn restore_underhill(
     vm_send: &mesh::Sender<VmRpc>,
     send: &mesh::Sender<GuestEmulationRequest>,
