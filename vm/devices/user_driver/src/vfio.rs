@@ -319,9 +319,7 @@ impl DeviceBacking for VfioDevice {
             .context("failed to unmap all msix vectors")?;
 
         // Clear local bookkeeping so re-mapping works correctly later.
-        for slot in &mut self.interrupts {
-            *slot = None;
-        }
+        self.interrupts.clear();
 
         Ok(())
     }
