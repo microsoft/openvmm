@@ -131,7 +131,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
         Self::save_openhcl(self, new_openhcl, flags).await?;
-        Self::restore_openhcl(&mut self).await
+        Self::restore_openhcl(self).await
     }
 
     async fn save_openhcl(
