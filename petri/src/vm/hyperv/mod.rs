@@ -540,7 +540,7 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     async fn save_openhcl(
         &mut self,
         _new_openhcl: &ResolvedArtifact,
-        flags: OpenHclServicingFlags,
+        _flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
         anyhow::bail!("saving OpenHCL firmware separately is not yet supported on Hyper-V");
     }
