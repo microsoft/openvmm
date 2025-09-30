@@ -14,6 +14,7 @@ use crate::vp_context_builder::VpContextBuilder;
 use crate::vp_context_builder::VpContextPageState;
 use crate::vp_context_builder::VpContextState;
 use crate::vp_context_builder::snp::InjectionType;
+use crate::vp_context_builder::snp::SecureAvic;
 use crate::vp_context_builder::snp::SnpHardwareContext;
 use crate::vp_context_builder::tdx::TdxHardwareContext;
 use crate::vp_context_builder::vbs::VbsRegister;
@@ -149,6 +150,7 @@ pub enum LoaderIsolationType {
         shared_gpa_boundary_bits: Option<u8>,
         policy: SnpPolicy,
         injection_type: InjectionType,
+        secure_avic: SecureAvic,
         // TODO SNP: SNP Keys? Other data?
     },
     Tdx {
@@ -201,6 +203,7 @@ impl IgvmLoaderRegister for X86Register {
                 shared_gpa_boundary_bits,
                 policy,
                 injection_type,
+                secure_avic,
             } => {
                 // TODO SNP: assumed that shared_gpa_boundary is always available.
                 let shared_gpa_boundary =
@@ -227,6 +230,7 @@ impl IgvmLoaderRegister for X86Register {
                     !with_paravisor,
                     shared_gpa_boundary,
                     injection_type,
+                    secure_avic,
                 ));
 
                 (platform_header, vec![init_header], vp_context_builder)
@@ -900,6 +904,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
                 shared_gpa_boundary_bits,
                 policy: _,
                 injection_type: _,
+                secure_avic: _,
             } => IsolationConfig {
                 paravisor_present: self.loader.paravisor_present,
                 isolation_type: IsolationType::Snp,
@@ -1260,6 +1265,7 @@ mod tests {
                 shared_gpa_boundary_bits: Some(39),
                 policy: SnpPolicy::from((0x1 << 17) | (0x1 << 16) | (0x1f)),
                 injection_type: InjectionType::Restricted,
+                secure_avic: SecureAvic::Enabled,
             },
         );
         let data = vec![0, 5];
