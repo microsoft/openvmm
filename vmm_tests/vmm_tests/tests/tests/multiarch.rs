@@ -840,7 +840,7 @@ async fn validate_mnf_usage_in_guest(
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
@@ -853,7 +853,7 @@ async fn memory_validation_small<T: PetriVmmBackend>(
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
