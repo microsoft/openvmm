@@ -951,7 +951,7 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()>;
     /// Instruct the OpenHCL to restore the state of the VTL2 paravisor. Will fail if the VM
-    /// is not running OpenHCL. Will also fail if the VM is running of if this is called without prior save
+    /// is not running OpenHCL. Will also fail if the VM is running or if this is called without prior save.
     async fn restore_openhcl(&mut self) -> anyhow::Result<()>;
     /// If the backend supports it, get an inspect interface
     fn inspector(&self) -> Option<Self::VmInspector> {
