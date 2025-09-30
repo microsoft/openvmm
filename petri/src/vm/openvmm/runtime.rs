@@ -133,6 +133,18 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::restart_openhcl(self, new_openhcl, flags).await
     }
 
+    async fn save_openhcl(
+        &mut self,
+        new_openhcl: &ResolvedArtifact,
+        flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        Self::save_openhcl(self, new_openhcl, flags).await
+    }
+
+    async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
+        Self::restore_openhcl(self).await
+    }
+
     fn inspector(&self) -> Option<OpenVmmInspector> {
         Some(OpenVmmInspector {
             worker: self.inner.worker.clone(),
