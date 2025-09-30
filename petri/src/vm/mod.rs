@@ -943,7 +943,8 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()>;
     /// Instruct the OpenHCL to save the state of the VTL2 paravisor. Will fail if the VM
-    /// is not running OpenHCL. Will also fail if the VM is not running of if this is called twice in succession
+    /// is not running OpenHCL. Will also fail if the VM is not running or if this is called twice in succession
+    /// without a call to `restore_openhcl`.
     async fn save_openhcl(
         &mut self,
         new_openhcl: &ResolvedArtifact,
