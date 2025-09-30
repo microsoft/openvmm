@@ -253,9 +253,3 @@ pub struct GuestSaveRequest {
     /// Flags bitfield.
     pub capabilities_flags: SaveGuestVtl2StateFlags,
 }
-
-/// Request to inject a debug interrupt into the guest.
-pub struct DebugInterruptRequest {
-    /// VTL to inject debug interrupt into.
-    pub vtl: u8,
-}
