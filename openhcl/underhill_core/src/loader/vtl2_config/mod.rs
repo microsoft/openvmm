@@ -100,7 +100,6 @@ impl MeasuredVtl2Info {
     }
 }
 
-#[derive(Debug)]
 /// Map of the portion of memory that contains the VTL2 parameters to read.
 ///
 /// If configured, on drop this mapping zeroes out the specified config ranges.
@@ -111,77 +110,62 @@ struct Vtl2ParamsMap<'a> {
 }
 
 impl<'a> Vtl2ParamsMap<'a> {
-    fn new(config_ranges: &'a [MemoryRange], zero_on_drop: bool) -> anyhow::Result<Self> {
+    fn new_internal(
+        ranges: &'a [MemoryRange],
+        writeable: bool,
+        zero_on_drop: bool,
+    ) -> anyhow::Result<Self> {
         // No overlaps.
-        // TODO: Move this check to host_fdt_parser?
-        if let Some((l, r)) = config_ranges
+        if let Some((l, r)) = ranges
             .iter()
-            .zip(config_ranges.iter().skip(1))
+            .zip(ranges.iter().skip(1))
             .find(|(l, r)| r.start() < l.end())
         {
-            anyhow::bail!("vtl-boot-data range {r} overlaps {l}");
+            anyhow::bail!("range {r} overlaps {l}");
         }
 
-        tracing::trace!("boot_data_gpa_ranges {:x?}", config_ranges);
+        tracing::trace!("requested mapping ranges {:x?}", ranges);
 
-        let base = config_ranges
-            .first()
-            .context("no vtl-boot-data ranges")?
-            .start();
-        let size = config_ranges.last().unwrap().end() - base;
+        let base = ranges.first().context("no ranges")?.start();
+        let size = ranges.last().unwrap().end() - base;
 
-        let mapping =
-            SparseMapping::new(size as usize).context("failed to create a sparse mapping")?;
+        let mapping = SparseMapping::new(size as usize)
+            .context("failed to create a sparse mapping for vtl2params")?;
 
+        let writeable = writeable || zero_on_drop;
         let dev_mem = fs_err::OpenOptions::new()
             .read(true)
-            .write(zero_on_drop)
+            .write(writeable)
             .open("/dev/mem")?;
-        for range in config_ranges {
+        for range in ranges {
             mapping
                 .map_file(
                     (range.start() - base) as usize,
                     range.len() as usize,
                     dev_mem.file(),
                     range.start(),
-                    zero_on_drop,
+                    writeable,
                 )
                 .context("failed to memory map igvm parameters")?;
         }
 
         Ok(Self {
             mapping,
-            ranges: config_ranges,
+            ranges,
             zero_on_drop,
         })
     }
 
-    // FIXME: this should probably not be used and use mshv_vtl/vtl_gpa or
-    // whatever instead, and don't describe the kernel ranges as reserved.
-    fn new_writeable(ranges: &'a [MemoryRange]) -> anyhow::Result<Self> {
-        // TODO: figure out how this will work for multiple ranges...
-        assert_eq!(ranges.len(), 1);
-        let range = ranges[0];
-        let mapping = SparseMapping::new(range.len() as usize)
-            .context("failed to create a sparse mapping")?;
-
-        let dev_mem = fs_err::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/mem")?;
-
-        mapping
-            .map_file(0, range.len() as usize, dev_mem.file(), range.start(), true)
-            .context("failed to memory map range")?;
-
-        Ok(Self {
-            mapping,
-            ranges,
-            zero_on_drop: false,
-        })
+    fn new(config_ranges: &'a [MemoryRange], zero_on_drop: bool) -> anyhow::Result<Self> {
+        Self::new_internal(config_ranges, false, zero_on_drop)
     }
 
-    // FIXME: see above
+    // TODO: Consider not using /dev/mem and instead using mshv_vtl_low, which
+    // would require not describing the memory to the kernel in the E820 map.
+    fn new_writeable(ranges: &'a [MemoryRange]) -> anyhow::Result<Self> {
+        Self::new_internal(ranges, true, false)
+    }
+
     fn write_at(&self, offset: usize, buf: &[u8]) -> anyhow::Result<()> {
         Ok(self.mapping.write_at(offset, buf)?)
     }
