@@ -266,9 +266,8 @@ struct EqeWaitResult {
 
 impl<T: DeviceBacking> GdmaDriver<T> {
     pub fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
-        let device = match self.device.as_mut() {
-            Some(d) => d,
-            None => return Ok(()),
+        let Some(device) = self.device.as_mut() else {
+            return Ok(());
         };
 
         device.unmap_all_interrupts()
@@ -290,12 +289,15 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;
 
-        let dma_buffer = dma_buffer.map(Ok).unwrap_or_else(|| {
-            let dma_client = device.dma_client();
-            dma_client
-                .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
-                .context("failed to allocate DMA buffer")
-        })?;
+        let dma_buffer = match dma_buffer {
+            Some(buffer) => buffer,
+            None => {
+                let dma_client = device.dma_client();
+                dma_client
+                    .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
+                    .context("failed to allocate DMA buffer")?
+            }
+        };
 
         let pages = dma_buffer.pfns();
 
