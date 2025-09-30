@@ -50,6 +50,7 @@ fn main() -> anyhow::Result<()> {
 
     let output_dir = output_dir.get();
     let logger = petri::try_init_tracing(output_dir)?;
+    tracing::info!("Running VMM test prep steps");
 
     let source_disk = source_disk.get();
     // FUTURE: This file path should be obtainable from the artifact infrstructure.
