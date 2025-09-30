@@ -556,14 +556,16 @@ fn vhdfiledisk_create(
         !exists || existing_size.is_some_and(|existing_size| file_size != existing_size);
 
     // resize the file if necessary
+    let default_label = if file_size == VMGS_DEFAULT_CAPACITY {
+        " (default)"
+    } else {
+        ""
+    };
     if needs_resize {
         eprintln!(
             "Setting file size to {}{}{}",
             file_size,
-            req_file_size
-                .is_some()
-                .then_some(" (default)")
-                .unwrap_or_default(),
+            default_label,
             existing_size
                 .map(|s| format!(" (previous size: {s})"))
                 .unwrap_or_default(),
@@ -572,12 +574,7 @@ fn vhdfiledisk_create(
     } else {
         eprintln!(
             "File size is already {}{}, skipping resize",
-            file_size,
-            if req_file_size.is_some() {
-                ""
-            } else {
-                " (default)"
-            }
+            file_size, default_label
         );
     }
 
