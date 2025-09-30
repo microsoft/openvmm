@@ -15,7 +15,6 @@ petri_artifacts_vmm_test.workspace = true
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 scsidisk_resources.workspace = true
 storvsp_resources.workspace = true
-vmm_test_images = { workspace = true, features = ["clap"] }
 vm_resource.workspace = true
 
 guid.workspace = true

@@ -5878,7 +5878,6 @@ dependencies = [
  "storvsp_resources",
  "tracing",
  "vm_resource",
- "vmm_test_images",
 ]
 
 [[package]]
