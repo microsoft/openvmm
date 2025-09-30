@@ -55,10 +55,6 @@ pub struct GdmaDriverSavedState {
     /// Link status by vport index
     #[mesh(12)]
     pub link_toggle: Vec<(u32, bool)>,
-
-    /// The HWC failure state
-    #[mesh(13)]
-    pub hwc_failure: bool,
 }
 
 /// The saved state of a completion queue or event queue for restoration

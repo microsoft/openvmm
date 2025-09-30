@@ -516,6 +516,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[allow(dead_code)]
     pub async fn save(mut self) -> anyhow::Result<GdmaDriverSavedState> {
+        if self.hwc_failure {
+            anyhow::bail!("cannot save/restore after HWC failure");
+        }
+
         self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
@@ -536,7 +540,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             num_msix: self.num_msix,
             min_queue_avail: self.min_queue_avail,
             link_toggle: self.link_toggle.clone(),
-            hwc_failure: self.hwc_failure,
         })
     }
 
@@ -660,7 +663,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_subscribed: false,
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
-            hwc_failure: saved_state.hwc_failure,
+            hwc_failure: false,
             state_saved: false,
             db_id: db_id as u32,
         };
