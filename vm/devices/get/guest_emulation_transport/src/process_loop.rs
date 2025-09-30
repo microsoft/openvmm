@@ -193,6 +193,8 @@ pub(crate) mod msg {
         Inspect(inspect::Deferred),
         /// Store the gpa allocator to be used for attestation.
         SetGpaAllocator(Arc<dyn DmaClient>),
+        /// Store the callback to trigger the debug interrupt.
+        SetDebugInterruptCallback(Box<dyn Fn(u8) + Send + Sync>),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -225,8 +227,6 @@ pub(crate) mod msg {
         TakeVtl2SettingsReceiver(Rpc<(), Option<mesh::Receiver<ModifyVtl2SettingsRequest>>>),
         /// Take the late-bound receiver for battery status updates.
         TakeBatteryStatusReceiver(Rpc<(), Option<mesh::Receiver<HostBatteryUpdate>>>),
-        /// Take the late-bound receiver for debug interrupt inject requests.
-        TakeDebugInterruptReceiver(Rpc<(), Option<mesh::Receiver<DebugInterruptRequest>>>),
         /// Register a new VPCI bus event listener with the process loop.
         ///
         /// VPCI bus events are purely informative, no information is sent back to the host.
@@ -497,6 +497,8 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     secondary_host_requests_read_send: mesh::Sender<Vec<u8>>,
     gpa_allocator: Option<Arc<dyn DmaClient>>,
+    #[inspect(skip)]
+    set_debug_interrupt: Option<Box<dyn Fn(u8) + Send + Sync>>,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -515,7 +517,6 @@ struct GuestNotificationListeners {
     #[inspect(skip)]
     vpci: HashMap<Guid, mesh::Sender<VpciBusEvent>>,
     battery_status: GuestNotificationSender<HostBatteryUpdate>,
-    debug_interrupt: GuestNotificationSender<DebugInterruptRequest>,
 }
 
 // DEVNOTE: The fact that we even have a notion of "guest notification
@@ -705,6 +706,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 battery_status: GuestNotificationSender::new(),
             },
             gpa_allocator: None,
+            set_debug_interrupt: None,
         }
     }
 
@@ -1034,6 +1036,9 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::SetGpaAllocator(gpa_allocator) => {
                 self.gpa_allocator = Some(gpa_allocator);
             }
+            Msg::SetDebugInterruptCallback(callback) => {
+                self.set_debug_interrupt = Some(callback);
+            }
 
             // Late bound receivers for Guest Notifications
             Msg::TakeVtl2SettingsReceiver(req) => req.handle_sync(|()| {
@@ -1249,8 +1254,8 @@ impl<T: RingMem> ProcessLoop<T> {
     ) -> Result<(), FatalError> {
         use get_protocol::GuestNotifications;
 
-        // Version must be latest. Give up if not.
-        if header.message_version != get_protocol::MessageVersions::HEADER_VERSION_1 {
+        // Version must be at least version 1.
+        if header.message_version < get_protocol::MessageVersions::HEADER_VERSION_1 {
             tracing::error!(
                 msg = ?buf,
                 version = ?header.message_version,
@@ -1512,14 +1517,12 @@ impl<T: RingMem> ProcessLoop<T> {
             });
         }
 
-        self.guest_notification_listeners
-            .debug_interrupt
-            .send(notification.vtl)
-            .map_err(|_| {
-                FatalError::TooManyGuestNotifications(
-                    get_protocol::GuestNotifications::INJECT_DEBUG_INTERRUPT,
-                )
-            })
+        // Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
+        self.set_debug_interrupt
+            .as_ref()
+            .map(|callback| callback(notification.vtl));
+
+        Ok(())
     }
 
     fn complete_modify_vtl2_settings(
