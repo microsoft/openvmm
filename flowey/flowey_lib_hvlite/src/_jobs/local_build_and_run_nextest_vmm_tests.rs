@@ -106,6 +106,7 @@ pub struct BuildSelections {
     pub openvmm: bool,
     pub pipette_windows: bool,
     pub pipette_linux: bool,
+    pub prep_steps: bool,
     pub guest_test_uefi: bool,
     pub tmks: bool,
     pub tmk_vmm_windows: bool,
@@ -116,6 +117,7 @@ pub struct BuildSelections {
 impl Default for BuildSelections {
     fn default() -> Self {
         Self {
+            prep_steps: true,
             openhcl: true,
             openvmm: true,
             pipette_windows: true,
@@ -299,12 +301,16 @@ impl SimpleFlowNode for Node {
                     filter.push_str(" & !test(guest_test_uefi)");
                     build.guest_test_uefi = false;
                 }
+                if !tdx && !snp && !hyperv_vbs {
+                    build.prep_steps = false;
+                }
 
                 let artifacts = match arch {
                     CommonArch::X86_64 => {
                         let mut artifacts = Vec::new();
 
                         if windows && (tdx || snp || hyperv_vbs) {
+                            artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
                         }
                         if ubuntu && (tdx || snp || hyperv_vbs) {
@@ -598,6 +604,32 @@ impl SimpleFlowNode for Node {
             output
         });
 
+        let register_prep_steps = build.prep_steps.then(|| {
+            let output = ctx.reqv(|v| crate::build_prep_steps::Request {
+                target: CommonTriple::Common {
+                    arch,
+                    platform: CommonPlatform::WindowsMsvc,
+                },
+                profile: CommonProfile::from_release(release),
+                prep_steps: v,
+            });
+            if copy_extras {
+                copy_to_dir.push((
+                    extras_dir.to_owned(),
+                    output.map(ctx, |x| {
+                        Some(match x {
+                            crate::build_prep_steps::PrepStepsOutput::WindowsBin {
+                                exe: _,
+                                pdb,
+                            } => pdb,
+                            _ => unreachable!(),
+                        })
+                    }),
+                ));
+            }
+            output
+        });
+
         let nextest_archive = ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
             target: target.as_triple(),
             profile: CommonProfile::from_release(release),
@@ -791,6 +823,13 @@ impl SimpleFlowNode for Node {
             ctx.emit_side_effect_step(side_effects, [done]);
         } else {
             side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
+            if let Some(prep_steps) = register_prep_steps {
+                side_effects.push(ctx.reqv(|done| crate::run_prep_steps::Request {
+                    prep_steps,
+                    env: extra_env.clone(),
+                    done,
+                }));
+            }
 
             let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
                 nextest_archive_file: ReadVar::from_static(NextestVmmTestsArchive {
