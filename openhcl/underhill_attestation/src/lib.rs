@@ -678,10 +678,10 @@ async fn get_derived_keys(
 
         let requires_gsp = is_gsp
             || response.extended_status_flags.requires_rpc_server()
-            || matches!(
+            || (matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::GspKey
-            );
+            ) && strict_encryption_policy);
 
         // If the VMGS is encrypted, but no key protection data is found,
         // assume GspById encryption is enabled, but no ID file was written.
@@ -887,16 +887,19 @@ async fn get_derived_keys(
                 .map_err(GetDerivedKeysError::GetDerivedKeyById)?;
 
         if no_kek && no_gsp {
-            if matches!(
+            if !matches!(
                 guest_state_encryption_policy,
-                GuestStateEncryptionPolicy::None
+                GuestStateEncryptionPolicy::GspById | GuestStateEncryptionPolicy::Auto
             ) {
                 // Log a warning here to indicate that the VMGS state is out of
                 // sync with the VM's configuration.
                 //
-                // This should only happen if the VM is configured to
-                // have no encryption, but it already has GspById encryption
-                // and strict encryption policy is disabled.
+                // This should only happen if strict encryption policy is
+                // disabled and one of the following is true:
+                // - The VM is configured to have no encryption, but it already
+                //   has GspById encryption.
+                // - The VM is configured to use GspKey, but GspKey is not
+                //   available and GspById is.
                 tracing::warn!(CVM_ALLOWED, "Allowing GspById");
             } else {
                 tracing::info!(CVM_ALLOWED, "Using GspById");
@@ -968,7 +971,7 @@ async fn get_derived_keys(
                 derived_keys.ingress = ingress_key;
             }
         } else {
-            tracing::info!(CVM_ALLOWED, "Using GSP.");
+            tracing::info!(CVM_ALLOWED, "Using existing GSP.");
 
             ingress_seed = Some(
                 gsp_response.decrypted_gsp[ingress_idx].buffer
@@ -1032,9 +1035,9 @@ async fn get_derived_keys(
         }
     }
 
-    if matches!(
+    if !matches!(
         guest_state_encryption_policy,
-        GuestStateEncryptionPolicy::None | GuestStateEncryptionPolicy::GspById
+        GuestStateEncryptionPolicy::GspKey | GuestStateEncryptionPolicy::Auto
     ) {
         // Log a warning here to indicate that the VMGS state is out of
         // sync with the VM's configuration.
