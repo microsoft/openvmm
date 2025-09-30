@@ -130,7 +130,8 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
-        Self::restart_openhcl(self, new_openhcl, flags).await
+        Self::save_openhcl(self, new_openhcl, flags).await?;
+        Self::restore_openhcl(&mut self).await
     }
 
     async fn save_openhcl(
@@ -222,14 +223,6 @@ impl PetriVmOpenVmm {
         /// Waits for the KVP IC to be ready, returning a sender that can be used
         /// to send requests to it.
         pub async fn wait_for_kvp(&mut self) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>>
-    );
-    petri_vm_fn!(
-        /// Restarts OpenHCL.
-        pub async fn restart_openhcl(
-            &mut self,
-            new_openhcl: &ResolvedArtifact,
-            flags: OpenHclServicingFlags
-        ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
         /// Stages the new OpenHCL file and saves the existing state.
@@ -393,23 +386,6 @@ impl PetriVmInner {
             .context("failed to connect to KVP IC")?;
 
         Ok(send)
-    }
-
-    async fn restart_openhcl(
-        &self,
-        new_openhcl: &ResolvedArtifact,
-        flags: OpenHclServicingFlags,
-    ) -> anyhow::Result<()> {
-        let ged_send = self
-            .resources
-            .ged_send
-            .as_ref()
-            .context("openhcl not configured")?;
-
-        let igvm_file = fs_err::File::open(new_openhcl).context("failed to open igvm file")?;
-        self.worker
-            .restart_openhcl(ged_send, flags, igvm_file.into())
-            .await
     }
 
     async fn save_openhcl(

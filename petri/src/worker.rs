@@ -58,24 +58,6 @@ impl Worker {
         self.rpc.call_failable(VmRpc::PulseSaveRestore, ()).await
     }
 
-    pub(crate) async fn restart_openhcl(
-        &self,
-        send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
-        flags: OpenHclServicingFlags,
-        file: std::fs::File,
-    ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::save_underhill(
-            &self.rpc,
-            send,
-            GuestServicingFlags {
-                nvme_keepalive: flags.enable_nvme_keepalive,
-            },
-            file,
-        )
-        .await?;
-        hvlite_helpers::underhill::restore_underhill(&self.rpc, send).await
-    }
-
     pub(crate) async fn save_openhcl(
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
