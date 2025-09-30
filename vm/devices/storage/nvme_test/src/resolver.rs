@@ -63,7 +63,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 msix_count: resource.msix_count,
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
-                flr_support: resource.flr_support,
             },
             resource.fault_config,
         );

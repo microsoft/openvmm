@@ -100,11 +100,10 @@ impl Worker {
         hvlite_helpers::underhill::restore_underhill(&self.rpc, send).await
     }
 
-    pub(crate) async fn inspect_all(&self) -> String {
+    pub(crate) async fn inspect_all(&self) -> inspect::Node {
         let mut inspection = inspect::inspect("", &self.handle);
         inspection.resolve().await;
-        let results = inspection.results();
-        format!("{results:#}",)
+        inspection.results()
     }
 
     pub(crate) async fn shutdown(mut self) -> anyhow::Result<()> {
