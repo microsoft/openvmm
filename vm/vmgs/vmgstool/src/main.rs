@@ -521,39 +521,52 @@ fn vhdfiledisk_create(
         ));
     }
 
-    // check if the file already exists
+    // check if the file already exists so we know whether to try to preserve
+    // the size and footer later
     let exists = Path::new(path.as_ref()).exists();
-    if exists && !force_create {
-        return Err(Error::FileExists);
-    }
 
     // open/create the file
     eprintln!("Creating file: {}", path.as_ref().display());
-    let file = fs_err::OpenOptions::new()
+    let file = match fs_err::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
+        .create_new(!force_create)
         .open(path.as_ref())
-        .map_err(Error::VmgsFile)?;
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::FileExists);
+        }
+        Err(err) => return Err(Error::VmgsFile(err)),
+    };
 
     // determine if a resize is necessary
     let existing_size = exists
-        .then(|| Ok(file.metadata()?.len() - VHD_DISK_FOOTER_PACKED_SIZE))
+        .then(|| {
+            Ok(file
+                .metadata()?
+                .len()
+                .checked_sub(VHD_DISK_FOOTER_PACKED_SIZE))
+        })
         .transpose()
-        .map_err(Error::VmgsFile)?;
+        .map_err(Error::VmgsFile)?
+        .flatten();
     let needs_resize =
         !exists || existing_size.is_some_and(|existing_size| file_size != existing_size);
 
     // resize the file if necessary
     if needs_resize {
         eprintln!(
-            "Setting file size to {}{}",
+            "Setting file size to {}{}{}",
             file_size,
-            if req_file_size.is_some() {
-                ""
-            } else {
-                " (default)"
-            }
+            req_file_size
+                .is_some()
+                .then_some(" (default)")
+                .unwrap_or_default(),
+            existing_size
+                .map(|s| format!(" (previous size: {s})"))
+                .unwrap_or_default(),
         );
         file.set_len(file_size).map_err(Error::VmgsFile)?;
     } else {
@@ -572,7 +585,9 @@ fn vhdfiledisk_create(
     let disk = if needs_resize {
         None
     } else {
-        Vhd1Disk::open_fixed(file.try_clone().map_err(Error::VmgsFile)?.into(), false).ok()
+        Vhd1Disk::open_fixed(file.try_clone().map_err(Error::VmgsFile)?.into(), false)
+            .inspect_err(|e| eprintln!("No valid VHD header found in existing file: {e:#}"))
+            .ok()
     };
 
     // format the VHD if necessary
