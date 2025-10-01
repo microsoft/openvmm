@@ -375,6 +375,7 @@ struct PartitionTopology {
     memory_allocation_mode: MemoryAllocationMode,
 }
 
+/// Read topology from the host provided device tree.
 fn topology_from_host_dt(
     params: &ShimParams,
     parsed: &ParsedDt,
@@ -542,9 +543,7 @@ fn topology_from_host_dt(
     })
 }
 
-// FIXME: seems like maybe we could take the host provided, merge in the pool
-// region (since that's the only thing we really care about that doesn't get
-// overwritten), then instead verify what we got matches what the host reported?
+/// Read topology from the persisted state region and protobuf payload.
 fn topology_from_persisted_state(
     header: PersistedStateHeader,
     params: &ShimParams,
