@@ -37,21 +37,6 @@ pub trait ClientDevice: Send + Sync + Inspect {
     fn tdisp_bind_interface(&self) -> anyhow::Result<()>;
 }
 
-/// Trait for registering TDISP devices.
-pub trait RegisterTdisp: Send {
-    /// Registers a TDISP capable device on the host.
-    fn register(&mut self, target: Arc<dyn tdisp::TdispHostDeviceTarget>);
-}
-
-/// No operation struct for tests to implement `RegisterTdisp`.
-pub struct TestTdispRegisterNoOp {}
-
-impl RegisterTdisp for TestTdispRegisterNoOp {
-    fn register(&mut self, _target: Arc<dyn tdisp::TdispHostDeviceTarget>) {
-        todo!()
-    }
-}
-
 pub trait VpciTdispInterface: Send + Sync {
     /// Sends a TDISP command to the device through the VPCI channel.
     fn send_tdisp_command(
