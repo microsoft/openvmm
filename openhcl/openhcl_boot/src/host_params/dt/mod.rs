@@ -562,8 +562,6 @@ fn topology_from_persisted_state(
         params.persisted_state
     );
 
-    log!("using persisted state protobuf region {protobuf_region:#x?}");
-
     // Verify protobuf payload len is smaller than region.
     assert!(
         header.protobuf_payload_len <= header.protobuf_region_len,
@@ -629,8 +627,6 @@ fn topology_from_persisted_state(
             vnode,
         }),
     );
-
-    log!("restored vtl2 ram {:#x?}", vtl2_ram.as_slice());
 
     // If the host was responsible for allocating VTL2 ram, verify the ram
     // parsed from the previous instance matches.
@@ -821,7 +817,7 @@ impl PartitionInfo {
 
         let persisted_state_header = read_persisted_region_header(params);
         let topology = if let Some(header) = persisted_state_header {
-            log!("found persisted state header {:#x?}", header);
+            log!("found persisted state header");
             topology_from_persisted_state(header, params, parsed, address_space)?
         } else {
             topology_from_host_dt(params, parsed, &options, address_space)?
