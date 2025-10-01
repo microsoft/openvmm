@@ -176,6 +176,8 @@ lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
+openhcl_tdisp = { path = "openhcl/openhcl_tdisp" }
+openhcl_tdisp_resources = { path = "openhcl/openhcl_tdisp_resources" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 tee_call = { path = "openhcl/tee_call" }
@@ -262,6 +264,7 @@ nvme_resources = { path = "vm/devices/storage/nvme_resources" }
 nvme_spec = { path = "vm/devices/storage/nvme_spec" }
 nvme_test = { path = "vm/devices/storage/nvme_test" }
 storage_string = { path = "vm/devices/storage/storage_string" }
+tdisp = { path = "vm/devices/tdisp" }
 vmswitch = { path = "vm/devices/net/vmswitch" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
