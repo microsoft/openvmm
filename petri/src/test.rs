@@ -335,11 +335,7 @@ pub fn test_main(
 
     let trials = Test::all()
         .map(|test| {
-            let can_run = test.test.0.host_requirements().is_some()
-                && can_run_test_with_context(
-                    test.test.0.host_requirements().unwrap(),
-                    &host_context,
-                );
+            let can_run = can_run_test_with_context(test.test.0.host_requirements(), &host_context);
             test.trial(resolve).with_ignored_flag(!can_run)
         })
         .collect();

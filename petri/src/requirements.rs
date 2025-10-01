@@ -228,6 +228,13 @@ impl TestCaseRequirements {
 }
 
 /// Evaluates if a test case can be run in the current execution environment with context.
-pub fn can_run_test_with_context(config: &TestCaseRequirements, context: &HostContext) -> bool {
-    config.requirements.is_satisfied(context)
+pub fn can_run_test_with_context(
+    config: Option<&TestCaseRequirements>,
+    context: &HostContext,
+) -> bool {
+    if let Some(config) = config {
+        config.requirements.is_satisfied(context)
+    } else {
+        true
+    }
 }
