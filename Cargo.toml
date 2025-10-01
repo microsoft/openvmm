@@ -177,7 +177,6 @@ minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 openhcl_tdisp = { path = "openhcl/openhcl_tdisp" }
-openhcl_tdisp_resources = { path = "openhcl/openhcl_tdisp_resources" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 tee_call = { path = "openhcl/tee_call" }

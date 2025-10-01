@@ -58,10 +58,10 @@ impl From<u32> for TdispDeviceReportType {
             0 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInvalid),
             1 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoGuestDeviceId),
             2 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInterfaceReport),
-            TDISP_TDI_REPORT_ENUM_COUNT + 0 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoInvalid),
-            TDISP_TDI_REPORT_ENUM_COUNT + 1 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoCertificateChain),
-            TDISP_TDI_REPORT_ENUM_COUNT + 2 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoMeasurements),
-            TDISP_TDI_REPORT_ENUM_COUNT + 3 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoIsRegistered),
+            3 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoInvalid),
+            4 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoCertificateChain),
+            5 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoMeasurements),
+            6 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoIsRegistered),
             _ => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInvalid),
         }
     }

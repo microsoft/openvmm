@@ -32,7 +32,6 @@
 pub mod command;
 pub mod devicereport;
 pub mod serialize;
-use bitfield_struct::bitfield;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -44,7 +43,10 @@ use inspect::Inspect;
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use crate::command::{TdispCommandRequestPayload, TdispCommandResponseGetTdiReport};
+use crate::{
+    command::{TdispCommandRequestPayload, TdispCommandResponseGetTdiReport},
+    devicereport::{TdispDeviceReport, TdispDeviceReportType, TdispTdiReport},
+};
 
 /// Major version of the TDISP guest-to-host interface.
 pub const TDISP_INTERFACE_VERSION_MAJOR: u32 = 1;

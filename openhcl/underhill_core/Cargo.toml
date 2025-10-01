@@ -78,6 +78,7 @@ netvsp.workspace = true
 nvme_driver.workspace = true
 nvme_resources.workspace = true
 openhcl_dma_manager.workspace = true
+openhcl_tdisp.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 scsidisk_resources.workspace = true
@@ -85,6 +86,7 @@ serial_16550_resources.workspace = true
 storage_string.workspace = true
 storvsp.workspace = true
 storvsp_resources.workspace = true
+tdisp.workspace = true
 tpm_resources.workspace = true
 tpm_device = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true
