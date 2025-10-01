@@ -82,7 +82,7 @@ pub struct FaultConfiguration {
     pub admin_fault: AdminQueueFaultConfig,
     /// Fault to apply to management layer of the controller
     pub pci_fault: PciFaultConfig,
-    /// Fault to for namespace change notifications
+    /// Fault for test triggered namespace change notifications
     pub namespace_fault: NamespaceFaultConfig,
 }
 
