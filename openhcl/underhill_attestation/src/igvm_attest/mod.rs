@@ -232,7 +232,7 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
     }
 
     // IgvmErrorInfo is added in response header since version 2
-    if header.version != IgvmAttestResponseVersion::VERSION_1 {
+    if header.version == IgvmAttestResponseVersion::VERSION_2 {
         // Extract result info from response header
         let igvm_error_info = IgvmErrorInfo::read_from_prefix(
             &response[size_of::<IgvmAttestCommonResponseHeader>()..],
@@ -281,8 +281,8 @@ fn create_request(
     }
 
     let runtime_claims_len = runtime_claims.len();
-    // Determine if extension data structure is needed
-    let include_extension = version != IgvmAttestRequestVersion::VERSION_1;
+    // Determine if request data extension structure is needed (currently only for version 2)
+    let include_extension = version == IgvmAttestRequestVersion::VERSION_2;
     let extension_size = if include_extension {
         size_of::<IgvmAttestRequestDataExt>()
     } else {

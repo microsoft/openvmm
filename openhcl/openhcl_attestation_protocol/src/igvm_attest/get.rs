@@ -79,7 +79,7 @@ pub struct IgvmAttestRequest {
     /// Request data (unmeasured)
     pub request_data: IgvmAttestRequestData,
     // Data to be appended at the end of the struct:
-    // - Optional Extended request data (request version 2+).
+    // - Optional Extended request data [`IgvmAttestRequestDataExt`] (request version 2+).
     // - Variable-length [`runtime_claims::RuntimeClaims`] (JSON string)
     //   The hash of [`runtime_claims::RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
     //   in the `report_data` or equivalent field of the TEE attestation report.

@@ -40,7 +40,6 @@ pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
     let header = parse_response_header(response).map_err(AkCertError::ParseHeader)?;
 
     // Extract payload as per header version
-    // parse_response_header above has verified the header version already
     let header_size = match header.version {
         IgvmAttestResponseVersion::VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
         IgvmAttestResponseVersion::VERSION_2 => size_of::<IgvmAttestAkCertResponseHeader>(),
