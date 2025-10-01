@@ -200,16 +200,16 @@ impl Drop for Vtl2ParamsMap<'_> {
     }
 }
 
-// FIXME: does not belong here
+// Write persisted info into the bootshim described persisted region.
 fn write_persisted_info(parsed: &ParsedBootDtInfo) -> anyhow::Result<()> {
     use loader_defs::shim::MemoryEntry;
     use loader_defs::shim::MmioEntry;
     use loader_defs::shim::PersistedStateHeader;
     use loader_defs::shim::SavedState;
 
-    tracing::info!(
-        "writing persisted info at {:#x?}",
-        parsed.vtl2_persisted_header
+    tracing::trace!(
+        protobuf_region = ?parsed.vtl2_persisted_protobuf_region,
+        "writing persisted protobuf"
     );
 
     let ranges = [parsed.vtl2_persisted_protobuf_region];
@@ -248,11 +248,16 @@ fn write_persisted_info(parsed: &ParsedBootDtInfo) -> anyhow::Result<()> {
     };
 
     let protobuf = mesh_protobuf::encode(state);
-    tracing::info!("protobuf len: {}", protobuf.len());
+    tracing::trace!(len = protobuf.len(), "persisted protobuf len");
 
     mapping
         .write_at(0, protobuf.as_bytes())
         .context("failed to write persisted state protobuf")?;
+
+    tracing::trace!(
+        header_region = ?parsed.vtl2_persisted_header,
+        "writing persisted header"
+    );
 
     let ranges = [parsed.vtl2_persisted_header];
     let mapping =
@@ -411,9 +416,10 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         Some(measured_config.vtom_offset_bit)
     };
 
-    // FIXME: Doesn't belong here, but when we get a servicing call to write
-    // this information there instead. Do it here cause not persisting anything
-    // other than memory info.
+    // For now, save the persisted info after we read the bootshim provided data
+    // as all information we're persisting is currently known. In the future, if
+    // we plan on putting more usermode specific data such as the full openvmm
+    // saved state, we should probably move this to a servicing specific call.
     write_persisted_info(&parsed_openhcl_boot)
         .context("unable to write persisted info for next servicing boot")?;
 
