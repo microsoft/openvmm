@@ -334,6 +334,39 @@ fn init_heap(params: &ShimParams) {
 type ParsedDt =
     ParsedDeviceTree<MAX_PARTITION_RAM_RANGES, MAX_CPU_COUNT, COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>;
 
+/// Add common ranges to [`AddressSpaceManagerBuilder`] regardless if creating
+/// topology from the host or from saved state.
+fn add_common_ranges<'a, I: Iterator<Item = MemoryRange>>(
+    params: &ShimParams,
+    mut builder: AddressSpaceManagerBuilder<'a, I>,
+) -> AddressSpaceManagerBuilder<'a, I> {
+    // Add the log buffer which is always present.
+    builder = builder.with_log_buffer(params.log_buffer);
+
+    if params.vtl2_reserved_region_size != 0 {
+        builder = builder.with_reserved_range(MemoryRange::new(
+            params.vtl2_reserved_region_start
+                ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
+        ));
+    }
+
+    if params.sidecar_size != 0 {
+        builder = builder.with_sidecar_image(MemoryRange::new(
+            params.sidecar_base..(params.sidecar_base + params.sidecar_size),
+        ));
+    }
+
+    // Only specify pagetables as a reserved region on TDX, as they are used
+    // for AP startup via the mailbox protocol. On other platforms, the
+    // memory is free to be reclaimed.
+    if params.isolation_type == IsolationType::Tdx {
+        assert!(params.page_tables.is_some());
+        builder = builder.with_page_tables(params.page_tables.expect("always present on tdx"));
+    }
+
+    builder
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct PartitionTopology {
     vtl2_ram: &'static [MemoryEntry],
@@ -466,30 +499,9 @@ fn topology_from_host_dt(
         params.used,
         persisted_state_region,
         subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
-    )
-    .with_log_buffer(params.log_buffer);
+    );
 
-    if params.vtl2_reserved_region_size != 0 {
-        address_space_builder = address_space_builder.with_reserved_range(MemoryRange::new(
-            params.vtl2_reserved_region_start
-                ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
-        ));
-    }
-
-    if params.sidecar_size != 0 {
-        address_space_builder = address_space_builder.with_sidecar_image(MemoryRange::new(
-            params.sidecar_base..(params.sidecar_base + params.sidecar_size),
-        ));
-    }
-
-    // Only specify pagetables as a reserved region on TDX, as they are used
-    // for AP startup via the mailbox protocol. On other platforms, the
-    // memory is free to be reclaimed.
-    if params.isolation_type == IsolationType::Tdx {
-        assert!(params.page_tables.is_some());
-        address_space_builder = address_space_builder
-            .with_page_tables(params.page_tables.expect("always present on tdx"));
-    }
+    address_space_builder = add_common_ranges(params, address_space_builder);
 
     address_space_builder
         .init()
@@ -552,7 +564,7 @@ fn topology_from_persisted_state(
 
     log!("using persisted state protobuf region {protobuf_region:#x?}");
 
-    // verify protobuf payload len is smaller than region.
+    // Verify protobuf payload len is smaller than region.
     assert!(
         header.protobuf_payload_len <= header.protobuf_region_len,
         "protobuf payload len {} is larger than region len {}",
@@ -578,18 +590,13 @@ fn topology_from_persisted_state(
     ALLOCATOR.disable_alloc();
     ALLOCATOR.log_stats();
 
-    log!("read saved state {:#x?}", parsed_protobuf);
-
     let loader_defs::shim::SavedState {
         partition_memory,
         partition_mmio,
     } = parsed_protobuf;
 
-    // FIXME: verify the saved state and host provided values match, via walking
-    // the ranges for both and making sure they all overlap.
-
-    // FIXME: memory allocation mode should persist in saved state and compare
-    // against host?
+    // FUTURE: should memory allocation mode should persist in saved state and
+    // verify the host did not change it?
     let memory_allocation_mode = parsed.memory_allocation_mode;
 
     let mut vtl2_ram =
@@ -609,9 +616,8 @@ fn topology_from_persisted_state(
     });
 
     // Merge adjacent ranges as saved state reports the final usage of ram which
-    // includes reserved in separate ranges, but here we want the whole
-    // underlying ram ranges, merged with adjacent types if they share the same
-    // igvm types.
+    // includes reserved in separate ranges. Here we want the whole underlying
+    // ram ranges, merged with adjacent types if they share the same igvm types.
     let previous_vtl2_ram = memory_range::merge_adjacent_ranges(
         previous_vtl2_ram.map(|entry| (entry.range, (entry.mem_type, entry.vnode))),
     );
@@ -645,11 +651,11 @@ fn topology_from_persisted_state(
     let persisted_header = partition_memory
         .iter()
         .find(|entry| entry.vtl_type == MemoryVtlType::VTL2_PERSISTED_STATE_HEADER)
-        .expect("BUGBUG return error - persisted state header missing");
+        .expect("persisted state header missing");
     let persisted_protobuf = partition_memory
         .iter()
         .find(|entry| entry.vtl_type == MemoryVtlType::VTL2_PERSISTED_STATE_PROTOBUF)
-        .expect("BUGBUG return error - persisted state protobuf missing");
+        .expect("persisted state protobuf region missing");
     assert_eq!(persisted_header.range.end(), protobuf_region.start());
     let persisted_state_region =
         MemoryRange::new(persisted_header.range.start()..persisted_protobuf.range.end());
@@ -675,8 +681,7 @@ fn topology_from_persisted_state(
         params.used,
         persisted_state_region,
         subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
-    )
-    .with_log_buffer(params.log_buffer);
+    );
 
     // NOTE: The only other region we take from the previous instance is any
     // allocated vtl2 pool. Today, we do not allocate a new/larger pool if the
@@ -700,27 +705,7 @@ fn topology_from_persisted_state(
     }
 
     // As described above, other ranges come from this current boot.
-    if params.vtl2_reserved_region_size != 0 {
-        address_space_builder = address_space_builder.with_reserved_range(MemoryRange::new(
-            params.vtl2_reserved_region_start
-                ..(params.vtl2_reserved_region_start + params.vtl2_reserved_region_size),
-        ));
-    }
-
-    if params.sidecar_size != 0 {
-        address_space_builder = address_space_builder.with_sidecar_image(MemoryRange::new(
-            params.sidecar_base..(params.sidecar_base + params.sidecar_size),
-        ));
-    }
-
-    // Only specify pagetables as a reserved region on TDX, as they are used
-    // for AP startup via the mailbox protocol. On other platforms, the
-    // memory is free to be reclaimed.
-    if params.isolation_type == IsolationType::Tdx {
-        assert!(params.page_tables.is_some());
-        address_space_builder = address_space_builder
-            .with_page_tables(params.page_tables.expect("always present on tdx"));
-    }
+    address_space_builder = add_common_ranges(params, address_space_builder);
 
     address_space_builder
         .init()
@@ -764,6 +749,10 @@ fn read_persisted_region_header(params: &ShimParams) -> Option<PersistedStateHea
     // to rethink how this will work in order to handle this correctly, as on a
     // first boot we'd need to accept them early, but subsequent boots should
     // not accept any pages.
+    //
+    // This may require some value passed in via a register or something early
+    // that indicates this is a servicing boot, which we could set if OpenHCL
+    // itself launches the next instance.
     if params.isolation_type != IsolationType::None {
         return None;
     }
