@@ -32,6 +32,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::PciFaultBehavior;
+use nvme_resources::fault::PciFaultConfig;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
@@ -61,7 +62,7 @@ pub struct NvmeFaultController {
     #[inspect(flatten, mut)]
     workers: NvmeWorkers,
     #[inspect(skip)]
-    fault_configuration: FaultConfiguration,
+    pci_fault_config: PciFaultConfig,
 }
 
 #[derive(Inspect)]
@@ -149,6 +150,9 @@ impl NvmeFaultController {
             .map(|i| msix.interrupt(i).unwrap())
             .collect();
 
+        // Extract the PCI fault config
+        let pci_fault_config = fault_configuration.pci_fault.clone();
+
         let qe_sizes = Arc::new(Default::default());
         let admin = NvmeWorkers::new(NvmeWorkersContext {
             driver_source,
@@ -158,7 +162,7 @@ impl NvmeFaultController {
             max_cqs: caps.max_io_queues,
             qe_sizes: Arc::clone(&qe_sizes),
             subsystem_id: caps.subsystem_id,
-            fault_configuration: fault_configuration.clone(),
+            fault_configuration,
         });
 
         Self {
@@ -167,7 +171,7 @@ impl NvmeFaultController {
             registers: RegState::new(),
             workers: admin,
             qe_sizes,
-            fault_configuration,
+            pci_fault_config,
         }
     }
 
@@ -346,11 +350,7 @@ impl NvmeFaultController {
         if cc.en() != self.registers.cc.en() {
             if cc.en() {
                 // If any fault was configured for cc.en() process it here
-                match self
-                    .fault_configuration
-                    .pci_fault
-                    .controller_management_fault_enable
-                {
+                match self.pci_fault_config.controller_management_fault_enable {
                     PciFaultBehavior::Delay(duration) => {
                         std::thread::sleep(duration);
                     }
@@ -446,7 +446,7 @@ impl ChangeDeviceState for NvmeFaultController {
             registers,
             qe_sizes,
             workers,
-            fault_configuration: _,
+            pci_fault_config: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
