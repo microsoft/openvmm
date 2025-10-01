@@ -168,6 +168,8 @@ fn run(
             .await?;
 
         // Copy the keys over.
+        // Until a machine boots it doesn't have a 'CurrentControlSet', so we
+        // copy to 'ControlSet001' instead.
         cmd!(shell, "reg")
             .args([
                 "copy",
