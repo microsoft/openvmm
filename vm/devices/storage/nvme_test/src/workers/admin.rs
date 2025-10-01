@@ -446,8 +446,26 @@ impl AdminHandler {
                 };
                 Event::NamespaceChange(nsid)
             };
+            let changed_namespace_fault = async {
+                let Some(nsid) = self
+                    .config
+                    .fault_configuration
+                    .namespace_fault
+                    .recv_changed_namespace
+                    .next()
+                    .await
+                else {
+                    pending().await
+                };
+                Event::NamespaceChange(nsid)
+            };
 
-            break (next_command, sq_delete_complete, changed_namespace)
+            break (
+                next_command,
+                sq_delete_complete,
+                changed_namespace,
+                changed_namespace_fault,
+            )
                 .race()
                 .await;
         };

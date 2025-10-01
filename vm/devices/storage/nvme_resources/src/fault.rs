@@ -40,6 +40,13 @@ pub struct PciFaultConfig {
     pub controller_management_fault_enable: PciFaultBehavior,
 }
 
+#[derive(MeshPayload)]
+/// A fault config to allow sending namespace change notifications to the controller.
+pub struct NamespaceFaultConfig {
+    /// Receiver for changed namespace notifications
+    pub recv_changed_namespace: mesh::Receiver<u32>,
+}
+
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
@@ -67,6 +74,8 @@ pub struct FaultConfiguration {
     pub admin_fault: AdminQueueFaultConfig,
     /// Fault to apply to management layer of the controller
     pub pci_fault: PciFaultConfig,
+    /// Fault to for namespace change notifications
+    pub namespace_fault: NamespaceFaultConfig,
 }
 
 impl FaultConfiguration {
@@ -76,6 +85,7 @@ impl FaultConfiguration {
             fault_active,
             admin_fault: AdminQueueFaultConfig::new(),
             pci_fault: PciFaultConfig::new(),
+            namespace_fault: NamespaceFaultConfig::new(mesh::channel().1), // TODO: What is the best way to set this up?
         }
     }
 
@@ -88,6 +98,12 @@ impl FaultConfiguration {
     /// Add an admin queue fault configuration to the fault configuration
     pub fn with_admin_queue_fault(mut self, admin_fault: AdminQueueFaultConfig) -> Self {
         self.admin_fault = admin_fault;
+        self
+    }
+
+    /// Add a namespace fault configuration to the fault configuration
+    pub fn with_namespace_fault(mut self, namespace_fault: NamespaceFaultConfig) -> Self {
+        self.namespace_fault = namespace_fault;
         self
     }
 }
@@ -164,5 +180,14 @@ impl AdminQueueFaultConfig {
         self.admin_completion_queue_faults
             .push((pattern, behaviour));
         self
+    }
+}
+
+impl NamespaceFaultConfig {
+    /// Creates a new NamespaceFaultConfig with a fresh channel.
+    pub fn new(recv_changed_namespace: mesh::Receiver<u32>) -> Self {
+        Self {
+            recv_changed_namespace,
+        }
     }
 }
