@@ -31,15 +31,7 @@ use test_macro_support::TESTS;
 macro_rules! test {
     ($f:ident, $req:expr) => {
         $crate::multitest!(vec![
-            $crate::SimpleTest::new(
-                stringify!($f),
-                $req,
-                $f,
-                $crate::requirements::TestCaseRequirements::new(
-                    $crate::requirements::TestRequirement::None
-                )
-            )
-            .into()
+            $crate::SimpleTest::new(stringify!($f), $req, $f, None,).into()
         ]);
     };
 }
@@ -199,14 +191,14 @@ pub trait RunTest: Send {
     /// `artifacts`.
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
     /// Returns the host requirements of the current test, if any.
-    fn host_requirements(&self) -> &TestCaseRequirements;
+    fn host_requirements(&self) -> Option<&TestCaseRequirements>;
 }
 
 trait DynRunTest: Send {
     fn leaf_name(&self) -> &str;
     fn artifact_requirements(&self) -> Option<TestArtifactRequirements>;
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
-    fn host_requirements(&self) -> &TestCaseRequirements;
+    fn host_requirements(&self) -> Option<&TestCaseRequirements>;
 }
 
 impl<T: RunTest> DynRunTest for T {
@@ -227,7 +219,7 @@ impl<T: RunTest> DynRunTest for T {
         self.run(params, artifacts)
     }
 
-    fn host_requirements(&self) -> &TestCaseRequirements {
+    fn host_requirements(&self) -> Option<&TestCaseRequirements> {
         self.host_requirements()
     }
 }
@@ -249,7 +241,7 @@ pub struct SimpleTest<A, F> {
     resolve: A,
     run: F,
     /// Optional test requirements
-    pub host_requirements: TestCaseRequirements,
+    pub host_requirements: Option<TestCaseRequirements>,
 }
 
 impl<A, AR, F, E> SimpleTest<A, F>
@@ -264,7 +256,7 @@ where
         leaf_name: &'static str,
         resolve: A,
         run: F,
-        host_requirements: TestCaseRequirements,
+        host_requirements: Option<TestCaseRequirements>,
     ) -> Self {
         SimpleTest {
             leaf_name,
@@ -295,8 +287,8 @@ where
         (self.run)(params, artifacts).map_err(Into::into)
     }
 
-    fn host_requirements(&self) -> &TestCaseRequirements {
-        &self.host_requirements
+    fn host_requirements(&self) -> Option<&TestCaseRequirements> {
+        self.host_requirements.as_ref()
     }
 }
 
@@ -343,7 +335,11 @@ pub fn test_main(
 
     let trials = Test::all()
         .map(|test| {
-            let can_run = can_run_test_with_context(test.test.0.host_requirements(), &host_context);
+            let can_run = test.test.0.host_requirements().is_some()
+                && can_run_test_with_context(
+                    test.test.0.host_requirements().unwrap(),
+                    &host_context,
+                );
             test.trial(resolve).with_ignored_flag(!can_run)
         })
         .collect();

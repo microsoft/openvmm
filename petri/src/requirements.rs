@@ -154,8 +154,6 @@ impl HostContext {
 
 /// A single requirement for a test to run.
 pub enum TestRequirement {
-    /// No specific requirements.
-    None,
     /// Execution environment requirement.
     ExecutionEnvironment(ExecutionEnvironment),
     /// Vendor requirement.
@@ -174,7 +172,6 @@ impl TestRequirement {
     /// Evaluate if this requirement is satisfied with the given host context
     pub fn is_satisfied(&self, context: &HostContext) -> bool {
         match self {
-            TestRequirement::None => true,
             TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
             TestRequirement::Vendor(vendor) => context.vendor == *vendor,
             TestRequirement::Isolation(isolation_type) => {

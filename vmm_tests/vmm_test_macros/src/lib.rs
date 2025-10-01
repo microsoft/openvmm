@@ -654,7 +654,12 @@ fn make_vmm_test(
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
         // Build requirements based on the configuration
-        let requirements_builder = build_requirements_builder(&config, &name);
+        let requirements = build_requirements(&config, &name);
+        let requirements = if let Some(req) = requirements {
+            quote! { Some(#req) }
+        } else {
+            quote! { None }
+        };
 
         // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
@@ -704,7 +709,7 @@ fn make_vmm_test(
                         #original_name(#original_args).await
                     })
                 },
-                #requirements_builder
+                #requirements
             ).into(),
         };
 
@@ -717,8 +722,8 @@ fn make_vmm_test(
     })
 }
 
-// Helper to build requirements_builder TokenStream for a config and specific_vmm
-fn build_requirements_builder(config: &Config, name: &str) -> TokenStream {
+// Helper to build requirements TokenStream for a config and specific_vmm
+fn build_requirements(config: &Config, name: &str) -> Option<TokenStream> {
     let mut requirement_expr: Option<TokenStream> = None;
     let mut is_vbs = false;
     // Add isolation requirement if specified
@@ -793,11 +798,9 @@ fn build_requirements_builder(config: &Config, name: &str) -> TokenStream {
         };
     }
 
-    // Default to "no requirements" if nothing was set
-    let final_expr =
-        requirement_expr.unwrap_or_else(|| quote!(::petri::requirements::TestRequirement::None));
-
-    quote! {
-        ::petri::requirements::TestCaseRequirements::new(#final_expr)
+    if requirement_expr.is_some() {
+        Some(quote!(::petri::requirements::TestCaseRequirements::new(#requirement_expr)))
+    } else {
+        None
     }
 }
