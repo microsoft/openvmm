@@ -20,7 +20,7 @@ use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
@@ -168,7 +168,7 @@ impl TestIgvmAgent {
     }
 
     pub(crate) fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
-        let request = IgvmAttestRequest::read_from_prefix(request_bytes)
+        let request = IgvmAttestRequestBase::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
@@ -178,12 +178,12 @@ impl TestIgvmAgent {
             return Err(Error::InvalidIgvmAttestRequestVersion {
                 found: request.request_data.version,
                 expected: IGVM_ATTEST_REQUEST_CURRENT_VERSION,
-            });
+            })?;
         }
 
-        // The runtime claims are appended after the fixed-size IgvmAttestRequest and IgvmAttestRequestDataExt structures.
+        // The runtime claims are appended after the fixed-size IgvmAttestRequestBase and IgvmAttestRequestDataExt structures.
         let runtime_claims_start =
-            size_of::<IgvmAttestRequest>() + size_of::<IgvmAttestRequestDataExt>();
+            size_of::<IgvmAttestRequestBase>() + size_of::<IgvmAttestRequestDataExt>();
         let runtime_claims_end =
             runtime_claims_start + request.request_data.variable_data_size as usize;
         if request_bytes.len() < runtime_claims_end {
@@ -232,9 +232,7 @@ impl TestIgvmAgent {
                                 self.initialize_keys()?;
                             }
                             let jwt = self
-                                .generate_mock_key_release_response(
-                                    &request_bytes[size_of::<IgvmAttestRequest>()..],
-                                )
+                                .generate_mock_key_release_response(runtime_claims_bytes)
                                 .map_err(Error::KeyReleaseError)?;
                             let data = jwt.as_bytes().to_vec();
                             let header = IgvmAttestKeyReleaseResponseHeader {

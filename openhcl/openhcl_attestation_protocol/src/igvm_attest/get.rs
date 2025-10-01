@@ -66,12 +66,12 @@ open_enum! {
     }
 }
 
-/// Request structure (C-style)
+/// Request base structure (C-style)
 /// The struct (includes the appended [`runtime_claims::RuntimeClaims`]) also serves as the
 /// attestation report in vTPM guest attestation.
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct IgvmAttestRequest {
+pub struct IgvmAttestRequestBase {
     /// Header (unmeasured)
     pub header: IgvmAttestRequestHeader,
     /// TEE attestation report
@@ -299,7 +299,7 @@ pub struct IgvmAttestAkCertResponseHeader {
 }
 
 /// Definition of the runt-time claims, which will be appended to the
-/// `IgvmAttestRequest` in raw bytes.
+/// `IgvmAttestRequestBase` in raw bytes.
 pub mod runtime_claims {
     use base64_serde::base64_serde_type;
     use mesh::MeshPayload;
