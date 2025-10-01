@@ -23,7 +23,6 @@ use crate::queue::DoorbellMemory;
 use crate::queue::QueueError;
 use crate::queue::SubmissionQueue;
 use crate::spec;
-use core::panic;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::SinkExt;
