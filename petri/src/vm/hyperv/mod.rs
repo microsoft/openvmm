@@ -106,11 +106,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             vmgs: _, // TODO
         } = config;
 
-        let PetriVmResources {
-            driver,
-            output_dir: _,
-            log_source,
-        } = resources;
+        let PetriVmResources { driver, log_source } = resources;
 
         let temp_dir = tempfile::tempdir()?;
 

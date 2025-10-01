@@ -113,11 +113,7 @@ impl PetriVmConfigOpenVmm {
             boot_device_type,
         } = petri_vm_config;
 
-        let PetriVmResources {
-            driver,
-            output_dir,
-            log_source,
-        } = resources;
+        let PetriVmResources { driver, log_source } = resources;
 
         let setup = PetriVmConfigSetupCore {
             arch,
@@ -478,7 +474,7 @@ impl PetriVmConfigOpenVmm {
                 vtl2_pipette_listener,
                 linux_direct_serial_agent,
                 driver: driver.clone(),
-                output_dir: output_dir.to_owned(),
+                output_dir: log_source.output_dir().to_owned(),
                 agent_image,
                 openhcl_agent_image,
                 openvmm_path: openvmm_path.clone(),

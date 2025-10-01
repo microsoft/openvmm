@@ -20,7 +20,6 @@ use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
-use std::path::Path;
 use test_macro_support::TESTS;
 
 /// Defines a single test from a value that implements [`RunTest`].
@@ -115,7 +114,6 @@ impl Test {
                 PetriTestParams {
                     test_name: &name,
                     logger: &logger,
-                    output_dir,
                 },
                 &artifacts,
             )
@@ -135,22 +133,7 @@ impl Test {
             };
             Err(err)
         });
-        let result_path = match &r {
-            Ok(()) => {
-                tracing::info!("test passed");
-                "petri.passed"
-            }
-            Err(err) => {
-                tracing::error!(
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "test failed"
-                );
-                "petri.failed"
-            }
-        };
-        // Write a file to the output directory to indicate whether the test
-        // passed, for easy scanning via tools.
-        fs_err::write(output_dir.join(result_path), &name).unwrap();
+        logger.log_test_result(&name, &r);
         r
     }
 
@@ -219,8 +202,6 @@ pub struct PetriTestParams<'a> {
     pub test_name: &'a str,
     /// The logger for the test.
     pub logger: &'a PetriLogSource,
-    /// The test output directory.
-    pub output_dir: &'a Path,
 }
 
 /// A test defined by an artifact resolver function and a run function.

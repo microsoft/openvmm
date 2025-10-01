@@ -13,9 +13,11 @@ use pal_async::DefaultPool;
 use petri::ArtifactResolver;
 use petri::BootImageConfig;
 use petri::Firmware;
+use petri::PetriLogSource;
 use petri::PetriTestParams;
 use petri::PetriVmArtifacts;
 use petri::PetriVmBuilder;
+use petri::ResolvedArtifact;
 use petri::TestArtifactRequirements;
 use petri::UefiGuest;
 use petri::openvmm::OpenVmmPetriBackend;
@@ -24,10 +26,23 @@ use petri_artifacts_common::tags::MachineArch;
 use vm_resource::IntoResource;
 
 fn main() -> anyhow::Result<()> {
-    let vm_name = "prep";
+    let name = "prep_steps";
+    let (logger, artifacts, source_disk) = build(name)?;
+    let r = run(name, &logger, artifacts, source_disk);
+    logger.log_test_result(name, &r);
+    r
+}
+
+fn build(
+    name: &str,
+) -> anyhow::Result<(
+    PetriLogSource,
+    PetriVmArtifacts<OpenVmmPetriBackend>,
+    ResolvedArtifact,
+)> {
     // Create a VM config that should be able to run anywhere and boot quickly:
     // an OpenVMM UEFI x86_64 VM with a DataCenterCore Windows image.
-    let (artifacts, source_disk, output_dir) = build_with_artifacts(vm_name, |resolver| {
+    let (artifacts, source_disk, output_dir) = build_with_artifacts(name, |resolver| {
         let artifacts = PetriVmArtifacts::<OpenVmmPetriBackend>::new(
             &resolver,
             Firmware::uefi(
@@ -50,6 +65,15 @@ fn main() -> anyhow::Result<()> {
 
     let output_dir = output_dir.get();
     let logger = petri::try_init_tracing(output_dir)?;
+    Ok((logger, artifacts, source_disk.erase()))
+}
+
+fn run(
+    name: &str,
+    logger: &PetriLogSource,
+    artifacts: PetriVmArtifacts<OpenVmmPetriBackend>,
+    source_disk: ResolvedArtifact,
+) -> anyhow::Result<()> {
     tracing::info!("Running VMM test prep steps");
 
     let source_disk = source_disk.get();
@@ -78,9 +102,8 @@ fn main() -> anyhow::Result<()> {
     DefaultPool::run_with(async move |driver| {
         let (vm, agent) = PetriVmBuilder::new(
             &PetriTestParams {
-                test_name: vm_name,
-                logger: &logger,
-                output_dir,
+                test_name: name,
+                logger,
             },
             artifacts,
             &driver,
@@ -127,13 +150,38 @@ fn main() -> anyhow::Result<()> {
             )
             .await?;
 
+        // Load the IMC hive to read keys from.
         let shell = agent.windows_shell();
         cmd!(shell, "reg")
             .args(["load", "HKLM\\IMCTemp", "C:\\imc.hiv"])
             .run()
             .await?;
+
+        // Load the target's SYSTEM hive to write to.
         cmd!(shell, "reg")
-            .args(["copy", "HKLM\\IMCTemp", "HKLM", "/s", "/f"])
+            .args([
+                "load",
+                "HKLM\\TargetTemp",
+                "E:\\Windows\\System32\\config\\SYSTEM",
+            ])
+            .run()
+            .await?;
+
+        // Copy the keys over.
+        cmd!(shell, "reg")
+            .args([
+                "copy",
+                "HKLM\\IMCTemp\\SYSTEM",
+                "HKLM\\TargetTemp",
+                "/s",
+                "/f",
+            ])
+            .run()
+            .await?;
+
+        // Unload the target hive.
+        cmd!(shell, "reg")
+            .args(["unload", "HKLM\\TargetTemp"])
             .run()
             .await?;
 
