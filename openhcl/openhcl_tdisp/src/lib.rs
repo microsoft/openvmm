@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 //!
-//! WARNING: *** This crate is a work in progress, do not use in production! ***
-//!
 //! This module provides an implementation of the TDISP client device
 //! interface for OpenHCL devices.
 //!
