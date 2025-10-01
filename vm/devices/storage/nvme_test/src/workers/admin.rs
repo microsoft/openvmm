@@ -33,6 +33,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::message::SerializeMessage;
+use mesh::rpc::Rpc;
 use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
 use nvme_resources::fault::NamespaceChange;
@@ -121,6 +122,8 @@ pub struct AdminState {
     send_changed_namespace: futures::channel::mpsc::Sender<u32>,
     #[inspect(skip)]
     poll_namespace_change: BTreeMap<u32, Task<()>>,
+    #[inspect(skip)]
+    confirm_namespace_change_fault: Option<Rpc<(), ()>>,
 }
 
 #[derive(Inspect)]
@@ -194,6 +197,7 @@ impl AdminState {
             recv_changed_namespace,
             send_changed_namespace,
             poll_namespace_change,
+            confirm_namespace_change_fault: None,
         };
         state.set_max_queues(handler, handler.config.max_sqs, handler.config.max_cqs);
         state
@@ -433,6 +437,13 @@ impl AdminHandler {
                     )?;
 
                     state.notified_changed_namespaces = true;
+
+                    // Note: Since the tests require aen notification before invoking restore on the VM, this approach will
+                    // fail is the completion queue is full during save. In that case, the test will hang. Unless
+                    // the test is specifically stress testing the completion queue, this approach should be fine.
+                    if let Some(aen_confirmation) = state.confirm_namespace_change_fault.take() {
+                        aen_confirmation.complete(())
+                    }
                     continue;
                 }
             }
@@ -469,12 +480,12 @@ impl AdminHandler {
                 let nsid = match ns_change {
                     NamespaceChange::ChangeNotification(rpc) => {
                         let (nsid, notify) = rpc.split();
-                        notify.complete(());
+                        state.confirm_namespace_change_fault = Some(notify);
                         nsid
                     }
                 };
 
-                // TODO: Is it safe to notify the test of namespace change completion here?
+                // Don't notify the test quite yet because nothing has been written to the completion queue.
                 Event::NamespaceChange(nsid)
             };
 
