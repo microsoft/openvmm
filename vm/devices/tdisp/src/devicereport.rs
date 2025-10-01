@@ -1,6 +1,82 @@
 use bitfield_struct::bitfield;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+/// Represents a type of report that can be requested from the TDI (VF).
+#[derive(Debug)]
+pub enum TdispTdiReport {
+    TdiInfoInvalid,
+    TdiInfoGuestDeviceId,
+    TdiInfoInterfaceReport,
+}
+
+/// Represents a type of report that can be requested from the physical device.
+#[derive(Debug)]
+pub enum TdispDeviceReport {
+    DeviceInfoInvalid,
+    DeviceInfoCertificateChain,
+    DeviceInfoMeasurements,
+    DeviceInfoIsRegistered,
+}
+
+impl From<&TdispTdiReport> for u32 {
+    fn from(value: &TdispTdiReport) -> Self {
+        match value {
+            TdispTdiReport::TdiInfoInvalid => 0,
+            TdispTdiReport::TdiInfoGuestDeviceId => 1,
+            TdispTdiReport::TdiInfoInterfaceReport => 2,
+        }
+    }
+}
+
+// Set to the number of enums in TdispTdiReport to assign an ID that is unique for this enum.
+// [TDISP TODO] Is there a better way to do this with Rust const types?
+pub const TDISP_TDI_REPORT_ENUM_COUNT: u32 = 3;
+
+impl From<&TdispDeviceReport> for u32 {
+    fn from(value: &TdispDeviceReport) -> Self {
+        match value {
+            TdispDeviceReport::DeviceInfoInvalid => TDISP_TDI_REPORT_ENUM_COUNT,
+            TdispDeviceReport::DeviceInfoCertificateChain => TDISP_TDI_REPORT_ENUM_COUNT + 1,
+            TdispDeviceReport::DeviceInfoMeasurements => TDISP_TDI_REPORT_ENUM_COUNT + 2,
+            TdispDeviceReport::DeviceInfoIsRegistered => TDISP_TDI_REPORT_ENUM_COUNT + 3,
+        }
+    }
+}
+
+impl From<&TdispDeviceReportType> for u32 {
+    fn from(value: &TdispDeviceReportType) -> Self {
+        match value {
+            TdispDeviceReportType::TdiReport(report_type) => report_type.into(),
+            TdispDeviceReportType::DeviceReport(report_type) => report_type.into(),
+        }
+    }
+}
+
+impl From<u32> for TdispDeviceReportType {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInvalid),
+            1 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoGuestDeviceId),
+            2 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInterfaceReport),
+            TDISP_TDI_REPORT_ENUM_COUNT + 0 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoInvalid),
+            TDISP_TDI_REPORT_ENUM_COUNT + 1 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoCertificateChain),
+            TDISP_TDI_REPORT_ENUM_COUNT + 2 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoMeasurements),
+            TDISP_TDI_REPORT_ENUM_COUNT + 3 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoIsRegistered),
+            _ => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInvalid),
+        }
+    }
+}
+
+/// Represents a type of report that can be requested from an assigned TDISP device.
+#[derive(Debug)]
+pub enum TdispDeviceReportType {
+    /// A report produced by the device interface and not the physical interface.
+    TdiReport(TdispTdiReport),
+
+    /// A report produced by the physical interface and not the device interface.
+    DeviceReport(TdispDeviceReport),
+}
+
 #[bitfield(u16)]
 #[derive(KnownLayout, FromBytes, Immutable)]
 pub struct TdispTdiReportInterfaceInfo {

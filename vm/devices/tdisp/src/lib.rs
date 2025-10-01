@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 //!
-//! WARNING: *** This crate is a work in progress, do not use in production! ***
-//!
 //! TDISP is a standardized interface for end-to-end encryption and attestation
 //! of trusted assigned devices to confidential/isolated partitions. This crate
 //! implements structures and interfaces for the host and guest to prepare and
@@ -11,9 +9,25 @@
 //! include:
 //! - Intel® "TDX Connect"
 //! - AMD SEV-TIO
-
-// [TDISP TODO] Remove this once the TDISP interface is stable.
-#![allow(dead_code)]
+//!
+//! This crate is primarily used to implement the host side of the guest-to-host
+//! interface for TDISP as well as the serialization of guest-to-host commands for both
+//! the host and HCL.
+//!
+//! These structures and interfaces are used by the host virtualization stack
+//! to prepare and assign trusted devices to guest partitions.
+//!
+//! The host is responsible for dispatching guest commands to this machinery by
+//! creating a `TdispHostDeviceTargetEmulator` and calling through appropriate
+//! trait methods to pass guest commands received from the guest to the emulator.
+//!
+//! This crate will handle incoming guest message structs and manage the state transitions
+//! of the TDISP device and ensure valid transitions are made. Once a valid transition is made, the
+//! `TdispHostDeviceTargetEmulator` will call back into the host through the
+//! `TdispHostDeviceInterface` trait to allow the host to perform platform actions
+//! such as binding the device to a guest partition or retrieving attestation reports.
+//! It is the responsibility of the host to provide a `TdispHostDeviceInterface`
+//! implementation that performs the necessary platform actions.
 
 pub mod command;
 pub mod devicereport;
@@ -40,81 +54,6 @@ pub const TDISP_INTERFACE_VERSION_MINOR: u32 = 0;
 
 /// Callback for receiving TDISP commands from the guest.
 pub type TdispCommandCallback = dyn Fn(&GuestToHostCommand) -> anyhow::Result<()> + Send + Sync;
-
-/// Represents a type of report that can be requested from the TDI (VF).
-#[derive(Debug)]
-pub enum TdispTdiReport {
-    TdiInfoInvalid,
-    TdiInfoGuestDeviceId,
-    TdiInfoInterfaceReport,
-}
-
-/// Represents a type of report that can be requested from the physical device.
-#[derive(Debug)]
-pub enum TdispDeviceReport {
-    DeviceInfoInvalid,
-    DeviceInfoCertificateChain,
-    DeviceInfoMeasurements,
-    DeviceInfoIsRegistered,
-}
-
-impl From<&TdispTdiReport> for u32 {
-    fn from(value: &TdispTdiReport) -> Self {
-        match value {
-            TdispTdiReport::TdiInfoInvalid => 0,
-            TdispTdiReport::TdiInfoGuestDeviceId => 1,
-            TdispTdiReport::TdiInfoInterfaceReport => 2,
-        }
-    }
-}
-
-// Set to the number of enums in TdispTdiReport
-pub const TDISP_TDI_REPORT_ENUM_COUNT: u32 = 3;
-
-impl From<&TdispDeviceReport> for u32 {
-    fn from(value: &TdispDeviceReport) -> Self {
-        match value {
-            TdispDeviceReport::DeviceInfoInvalid => TDISP_TDI_REPORT_ENUM_COUNT,
-            TdispDeviceReport::DeviceInfoCertificateChain => TDISP_TDI_REPORT_ENUM_COUNT + 1,
-            TdispDeviceReport::DeviceInfoMeasurements => TDISP_TDI_REPORT_ENUM_COUNT + 2,
-            TdispDeviceReport::DeviceInfoIsRegistered => TDISP_TDI_REPORT_ENUM_COUNT + 3,
-        }
-    }
-}
-
-impl From<&TdispDeviceReportType> for u32 {
-    fn from(value: &TdispDeviceReportType) -> Self {
-        match value {
-            TdispDeviceReportType::TdiReport(report_type) => report_type.into(),
-            TdispDeviceReportType::DeviceReport(report_type) => report_type.into(),
-        }
-    }
-}
-
-impl From<u32> for TdispDeviceReportType {
-    fn from(value: u32) -> Self {
-        match value {
-            0 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInvalid),
-            1 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoGuestDeviceId),
-            2 => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInterfaceReport),
-            3 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoInvalid),
-            4 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoCertificateChain),
-            5 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoMeasurements),
-            6 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoIsRegistered),
-            _ => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInvalid),
-        }
-    }
-}
-
-/// Represents a type of report that can be requested from an assigned TDISP device.
-#[derive(Debug)]
-pub enum TdispDeviceReportType {
-    /// A report produced by the device interface and not the physical interface.
-    TdiReport(TdispTdiReport),
-
-    /// A report produced by the physical interface and not the device interface.
-    DeviceReport(TdispDeviceReport),
-}
 
 /// Trait used by the emulator to call back into the host.
 pub trait TdispHostDeviceInterface: Send + Sync {
@@ -144,9 +83,8 @@ pub trait TdispHostDeviceInterface: Send + Sync {
     }
 }
 
-/// Trait added to host VPCI devices to allow them to dispatch TDISP commands from guests.
+/// Trait added to host virtual devices to dispatch TDISP commands from guests.
 pub trait TdispHostDeviceTarget: Send + Sync {
-    /// [TDISP TODO] Highly subject to change as we work out the traits and semantics.
     fn tdisp_handle_guest_command(
         &mut self,
         _command: GuestToHostCommand,
@@ -178,7 +116,6 @@ impl TdispHostDeviceTargetEmulator {
     }
 
     /// Print a debug message to the log.
-    /// [TDISP TODO] Fix print type, make this accept a formatter instead.
     fn debug_print(&self, msg: String) {
         self.machine.debug_print(&msg);
     }
@@ -316,13 +253,14 @@ pub enum TdispTdiState {
 
     /// `TDI.Locked`` - The device resources have been locked and attestation can take place. The
     /// device's resources have been mapped and configured in hardware, but the device has not
-    /// been attested. The platform will not allow the device to be functional until it has
-    /// passed attestation and all device resources have been accepted into the guest context.
+    /// been attested. Private DMA and MMIO will not be functional until the resources have
+    /// been accepted into the guest context. Unencrypted "bounced" operations are still allowed.
     Locked,
 
-    /// `TDI.Run`` - The device is fully functional and attestation has succeeded. The device's
-    /// resources have been mapped and accepted into the guest context. The device is ready to
-    /// be used.
+    /// `TDI.Run`` - The device is no longer functional for unencrypted operations. Device resources
+    /// are locked but encrypted operations might not be functional. The device
+    /// will not be functional for encrypted operations until it has been fully validated by the guest
+    /// calling to firmware to accept resources.
     Run,
 }
 
@@ -352,7 +290,9 @@ impl From<u64> for TdispTdiState {
 /// The number of states to keep in the state history for debug.
 const TDISP_STATE_HISTORY_LEN: usize = 10;
 
-/// The reason for an `Unbind` call. `Unbind` can be called any time during the assignment flow.
+/// The reason for an `Unbind` call. This can be guest or host initiated.
+/// `Unbind` can be called any time during the assignment flow.
+/// This is used for telemetry and debugging.
 #[derive(Debug)]
 pub enum TdispUnbindReason {
     /// Unknown reason.
@@ -373,11 +313,11 @@ pub enum TdispUnbindReason {
     InvalidGuestTransitionToRun,
 
     /// The guest tried to retrieve the attestation report while the device was not in the
-    /// Locked state.
+    /// Locked or Run state.
     InvalidGuestGetAttestationReportState,
 
     /// The guest tried to accept the attestation report while the device was not in the
-    /// Locked state.
+    /// Locked or Run state.
     InvalidGuestAcceptAttestationReportState,
 
     /// The guest tried to unbind the device while the device with an unbind reason that is
@@ -386,6 +326,7 @@ pub enum TdispUnbindReason {
     InvalidGuestUnbindReason(anyhow::Error),
 }
 
+/// For a guest initiated unbind, the guest can provide a reason for the unbind.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TdispGuestUnbindReason {
     /// The guest requested to unbind the device for an unspecified reason.
@@ -413,7 +354,7 @@ impl From<u64> for TdispGuestUnbindReason {
     }
 }
 
-/// The state machine for the TDISP assignment flow for a device. Both the guest and host
+/// The state machine for the TDISP assignment flow for a device on the host. Both the guest and host
 /// synchronize this state machine with each other as they move through the assignment flow.
 pub struct TdispHostStateMachine {
     /// The current state of the TDISP device emulator.
@@ -610,14 +551,14 @@ impl From<u64> for TdispGuestOperationError {
 }
 
 /// Represents an interface by which guest commands can be dispatched to a
-/// backing TDISP state handler. This could be an emulated TDISP device or an
+/// backing TDISP state handler in the host. This could be an emulated TDISP device or an
 /// assigned TDISP device that is actually connected to the guest.
 pub trait TdispGuestRequestInterface {
     /// Transition the device from the Unlocked to Locked state. This takes place after the
     /// device has been assigned to the guest partition and the resources for the device have
-    /// been configured by the guest. The device will in the `Locked` state can still perform
-    /// unencrypted operations until it has been transitioned to the `Run` state. The device
-    /// will be attested in the `Run` state.
+    /// been configured by the guest by not yet validated.
+    /// The device will in the `Locked` state can still perform unencrypted operations until it has
+    /// been transitioned to the `Run` state. The device will be attested and moved to the `Run` state.
     ///
     /// Attempting to transition the device to the `Locked` state while the device is not in the
     /// `Unlocked` state will cause an error and unbind the device.
@@ -632,8 +573,7 @@ pub trait TdispGuestRequestInterface {
     /// `Locked` state will cause an error and unbind the device.
     fn request_start_tdi(&mut self) -> Result<(), TdispGuestOperationError>;
 
-    /// Transition the device from the Locked to the Run Retrieves the
-    /// attestation report for the device when the device is in the `Locked` or
+    /// Retrieves the attestation report for the device when the device is in the `Locked` or
     /// `Run` state. The device resources will not be functional until the
     /// resources have been accepted into the guest while the device is in the
     /// `Run` state.
