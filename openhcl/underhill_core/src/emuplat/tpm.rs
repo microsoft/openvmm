@@ -4,8 +4,8 @@
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_VERSION_1;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_VERSION_CURRENT;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
 use thiserror::Error;
@@ -89,10 +89,10 @@ impl RequestAkCert for TpmRequestAkCertHelper {
         let version = if is_attestation_report {
             // If this is an attestation report, use the version 1, the stable structure exposed
             // to the guest via NV index.
-            IGVM_ATTEST_REQUEST_VERSION_1
+            IgvmAttestRequestVersion::VERSION_1
         } else {
             // Otherwise, this is an AK cert request. Use the latest version to get the latest features.
-            IGVM_ATTEST_REQUEST_VERSION_CURRENT
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION
         };
 
         let request = ak_cert_request_helper

@@ -6,13 +6,13 @@
 //! `IGVM_ATTEST` host request.
 
 use base64_serde::base64_serde_type;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_VERSION_2;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
-use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmCapabilityBitMap;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
@@ -48,8 +48,11 @@ pub enum Error {
         "response size {specified_size} specified in the header not match the actual size {size}"
     )]
     ResponseSizeMismatch { size: usize, specified_size: usize },
-    #[error("response header version {version} larger than current version {latest_version}")]
-    InvalidResponseHeaderVersion { version: u32, latest_version: u32 },
+    #[error("response header version {version:?} larger than current version {latest_version:?}")]
+    InvalidResponseHeaderVersion {
+        version: IgvmAttestResponseVersion,
+        latest_version: IgvmAttestResponseVersion,
+    },
     #[error(
         "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal})"
     )]
@@ -190,7 +193,7 @@ impl IgvmAttestRequestHelper {
     /// Create the request in raw bytes.
     pub fn create_request(
         &self,
-        version: u32,
+        version: IgvmAttestRequestVersion,
         attestation_report: &[u8],
     ) -> Result<Vec<u8>, Error> {
         create_request(
@@ -228,8 +231,8 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
         })?
     }
 
-    // IgvmErrorInfo is added in response header since IGVM_ATTEST_RESPONSE_VERSION_2
-    if header.version >= IGVM_ATTEST_RESPONSE_VERSION_2 {
+    // IgvmErrorInfo is added in response header since version 2
+    if header.version != IgvmAttestResponseVersion::VERSION_1 {
         // Extract result info from response header
         let igvm_error_info = IgvmErrorInfo::read_from_prefix(
             &response[size_of::<IgvmAttestCommonResponseHeader>()..],
@@ -257,7 +260,7 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
 /// A request looks like:
 ///   `IgvmAttestRequest` (raw bytes) | `IgvmAttestRequestDataExt` (raw bytes) if version >= 2 | `runtime_claims` (raw bytes)
 fn create_request(
-    version: u32,
+    version: IgvmAttestRequestVersion,
     request_type: IgvmAttestRequestType,
     runtime_claims: &[u8],
     attestation_report: &[u8],
@@ -278,7 +281,8 @@ fn create_request(
     }
 
     let runtime_claims_len = runtime_claims.len();
-    let include_extension = version >= IGVM_ATTEST_REQUEST_VERSION_2;
+    // Determine if extension data structure is needed
+    let include_extension = version != IgvmAttestRequestVersion::VERSION_1;
     let extension_size = if include_extension {
         size_of::<IgvmAttestRequestDataExt>()
     } else {
@@ -350,10 +354,10 @@ mod tests {
 
     #[test]
     fn test_create_request() {
-        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_VERSION_CURRENT;
+        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
 
         let result = create_request(
-            IGVM_ATTEST_REQUEST_VERSION_CURRENT,
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &[],
             &[0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE],
@@ -363,7 +367,7 @@ mod tests {
         assert!(result.is_ok());
 
         let result = create_request(
-            IGVM_ATTEST_REQUEST_VERSION_CURRENT,
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &[],
             &[0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE + 1],
@@ -375,15 +379,15 @@ mod tests {
 
     #[test]
     fn test_create_request_version1_no_extension() {
-        use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_VERSION_1;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 
         let runtime_claims = vec![1u8, 2, 3];
         let attestation_report =
             vec![0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE];
 
         let buffer = create_request(
-            IGVM_ATTEST_REQUEST_VERSION_1,
+            IgvmAttestRequestVersion::VERSION_1,
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &runtime_claims,
             &attestation_report,
@@ -394,7 +398,10 @@ mod tests {
 
         let (request, _) =
             IgvmAttestRequest::read_from_prefix(&buffer).expect("parse IgvmAttestRequest");
-        assert_eq!(request.request_data.version, IGVM_ATTEST_REQUEST_VERSION_1);
+        assert_eq!(
+            request.request_data.version,
+            IgvmAttestRequestVersion::VERSION_1
+        );
 
         let expected_size = (size_of::<
             openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestData,
@@ -414,13 +421,14 @@ mod tests {
     fn test_create_request_version2_with_extension() {
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequest;
         use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
+        use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestVersion;
 
         let runtime_claims = vec![4u8, 5, 6, 7];
         let attestation_report =
             vec![0u8; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE];
 
         let buffer = create_request(
-            IGVM_ATTEST_REQUEST_VERSION_2,
+            IgvmAttestRequestVersion::VERSION_2,
             IgvmAttestRequestType::AK_CERT_REQUEST,
             &runtime_claims,
             &attestation_report,
@@ -431,7 +439,10 @@ mod tests {
 
         let (request, _) =
             IgvmAttestRequest::read_from_prefix(&buffer).expect("parse IgvmAttestRequest");
-        assert_eq!(request.request_data.version, IGVM_ATTEST_REQUEST_VERSION_2);
+        assert_eq!(
+            request.request_data.version,
+            IgvmAttestRequestVersion::VERSION_2
+        );
 
         let expected_extension_size = size_of::<IgvmAttestRequestDataExt>();
         let expected_size = (size_of::<
@@ -551,7 +562,7 @@ mod tests {
         assert!(result.is_ok());
         let header = result.unwrap();
         assert_eq!(VALID_RESPONSE.len(), header.data_size as usize);
-        assert_eq!(1, header.version);
+        assert_eq!(IgvmAttestResponseVersion::VERSION_1, header.version);
     }
 
     #[test]
@@ -566,7 +577,7 @@ mod tests {
         assert!(result.is_ok());
         let header = result.unwrap();
         assert_eq!(VALID_RESPONSE.len(), header.data_size as usize);
-        assert_eq!(2, header.version);
+        assert_eq!(IgvmAttestResponseVersion::VERSION_2, header.version);
     }
 
     #[test]
@@ -648,7 +659,7 @@ mod tests {
         assert_eq!(
             result.unwrap_err().to_string(),
             Error::InvalidResponseHeaderVersion {
-                version: 3,
+                version: IgvmAttestResponseVersion(3),
                 latest_version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION
             }
             .to_string()

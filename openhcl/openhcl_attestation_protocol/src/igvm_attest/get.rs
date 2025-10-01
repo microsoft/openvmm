@@ -36,15 +36,35 @@ pub const KEY_RELEASE_RESPONSE_BUFFER_SIZE: usize = 16 * PAGE_SIZE;
 /// Currently the AK cert request only requires 1 page.
 pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
 
-/// IGVM Attest response header versions
-pub const IGVM_ATTEST_RESPONSE_VERSION_1: u32 = 1;
-pub const IGVM_ATTEST_RESPONSE_VERSION_2: u32 = 2;
-pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: u32 = IGVM_ATTEST_RESPONSE_VERSION_2;
+/// Current IGVM Attest response header version.
+pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: IgvmAttestResponseVersion =
+    IgvmAttestResponseVersion::VERSION_2;
 
-/// IGVM Attest request header versions
-pub const IGVM_ATTEST_REQUEST_VERSION_1: u32 = 1;
-pub const IGVM_ATTEST_REQUEST_VERSION_2: u32 = 2;
-pub const IGVM_ATTEST_REQUEST_VERSION_CURRENT: u32 = IGVM_ATTEST_REQUEST_VERSION_2;
+open_enum! {
+    /// IGVM Attest response header versions.
+    #[derive(Default, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum IgvmAttestResponseVersion: u32 {
+        /// Version 1
+        VERSION_1 = 1,
+        /// Version 2
+        VERSION_2 = 2,
+    }
+}
+
+/// Current IGVM Attest request header version.
+pub const IGVM_ATTEST_REQUEST_CURRENT_VERSION: IgvmAttestRequestVersion =
+    IgvmAttestRequestVersion::VERSION_2;
+
+open_enum! {
+    /// IGVM Attest request header versions.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum IgvmAttestRequestVersion: u32 {
+        /// Version 1
+        VERSION_1 = 1,
+        /// Version 2
+        VERSION_2 = 2,
+    }
+}
 
 /// Request structure (C-style)
 /// The struct (includes the appended [`runtime_claims::RuntimeClaims`]) also serves as the
@@ -58,7 +78,7 @@ pub struct IgvmAttestRequest {
     pub attestation_report: [u8; ATTESTATION_REPORT_SIZE_MAX],
     /// Request data (unmeasured)
     pub request_data: IgvmAttestRequestData,
-    // Appended data:
+    // Data to be appended at the end of the struct:
     // - Optional Extended request data (request version 2+).
     // - Variable-length [`runtime_claims::RuntimeClaims`] (JSON string)
     //   The hash of [`runtime_claims::RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
@@ -163,7 +183,7 @@ pub struct IgvmAttestRequestData {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestRequestVersion,
     /// Report type
     pub report_type: IgvmAttestReportType,
     /// Report data hash type
@@ -175,7 +195,7 @@ pub struct IgvmAttestRequestData {
 impl IgvmAttestRequestData {
     /// Create an `IgvmAttestRequestData` instance.
     pub fn new(
-        version: u32,
+        version: IgvmAttestRequestVersion,
         data_size: u32,
         report_type: IgvmAttestReportType,
         report_data_hash_type: IgvmAttestHashType,
@@ -224,7 +244,7 @@ pub struct IgvmAttestCommonResponseHeader {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestResponseVersion,
 }
 
 /// The response header for `IGVM_ERROR_INFO` (C-style struct)
@@ -248,7 +268,7 @@ pub struct IgvmAttestKeyReleaseResponseHeader {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestResponseVersion,
     /// IgvmErrorInfo that contains RPC result and retry recommendation
     pub error_info: IgvmErrorInfo,
 }
@@ -261,7 +281,7 @@ pub struct IgvmAttestWrappedKeyResponseHeader {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestResponseVersion,
     /// IgvmErrorInfo that contains RPC result and retry recommendation
     pub error_info: IgvmErrorInfo,
 }
@@ -273,7 +293,7 @@ pub struct IgvmAttestAkCertResponseHeader {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestResponseVersion,
     /// IgvmErrorInfo that contains RPC result and retry recommendation
     pub error_info: IgvmErrorInfo,
 }
