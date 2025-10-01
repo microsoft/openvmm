@@ -87,7 +87,7 @@
         "2vp": {
             "usage": {
                 "base": 231334,
-                "threshold": 150
+                "threshold": 500
             },
             "reservation": {
                 "base": 17664,
@@ -116,7 +116,7 @@
             "underhill_vm": {
                 "Pss": {
                     "base": 29054,
-                    "threshold": 150
+                    "threshold": 500
                 },
                 "Pss_Anon": {
                     "base": 8951,
