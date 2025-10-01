@@ -846,7 +846,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     /// Instruct the OpenHCL to save the state of the VTL2 paravisor. Will fail if the VM
-    /// is not running OpenHCL. Will also fail if the VM is not running of if this is called twice in succession
+    /// is not running OpenHCL. Will also fail if the VM is not running or if this is called twice in succession
     pub async fn save_openhcl(
         &mut self,
         new_openhcl: ResolvedArtifact<impl IsOpenhclIgvm>,
@@ -856,7 +856,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     /// Instruct the OpenHCL to restore the state of the VTL2 paravisor. Will fail if the VM
-    /// is not running OpenHCL. Will also fail if the VM is running of if this is called without prior save
+    /// is not running OpenHCL. Will also fail if the VM is running or if this is called without prior save
     pub async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
         self.runtime.restore_openhcl().await
     }
