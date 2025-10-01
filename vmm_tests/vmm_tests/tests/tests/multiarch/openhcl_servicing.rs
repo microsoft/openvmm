@@ -107,7 +107,7 @@ async fn basic_servicing<T: PetriVmmBackend>(
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and no vmbus redirect.
 #[openvmm_test(openhcl_linux_direct_x64[LATEST_LINUX_DIRECT_TEST_X64])]
-async fn keepalive_no_device<T: PetriVmmBackend>(
+async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
@@ -127,7 +127,7 @@ async fn keepalive_no_device<T: PetriVmmBackend>(
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support.
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
-async fn keepalive_with_device<T: PetriVmmBackend>(
+async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
