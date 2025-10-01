@@ -1299,7 +1299,7 @@ impl MshvHvcall {
             assert!(size_of::<O>() <= HV_PAGE_SIZE as usize);
         }
         assert_size::<I, O>();
-        assert!(variable_input.len() % 8 == 0);
+        assert!(variable_input.len().is_multiple_of(8));
 
         let input = [input.as_bytes(), variable_input].concat();
         if input.len() > HV_PAGE_SIZE as usize {

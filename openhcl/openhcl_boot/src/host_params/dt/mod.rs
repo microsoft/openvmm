@@ -12,6 +12,7 @@ use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
+use crate::host_params::mmio::select_vtl2_mmio_range;
 use crate::host_params::shim_params::IsolationType;
 use crate::memory::AddressSpaceManager;
 use crate::memory::AddressSpaceManagerBuilder;
@@ -32,6 +33,8 @@ use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
 use thiserror::Error;
+
+mod bump_alloc;
 
 /// Errors when reading the host device tree.
 #[derive(Debug, Error)]
@@ -310,6 +313,30 @@ fn parse_host_vtl2_ram(
     vtl2_ram
 }
 
+fn init_heap(params: &ShimParams) {
+    // Initialize the temporary heap.
+    //
+    // This is only to be enabled for mesh decode.
+    //
+    // SAFETY: The heap range is reserved at file build time, and is
+    // guaranteed to be unused by anything else.
+    unsafe {
+        bump_alloc::ALLOCATOR.init(params.heap);
+    }
+
+    // TODO: test using heap, as no mesh decode yet.
+    {
+        use alloc::boxed::Box;
+        bump_alloc::ALLOCATOR.enable_alloc();
+
+        let box_int = Box::new(42);
+        log!("box int {box_int}");
+        drop(box_int);
+        bump_alloc::ALLOCATOR.disable_alloc();
+        bump_alloc::ALLOCATOR.log_stats();
+    }
+}
+
 impl PartitionInfo {
     // Read the IGVM provided DT for the vtl2 partition info.
     pub fn read_from_dt<'a>(
@@ -382,6 +409,8 @@ impl PartitionInfo {
         storage.vmbus_vtl2 = parsed.vmbus_vtl2.clone().ok_or(DtError::Vtl2Vmbus)?;
         storage.vmbus_vtl0 = parsed.vmbus_vtl0.clone().ok_or(DtError::Vtl0Vmbus)?;
 
+        init_heap(params);
+
         // The host is responsible for allocating MMIO ranges for non-isolated
         // guests when it also provides the ram VTL2 should use.
         //
@@ -405,11 +434,15 @@ impl PartitionInfo {
             );
 
             // Decide what mmio vtl2 should use.
-            let vtl2_mmio = storage.select_vtl2_mmio_range(mmio_size)?;
+            let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
+            let selected_vtl2_mmio = select_vtl2_mmio_range(mmio, mmio_size)?;
 
             // Update vtl0 mmio to exclude vtl2 mmio.
-            let vtl0_mmio = subtract_ranges(storage.vmbus_vtl0.mmio.iter().cloned(), [vtl2_mmio])
-                .collect::<ArrayVec<MemoryRange, 2>>();
+            let vtl0_mmio = subtract_ranges(
+                storage.vmbus_vtl0.mmio.iter().cloned(),
+                [selected_vtl2_mmio],
+            )
+            .collect::<ArrayVec<MemoryRange, 2>>();
 
             // TODO: For now, if we have only a single vtl0_mmio range left,
             // panic. In the future decide if we want to report this as a start
@@ -423,7 +456,7 @@ impl PartitionInfo {
             );
 
             storage.vmbus_vtl2.mmio.clear();
-            storage.vmbus_vtl2.mmio.push(vtl2_mmio);
+            storage.vmbus_vtl2.mmio.push(selected_vtl2_mmio);
             storage.vmbus_vtl0.mmio = vtl0_mmio;
         }
 
@@ -452,7 +485,8 @@ impl PartitionInfo {
             &storage.vtl2_ram,
             params.used,
             subtract_ranges([vtl2_config_region], [vtl2_config_region_reclaim]),
-        );
+        )
+        .with_log_buffer(params.log_buffer);
 
         if params.vtl2_reserved_region_size != 0 {
             address_space_builder = address_space_builder.with_reserved_range(MemoryRange::new(

@@ -33,6 +33,7 @@ use vmgs_format::VmgsHeader;
 
 const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 const ONE_GIGA_BYTE: u64 = ONE_MEGA_BYTE * 1024;
+const VHD_DISK_FOOTER_PACKED_SIZE: u64 = 512;
 
 #[derive(Debug, Error)]
 enum Error {
@@ -340,7 +341,7 @@ fn main() {
                 Error::NotEncrypted => ExitCode::ErrorNotEncrypted,
                 Error::EmptyFile => ExitCode::ErrorEmpty,
                 Error::ZeroSize => ExitCode::ErrorEmpty,
-                Error::Vmgs(VmgsError::FileInfoAllocated) => ExitCode::ErrorNotFound,
+                Error::Vmgs(VmgsError::FileInfoNotAllocated) => ExitCode::ErrorNotFound,
                 Error::V1Format => ExitCode::ErrorV1,
                 Error::GspByIdEncryption => ExitCode::ErrorGspById,
                 _ => ExitCode::Error,
@@ -508,8 +509,9 @@ fn vhdfiledisk_create(
     const MIN_VMGS_FILE_SIZE: u64 = 4 * VMGS_BYTES_PER_BLOCK as u64;
     const SECTOR_SIZE: u64 = 512;
 
+    // validate the VHD size
     let file_size = req_file_size.unwrap_or(VMGS_DEFAULT_CAPACITY);
-    if file_size < MIN_VMGS_FILE_SIZE || file_size % SECTOR_SIZE != 0 {
+    if file_size < MIN_VMGS_FILE_SIZE || !file_size.is_multiple_of(SECTOR_SIZE) {
         return Err(Error::InvalidVmgsFileSize(
             file_size,
             format!(
@@ -519,20 +521,17 @@ fn vhdfiledisk_create(
         ));
     }
 
-    if force_create && Path::new(path.as_ref()).exists() {
-        eprintln!(
-            "File already exists. Recreating the file {:?}",
-            path.as_ref()
-        );
-    }
+    // check if the file already exists so we know whether to try to preserve
+    // the size and footer later
+    let exists = Path::new(path.as_ref()).exists();
 
+    // open/create the file
     eprintln!("Creating file: {}", path.as_ref().display());
     let file = match fs_err::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .create_new(!force_create)
-        .truncate(true)
         .open(path.as_ref())
     {
         Ok(file) => file,
@@ -542,20 +541,65 @@ fn vhdfiledisk_create(
         Err(err) => return Err(Error::VmgsFile(err)),
     };
 
-    eprintln!(
-        "Setting file size to {}{}",
-        file_size,
-        if req_file_size.is_some() {
-            ""
-        } else {
-            " (default)"
-        }
-    );
-    file.set_len(file_size).map_err(Error::VmgsFile)?;
+    // determine if a resize is necessary
+    let existing_size = exists
+        .then(|| {
+            Ok(file
+                .metadata()?
+                .len()
+                .checked_sub(VHD_DISK_FOOTER_PACKED_SIZE))
+        })
+        .transpose()
+        .map_err(Error::VmgsFile)?
+        .flatten();
+    let needs_resize =
+        !exists || existing_size.is_some_and(|existing_size| file_size != existing_size);
 
-    eprintln!("Formatting VHD");
-    Vhd1Disk::make_fixed(file.file()).map_err(Error::Vhd1)?;
-    let disk = Vhd1Disk::open_fixed(file.into(), false).map_err(Error::Vhd1)?;
+    // resize the file if necessary
+    let default_label = if file_size == VMGS_DEFAULT_CAPACITY {
+        " (default)"
+    } else {
+        ""
+    };
+    if needs_resize {
+        eprintln!(
+            "Setting file size to {}{}{}",
+            file_size,
+            default_label,
+            existing_size
+                .map(|s| format!(" (previous size: {s})"))
+                .unwrap_or_default(),
+        );
+        file.set_len(file_size).map_err(Error::VmgsFile)?;
+    } else {
+        eprintln!(
+            "File size is already {}{}, skipping resize",
+            file_size, default_label
+        );
+    }
+
+    // attempt to open the VHD file if it already existed
+    let disk = if needs_resize {
+        None
+    } else {
+        Vhd1Disk::open_fixed(file.try_clone().map_err(Error::VmgsFile)?.into(), false)
+            .inspect_err(|e| eprintln!("No valid VHD header found in existing file: {e:#}"))
+            .ok()
+    };
+
+    // format the VHD if necessary
+    let disk = match disk {
+        Some(disk) => {
+            eprintln!("Valid VHD footer already exists, skipping VHD format");
+            disk
+        }
+        None => {
+            eprintln!("Formatting VHD");
+            Vhd1Disk::make_fixed(file.file()).map_err(Error::Vhd1)?;
+            Vhd1Disk::open_fixed(file.into(), false).map_err(Error::Vhd1)?
+        }
+    };
+
     Disk::new(disk).map_err(Error::InvalidDisk)
 }
 
@@ -1044,7 +1088,6 @@ fn vmgs_file_validate(file: &File) -> Result<(), Error> {
 ///     1) the size is zero
 ///     2) the size is non-zero but there is no content inside the file except the footer.
 fn vmgs_file_validate_not_empty(mut file: &File) -> Result<(), Error> {
-    const VHD_DISK_FOOTER_PACKED_SIZE: u64 = 512;
     const MAX_VMGS_FILE_SIZE: u64 = 4 * ONE_GIGA_BYTE;
 
     let file_size = file.metadata().map_err(Error::VmgsFile)?.len();

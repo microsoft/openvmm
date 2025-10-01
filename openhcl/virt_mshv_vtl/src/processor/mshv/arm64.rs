@@ -26,7 +26,6 @@ use aarch64defs::Cpsr64;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
 use hcl::GuestVtl;
-use hcl::UnsupportedGuestVtl;
 use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hv1_emulator::hv::ProcessorVtlHv;
@@ -168,7 +167,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
         let intercepted = this
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(MshvRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(MshvRunVpError(e).into()))?;
 
         if intercepted {
             let stat = match this.runner.exit_message().header.typ {
@@ -252,22 +251,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
 }
 
 #[derive(Debug, Error)]
-#[error("invalid intercepted vtl {0:?}")]
-struct InvalidInterceptedVtl(u8);
-
-#[derive(Debug, Error)]
 #[error("guest accessed unaccepted gpa {0}")]
 struct UnacceptedMemoryAccess(u64);
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
-    fn intercepted_vtl(
-        message_header: &hvdef::HvArm64InterceptMessageHeader,
-    ) -> Result<GuestVtl, InvalidInterceptedVtl> {
-        message_header
-            .execution_state
-            .vtl()
-            .try_into()
-            .map_err(|e: UnsupportedGuestVtl| InvalidInterceptedVtl(e.0))
+    fn intercepted_vtl(message_header: &hvdef::HvArm64InterceptMessageHeader) -> GuestVtl {
+        message_header.execution_state.vtl().try_into().unwrap()
     }
 
     fn handle_synic_deliverable_exit(&mut self) {
@@ -300,8 +289,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header)
-            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+        let intercepted_vtl = Self::intercepted_vtl(&message.header);
         let guest_memory = &self.partition.gm[intercepted_vtl];
         let smccc_convention = message.immediate == 0;
 
@@ -333,8 +321,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             interruption_pending: message.header.execution_state.interruption_pending(),
         };
 
-        let intercepted_vtl = Self::intercepted_vtl(&message.header)
-            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+        let intercepted_vtl = Self::intercepted_vtl(&message.header);
 
         // Fast path for monitor page writes.
         if Some(message.guest_physical_address & !(hvdef::HV_PAGE_SIZE - 1))
@@ -393,9 +380,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             // Note: SGX memory should be included in this check, so if SGX is
             // no longer included in the lower_vtl_memory_layout, make sure the
             // appropriate changes are reflected here.
-            Err(VpHaltReason::InvalidVmState(
-                UnacceptedMemoryAccess(gpa).into(),
-            ))
+            Err(dev.fatal_error(UnacceptedMemoryAccess(gpa).into()))
         } else {
             // TODO: for hardware isolation, if the intercept is due to a guest
             // error, inject a machine check

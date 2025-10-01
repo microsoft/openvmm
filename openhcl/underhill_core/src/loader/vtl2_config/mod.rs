@@ -11,6 +11,7 @@
 use anyhow::Context;
 use bootloader_fdt_parser::IsolationType;
 use bootloader_fdt_parser::ParsedBootDtInfo;
+use cvm_tracing::CVM_ALLOWED;
 use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use loader_defs::paravisor::PARAVISOR_CONFIG_PPTT_PAGE_INDEX;
@@ -21,8 +22,10 @@ use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_CPUID_SIZE_PAGES;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_PAGE_INDEX;
 use loader_defs::paravisor::PARAVISOR_RESERVED_VTL2_SNP_SECRETS_SIZE_PAGES;
 use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
+use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use sparse_mmap::SparseMapping;
+use string_page_buf::StringBuffer;
 use vm_topology::memory::MemoryRangeWithNode;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -37,6 +40,9 @@ pub struct RuntimeParameters {
     pptt: Option<Vec<u8>>,
     cvm_cpuid_info: Option<Vec<u8>>,
     snp_secrets: Option<Vec<u8>>,
+    #[inspect(iter_by_index)]
+    bootshim_logs: Vec<String>,
+    bootshim_log_dropped: u16,
 }
 
 impl RuntimeParameters {
@@ -260,6 +266,45 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         }
     };
 
+    // Read bootshim logs.
+    let (bootshim_logs, bootshim_log_dropped) = {
+        let range = *parsed_openhcl_boot
+            .partition_memory_map
+            .iter()
+            .find(|range| range.vtl_usage() == MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER)
+            .context("no bootshim log buffer found")?
+            .range();
+        let ranges = &[range];
+        let mapping =
+            Vtl2ParamsMap::new(ranges, false).context("failed to map bootshim log buffer")?;
+
+        let mut raw = vec![0; range.len() as usize];
+        mapping
+            .read_at(0, raw.as_mut_slice())
+            .context("unable to read raw bootshim logs")?;
+
+        let buf = StringBuffer::from_existing(raw.as_mut_slice())
+            .context("bootshim buffer contents invalid")?;
+
+        let bootshim_log_dropped = buf.dropped_messages();
+        if bootshim_log_dropped != 0 {
+            tracing::warn!(
+                CVM_ALLOWED,
+                bootshim_log_dropped,
+                "bootshim logger dropped messages"
+            );
+        }
+
+        (
+            buf.contents().lines().map(|s| s.to_string()).collect(),
+            bootshim_log_dropped,
+        )
+    };
+
+    for line in &bootshim_logs {
+        tracing::info!(CVM_ALLOWED, line, "openhcl_boot log");
+    }
+
     let accepted_regions = if parsed_openhcl_boot.isolation != IsolationType::None {
         parsed_openhcl_boot.accepted_ranges.clone()
     } else {
@@ -288,6 +333,8 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         pptt,
         cvm_cpuid_info,
         snp_secrets,
+        bootshim_logs,
+        bootshim_log_dropped,
     };
 
     let measured_vtl2_info = MeasuredVtl2Info {

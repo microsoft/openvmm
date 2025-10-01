@@ -5,12 +5,12 @@
 //! `/dev/mshv_vtl` to interact with the Microsoft hypervisor while running in
 //! VTL2.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(guest_is_native, target_os = "linux"))]
 
 mod devmsr;
 
 cfg_if::cfg_if!(
-    if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
+    if #[cfg(guest_arch = "x86_64")] {
         mod cvm_cpuid;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
@@ -31,7 +31,7 @@ cfg_if::cfg_if!(
         /// Bitarray type for representing IRR bits in a x86-64 APIC
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
-    } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
+    } else if #[cfg(guest_arch = "aarch64")] {
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
         use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
     }
@@ -171,6 +171,8 @@ pub enum Error {
     InvalidDebugConfiguration,
     #[error("failed to allocate TLB flush page")]
     AllocateTlbFlushPage(#[source] anyhow::Error),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 /// Error revoking guest VSM.
@@ -1797,7 +1799,8 @@ impl<'a> UhProtoPartition<'a> {
             &cpuid,
             isolation,
             params.hide_isolation,
-        );
+        )
+        .map_err(Error::Capabilities)?;
 
         if params.handle_synic && !matches!(isolation, IsolationType::Tdx) {
             // The hypervisor will manage the untrusted SINTs (or the whole
@@ -2175,7 +2178,7 @@ impl UhPartition {
         cpuid: &virt::CpuidLeafSet,
         isolation: IsolationType,
         hide_isolation: bool,
-    ) -> virt::x86::X86PartitionCapabilities {
+    ) -> Result<virt::x86::X86PartitionCapabilities, virt::x86::X86PartitionCapabilitiesError> {
         let mut native_cpuid_fn;
         let mut cvm_cpuid_fn;
 
@@ -2195,7 +2198,7 @@ impl UhPartition {
         };
 
         // Compute and validate capabilities.
-        let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn);
+        let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn)?;
         match isolation {
             IsolationType::Tdx => {
                 assert_eq!(caps.vtom.is_some(), !hide_isolation);
@@ -2210,7 +2213,7 @@ impl UhPartition {
             }
         }
 
-        caps
+        Ok(caps)
     }
 }
 

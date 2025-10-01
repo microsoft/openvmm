@@ -130,7 +130,20 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
-        Self::restart_openhcl(self, new_openhcl, flags).await
+        Self::save_openhcl(self, new_openhcl, flags).await?;
+        Self::restore_openhcl(self).await
+    }
+
+    async fn save_openhcl(
+        &mut self,
+        new_openhcl: &ResolvedArtifact,
+        flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        Self::save_openhcl(self, new_openhcl, flags).await
+    }
+
+    async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
+        Self::restore_openhcl(self).await
     }
 
     fn inspector(&self) -> Option<OpenVmmInspector> {
@@ -212,11 +225,17 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_kvp(&mut self) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>>
     );
     petri_vm_fn!(
-        /// Restarts OpenHCL.
-        pub async fn restart_openhcl(
+        /// Stages the new OpenHCL file and saves the existing state.
+        pub async fn save_openhcl(
             &mut self,
             new_openhcl: &ResolvedArtifact,
             flags: OpenHclServicingFlags
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Restores OpenHCL from a previously saved state.
+        pub async fn restore_openhcl(
+            &mut self
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
@@ -369,7 +388,7 @@ impl PetriVmInner {
         Ok(send)
     }
 
-    async fn restart_openhcl(
+    async fn save_openhcl(
         &self,
         new_openhcl: &ResolvedArtifact,
         flags: OpenHclServicingFlags,
@@ -382,8 +401,18 @@ impl PetriVmInner {
 
         let igvm_file = fs_err::File::open(new_openhcl).context("failed to open igvm file")?;
         self.worker
-            .restart_openhcl(ged_send, flags, igvm_file.into())
+            .save_openhcl(ged_send, flags, igvm_file.into())
             .await
+    }
+
+    async fn restore_openhcl(&self) -> anyhow::Result<()> {
+        let ged_send = self
+            .resources
+            .ged_send
+            .as_ref()
+            .context("openhcl not configured")?;
+
+        self.worker.restore_openhcl(ged_send).await
     }
 
     async fn modify_vtl2_settings(
@@ -508,7 +537,7 @@ pub struct OpenVmmInspector {
 
 #[async_trait]
 impl PetriVmInspector for OpenVmmInspector {
-    async fn inspect(&self) -> anyhow::Result<String> {
+    async fn inspect_all(&self) -> anyhow::Result<inspect::Node> {
         Ok(self.worker.inspect_all().await)
     }
 }

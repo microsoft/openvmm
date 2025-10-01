@@ -8,6 +8,7 @@ pub mod vp;
 use crate::state::StateElement;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
+use thiserror::Error;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
 
 /// VP state that can be set for initial boot.
@@ -30,3 +31,6 @@ impl Aarch64InitialRegs {
 
 #[derive(Debug, Inspect)]
 pub struct Aarch64PartitionCapabilities {}
+
+#[derive(Error, Debug)]
+pub enum Aarch64PartitionCapabilitiesError {}

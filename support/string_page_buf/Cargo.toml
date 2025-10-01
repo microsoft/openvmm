@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "string_page_buf"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

@@ -277,7 +277,7 @@ pub struct OfferParams {
     pub mnf_interrupt_latency: Option<Duration>,
     /// The order in which channels with the same interface will be offered to
     /// the guest (optional).
-    pub offer_order: Option<u32>,
+    pub offer_order: Option<u64>,
     /// Indicates whether the channel supports using encrypted memory for any
     /// external GPADLs and GPA direct ranges. This is only used when hardware
     /// isolation is in use.

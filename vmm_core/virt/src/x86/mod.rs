@@ -11,6 +11,7 @@ use crate::state::StateElement;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
+use thiserror::Error;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86Topology;
@@ -91,11 +92,21 @@ pub struct X86PartitionCapabilities {
     pub nxe_forced_on: bool,
 }
 
+#[derive(Error, Debug)]
+pub enum X86PartitionCapabilitiesError {
+    #[error(
+        "advertised xsave length ({advertised}) too small for features, requires ({required}) bytes"
+    )]
+    XSaveLengthTooSmall { advertised: u32, required: u32 },
+    #[error("x2apic topology and cpuid mismatch, expected x2apic={expected}, found {found}")]
+    X2ApicMismatch { expected: bool, found: bool },
+}
+
 impl X86PartitionCapabilities {
     pub fn from_cpuid(
         processor_topology: &ProcessorTopology<X86Topology>,
         f: &mut dyn FnMut(u32, u32) -> [u32; 4],
-    ) -> Self {
+    ) -> Result<Self, X86PartitionCapabilitiesError> {
         let mut this = Self {
             vendor: Vendor([0; 12]),
             hv1: false,
@@ -185,12 +196,13 @@ impl X86PartitionCapabilities {
             }
             this.xsave.compact_len = this.xsave.compact_len_for(!0);
             this.xsave.standard_len = this.xsave.standard_len_for(!0);
-            assert!(
-                this.xsave.standard_len <= standard_len,
-                "advertised xsave length ({}) too small for features, requires ({}) bytes",
-                standard_len,
-                this.xsave.standard_len
-            );
+
+            if this.xsave.standard_len > standard_len {
+                return Err(X86PartitionCapabilitiesError::XSaveLengthTooSmall {
+                    advertised: standard_len,
+                    required: this.xsave.standard_len,
+                });
+            }
         }
 
         // Hypervisor info.
@@ -223,16 +235,21 @@ impl X86PartitionCapabilities {
             }
         }
 
-        match processor_topology.apic_mode() {
-            ApicMode::XApic => assert!(
-                !this.x2apic,
-                "x2apic disabled in topology, enabled in cpuid"
-            ),
-            ApicMode::X2ApicSupported => {
-                assert!(this.x2apic, "x2apic enabled in topology, disabled in cpuid")
+        match (processor_topology.apic_mode(), this.x2apic) {
+            (ApicMode::XApic, true) => {
+                return Err(X86PartitionCapabilitiesError::X2ApicMismatch {
+                    expected: false,
+                    found: true,
+                });
             }
-            ApicMode::X2ApicEnabled => {
-                assert!(this.x2apic, "x2apic enabled in topology, disabled in cpuid");
+            (ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled, false) => {
+                return Err(X86PartitionCapabilitiesError::X2ApicMismatch {
+                    expected: true,
+                    found: false,
+                });
+            }
+            (ApicMode::XApic, false) | (ApicMode::X2ApicSupported, true) => {}
+            (ApicMode::X2ApicEnabled, true) => {
                 this.x2apic_enabled = true;
             }
         }
@@ -256,7 +273,7 @@ impl X86PartitionCapabilities {
             rdtscp || rdpid
         };
 
-        this
+        Ok(this)
     }
 }
 

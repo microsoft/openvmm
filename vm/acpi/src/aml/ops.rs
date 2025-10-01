@@ -1,6 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Utilities for encoding procedural operations into ACPI
+//! Machine Language (AML).
+
+/// An AML operation.
 pub trait OperationObject {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>);
 
@@ -11,6 +15,7 @@ pub trait OperationObject {
     }
 }
 
+/// A bitwise AND AML operation.
 pub struct AndOp {
     pub operand1: Vec<u8>,
     pub operand2: Vec<u8>,
@@ -26,6 +31,7 @@ impl OperationObject for AndOp {
     }
 }
 
+/// A bitwise OR AML operation.
 pub struct OrOp {
     pub operand1: Vec<u8>,
     pub operand2: Vec<u8>,
@@ -41,6 +47,7 @@ impl OperationObject for OrOp {
     }
 }
 
+/// An AML operation to return from a procedure.
 pub struct ReturnOp {
     pub result: Vec<u8>,
 }
@@ -55,8 +62,8 @@ impl OperationObject for ReturnOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsdt::encode_integer;
-    use crate::dsdt::tests::verify_expected_bytes;
+    use crate::aml::encode_integer;
+    use crate::aml::test_helpers::verify_expected_bytes;
 
     #[test]
     fn verify_and_operation() {

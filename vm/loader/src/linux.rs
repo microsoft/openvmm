@@ -202,7 +202,7 @@ pub struct LoadInfo {
 
 /// Check if an address is aligned to a page.
 fn check_address_alignment(address: u64) -> Result<(), Error> {
-    if address % HV_PAGE_SIZE != 0 {
+    if !address.is_multiple_of(HV_PAGE_SIZE) {
         Err(Error::UnalignedAddress(address))
     } else {
         Ok(())
@@ -337,7 +337,7 @@ pub fn load_config(
         IdentityMapSize::Size4Gb,
         None,
     );
-    assert!(page_table.len() as u64 % HV_PAGE_SIZE == 0);
+    assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
         .import_pages(
             registers.page_table_address / HV_PAGE_SIZE,
