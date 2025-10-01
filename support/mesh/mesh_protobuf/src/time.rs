@@ -66,6 +66,7 @@ impl From<std::time::SystemTime> for Timestamp {
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Debug, Error)]
 #[error("timestamp out of range for system time")]
 pub struct TimestampOutOfRange;
