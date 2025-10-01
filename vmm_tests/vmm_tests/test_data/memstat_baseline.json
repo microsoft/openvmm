@@ -282,7 +282,7 @@
             "underhill_vm": {
                 "Pss": {
                     "base": 31812,
-                    "threshold": 150
+                    "threshold": 500
                 },
                 "Pss_Anon": {
                     "base": 11730,
