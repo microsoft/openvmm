@@ -20,6 +20,9 @@ pub mod test_utilities;
 mod test_igvm_agent;
 
 #[cfg(feature = "test_igvm_agent")]
+mod test_crypto;
+
+#[cfg(feature = "test_igvm_agent")]
 use crate::test_igvm_agent::TestIgvmAgent;
 
 use async_trait::async_trait;

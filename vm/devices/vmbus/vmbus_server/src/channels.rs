@@ -642,7 +642,7 @@ pub struct OfferParamsInternal {
     pub mmio_megabytes_optional: u16,
     pub subchannel_index: u16,
     pub use_mnf: MnfUsage,
-    pub offer_order: Option<u32>,
+    pub offer_order: Option<u64>,
     pub flags: OfferFlags,
     pub user_defined: UserDefinedData,
 }
@@ -2664,7 +2664,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         if self.inner.use_absolute_channel_order {
             sorted_channels.sort_unstable_by_key(|(_, channel)| {
                 (
-                    channel.offer.offer_order.unwrap_or(u32::MAX),
+                    channel.offer.offer_order.unwrap_or(u64::MAX),
                     channel.offer.interface_id,
                     channel.offer.instance_id,
                 )
@@ -2673,7 +2673,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             sorted_channels.sort_unstable_by_key(|(_, channel)| {
                 (
                     channel.offer.interface_id,
-                    channel.offer.offer_order.unwrap_or(u32::MAX),
+                    channel.offer.offer_order.unwrap_or(u64::MAX),
                     channel.offer.instance_id,
                 )
             });

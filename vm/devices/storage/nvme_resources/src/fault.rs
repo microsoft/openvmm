@@ -58,7 +58,7 @@ pub struct CommandMatch {
     pub mask: [u8; 64],
 }
 
-#[derive(MeshPayload, Clone)]
+#[derive(MeshPayload)]
 /// A simple fault configuration with admin submission queue support
 pub struct FaultConfiguration {
     /// Fault active state

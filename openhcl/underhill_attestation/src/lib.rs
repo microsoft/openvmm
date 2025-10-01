@@ -472,7 +472,7 @@ async fn unlock_vmgs_data_store(
             if let Some(key) = old_egress_key {
                 // Key rolling did not complete successfully last time and there's an old
                 // egress key in the VMGS. It may be needed for decryption.
-                tracing::trace!(CVM_ALLOWED, "Old EgressKey found");
+                tracing::info!(CVM_ALLOWED, "Old EgressKey found");
                 vmgs.unlock_with_encryption_key(&key)
                     .await
                     .map_err(UnlockVmgsDataStoreError::VmgsUnlockUsingExistingEgressKey)?;
@@ -955,7 +955,7 @@ async fn get_derived_keys(
         if gsp_response.decrypted_gsp[ingress_idx].length == 0
             && gsp_response.decrypted_gsp[egress_idx].length == 0
         {
-            tracing::trace!(CVM_ALLOWED, "Applying GSP.");
+            tracing::info!(CVM_ALLOWED, "Applying GSP.");
 
             // VMGS has never had any GSP applied.
             // Leave ingress key untouched, derive egress key with new seed.
@@ -968,7 +968,7 @@ async fn get_derived_keys(
                 derived_keys.ingress = ingress_key;
             }
         } else {
-            tracing::trace!(CVM_ALLOWED, "Using GSP.");
+            tracing::info!(CVM_ALLOWED, "Using GSP.");
 
             ingress_seed = Some(
                 gsp_response.decrypted_gsp[ingress_idx].buffer

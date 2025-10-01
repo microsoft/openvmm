@@ -7,14 +7,13 @@
 //! attestation requests in VMM tests.
 
 //! NOTE: This is a test implementation and should not be used in production.
-//! The cryptographic crates (`rsa`, `sha1`, and `aes_kw`) are not vetted
-//! for production use and are *exclusively* for this test module on the
-//! Windows platform.
 
 use crate::IgvmAgentAction;
 use crate::IgvmAgentTestPlan;
 use crate::IgvmAgentTestSetting;
-use aes_kw::KekAes256;
+use crate::test_crypto::DummyRng;
+use crate::test_crypto::TestSha1;
+use crate::test_crypto::aes_key_wrap_with_padding;
 use base64::Engine;
 use get_resources::ged::IgvmAttestTestConfig;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
@@ -29,11 +28,9 @@ use rsa::Oaep;
 use rsa::RsaPrivateKey;
 use rsa::RsaPublicKey;
 use rsa::pkcs8::EncodePrivateKey;
-use rsa::rand_core::CryptoRng;
 use rsa::rand_core::OsRng;
 use rsa::rand_core::RngCore;
 use rsa::rand_core::SeedableRng;
-use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::VecDeque;
 use std::sync::Once;
@@ -84,8 +81,6 @@ pub(crate) enum KeyReleaseError {
     SecretKeyNotInitialized,
     #[error("failed to convert RSA key to PKCS8 format")]
     RsaToPkcs8Error(#[source] rsa::pkcs8::Error),
-    #[error("AES key wrap error")]
-    AesKeyWrapError(aes_kw::Error),
     #[error("RSA encryption error")]
     RsaEncryptionError(#[source] rsa::Error),
     #[error("JSON serialization error")]
@@ -529,23 +524,16 @@ impl TestIgvmAgent {
             .ok_or(KeyReleaseError::SecretKeyNotInitialized)?;
         let mut rng = OsRng;
 
-        // Generate or reuse the Key Encryption Key (KEK) for AES-KW
+        // Generate the KEK (32 bytes) and wrap the private key using internal wrapper
         let mut kek_bytes = [0u8; 32];
         RngCore::fill_bytes(&mut rng, &mut kek_bytes);
-        let kek = KekAes256::from(kek_bytes);
-
-        // Wrap the target RSA key using AES-KW - pad to expected 256 bytes
-        let wrapped_key = kek
-            .wrap_with_padding_vec(
-                secret_key
-                    .to_pkcs8_der()
-                    .map_err(KeyReleaseError::RsaToPkcs8Error)?
-                    .as_bytes(),
-            )
-            .map_err(KeyReleaseError::AesKeyWrapError)?;
+        let priv_key_der = secret_key
+            .to_pkcs8_der()
+            .map_err(KeyReleaseError::RsaToPkcs8Error)?;
+        let wrapped_key = aes_key_wrap_with_padding(&kek_bytes, priv_key_der.as_bytes());
 
         // Encrypt the KEK using RSA-OAEP
-        let padding = Oaep::new::<Sha1>();
+        let padding = Oaep::new::<TestSha1>();
         let encrypted_kek = public_key
             .encrypt(&mut rng, padding, &kek_bytes)
             .map_err(KeyReleaseError::RsaEncryptionError)?;
@@ -589,50 +577,3 @@ impl TestIgvmAgent {
         Ok(format!("{}.{}.{}", header_b64, body_b64, signature_b64))
     }
 }
-
-/// A simple deterministic RNG used only for testing (not cryptographically secure).
-///
-/// This avoids the high cost of using `OsRng` during RSA key generation,
-/// making `initialize_keys` run faster and with consistent timing across test runs.
-/// In contrast, `OsRng` can introduce significant variability and may cause
-/// tests to run slowly or even hit the default 5-second timeouts.
-pub struct DummyRng {
-    state: u64,
-}
-
-impl SeedableRng for DummyRng {
-    type Seed = [u8; 8]; // 64-bit seed
-
-    fn from_seed(seed: Self::Seed) -> Self {
-        DummyRng {
-            state: u64::from_le_bytes(seed),
-        }
-    }
-}
-
-impl RngCore for DummyRng {
-    fn next_u32(&mut self) -> u32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (self.state >> 32) as u32
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        self.state
-    }
-
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        for chunk in dest.chunks_mut(8) {
-            let n = self.next_u64().to_le_bytes();
-            chunk.copy_from_slice(&n[..chunk.len()]);
-        }
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
-}
-
-/// Marker trait to satisfy `rsa::RsaPrivateKey::new`.
-impl CryptoRng for DummyRng {}
