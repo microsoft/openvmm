@@ -32,7 +32,6 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
-use mesh::message::SerializeMessage;
 use mesh::rpc::Rpc;
 use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
@@ -57,7 +56,6 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
-use vmcore::notify;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
@@ -462,7 +460,7 @@ impl AdminHandler {
                 Event::NamespaceChange(nsid)
             };
             let changed_namespace_fault = async {
-                if self.config.fault_configuration.fault_active.get() == false {
+                if self.config.fault_configuration.fault_active.get() {
                     pending().await
                 }
 

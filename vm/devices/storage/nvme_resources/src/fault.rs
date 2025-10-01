@@ -35,7 +35,9 @@ pub enum PciFaultBehavior {
 }
 
 #[derive(MeshPayload)]
+/// A notification to the test confirming namespace change processing.
 pub enum NamespaceChange {
+    /// Input: Namespace ID to notify
     ChangeNotification(Rpc<u32, ()>),
 }
 
