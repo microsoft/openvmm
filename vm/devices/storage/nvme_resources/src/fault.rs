@@ -59,25 +59,6 @@ pub struct CommandMatch {
 }
 
 #[derive(MeshPayload)]
-/// A buildable fault configuration for namespace changes
-pub struct NamespaceFaultConfig {
-    /// Fault to apply to namespace changes
-    recv_changed_namespace: mesh::Receiver<u32>,
-    send_changed_namespace: mesh::Sender<u32>,
-}
-
-impl NamespaceFaultConfig {
-    /// Create a new NamespaceFaultConfig with a mesh channel pair
-    pub fn new() -> Self {
-        let (send_changed_namespace, recv_changed_namespace) = mesh::channel();
-        Self {
-            recv_changed_namespace,
-            send_changed_namespace,
-        }
-    }
-}
-
-#[derive(MeshPayload)]
 /// A simple fault configuration with admin submission queue support
 pub struct FaultConfiguration {
     /// Fault active state
@@ -86,8 +67,6 @@ pub struct FaultConfiguration {
     pub admin_fault: AdminQueueFaultConfig,
     /// Fault to apply to management layer of the controller
     pub pci_fault: PciFaultConfig,
-    /// Fault the namespace changes
-    pub namespace_fault: NamespaceFaultConfig,
 }
 
 impl FaultConfiguration {
@@ -97,7 +76,6 @@ impl FaultConfiguration {
             fault_active,
             admin_fault: AdminQueueFaultConfig::new(),
             pci_fault: PciFaultConfig::new(),
-            namespace_fault: NamespaceFaultConfig::new(),
         }
     }
 
@@ -110,12 +88,6 @@ impl FaultConfiguration {
     /// Add an admin queue fault configuration to the fault configuration
     pub fn with_admin_queue_fault(mut self, admin_fault: AdminQueueFaultConfig) -> Self {
         self.admin_fault = admin_fault;
-        self
-    }
-
-    /// Add a namespace fault configuration to the fault configuration
-    pub fn with_namespace_fault(mut self, namespace_fault: NamespaceFaultConfig) -> Self {
-        self.namespace_fault = namespace_fault;
         self
     }
 }
