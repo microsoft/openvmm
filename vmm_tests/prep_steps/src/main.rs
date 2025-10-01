@@ -171,8 +171,8 @@ fn run(
         cmd!(shell, "reg")
             .args([
                 "copy",
-                "HKLM\\IMCTemp\\SYSTEM",
-                "HKLM\\TargetTemp",
+                "HKLM\\IMCTemp\\SYSTEM\\CurrentControlSet",
+                "HKLM\\TargetTemp\\ControlSet001",
                 "/s",
                 "/f",
             ])
