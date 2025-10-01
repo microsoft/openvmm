@@ -327,7 +327,7 @@ fn init_heap(params: &ShimParams) {
     // SAFETY: The heap range is reserved at file build time, and is
     // guaranteed to be unused by anything else.
     unsafe {
-        bump_alloc::ALLOCATOR.init(params.heap);
+        ALLOCATOR.init(params.heap);
     }
 }
 
@@ -541,7 +541,7 @@ fn topology_from_persisted_state(
 ) -> Result<PartitionTopology, DtError> {
     // Verify the header describes a protobuf region within the bootshim
     // persisted region. We expect it to live there as today we rely on the
-    // build time generated pagetable to identiy map the protobuf region.
+    // build time generated pagetable to identity map the protobuf region.
     let protobuf_region =
         MemoryRange::new(header.protobuf_base..(header.protobuf_base + header.protobuf_region_len));
     assert!(
