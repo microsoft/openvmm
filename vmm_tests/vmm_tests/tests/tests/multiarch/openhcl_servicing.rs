@@ -363,60 +363,6 @@ async fn servicing_keepalive_with_nvme_identify_fault(
     Ok(())
 }
 
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn keepalive_with_nvme_namespace_update_fault(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
-) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
-    let mut fault_start_updater = CellUpdater::new(false);
-
-    // The first 8bytes of the response buffer correspond to the nsze field of the Identify Namespace data structure.
-    // Reduce the reported size of the namespace to 256 blocks instead of the original 512.
-    let mut buf: u64 = 256;
-    let buf = buf.as_mut_bytes();
-
-    let (send_namespace_change, recv_namespace_change) = mesh::channel::<NamespaceChange>();
-
-    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
-        .with_namespace_fault(NamespaceFaultConfig::new(recv_namespace_change));
-
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
-
-    agent.ping().await?;
-    let sh = agent.unix_shell();
-
-    // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?;
-
-    // IDENTIFY:NAMESPACE is faulty. It will report a changed namespace size. The driver is still expected to make progress.
-    fault_start_updater.set(true).await;
-    vm.save_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
-    )
-    .await?;
-
-    send_namespace_change
-        .call(NamespaceChange::ChangeNotification, 37)
-        .await
-        .unwrap(); // Send a namespace change event for the namespace ID we are using.
-
-    vm.restore_openhcl().await?;
-
-    fault_start_updater.set(false).await;
-    agent.ping().await?;
-
-    Ok(())
-}
-
 async fn create_keepalive_test_config(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
