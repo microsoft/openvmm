@@ -307,6 +307,22 @@ impl DeviceBacking for VfioDevice {
 
         Ok(interrupt.insert(new_interrupt).interrupt.clone())
     }
+
+    fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
+        if self.interrupts.is_empty() {
+            return Ok(());
+        }
+
+        let count = self.interrupts.len() as u32;
+        self.device
+            .unmap_msix(0, count)
+            .context("failed to unmap all msix vectors")?;
+
+        // Clear local bookkeeping so re-mapping works correctly later.
+        self.interrupts.clear();
+
+        Ok(())
+    }
 }
 
 struct InterruptTask {
