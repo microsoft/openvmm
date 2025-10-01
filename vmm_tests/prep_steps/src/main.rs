@@ -6,6 +6,10 @@
 //! Currently this means booting a Windows VM to perform one task:
 //! 1. Mount the VHD that will be used for Windows-based CVM tests and install
 //!    pipette into it.
+//!
+//! This tool is intentionally as minimal as possible, to keep tests easily
+//! reproducible. Anything that can be done through pipette during the test
+//! run should be done there instead of here.
 
 #![forbid(unsafe_code)]
 
