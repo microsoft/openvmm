@@ -67,6 +67,9 @@ pub struct Vtl0Config<'a> {
 // See HclDefs.h
 pub const HCL_SECURE_VTL: Vtl = Vtl::Vtl2;
 
+/// Size of the persisted region (2MB).
+const PERSISTED_REGION_SIZE: u64 = 2 * 1024 * 1024;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("memory is unaligned: {0}")]
@@ -181,7 +184,7 @@ where
     // 4K page page is always the persisted state header, and the bootshim may
     // decide to use the the remaining pages for the protobuf payload.
     let persisted_region_base = offset;
-    let persisted_region_size = X64_LARGE_PAGE_SIZE;
+    let persisted_region_size = PERSISTED_REGION_SIZE;
     offset += persisted_region_size;
 
     // If hardware isolated, reserve a 2MB range for bounce buffering shared
@@ -971,7 +974,7 @@ where
     // 4K page page is always the persisted state header, and the bootshim may
     // decide to use the the remaining pages for the protobuf payload.
     let persisted_region_base = next_addr;
-    let persisted_region_size = X64_LARGE_PAGE_SIZE; // FIXME static 2mb defn
+    let persisted_region_size = PERSISTED_REGION_SIZE;
     next_addr += persisted_region_size;
 
     tracing::trace!(next_addr, "loading the kernel");
