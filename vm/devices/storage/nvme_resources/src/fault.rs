@@ -93,7 +93,7 @@ impl FaultConfiguration {
             fault_active,
             admin_fault: AdminQueueFaultConfig::new(),
             pci_fault: PciFaultConfig::new(),
-            namespace_fault: NamespaceFaultConfig::new(mesh::channel().1), // TODO: What is the best way to set this up?
+            namespace_fault: NamespaceFaultConfig::new(mesh::channel().1), // Dummy channel for empty config.
         }
     }
 
