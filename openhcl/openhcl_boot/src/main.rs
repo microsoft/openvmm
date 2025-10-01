@@ -8,6 +8,13 @@
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
+// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`. This
+// is used for some miri tests for testing the bump allocator.
+//
+// Do not use a normal feature, as that shows errors with rust-analyzer since
+// most people are using stable and enable all features. We could remove this
+// once the allocator_api feature is stable.
+#![cfg_attr(nightly, feature(allocator_api))]
 
 mod arch;
 mod boot_logger;
@@ -20,12 +27,15 @@ mod rt;
 mod sidecar;
 mod single_threaded;
 
+extern crate alloc;
+
 use crate::arch::setup_vtl2_memory;
 use crate::arch::setup_vtl2_vp;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
-use crate::boot_logger::boot_logger_init;
+use crate::boot_logger::boot_logger_memory_init;
+use crate::boot_logger::boot_logger_runtime_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::memory::AddressSpaceManager;
@@ -399,7 +409,8 @@ mod x86_boot {
                 | MemoryVtlType::VTL2_SIDECAR_NODE
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
-                | MemoryVtlType::VTL2_TDX_PAGE_TABLES => {
+                | MemoryVtlType::VTL2_TDX_PAGE_TABLES
+                | MemoryVtlType::VTL2_BOOTSHIM_LOG_BUFFER => {
                     add_e820_entry(entries.next(), range, E820_RESERVED)?;
                     n += 1;
                 }
@@ -514,6 +525,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         enable_enlightened_panic();
     }
 
+    // Enable the in-memory log.
+    boot_logger_memory_init(p.log_buffer);
+
     let boot_reftime = get_ref_time(p.isolation_type);
 
     // The support code for the fast hypercalls does not set
@@ -552,7 +566,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Enable logging ASAP. This is fine even when isolated, as we don't have
     // any access to secrets in the boot shim.
-    boot_logger_init(p.isolation_type, partition_info.com3_serial_available);
+    boot_logger_runtime_init(p.isolation_type, partition_info.com3_serial_available);
     log!("openhcl_boot: logging enabled");
 
     // Confidential debug will show up in boot_options only if included in the

@@ -537,6 +537,18 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.restart_openhcl(flags).await
     }
 
+    async fn save_openhcl(
+        &mut self,
+        _new_openhcl: &ResolvedArtifact,
+        _flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("saving OpenHCL firmware separately is not yet supported on Hyper-V");
+    }
+
+    async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
+        anyhow::bail!("restoring OpenHCL firmware separately is not yet supported on Hyper-V");
+    }
+
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
         (!self.is_isolated).then(|| self.vm.get_framebuffer_access())
     }

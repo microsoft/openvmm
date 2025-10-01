@@ -47,6 +47,7 @@ static_assertions::const_assert_eq!(
 );
 
 /// Type of the TEE
+#[derive(Debug)]
 pub enum TeeType {
     /// AMD SEV-SNP
     Snp,

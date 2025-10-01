@@ -145,6 +145,7 @@ pal_async.workspace = true
 pal_uring.workspace = true
 pal.workspace = true
 sparse_mmap.workspace = true
+string_page_buf.workspace = true
 tracing_helpers.workspace = true
 tee_call.workspace = true
 uevent.workspace = true

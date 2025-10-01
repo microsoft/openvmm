@@ -91,6 +91,8 @@
   - [Emulated]()
     - [vTPM]()
     - [NVMe]()
+      - [Overview](./reference/emulated/NVMe/overview.md)
+      - [Doorbells](./reference/emulated/NVMe/doorbells.md)
     - [Serial]()
     - [Legacy x86]()
       - [i440BX + PIIX4 chipset]()

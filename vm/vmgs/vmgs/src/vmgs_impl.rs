@@ -409,7 +409,7 @@ impl Vmgs {
     ///
     /// When reading data from a file, the buffer must be at least `valid_bytes` long.
     pub fn get_file_info(&self, file_id: FileId) -> Result<VmgsFileInfo, Error> {
-        let fcb = self.fcbs.get(&file_id).ok_or(Error::FileInfoAllocated)?;
+        let fcb = self.fcbs.get(&file_id).ok_or(Error::FileInfoNotAllocated)?;
 
         Ok(VmgsFileInfo {
             allocated_bytes: block_count_to_byte_count(fcb.allocated_blocks.get()),

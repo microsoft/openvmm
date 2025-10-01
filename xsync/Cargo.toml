@@ -7,7 +7,7 @@ members = ["xsync"]
 resolver = "2"
 
 [workspace.package]
-rust-version = "1.89"
+rust-version = "1.90"
 edition = "2024"
 
 [workspace.dependencies]

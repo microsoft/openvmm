@@ -57,12 +57,14 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     ParseIgvmAttestKeyReleaseResponse(#[source] igvm_attest::key_release::KeyReleaseError),
     #[error("PKCS11 RSA AES key unwrap failed")]
     Pkcs11RsaAesKeyUnwrap(#[source] crypto::Pkcs11RsaAesKeyUnwrapError),
+    #[error("maximum number of attempts reached")]
+    MaximumAttemptsReached,
 }
 
 /// The return values of [`make_igvm_attest_requests`].
 struct WrappedKeyVmgsEncryptionKeys {
-    /// Optional RSA-AES-wrapped key blob.
-    rsa_aes_wrapped_key: Option<Vec<u8>>,
+    /// RSA-AES-wrapped key blob. This field is always present (required).
+    rsa_aes_wrapped_key: Vec<u8>,
     /// Optional wrapped DiskEncryptionSettings key blob.
     wrapped_des_key: Option<Vec<u8>>,
 }
@@ -71,6 +73,7 @@ struct WrappedKeyVmgsEncryptionKeys {
 #[derive(Default)]
 pub struct VmgsEncryptionKeys {
     /// Optional ingress RSA key-encryption key.
+    /// `None` indicate secure key release failed.
     pub ingress_rsa_kek: Option<Rsa<Private>>,
     /// Optional DiskEncryptionSettings key used by key rotation.
     pub wrapped_des_key: Option<Vec<u8>>,
@@ -117,11 +120,6 @@ pub async fn request_vmgs_encryption_keys(
         NO_RETRY_COUNT
     };
 
-    let mut wrapped_vmgs_keks = WrappedKeyVmgsEncryptionKeys {
-        rsa_aes_wrapped_key: None,
-        wrapped_des_key: None,
-    };
-    let mut tcb_version = None;
     let mut timer = pal_async::timer::PolledTimer::new(&driver);
 
     for i in 0..max_retry {
@@ -135,8 +133,6 @@ pub async fn request_vmgs_encryption_keys(
         let result = tee_call
             .get_attestation_report(igvm_attest_request_helper.get_runtime_claims_hash())
             .map_err(RequestVmgsEncryptionKeysError::GetAttestationReport)?;
-
-        tcb_version = result.tcb_version;
 
         // Get tenant keys based on attestation results, this might fail.
         match make_igvm_attest_requests(
@@ -152,33 +148,16 @@ pub async fn request_vmgs_encryption_keys(
             Ok(WrappedKeyVmgsEncryptionKeys {
                 rsa_aes_wrapped_key,
                 wrapped_des_key,
-            }) if rsa_aes_wrapped_key.is_some() => {
-                wrapped_vmgs_keks = WrappedKeyVmgsEncryptionKeys {
-                    rsa_aes_wrapped_key,
-                    wrapped_des_key,
-                };
-
-                break;
-            }
-            Ok(WrappedKeyVmgsEncryptionKeys {
-                rsa_aes_wrapped_key: _,
-                wrapped_des_key: _,
-            }) if i == (max_retry - 1) => {
-                tracing::error!(
-                    CVM_ALLOWED,
-                    "VMGS key-encryption failed due to invalid key format, max number of attempts reached"
-                );
-                break;
-            }
-            Ok(WrappedKeyVmgsEncryptionKeys {
-                rsa_aes_wrapped_key: _,
-                wrapped_des_key: _,
             }) => {
-                tracing::warn!(
-                    CVM_ALLOWED,
-                    retry = i,
-                    "Failed to get VMGS key-encryption due to invalid key format"
-                )
+                let ingress_rsa_kek =
+                        crypto::pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
+                            .map_err(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap)?;
+
+                return Ok(VmgsEncryptionKeys {
+                    ingress_rsa_kek: Some(ingress_rsa_kek),
+                    wrapped_des_key,
+                    tcb_version: result.tcb_version,
+                });
             }
             Err(
                 wrapped_key_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
@@ -201,7 +180,7 @@ pub async fn request_vmgs_encryption_keys(
                     "VMGS key-encryption failed due to igvm attest error"
                 );
                 if !retry_signal || i == (max_retry - 1) {
-                    Err(wrapped_key_attest_error)?
+                    return Err(wrapped_key_attest_error);
                 }
             }
             Err(
@@ -225,16 +204,8 @@ pub async fn request_vmgs_encryption_keys(
                     "VMGS key-encryption failed due to igvm attest error"
                 );
                 if !retry_signal || i == (max_retry - 1) {
-                    Err(key_release_attest_error)?
+                    return Err(key_release_attest_error);
                 }
-            }
-            Err(e) if i == (max_retry - 1) => {
-                tracing::error!(
-                    CVM_ALLOWED,
-                    error = &e as &dyn std::error::Error,
-                    "VMGS key-encryption failed due to error, max number of attempts reached"
-                );
-                Err(e)?
             }
             Err(e) => {
                 tracing::error!(
@@ -250,22 +221,7 @@ pub async fn request_vmgs_encryption_keys(
         timer.sleep(std::time::Duration::new(1, 0)).await;
     }
 
-    let ingress_rsa_kek = if let Some(rsa_aes_wrapped_key) = wrapped_vmgs_keks.rsa_aes_wrapped_key {
-        Some(
-            crypto::pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
-                .map_err(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap)?,
-        )
-    } else {
-        tracing::error!(CVM_ALLOWED, "failed to unwrap VMGS key-encryption key");
-
-        None
-    };
-
-    Ok(VmgsEncryptionKeys {
-        ingress_rsa_kek,
-        wrapped_des_key: wrapped_vmgs_keks.wrapped_des_key,
-        tcb_version,
-    })
+    Err(RequestVmgsEncryptionKeysError::MaximumAttemptsReached)
 }
 
 /// Get windows epoch from host via GET and covert it into unix epoch.
@@ -409,24 +365,9 @@ async fn make_igvm_attest_requests(
     match igvm_attest::key_release::parse_response(&response.response, transfer_key.size() as usize)
     {
         Ok(rsa_aes_wrapped_key) => Ok(WrappedKeyVmgsEncryptionKeys {
-            rsa_aes_wrapped_key: Some(rsa_aes_wrapped_key),
+            rsa_aes_wrapped_key,
             wrapped_des_key,
         }),
-        Err(
-            igvm_attest::key_release::KeyReleaseError::ParseHeader(
-                igvm_attest::Error::ResponseSizeTooSmall { .. },
-            )
-            | igvm_attest::key_release::KeyReleaseError::PayloadSizeTooSmall,
-        ) => {
-            // Notify host for diagnosis.
-            get.event_log_fatal(EventLogId::KEY_NOT_RELEASED).await;
-
-            // The request does not succeed
-            Ok(WrappedKeyVmgsEncryptionKeys {
-                rsa_aes_wrapped_key: None,
-                wrapped_des_key: None,
-            })
-        }
         Err(e) => {
             // Notify host for diagnosis.
             get.event_log_fatal(EventLogId::KEY_NOT_RELEASED).await;
