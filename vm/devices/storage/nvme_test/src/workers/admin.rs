@@ -23,6 +23,7 @@ use crate::queue::DoorbellMemory;
 use crate::queue::QueueError;
 use crate::queue::SubmissionQueue;
 use crate::spec;
+use core::panic;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::SinkExt;
@@ -31,8 +32,10 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::message::SerializeMessage;
 use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::NamespaceChange;
 use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -53,6 +56,7 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
+use vmcore::notify;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
@@ -447,7 +451,11 @@ impl AdminHandler {
                 Event::NamespaceChange(nsid)
             };
             let changed_namespace_fault = async {
-                let Some(nsid) = self
+                if self.config.fault_configuration.fault_active.get() == false {
+                    pending().await
+                }
+
+                let Some(ns_change) = self
                     .config
                     .fault_configuration
                     .namespace_fault
@@ -457,6 +465,16 @@ impl AdminHandler {
                 else {
                     pending().await
                 };
+
+                let nsid = match ns_change {
+                    NamespaceChange::ChangeNotification(rpc) => {
+                        let (nsid, notify) = rpc.split();
+                        notify.complete(());
+                        nsid
+                    }
+                };
+
+                // TODO: Is it safe to notify the test of namespace change completion here?
                 Event::NamespaceChange(nsid)
             };
 

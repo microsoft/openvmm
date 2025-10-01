@@ -12,10 +12,14 @@ use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
 use mesh::CellUpdater;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::NamespaceChange;
+use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_resources::fault::QueueFaultBehavior;
 use nvme_test::command_match::CommandMatchBuilder;
 use petri::OpenHclServicingFlags;
@@ -417,10 +421,6 @@ async fn keepalive_with_nvme_identify_namespace_fault(
     Ok(())
 }
 
-/// Test servicing an OpenHCL VM from the current version to itself with NVMe keepalive support
-/// and a faulty controller that responds incorrectly to the IDENTIFY:NAMESPACE command after servicing.
-/// TODO: For now this test will succeed because the driver currently requeries the namespace size and only checks that the size is non-zero.
-/// Once AER support is added to the driver the checks will be more stringent and this test will need updating
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn keepalive_with_nvme_namespace_update_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -438,36 +438,22 @@ async fn keepalive_with_nvme_namespace_update_fault(
     let mut buf: u64 = 256;
     let buf = buf.as_mut_bytes();
 
+    let (send_namespace_change, recv_namespace_change) = mesh::channel::<NamespaceChange>();
+
     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
-        .with_admin_queue_fault(
-            AdminQueueFaultConfig::new().with_completion_queue_fault(
-                CommandMatchBuilder::new()
-                    .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
-                    .match_cdw10(
-                        nvme_spec::Cdw10Identify::new()
-                            .with_cns(nvme_spec::Cns::NAMESPACE.0)
-                            .into(),
-                        nvme_spec::Cdw10Identify::new().with_cns(u8::MAX).into(),
-                    )
-                    .build(),
-                QueueFaultBehavior::CustomPayload(buf.to_vec()),
-            ),
-        );
+        .with_namespace_fault(NamespaceFaultConfig::new(recv_namespace_change));
 
     let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
 
     agent.ping().await?;
     let sh = agent.unix_shell();
 
-    let (send_changed_namespace, recv_changed_namespace) =
-        futures::channel::mpsc::channel::<u32>(256);
-
     // Make sure the disk showed up.
     cmd!(sh, "ls /dev/sda").run().await?;
 
     // IDENTIFY:NAMESPACE is faulty. It will report a changed namespace size. The driver is still expected to make progress.
     fault_start_updater.set(true).await;
-    vm.restart_openhcl(
+    vm.save_openhcl(
         igvm_file.clone(),
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
@@ -475,6 +461,13 @@ async fn keepalive_with_nvme_namespace_update_fault(
         },
     )
     .await?;
+
+    send_namespace_change
+        .call(NamespaceChange::ChangeNotification, 37)
+        .await
+        .unwrap(); // Send a namespace change event for the namespace ID we are using.
+
+    vm.restore_openhcl().await?;
 
     fault_start_updater.set(false).await;
     agent.ping().await?;

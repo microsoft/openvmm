@@ -5,6 +5,7 @@
 
 use mesh::Cell;
 use mesh::MeshPayload;
+use mesh::rpc::Rpc;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use std::time::Duration;
@@ -33,6 +34,11 @@ pub enum PciFaultBehavior {
     Default,
 }
 
+#[derive(MeshPayload)]
+pub enum NamespaceChange {
+    ChangeNotification(Rpc<u32, ()>),
+}
+
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
 pub struct PciFaultConfig {
@@ -44,7 +50,7 @@ pub struct PciFaultConfig {
 /// A fault config to allow sending namespace change notifications to the controller.
 pub struct NamespaceFaultConfig {
     /// Receiver for changed namespace notifications
-    pub recv_changed_namespace: mesh::Receiver<u32>,
+    pub recv_changed_namespace: mesh::Receiver<NamespaceChange>,
 }
 
 #[derive(MeshPayload, Clone)]
@@ -185,7 +191,7 @@ impl AdminQueueFaultConfig {
 
 impl NamespaceFaultConfig {
     /// Creates a new NamespaceFaultConfig with a fresh channel.
-    pub fn new(recv_changed_namespace: mesh::Receiver<u32>) -> Self {
+    pub fn new(recv_changed_namespace: mesh::Receiver<NamespaceChange>) -> Self {
         Self {
             recv_changed_namespace,
         }
