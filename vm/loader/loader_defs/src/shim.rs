@@ -292,24 +292,34 @@ impl From<IgvmMemoryType> for igvm_defs::MemoryMapEntryType {
     }
 }
 
+/// A memory entry describing what range of address space described as memory is
+/// used for what.
 #[derive(mesh_protobuf::Protobuf, Debug)]
 #[mesh(package = "openhcl.openhcl_boot")]
 pub struct MemoryEntry {
+    /// The range of memory.
     #[mesh(1)]
     pub range: MemoryRange,
+    /// The numa vnode for this range.
     #[mesh(2)]
     pub vnode: u32,
+    /// The VTL type for this range.
     #[mesh(3)]
     pub vtl_type: MemoryVtlType,
+    /// The IGVM type for this range, which was reported by the host originally.
     #[mesh(4)]
     pub igvm_type: IgvmMemoryType,
 }
 
+/// A mmio entry describing what range of address space described as mmio is
+/// used for what.
 #[derive(mesh_protobuf::Protobuf, Debug)]
 #[mesh(package = "openhcl.openhcl_boot")]
 pub struct MmioEntry {
+    /// The range of mmio.
     #[mesh(1)]
     pub range: MemoryRange,
+    /// The VTL type for this range, which should always be an mmio type.
     #[mesh(2)]
     pub vtl_type: MemoryVtlType,
 }
@@ -319,8 +329,10 @@ pub struct MmioEntry {
 #[derive(mesh_protobuf::Protobuf, Debug)]
 #[mesh(package = "openhcl.openhcl_boot")]
 pub struct SavedState {
+    /// The memory entries describing memory for the whole partition.
     #[mesh(1)]
     pub partition_memory: Vec<MemoryEntry>,
+    /// The mmio entries describing mmio for the whole partition.
     #[mesh(2)]
     pub partition_mmio: Vec<MmioEntry>,
 }
