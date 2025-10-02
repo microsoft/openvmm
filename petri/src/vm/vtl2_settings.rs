@@ -21,13 +21,13 @@ pub enum ControllerType {
 /// have zero, one, or multiple backing devices (see [`Vtl2LunBuilder`] for more
 /// details on that).
 #[derive(Debug, PartialEq, Eq)]
-pub struct Vtl2PhysicalDeviceBuilder {
+pub struct Vtl2StorageBackingDeviceBuilder {
     device_type: ControllerType,
     device_path: String,
     sub_device_path: u32,
 }
 
-impl Vtl2PhysicalDeviceBuilder {
+impl Vtl2StorageBackingDeviceBuilder {
     /// Creates a new physical device builder.
     ///
     /// `device_type` is the type of device presented to VTL2. `device_path` is
@@ -59,27 +59,27 @@ impl Vtl2PhysicalDeviceBuilder {
             sub_device_path: self.sub_device_path,
         }
     }
+}
 
-    /// VTL2 Settings wraps the list of backing devices into a
-    /// [`PhysicalDevices`](vtl2_settings_proto::PhysicalDevices) type, with
-    /// subtlely different fields depending on whether there is one or multiple
-    /// devices. This helper builds that wrapper type.
-    pub fn build_physical_devices(
-        mut devices: Vec<Self>,
-    ) -> Option<vtl2_settings_proto::PhysicalDevices> {
-        match devices.len() {
-            0 => None,
-            1 => Some(vtl2_settings_proto::PhysicalDevices {
-                r#type: vtl2_settings_proto::physical_devices::BackingType::Single.into(),
-                device: Some(devices.pop().unwrap().build()),
-                devices: Vec::new(),
-            }),
-            _ => Some(vtl2_settings_proto::PhysicalDevices {
-                r#type: vtl2_settings_proto::physical_devices::BackingType::Striped.into(),
-                device: None,
-                devices: devices.drain(..).map(|d| d.build()).collect(),
-            }),
-        }
+/// VTL2 Settings wraps the list of backing devices into a
+/// [`PhysicalDevices`](vtl2_settings_proto::PhysicalDevices) type, with
+/// subtlely different fields depending on whether there is one or multiple
+/// devices. This helper builds that wrapper type.
+pub fn build_vtl2_storage_backing_physical_devices(
+    mut devices: Vec<Vtl2StorageBackingDeviceBuilder>,
+) -> Option<vtl2_settings_proto::PhysicalDevices> {
+    match devices.len() {
+        0 => None,
+        1 => Some(vtl2_settings_proto::PhysicalDevices {
+            r#type: vtl2_settings_proto::physical_devices::BackingType::Single.into(),
+            device: Some(devices.pop().unwrap().build()),
+            devices: Vec::new(),
+        }),
+        _ => Some(vtl2_settings_proto::PhysicalDevices {
+            r#type: vtl2_settings_proto::physical_devices::BackingType::Striped.into(),
+            device: None,
+            devices: devices.drain(..).map(|d| d.build()).collect(),
+        }),
     }
 }
 
@@ -101,7 +101,7 @@ pub struct Vtl2LunBuilder {
     product_revision_level: String,
     serial_number: String,
     model_number: String,
-    physical_devices: Vec<Vtl2PhysicalDeviceBuilder>,
+    physical_devices: Vec<Vtl2StorageBackingDeviceBuilder>,
     is_dvd: bool,
     chunk_size_in_kb: u32,
 }
@@ -142,7 +142,7 @@ impl Vtl2LunBuilder {
     /// The physical devices backing the LUN.
     pub fn with_physical_devices(
         mut self,
-        physical_devices: Vec<Vtl2PhysicalDeviceBuilder>,
+        physical_devices: Vec<Vtl2StorageBackingDeviceBuilder>,
     ) -> Self {
         self.physical_devices = physical_devices;
         self
@@ -164,9 +164,7 @@ impl Vtl2LunBuilder {
             product_revision_level: self.product_revision_level,
             serial_number: self.serial_number,
             model_number: self.model_number,
-            physical_devices: Vtl2PhysicalDeviceBuilder::build_physical_devices(
-                self.physical_devices,
-            ),
+            physical_devices: build_vtl2_storage_backing_physical_devices(self.physical_devices),
             is_dvd: self.is_dvd,
             chunk_size_in_kb: self.chunk_size_in_kb,
             ..Default::default()

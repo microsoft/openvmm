@@ -22,8 +22,9 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri::vtl2_settings::ControllerType;
 use petri::vtl2_settings::Vtl2LunBuilder;
-use petri::vtl2_settings::Vtl2PhysicalDeviceBuilder;
+use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
 use petri::vtl2_settings::Vtl2StorageControllerBuilder;
+use petri::vtl2_settings::build_vtl2_storage_backing_physical_devices;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use scsidisk_resources::SimpleScsiDvdRequest;
@@ -130,7 +131,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                         .add_lun(
                             Vtl2LunBuilder::disk()
                                 .with_location(vtl0_scsi_lun)
-                                .with_physical_devices(vec![Vtl2PhysicalDeviceBuilder::new(
+                                .with_physical_devices(vec![Vtl2StorageBackingDeviceBuilder::new(
                                     ControllerType::Scsi,
                                     scsi_instance.to_string(),
                                     vtl2_lun,
@@ -139,7 +140,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                         .add_lun(
                             Vtl2LunBuilder::disk()
                                 .with_location(vtl0_nvme_lun)
-                                .with_physical_devices(vec![Vtl2PhysicalDeviceBuilder::new(
+                                .with_physical_devices(vec![Vtl2StorageBackingDeviceBuilder::new(
                                     ControllerType::Nvme,
                                     NVME_INSTANCE.to_string(),
                                     vtl2_nsid,
@@ -340,8 +341,8 @@ async fn openhcl_linux_storvsp_dvd(
     vm.backend()
         .modify_vtl2_settings(|v| {
             v.dynamic.as_mut().unwrap().storage_controllers[0].luns[0].physical_devices =
-                Vtl2PhysicalDeviceBuilder::build_physical_devices(vec![
-                    Vtl2PhysicalDeviceBuilder::new(
+                build_vtl2_storage_backing_physical_devices(vec![
+                    Vtl2StorageBackingDeviceBuilder::new(
                         ControllerType::Scsi,
                         scsi_instance.to_string(),
                         vtl2_lun,
@@ -364,7 +365,7 @@ async fn openhcl_linux_storvsp_dvd(
     vm.backend()
         .modify_vtl2_settings(|v| {
             v.dynamic.as_mut().unwrap().storage_controllers[0].luns[0].physical_devices =
-                Vtl2PhysicalDeviceBuilder::build_physical_devices(vec![])
+                build_vtl2_storage_backing_physical_devices(vec![])
         })
         .await
         .context("failed to modify vtl2 settings")?;
@@ -429,7 +430,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(
                         .add_lun(
                             Vtl2LunBuilder::dvd()
                                 .with_location(vtl2_lun)
-                                .with_physical_devices(vec![Vtl2PhysicalDeviceBuilder::new(
+                                .with_physical_devices(vec![Vtl2StorageBackingDeviceBuilder::new(
                                     ControllerType::Nvme,
                                     NVME_INSTANCE.to_string(),
                                     vtl2_nsid,
@@ -507,12 +508,12 @@ async fn openhcl_linux_stripe_storvsp(
                                 .with_location(vtl0_nvme_lun)
                                 .with_chunk_size_in_kb(128)
                                 .with_physical_devices(vec![
-                                    Vtl2PhysicalDeviceBuilder::new(
+                                    Vtl2StorageBackingDeviceBuilder::new(
                                         ControllerType::Nvme,
                                         NVME_INSTANCE_1.to_string(),
                                         vtl2_nsid,
                                     ),
-                                    Vtl2PhysicalDeviceBuilder::new(
+                                    Vtl2StorageBackingDeviceBuilder::new(
                                         ControllerType::Nvme,
                                         NVME_INSTANCE_2.to_string(),
                                         vtl2_nsid,
