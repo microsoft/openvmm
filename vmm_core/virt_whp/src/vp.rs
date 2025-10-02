@@ -1861,7 +1861,7 @@ mod aarch64 {
                 hvdef::HvArm64ResetType::POWER_OFF => VpHaltReason::PowerOff,
                 hvdef::HvArm64ResetType::REBOOT => VpHaltReason::Reset,
                 hvdef::HvArm64ResetType::HIBERNATE => VpHaltReason::Hibernate,
-                HvArm64ResetType::SYSTEM_RESET => {
+                hvdef::HvArm64ResetType::SYSTEM_RESET => {
                     // TODO: What values can it have?
                     tracing::debug!(reset_code = info.reset_code, "system reset");
                     VpHaltReason::Reset
