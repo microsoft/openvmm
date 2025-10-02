@@ -92,28 +92,18 @@ open_enum! {
 pub trait TdispHostDeviceInterface: Send + Sync {
     /// Bind a tdi device to the current partition. Transitions device to the Locked
     /// state from Unlocked.
-    fn tdisp_bind_device(&mut self) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("not implemented"))
-    }
+    fn tdisp_bind_device(&mut self) -> anyhow::Result<()>;
 
     /// Start a bound device by transitioning it to the Run state from the Locked state.
     /// This allows attestation and resources to be accepted into the guest context.
-    fn tdisp_start_device(&mut self) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("not implemented"))
-    }
+    fn tdisp_start_device(&mut self) -> anyhow::Result<()>;
 
     /// Unbind a tdi device from the current partition.
-    fn tdisp_unbind_device(&mut self) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("not implemented"))
-    }
+    fn tdisp_unbind_device(&mut self) -> anyhow::Result<()>;
 
     /// Get a device interface report for the device.
-    fn tdisp_get_device_report(
-        &mut self,
-        _report_type: TdispReportType,
-    ) -> anyhow::Result<Vec<u8>> {
-        Err(anyhow::anyhow!("not implemented"))
-    }
+    fn tdisp_get_device_report(&mut self, _report_type: TdispReportType)
+    -> anyhow::Result<Vec<u8>>;
 }
 
 /// Trait added to host virtual devices to dispatch TDISP commands from guests.
@@ -122,10 +112,7 @@ pub trait TdispHostDeviceTarget: Send + Sync {
     fn tdisp_handle_guest_command(
         &mut self,
         _command: GuestToHostCommand,
-    ) -> anyhow::Result<GuestToHostResponse> {
-        tracing::warn!("TdispHostDeviceTarget not implemented: tdisp_dispatch");
-        anyhow::bail!("TdispHostDeviceTarget not implemented: tdisp_dispatch")
-    }
+    ) -> anyhow::Result<GuestToHostResponse>;
 }
 
 /// An emulator which runs the TDISP state machine for a synthetic device.
