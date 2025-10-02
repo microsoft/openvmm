@@ -29,9 +29,15 @@
 //! It is the responsibility of the host to provide a `TdispHostDeviceInterface`
 //! implementation that performs the necessary platform actions.
 
+/// Commands and responses for the TDISP guest-to-host interface.
 pub mod command;
+
+/// Retrieval and parsing of device reports.
 pub mod devicereport;
+
+/// Serialization of guest commands and responses.
 pub mod serialize;
+
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -87,6 +93,7 @@ pub trait TdispHostDeviceInterface: Send + Sync {
 
 /// Trait added to host virtual devices to dispatch TDISP commands from guests.
 pub trait TdispHostDeviceTarget: Send + Sync {
+    /// Dispatch a TDISP command from a guest.
     fn tdisp_handle_guest_command(
         &mut self,
         _command: GuestToHostCommand,
