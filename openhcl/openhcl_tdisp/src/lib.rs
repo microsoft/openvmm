@@ -7,8 +7,9 @@
 //!
 //! See: `vm/tdisp` for more information.
 
+pub use tdisp::TDISP_INTERFACE_VERSION_MAJOR;
+pub use tdisp::TDISP_INTERFACE_VERSION_MINOR;
 pub use tdisp::TdispCommandId;
-pub use tdisp::{TDISP_INTERFACE_VERSION_MAJOR, TDISP_INTERFACE_VERSION_MINOR};
 
 use inspect::Inspect;
 use std::future::Future;

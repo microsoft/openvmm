@@ -3,14 +3,18 @@
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes};
 
-use crate::command::{
-    TdispCommandRequestGetTdiReport, TdispCommandRequestPayload, TdispCommandRequestUnbind,
-    TdispCommandResponseGetTdiReport, TdispSerializedCommandRequestGetTdiReport,
-};
-use crate::{
-    GuestToHostCommand, GuestToHostResponse, TdispCommandResponsePayload, TdispGuestOperationError,
-};
-use crate::{TdispCommandId, TdispDeviceInterfaceInfo};
+use crate::command::TdispCommandRequestGetTdiReport;
+use crate::command::TdispCommandRequestPayload;
+use crate::command::TdispCommandRequestUnbind;
+use crate::command::TdispCommandResponseGetTdiReport;
+use crate::command::TdispSerializedCommandRequestGetTdiReport;
+
+use crate::GuestToHostCommand;
+use crate::GuestToHostResponse;
+use crate::TdispCommandId;
+use crate::TdispCommandResponsePayload;
+use crate::TdispDeviceInterfaceInfo;
+use crate::TdispGuestOperationError;
 
 /// Serialized form of the header for a GuestToHostCommand packet
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]

@@ -38,21 +38,23 @@ pub mod devicereport;
 /// Serialization of guest commands and responses.
 pub mod serialize;
 
-use std::sync::Arc;
+pub use command::GuestToHostCommand;
+pub use command::GuestToHostResponse;
+pub use command::TdispCommandId;
+pub use command::TdispCommandResponsePayload;
+pub use command::TdispDeviceInterfaceInfo;
 
 use anyhow::Context;
-pub use command::{
-    GuestToHostCommand, GuestToHostResponse, TdispCommandId, TdispCommandResponsePayload,
-    TdispDeviceInterfaceInfo,
-};
 use inspect::Inspect;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use thiserror::Error;
 
-use crate::{
-    command::{TdispCommandRequestPayload, TdispCommandResponseGetTdiReport},
-    devicereport::{TdispDeviceReport, TdispDeviceReportType, TdispTdiReport},
-};
+use crate::command::TdispCommandRequestPayload;
+use crate::command::TdispCommandResponseGetTdiReport;
+use crate::devicereport::TdispDeviceReport;
+use crate::devicereport::TdispDeviceReportType;
+use crate::devicereport::TdispTdiReport;
 
 /// Major version of the TDISP guest-to-host interface.
 pub const TDISP_INTERFACE_VERSION_MAJOR: u32 = 1;

@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 use bitfield_struct::bitfield;
-use zerocopy::{FromBytes, Immutable, KnownLayout};
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
 /// Represents a type of report that can be requested from the TDI (VF).
 #[derive(Debug)]
