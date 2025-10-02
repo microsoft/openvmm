@@ -5,24 +5,33 @@ use crate::command::{
     TdispCommandResponseGetTdiReport, TdispSerializedCommandRequestGetTdiReport,
 };
 use crate::{
-    GuestToHostCommand, GuestToHostResponse, TdispCommandResponsePayload, TdispDeviceReport,
-    TdispDeviceReportType, TdispGuestOperationError, TdispTdiReport,
+    GuestToHostCommand, GuestToHostResponse, TdispCommandResponsePayload, TdispGuestOperationError,
 };
 use crate::{TdispCommandId, TdispDeviceInterfaceInfo};
 
 /// Serialized form of the header for a GuestToHostCommand packet
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 pub struct GuestToHostCommandSerializedHeader {
+    /// The logical TDISP device ID of the device that the command is being sent to.
     pub device_id: u64,
+
+    /// The command ID of the command that is being sent. See: `TdispCommandId`
     pub command_id: u64,
 }
 
 /// Serialized form of the header for a GuestToHostResponse packet
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 pub struct GuestToHostResponseSerializedHeader {
+    /// The command ID of the command that was processed. See: `TdispCommandId`
     pub command_id: u64,
+
+    /// The result of the command. See: `TdispGuestOperationError`
     pub result: u64,
+
+    /// The TDI state before the command was processed. See: `TdispTdiState`
     pub tdi_state_before: u64,
+
+    /// The TDI state after the command was processed. See: `TdispTdiState`
     pub tdi_state_after: u64,
 }
 
@@ -68,8 +77,13 @@ impl From<&GuestToHostResponseSerializedHeader> for GuestToHostResponse {
         }
     }
 }
+
+/// Trait implemented by the guest-to-host command and response structs to allow serialization and deserialization.
 pub trait SerializePacket: Sized {
+    /// Serialize the struct to a byte vector.
     fn serialize_to_bytes(self) -> Vec<u8>;
+
+    /// Deserialize a byte slice into a struct.
     fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, anyhow::Error>;
 }
 
