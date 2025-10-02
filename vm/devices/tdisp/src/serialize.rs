@@ -44,45 +44,68 @@ pub struct GuestToHostResponseSerializedHeader {
     pub tdi_state_after: u64,
 }
 
-// [TDISP TODO] There's probably a better way to do these conversions.
-impl From<&GuestToHostCommand> for GuestToHostCommandSerializedHeader {
-    fn from(value: &GuestToHostCommand) -> Self {
+/// Trait used to serialize a command or response header into its serializable form.
+trait SerializeHeader {
+    type SerializedHeader;
+
+    fn to_serializable_header(&self) -> Self::SerializedHeader;
+}
+
+/// Trait used to deserialize a command or response header from its serializable form.
+trait DeserializeHeader {
+    type DeserializedHeader;
+
+    fn from_serializable_header(header: &Self::DeserializedHeader) -> Self;
+}
+
+impl SerializeHeader for GuestToHostCommand {
+    type SerializedHeader = GuestToHostCommandSerializedHeader;
+
+    fn to_serializable_header(&self) -> Self::SerializedHeader {
         GuestToHostCommandSerializedHeader {
-            device_id: value.device_id,
-            command_id: value.command_id.0,
+            device_id: self.device_id,
+            command_id: self.command_id.0,
         }
     }
 }
 
-impl From<&GuestToHostResponse> for GuestToHostResponseSerializedHeader {
-    fn from(value: &GuestToHostResponse) -> Self {
-        let serialized_err_code: TdispGuestOperationErrorCode = value.result.into();
+impl SerializeHeader for GuestToHostResponse {
+    type SerializedHeader = GuestToHostResponseSerializedHeader;
+
+    fn to_serializable_header(&self) -> Self::SerializedHeader {
+        let serialized_err_code: TdispGuestOperationErrorCode = self.result.into();
         GuestToHostResponseSerializedHeader {
-            command_id: value.command_id.0,
+            command_id: self.command_id.0,
             result: serialized_err_code.0,
-            tdi_state_before: value.tdi_state_before.0,
-            tdi_state_after: value.tdi_state_after.0,
+            tdi_state_before: self.tdi_state_before.0,
+            tdi_state_after: self.tdi_state_after.0,
         }
     }
 }
 
-impl From<&GuestToHostCommandSerializedHeader> for GuestToHostCommand {
-    fn from(value: &GuestToHostCommandSerializedHeader) -> Self {
+impl DeserializeHeader for GuestToHostCommand {
+    type DeserializedHeader = GuestToHostCommandSerializedHeader;
+
+    fn from_serializable_header(header: &Self::DeserializedHeader) -> Self {
         GuestToHostCommand {
-            device_id: value.device_id,
-            command_id: TdispCommandId(value.command_id),
+            device_id: header.device_id,
+            command_id: TdispCommandId(header.command_id),
             payload: TdispCommandRequestPayload::None,
         }
     }
 }
 
-impl From<&GuestToHostResponseSerializedHeader> for GuestToHostResponse {
-    fn from(value: &GuestToHostResponseSerializedHeader) -> Self {
+impl DeserializeHeader for GuestToHostResponse {
+    type DeserializedHeader = GuestToHostResponseSerializedHeader;
+
+    fn from_serializable_header(header: &Self::DeserializedHeader) -> Self {
+        let serialized_err_code: TdispGuestOperationErrorCode =
+            TdispGuestOperationErrorCode(header.result);
         GuestToHostResponse {
-            command_id: TdispCommandId(value.command_id),
-            result: TdispGuestOperationErrorCode(value.result).into(),
-            tdi_state_before: TdispTdiState(value.tdi_state_before),
-            tdi_state_after: TdispTdiState(value.tdi_state_after),
+            command_id: TdispCommandId(header.command_id),
+            result: serialized_err_code.into(),
+            tdi_state_before: TdispTdiState(header.tdi_state_before),
+            tdi_state_after: TdispTdiState(header.tdi_state_after),
             payload: TdispCommandResponsePayload::None,
         }
     }
@@ -99,7 +122,7 @@ pub trait SerializePacket: Sized {
 
 impl SerializePacket for GuestToHostCommand {
     fn serialize_to_bytes(self) -> Vec<u8> {
-        let header = GuestToHostCommandSerializedHeader::from(&self);
+        let header = self.to_serializable_header();
         let bytes = header.as_bytes();
         tracing::debug!(msg = format!("serialize_to_bytes: header={:?}", header));
         tracing::debug!(msg = format!("serialize_to_bytes: {:?}", bytes));
@@ -131,7 +154,7 @@ impl SerializePacket for GuestToHostCommand {
 
         let payload_slice = &bytes[header_length..];
 
-        let mut packet: Self = header.into();
+        let mut packet: Self = GuestToHostCommand::from_serializable_header(header);
 
         if !payload_slice.is_empty() {
             let payload = match packet.command_id {
@@ -176,7 +199,7 @@ impl SerializePacket for GuestToHostCommand {
 
 impl SerializePacket for GuestToHostResponse {
     fn serialize_to_bytes(self) -> Vec<u8> {
-        let header = GuestToHostResponseSerializedHeader::from(&self);
+        let header = self.to_serializable_header();
         let bytes = header.as_bytes();
 
         let mut bytes = bytes.to_vec();
@@ -208,7 +231,7 @@ impl SerializePacket for GuestToHostResponse {
                     anyhow::anyhow!("failed to deserialize GuestToHostResponse header: {:?}", e)
                 })?;
 
-        let mut packet: Self = header.into();
+        let mut packet: Self = GuestToHostResponse::from_serializable_header(header);
 
         // If the result is not success, then we don't need to deserialize the payload.
         match packet.result {

@@ -90,12 +90,6 @@ pub enum TdispCommandResponsePayload {
     GetTdiReport(TdispCommandResponseGetTdiReport),
 }
 
-impl From<TdispDeviceInterfaceInfo> for TdispCommandResponsePayload {
-    fn from(value: TdispDeviceInterfaceInfo) -> Self {
-        TdispCommandResponsePayload::GetDeviceInterfaceInfo(value)
-    }
-}
-
 /// Serialized to and from the payload field of a TdispCommandRequest
 #[derive(Debug, Copy, Clone)]
 pub enum TdispCommandRequestPayload {
