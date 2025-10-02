@@ -476,10 +476,10 @@ impl TdispHostStateMachine {
         // All states can be reset to the Unlocked state. This can only happen if the
         // state is corrupt beyond the state machine.
         if let Err(reason) = self.transition_state_to(TdispTdiState::Unlocked) {
-            panic!(
-                "[{}] Impossible state machine violation during TDISP Unbind: {:?}",
-                self.debug_device_id, reason
-            );
+            return Err(anyhow::anyhow!(
+                "Impossible state machine violation during TDISP Unbind: {:?}",
+                reason
+            ));
         }
 
         // Call back into the host to bind the device.
