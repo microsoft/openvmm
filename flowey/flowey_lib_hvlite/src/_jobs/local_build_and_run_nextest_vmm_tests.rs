@@ -411,7 +411,6 @@ impl SimpleFlowNode for Node {
                 let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
                 let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
                 let (read_built_sidecar, built_sidecar) = ctx.new_var();
-                // Allow local custom kernel/modules by wrapping the recipe with LocalOnlyCustom details.
                 let recipe_to_use =
                     if custom_kernel_modules_abs.is_some() || custom_kernel_abs.is_some() {
                         let mut details = recipe.recipe_details(release);

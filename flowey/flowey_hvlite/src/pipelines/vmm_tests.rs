@@ -71,10 +71,10 @@ pub struct VmmTestsCli {
     #[clap(long)]
     copy_extras: bool,
 
-    /// Optional: custom kernel modules cpio or directory for initrd layering
+    /// Optional: custom kernel modules
     #[clap(long)]
     custom_kernel_modules: Option<PathBuf>,
-    /// Optional: custom kernel image to embed in IGVM (forces UEFI)
+    /// Optional: custom kernel image
     #[clap(long)]
     custom_kernel: Option<PathBuf>,
 }
