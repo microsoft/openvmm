@@ -3,10 +3,10 @@
 
 //! Wrappers for Hyper-V Powershell Cmdlets
 
-use super::vm::CommandError;
-use super::vm::run_cmd;
+use crate::CommandError;
 use crate::OpenHclServicingFlags;
 use crate::VmScreenshotMeta;
+use crate::run_cmd;
 use anyhow::Context;
 use core::str;
 use guid::Guid;

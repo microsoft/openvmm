@@ -7,6 +7,7 @@
 
 /// Artifact declarations
 pub mod artifacts {
+    use petri_artifacts_common::tags::IsVmgsTool;
     use petri_artifacts_core::declare_artifacts;
 
     macro_rules! openvmm_native {
@@ -537,6 +538,40 @@ pub mod artifacts {
             SIMPLE_TMK_AARCH64,
         }
     }
+
+    macro_rules! vmgstool_native {
+        ($id_ty:ty, $os:literal, $arch:literal) => {
+            /// vmgstool "native" executable (i.e:
+            /// [`VMGSTOOL_WIN_X64`](const@VMGSTOOL_WIN_X64) when compiled on windows x86_64,
+            /// [`VMGSTOOL_LINUX_AARCH64`](const@VMGSTOOL_LINUX_AARCH64) when compiled on linux aarch64,
+            /// etc...)
+            // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+            #[cfg(all(target_os = $os, target_arch = $arch))]
+            pub const VMGSTOOL_NATIVE: petri_artifacts_core::ArtifactHandle<$id_ty> =
+                petri_artifacts_core::ArtifactHandle::new();
+        };
+    }
+
+    vmgstool_native!(VMGSTOOL_WIN_X64, "windows", "x86_64");
+    vmgstool_native!(VMGSTOOL_LINUX_X64, "linux", "x86_64");
+    vmgstool_native!(VMGSTOOL_WIN_AARCH64, "windows", "aarch64");
+    vmgstool_native!(VMGSTOOL_LINUX_AARCH64, "linux", "aarch64");
+
+    declare_artifacts! {
+        /// vmgstool windows x86_64 executable
+        VMGSTOOL_WIN_X64,
+        /// vmgstool linux x86_64 executable
+        VMGSTOOL_LINUX_X64,
+        /// vmgstool windows aarch64 executable
+        VMGSTOOL_WIN_AARCH64,
+        /// vmgstool linux aarch64 executable
+        VMGSTOOL_LINUX_AARCH64,
+    }
+
+    impl IsVmgsTool for VMGSTOOL_WIN_X64 {}
+    impl IsVmgsTool for VMGSTOOL_LINUX_X64 {}
+    impl IsVmgsTool for VMGSTOOL_WIN_AARCH64 {}
+    impl IsVmgsTool for VMGSTOOL_LINUX_AARCH64 {}
 }
 
 /// Artifact tag trait declarations

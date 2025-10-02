@@ -48,6 +48,7 @@ use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempPath;
@@ -181,10 +182,7 @@ impl PetriVmConfigOpenVmm {
     }
 }
 
-fn memdiff_disk_from_artifact(
-    artifact: &ResolvedArtifact,
-) -> anyhow::Result<Resource<DiskHandleKind>> {
-    let path = artifact.as_ref();
+fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
     let disk = open_disk_type(path, true)
         .with_context(|| format!("failed to open disk: {}", path.display()))?;
     Ok(LayeredDiskHandle {
@@ -196,18 +194,17 @@ fn memdiff_disk_from_artifact(
     .into_resource())
 }
 
-fn memdiff_vmgs_from_artifact(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
-    let convert_disk =
-        |disk: &Option<ResolvedArtifact>| -> anyhow::Result<Resource<DiskHandleKind>> {
-            if let Some(disk) = disk {
-                memdiff_disk_from_artifact(disk)
-            } else {
-                Ok(LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-                })
-                .into_resource())
-            }
-        };
+fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
+    let convert_disk = |disk: &Option<PathBuf>| -> anyhow::Result<Resource<DiskHandleKind>> {
+        if let Some(disk) = disk {
+            memdiff_disk(disk)
+        } else {
+            Ok(LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+            })
+            .into_resource())
+        }
+    };
 
     Ok(match vmgs {
         PetriVmgsResource::Disk(disk) => VmgsResource::Disk(convert_disk(disk)?),
