@@ -72,6 +72,8 @@ pub trait DmaClient: Send + Sync + Inspect {
     /// Allocate a new DMA buffer. This buffer must be zero initialized.
     ///
     /// TODO: string tag for allocation?
+    /// TODO: contiguous vs non-contiguous? (both on the request side, and if
+    ///       a request contiguous allocation cannot be fulfilled)
     fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
 
     /// Attach all previously allocated memory blocks.

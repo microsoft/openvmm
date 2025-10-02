@@ -26,12 +26,16 @@ const ENABLE_VTL2_GPA_POOL: &str = "OPENHCL_ENABLE_VTL2_GPA_POOL=";
 /// * `log`: Enable sidecar logging.
 const SIDECAR: &str = "OPENHCL_SIDECAR=";
 
+/// Disable NVME keep alive regardless if the host supports it.
+const DISABLE_NVME_KEEP_ALIVE: &str = "OPENHCL_DISABLE_NVME_KEEP_ALIVE=";
+
 #[derive(Debug, PartialEq)]
 pub struct BootCommandLineOptions {
     pub confidential_debug: bool,
     pub enable_vtl2_gpa_pool: Option<u64>,
     pub sidecar: bool,
     pub sidecar_logging: bool,
+    pub disable_nvme_keep_alive: bool,
 }
 
 impl BootCommandLineOptions {
@@ -41,6 +45,7 @@ impl BootCommandLineOptions {
             enable_vtl2_gpa_pool: None,
             sidecar: true, // sidecar is enabled by default
             sidecar_logging: false,
+            disable_nvme_keep_alive: false,
         }
     }
 }
@@ -71,6 +76,11 @@ impl BootCommandLineOptions {
                             _ => {}
                         }
                     }
+                }
+            } else if arg.starts_with(DISABLE_NVME_KEEP_ALIVE) {
+                let arg = arg.split_once('=').map(|(_, arg)| arg);
+                if arg.is_some_and(|a| a != "0") {
+                    self.disable_nvme_keep_alive = true;
                 }
             }
         }
