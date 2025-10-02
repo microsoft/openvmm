@@ -190,7 +190,7 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                     TdispCommandRequestPayload::GetTdiReport(payload) => {
                         TdispDeviceReportType::from(payload.report_type)
                     }
-                    _ => TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInvalid),
+                    _ => TdispDeviceReportType::TdiReport(TdispTdiReport::Invalid),
                 };
 
                 let report_buffer = self.machine.request_attestation_report(&report_type);
@@ -680,11 +680,11 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
 
         match report_type {
-            TdispDeviceReportType::TdiReport(TdispTdiReport::TdiInfoInvalid) => {
+            TdispDeviceReportType::TdiReport(TdispTdiReport::Invalid) => {
                 self.error_print("Invalid report type TdispTdiReport::TdiInfoInvalid requested");
                 return Err(TdispGuestOperationError::InvalidGuestAttestationReportType);
             }
-            TdispDeviceReportType::DeviceReport(TdispDeviceReport::DeviceInfoInvalid) => {
+            TdispDeviceReportType::DeviceReport(TdispDeviceReport::Invalid) => {
                 self.error_print(
                     "Invalid report type TdispDeviceReport::DeviceInfoInvalid requested",
                 );

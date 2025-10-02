@@ -143,8 +143,10 @@ pub enum TdispCommandRequestPayload {
     GetTdiReport(TdispCommandRequestGetTdiReport),
 }
 
+/// Represents a request to unbind the device back to the Unlocked state.
 #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, KnownLayout, Immutable)]
 pub struct TdispCommandRequestUnbind {
+    /// The reason for the unbind. See: `TdispGuestUnbindReason`
     pub unbind_reason: u64,
 }
 
@@ -167,9 +169,13 @@ pub struct TdispCommandResponseGetTdiReport {
     pub report_buffer: Vec<u8>,
 }
 
+/// Represents the serialized form of a TdispCommandRequestGetTdiReport.
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 pub struct TdispSerializedCommandRequestGetTdiReport {
+    /// The type of report to request. See: `TdispDeviceReportType``
     pub report_type: u32,
+
+    /// The size of the report buffer.
     pub report_buffer_size: u32,
-    // Report buffer follows.
+    // The remainder of the `report_buffer_size` bytes to follow are the bytes of the returned report.
 }
