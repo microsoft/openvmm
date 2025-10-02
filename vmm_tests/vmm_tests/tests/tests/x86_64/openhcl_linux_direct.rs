@@ -3,16 +3,9 @@
 
 //! Integration tests for x86_64 Linux direct boot with OpenHCL.
 
-use disk_backend_resources::FileDiskHandle;
-use disk_backend_resources::LayeredDiskHandle;
-use disk_backend_resources::layer::DiskLayerHandle;
-use disk_backend_resources::layer::RamDiskLayerHandle;
+use crate::x86_64::storage::new_test_vtl2_nvme_device;
 use guid::Guid;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
-use nvme_resources::NamespaceDefinition;
-use nvme_resources::NvmeControllerHandle;
 use petri::OpenHclServicingFlags;
 use petri::PetriVmBuilder;
 use petri::ResolvedArtifact;
@@ -20,8 +13,6 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
-use std::fs::File;
-use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
@@ -107,35 +98,6 @@ async fn mana_nic_servicing(
     vm.wait_for_clean_teardown().await?;
 
     Ok(())
-}
-
-fn new_test_vtl2_nvme_device(
-    nsid: u32,
-    size: u64,
-    instance_id: Guid,
-    backing_file: Option<File>,
-) -> VpciDeviceConfig {
-    let layer = if let Some(file) = backing_file {
-        LayeredDiskHandle::single_layer(DiskLayerHandle(FileDiskHandle(file).into_resource()))
-    } else {
-        LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(size) })
-    };
-
-    VpciDeviceConfig {
-        vtl: DeviceVtl::Vtl2,
-        instance_id,
-        resource: NvmeControllerHandle {
-            subsystem_id: instance_id,
-            max_io_queues: 64,
-            msix_count: 64,
-            namespaces: vec![NamespaceDefinition {
-                nsid,
-                disk: layer.into_resource(),
-                read_only: false,
-            }],
-        }
-        .into_resource(),
-    }
 }
 
 /// Test an OpenHCL Linux direct VM with many NVMe devices assigned to VTL2 and vmbus relay.

@@ -35,8 +35,10 @@ use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 
-// FIXME: move this helper to a shared location so that other tests can use it.
-fn new_test_vtl2_nvme_device(
+/// Create a VPCI device config for an NVMe controller assigned to VTL2, with a single namespace.
+/// The namespace will be backed by either a file or a ramdisk, depending on whether
+/// `backing_file` is `Some` or `None`.
+pub(crate) fn new_test_vtl2_nvme_device(
     nsid: u32,
     size: u64,
     instance_id: Guid,
@@ -151,7 +153,12 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
         .await?;
 
     let sh = agent.unix_shell();
-    // The drive ordering is not guaranteed, so we need to check all drives.
+
+    // Check that the correct devices are found in the VTL0 guest.
+    // The test framework adds additional devices (pipette, cloud-init, etc), so
+    // just check that there are the two devices with the expected sizes.
+    //
+    // TODO: Verify VMBUS instance ID, LUN, etc.
     let devices = cmd!(sh, "sh -c 'ls -d /sys/block/sd*'").read().await?;
 
     let mut reported_sizes = Vec::new();
@@ -185,8 +192,6 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
             nvme_disk_sectors
         ))?;
     assert_ne!(scsi_drive_index, nvme_drive_index);
-    // Account for the pipette drive too
-    assert_eq!(reported_sizes.len(), 3);
 
     // Do IO to both devices. Generate a file with random contents so that we
     // can verify that the writes (and reads) work correctly.
