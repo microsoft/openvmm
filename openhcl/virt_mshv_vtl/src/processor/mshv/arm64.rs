@@ -205,7 +205,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
                             tracing::debug!(reset_code = message.reset_code, "system reset");
                             return Err(VpHaltReason::Reset);
                         }
-                        ty => unreachable!("unknown reset type: {:#x?}", ty),
+                        ty => {
+                            unreachable!(
+                                "unknown reset type: {:#x?}, {:#x}",
+                                ty, message.reset_code
+                            )
+                        }
                     }
                 }
                 reason => unreachable!("unknown exit reason: {:#x?}", reason),
