@@ -9,6 +9,7 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use crate::build_vmgstool;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -100,6 +101,7 @@ define_vmm_test_selection_flags! {
     pcat: true,
     tmk: true,
     guest_test_uefi: true,
+    vmgstool: true,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -113,6 +115,7 @@ pub struct BuildSelections {
     pub tmks: bool,
     pub tmk_vmm_windows: bool,
     pub tmk_vmm_linux: bool,
+    pub vmgstool: bool,
 }
 
 // Build everything we can by default
@@ -128,6 +131,7 @@ impl Default for BuildSelections {
             tmks: true,
             tmk_vmm_windows: true,
             tmk_vmm_linux: true,
+            vmgstool: true,
         }
     }
 }
@@ -243,6 +247,7 @@ impl SimpleFlowNode for Node {
                 pcat,
                 tmk,
                 guest_test_uefi,
+                vmgstool,
             }) => {
                 let mut build = BuildSelections::default();
 
@@ -675,6 +680,29 @@ impl SimpleFlowNode for Node {
             output
         });
 
+        let register_vmgstool = build.vmgstool.then(|| {
+            let output = ctx.reqv(|v| crate::build_vmgstool::Request {
+                target: target.clone(),
+                profile: CommonProfile::from_release(release),
+                with_crypto: true,
+                vmgstool: v,
+            });
+            if copy_extras {
+                copy_to_dir.push((
+                    extras_dir.to_owned(),
+                    output.map(ctx, |x| {
+                        Some(match x {
+                            crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe: _, pdb } => {
+                                pdb
+                            }
+                            crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin: _, dbg } => dbg,
+                        })
+                    }),
+                ));
+            }
+            output
+        });
+
         let nextest_archive = ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
             target: target.as_triple(),
             profile: CommonProfile::from_release(release),
@@ -762,6 +790,7 @@ impl SimpleFlowNode for Node {
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
+            register_vmgstool,
             disk_images_dir: Some(test_artifacts_dir),
             register_openhcl_igvm_files,
             get_test_log_path: None,

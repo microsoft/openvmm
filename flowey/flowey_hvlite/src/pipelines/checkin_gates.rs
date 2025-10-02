@@ -1120,6 +1120,7 @@ mod vmm_tests_artifact_builders {
     use flowey_lib_hvlite::build_prep_steps::PrepStepsOutput;
     use flowey_lib_hvlite::build_tmk_vmm::TmkVmmOutput;
     use flowey_lib_hvlite::build_tmks::TmksOutput;
+    use flowey_lib_hvlite::build_vmgstool::VmgstoolOutput;
 
     pub type ResolveVmmTestsDepArtifacts =
         Box<dyn Fn(&mut PipelineJobCtx<'_>) -> VmmTestsDepArtifacts>;
@@ -1166,6 +1167,7 @@ mod vmm_tests_artifact_builders {
                 artifact_dir_openhcl_igvm_files: None,
                 tmk_vmm_linux_musl: None,
                 prep_steps: None,
+                vmgstool: None,
             }))
         }
     }
@@ -1177,6 +1179,7 @@ mod vmm_tests_artifact_builders {
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         pub use_prep_steps: Option<UseTypedArtifact<PrepStepsOutput>>,
+        pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
@@ -1198,6 +1201,7 @@ mod vmm_tests_artifact_builders {
                 use_tmk_vmm_linux_musl,
                 use_tmks,
                 use_prep_steps,
+                use_vmgstool,
             } = self;
 
             let use_openvmm = use_openvmm.ok_or("openvmm")?;
@@ -1209,6 +1213,7 @@ mod vmm_tests_artifact_builders {
             let use_tmk_vmm_linux_musl = use_tmk_vmm_linux_musl.ok_or("tmk_vmm_linux_musl")?;
             let use_tmks = use_tmks.ok_or("tmks")?;
             let use_prep_steps = use_prep_steps.ok_or("prep_steps")?;
+            let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1220,6 +1225,7 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm_linux_musl: Some(ctx.use_typed_artifact(&use_tmk_vmm_linux_musl)),
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: Some(ctx.use_typed_artifact(&use_prep_steps)),
+                vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
             }))
         }
     }
@@ -1271,6 +1277,7 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm_linux_musl: Some(ctx.use_typed_artifact(&use_tmk_vmm_linux_musl)),
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: None,
+                vmgstool: None,
             }))
         }
     }
