@@ -163,6 +163,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
         ctx.import::<crate::build_pipette::Node>();
+        ctx.import::<crate::build_prep_steps::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
@@ -174,6 +175,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
         ctx.import::<flowey_lib_common::gen_cargo_nextest_run_cmd::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
+        ctx.import::<crate::run_prep_steps::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -604,6 +606,7 @@ impl SimpleFlowNode for Node {
             output
         });
 
+        // TODO: Consider adding a run of prep steps to a script output by build_only
         let register_prep_steps = build.prep_steps.then(|| {
             let output = ctx.reqv(|v| crate::build_prep_steps::Request {
                 target: CommonTriple::Common {
