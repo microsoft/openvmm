@@ -2,97 +2,33 @@
 // Licensed under the MIT License.
 
 use bitfield_struct::bitfield;
+use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::KnownLayout;
 
-/// Represents a type of report that can be requested from the TDI (VF).
-#[derive(Debug)]
-pub enum TdispTdiReport {
-    /// Invalid report type. All usages of this report type should be treated as an error.
-    Invalid,
+open_enum! {
+    /// Represents a type of report that can be requested from the TDI (VF).
+    pub enum TdispReportType: u32 {
+        /// Invalid report type. All usages of this report type should be treated as an error.
+        INVALID = 0,
 
-    /// Guest requests the guest device ID of the TDI.
-    GuestDeviceId,
+        /// Guest requests the guest device ID of the TDI.
+        GUEST_DEVICE_ID = 1,
 
-    /// Guest requests the interface report of the TDI.
-    InterfaceReport,
-}
+        /// Guest requests the interface report of the TDI.
+        INTERFACE_REPORT = 2,
 
-/// Represents a type of report that can be requested from the physical device.
-#[derive(Debug)]
-pub enum TdispDeviceReport {
-    /// Invalid report type. All usages of this report type should be treated as an error.
-    Invalid,
+        /// Guest requests the certificate chain of the physical device.
+        CERTIFICATE_CHAIN = 3,
 
-    /// Guest requests the certificate chain of the device.
-    CertificateChain,
+        /// Guest requests the measurements of the physical device.
+        MEASUREMENTS = 4,
 
-    /// Guest requests the measurements of the device.
-    Measurements,
-
-    /// Guest requests whether the device is registered.
-    /// [TDISP TODO] Remove this report type? Doesn't seem to serve a purpose.
-    IsRegistered,
-}
-
-impl From<&TdispTdiReport> for u32 {
-    fn from(value: &TdispTdiReport) -> Self {
-        match value {
-            TdispTdiReport::Invalid => 0,
-            TdispTdiReport::GuestDeviceId => 1,
-            TdispTdiReport::InterfaceReport => 2,
-        }
+        /// Guest requests whether the physical device is registered.
+        /// [TDISP TODO] Remove this report type? Doesn't seem to serve a purpose.
+        IS_REGISTERED = 5,
     }
-}
-
-/// Set to the number of enums in TdispTdiReport to assign an ID that is unique for this enum.
-/// [TDISP TODO] Is there a better way to do this by calculating how many enums there are with Rust const types?
-pub const TDISP_TDI_REPORT_ENUM_COUNT: u32 = 3;
-
-impl From<&TdispDeviceReport> for u32 {
-    fn from(value: &TdispDeviceReport) -> Self {
-        match value {
-            TdispDeviceReport::Invalid => TDISP_TDI_REPORT_ENUM_COUNT,
-            TdispDeviceReport::CertificateChain => TDISP_TDI_REPORT_ENUM_COUNT + 1,
-            TdispDeviceReport::Measurements => TDISP_TDI_REPORT_ENUM_COUNT + 2,
-            TdispDeviceReport::IsRegistered => TDISP_TDI_REPORT_ENUM_COUNT + 3,
-        }
-    }
-}
-
-impl From<&TdispDeviceReportType> for u32 {
-    fn from(value: &TdispDeviceReportType) -> Self {
-        match value {
-            TdispDeviceReportType::TdiReport(report_type) => report_type.into(),
-            TdispDeviceReportType::DeviceReport(report_type) => report_type.into(),
-        }
-    }
-}
-
-impl From<u32> for TdispDeviceReportType {
-    fn from(value: u32) -> Self {
-        match value {
-            0 => TdispDeviceReportType::TdiReport(TdispTdiReport::Invalid),
-            1 => TdispDeviceReportType::TdiReport(TdispTdiReport::GuestDeviceId),
-            2 => TdispDeviceReportType::TdiReport(TdispTdiReport::InterfaceReport),
-            3 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::Invalid),
-            4 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::CertificateChain),
-            5 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::Measurements),
-            6 => TdispDeviceReportType::DeviceReport(TdispDeviceReport::IsRegistered),
-            _ => TdispDeviceReportType::TdiReport(TdispTdiReport::Invalid),
-        }
-    }
-}
-
-/// Represents a type of report that can be requested from an assigned TDISP device.
-#[derive(Debug)]
-pub enum TdispDeviceReportType {
-    /// A report produced by the device interface and not the physical interface.
-    TdiReport(TdispTdiReport),
-
-    /// A report produced by the physical interface and not the device interface.
-    DeviceReport(TdispDeviceReport),
 }
 
 /// PCI Express Base Specification Revision 6.3 Section 11.3.11 DEVICE_INTERFACE_REPORT

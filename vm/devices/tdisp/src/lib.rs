@@ -52,9 +52,7 @@ use thiserror::Error;
 
 use crate::command::TdispCommandRequestPayload;
 use crate::command::TdispCommandResponseGetTdiReport;
-use crate::devicereport::TdispDeviceReport;
-use crate::devicereport::TdispDeviceReportType;
-use crate::devicereport::TdispTdiReport;
+use crate::devicereport::TdispReportType;
 
 /// Major version of the TDISP guest-to-host interface.
 pub const TDISP_INTERFACE_VERSION_MAJOR: u32 = 1;
@@ -87,7 +85,7 @@ pub trait TdispHostDeviceInterface: Send + Sync {
     /// Get a device interface report for the device.
     fn tdisp_get_device_report(
         &mut self,
-        _report_type: &TdispDeviceReportType,
+        _report_type: TdispReportType,
     ) -> anyhow::Result<Vec<u8>> {
         Err(anyhow::anyhow!("not implemented"))
     }
@@ -197,19 +195,21 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             TdispCommandId::GET_TDI_REPORT => {
                 let report_type = match &command.payload {
                     TdispCommandRequestPayload::GetTdiReport(payload) => {
-                        TdispDeviceReportType::from(payload.report_type)
+                        TdispReportType(payload.report_type)
                     }
-                    _ => TdispDeviceReportType::TdiReport(TdispTdiReport::Invalid),
+                    _ => TdispReportType::INVALID,
                 };
 
-                let report_buffer = self.machine.request_attestation_report(&report_type);
+                let report_buffer = self.machine.request_attestation_report(report_type);
                 if let Err(err) = report_buffer {
                     error = err;
                 } else {
                     payload = TdispCommandResponsePayload::GetTdiReport(
                         TdispCommandResponseGetTdiReport {
-                            report_type: (&report_type).into(),
-                            report_buffer: report_buffer.unwrap(),
+                            report_type: report_type.0,
+                            report_buffer: report_buffer
+                                .context("expecting report buffer from request_attestation_report")
+                                .unwrap(),
                         },
                     );
                 }
@@ -600,7 +600,7 @@ pub trait TdispGuestRequestInterface {
     /// the `Locked` or `Run` state will cause an error and unbind the device.
     fn request_attestation_report(
         &mut self,
-        report_type: &TdispDeviceReportType,
+        report_type: TdispReportType,
     ) -> Result<Vec<u8>, TdispGuestOperationError>;
 
     /// Guest initiates a graceful unbind of the device. The guest might
@@ -683,7 +683,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
 
     fn request_attestation_report(
         &mut self,
-        report_type: &TdispDeviceReportType,
+        report_type: TdispReportType,
     ) -> Result<Vec<u8>, TdispGuestOperationError> {
         if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
             self.error_print(
@@ -695,19 +695,10 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             return Err(TdispGuestOperationError::InvalidGuestAttestationReportState);
         }
 
-        match report_type {
-            TdispDeviceReportType::TdiReport(TdispTdiReport::Invalid) => {
-                self.error_print("Invalid report type TdispTdiReport::TdiInfoInvalid requested");
-                return Err(TdispGuestOperationError::InvalidGuestAttestationReportType);
-            }
-            TdispDeviceReportType::DeviceReport(TdispDeviceReport::Invalid) => {
-                self.error_print(
-                    "Invalid report type TdispDeviceReport::DeviceInfoInvalid requested",
-                );
-                return Err(TdispGuestOperationError::InvalidGuestAttestationReportType);
-            }
-            _ => {}
-        };
+        if report_type == TdispReportType::INVALID {
+            self.error_print("Invalid report type TdispReportId::INVALID requested");
+            return Err(TdispGuestOperationError::InvalidGuestAttestationReportType);
+        }
 
         let report_buffer = self
             .host_interface

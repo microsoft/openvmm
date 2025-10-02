@@ -17,7 +17,7 @@ use tdisp::GuestToHostCommand;
 use tdisp::GuestToHostResponse;
 use tdisp::TdispGuestUnbindReason;
 use tdisp::devicereport::TdiReportStruct;
-use tdisp::devicereport::TdispDeviceReportType;
+use tdisp::devicereport::TdispReportType;
 
 /// Represents a TDISP device assigned to a guest partition. This trait allows
 /// the guest to send TDISP commands to the host through the backing interface.
@@ -64,7 +64,7 @@ pub trait VpciTdispInterface: Send + Sync {
     /// Request a device report from the TDI or physical device depending on the report type.
     fn tdisp_get_device_report(
         &self,
-        report_type: &TdispDeviceReportType,
+        report_type: &TdispReportType,
     ) -> impl Future<Output = anyhow::Result<Vec<u8>>> + Send;
 
     /// Request a TDI report from the TDI or physical device.
