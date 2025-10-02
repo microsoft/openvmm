@@ -3,7 +3,6 @@
 
 use crate::TdispGuestOperationError;
 use crate::TdispTdiState;
-use std::fmt::Display;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -33,15 +32,6 @@ pub struct GuestToHostResponse {
     pub tdi_state_after: TdispTdiState,
     /// The payload of the response if it has one.
     pub payload: TdispCommandResponsePayload,
-}
-
-impl Display for GuestToHostCommand {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Display the Debug representation of the command.
-        f.debug_struct("GuestToHostCommand")
-            .field("command_id", &self.command_id)
-            .finish()
-    }
 }
 
 /// Represents a TDISP command sent from the guest to the host.
