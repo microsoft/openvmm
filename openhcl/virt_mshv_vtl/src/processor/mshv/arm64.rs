@@ -197,9 +197,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
                         HvArm64ResetType::POWER_OFF | HvArm64ResetType::HIBERNATE => {
                             return Err(VpHaltReason::PowerOff);
                         }
-                        // TODO: Should we be checking reset code for SYSTEM_RESET?
-                        // What values can it have?
-                        HvArm64ResetType::REBOOT | HvArm64ResetType::SYSTEM_RESET => {
+                        HvArm64ResetType::REBOOT => {
+                            return Err(VpHaltReason::Reset);
+                        }
+                        HvArm64ResetType::SYSTEM_RESET => {
+                            // TODO: What values can it have?
+                            tracing::debug!(reset_code = message.reset_code, "system reset");
                             return Err(VpHaltReason::Reset);
                         }
                         ty => unreachable!("unknown reset type: {:#x?}", ty),
