@@ -130,40 +130,42 @@ impl SerializePacket for GuestToHostCommand {
 
         let mut packet: Self = header.into();
 
-        let payload = match packet.command_id {
-            TdispCommandId::UNBIND => TdispCommandRequestPayload::Unbind(
-                TdispCommandRequestUnbind::try_read_from_bytes(payload_slice).map_err(|e| {
-                    anyhow::anyhow!("failed to deserialize TdispCommandRequestUnbind: {:?}", e)
-                })?,
-            ),
-            TdispCommandId::BIND => TdispCommandRequestPayload::None,
-            TdispCommandId::GET_DEVICE_INTERFACE_INFO => TdispCommandRequestPayload::None,
-            TdispCommandId::START_TDI => TdispCommandRequestPayload::None,
-            TdispCommandId::GET_TDI_REPORT => TdispCommandRequestPayload::GetTdiReport(
-                TdispCommandRequestGetTdiReport::try_read_from_bytes(payload_slice).map_err(
-                    |e| {
-                        anyhow::anyhow!(
-                            "failed to deserialize TdispCommandRequestGetTdiReport: {:?}",
-                            e
-                        )
-                    },
-                )?,
-            ),
-            TdispCommandId::UNKNOWN => {
-                return Err(anyhow::anyhow!(
-                    "Unknown payload type for command id {:?} while deserializing GuestToHostCommand",
-                    header.command_id
-                ));
-            }
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Unknown payload type for command id {:?} while deserializing GuestToHostCommand",
-                    header.command_id
-                ));
-            }
-        };
+        if !payload_slice.is_empty() {
+            let payload = match packet.command_id {
+                TdispCommandId::UNBIND => TdispCommandRequestPayload::Unbind(
+                    TdispCommandRequestUnbind::try_read_from_bytes(payload_slice).map_err(|e| {
+                        anyhow::anyhow!("failed to deserialize TdispCommandRequestUnbind: {:?}", e)
+                    })?,
+                ),
+                TdispCommandId::BIND => TdispCommandRequestPayload::None,
+                TdispCommandId::GET_DEVICE_INTERFACE_INFO => TdispCommandRequestPayload::None,
+                TdispCommandId::START_TDI => TdispCommandRequestPayload::None,
+                TdispCommandId::GET_TDI_REPORT => TdispCommandRequestPayload::GetTdiReport(
+                    TdispCommandRequestGetTdiReport::try_read_from_bytes(payload_slice).map_err(
+                        |e| {
+                            anyhow::anyhow!(
+                                "failed to deserialize TdispCommandRequestGetTdiReport: {:?}",
+                                e
+                            )
+                        },
+                    )?,
+                ),
+                TdispCommandId::UNKNOWN => {
+                    return Err(anyhow::anyhow!(
+                        "Unknown payload type for command id {:?} while deserializing GuestToHostCommand",
+                        header.command_id
+                    ));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Unknown payload type for command id {:?} while deserializing GuestToHostCommand",
+                        header.command_id
+                    ));
+                }
+            };
 
-        packet.payload = payload;
+            packet.payload = payload;
+        }
 
         Ok(packet)
     }
@@ -215,59 +217,66 @@ impl SerializePacket for GuestToHostResponse {
 
         let payload_slice = &bytes[header_length..];
 
-        let payload = match packet.command_id {
-            TdispCommandId::GET_DEVICE_INTERFACE_INFO => {
-                TdispCommandResponsePayload::GetDeviceInterfaceInfo(
-                    TdispDeviceInterfaceInfo::try_read_from_bytes(payload_slice).map_err(|e| {
-                        anyhow::anyhow!("failed to deserialize TdispDeviceInterfaceInfo: {:?}", e)
-                    })?,
-                )
-            }
-            TdispCommandId::BIND => TdispCommandResponsePayload::None,
-            TdispCommandId::UNBIND => TdispCommandResponsePayload::None,
-            TdispCommandId::START_TDI => TdispCommandResponsePayload::None,
-            TdispCommandId::GET_TDI_REPORT => {
-                // Peel off the header from the payload
-                let payload_header_len = size_of::<TdispSerializedCommandRequestGetTdiReport>();
-                let payload_header_slice = &payload_slice[0..payload_header_len];
-
-                // Read the header
-                let payload_header =
-                    TdispSerializedCommandRequestGetTdiReport::try_read_from_bytes(
-                        payload_header_slice,
+        if !payload_slice.is_empty() {
+            let payload = match packet.command_id {
+                TdispCommandId::GET_DEVICE_INTERFACE_INFO => {
+                    TdispCommandResponsePayload::GetDeviceInterfaceInfo(
+                        TdispDeviceInterfaceInfo::try_read_from_bytes(payload_slice).map_err(
+                            |e| {
+                                anyhow::anyhow!(
+                                    "failed to deserialize TdispDeviceInterfaceInfo: {:?}",
+                                    e
+                                )
+                            },
+                        )?,
                     )
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "failed to deserialize TdispSerializedCommandRequestGetTdiReport: {:?}",
-                            e
+                }
+                TdispCommandId::BIND => TdispCommandResponsePayload::None,
+                TdispCommandId::UNBIND => TdispCommandResponsePayload::None,
+                TdispCommandId::START_TDI => TdispCommandResponsePayload::None,
+                TdispCommandId::GET_TDI_REPORT => {
+                    // Peel off the header from the payload
+                    let payload_header_len = size_of::<TdispSerializedCommandRequestGetTdiReport>();
+                    let payload_header_slice = &payload_slice[0..payload_header_len];
+
+                    // Read the header
+                    let payload_header =
+                        TdispSerializedCommandRequestGetTdiReport::try_read_from_bytes(
+                            payload_header_slice,
                         )
-                    })?;
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to deserialize TdispSerializedCommandRequestGetTdiReport: {:?}",
+                                e
+                            )
+                        })?;
 
-                // Determine the number of bytes to read from the payload for the report buffer
-                let payload_bytes = &payload_slice[payload_header_len
-                    ..(payload_header_len + payload_header.report_buffer_size as usize)];
+                    // Determine the number of bytes to read from the payload for the report buffer
+                    let payload_bytes = &payload_slice[payload_header_len
+                        ..(payload_header_len + payload_header.report_buffer_size as usize)];
 
-                // Convert this to the response type
-                TdispCommandResponsePayload::GetTdiReport(TdispCommandResponseGetTdiReport {
-                    report_type: payload_header.report_type,
-                    report_buffer: payload_bytes.to_vec(),
-                })
-            }
-            TdispCommandId::UNKNOWN => {
-                return Err(anyhow::anyhow!(
-                    "invalid command id in GuestToHostResponse: {:?}",
-                    header.result
-                ));
-            }
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "invalid command id in GuestToHostResponse: {:?}",
-                    header.result
-                ));
-            }
-        };
+                    // Convert this to the response type
+                    TdispCommandResponsePayload::GetTdiReport(TdispCommandResponseGetTdiReport {
+                        report_type: payload_header.report_type,
+                        report_buffer: payload_bytes.to_vec(),
+                    })
+                }
+                TdispCommandId::UNKNOWN => {
+                    return Err(anyhow::anyhow!(
+                        "invalid command id in GuestToHostResponse: {:?}",
+                        header.result
+                    ));
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "invalid command id in GuestToHostResponse: {:?}",
+                        header.result
+                    ));
+                }
+            };
 
-        packet.payload = payload;
+            packet.payload = payload;
+        }
 
         Ok(packet)
     }
