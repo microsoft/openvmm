@@ -7212,6 +7212,7 @@ dependencies = [
  "anyhow",
  "bitfield-struct 0.11.0",
  "inspect",
+ "open_enum",
  "parking_lot",
  "static_assertions",
  "thiserror 2.0.16",

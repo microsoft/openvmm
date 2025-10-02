@@ -164,11 +164,11 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
         let mut payload = TdispCommandResponsePayload::None;
         let state_before = self.machine.state();
         match command.command_id {
-            TdispCommandId::GetDeviceInterfaceInfo => {
+            TdispCommandId::GET_DEVICE_INTERFACE_INFO => {
                 let interface_info = self.get_device_interface_info();
                 payload = TdispCommandResponsePayload::GetDeviceInterfaceInfo(interface_info);
             }
-            TdispCommandId::Bind => {
+            TdispCommandId::BIND => {
                 let bind_res = self.machine.request_lock_device_resources();
                 if let Err(err) = bind_res {
                     error = err;
@@ -176,7 +176,7 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                     payload = TdispCommandResponsePayload::None;
                 }
             }
-            TdispCommandId::StartTdi => {
+            TdispCommandId::START_TDI => {
                 let start_tdi_res = self.machine.request_start_tdi();
                 if let Err(err) = start_tdi_res {
                     error = err;
@@ -184,7 +184,7 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                     payload = TdispCommandResponsePayload::None;
                 }
             }
-            TdispCommandId::Unbind => {
+            TdispCommandId::UNBIND => {
                 let unbind_reason: TdispGuestUnbindReason = match command.payload {
                     TdispCommandRequestPayload::Unbind(payload) => payload.unbind_reason.into(),
                     _ => TdispGuestUnbindReason::Unknown,
@@ -194,7 +194,7 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                     error = err;
                 }
             }
-            TdispCommandId::GetTdiReport => {
+            TdispCommandId::GET_TDI_REPORT => {
                 let report_type = match &command.payload {
                     TdispCommandRequestPayload::GetTdiReport(payload) => {
                         TdispDeviceReportType::from(payload.report_type)
@@ -214,7 +214,10 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                     );
                 }
             }
-            TdispCommandId::Unknown => {
+            TdispCommandId::UNKNOWN => {
+                error = TdispGuestOperationError::InvalidGuestCommandId;
+            }
+            _ => {
                 error = TdispGuestOperationError::InvalidGuestCommandId;
             }
         }

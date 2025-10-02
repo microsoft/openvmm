@@ -7,14 +7,15 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-inspect.workspace = true
 anyhow.workspace = true
-tracing.workspace = true
-thiserror.workspace = true
-zerocopy.workspace = true
-parking_lot.workspace = true
 bitfield-struct.workspace = true
+inspect.workspace = true
+open_enum.workspace = true
+parking_lot.workspace = true
 static_assertions.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true

@@ -3,6 +3,7 @@
 
 use crate::TdispGuestOperationError;
 use crate::TdispTdiState;
+use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -34,52 +35,27 @@ pub struct GuestToHostResponse {
     pub payload: TdispCommandResponsePayload,
 }
 
-/// Represents a TDISP command sent from the guest to the host.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum TdispCommandId {
-    /// Invalid command id.
-    Unknown,
+open_enum! {
+    /// Represents the command type for a packet sent from the guest to the host or
+    /// the response from the host to the guest.
+    pub enum TdispCommandId: u64 {
+        /// Invalid command id.
+        UNKNOWN = 0,
 
-    /// Request the device's TDISP interface information.
-    GetDeviceInterfaceInfo,
+        /// Request the device's TDISP interface information.
+        GET_DEVICE_INTERFACE_INFO = 1,
 
-    /// Bind the device to the current partition and transition to Locked.
-    Bind,
+        /// Bind the device to the current partition and transition to Locked.
+        BIND = 2,
 
-    /// Get the TDI report for attestation from the host for the device.
-    GetTdiReport,
+        /// Get the TDI report for attestation from the host for the device.
+        GET_TDI_REPORT = 3,
 
-    /// Transition the device to the Start state after successful attestation.
-    StartTdi,
+        /// Transition the device to the Start state after successful attestation.
+        START_TDI = 4,
 
-    /// Unbind the device from the partition, reverting it back to the Unlocked state.
-    Unbind,
-}
-
-impl From<TdispCommandId> for u64 {
-    fn from(value: TdispCommandId) -> Self {
-        match value {
-            TdispCommandId::Unknown => 0,
-            TdispCommandId::GetDeviceInterfaceInfo => 1,
-            TdispCommandId::Bind => 2,
-            TdispCommandId::GetTdiReport => 3,
-            TdispCommandId::StartTdi => 4,
-            TdispCommandId::Unbind => 5,
-        }
-    }
-}
-
-impl From<u64> for TdispCommandId {
-    fn from(value: u64) -> Self {
-        match value {
-            0 => TdispCommandId::Unknown,
-            1 => TdispCommandId::GetDeviceInterfaceInfo,
-            2 => TdispCommandId::Bind,
-            3 => TdispCommandId::GetTdiReport,
-            4 => TdispCommandId::StartTdi,
-            5 => TdispCommandId::Unbind,
-            _ => TdispCommandId::Unknown,
-        }
+        /// Unbind the device from the partition, reverting it back to the Unlocked state.
+        UNBIND = 5,
     }
 }
 
