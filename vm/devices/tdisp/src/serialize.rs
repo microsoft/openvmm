@@ -19,6 +19,7 @@ use crate::TdispGuestOperationErrorCode;
 use crate::TdispTdiState;
 
 /// Serialized form of the header for a GuestToHostCommand packet
+#[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 pub struct GuestToHostCommandSerializedHeader {
     /// The logical TDISP device ID of the device that the command is being sent to.
@@ -29,6 +30,7 @@ pub struct GuestToHostCommandSerializedHeader {
 }
 
 /// Serialized form of the header for a GuestToHostResponse packet
+#[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 pub struct GuestToHostResponseSerializedHeader {
     /// The command ID of the command that was processed. See: `TdispCommandId`
