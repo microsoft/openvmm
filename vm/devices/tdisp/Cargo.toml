@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 bitfield-struct.workspace = true
-inspect.workspace = true
 open_enum.workspace = true
 parking_lot.workspace = true
 static_assertions.workspace = true
