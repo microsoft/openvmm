@@ -18,6 +18,7 @@ use crate::table::DescribeTable;
 use crate::table::TableEncoder;
 use core::time::Duration;
 use mesh_protobuf::Protobuf;
+#[cfg(feature = "std")]
 use thiserror::Error;
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
