@@ -46,7 +46,7 @@ impl SimpleFlowNode for Node {
 
                 let id = xshell::cmd!(
                     sh,
-                    "{gh_cli} run list -R {repo} -b {branch} -w {pipeline_name} -s completed --limit 1 --json databaseId -q .[0].databaseId"
+                    "{gh_cli} run list -R {repo} -b {branch} -w {pipeline_name} -s success --limit 1 --json databaseId -q .[0].databaseId"
                 )
                 .read()?;
 
