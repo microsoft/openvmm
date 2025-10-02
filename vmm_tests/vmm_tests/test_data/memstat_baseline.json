@@ -160,7 +160,7 @@
                 },
                 "Pss_Anon": {
                     "base": 16628,
-                    "threshold": 150
+                    "threshold": 500
                 }
             }
         }
@@ -203,7 +203,7 @@
                 },
                 "Pss_Anon": {
                     "base": 9312,
-                    "threshold": 150
+                    "threshold": 250
                 }
             }
         },
