@@ -45,7 +45,7 @@ pub use command::TdispCommandResponsePayload;
 pub use command::TdispDeviceInterfaceInfo;
 
 use anyhow::Context;
-use inspect::Inspect;
+use open_enum::open_enum;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use thiserror::Error;
@@ -62,6 +62,31 @@ pub const TDISP_INTERFACE_VERSION_MINOR: u32 = 0;
 
 /// Callback for receiving TDISP commands from the guest.
 pub type TdispCommandCallback = dyn Fn(&GuestToHostCommand) -> anyhow::Result<()> + Send + Sync;
+
+open_enum! {
+    /// Represents the state of the TDISP host device emulator.
+    pub enum TdispTdiState: u64 {
+        /// The TDISP state is not initialized or indeterminate.
+        UNINITIALIZED = 0,
+
+        /// `TDI.Unlocked`` - The device is in its default "reset" state. Resources can be configured
+        /// and no functionality can be used. Attestation cannot take place until the device has
+        /// been locked.
+        UNLOCKED = 1,
+
+        /// `TDI.Locked`` - The device resources have been locked and attestation can take place. The
+        /// device's resources have been mapped and configured in hardware, but the device has not
+        /// been attested. Private DMA and MMIO will not be functional until the resources have
+        /// been accepted into the guest context. Unencrypted "bounced" operations are still allowed.
+        LOCKED = 2,
+
+        /// `TDI.Run`` - The device is no longer functional for unencrypted operations. Device resources
+        /// are locked but encrypted operations might not be functional. The device
+        /// will not be functional for encrypted operations until it has been fully validated by the guest
+        /// calling to firmware to accept resources.
+        RUN = 3,
+    }
+}
 
 /// Trait used by the emulator to call back into the host.
 pub trait TdispHostDeviceInterface: Send + Sync {
@@ -254,53 +279,6 @@ pub trait TdispClientDevice: Send + Sync {
     fn tdisp_command_to_host(&self, command: GuestToHostCommand) -> anyhow::Result<()>;
 }
 
-/// Represents the state of the TDISP host device emulator.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Inspect)]
-pub enum TdispTdiState {
-    /// The TDISP state is not initialized or indeterminate.
-    Uninitialized,
-
-    /// `TDI.Unlocked`` - The device is in its default "reset" state. Resources can be configured
-    /// and no functionality can be used. Attestation cannot take place until the device has
-    /// been locked.
-    Unlocked,
-
-    /// `TDI.Locked`` - The device resources have been locked and attestation can take place. The
-    /// device's resources have been mapped and configured in hardware, but the device has not
-    /// been attested. Private DMA and MMIO will not be functional until the resources have
-    /// been accepted into the guest context. Unencrypted "bounced" operations are still allowed.
-    Locked,
-
-    /// `TDI.Run`` - The device is no longer functional for unencrypted operations. Device resources
-    /// are locked but encrypted operations might not be functional. The device
-    /// will not be functional for encrypted operations until it has been fully validated by the guest
-    /// calling to firmware to accept resources.
-    Run,
-}
-
-impl From<TdispTdiState> for u64 {
-    fn from(value: TdispTdiState) -> Self {
-        match value {
-            TdispTdiState::Uninitialized => 0,
-            TdispTdiState::Unlocked => 1,
-            TdispTdiState::Locked => 2,
-            TdispTdiState::Run => 3,
-        }
-    }
-}
-
-impl From<u64> for TdispTdiState {
-    fn from(value: u64) -> Self {
-        match value {
-            0 => TdispTdiState::Uninitialized,
-            1 => TdispTdiState::Unlocked,
-            2 => TdispTdiState::Locked,
-            3 => TdispTdiState::Run,
-            _ => TdispTdiState::Uninitialized,
-        }
-    }
-}
-
 /// The number of states to keep in the state history for debug.
 const TDISP_STATE_HISTORY_LEN: usize = 10;
 
@@ -387,7 +365,7 @@ impl TdispHostStateMachine {
     /// Create a new TDISP state machine with the `Unlocked` state.
     pub fn new(host_interface: Arc<Mutex<dyn TdispHostDeviceInterface>>) -> Self {
         Self {
-            current_state: TdispTdiState::Unlocked,
+            current_state: TdispTdiState::UNLOCKED,
             state_history: Vec::new(),
             debug_device_id: "".to_owned(),
             unbind_reason_history: Vec::new(),
@@ -419,15 +397,15 @@ impl TdispHostStateMachine {
     /// while higher level transition machinery tries to avoid these conditions. If the new state is impossible,
     /// `false` is returned.
     fn is_valid_state_transition(&self, new_state: &TdispTdiState) -> bool {
-        match (self.current_state, new_state) {
+        match (self.current_state, *new_state) {
             // Valid forward progress states from Unlocked -> Run
-            (TdispTdiState::Unlocked, TdispTdiState::Locked) => true,
-            (TdispTdiState::Locked, TdispTdiState::Run) => true,
+            (TdispTdiState::UNLOCKED, TdispTdiState::LOCKED) => true,
+            (TdispTdiState::LOCKED, TdispTdiState::RUN) => true,
 
             // Device can always return to the Unlocked state with `Unbind`
-            (TdispTdiState::Run, TdispTdiState::Unlocked) => true,
-            (TdispTdiState::Locked, TdispTdiState::Unlocked) => true,
-            (TdispTdiState::Unlocked, TdispTdiState::Unlocked) => true,
+            (TdispTdiState::RUN, TdispTdiState::UNLOCKED) => true,
+            (TdispTdiState::LOCKED, TdispTdiState::UNLOCKED) => true,
+            (TdispTdiState::UNLOCKED, TdispTdiState::UNLOCKED) => true,
 
             // Every other state transition is invalid
             _ => false,
@@ -480,7 +458,7 @@ impl TdispHostStateMachine {
 
         // All states can be reset to the Unlocked state. This can only happen if the
         // state is corrupt beyond the state machine.
-        if let Err(reason) = self.transition_state_to(TdispTdiState::Unlocked) {
+        if let Err(reason) = self.transition_state_to(TdispTdiState::UNLOCKED) {
             return Err(anyhow::anyhow!(
                 "Impossible state machine violation during TDISP Unbind: {:?}",
                 reason
@@ -621,7 +599,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
     fn request_lock_device_resources(&mut self) -> Result<(), TdispGuestOperationError> {
         // If the guest attempts to transition the device to the Locked state while the device
         // is not in the Unlocked state, the device is reset to the Unlocked state.
-        if self.current_state != TdispTdiState::Unlocked {
+        if self.current_state != TdispTdiState::UNLOCKED {
             self.error_print(
                 "Unlocked to Locked state called while device was not in Unlocked state.",
             );
@@ -648,12 +626,12 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
 
         self.debug_print("Device transition from Unlocked to Locked state");
-        self.transition_state_to(TdispTdiState::Locked).unwrap();
+        self.transition_state_to(TdispTdiState::LOCKED).unwrap();
         Ok(())
     }
 
     fn request_start_tdi(&mut self) -> Result<(), TdispGuestOperationError> {
-        if self.current_state != TdispTdiState::Locked {
+        if self.current_state != TdispTdiState::LOCKED {
             self.error_print("StartTDI called while device was not in Locked state.");
             self.unbind_all(TdispUnbindReason::InvalidGuestTransitionToRun)
                 .map_err(|_| TdispGuestOperationError::HostFailedToProcessCommand)?;
@@ -676,7 +654,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
 
         self.debug_print("Device transition from Locked to Run state");
-        self.transition_state_to(TdispTdiState::Run).unwrap();
+        self.transition_state_to(TdispTdiState::RUN).unwrap();
 
         Ok(())
     }
@@ -685,7 +663,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         &mut self,
         report_type: TdispReportType,
     ) -> Result<Vec<u8>, TdispGuestOperationError> {
-        if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
+        if self.current_state != TdispTdiState::LOCKED && self.current_state != TdispTdiState::RUN {
             self.error_print(
                 "Request to retrieve attestation report called while device was not in Locked or Run state.",
             );

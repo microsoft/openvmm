@@ -15,6 +15,7 @@ use crate::TdispCommandId;
 use crate::TdispCommandResponsePayload;
 use crate::TdispDeviceInterfaceInfo;
 use crate::TdispGuestOperationError;
+use crate::TdispTdiState;
 
 /// Serialized form of the header for a GuestToHostCommand packet
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -57,8 +58,8 @@ impl From<&GuestToHostResponse> for GuestToHostResponseSerializedHeader {
         GuestToHostResponseSerializedHeader {
             command_id: value.command_id.0,
             result: value.result.into(),
-            tdi_state_before: value.tdi_state_before.into(),
-            tdi_state_after: value.tdi_state_after.into(),
+            tdi_state_before: value.tdi_state_before.0,
+            tdi_state_after: value.tdi_state_after.0,
         }
     }
 }
@@ -78,8 +79,8 @@ impl From<&GuestToHostResponseSerializedHeader> for GuestToHostResponse {
         GuestToHostResponse {
             command_id: TdispCommandId(value.command_id),
             result: value.result.into(),
-            tdi_state_before: value.tdi_state_before.into(),
-            tdi_state_after: value.tdi_state_after.into(),
+            tdi_state_before: TdispTdiState(value.tdi_state_before),
+            tdi_state_after: TdispTdiState(value.tdi_state_after),
             payload: TdispCommandResponsePayload::None,
         }
     }
