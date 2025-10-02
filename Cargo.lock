@@ -7375,6 +7375,8 @@ name = "tdisp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bitfield-struct 0.11.0",
+ "open_enum",
  "parking_lot",
  "prost",
  "tdisp_proto",
@@ -7389,6 +7391,7 @@ dependencies = [
  "inspect",
  "prost",
  "prost-build",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -9909,11 +9912,13 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "openhcl_tdisp",
  "pal_async",
  "parking_lot",
  "pci_core",
  "slab",
  "task_control",
+ "tdisp",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",

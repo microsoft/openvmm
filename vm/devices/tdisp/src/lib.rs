@@ -54,7 +54,16 @@ use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
 use tdisp_proto::guest_to_host_response::Response;
 use thiserror::Error;
-use tracing::instrument;
+
+use crate::command::TdispCommandRequestPayload;
+use crate::command::TdispCommandResponseGetTdiReport;
+use crate::devicereport::TdispReportType;
+
+/// Major version of the TDISP guest-to-host interface.
+pub const TDISP_INTERFACE_VERSION_MAJOR: u32 = 1;
+
+/// Minor version of the TDISP guest-to-host interface.
+pub const TDISP_INTERFACE_VERSION_MINOR: u32 = 0;
 
 /// Callback for receiving TDISP commands from the guest.
 pub type TdispCommandCallback = dyn Fn(&GuestToHostCommand) -> anyhow::Result<()> + Send + Sync;

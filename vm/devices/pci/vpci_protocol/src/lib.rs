@@ -106,6 +106,8 @@ open_enum! {
         CREATE_INTERRUPT3 = 0x4249001b,
         /// Reset a device
         RESET_DEVICE = 0x4249001c,
+        /// TDISP command from guest to host
+        VPCI_TDISP_COMMAND = 0x4249001D,
     }
 }
 
@@ -806,3 +808,29 @@ pub struct PdoMessage {
     /// PCI slot number of the target device
     pub slot: SlotNumber,
 }
+
+/// A TDISP packet being sent to the host.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct VpciTdispCommandHeader {
+    /// Type of message (must be VPCI_TDISP_COMMAND)
+    pub message_type: MessageType,
+    /// PCI slot number of the target device
+    pub slot: SlotNumber,
+    /// Length of the data payload to follow
+    pub data_length: u64,
+    // pub data: [u8; data_length...],
+}
+
+/// A serialized TDISP VPCI VMBUS command packet.
+#[derive(Debug, Clone)]
+pub struct VpciTdispCommand {
+    /// Header of the VMBUS packet
+    pub header: VpciTdispCommandHeader,
+
+    /// The payload of the command (serialized to Vec)
+    pub data: Vec<u8>,
+}
+
+/// Maximum size of a TDISP command in bytes. Property of the VMBUS implementation on the host.
+pub const MAX_VPCI_TDISP_COMMAND_SIZE: usize = 35000;
