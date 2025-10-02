@@ -20,7 +20,7 @@ pub use tdisp::{TDISP_INTERFACE_VERSION_MAJOR, TDISP_INTERFACE_VERSION_MINOR};
 
 /// Represents a TDISP device assigned to a guest partition. This trait allows
 /// the guest to send TDISP commands to the host through the backing interface.
-/// [TDISP TODO] Change out `anyhow` for a `TdispError` type.
+/// [TDISP TODO] Change out `anyhow` for a `TdispError` type?
 pub trait ClientDevice: Send + Sync + Inspect {
     /// Send a TDISP command to the host through the backing interface.
     fn tdisp_command_to_host(
@@ -35,6 +35,8 @@ pub trait ClientDevice: Send + Sync + Inspect {
     fn tdisp_bind_interface(&self) -> anyhow::Result<()>;
 }
 
+/// Represents a TDISP device assigned to a guest partition that can be used to
+/// send TDISP commands to the host through a backing interface.
 pub trait VpciTdispInterface: Send + Sync {
     /// Sends a TDISP command to the device through the VPCI channel.
     fn send_tdisp_command(
