@@ -440,7 +440,7 @@ impl AdminHandler {
                     // the test is specifically stress testing the completion queue, this approach should be fine
                     // since it is unexpected to fill the queue with admin commands.
                     if let Some(aen_confirmation) = state.confirm_namespace_change_fault.take() {
-                        aen_confirmation.complete(())
+                        aen_confirmation.complete(());
                     }
                     continue;
                 }
@@ -460,7 +460,7 @@ impl AdminHandler {
                 Event::NamespaceChange(nsid)
             };
             let changed_namespace_fault = async {
-                if self.config.fault_configuration.fault_active.get() {
+                if !self.config.fault_configuration.fault_active.get() {
                     pending().await
                 }
 

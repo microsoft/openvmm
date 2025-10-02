@@ -58,7 +58,9 @@ pub struct NamespaceFaultConfig {
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
-    /// A map of NVME opcodes to the submission fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
+    /// A map of NVME opcodes to the submission fault behavior for each. (This
+    /// would ideally be a `HashMap`, but `mesh` doesn't support that type.
+    /// Given that this is not performance sensitive, the lookup is okay)
     pub admin_submission_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Command>)>,
     /// A map of NVME opcodes to the completion fault behavior for each.
     pub admin_completion_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Completion>)>,
@@ -89,11 +91,14 @@ pub struct FaultConfiguration {
 impl FaultConfiguration {
     /// Create a new empty fault configuration
     pub fn new(fault_active: Cell<bool>) -> Self {
+        // Ideally the faults should begin life as Option::None.
+        // For now, use a dummy mesh channel for namespace fault to avoid
+        // test setup complexity & special cases in the AdminHandler run loop.
         Self {
             fault_active,
             admin_fault: AdminQueueFaultConfig::new(),
             pci_fault: PciFaultConfig::new(),
-            namespace_fault: NamespaceFaultConfig::new(mesh::channel().1), // Dummy channel for empty config.
+            namespace_fault: NamespaceFaultConfig::new(mesh::channel().1),
         }
     }
 
