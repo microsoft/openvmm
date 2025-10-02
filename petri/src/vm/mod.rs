@@ -328,22 +328,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                  driver: &DefaultDriver,
                  inspect: std::pin::Pin<Box<dyn Future<Output = _> + Send>>| {
                     driver.spawn(format!("petri-watchdog-inspect-{name}"), async move {
-                        tracing::info!("Collecting {name} inspect details.");
-                        let node = match inspect.await {
-                            Ok(n) => n,
-                            Err(e) => {
-                                tracing::error!(?e, "Failed to get {name}");
-                                return;
-                            }
-                        };
-                        if let Err(e) = log_source.write_attachment(
-                            &format!("timeout_inspect_{name}.log"),
-                            format!("{node:#}"),
-                        ) {
-                            tracing::error!(?e, "Failed to save {name} inspect log");
-                            return;
-                        }
-                        tracing::info!("{name} inspect task finished.");
+                        save_inspect(name, inspect, &log_source).await;
                     })
                 };
 
@@ -791,7 +776,6 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// returns that status.
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
         tracing::info!("Waiting for boot event...");
-        let inspector = self.runtime.inspector();
         let boot_event = loop {
             match CancelContext::new()
                 .with_timeout(self.vmm_quirks.flaky_boot.unwrap_or(Duration::MAX))
@@ -801,21 +785,13 @@ impl<T: PetriVmmBackend> PetriVm<T> {
                 Ok(res) => break res?,
                 Err(_) => {
                     tracing::error!("Did not get boot event in required time, resetting...");
-                    if let Some(inspector) = &inspector {
-                        match inspector.inspect().await {
-                            Err(e) => {
-                                tracing::error!(?e, "Failed to get inspect contents");
-                            }
-                            Ok(info) => {
-                                if let Err(e) = self
-                                    .resources
-                                    .log_source
-                                    .write_attachment("timeout_inspect.log", info)
-                                {
-                                    tracing::error!(?e, "Failed to save inspect log");
-                                }
-                            }
-                        };
+                    if let Some(inspector) = self.runtime.inspector() {
+                        save_inspect(
+                            "vmm",
+                            Box::pin(async move { inspector.inspect_all().await }),
+                            &self.resources.log_source,
+                        )
+                        .await;
                     }
 
                     self.runtime.reset().await?;
@@ -1705,6 +1681,28 @@ fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {
     } else {
         *cmd = Some(add_cmd.to_string());
     }
+}
+
+async fn save_inspect(
+    name: &str,
+    inspect: std::pin::Pin<Box<dyn Future<Output = anyhow::Result<inspect::Node>> + Send>>,
+    log_source: &PetriLogSource,
+) {
+    tracing::info!("Collecting {name} inspect details.");
+    let node = match inspect.await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!(?e, "Failed to get {name}");
+            return;
+        }
+    };
+    if let Err(e) =
+        log_source.write_attachment(&format!("timeout_inspect_{name}.log"), format!("{node:#}"))
+    {
+        tracing::error!(?e, "Failed to save {name} inspect log");
+        return;
+    }
+    tracing::info!("{name} inspect task finished.");
 }
 
 #[cfg(test)]
