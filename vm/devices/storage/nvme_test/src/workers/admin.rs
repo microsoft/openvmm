@@ -435,9 +435,10 @@ impl AdminHandler {
 
                     state.notified_changed_namespaces = true;
 
-                    // Note: Since the tests require aen notification before invoking restore on the VM, this approach will
-                    // fail is the completion queue is full during save. In that case, the test will hang. Unless
-                    // the test is specifically stress testing the completion queue, this approach should be fine.
+                    // Note: Since the tests require AEN before invoking restore on the VM, this approach will
+                    // fail if the completion queue is full during save. In that case, the test will hang. Unless
+                    // the test is specifically stress testing the completion queue, this approach should be fine
+                    // since it is unexpected to fill the queue with admin commands.
                     if let Some(aen_confirmation) = state.confirm_namespace_change_fault.take() {
                         aen_confirmation.complete(())
                     }
