@@ -269,8 +269,8 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     let vtl0_nvme_lun = 1;
     let vtl2_nsid = 37;
     let scsi_instance = Guid::new_random();
-    let scsi_disk_sectors = 0x2000;
-    let nvme_disk_sectors: u64 = 0x3000;
+    let scsi_disk_sectors = 0x4_0000; // Must be at least 100MB so that the below 'dd' command works without issues
+    let nvme_disk_sectors: u64 = 0x5_0000; // Must be at least 100MB so that the below 'dd' command works without issues
     let sector_size = 512;
 
     let (vm, agent) = config
@@ -375,25 +375,91 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 
     let sh = agent.unix_shell();
     // The drive ordering is not guaranteed, so we need to check all drives.
-    let output = cmd!(sh, "sh -c 'cat /sys/block/sd*/size'").read().await?;
-    // Make sure the disk sizes match.
-    let reported_sizes = output
-        .split_ascii_whitespace()
-        .map(|x| x.parse::<u64>())
-        .collect::<Result<Vec<_>, _>>()
-        .context("failed to parse sizes")?;
+    let devices = cmd!(sh, "sh -c 'ls -d /sys/block/sd*'").read().await?;
+
+    let mut reported_sizes = Vec::new();
+    for device in devices.lines() {
+        let device_info_command =
+            format!("echo /dev/$(basename {device}) $(cat /sys/block/$(basename {device})/size)");
+        let line = cmd!(sh, "sh -c {device_info_command}")
+            .read()
+            .await?
+            .split_ascii_whitespace()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>();
+
+        let size = line[1].parse::<u64>().context("failed to parse size")?;
+
+        reported_sizes.push((line[0].clone(), size));
+    }
 
     let scsi_drive_index = reported_sizes
         .iter()
-        .position(|x| *x == scsi_disk_sectors)
-        .expect("couldn't find scsi drive");
+        .position(|(_device, sectors)| *sectors == scsi_disk_sectors)
+        .context(format!(
+            "couldn't find scsi drive with expected sector count: {}",
+            scsi_disk_sectors
+        ))?;
     let nvme_drive_index = reported_sizes
         .iter()
-        .position(|x| *x == nvme_disk_sectors)
-        .expect("couldn't find nvme drive");
+        .position(|(_device, sectors)| *sectors == nvme_disk_sectors)
+        .context(format!(
+            "couldn't find nvme drive with expected sector count: {}",
+            nvme_disk_sectors
+        ))?;
     assert_ne!(scsi_drive_index, nvme_drive_index);
     // Account for the pipette drive too
     assert_eq!(reported_sizes.len(), 3);
+
+    // Do IO to both devices. Generate a file with random contents so that we
+    // can verify that the writes (and reads) work correctly.
+    //
+    // - `{o,i}flag=direct` is needed to ensure that the IO is not served
+    //   from the guest's cache.
+    // - `conv=fsync` is needed to ensure that the write is flushed to the
+    //    device before `dd` exits.
+    // - `iflag=fullblock` is needed to ensure that `dd` reads the full
+    //   amount of data requested, otherwise it may read less and exit
+    //   early.
+    //
+    // TODO: use this same logic in other storage focused tests.
+    let test_io = async |device| -> anyhow::Result<()> {
+        cmd!(
+            sh,
+            "sh -c 'dd if=/dev/urandom of=/tmp/random_data bs=1M count=100'"
+        )
+        .run()
+        .await?;
+
+        let write_to_device_cmd = format!(
+            "dd if=/tmp/random_data of={} bs=1M count=100 oflag=direct conv=fsync",
+            device
+        );
+        cmd!(sh, "sh -c {write_to_device_cmd}").run().await?;
+
+        let read_from_device_cmd = format!(
+            "dd if={} of=/tmp/verify_data bs=1M count=100 iflag=direct,fullblock",
+            device
+        );
+        cmd!(sh, "sh -c {read_from_device_cmd}").run().await?;
+
+        let diff_out = cmd!(sh, "sh -c 'diff -s /tmp/random_data /tmp/verify_data'")
+            .read()
+            .await?;
+        assert!(diff_out.contains("are identical"), "data mismatch");
+
+        cmd!(sh, "rm -f /tmp/random_data /tmp/verify_data")
+            .run()
+            .await?;
+
+        Ok(())
+    };
+
+    tracing::info!("Validating IO to device attached to VTL2 as SCSI");
+    test_io(reported_sizes[scsi_drive_index].0.as_str()).await?;
+
+    tracing::info!("Validating IO to device attached to VTL2 as NVMe");
+    test_io(reported_sizes[nvme_drive_index].0.as_str()).await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
