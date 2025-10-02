@@ -123,10 +123,13 @@ pub struct TdispHostDeviceTargetEmulator {
 
 impl TdispHostDeviceTargetEmulator {
     /// Create a new emulator which runs the TDISP state machine for a synthetic device.
-    pub fn new(host_interface: Arc<Mutex<dyn TdispHostDeviceInterface>>) -> Self {
+    pub fn new(
+        host_interface: Arc<Mutex<dyn TdispHostDeviceInterface>>,
+        debug_device_id: &str,
+    ) -> Self {
         Self {
             machine: TdispHostStateMachine::new(host_interface),
-            debug_device_id: "".to_owned(),
+            debug_device_id: debug_device_id.to_owned(),
         }
     }
 
