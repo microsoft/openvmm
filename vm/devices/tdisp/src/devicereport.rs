@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use bitfield_struct::bitfield;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
