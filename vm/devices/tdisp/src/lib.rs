@@ -508,6 +508,8 @@ impl TdispHostStateMachine {
 #[derive(Error, Debug, Copy, Clone)]
 #[expect(missing_docs)]
 pub enum TdispGuestOperationError {
+    #[error("unknown error code")]
+    Unknown,
     #[error("the operation was successful")]
     Success,
     #[error("the current TDI state is incorrect for this operation")]
@@ -531,14 +533,15 @@ pub enum TdispGuestOperationError {
 impl From<TdispGuestOperationError> for u64 {
     fn from(err: TdispGuestOperationError) -> Self {
         match err {
-            TdispGuestOperationError::Success => 0,
-            TdispGuestOperationError::InvalidDeviceState => 1,
-            TdispGuestOperationError::InvalidGuestUnbindReason => 2,
-            TdispGuestOperationError::InvalidGuestCommandId => 3,
-            TdispGuestOperationError::NotImplemented => 4,
-            TdispGuestOperationError::HostFailedToProcessCommand => 5,
-            TdispGuestOperationError::InvalidGuestAttestationReportState => 6,
-            TdispGuestOperationError::InvalidGuestAttestationReportType => 7,
+            TdispGuestOperationError::Unknown => 0,
+            TdispGuestOperationError::Success => 1,
+            TdispGuestOperationError::InvalidDeviceState => 2,
+            TdispGuestOperationError::InvalidGuestUnbindReason => 3,
+            TdispGuestOperationError::InvalidGuestCommandId => 4,
+            TdispGuestOperationError::NotImplemented => 5,
+            TdispGuestOperationError::HostFailedToProcessCommand => 6,
+            TdispGuestOperationError::InvalidGuestAttestationReportState => 7,
+            TdispGuestOperationError::InvalidGuestAttestationReportType => 8,
         }
     }
 }
@@ -546,15 +549,16 @@ impl From<TdispGuestOperationError> for u64 {
 impl From<u64> for TdispGuestOperationError {
     fn from(err: u64) -> Self {
         match err {
-            0 => TdispGuestOperationError::Success,
-            1 => TdispGuestOperationError::InvalidDeviceState,
-            2 => TdispGuestOperationError::InvalidGuestUnbindReason,
-            3 => TdispGuestOperationError::InvalidGuestCommandId,
-            4 => TdispGuestOperationError::NotImplemented,
-            5 => TdispGuestOperationError::HostFailedToProcessCommand,
-            6 => TdispGuestOperationError::InvalidGuestAttestationReportState,
-            7 => TdispGuestOperationError::InvalidGuestAttestationReportType,
-            _ => panic!("invalid TdispGuestOperationError code: {err}"),
+            0 => TdispGuestOperationError::Unknown,
+            1 => TdispGuestOperationError::Success,
+            2 => TdispGuestOperationError::InvalidDeviceState,
+            3 => TdispGuestOperationError::InvalidGuestUnbindReason,
+            4 => TdispGuestOperationError::InvalidGuestCommandId,
+            5 => TdispGuestOperationError::NotImplemented,
+            6 => TdispGuestOperationError::HostFailedToProcessCommand,
+            7 => TdispGuestOperationError::InvalidGuestAttestationReportState,
+            8 => TdispGuestOperationError::InvalidGuestAttestationReportType,
+            _ => TdispGuestOperationError::Unknown,
         }
     }
 }
