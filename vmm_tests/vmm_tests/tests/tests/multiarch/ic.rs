@@ -68,7 +68,7 @@ async fn kvp_ic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<(
         )
         .await?;
 
-    // Validate the IP information against the default consomme confiugration.
+    // Validate the IP information against the default consomme configuration.
     tracing::info!(?ip_info, "ip information");
 
     // Filter out link-local addresses, since Windows seems to enumerate one for
