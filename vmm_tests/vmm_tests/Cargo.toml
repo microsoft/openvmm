@@ -25,7 +25,6 @@ petri.workspace = true
 
 get_resources.workspace = true
 hvlite_defs.workspace = true
-vtl2_settings_proto.workspace = true
 disk_backend_resources.workspace = true
 hyperv_ic_resources.workspace = true
 net_backend_resources.workspace = true

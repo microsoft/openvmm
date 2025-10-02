@@ -20,6 +20,7 @@ members = [
   "tmk/tmk_vmm",
   "tmk/simple_tmk",
   # VMM tests
+  "vmm_tests/prep_steps",
   "vmm_tests/vmm_tests",
   # hyper-v tooling
   "hyperv/tools/hypestv",

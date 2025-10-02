@@ -5865,6 +5865,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "prep_steps"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "guid",
+ "hvlite_defs",
+ "hvlite_helpers",
+ "pal_async",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
+ "petri_artifacts_vmm_test",
+ "scsidisk_resources",
+ "storvsp_resources",
+ "tracing",
+ "vm_resource",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9279,7 +9298,6 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmm_test_macros",
- "vtl2_settings_proto",
  "zerocopy 0.8.25",
 ]
 

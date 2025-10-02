@@ -69,6 +69,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
+            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED => get_prepped_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
             _ if id == test_vhd::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Vhd),
             _ if id == test_vhd::UBUNTU_2204_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2204ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerX64Vhd),
@@ -139,6 +140,21 @@ fn get_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyho
                 &artifact.name(),
             ],
             description: "test artifact",
+        },
+    )
+}
+
+fn get_prepped_test_artifact_path(artifact: KnownTestArtifacts) -> Result<PathBuf, anyhow::Error> {
+    let images_dir = std::env::var("VMM_TEST_IMAGES");
+    let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
+    let prepped_filename = artifact.filename().replace(".vhd", "-prepped.vhd");
+
+    get_path(
+        full_path,
+        prepped_filename,
+        MissingCommand::Run {
+            description: "prepped test image",
+            package: "prep_steps",
         },
     )
 }
@@ -541,6 +557,11 @@ pub enum MissingCommand<'a> {
         package: &'a str,
         target: Option<&'a str>,
     },
+    /// A `cargo run` invocation.
+    Run {
+        description: &'a str,
+        package: &'a str,
+    },
     /// A `cargo xtask` invocation.
     Xtask {
         description: &'a str,
@@ -564,6 +585,14 @@ impl MissingCommand<'_> {
                 "Failed to find {package} binary. Run `cargo build {target_args}-p {package}` to build it.",
                 target_args =
                     target.map_or(String::new(), |target| format!("--target {} ", target)),
+            ),
+            MissingCommand::Run {
+                description,
+                package,
+            } => anyhow::bail!(
+                "Failed to find {}. Run `cargo run -p {}` to create it.",
+                description,
+                package
             ),
             MissingCommand::Xtask {
                 description,

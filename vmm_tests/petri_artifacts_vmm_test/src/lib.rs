@@ -421,6 +421,22 @@ pub mod artifacts {
                 "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx";
             const SIZE: u64 = 24398266368;
         }
+
+        // VHDs that are created by pre-preparation automation
+
+        declare_artifacts! {
+            /// Generation 2 windows test image
+            GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED
+        }
+
+        impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED {
+            const OS_FLAVOR: OsFlavor = GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::OS_FLAVOR;
+            const ARCH: MachineArch = GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::ARCH;
+
+            fn quirks() -> GuestQuirks {
+                GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::quirks()
+            }
+        }
     }
 
     /// Test ISO artifacts

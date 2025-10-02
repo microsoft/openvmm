@@ -6,6 +6,7 @@
 pub mod hyperv;
 /// OpenVMM VM management
 pub mod openvmm;
+pub mod vtl2_settings;
 
 use crate::PetriLogSource;
 use crate::PetriTestParams;
@@ -33,7 +34,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// The set of artifacts and resources needed to instantiate a
@@ -128,7 +128,6 @@ pub struct PetriVmConfig {
 /// Resources used by a Petri VM during contruction and runtime
 pub struct PetriVmResources {
     driver: DefaultDriver,
-    output_dir: PathBuf,
     log_source: PetriLogSource,
 }
 
@@ -212,7 +211,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             modify_vmm_config: None,
             resources: PetriVmResources {
                 driver: driver.clone(),
-                output_dir: params.output_dir.to_owned(),
                 log_source: params.logger.clone(),
             },
 

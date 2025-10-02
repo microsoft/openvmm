@@ -106,11 +106,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             vmgs: _, // TODO
         } = config;
 
-        let PetriVmResources {
-            driver,
-            output_dir: _,
-            log_source,
-        } = resources;
+        let PetriVmResources { driver, log_source } = resources;
 
         let temp_dir = tempfile::tempdir()?;
 
@@ -301,6 +297,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             {
                 if agent_image.contains_pipette()
                     && matches!(firmware.os_flavor(), OsFlavor::Windows)
+                    && firmware.isolation().is_none()
                 {
                     // Make a file for the IMC hive. It's not guaranteed to be at a fixed
                     // location at runtime.

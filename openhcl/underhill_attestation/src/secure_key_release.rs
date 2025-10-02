@@ -10,6 +10,7 @@ use crate::igvm_attest;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
@@ -258,7 +259,7 @@ async fn make_igvm_attest_requests(
     // Attempt to get wrapped DiskEncryptionSettings key
     igvm_attest_request_helper.set_request_type(IgvmAttestRequestType::WRAPPED_KEY_REQUEST);
     let request = igvm_attest_request_helper
-        .create_request(attestation_report)
+        .create_request(IGVM_ATTEST_REQUEST_CURRENT_VERSION, attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
 
     let response = match get
@@ -341,7 +342,7 @@ async fn make_igvm_attest_requests(
 
     igvm_attest_request_helper.set_request_type(IgvmAttestRequestType::KEY_RELEASE_REQUEST);
     let request = igvm_attest_request_helper
-        .create_request(attestation_report)
+        .create_request(IGVM_ATTEST_REQUEST_CURRENT_VERSION, attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestKeyReleaseRequest)?;
 
     // Get tenant keys based on attestation results
