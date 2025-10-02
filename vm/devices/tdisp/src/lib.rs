@@ -209,8 +209,10 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             }
             TdispCommandId::UNBIND => {
                 let unbind_reason: TdispGuestUnbindReason = match command.payload {
-                    TdispCommandRequestPayload::Unbind(payload) => payload.unbind_reason.into(),
-                    _ => TdispGuestUnbindReason::Unknown,
+                    TdispCommandRequestPayload::Unbind(payload) => {
+                        TdispGuestUnbindReason(payload.unbind_reason)
+                    }
+                    _ => TdispGuestUnbindReason::UNKNOWN,
                 };
                 let unbind_res = self.machine.request_unbind(unbind_reason);
                 if let Err(err) = unbind_res {
@@ -318,31 +320,14 @@ pub enum TdispUnbindReason {
     InvalidGuestUnbindReason(anyhow::Error),
 }
 
-/// For a guest initiated unbind, the guest can provide a reason for the unbind.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum TdispGuestUnbindReason {
-    /// The guest requested to unbind the device for an unspecified reason.
-    Unknown,
+open_enum! {
+    /// For a guest initiated unbind, the guest can provide a reason for the unbind.
+    pub enum TdispGuestUnbindReason: u64 {
+        /// The guest requested to unbind the device for an unspecified reason.
+        UNKNOWN = 0,
 
-    /// The guest requested to unbind the device because the device is being detached.
-    Graceful,
-}
-
-impl From<TdispGuestUnbindReason> for u64 {
-    fn from(value: TdispGuestUnbindReason) -> Self {
-        match value {
-            TdispGuestUnbindReason::Unknown => 0,
-            TdispGuestUnbindReason::Graceful => 1,
-        }
-    }
-}
-
-impl From<u64> for TdispGuestUnbindReason {
-    fn from(value: u64) -> Self {
-        match value {
-            1 => TdispGuestUnbindReason::Graceful,
-            _ => TdispGuestUnbindReason::Unknown,
-        }
+        /// The guest requested to unbind the device because the device is being detached.
+        GRACEFUL = 1,
     }
 }
 
@@ -410,12 +395,6 @@ impl TdispHostStateMachine {
             // Every other state transition is invalid
             _ => false,
         }
-    }
-
-    /// Check if the guest unbind reason is valid. This is used for bookkeeping purposes to
-    /// ensure the guest unbind reason recorded in the unbind history is valid.
-    fn is_valid_guest_unbind_reason(&self, reason: &TdispGuestUnbindReason) -> bool {
-        !(matches!(reason, TdispGuestUnbindReason::Unknown))
     }
 
     /// Transitions the state machine to the new state if it is valid. If the new state is invalid,
@@ -513,35 +492,95 @@ pub enum TdispGuestOperationError {
     InvalidGuestAttestationReportType,
 }
 
-impl From<TdispGuestOperationError> for u64 {
-    fn from(err: TdispGuestOperationError) -> Self {
-        match err {
-            TdispGuestOperationError::Unknown => 0,
-            TdispGuestOperationError::Success => 1,
-            TdispGuestOperationError::InvalidDeviceState => 2,
-            TdispGuestOperationError::InvalidGuestUnbindReason => 3,
-            TdispGuestOperationError::InvalidGuestCommandId => 4,
-            TdispGuestOperationError::NotImplemented => 5,
-            TdispGuestOperationError::HostFailedToProcessCommand => 6,
-            TdispGuestOperationError::InvalidGuestAttestationReportState => 7,
-            TdispGuestOperationError::InvalidGuestAttestationReportType => 8,
+open_enum! {
+    /// Error returned by TDISP operations dispatched by the guest.
+    pub enum TdispGuestOperationErrorCode: u64 {
+        /// Unknown error code.
+        UNKNOWN = 0,
+
+        /// The operation was successful.
+        SUCCESS = 1,
+
+        /// The current TDI state is incorrect for this operation.
+        INVALID_DEVICE_STATE = 2,
+
+        /// The reason for this unbind is invalid.
+        INVALID_GUEST_UNBIND_REASON = 3,
+
+        /// Invalid TDI command ID.
+        INVALID_GUEST_COMMAND_ID = 4,
+
+        /// Operation requested was not implemented.
+        NOT_IMPLEMENTED = 5,
+
+        /// Host failed to process command.
+        HOST_FAILED_TO_PROCESS_COMMAND = 6,
+
+        /// The device was not in the Locked or Run state when the attestation report was requested.
+        INVALID_GUEST_ATTESTATION_REPORT_STATE = 7,
+
+        /// Invalid attestation report type requested.
+        INVALID_GUEST_ATTESTATION_REPORT_TYPE = 8,
+    }
+}
+
+impl From<TdispGuestOperationErrorCode> for TdispGuestOperationError {
+    fn from(err_code: TdispGuestOperationErrorCode) -> Self {
+        match err_code {
+            TdispGuestOperationErrorCode::UNKNOWN => TdispGuestOperationError::Unknown,
+            TdispGuestOperationErrorCode::SUCCESS => TdispGuestOperationError::Success,
+            TdispGuestOperationErrorCode::INVALID_DEVICE_STATE => {
+                TdispGuestOperationError::InvalidDeviceState
+            }
+            TdispGuestOperationErrorCode::INVALID_GUEST_UNBIND_REASON => {
+                TdispGuestOperationError::InvalidGuestUnbindReason
+            }
+            TdispGuestOperationErrorCode::INVALID_GUEST_COMMAND_ID => {
+                TdispGuestOperationError::InvalidGuestCommandId
+            }
+            TdispGuestOperationErrorCode::NOT_IMPLEMENTED => {
+                TdispGuestOperationError::NotImplemented
+            }
+            TdispGuestOperationErrorCode::HOST_FAILED_TO_PROCESS_COMMAND => {
+                TdispGuestOperationError::HostFailedToProcessCommand
+            }
+            TdispGuestOperationErrorCode::INVALID_GUEST_ATTESTATION_REPORT_STATE => {
+                TdispGuestOperationError::InvalidGuestAttestationReportState
+            }
+            TdispGuestOperationErrorCode::INVALID_GUEST_ATTESTATION_REPORT_TYPE => {
+                TdispGuestOperationError::InvalidGuestAttestationReportType
+            }
+            _ => TdispGuestOperationError::Unknown,
         }
     }
 }
 
-impl From<u64> for TdispGuestOperationError {
-    fn from(err: u64) -> Self {
+impl From<TdispGuestOperationError> for TdispGuestOperationErrorCode {
+    fn from(err: TdispGuestOperationError) -> Self {
         match err {
-            0 => TdispGuestOperationError::Unknown,
-            1 => TdispGuestOperationError::Success,
-            2 => TdispGuestOperationError::InvalidDeviceState,
-            3 => TdispGuestOperationError::InvalidGuestUnbindReason,
-            4 => TdispGuestOperationError::InvalidGuestCommandId,
-            5 => TdispGuestOperationError::NotImplemented,
-            6 => TdispGuestOperationError::HostFailedToProcessCommand,
-            7 => TdispGuestOperationError::InvalidGuestAttestationReportState,
-            8 => TdispGuestOperationError::InvalidGuestAttestationReportType,
-            _ => TdispGuestOperationError::Unknown,
+            TdispGuestOperationError::Unknown => TdispGuestOperationErrorCode::UNKNOWN,
+            TdispGuestOperationError::Success => TdispGuestOperationErrorCode::SUCCESS,
+            TdispGuestOperationError::InvalidDeviceState => {
+                TdispGuestOperationErrorCode::INVALID_DEVICE_STATE
+            }
+            TdispGuestOperationError::InvalidGuestUnbindReason => {
+                TdispGuestOperationErrorCode::INVALID_GUEST_UNBIND_REASON
+            }
+            TdispGuestOperationError::InvalidGuestCommandId => {
+                TdispGuestOperationErrorCode::INVALID_GUEST_COMMAND_ID
+            }
+            TdispGuestOperationError::NotImplemented => {
+                TdispGuestOperationErrorCode::NOT_IMPLEMENTED
+            }
+            TdispGuestOperationError::HostFailedToProcessCommand => {
+                TdispGuestOperationErrorCode::HOST_FAILED_TO_PROCESS_COMMAND
+            }
+            TdispGuestOperationError::InvalidGuestAttestationReportState => {
+                TdispGuestOperationErrorCode::INVALID_GUEST_ATTESTATION_REPORT_STATE
+            }
+            TdispGuestOperationError::InvalidGuestAttestationReportType => {
+                TdispGuestOperationErrorCode::INVALID_GUEST_ATTESTATION_REPORT_TYPE
+            }
         }
     }
 }
@@ -700,14 +739,17 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         // The guest can provide a reason for the unbind. If the unbind reason isn't valid for a guest (such as
         // if the guest says it is unbinding due to a host-related error), the reason is discarded and InvalidGuestUnbindReason
         // is recorded in the unbind history.
-        let reason = if !self.is_valid_guest_unbind_reason(&reason) {
-            let error_txt = format!("Invalid guest unbind reason {reason:?} requested");
-
-            self.error_print(error_txt.as_str());
-
-            TdispUnbindReason::InvalidGuestUnbindReason(anyhow::anyhow!(error_txt))
-        } else {
-            TdispUnbindReason::GuestInitiated(reason)
+        let reason = match reason {
+            TdispGuestUnbindReason::GRACEFUL => TdispUnbindReason::GuestInitiated(reason),
+            _ => {
+                self.error_print(
+                    format!("Invalid guest unbind reason {} requested", reason.0).as_str(),
+                );
+                TdispUnbindReason::InvalidGuestUnbindReason(anyhow::anyhow!(
+                    "Invalid guest unbind reason {} requested",
+                    reason.0
+                ))
+            }
         };
 
         self.debug_print(&format!(
