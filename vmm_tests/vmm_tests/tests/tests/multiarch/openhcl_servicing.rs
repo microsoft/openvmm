@@ -26,6 +26,10 @@ use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
+use petri::vtl2_settings::ControllerType;
+use petri::vtl2_settings::Vtl2LunBuilder;
+use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
+use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 #[allow(unused_imports)]
@@ -397,35 +401,19 @@ async fn create_keepalive_test_config(
             // Assign the fault controller to VTL2
             .with_custom_vtl2_settings(|v| {
                 v.dynamic.as_mut().unwrap().storage_controllers.push(
-                    vtl2_settings_proto::StorageController {
-                        instance_id: scsi_instance.to_string(),
-                        protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
-                            .into(),
-                        luns: vec![vtl2_settings_proto::Lun {
-                            location: vtl0_nvme_lun,
-                            device_id: Guid::new_random().to_string(),
-                            vendor_id: "OpenVMM".to_string(),
-                            product_id: "Disk".to_string(),
-                            product_revision_level: "1.0".to_string(),
-                            serial_number: "0".to_string(),
-                            model_number: "1".to_string(),
-                            physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
-                                r#type: vtl2_settings_proto::physical_devices::BackingType::Single
-                                    .into(),
-                                device: Some(vtl2_settings_proto::PhysicalDevice {
-                                    device_type:
-                                        vtl2_settings_proto::physical_device::DeviceType::Nvme
-                                            .into(),
-                                    device_path: NVME_INSTANCE.to_string(),
-                                    sub_device_path: vtl2_nsid,
-                                }),
-                                devices: Vec::new(),
-                            }),
-                            ..Default::default()
-                        }],
-                        io_queue_depth: None,
-                    },
-                )
+                    Vtl2StorageControllerBuilder::scsi()
+                        .with_instance_id(scsi_instance)
+                        .add_lun(
+                            Vtl2LunBuilder::disk()
+                                .with_location(vtl0_nvme_lun)
+                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                    ControllerType::Nvme,
+                                    NVME_INSTANCE,
+                                    vtl2_nsid,
+                                )),
+                        )
+                        .build(),
+                );
             })
         })
         .run()

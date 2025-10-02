@@ -9295,7 +9295,6 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmm_test_macros",
- "vtl2_settings_proto",
  "zerocopy 0.8.25",
 ]
 

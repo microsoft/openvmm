@@ -30,6 +30,10 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openvmm::BOOT_NVME_INSTANCE;
 use crate::openvmm::memdiff_vmgs_from_artifact;
 use crate::vm::append_cmdline;
+use crate::vtl2_settings::ControllerType;
+use crate::vtl2_settings::Vtl2LunBuilder;
+use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
+use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use anyhow::Context;
 use framebuffer::FRAMEBUFFER_SIZE;
 use framebuffer::Framebuffer;
@@ -38,7 +42,6 @@ use fs_err::File;
 use futures::StreamExt;
 use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
-use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
@@ -815,34 +818,20 @@ impl PetriVmConfigSetupCore<'_> {
                     .as_mut()
                     .unwrap()
                     .storage_controllers
-                    .push(vtl2_settings_proto::StorageController {
-                        instance_id: SCSI_INSTANCE.to_string(),
-                        protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
-                            .into(),
-                        luns: vec![vtl2_settings_proto::Lun {
-                            location: BOOT_NVME_LUN,
-                            device_id: Guid::new_random().to_string(),
-                            vendor_id: "OpenVMM".to_string(),
-                            product_id: "Disk".to_string(),
-                            product_revision_level: "1.0".to_string(),
-                            serial_number: "0".to_string(),
-                            model_number: "1".to_string(),
-                            physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
-                                r#type: vtl2_settings_proto::physical_devices::BackingType::Single
-                                    .into(),
-                                device: Some(vtl2_settings_proto::PhysicalDevice {
-                                    device_type:
-                                        vtl2_settings_proto::physical_device::DeviceType::Nvme
-                                            .into(),
-                                    device_path: PARAVISOR_BOOT_NVME_INSTANCE.to_string(),
-                                    sub_device_path: BOOT_NVME_NSID,
-                                }),
-                                devices: Vec::new(),
-                            }),
-                            ..Default::default()
-                        }],
-                        io_queue_depth: None,
-                    }),
+                    .push(
+                        Vtl2StorageControllerBuilder::scsi()
+                            .with_instance_id(SCSI_INSTANCE)
+                            .add_lun(
+                                Vtl2LunBuilder::disk()
+                                    .with_location(BOOT_NVME_LUN)
+                                    .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                        ControllerType::Nvme,
+                                        PARAVISOR_BOOT_NVME_INSTANCE,
+                                        BOOT_NVME_NSID,
+                                    )),
+                            )
+                            .build(),
+                    ),
             }
         } else {
             match self.boot_device_type {

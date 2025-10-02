@@ -23,7 +23,7 @@ pub enum ControllerType {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Vtl2StorageBackingDeviceBuilder {
     device_type: ControllerType,
-    device_path: String,
+    device_path: Guid,
     sub_device_path: u32,
 }
 
@@ -37,7 +37,7 @@ impl Vtl2StorageBackingDeviceBuilder {
     /// device.
     ///
     /// IDE is not supported as a VTL2 backing device.
-    pub fn new(device_type: ControllerType, device_path: String, sub_device_path: u32) -> Self {
+    pub fn new(device_type: ControllerType, device_path: Guid, sub_device_path: u32) -> Self {
         assert_ne!(device_type, ControllerType::Ide); // IDE is not supported as VTL2 backing device
         Self {
             device_type,
@@ -55,7 +55,7 @@ impl Vtl2StorageBackingDeviceBuilder {
         };
         vtl2_settings_proto::PhysicalDevice {
             device_type: device_type.into(),
-            device_path: self.device_path,
+            device_path: self.device_path.to_string(),
             sub_device_path: self.sub_device_path,
         }
     }
@@ -140,12 +140,21 @@ impl Vtl2LunBuilder {
     }
 
     /// The physical devices backing the LUN.
+    ///
+    /// Overwrites any current physical backing device configuration (one or many).
     pub fn with_physical_devices(
         mut self,
         physical_devices: Vec<Vtl2StorageBackingDeviceBuilder>,
     ) -> Self {
         self.physical_devices = physical_devices;
         self
+    }
+
+    /// The single physical device backing the LUN.
+    ///
+    /// Overwrites any current physical backing device configuration (one or many).
+    pub fn with_physical_device(self, physical_device: Vtl2StorageBackingDeviceBuilder) -> Self {
+        self.with_physical_devices(vec![physical_device])
     }
 
     /// For striped devices, the size of the stripe chunk in KB.
@@ -213,6 +222,12 @@ impl Vtl2StorageControllerBuilder {
     /// Add a LUN to the controller.
     pub fn add_lun(mut self, lun: Vtl2LunBuilder) -> Self {
         self.luns.push(lun);
+        self
+    }
+
+    /// Add a LUN to the controller.
+    pub fn add_luns(mut self, luns: Vec<Vtl2LunBuilder>) -> Self {
+        self.luns.extend(luns);
         self
     }
 

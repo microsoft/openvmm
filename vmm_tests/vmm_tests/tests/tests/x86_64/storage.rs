@@ -131,20 +131,20 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                         .add_lun(
                             Vtl2LunBuilder::disk()
                                 .with_location(vtl0_scsi_lun)
-                                .with_physical_devices(vec![Vtl2StorageBackingDeviceBuilder::new(
+                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                                     ControllerType::Scsi,
-                                    scsi_instance.to_string(),
+                                    scsi_instance,
                                     vtl2_lun,
-                                )]),
+                                )),
                         )
                         .add_lun(
                             Vtl2LunBuilder::disk()
                                 .with_location(vtl0_nvme_lun)
-                                .with_physical_devices(vec![Vtl2StorageBackingDeviceBuilder::new(
+                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                                     ControllerType::Nvme,
-                                    NVME_INSTANCE.to_string(),
+                                    NVME_INSTANCE,
                                     vtl2_nsid,
-                                )]),
+                                )),
                         )
                         .build(),
                 )
@@ -344,7 +344,7 @@ async fn openhcl_linux_storvsp_dvd(
                 build_vtl2_storage_backing_physical_devices(vec![
                     Vtl2StorageBackingDeviceBuilder::new(
                         ControllerType::Scsi,
-                        scsi_instance.to_string(),
+                        scsi_instance,
                         vtl2_lun,
                     ),
                 ])
@@ -430,11 +430,11 @@ async fn openhcl_linux_storvsp_dvd_nvme(
                         .add_lun(
                             Vtl2LunBuilder::dvd()
                                 .with_location(vtl2_lun)
-                                .with_physical_devices(vec![Vtl2StorageBackingDeviceBuilder::new(
+                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
                                     ControllerType::Nvme,
-                                    NVME_INSTANCE.to_string(),
+                                    NVME_INSTANCE,
                                     vtl2_nsid,
-                                )]),
+                                )),
                         )
                         .build(),
                 );
@@ -510,12 +510,12 @@ async fn openhcl_linux_stripe_storvsp(
                                 .with_physical_devices(vec![
                                     Vtl2StorageBackingDeviceBuilder::new(
                                         ControllerType::Nvme,
-                                        NVME_INSTANCE_1.to_string(),
+                                        NVME_INSTANCE_1,
                                         vtl2_nsid,
                                     ),
                                     Vtl2StorageBackingDeviceBuilder::new(
                                         ControllerType::Nvme,
-                                        NVME_INSTANCE_2.to_string(),
+                                        NVME_INSTANCE_2,
                                         vtl2_nsid,
                                     ),
                                 ]),
