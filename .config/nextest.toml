@@ -19,8 +19,8 @@ threads-required = 4
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests) and test(heavy)'
-# Mark heavy tests as extra heavy, as they include up to 16 vps.
-threads-required = 16
+# Mark heavy tests as extra heavy, as they include 16 vps.
+threads-required = 32
 
 # Profile for CI runs.
 [profile.ci]
@@ -47,14 +47,3 @@ filter = 'package(~vmm_tests)'
 # VMM tests contain their own watchdog timer, but keep an extra long timer
 # here as a backup.
 slow-timeout = { period = "10m", terminate-after = 1 }
-
-# TEMP (hopefully): For reasons that continue to befuddle, running Windows
-# release-mode unit tests in flowey CI is resulting in seemingly-random
-# tests occationally stalling by up to ~10 seconds.
-#
-# This did not occur in the "legacy" non-flowey CI, and so the question becomes:
-# what subtle different in execution environments between the new pipeline and
-# the old pipeline is causing this different behavior?
-[[profile.ci.overrides]]
-platform = 'cfg(windows)'
-slow-timeout = { period = "1s", terminate-after = 30 }
