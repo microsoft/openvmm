@@ -6,6 +6,7 @@
 pub mod hyperv;
 /// OpenVMM VM management
 pub mod openvmm;
+pub mod vtl2_settings;
 
 use crate::PetriLogSource;
 use crate::PetriTestParams;
