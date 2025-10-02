@@ -191,13 +191,13 @@ impl QueuePair {
 
     /// Create a new queue pair.
     ///
-    /// * `sq_entries` and `cq_entries` are the requested sizes in entries.
-    ///    Calling code should request the largest size it thinks the device
-    ///    will support (see `CAP.MQES`). These may be clamped down to what will
-    ///    fit in one page should this routine fail to allocate physically
-    ///    contiguous memory to back the queues.
-    ///    IMPORTANT: Calling code should check the actual sizes via corresponding
-    ///    calls to [`QueuePair::sq_entries`] and [`QueuePair::cq_entries`] AFTER calling this routine.
+    /// `sq_entries` and `cq_entries` are the requested sizes in entries.
+    /// Calling code should request the largest size it thinks the device
+    /// will support (see `CAP.MQES`). These may be clamped down to what will
+    /// fit in one page should this routine fail to allocate physically
+    /// contiguous memory to back the queues.
+    /// IMPORTANT: Calling code should check the actual sizes via corresponding
+    /// calls to [`QueuePair::sq_entries`] and [`QueuePair::cq_entries`] AFTER calling this routine.
     pub fn new(
         spawner: impl SpawnDriver,
         device: &impl DeviceBacking,
