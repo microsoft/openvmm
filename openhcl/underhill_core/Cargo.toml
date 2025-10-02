@@ -86,7 +86,6 @@ serial_16550_resources.workspace = true
 storage_string.workspace = true
 storvsp.workspace = true
 storvsp_resources.workspace = true
-tdisp.workspace = true
 tpm_resources.workspace = true
 tpm_device = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true

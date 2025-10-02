@@ -27,7 +27,6 @@ mod vp;
 mod vpci;
 mod worker;
 mod wrapped_partition;
-
 // `pub` so that the missing_docs warning fires for options without
 // documentation.
 pub use options::Options;
@@ -67,6 +66,7 @@ use mesh_worker::WorkerHost;
 use mesh_worker::WorkerHostRunner;
 use mesh_worker::launch_local_worker;
 use mesh_worker::register_workers;
+use openhcl_tdisp as _;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
