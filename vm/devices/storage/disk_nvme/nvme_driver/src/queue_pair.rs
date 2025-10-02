@@ -174,16 +174,19 @@ impl PendingCommands {
 }
 
 impl QueuePair {
-    /// Number of SQ entries per page.
-    const SQ_ENTRIES_PER_PAGE: usize = PAGE_SIZE / 64;
-    /// Submission Queue size in bytes (64 submissions per page).
+    const SQ_ENTRY_SIZE: usize = size_of::<spec::Command>();
+    const CQ_ENTRY_SIZE: usize = size_of::<spec::Completion>();
+
+    /// Number of SQ entries per page (64).
+    const SQ_ENTRIES_PER_PAGE: usize = PAGE_SIZE / Self::SQ_ENTRY_SIZE;
+    /// Submission Queue size in bytes.
     const SQ_SIZE: usize = PAGE_SIZE * 4;
-    /// Completion Queue size in bytes (256 submissions per page).
+    /// Completion Queue size in bytes.
     const CQ_SIZE: usize = PAGE_SIZE;
     /// Maximum SQ size in entries.
-    pub const MAX_SQ_ENTRIES: u16 = (Self::SQ_SIZE / 64) as u16;
+    pub const MAX_SQ_ENTRIES: u16 = (Self::SQ_SIZE / Self::SQ_ENTRY_SIZE) as u16;
     /// Maximum CQ size in entries.
-    pub const MAX_CQ_ENTRIES: u16 = (Self::CQ_SIZE / 16) as u16;
+    pub const MAX_CQ_ENTRIES: u16 = (Self::CQ_SIZE / Self::CQ_ENTRY_SIZE) as u16;
     /// Number of pages per queue if bounce buffering.
     const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
     /// Number of pages per queue if not bounce buffering.
@@ -293,7 +296,9 @@ impl QueuePair {
                 cq_mem_block.pfns = ?cq_mem_block.pfns(),
                 "non-contiguous queue memory detected, falling back to single page queues"
             );
-            // clamp both to the same 1-page size.
+            // Clamp both queues to the number of entries that will fit in a
+            // single SQ page (since this will be the smaller between the SQ and
+            // CQ capacity).
             (
                 QueuePair::SQ_ENTRIES_PER_PAGE as u16,
                 QueuePair::SQ_ENTRIES_PER_PAGE as u16,

@@ -4815,6 +4815,7 @@ dependencies = [
  "inspect",
  "mesh",
  "open_enum",
+ "static_assertions",
  "storage_string",
  "zerocopy 0.8.25",
 ]
