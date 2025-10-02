@@ -57,7 +57,7 @@ pub trait VpciTdispInterface: Send + Sync {
     /// the device from modifying its resources prior to attestation.
     fn tdisp_bind_interface(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
 
-    /// Start a bound device by transitioning it to the from the Locked state to the Run state.
+    /// Start a bound device by transitioning it from the Locked state to the Run state.
     /// This allows for attestation and for resources to be accepted into the guest context.
     fn tdisp_start_device(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
 
