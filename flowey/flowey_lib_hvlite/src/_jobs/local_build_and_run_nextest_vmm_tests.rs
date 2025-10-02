@@ -5,7 +5,8 @@
 
 use crate::_jobs::local_build_igvm::non_production_build_igvm_tool_out_name;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
-use crate::build_openhcl_igvm_from_recipe::{OpenhclIgvmRecipe, OpenhclIgvmRecipeDetailsLocalOnly};
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
@@ -194,12 +195,8 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
-        // Pre-resolve absolute paths where needed in a fallible context.
-        let custom_kernel_modules_abs = custom_kernel_modules
-            .clone()
-            .map(|p| p.absolute())
-            .transpose()?;
-        let custom_kernel_abs = custom_kernel.clone().map(|p| p.absolute()).transpose()?;
+        let custom_kernel_modules_abs = custom_kernel_modules.map(|p| p.absolute()).transpose()?;
+        let custom_kernel_abs = custom_kernel.map(|p| p.absolute()).transpose()?;
 
         let target_triple = target.as_triple();
         let arch = target.common_arch().unwrap();
