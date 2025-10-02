@@ -91,6 +91,8 @@ impl SerializePacket for GuestToHostCommand {
     fn serialize_to_bytes(self) -> Vec<u8> {
         let header = GuestToHostCommandSerializedHeader::from(&self);
         let bytes = header.as_bytes();
+        tracing::debug!(format!("serialize_to_bytes: header={:?}", header));
+        tracing::debug!(format!("serialize_to_bytes: {:?}", bytes));
 
         let mut bytes = bytes.to_vec();
         match self.payload {
@@ -106,11 +108,16 @@ impl SerializePacket for GuestToHostCommand {
 
     fn deserialize_from_bytes(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         let header_length = size_of::<GuestToHostCommandSerializedHeader>();
-        tracing::error!(msg = format!("deserialize_from_bytes: header_length={header_length}"));
-        tracing::error!(msg = format!("deserialize_from_bytes: {:?}", bytes));
+        tracing::debug!(format!(
+            "deserialize_from_bytes: header_length={header_length}"
+        ));
+        tracing::debug!(format!("deserialize_from_bytes: {:?}", bytes));
 
         let header_bytes = &bytes[0..header_length];
-        tracing::error!(msg = format!("deserialize_from_bytes: header_bytes={:?}", header_bytes));
+        tracing::debug!(format!(
+            "deserialize_from_bytes: header_bytes={:?}",
+            header_bytes
+        ));
 
         let header =
             GuestToHostCommandSerializedHeader::try_ref_from_bytes(header_bytes).map_err(|e| {

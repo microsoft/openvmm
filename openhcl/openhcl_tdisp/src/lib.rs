@@ -3,7 +3,7 @@
 
 //!
 //! This module provides resources and traits for a TDISP client device
-//! interface for assigned deviecs in OpenHCL.
+//! interface for assigned devices in OpenHCL.
 //!
 //! See: `vm/tdisp` for more information.
 //! See: `openhcl_tdisp` for more information.

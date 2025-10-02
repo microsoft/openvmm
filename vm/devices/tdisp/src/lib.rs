@@ -397,7 +397,7 @@ impl TdispHostStateMachine {
 
     /// Print a debug message to the log.
     fn debug_print(&self, msg: &str) {
-        tracing::error!(msg = format!("[TdispEmu] [{}] {}", self.debug_device_id, msg));
+        tracing::debug!(msg = format!("[TdispEmu] [{}] {}", self.debug_device_id, msg));
     }
 
     /// Print an error message to the log.
