@@ -815,3 +815,79 @@ async fn validate_mnf_usage_in_guest(
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Configure Guest VSM and reboot the VM to verify it works.
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config.run().await?;
+    let shell = agent.windows_shell();
+
+    // Enable VBS
+    cmd!(shell, "reg")
+        .args([
+            "add",
+            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
+            "/v",
+            "EnableVirtualizationBasedSecurity",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "1",
+            "/f",
+        ])
+        .run()
+        .await?;
+    // Enable Credential Guard
+    cmd!(shell, "reg")
+        .args([
+            "add",
+            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
+            "/v",
+            "LsaCfgFlags",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "2",
+            "/f",
+        ])
+        .run()
+        .await?;
+    // Enable HVCI
+    cmd!(shell, "reg")
+        .args([
+            "add",
+            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity",
+            "/v",
+            "Enabled",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "1",
+            "/f",
+        ])
+        .run()
+        .await?;
+
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+    let shell = agent.windows_shell();
+
+    // Verify VBS is running
+    let output = cmd!(shell, "systeminfo").output().await?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert!(output_str.contains("Virtualization-based security: Status: Running"));
+    let output_running = &output_str[output_str.find("Services Running:").unwrap()..];
+    assert!(output_running.contains("Credential Guard"));
+    assert!(output_running.contains("Hypervisor enforced Code Integrity"));
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
