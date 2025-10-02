@@ -194,8 +194,11 @@ impl BackingPrivate for HypervisorBackedArm64 {
                         .exit_message()
                         .as_message::<hvdef::HvArm64ResetInterceptMessage>();
                     match message.reset_type {
-                        HvArm64ResetType::POWER_OFF | HvArm64ResetType::HIBERNATE => {
+                        HvArm64ResetType::POWER_OFF => {
                             return Err(VpHaltReason::PowerOff);
+                        }
+                        HvArm64ResetType::HIBERNATE => {
+                            return Err(VpHaltReason::Hibernate);
                         }
                         HvArm64ResetType::REBOOT => {
                             return Err(VpHaltReason::Reset);
