@@ -6,17 +6,17 @@
 //! interface for assigned devices in OpenHCL.
 //!
 //! See: `vm/tdisp` for more information.
-//! See: `openhcl_tdisp` for more information.
+
+pub use tdisp::TdispCommandId;
+pub use tdisp::{TDISP_INTERFACE_VERSION_MAJOR, TDISP_INTERFACE_VERSION_MINOR};
 
 use inspect::Inspect;
 use std::future::Future;
 use tdisp::GuestToHostCommand;
 use tdisp::GuestToHostResponse;
-pub use tdisp::TdispCommandId;
 use tdisp::TdispGuestUnbindReason;
 use tdisp::devicereport::TdiReportStruct;
 use tdisp::devicereport::TdispDeviceReportType;
-pub use tdisp::{TDISP_INTERFACE_VERSION_MAJOR, TDISP_INTERFACE_VERSION_MINOR};
 
 /// Represents a TDISP device assigned to a guest partition. This trait allows
 /// the guest to send TDISP commands to the host through the backing interface.
