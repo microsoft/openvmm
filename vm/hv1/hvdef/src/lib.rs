@@ -3022,7 +3022,7 @@ impl MessagePayload for HvX64HaltMessage {}
 pub struct HvArm64ResetInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub reset_type: HvArm64ResetType,
-    pub padding: u32,
+    pub reset_code: u32,
 }
 
 impl MessagePayload for HvArm64ResetInterceptMessage {}
@@ -3032,6 +3032,8 @@ open_enum! {
     pub enum HvArm64ResetType: u32 {
         POWER_OFF = 0,
         REBOOT = 1,
+        SYSTEM_RESET = 2,
+        HIBERNATE = 3,
     }
 }
 

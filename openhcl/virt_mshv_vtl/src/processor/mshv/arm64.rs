@@ -194,9 +194,26 @@ impl BackingPrivate for HypervisorBackedArm64 {
                         .exit_message()
                         .as_message::<hvdef::HvArm64ResetInterceptMessage>();
                     match message.reset_type {
-                        HvArm64ResetType::POWER_OFF => return Err(VpHaltReason::PowerOff),
-                        HvArm64ResetType::REBOOT => return Err(VpHaltReason::Reset),
-                        ty => unreachable!("unknown reset type: {:#x?}", ty),
+                        HvArm64ResetType::POWER_OFF => {
+                            return Err(VpHaltReason::PowerOff);
+                        }
+                        HvArm64ResetType::HIBERNATE => {
+                            return Err(VpHaltReason::Hibernate);
+                        }
+                        HvArm64ResetType::REBOOT => {
+                            return Err(VpHaltReason::Reset);
+                        }
+                        HvArm64ResetType::SYSTEM_RESET => {
+                            // TODO: What values can it have?
+                            tracing::debug!(reset_code = message.reset_code, "system reset");
+                            return Err(VpHaltReason::Reset);
+                        }
+                        ty => {
+                            unreachable!(
+                                "unknown reset type: {:#x?}, {:#x}",
+                                ty, message.reset_code
+                            )
+                        }
                     }
                 }
                 reason => unreachable!("unknown exit reason: {:#x?}", reason),
