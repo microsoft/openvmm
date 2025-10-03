@@ -121,7 +121,7 @@ pub struct BuildSelections {
 impl Default for BuildSelections {
     fn default() -> Self {
         Self {
-            prep_steps: true,
+            prep_steps: false,
             openhcl: true,
             openvmm: true,
             pipette_windows: true,
