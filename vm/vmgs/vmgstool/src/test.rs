@@ -33,9 +33,8 @@ pub(crate) enum TestOperation {
     },
     /// Create a VMGS file that has two encryption keys
     ///
-    /// This is useful for testing recovery the recovery path in the
-    /// `update-key` command in this scenario. Also writes an extra key for
-    /// convenience when testing that command (extrakey.bin).
+    /// This is useful for testing the recovery path in the
+    /// `update-key` command in this scenario.
     TwoKeys {
         #[command(flatten)]
         file_path: FilePathArg,
