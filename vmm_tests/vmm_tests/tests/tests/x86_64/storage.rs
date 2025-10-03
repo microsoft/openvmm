@@ -462,7 +462,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(
     Ok(())
 }
 
-/// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
+// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
 // #[openvmm_test(
 //     openhcl_linux_direct_x64,
 //     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
