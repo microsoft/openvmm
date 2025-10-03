@@ -9,7 +9,6 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
-use crate::build_vmgstool;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonPlatform;
@@ -187,6 +186,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::gen_cargo_nextest_run_cmd::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
+        ctx.import::<crate::build_vmgstool::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -322,6 +322,10 @@ impl SimpleFlowNode for Node {
                 }
                 if !tdx && !snp && !hyperv_vbs {
                     build.prep_steps = false;
+                }
+                if !vmgstool {
+                    filter.push_str(" & !test(vmgstool)");
+                    build.vmgstool = false;
                 }
 
                 let artifacts = match arch {

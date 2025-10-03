@@ -19,6 +19,7 @@ pub use runtime::PetriVmOpenVmm;
 
 use crate::BootDeviceType;
 use crate::Firmware;
+use crate::PetriDiskType;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
@@ -195,14 +196,14 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
 }
 
 fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
-    let convert_disk = |disk: &Option<PathBuf>| -> anyhow::Result<Resource<DiskHandleKind>> {
-        if let Some(disk) = disk {
-            memdiff_disk(disk)
-        } else {
-            Ok(LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+    let convert_disk = |disk: &PetriDiskType| -> anyhow::Result<Resource<DiskHandleKind>> {
+        match disk {
+            PetriDiskType::Memory => Ok(LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                 len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
             })
-            .into_resource())
+            .into_resource()),
+            PetriDiskType::Differencing(path) => memdiff_disk(path),
+            PetriDiskType::Persistent(path) => open_disk_type(path, false),
         }
     };
 

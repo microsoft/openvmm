@@ -416,7 +416,7 @@ async fn default_boot(
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_backing_vmgs(initial_vmgs)
+        .with_initial_vmgs(initial_vmgs)
         .modify_backend(|b| b.with_default_boot_always_attempt(true))
         .run()
         .await?;
@@ -443,7 +443,7 @@ async fn clear_vmgs(
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Reprovision)
-        .with_backing_vmgs(initial_vmgs)
+        .with_initial_vmgs(initial_vmgs)
         .run()
         .await?;
 
@@ -472,7 +472,7 @@ async fn boot_expect_fail(
     let vm = config
         .with_expect_boot_failure()
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_backing_vmgs(initial_vmgs)
+        .with_initial_vmgs(initial_vmgs)
         .run_without_agent()
         .await?;
 
@@ -558,7 +558,7 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
     Ok(())
 }
 
-/// Test vmgstool
+/// Test vmgstool create command
 #[openvmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGSTOOL_NATIVE]
 )]
@@ -569,13 +569,61 @@ async fn vmgstool_create(
     let temp_dir = tempfile::tempdir()?;
     let vmgs_path = temp_dir.path().join("test.vmgs");
     let vmgstool_path = vmgstool.get();
+
     let mut cmd = Command::new(vmgstool_path);
     cmd.arg("create").arg("--filepath").arg(&vmgs_path);
     run_cmd(cmd).await?;
 
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_backing_vmgs(&vmgs_path)
+        .with_persistent_vmgs(&vmgs_path)
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    // make sure the vmgs was actually used and that there are some boot
+    // entries now
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("uefi-nvram")
+        .arg("remove-boot-entries")
+        .arg("--filepath")
+        .arg(&vmgs_path);
+    run_cmd(cmd).await?;
+
+    Ok(())
+}
+
+/// Test vmgstool remove-boot-entries command to make sure it removes the
+/// invalid boot entries and the vm boots.
+#[openvmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGSTOOL_NATIVE, VMGS_WITH_BOOT_ENTRY]
+)]
+async fn vmgstool_remove_boot_entries(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (vmgstool, initial_vmgs): (
+        ResolvedArtifact<impl IsVmgsTool>,
+        ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,
+    ),
+) -> Result<(), anyhow::Error> {
+    let temp_dir = tempfile::tempdir()?;
+    let vmgs_path = temp_dir.path().join("test.vmgs");
+    let vmgstool_path = vmgstool.get();
+
+    std::fs::copy(initial_vmgs.get(), &vmgs_path)?;
+
+    let mut cmd = Command::new(vmgstool_path);
+    cmd.arg("uefi-nvram")
+        .arg("remove-boot-entries")
+        .arg("--filepath")
+        .arg(&vmgs_path);
+
+    run_cmd(cmd).await?;
+
+    let (vm, agent) = config
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_persistent_vmgs(&vmgs_path)
         .run()
         .await?;
 

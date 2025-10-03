@@ -255,6 +255,9 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_prep_steps, use_prep_steps) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-prep_steps"));
 
+            let (pub_vmgstool, use_vmgstool) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
+
             // filter off interesting artifacts required by the VMM tests job
             match arch {
                 CommonArch::X86_64 => {
@@ -265,6 +268,7 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_pipette_windows.clone());
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
                     vmm_tests_artifacts_windows_x86.use_prep_steps = Some(use_prep_steps.clone());
+                    vmm_tests_artifacts_windows_x86.use_vmgstool = Some(use_vmgstool.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openvmm = Some(use_openvmm.clone());
@@ -280,8 +284,6 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-igvmfilegen"));
             let (pub_vmgs_lib, _use_vmgs_lib) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgs_lib"));
-            let (pub_vmgstool, _use_vmgstool) =
-                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
             let (pub_hypestv, _use_hypestv) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-hypestv"));
             let (pub_ohcldiag_dev, _use_ohcldiag_dev) =
@@ -296,15 +298,6 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
                     FlowPlatform::Windows,
                 ))
-                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
-                    profile: CommonProfile::from_release(release),
-                    with_crypto: true,
-                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
-                })
                 .dep_on(|ctx| flowey_lib_hvlite::build_hypestv::Request {
                     target: CommonTriple::Common {
                         arch,
@@ -396,6 +389,15 @@ impl IntoPipeline for CheckinGatesCli {
                     },
                     profile: CommonProfile::from_release(release),
                     prep_steps: ctx.publish_typed_artifact(pub_prep_steps),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    with_crypto: true,
+                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
                 });
 
             // Hang building the windows VMM tests off this big windows job.
