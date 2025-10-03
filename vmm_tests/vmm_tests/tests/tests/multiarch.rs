@@ -9,7 +9,6 @@ use memstat::TestVPCount;
 use memstat::WaitPeriodSec;
 use memstat::idle_test;
 use pal_async::DefaultDriver;
-use petri::ArtifactResolver;
 use petri::MemoryConfig;
 use petri::PetriGuestStateLifetime;
 use petri::PetriHaltReason;
@@ -571,8 +570,7 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    _resolver: &ArtifactResolver<'_>,
-    driver: &DefaultDriver,
+    driver: DefaultDriver,
 ) -> anyhow::Result<()> {
     idle_test(
         config,
@@ -592,8 +590,7 @@ async fn memory_validation_small<T: PetriVmmBackend>(
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_large<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    _resolver: &ArtifactResolver<'_>,
-    driver: &DefaultDriver,
+    driver: DefaultDriver,
 ) -> anyhow::Result<()> {
     idle_test(
         config,
