@@ -897,7 +897,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                             );
                     }
                     _ => {
-                         tracing::info!(
+                         tracing::error!(
                             cpu,
                             fallback_cpu,
                             error = &err as &dyn std::error::Error,
