@@ -138,12 +138,8 @@ impl virt::Hypervisor for LinuxMshv {
             break;
         }
 
-        match vmfd.initialize() {
-            Ok(()) => {}
-            Err(_) => {
-                return Err(Error::CreateVMFailed);
-            }
-        }
+        vmfd.initialize()
+            .map_err(|e| Error::CreateVMInitFailed(e.into()))?;
 
         // Create virtual CPUs.
         let mut vps: Vec<MshvVpInner> = Vec::new();
@@ -1083,6 +1079,8 @@ pub enum Error {
     NotSupported,
     #[error("create_vm failed")]
     CreateVMFailed,
+    #[error("failed to initialize VM")]
+    CreateVMInitFailed(#[source] anyhow::Error),
     #[error("failed to create VCPU")]
     CreateVcpu(#[source] MshvError),
     #[error("vtl2 not supported")]
