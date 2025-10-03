@@ -5,12 +5,9 @@
 
 use anyhow::Context;
 use futures::StreamExt;
-use hyperv_ic_resources::kvp::KvpRpc;
-use jiff::SignedDuration;
 use memstat::TestVPCount;
 use memstat::WaitPeriodSec;
 use memstat::idle_test;
-use mesh::rpc::RpcSend;
 use petri::MemoryConfig;
 use petri::PetriGuestStateLifetime;
 use petri::PetriHaltReason;
