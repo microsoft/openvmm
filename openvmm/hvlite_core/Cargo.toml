@@ -62,6 +62,7 @@ input_core.workspace = true
 missing_dev.workspace = true
 pci_bus.workspace = true
 pci_core.workspace = true
+pcie.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 serial_16550_resources.workspace = true
