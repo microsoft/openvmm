@@ -556,6 +556,7 @@ pub mod artifacts {
     vmgstool_native!(VMGSTOOL_LINUX_X64, "linux", "x86_64");
     vmgstool_native!(VMGSTOOL_WIN_AARCH64, "windows", "aarch64");
     vmgstool_native!(VMGSTOOL_LINUX_AARCH64, "linux", "aarch64");
+    vmgstool_native!(VMGSTOOL_MACOS_AARCH64, "macos", "aarch64");
 
     declare_artifacts! {
         /// vmgstool windows x86_64 executable
@@ -566,12 +567,15 @@ pub mod artifacts {
         VMGSTOOL_WIN_AARCH64,
         /// vmgstool linux aarch64 executable
         VMGSTOOL_LINUX_AARCH64,
+        /// vmgstool linux aarch64 executable
+        VMGSTOOL_MACOS_AARCH64,
     }
 
     impl IsVmgsTool for VMGSTOOL_WIN_X64 {}
     impl IsVmgsTool for VMGSTOOL_LINUX_X64 {}
     impl IsVmgsTool for VMGSTOOL_WIN_AARCH64 {}
     impl IsVmgsTool for VMGSTOOL_LINUX_AARCH64 {}
+    impl IsVmgsTool for VMGSTOOL_MACOS_AARCH64 {}
 }
 
 /// Artifact tag trait declarations
