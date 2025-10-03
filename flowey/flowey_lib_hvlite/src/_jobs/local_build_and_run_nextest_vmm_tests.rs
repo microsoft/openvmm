@@ -866,6 +866,9 @@ impl SimpleFlowNode for Node {
 
         if build_only {
             ctx.emit_side_effect_step(side_effects, [done]);
+            if let Some(prep_steps) = register_prep_steps {
+                prep_steps.claim_unused(ctx);
+            }
         } else {
             side_effects.push(ctx.reqv(crate::install_vmm_tests_deps::Request::Install));
             if let Some(prep_steps) = register_prep_steps {
