@@ -3,7 +3,7 @@
 
 //! Memory Validation for VMM Tests
 
-use pal_async::DefaultPool;
+use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::IsolationType;
 use petri::MemoryConfig;
@@ -363,6 +363,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     vps: TestVPCount,
     wait_time_sec: WaitPeriodSec,
+    driver: DefaultDriver,
 ) -> anyhow::Result<()> {
     let isolation_type = config.isolation();
     let machine_arch = config.arch();
@@ -395,11 +396,9 @@ pub async fn idle_test<T: PetriVmmBackend>(
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
 
     // This wait is needed to let the idle VM fully instantiate its memory - provides more accurate memory usage results
-    DefaultPool::run_with(async |driver| {
-        PolledTimer::new(&driver)
-            .sleep(Duration::from_secs(wait_time_sec as u64))
-            .await;
-    });
+    PolledTimer::new(&driver)
+        .sleep(Duration::from_secs(wait_time_sec as u64))
+        .await;
 
     let memstat = MemStat::new(&vtl2_agent).await;
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());

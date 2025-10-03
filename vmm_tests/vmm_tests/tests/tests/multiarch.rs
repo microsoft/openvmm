@@ -8,6 +8,8 @@ use futures::StreamExt;
 use memstat::TestVPCount;
 use memstat::WaitPeriodSec;
 use memstat::idle_test;
+use pal_async::DefaultDriver;
+use petri::ArtifactResolver;
 use petri::MemoryConfig;
 use petri::PetriGuestStateLifetime;
 use petri::PetriHaltReason;
@@ -569,8 +571,16 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
+    _artifact_resolver: ArtifactResolver<'_>,
+    driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    idle_test(config, TestVPCount::SmallVPCount, WaitPeriodSec::ShortWait).await
+    idle_test(
+        config,
+        TestVPCount::SmallVPCount,
+        WaitPeriodSec::ShortWait,
+        driver,
+    )
+    .await
 }
 
 #[vmm_test_no_agent(
@@ -582,6 +592,14 @@ async fn memory_validation_small<T: PetriVmmBackend>(
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_large<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
+    _artifact_resolver: ArtifactResolver<'_>,
+    driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    idle_test(config, TestVPCount::LargeVPCount, WaitPeriodSec::LongWait).await
+    idle_test(
+        config,
+        TestVPCount::LargeVPCount,
+        WaitPeriodSec::LongWait,
+        driver,
+    )
+    .await
 }
