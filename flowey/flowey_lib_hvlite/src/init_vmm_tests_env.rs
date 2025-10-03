@@ -48,6 +48,8 @@ flowey_request! {
         pub register_tmk_vmm: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
         /// Register a TMK VMM Linux musl binary
         pub register_tmk_vmm_linux_musl: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
+        /// Register a vmgstool binary
+        pub register_vmgstool: Option<ReadVar<crate::build_vmgstool::VmgstoolOutput>>,
 
         /// Get the path to the folder containing various logs emitted VMM tests.
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
@@ -81,6 +83,7 @@ impl SimpleFlowNode for Node {
             register_tmks,
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
+            register_vmgstool,
             disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path,
@@ -123,6 +126,7 @@ impl SimpleFlowNode for Node {
             let tmks = register_tmks.claim(ctx);
             let tmk_vmm = register_tmk_vmm.claim(ctx);
             let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
+            let vmgstool = register_vmgstool.claim(ctx);
             let disk_image_dir = disk_images_dir.claim(ctx);
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
@@ -282,6 +286,19 @@ impl SimpleFlowNode for Node {
                     // OK, they should be the same. Fix this when the resolver
                     // can handle multiple different outputs with the same name.
                     fs_err::copy(bin, test_content_dir.join("tmk_vmm"))?;
+                }
+
+                if let Some(vmgstool) = vmgstool {
+                    match rt.read(vmgstool) {
+                        crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe, .. } => {
+                            fs_err::copy(exe, test_content_dir.join("vmgstool.exe"))?;
+                        }
+                        crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin, .. } => {
+                            let dst = test_content_dir.join("vmgstool");
+                            fs_err::copy(bin, &dst)?;
+                            dst.make_executable()?;
+                        }
+                    }
                 }
 
                 if let Some(openhcl_igvm_files) = openhcl_igvm_files {

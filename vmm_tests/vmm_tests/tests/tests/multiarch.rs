@@ -10,20 +10,16 @@ use memstat::WaitPeriodSec;
 use memstat::idle_test;
 use pal_async::DefaultDriver;
 use petri::MemoryConfig;
-use petri::PetriGuestStateLifetime;
 use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
-use petri::ResolvedArtifact;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
-use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_no_agent;
@@ -37,6 +33,8 @@ mod openhcl_servicing;
 mod memstat;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
+/// Tests involving VMGS functionality
+mod vmgs;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
 #[vmm_test_no_agent(
@@ -400,87 +398,6 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
         MachineArch::X86_64 => assert!(matches!(halt_reason, PetriHaltReason::TripleFault)),
         MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
     }
-    Ok(())
-}
-
-/// Verify that UEFI default boots even if invalid boot entries exist
-/// when `default_boot_always_attempt` is enabled.
-#[openvmm_test(
-    openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
-)]
-async fn default_boot(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
-) -> Result<(), anyhow::Error> {
-    let (vm, agent) = config
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_backing_vmgs(initial_vmgs)
-        .modify_backend(|b| b.with_default_boot_always_attempt(true))
-        .run()
-        .await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
-/// Verify that UEFI successfully boots an operating system after reprovisioning
-/// the VMGS when invalid boot entries existed initially.
-#[openvmm_test(
-    openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
-)]
-async fn clear_vmgs(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
-) -> Result<(), anyhow::Error> {
-    let (vm, agent) = config
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Reprovision)
-        .with_backing_vmgs(initial_vmgs)
-        .run()
-        .await?;
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
-}
-
-/// Verify that UEFI fails to boot if invalid boot entries exist
-///
-/// This test exists to ensure we are not getting a false positive for
-/// the `default_boot` and `clear_vmgs` test above.
-#[openvmm_test_no_agent(
-    openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
-)]
-async fn boot_expect_fail(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
-) -> Result<(), anyhow::Error> {
-    let vm = config
-        .with_expect_boot_failure()
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .with_backing_vmgs(initial_vmgs)
-        .run_without_agent()
-        .await?;
-
-    vm.wait_for_clean_teardown().await?;
-
     Ok(())
 }
 

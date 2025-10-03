@@ -35,6 +35,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// The set of artifacts and resources needed to instantiate a
@@ -578,7 +579,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             PetriVmgsResource::Disk(disk)
             | PetriVmgsResource::ReprovisionOnFailure(disk)
             | PetriVmgsResource::Reprovision(disk) => disk,
-            PetriVmgsResource::Ephemeral => None,
+            PetriVmgsResource::Ephemeral => PetriDiskType::Memory,
         };
         self.config.vmgs = match guest_state_lifetime {
             PetriGuestStateLifetime::Disk => PetriVmgsResource::Disk(disk),
@@ -587,7 +588,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }
             PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
             PetriGuestStateLifetime::Ephemeral => {
-                if disk.is_some() {
+                if !matches!(disk, PetriDiskType::Memory) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
                 }
                 PetriVmgsResource::Ephemeral
@@ -597,15 +598,24 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Use the specified backing VMGS file
-    pub fn with_backing_vmgs(mut self, disk: ResolvedArtifact<impl IsTestVmgs>) -> Self {
+    pub fn with_initial_vmgs(self, disk: ResolvedArtifact<impl IsTestVmgs>) -> Self {
+        self.with_backing_vmgs(PetriDiskType::Differencing(disk.into()))
+    }
+
+    /// Use the specified backing VMGS file
+    pub fn with_persistent_vmgs(self, disk: impl AsRef<Path>) -> Self {
+        self.with_backing_vmgs(PetriDiskType::Persistent(disk.as_ref().to_path_buf()))
+    }
+
+    fn with_backing_vmgs(mut self, disk: PetriDiskType) -> Self {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(installed_disk)
             | PetriVmgsResource::ReprovisionOnFailure(installed_disk)
             | PetriVmgsResource::Reprovision(installed_disk) => {
-                if installed_disk.is_some() {
+                if !matches!(installed_disk, PetriDiskType::Memory) {
                     panic!("already specified a backing vmgs file");
                 }
-                *installed_disk = Some(disk.erase());
+                *installed_disk = disk;
             }
             PetriVmgsResource::Ephemeral => {
                 panic!("attempted to specify a backing vmgs with ephemeral guest state")
@@ -1589,15 +1599,26 @@ pub struct OpenHclServicingFlags {
     pub stop_timeout_hint_secs: Option<u16>,
 }
 
+/// Petri disk type
+#[derive(Debug, Clone)]
+pub enum PetriDiskType {
+    /// Memory backed
+    Memory,
+    /// Memory differencing disk backed by a file
+    Differencing(PathBuf),
+    /// Persistent disk
+    Persistent(PathBuf),
+}
+
 /// Petri VM guest state resource
 #[derive(Debug, Clone)]
 pub enum PetriVmgsResource {
     /// Use disk to store guest state
-    Disk(Option<ResolvedArtifact>),
+    Disk(PetriDiskType),
     /// Use disk to store guest state, reformatting if corrupted.
-    ReprovisionOnFailure(Option<ResolvedArtifact>),
+    ReprovisionOnFailure(PetriDiskType),
     /// Format and use disk to store guest state
-    Reprovision(Option<ResolvedArtifact>),
+    Reprovision(PetriDiskType),
     /// Store guest state in memory
     Ephemeral,
 }

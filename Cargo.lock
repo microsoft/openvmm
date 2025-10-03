@@ -9158,6 +9158,7 @@ dependencies = [
  "disk_backend",
  "disk_vhd1",
  "fs-err",
+ "getrandom 0.3.3",
  "guid",
  "hcl_compat_uefi_nvram_storage",
  "hex",

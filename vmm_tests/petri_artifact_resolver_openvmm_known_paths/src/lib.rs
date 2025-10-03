@@ -86,6 +86,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == tmks::SIMPLE_TMK_X64 => simple_tmk_path(MachineArch::X86_64),
             _ if id == tmks::SIMPLE_TMK_AARCH64 => simple_tmk_path(MachineArch::Aarch64),
 
+            _ if id == VMGSTOOL_NATIVE => vmgstool_native_executable_path(),
+
             _ => anyhow::bail!("no support for given artifact type"),
         }
     }
@@ -217,7 +219,7 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
     unreachable!()
 }
 
-/// Path to the output location of the hvlite executable.
+/// Path to the output location of the openvmm executable.
 fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm")
 }
@@ -225,6 +227,11 @@ fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
 /// Path to the output location of the tmk_vmm executable.
 fn tmk_vmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("tmk_vmm")
+}
+
+/// Path to the output location of the vmgstool executable.
+fn vmgstool_native_executable_path() -> anyhow::Result<PathBuf> {
+    get_output_executable_path("vmgstool")
 }
 
 fn tmk_vmm_paravisor_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
