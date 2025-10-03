@@ -53,10 +53,7 @@ impl ControlMmioIntercept for TestPcieControlMmioIntercept {
     /// Returns `None` if the provided `addr` is outside of the memory
     /// region, or the region is currently unmapped.
     fn offset_of(&self, addr: u64) -> Option<u64> {
-        match self.mapping {
-            Some(base_address) => Some(addr - base_address),
-            None => None,
-        }
+        self.mapping.map(|base_addr| addr - base_addr)
     }
 
     fn region_name(&self) -> &str {

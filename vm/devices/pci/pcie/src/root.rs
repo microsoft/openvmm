@@ -77,7 +77,7 @@ impl GenericPcieRootComplex {
             .into_iter()
             .enumerate()
             .map(|(i, definition)| {
-                let device_number = (i << BDF_DEVICE_SHIFT) as u8;
+                let device_number: u8 = (i << BDF_DEVICE_SHIFT).try_into().expect("too many ports");
                 let emulator = RootPort::new();
                 (device_number, (definition.name, emulator))
             })
@@ -365,7 +365,9 @@ impl RootPort {
         let bus_range = self.cfg_space.assigned_bus_range();
         if *bus == *bus_range.start() && *device_function == 0 {
             if let Some((_, device)) = &mut self.link {
-                let _ = device.pci_cfg_read(cfg_offset, value);
+                if let Some(result) = device.pci_cfg_read(cfg_offset, value) {
+                    check_result!(result);
+                }
             }
         } else if bus_range.contains(bus) {
             tracelimit::warn_ratelimited!("multi-level hierarchies not implemented yet");
@@ -384,7 +386,9 @@ impl RootPort {
         let bus_range = self.cfg_space.assigned_bus_range();
         if *bus == *bus_range.start() && *device_function == 0 {
             if let Some((_, device)) = &mut self.link {
-                let _ = device.pci_cfg_write(cfg_offset, value);
+                if let Some(result) = device.pci_cfg_write(cfg_offset, value) {
+                    check_result!(result);
+                }
             }
         } else if bus_range.contains(bus) {
             tracelimit::warn_ratelimited!("multi-level hierarchies not implemented yet");
