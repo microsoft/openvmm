@@ -73,8 +73,8 @@ pub enum CommandError {
     Utf8(#[from] std::string::FromUtf8Error),
 }
 
-/// Run the the command and return the output
-pub async fn run_cmd(mut cmd: Command) -> Result<String, CommandError> {
+/// Run a command on the host and return the output
+pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
     cmd.stderr(Stdio::piped()).stdin(Stdio::null());
 
     let cmd_debug = format!("{cmd:?}");

@@ -105,5 +105,5 @@ async fn hvc_output(
     let mut cmd = std::process::Command::new("hvc.exe");
     f(&mut cmd);
 
-    crate::run_cmd(cmd).await
+    crate::run_host_cmd(cmd).await
 }

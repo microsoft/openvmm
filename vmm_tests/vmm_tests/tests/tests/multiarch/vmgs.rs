@@ -5,7 +5,7 @@ use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
-use petri::run_cmd;
+use petri::run_host_cmd;
 use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_vmm_test::artifacts::VMGSTOOL_NATIVE;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
@@ -108,7 +108,7 @@ async fn vmgstool_create(
 
     let mut cmd = Command::new(vmgstool_path);
     cmd.arg("create").arg("--filepath").arg(&vmgs_path);
-    run_cmd(cmd).await?;
+    run_host_cmd(cmd).await?;
 
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
@@ -126,7 +126,7 @@ async fn vmgstool_create(
         .arg("remove-boot-entries")
         .arg("--filepath")
         .arg(&vmgs_path);
-    run_cmd(cmd).await?;
+    run_host_cmd(cmd).await?;
 
     Ok(())
 }
@@ -155,7 +155,7 @@ async fn vmgstool_remove_boot_entries(
         .arg("--filepath")
         .arg(&vmgs_path);
 
-    run_cmd(cmd).await?;
+    run_host_cmd(cmd).await?;
 
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
