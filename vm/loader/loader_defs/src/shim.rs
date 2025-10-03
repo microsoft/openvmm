@@ -270,7 +270,7 @@ pub struct PersistedStateHeader {
 
 impl PersistedStateHeader {
     /// "OHCLPHDR" in ASCII.
-    pub const MAGIC: u64 = 0x4F48434C50484452;
+    pub const MAGIC: u64 = u64::from_le_bytes(*b"OHCLPHDR");
 }
 
 /// A local newtype wrapper that represents a [`igvm_defs::MemoryMapEntryType`].
