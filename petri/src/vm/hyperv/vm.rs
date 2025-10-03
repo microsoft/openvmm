@@ -481,7 +481,7 @@ impl HyperVVM {
         Ok(())
     }
 
-    /// Sets the VM firmware  command line.
+    /// Sets the VM firmware command line.
     pub async fn set_vm_firmware_command_line(
         &self,
         openhcl_command_line: &str,
@@ -507,6 +507,11 @@ impl HyperVVM {
             temp_bin_path: self.temp_dir.path().join("screenshot.bin"),
             ps_mod: self.ps_mod.clone(),
         }
+    }
+
+    /// Set the VM's guest state file
+    pub async fn set_guest_state_file(&self, vmgs_file: &Path) -> anyhow::Result<()> {
+        powershell::run_set_guest_state_file(&self.vmid, &self.ps_mod, vmgs_file).await
     }
 }
 

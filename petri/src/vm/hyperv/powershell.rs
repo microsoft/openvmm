@@ -1067,3 +1067,27 @@ pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
     serde_json::from_str::<HyperVGetVmHost>(&output)
         .map_err(|e| anyhow::anyhow!("failed to parse HyperVGetVmHost: {}", e))
 }
+
+/// Runs Set-GuestStateFile with the given arguments.
+pub async fn run_set_guest_state_file(
+    vmid: &Guid,
+    ps_mod: &Path,
+    vmgs_file: &Path,
+) -> anyhow::Result<()> {
+    run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("Get-VM")
+            .arg("Id", vmid)
+            .pipeline()
+            .cmdlet("Set-GuestStateFile")
+            .arg("VmgsFile", vmgs_file)
+            .finish()
+            .build(),
+    )
+    .await
+    .map(|_| ())
+    .context("set_guest_state_file")
+}

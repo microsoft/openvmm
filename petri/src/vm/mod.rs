@@ -579,7 +579,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             PetriVmgsResource::Disk(disk)
             | PetriVmgsResource::ReprovisionOnFailure(disk)
             | PetriVmgsResource::Reprovision(disk) => disk,
-            PetriVmgsResource::Ephemeral => PetriDiskType::Memory,
+            PetriVmgsResource::Ephemeral => PetriVmgsDisk::default(),
         };
         self.config.vmgs = match guest_state_lifetime {
             PetriGuestStateLifetime::Disk => PetriVmgsResource::Disk(disk),
@@ -588,12 +588,27 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }
             PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
             PetriGuestStateLifetime::Ephemeral => {
-                if !matches!(disk, PetriDiskType::Memory) {
+                if !matches!(disk.disk, PetriDiskType::Memory) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
                 }
                 PetriVmgsResource::Ephemeral
             }
         };
+        self
+    }
+
+    /// Specify the guest state encryption policy for the VM
+    pub fn with_guest_state_encryption(mut self, policy: PetriGuestStateEncryptionPolicy) -> Self {
+        match &mut self.config.vmgs {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => {
+                vmgs.encryption_policy = policy;
+            }
+            PetriVmgsResource::Ephemeral => {
+                panic!("attempted to encrypt ephemeral guest state")
+            }
+        }
         self
     }
 
@@ -609,13 +624,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     fn with_backing_vmgs(mut self, disk: PetriDiskType) -> Self {
         match &mut self.config.vmgs {
-            PetriVmgsResource::Disk(installed_disk)
-            | PetriVmgsResource::ReprovisionOnFailure(installed_disk)
-            | PetriVmgsResource::Reprovision(installed_disk) => {
-                if !matches!(installed_disk, PetriDiskType::Memory) {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => {
+                if !matches!(vmgs.disk, PetriDiskType::Memory) {
                     panic!("already specified a backing vmgs file");
                 }
-                *installed_disk = disk;
+                vmgs.disk = disk;
             }
             PetriVmgsResource::Ephemeral => {
                 panic!("attempted to specify a backing vmgs with ephemeral guest state")
@@ -1600,9 +1615,10 @@ pub struct OpenHclServicingFlags {
 }
 
 /// Petri disk type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum PetriDiskType {
     /// Memory backed
+    #[default]
     Memory,
     /// Memory differencing disk backed by a file
     Differencing(PathBuf),
@@ -1610,15 +1626,72 @@ pub enum PetriDiskType {
     Persistent(PathBuf),
 }
 
+/// Petri VM guest state encryption policy
+#[derive(Debug, Clone, Copy)]
+pub enum PetriGuestStateEncryptionPolicy {
+    /// Use the best encryption available, allowing fallback.
+    ///
+    /// VMs will be created as or migrated to the best encryption available,
+    /// attempting GspKey, then GspById, and finally leaving the data
+    /// unencrypted if neither are available.
+    Auto,
+    /// Prefer (or require, if strict) no encryption.
+    ///
+    /// Do not encrypt the guest state unless it is already encrypted and
+    /// strict encryption policy is disabled.
+    None(bool),
+    /// Prefer (or require, if strict) GspById.
+    ///
+    /// This prevents a VM from being created as or migrated to GspKey even
+    /// if it is available. Exisiting GspKey encryption will be used unless
+    /// strict encryption policy is enabled. Fails if the data cannot be
+    /// encrypted.
+    GspById(bool),
+    /// Require GspKey.
+    ///
+    /// VMs will be created as or migrated to GspKey. Fails if GspKey is
+    /// not available. Strict encryption policy has no effect here since
+    /// GspKey is currently the most secure policy.
+    GspKey(bool),
+}
+
+impl Default for PetriGuestStateEncryptionPolicy {
+    fn default() -> Self {
+        // TODO: make this strict once we can set it in OpenHCL
+        PetriGuestStateEncryptionPolicy::None(false)
+    }
+}
+
+impl PetriGuestStateEncryptionPolicy {
+    /// whether to use strict encryption policy
+    pub fn is_strict(&self) -> bool {
+        match self {
+            PetriGuestStateEncryptionPolicy::Auto => false,
+            PetriGuestStateEncryptionPolicy::None(strict)
+            | PetriGuestStateEncryptionPolicy::GspById(strict)
+            | PetriGuestStateEncryptionPolicy::GspKey(strict) => *strict,
+        }
+    }
+}
+
+/// Petri VMGS disk
+#[derive(Debug, Clone, Default)]
+pub struct PetriVmgsDisk {
+    /// Backing disk
+    pub disk: PetriDiskType,
+    /// Guest state encryption policy
+    pub encryption_policy: PetriGuestStateEncryptionPolicy,
+}
+
 /// Petri VM guest state resource
 #[derive(Debug, Clone)]
 pub enum PetriVmgsResource {
     /// Use disk to store guest state
-    Disk(PetriDiskType),
+    Disk(PetriVmgsDisk),
     /// Use disk to store guest state, reformatting if corrupted.
-    ReprovisionOnFailure(PetriDiskType),
+    ReprovisionOnFailure(PetriVmgsDisk),
     /// Format and use disk to store guest state
-    Reprovision(PetriDiskType),
+    Reprovision(PetriVmgsDisk),
     /// Store guest state in memory
     Ephemeral,
 }
@@ -1705,12 +1778,12 @@ pub enum PetriHaltReason {
     Other,
 }
 
-fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {
+fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {
     if let Some(cmd) = cmd.as_mut() {
         cmd.push(' ');
-        cmd.push_str(add_cmd);
+        cmd.push_str(add_cmd.as_ref());
     } else {
-        *cmd = Some(add_cmd.to_string());
+        *cmd = Some(add_cmd.as_ref().to_string());
     }
 }
 

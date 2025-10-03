@@ -449,3 +449,20 @@ function Set-TurnOffOnGuestRestart
     $vssd.TurnOffOnGuestRestart = $Enable
     Set-VmSystemSettings $vssd
 }
+
+function Set-GuestStateFile
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
+        [Parameter(Mandatory = $true)]
+        [string] $VmgsFile
+    )
+
+    $vssd = Get-Vssd $Vm
+    $vssd.GuestStateFile = $VmgsFile
+    Set-VmSystemSettings $vssd
+}

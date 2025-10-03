@@ -20,9 +20,11 @@ pub use runtime::PetriVmOpenVmm;
 use crate::BootDeviceType;
 use crate::Firmware;
 use crate::PetriDiskType;
+use crate::PetriGuestStateEncryptionPolicy;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
+use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::VmmQuirks;
@@ -196,8 +198,14 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
 }
 
 fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
-    let convert_disk = |disk: &PetriDiskType| -> anyhow::Result<Resource<DiskHandleKind>> {
-        match disk {
+    let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<Resource<DiskHandleKind>> {
+        if !matches!(
+            disk.encryption_policy,
+            PetriGuestStateEncryptionPolicy::None(_)
+        ) {
+            unreachable!("guest state encryption not supported on openvmm");
+        }
+        match &disk.disk {
             PetriDiskType::Memory => Ok(LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                 len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
             })
