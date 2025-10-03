@@ -296,8 +296,23 @@ impl VpSpawner {
 
         // Start the run VP task.
         thread.set_idle_task(async move |mut control| {
+            // Allow running twice, because if the threadpool started before we spawned any vps (due to say nvme requesting a start), we may have state for some reason?
+            // why do we have state?
             let state = this.run_vp(saved_state, Some(&mut control)).await;
+            if state.is_none() {
+                return;
+            }
+
+            let state = this.run_vp(state, Some(&mut control)).await;
             assert!(state.is_none());
+
+            // let mut state = saved_state;
+            // loop {
+            //     state = this.run_vp(state, Some(&mut control)).await;
+            //     if state.is_none() {
+            //         break;
+            //     }
+            // }
         });
     }
 }
