@@ -570,7 +570,7 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    _: (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+    _: (),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
     idle_test(
@@ -591,7 +591,7 @@ async fn memory_validation_small<T: PetriVmmBackend>(
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_large<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    _: (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+    _: (),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
     idle_test(
