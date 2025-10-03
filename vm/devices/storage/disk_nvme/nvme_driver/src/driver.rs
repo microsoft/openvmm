@@ -106,7 +106,7 @@ pub enum RestoreError {
 #[derive(Debug, Error)]
 pub enum DeviceError {
     #[error("no more io queues available, reached maximum {0}")]
-    NoMoreIoQueues(usize),
+    NoMoreIoQueues(u16),
     #[error("failed to map interrupt")]
     InterruptMapFailure(#[source] anyhow::Error),
     #[error("failed to create io queue pair {1}")]
@@ -894,15 +894,15 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                             fallback_cpu,
                             error = &err as &dyn std::error::Error,
                             "failed to create io queue, falling back"
-                            );
+                        );
                     }
                     _ => {
-                         tracing::error!(
+                        tracing::error!(
                             cpu,
                             fallback_cpu,
                             error = &err as &dyn std::error::Error,
                             "failed to create io queue, falling back"
-                            );
+                        );
                     }
                 }
 
@@ -922,7 +922,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         cpu: u32,
     ) -> Result<IoIssuer, DeviceError> {
         if self.io.len() >= state.max_io_queues as usize {
-           return Err(DeviceError::NoMoreIoQueues(state.max_io_queues as usize));
+            return Err(DeviceError::NoMoreIoQueues(state.max_io_queues));
         }
 
         let qid = self.io.len() as u16 + 1;
@@ -946,7 +946,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             self.registers.clone(),
             self.bounce_buffer,
         )
-        .map_err(|err| DeviceError::IoQueuePairCreationFailure(err.into(), qid))?;
+        .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
 
         let io_sq_addr = queue.sq_addr();
         let io_cq_addr = queue.cq_addr();
