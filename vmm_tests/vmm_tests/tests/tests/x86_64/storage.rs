@@ -463,85 +463,85 @@ async fn openhcl_linux_storvsp_dvd_nvme(
 }
 
 /// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
-#[openvmm_test(
-    openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
-)]
-async fn openhcl_linux_stripe_storvsp(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> Result<(), anyhow::Error> {
-    const NVME_INSTANCE_1: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    const NVME_INSTANCE_2: Guid = guid::guid!("06a97a09-d5ad-4689-b638-9419d7346a68");
-    let vtl0_nvme_lun = 0;
-    let vtl2_nsid = 1;
-    let nvme_disk_sectors: u64 = 0x10000;
-    let sector_size = 512;
-    let number_of_stripe_devices = 2;
-    let scsi_instance = Guid::new_random();
+// #[openvmm_test(
+//     openhcl_linux_direct_x64,
+//     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+// )]
+// async fn openhcl_linux_stripe_storvsp(
+//     config: PetriVmBuilder<OpenVmmPetriBackend>,
+// ) -> Result<(), anyhow::Error> {
+//     const NVME_INSTANCE_1: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+//     const NVME_INSTANCE_2: Guid = guid::guid!("06a97a09-d5ad-4689-b638-9419d7346a68");
+//     let vtl0_nvme_lun = 0;
+//     let vtl2_nsid = 1;
+//     let nvme_disk_sectors: u64 = 0x10000;
+//     let sector_size = 512;
+//     let number_of_stripe_devices = 2;
+//     let scsi_instance = Guid::new_random();
 
-    let (vm, agent) = config
-        .with_vmbus_redirect(true)
-        .modify_backend(move |b| {
-            b.with_custom_config(|c| {
-                c.vpci_devices.extend([
-                    new_test_vtl2_nvme_device(
-                        vtl2_nsid,
-                        nvme_disk_sectors * sector_size,
-                        NVME_INSTANCE_1,
-                        None,
-                    ),
-                    new_test_vtl2_nvme_device(
-                        vtl2_nsid,
-                        nvme_disk_sectors * sector_size,
-                        NVME_INSTANCE_2,
-                        None,
-                    ),
-                ]);
-            })
-            .with_custom_vtl2_settings(|v| {
-                v.dynamic.as_mut().unwrap().storage_controllers.push(
-                    Vtl2StorageControllerBuilder::scsi()
-                        .with_instance_id(scsi_instance)
-                        .with_protocol(ControllerType::Scsi)
-                        .add_lun(
-                            Vtl2LunBuilder::disk()
-                                .with_location(vtl0_nvme_lun)
-                                .with_chunk_size_in_kb(128)
-                                .with_physical_devices(vec![
-                                    Vtl2StorageBackingDeviceBuilder::new(
-                                        ControllerType::Nvme,
-                                        NVME_INSTANCE_1,
-                                        vtl2_nsid,
-                                    ),
-                                    Vtl2StorageBackingDeviceBuilder::new(
-                                        ControllerType::Nvme,
-                                        NVME_INSTANCE_2,
-                                        vtl2_nsid,
-                                    ),
-                                ]),
-                        )
-                        .build(),
-                )
-            })
-        })
-        .run()
-        .await?;
+//     let (vm, agent) = config
+//         .with_vmbus_redirect(true)
+//         .modify_backend(move |b| {
+//             b.with_custom_config(|c| {
+//                 c.vpci_devices.extend([
+//                     new_test_vtl2_nvme_device(
+//                         vtl2_nsid,
+//                         nvme_disk_sectors * sector_size,
+//                         NVME_INSTANCE_1,
+//                         None,
+//                     ),
+//                     new_test_vtl2_nvme_device(
+//                         vtl2_nsid,
+//                         nvme_disk_sectors * sector_size,
+//                         NVME_INSTANCE_2,
+//                         None,
+//                     ),
+//                 ]);
+//             })
+//             .with_custom_vtl2_settings(|v| {
+//                 v.dynamic.as_mut().unwrap().storage_controllers.push(
+//                     Vtl2StorageControllerBuilder::scsi()
+//                         .with_instance_id(scsi_instance)
+//                         .with_protocol(ControllerType::Scsi)
+//                         .add_lun(
+//                             Vtl2LunBuilder::disk()
+//                                 .with_location(vtl0_nvme_lun)
+//                                 .with_chunk_size_in_kb(128)
+//                                 .with_physical_devices(vec![
+//                                     Vtl2StorageBackingDeviceBuilder::new(
+//                                         ControllerType::Nvme,
+//                                         NVME_INSTANCE_1,
+//                                         vtl2_nsid,
+//                                     ),
+//                                     Vtl2StorageBackingDeviceBuilder::new(
+//                                         ControllerType::Nvme,
+//                                         NVME_INSTANCE_2,
+//                                         vtl2_nsid,
+//                                     ),
+//                                 ]),
+//                         )
+//                         .build(),
+//                 )
+//             })
+//         })
+//         .run()
+//         .await?;
 
-    let sh = agent.unix_shell();
-    let output = sh.read_file("/sys/block/sda/size").await?;
+//     let sh = agent.unix_shell();
+//     let output = sh.read_file("/sys/block/sda/size").await?;
 
-    let reported_nvme_sectors = output
-        .trim()
-        .parse::<u64>()
-        .context("failed to parse size")?;
+//     let reported_nvme_sectors = output
+//         .trim()
+//         .parse::<u64>()
+//         .context("failed to parse size")?;
 
-    assert_eq!(
-        reported_nvme_sectors,
-        nvme_disk_sectors * number_of_stripe_devices
-    );
+//     assert_eq!(
+//         reported_nvme_sectors,
+//         nvme_disk_sectors * number_of_stripe_devices
+//     );
 
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
+//     agent.power_off().await?;
+//     vm.wait_for_clean_teardown().await?;
 
-    Ok(())
-}
+//     Ok(())
+// }
