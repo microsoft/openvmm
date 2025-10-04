@@ -183,6 +183,7 @@ impl NvmeManagerClient {
     /// Send an RPC call to save NVMe worker data.
     pub async fn save(&self) -> Option<NvmeManagerSavedState> {
         match self.sender.call(Request::Save, ()).await {
+            // todo: check if we get save state here
             Ok(s) => s.ok(),
             Err(_) => None,
         }
@@ -437,6 +438,7 @@ impl NvmeManagerWorker {
             .map(|(pci_id, driver)| (pci_id.clone(), driver.client().clone()))
             .collect();
         for (pci_id, client) in devices_to_save.iter_mut() {
+            // todo: first call client.save() to see if we get a saved state
             nvme_disks.push(NvmeSavedDiskConfig {
                 pci_id: pci_id.clone(),
                 driver_state: client.save().await?,

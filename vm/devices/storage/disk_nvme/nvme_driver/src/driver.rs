@@ -527,6 +527,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
     /// Saves the NVMe driver state during servicing.
     pub async fn save(&mut self) -> anyhow::Result<NvmeDriverSavedState> {
+        // todo: interrogate all queues to see if any are with non-persistent memory
+        // that's been allocated. If so, then fail the save (and make sure the stack above handles)
+        // that gracefully. By failing thye save, we should leave the driver
+        // in a state that is still running.
+        //
         // Nothing to save if Identify Controller was never queried.
         if self.identify.is_none() {
             return Err(save_restore::Error::InvalidState.into());

@@ -69,6 +69,10 @@ pub struct VfioNvmeDriverSpawner {
     pub is_isolated: bool,
     #[inspect(skip)]
     pub dma_client_spawner: DmaClientSpawner,
+    /// If true, log a warning when creating a driver since no private pool is available.
+    pub warn_no_private_pool: bool,
+    /// If true, log a warning when creating a driver since save/restore is not supported.
+    pub warn_no_save_restore: bool,
 }
 
 #[async_trait]
@@ -81,6 +85,28 @@ impl CreateNvmeDriver for VfioNvmeDriverSpawner {
         save_restore_supported: bool,
         saved_state: Option<&NvmeDriverSavedState>,
     ) -> Result<Box<dyn NvmeDevice>, NvmeSpawnerError> {
+        if self.warn_no_private_pool {
+            // Log a warning, since the nvme driver relies on contiguous allocations for
+            // per-queue IO, so without a private pool, we expect to get 1 page at a time.
+            // This limits the overall IO queue depth to 64 (the number of SQ entries per page).
+            //
+            // TODO: not quite accurate, since the allocations will come from the shared pool for
+            // IVMs.
+            tracing::warn!(
+                ?pci_id,
+                "nvme: no private pool, expect degraded IO performance"
+            );
+        }
+
+        if self.warn_no_save_restore {
+            // Log a warning, since this implies that keepalive is not enabled and we can
+            // expect poor OpenHCL servicing performance in the event of particularly
+            // long IOs to the backing NVMe devices.
+            //
+            // TODO: not quite accurate for CVMs?
+            tracing::warn!(?pci_id, "nvme: save/restore not supported");
+        }
+
         let dma_client = self
             .dma_client_spawner
             .new_client(DmaClientParameters {
