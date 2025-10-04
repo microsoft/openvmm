@@ -5,6 +5,10 @@
 
 use anyhow::Context;
 use futures::StreamExt;
+use memstat::TestVPCount;
+use memstat::WaitPeriodSec;
+use memstat::idle_test;
+use pal_async::DefaultDriver;
 use petri::MemoryConfig;
 use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
@@ -24,6 +28,9 @@ use vmm_test_macros::vmm_test_no_agent;
 mod ic;
 /// Servicing tests.
 mod openhcl_servicing;
+
+// Memory Validation tests.
+mod memstat;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
 /// Tests involving VMGS functionality
@@ -469,4 +476,46 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
+}
+
+#[vmm_test_no_agent(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_small<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    idle_test(
+        config,
+        TestVPCount::SmallVPCount,
+        WaitPeriodSec::ShortWait,
+        driver,
+    )
+    .await
+}
+
+#[vmm_test_no_agent(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn memory_validation_large<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    idle_test(
+        config,
+        TestVPCount::LargeVPCount,
+        WaitPeriodSec::LongWait,
+        driver,
+    )
+    .await
 }
