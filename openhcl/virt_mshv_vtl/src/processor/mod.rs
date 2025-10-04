@@ -485,7 +485,7 @@ pub(crate) trait HardwareIsolatedBacking: Backing {
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-#[derive(Inspect, Debug)]
+#[derive(Inspect, Debug, Clone)]
 #[inspect(tag = "reason")]
 pub(crate) enum SidecarExitReason {
     #[inspect(transparent)]
@@ -496,7 +496,7 @@ pub(crate) enum SidecarExitReason {
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-#[derive(Inspect, Debug)]
+#[derive(Inspect, Debug, Clone)]
 #[inspect(tag = "exit")]
 pub(crate) enum SidecarRemoveExit {
     Msr {
@@ -566,11 +566,18 @@ impl UhVpInner {
     }
 
     pub fn set_sidecar_exit_reason(&self, reason: SidecarExitReason) {
-        self.sidecar_exit_reason.lock().get_or_insert_with(|| {
-            tracing::info!(CVM_ALLOWED, "sidecar exit");
-            tracing::info!(CVM_CONFIDENTIAL, ?reason, "sidecar exit");
-            reason
-        });
+        let prev = self.sidecar_exit_reason.lock().replace(reason.clone());
+
+        match prev {
+            Some(reason) => {
+                tracing::warn!(CVM_ALLOWED, "sidecar exit reason replaced");
+                tracing::warn!(CVM_CONFIDENTIAL, ?reason, "sidecar exit reason replaced");
+            }
+            None => {
+                tracing::info!(CVM_ALLOWED, "sidecar exit");
+                tracing::info!(CVM_CONFIDENTIAL, ?reason, "sidecar exit");
+            }
+        }
     }
 }
 
