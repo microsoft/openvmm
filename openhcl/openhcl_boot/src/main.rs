@@ -76,41 +76,32 @@ impl From<core::fmt::Error> for CommandLineTooLong {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum CanTrustHost {
-    Yes,
-    No,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum IsConfidentialDebug {
-    Yes,
-    No,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Vtl2GpaPoolSupported {
-    Yes,
-    No,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum DisableKeepAlive {
-    Yes,
-    No,
+struct BuildKernelCommandLineParams<'a> {
+    params: &'a ShimParams,
+    cmdline: &'a mut ArrayString<COMMAND_LINE_SIZE>,
+    partition_info: &'a PartitionInfo,
+    can_trust_host: bool,
+    is_confidential_debug: bool,
+    sidecar: Option<&'a SidecarConfig<'a>>,
+    vtl2_pool_supported: bool,
+    disable_keep_alive: bool,
 }
 
 /// Read and setup the underhill kernel command line into the specified buffer.
 fn build_kernel_command_line(
-    params: &ShimParams,
-    cmdline: &mut ArrayString<COMMAND_LINE_SIZE>,
-    partition_info: &PartitionInfo,
-    can_trust_host: CanTrustHost,
-    is_confidential_debug: IsConfidentialDebug,
-    sidecar: Option<&SidecarConfig<'_>>,
-    vtl2_pool_supported: Vtl2GpaPoolSupported,
-    disable_keep_alive: DisableKeepAlive,
+    fn_params: BuildKernelCommandLineParams<'_>,
 ) -> Result<(), CommandLineTooLong> {
+    let BuildKernelCommandLineParams {
+        params,
+        cmdline,
+        partition_info,
+        can_trust_host,
+        is_confidential_debug,
+        sidecar,
+        vtl2_pool_supported,
+        disable_keep_alive,
+    } = fn_params;
+
     // For reference:
     // https://www.kernel.org/doc/html/v5.15/admin-guide/kernel-parameters.html
     const KERNEL_PARAMETERS: &[&str] = &[
@@ -275,7 +266,7 @@ fn build_kernel_command_line(
     // com1. This is overridden by any user customizations in the static or
     // dynamic command line, as this console argument provided by the bootloader
     // comes first.
-    let console = if partition_info.com3_serial_available && (can_trust_host == CanTrustHost::Yes) {
+    let console = if partition_info.com3_serial_available && can_trust_host {
         "ttyS2,115200"
     } else {
         "ttynull"
@@ -290,7 +281,7 @@ fn build_kernel_command_line(
         )?;
     }
 
-    if is_confidential_debug == IsConfidentialDebug::Yes {
+    if is_confidential_debug {
         write!(
             cmdline,
             "{}=1 ",
@@ -300,10 +291,7 @@ fn build_kernel_command_line(
 
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
-    if partition_info.nvme_keepalive
-        && vtl2_pool_supported == Vtl2GpaPoolSupported::Yes
-        && disable_keep_alive == DisableKeepAlive::No
-    {
+    if partition_info.nvme_keepalive && vtl2_pool_supported && !disable_keep_alive {
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 
@@ -322,7 +310,7 @@ fn build_kernel_command_line(
     )?;
 
     // If we're isolated we can't trust the host-provided cmdline
-    if can_trust_host == CanTrustHost::Yes {
+    if can_trust_host {
         // Prepend the computed parameters to the original command line.
         cmdline.write_str(&partition_info.cmdline)?;
     }
@@ -601,11 +589,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // static command line, or if can_trust_host is true (so the dynamic command
     // line has been parsed).
     let is_confidential_debug =
-        if static_confidential_debug || partition_info.boot_options.confidential_debug {
-            IsConfidentialDebug::Yes
-        } else {
-            IsConfidentialDebug::No
-        };
+        static_confidential_debug || partition_info.boot_options.confidential_debug;
 
     // Fill out the non-devicetree derived parts of PartitionInfo.
     if !p.isolation_type.is_hardware_isolated()
@@ -664,33 +648,17 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Rebind address_space as no longer mutable.
     let address_space: &AddressSpaceManager = address_space;
 
-    let can_trust_host = if can_trust_host {
-        CanTrustHost::Yes
-    } else {
-        CanTrustHost::No
-    };
-    let has_vtl2_pool = if address_space.has_vtl2_pool() {
-        Vtl2GpaPoolSupported::Yes
-    } else {
-        Vtl2GpaPoolSupported::No
-    };
-    let disable_keep_alive = if partition_info.boot_options.disable_nvme_keep_alive {
-        DisableKeepAlive::Yes
-    } else {
-        DisableKeepAlive::No
-    };
-
     let mut cmdline = off_stack!(ArrayString<COMMAND_LINE_SIZE>, ArrayString::new_const());
-    build_kernel_command_line(
-        &p,
-        &mut cmdline,
+    build_kernel_command_line(BuildKernelCommandLineParams {
+        params: &p,
+        cmdline: &mut cmdline,
         partition_info,
         can_trust_host,
         is_confidential_debug,
-        sidecar.as_ref(),
-        has_vtl2_pool,
-        disable_keep_alive,
-    )
+        sidecar: sidecar.as_ref(),
+        vtl2_pool_supported: address_space.has_vtl2_pool(),
+        disable_keep_alive: partition_info.boot_options.disable_nvme_keep_alive,
+    })
     .unwrap();
 
     let mut fdt = off_stack!(Fdt, zeroed());
