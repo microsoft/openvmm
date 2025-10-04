@@ -31,8 +31,10 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::rpc::Rpc;
 use nvme_resources::fault::CommandMatch;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::NamespaceChange;
 use nvme_resources::fault::QueueFaultBehavior;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -117,6 +119,8 @@ pub struct AdminState {
     send_changed_namespace: futures::channel::mpsc::Sender<u32>,
     #[inspect(skip)]
     poll_namespace_change: BTreeMap<u32, Task<()>>,
+    #[inspect(skip)]
+    confirm_namespace_change_fault: Option<Rpc<(), ()>>,
 }
 
 #[derive(Inspect)]
@@ -190,6 +194,7 @@ impl AdminState {
             recv_changed_namespace,
             send_changed_namespace,
             poll_namespace_change,
+            confirm_namespace_change_fault: None,
         };
         state.set_max_queues(handler, handler.config.max_sqs, handler.config.max_cqs);
         state
@@ -429,6 +434,14 @@ impl AdminHandler {
                     )?;
 
                     state.notified_changed_namespaces = true;
+
+                    // Note: Since the tests require AEN before invoking restore on the VM, this approach will
+                    // fail if the completion queue is full during save. In that case, the test will hang. Unless
+                    // the test is specifically stress testing the completion queue, this approach should be fine
+                    // since it is unexpected to fill the queue with admin commands.
+                    if let Some(aen_confirmation) = state.confirm_namespace_change_fault.take() {
+                        aen_confirmation.complete(());
+                    }
                     continue;
                 }
             }
@@ -446,8 +459,40 @@ impl AdminHandler {
                 };
                 Event::NamespaceChange(nsid)
             };
+            let changed_namespace_fault = async {
+                if !self.config.fault_configuration.fault_active.get() {
+                    pending().await
+                }
 
-            break (next_command, sq_delete_complete, changed_namespace)
+                let Some(ns_change) = self
+                    .config
+                    .fault_configuration
+                    .namespace_fault
+                    .recv_changed_namespace
+                    .next()
+                    .await
+                else {
+                    pending().await
+                };
+
+                let nsid = match ns_change {
+                    NamespaceChange::ChangeNotification(rpc) => {
+                        let (nsid, notify) = rpc.split();
+                        state.confirm_namespace_change_fault = Some(notify);
+                        nsid
+                    }
+                };
+
+                // Don't notify the test quite yet because nothing has been written to the completion queue.
+                Event::NamespaceChange(nsid)
+            };
+
+            break (
+                next_command,
+                sq_delete_complete,
+                changed_namespace,
+                changed_namespace_fault,
+            )
                 .race()
                 .await;
         };

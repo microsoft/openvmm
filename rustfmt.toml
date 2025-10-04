@@ -1,6 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-newline_style="unix"
+newline_style="Unix"
 use_field_init_shorthand=true
 style_edition="2024"

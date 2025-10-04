@@ -158,6 +158,10 @@ impl PetriVmRuntime for PetriVmOpenVmm {
             .take()
             .map(|view| OpenVmmFramebufferAccess { view })
     }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        Self::reset(self).await
+    }
 }
 
 pub(super) struct PetriVmInner {

@@ -3,7 +3,7 @@
 
 //! Functions for interacting with Hyper-V VMs.
 
-use super::vm::CommandError;
+use crate::CommandError;
 use anyhow::Context;
 use guid::Guid;
 
@@ -105,5 +105,5 @@ async fn hvc_output(
     let mut cmd = std::process::Command::new("hvc.exe");
     f(&mut cmd);
 
-    super::vm::run_cmd(cmd).await
+    crate::run_host_cmd(cmd).await
 }

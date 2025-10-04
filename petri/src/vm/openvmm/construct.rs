@@ -10,7 +10,7 @@ use super::PARAVISOR_BOOT_NVME_INSTANCE;
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use super::SCSI_INSTANCE;
-use super::memdiff_disk_from_artifact;
+use super::memdiff_disk;
 use crate::BootDeviceType;
 use crate::Firmware;
 use crate::IsolationType;
@@ -28,7 +28,7 @@ use crate::UefiConfig;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openvmm::BOOT_NVME_INSTANCE;
-use crate::openvmm::memdiff_vmgs_from_artifact;
+use crate::openvmm::memdiff_vmgs;
 use crate::vm::append_cmdline;
 use crate::vtl2_settings::ControllerType;
 use crate::vtl2_settings::Vtl2LunBuilder;
@@ -370,7 +370,7 @@ impl PetriVmConfigOpenVmm {
         let vmgs = if firmware.is_openhcl() {
             None
         } else {
-            Some(memdiff_vmgs_from_artifact(&vmgs)?)
+            Some(memdiff_vmgs(&vmgs)?)
         };
 
         let config = Config {
@@ -775,14 +775,14 @@ impl PetriVmConfigSetupCore<'_> {
             Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
                 let disk_path = guest.artifact();
                 match guest {
-                    PcatGuest::Vhd(_) => Media::Disk(memdiff_disk_from_artifact(disk_path)?),
+                    PcatGuest::Vhd(_) => Media::Disk(memdiff_disk(disk_path.as_ref())?),
                     PcatGuest::Iso(_) => Media::Dvd(open_disk_type(disk_path.as_ref(), true)?),
                 }
             }
             Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => {
                 let disk_path = guest.artifact();
-                Media::Disk(memdiff_disk_from_artifact(
-                    disk_path.expect("not uefi guest none"),
+                Media::Disk(memdiff_disk(
+                    disk_path.expect("not uefi guest none").as_ref(),
                 )?)
             }
         };
@@ -988,7 +988,7 @@ impl PetriVmConfigSetupCore<'_> {
             com2: true,
             vmbus_redirection: *vmbus_redirect,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
-            vmgs: memdiff_vmgs_from_artifact(self.vmgs)?,
+            vmgs: memdiff_vmgs(self.vmgs)?,
             framebuffer: framebuffer.then(|| SharedFramebufferHandle.into_resource()),
             guest_request_recv,
             enable_tpm: false,

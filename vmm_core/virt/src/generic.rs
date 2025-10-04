@@ -557,6 +557,8 @@ pub enum VpHaltReason {
     PowerOff,
     /// The processor initiated a reboot.
     Reset,
+    /// The processor initiated a hibernation.
+    Hibernate,
     /// The processor triple faulted.
     TripleFault {
         /// The faulting VTL.

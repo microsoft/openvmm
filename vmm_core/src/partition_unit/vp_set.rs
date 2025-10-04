@@ -135,6 +135,7 @@ where
             VpHaltReason::Cancel => Ok(StopReason::Cancel),
             VpHaltReason::PowerOff => Err(HaltReason::PowerOff),
             VpHaltReason::Reset => Err(HaltReason::Reset),
+            VpHaltReason::Hibernate => Err(HaltReason::Hibernate),
             VpHaltReason::TripleFault { vtl } => {
                 let registers = self.vp.access_state(vtl).registers().ok().map(Arc::new);
 

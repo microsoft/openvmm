@@ -15,6 +15,7 @@ use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
+use mesh::CancelContext;
 use pal_async::DefaultDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -34,6 +35,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// The set of artifacts and resources needed to instantiate a
@@ -95,7 +97,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     resources: PetriVmResources,
 
     // VMM-specific quirks for the configured firmware
-    quirks: GuestQuirksInner,
+    guest_quirks: GuestQuirksInner,
+    vmm_quirks: VmmQuirks,
 
     // Test-specific boot behavior expectations.
     // Defaults to expected behavior for firmware configuration.
@@ -144,8 +147,8 @@ pub trait PetriVmmBackend {
     /// supported on the VMM.
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool;
 
-    /// Given a set a guest quirks, select the relevant quirks for this backend.
-    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner;
+    /// Select backend specific quirks guest and vmm quirks.
+    fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks);
 
     /// Resolve any artifacts needed to use this backend
     fn new(resolver: &ArtifactResolver<'_>) -> Self;
@@ -167,7 +170,8 @@ pub struct PetriVm<T: PetriVmmBackend> {
     openhcl_diag_handler: Option<OpenHclDiagHandler>,
 
     arch: MachineArch,
-    quirks: GuestQuirksInner,
+    guest_quirks: GuestQuirksInner,
+    vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
 }
 
@@ -178,7 +182,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         artifacts: PetriVmArtifacts<T>,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
-        let quirks = T::select_quirks(artifacts.firmware.quirks());
+        let (guest_quirks, vmm_quirks) = T::quirks(&artifacts.firmware);
         let expected_boot_event = artifacts.firmware.expected_boot_event();
         let boot_device_type = match artifacts.firmware {
             Firmware::LinuxDirect { .. } => BootDeviceType::None,
@@ -214,7 +218,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 log_source: params.logger.clone(),
             },
 
-            quirks,
+            guest_quirks,
+            vmm_quirks,
             expected_boot_event,
             override_expect_reset: false,
         })
@@ -261,7 +266,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             openhcl_diag_handler,
 
             arch,
-            quirks: self.quirks,
+            guest_quirks: self.guest_quirks,
+            vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
         };
 
@@ -292,7 +298,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self.override_expect_reset
             || matches!(
                 (
-                    self.quirks.initial_reboot,
+                    self.guest_quirks.initial_reboot,
                     self.expected_boot_event,
                     &self.config.firmware,
                 ),
@@ -323,22 +329,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                  driver: &DefaultDriver,
                  inspect: std::pin::Pin<Box<dyn Future<Output = _> + Send>>| {
                     driver.spawn(format!("petri-watchdog-inspect-{name}"), async move {
-                        tracing::info!("Collecting {name} inspect details.");
-                        let node = match inspect.await {
-                            Ok(n) => n,
-                            Err(e) => {
-                                tracing::error!(?e, "Failed to get {name}");
-                                return;
-                            }
-                        };
-                        if let Err(e) = log_source.write_attachment(
-                            &format!("timeout_inspect_{name}.log"),
-                            format!("{node:#}"),
-                        ) {
-                            tracing::error!(?e, "Failed to save {name} inspect log");
-                            return;
-                        }
-                        tracing::info!("{name} inspect task finished.");
+                        save_inspect(name, inspect, &log_source).await;
                     })
                 };
 
@@ -588,7 +579,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             PetriVmgsResource::Disk(disk)
             | PetriVmgsResource::ReprovisionOnFailure(disk)
             | PetriVmgsResource::Reprovision(disk) => disk,
-            PetriVmgsResource::Ephemeral => None,
+            PetriVmgsResource::Ephemeral => PetriDiskType::Memory,
         };
         self.config.vmgs = match guest_state_lifetime {
             PetriGuestStateLifetime::Disk => PetriVmgsResource::Disk(disk),
@@ -597,7 +588,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }
             PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
             PetriGuestStateLifetime::Ephemeral => {
-                if disk.is_some() {
+                if !matches!(disk, PetriDiskType::Memory) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
                 }
                 PetriVmgsResource::Ephemeral
@@ -607,15 +598,24 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Use the specified backing VMGS file
-    pub fn with_backing_vmgs(mut self, disk: ResolvedArtifact<impl IsTestVmgs>) -> Self {
+    pub fn with_initial_vmgs(self, disk: ResolvedArtifact<impl IsTestVmgs>) -> Self {
+        self.with_backing_vmgs(PetriDiskType::Differencing(disk.into()))
+    }
+
+    /// Use the specified backing VMGS file
+    pub fn with_persistent_vmgs(self, disk: impl AsRef<Path>) -> Self {
+        self.with_backing_vmgs(PetriDiskType::Persistent(disk.as_ref().to_path_buf()))
+    }
+
+    fn with_backing_vmgs(mut self, disk: PetriDiskType) -> Self {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(installed_disk)
             | PetriVmgsResource::ReprovisionOnFailure(installed_disk)
             | PetriVmgsResource::Reprovision(installed_disk) => {
-                if installed_disk.is_some() {
+                if !matches!(installed_disk, PetriDiskType::Memory) {
                     panic!("already specified a backing vmgs file");
                 }
-                *installed_disk = Some(disk.erase());
+                *installed_disk = disk;
             }
             PetriVmgsResource::Ephemeral => {
                 panic!("attempted to specify a backing vmgs with ephemeral guest state")
@@ -786,7 +786,29 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// returns that status.
     async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
         tracing::info!("Waiting for boot event...");
-        let boot_event = self.runtime.wait_for_boot_event().await?;
+        let boot_event = loop {
+            match CancelContext::new()
+                .with_timeout(self.vmm_quirks.flaky_boot.unwrap_or(Duration::MAX))
+                .until_cancelled(self.runtime.wait_for_boot_event())
+                .await
+            {
+                Ok(res) => break res?,
+                Err(_) => {
+                    tracing::error!("Did not get boot event in required time, resetting...");
+                    if let Some(inspector) = self.runtime.inspector() {
+                        save_inspect(
+                            "vmm",
+                            Box::pin(async move { inspector.inspect_all().await }),
+                            &self.resources.log_source,
+                        )
+                        .await;
+                    }
+
+                    self.runtime.reset().await?;
+                    continue;
+                }
+            }
+        };
         tracing::info!("Got boot event: {boot_event:?}");
         Ok(boot_event)
     }
@@ -805,7 +827,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         let mut wait_time = Duration::from_secs(5);
 
         // some guests need even more time
-        if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
+        if let Some(duration) = self.guest_quirks.hyperv_shutdown_ic_sleep {
             wait_time += duration;
         }
 
@@ -960,6 +982,8 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     fn take_framebuffer_access(&mut self) -> Option<Self::VmFramebufferAccess> {
         None
     }
+    /// Issue a hard reset to the VM
+    async fn reset(&mut self) -> anyhow::Result<()>;
 }
 
 /// Interface for getting information about the state of the VM
@@ -1565,15 +1589,26 @@ pub struct OpenHclServicingFlags {
     pub stop_timeout_hint_secs: Option<u16>,
 }
 
+/// Petri disk type
+#[derive(Debug, Clone)]
+pub enum PetriDiskType {
+    /// Memory backed
+    Memory,
+    /// Memory differencing disk backed by a file
+    Differencing(PathBuf),
+    /// Persistent disk
+    Persistent(PathBuf),
+}
+
 /// Petri VM guest state resource
 #[derive(Debug, Clone)]
 pub enum PetriVmgsResource {
     /// Use disk to store guest state
-    Disk(Option<ResolvedArtifact>),
+    Disk(PetriDiskType),
     /// Use disk to store guest state, reformatting if corrupted.
-    ReprovisionOnFailure(Option<ResolvedArtifact>),
+    ReprovisionOnFailure(PetriDiskType),
     /// Format and use disk to store guest state
-    Reprovision(Option<ResolvedArtifact>),
+    Reprovision(PetriDiskType),
     /// Store guest state in memory
     Ephemeral,
 }
@@ -1599,6 +1634,15 @@ pub enum SecureBootTemplate {
     MicrosoftWindows,
     /// The Microsoft UEFI certificate authority template.
     MicrosoftUefiCertificateAuthority,
+}
+
+/// Quirks to workaround certain bugs that only manifest when using a
+/// particular VMM, and do not depend on which guest is running.
+#[derive(Default, Debug, Clone)]
+pub struct VmmQuirks {
+    /// Automatically reset the VM if we did not recieve a boot event in the
+    /// specified amount of time.
+    pub flaky_boot: Option<Duration>,
 }
 
 /// Creates a VM-safe name that respects platform limitations.
@@ -1658,6 +1702,28 @@ fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {
     } else {
         *cmd = Some(add_cmd.to_string());
     }
+}
+
+async fn save_inspect(
+    name: &str,
+    inspect: std::pin::Pin<Box<dyn Future<Output = anyhow::Result<inspect::Node>> + Send>>,
+    log_source: &PetriLogSource,
+) {
+    tracing::info!("Collecting {name} inspect details.");
+    let node = match inspect.await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!(?e, "Failed to get {name}");
+            return;
+        }
+    };
+    if let Err(e) =
+        log_source.write_attachment(&format!("timeout_inspect_{name}.log"), format!("{node:#}"))
+    {
+        tracing::error!(?e, "Failed to save {name} inspect log");
+        return;
+    }
+    tracing::info!("{name} inspect task finished.");
 }
 
 #[cfg(test)]

@@ -144,4 +144,7 @@ pub mod tags {
 
     /// Artifact is a test VMGS file
     pub trait IsTestVmgs: ArtifactId {}
+
+    /// Artifact is a VmgsTool binary
+    pub trait IsVmgsTool: ArtifactId {}
 }

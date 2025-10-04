@@ -63,7 +63,7 @@ impl SimpleFlowNode for Node {
                         "{gh_cli} run list
                         --commit {commit}
                         -w {pipeline_name}
-                        -s completed
+                        -s success
                         -L 1
                         --json databaseId
                         --jq .[].databaseId"
