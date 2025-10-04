@@ -908,6 +908,8 @@ pub enum FlowPlatformLinuxDistro {
     Fedora,
     /// Ubuntu (including WSL2)
     Ubuntu,
+    /// Arch Linux (including WSL2)
+    Arch,
     /// An unknown distribution
     Unknown,
 }

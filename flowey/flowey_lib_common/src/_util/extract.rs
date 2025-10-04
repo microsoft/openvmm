@@ -38,6 +38,7 @@ pub fn extract_zip_if_new_deps(ctx: &mut NodeCtx<'_>) -> ExtractZipDeps {
                 FlowPlatform::Linux(linux_distribution) => match linux_distribution {
                     FlowPlatformLinuxDistro::Fedora => vec!["bsdtar".into()],
                     FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],
+                    FlowPlatformLinuxDistro::Arch => vec!["libarchive".into()],
                     FlowPlatformLinuxDistro::Unknown => vec![],
                 },
                 _ => {
