@@ -3,7 +3,11 @@
 
 //! Methods to construct page tables on Aarch64.
 
+use crate::PageTableBuffer;
 use bitfield_struct::bitfield;
+
+//TODO(babayet2) nonsensical
+pub const MAX_PAGE_TABLE_REGION_SIZE: usize = 1024 * 1024;
 
 /// Some memory attributes. Refer to the ARM VMSA
 /// manual for further details and other types.
@@ -437,10 +441,6 @@ impl<'a> Arm64PageTableSpace<'a> {
         debug_assert!(aligned(phys_table_start, Arm64PageSize::Small));
         debug_assert!(index < PAGE_SIZE_4K as usize / size_of::<Arm64PageTableEntry>());
 
-        tracing::debug!(
-            "Writing page table entry {entry:#016x}, index {index:#x}, table {phys_table_start:#x}"
-        );
-
         let pos = phys_table_start as usize - self.phys_page_table_root
             + index * size_of::<Arm64PageTableEntry>();
         self.space[pos..pos + 8].copy_from_slice(&entry.to_le_bytes());
@@ -677,13 +677,16 @@ impl<'a> Arm64PageTableSpace<'a> {
 }
 
 /// Build a set of Aarch64 page tables identity mapping the given region.
-pub fn build_identity_page_tables_aarch64(
+pub fn build_identity_page_tables_aarch64<P>(
     page_table_gpa: u64,
     start_gpa: u64,
     size: u64,
     memory_attribute_indirection: MemoryAttributeIndirectionEl1,
     page_table_region_size: usize,
-) -> Vec<u8> {
+    page_table_space: &mut P,
+) where
+    P: PageTableBuffer<Element = u8>,
+{
     // start_gpa and size must be 2MB aligned.
     if !aligned(start_gpa, Arm64PageSize::Large) {
         panic!("start_gpa not 2mb aligned");
@@ -693,13 +696,12 @@ pub fn build_identity_page_tables_aarch64(
         panic!("size not 2mb aligned");
     }
 
-    tracing::debug!(
-        "Creating Aarch64 page tables at {page_table_gpa:#x} mapping starting at {start_gpa:#x} of size {size} bytes"
-    );
+    for _ in 0..page_table_region_size {
+        page_table_space.push(0);
+    }
 
-    let mut page_table_space = vec![0; page_table_region_size];
     let mut page_tables =
-        Arm64PageTableSpace::new(page_table_gpa as usize, &mut page_table_space).unwrap();
+        Arm64PageTableSpace::new(page_table_gpa as usize, page_table_space.as_mut_slice()).unwrap();
     page_tables
         .map_range(
             start_gpa,
@@ -713,12 +715,8 @@ pub fn build_identity_page_tables_aarch64(
         .unwrap();
 
     let used_space = page_tables.used_space();
-    tracing::debug!("Page tables use {used_space} bytes");
-    tracing::debug!("Page tables stats by level: {:?}", page_tables.lvl_stats());
 
     page_table_space.truncate(used_space);
-
-    page_table_space
 }
 
 #[cfg(test)]

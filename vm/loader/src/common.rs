@@ -8,7 +8,10 @@ use crate::importer::ImageLoad;
 use crate::importer::SegmentRegister;
 use crate::importer::TableRegister;
 use crate::importer::X86Register;
+use core::ops::Index;
+use core::ops::IndexMut;
 use hvdef::HV_PAGE_SIZE;
+use page_table::PageTableBuffer;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 use x86defs::GdtEntry;
@@ -194,4 +197,58 @@ fn mtrr_mask(gpa_space_size: u8, maximum_address: u64) -> u64 {
     }
 
     result
+}
+
+///
+pub struct VecPageTableBuffer<T: Clone> {
+    inner: Vec<T>,
+}
+
+impl<T: Clone> PageTableBuffer for VecPageTableBuffer<T> {
+    type Element = T;
+
+    fn new() -> Self {
+        VecPageTableBuffer { inner: Vec::new() }
+    }
+
+    fn push(&mut self, item: T) {
+        self.inner.push(item)
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn extend(&mut self, items: &[T]) {
+        self.inner.extend_from_slice(items);
+    }
+
+    fn truncate(&mut self, new_len: usize) {
+        self.inner.truncate(new_len)
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        self.inner.as_mut_slice()
+    }
+
+    fn as_slice(&self) -> &[T] {
+        self.inner.as_slice()
+    }
+
+    fn iter_mut(&mut self) -> core::slice::IterMut<'_, T> {
+        self.inner.iter_mut()
+    }
+}
+
+impl<T: Clone> Index<usize> for VecPageTableBuffer<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T {
+        &self.inner[index]
+    }
+}
+
+impl<T: Clone> IndexMut<usize> for VecPageTableBuffer<T> {
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        &mut self.inner[index]
+    }
 }
