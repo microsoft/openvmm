@@ -9288,6 +9288,7 @@ dependencies = [
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
  "scsidisk_resources",
+ "static_assertions",
  "storvsp_resources",
  "tempfile",
  "tmk_tests",

@@ -19,6 +19,7 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
+use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
 use petri::vtl2_settings::ControllerType;
 use petri::vtl2_settings::Vtl2LunBuilder;
@@ -68,6 +69,129 @@ pub(crate) fn new_test_vtl2_nvme_device(
     }
 }
 
+#[derive(Debug, Clone)]
+struct ExpectedGuestDevice {
+    disk_size_sectors: usize,
+    #[expect(dead_code)] // Only used in logging via `Debug` trait
+    friendly_name: String,
+}
+
+async fn test_storage_unix(
+    agent: &PipetteClient,
+    expected_devices: Vec<ExpectedGuestDevice>,
+) -> anyhow::Result<()> {
+    #[derive(Debug)]
+    // Helper struct for things this test discovers about the device...
+    struct ExpectedGuestDeviceData {
+        #[expect(dead_code)] // Only used in logging via `Debug` trait
+        d: ExpectedGuestDevice,
+        discovered_guest_path: String,
+    }
+
+    let sh = agent.unix_shell();
+
+    // Check that the correct devices are found in the VTL0 guest.
+    // The test framework adds additional devices (pipette, cloud-init, etc), so
+    // just check that the expected devices are indeed found.
+    //
+    // TODO: Verify VMBUS instance ID, LUN, etc.
+    let devices = cmd!(sh, "sh -c 'ls -d /sys/block/sd*'").read().await?;
+
+    let mut reported_sizes = Vec::new();
+    for device in devices.lines() {
+        let device_info_command =
+            format!("echo /dev/$(basename {device}) $(cat /sys/block/$(basename {device})/size)");
+        let line = cmd!(sh, "sh -c {device_info_command}")
+            .read()
+            .await?
+            .split_ascii_whitespace()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>();
+
+        let size = line[1].parse::<usize>().context("failed to parse size")?;
+
+        reported_sizes.push((line[0].clone(), size));
+    }
+
+    let found_devices = expected_devices
+        .iter()
+        .map(|d| {
+            match reported_sizes
+                .iter()
+                .position(|(_device, sectors)| *sectors == d.disk_size_sectors)
+            {
+                Some(idx) => ExpectedGuestDeviceData {
+                    d: d.clone(),
+                    discovered_guest_path: reported_sizes[idx].0.clone(),
+                },
+                None => {
+                    // In the future, this could be more elegant by returning `Result` here and
+                    // using `try_collect` instead of `collect` below. For now, just bail
+                    // on the first non-found device (if any).
+                    //
+                    // See https://doc.rust-lang.org/std/iter/trait.Iterator.html#method.try_collect
+                    tracing::error!(?d, "couldn't find drive with expected sector count");
+                    panic!("couldn't find drive with expected sector count");
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let identical_devices: Vec<(&ExpectedGuestDeviceData, &ExpectedGuestDeviceData)> =
+        found_devices
+            .iter()
+            .zip(found_devices.iter().skip(1))
+            .filter(|(left, right)| left.discovered_guest_path == right.discovered_guest_path)
+            .collect();
+    if !identical_devices.is_empty() {
+        tracing::error!(?identical_devices, "found identical devices");
+        assert!(identical_devices.is_empty());
+    }
+
+    // Do IO to all devices. Generate a file with random contents so that we
+    // can verify that the writes (and reads) work correctly.
+    //
+    // - `{o,i}flag=direct` is needed to ensure that the IO is not served
+    //   from the guest's cache.
+    // - `conv=fsync` is needed to ensure that the write is flushed to the
+    //    device before `dd` exits.
+    // - `iflag=fullblock` is needed to ensure that `dd` reads the full
+    //   amount of data requested, otherwise it may read less and exit
+    //   early.
+    for device in found_devices {
+        tracing::info!(?device, "Performing IO tests");
+        cmd!(
+            sh,
+            "sh -c 'dd if=/dev/urandom of=/tmp/random_data bs=1M count=100'"
+        )
+        .run()
+        .await?;
+
+        let write_to_device_cmd = format!(
+            "dd if=/tmp/random_data of={} bs=1M count=100 oflag=direct conv=fsync",
+            device.discovered_guest_path
+        );
+        cmd!(sh, "sh -c {write_to_device_cmd}").run().await?;
+
+        let read_from_device_cmd = format!(
+            "dd if={} of=/tmp/verify_data bs=1M count=100 iflag=direct,fullblock",
+            device.discovered_guest_path
+        );
+        cmd!(sh, "sh -c {read_from_device_cmd}").run().await?;
+
+        let diff_out = cmd!(sh, "sh -c 'diff -s /tmp/random_data /tmp/verify_data'")
+            .read()
+            .await?;
+        assert!(diff_out.contains("are identical"), "data mismatch");
+
+        cmd!(sh, "rm -f /tmp/random_data /tmp/verify_data")
+            .run()
+            .await?;
+    }
+
+    Ok(())
+}
+
 /// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, an NVMe disk assigned to VTL2, and
 /// vmbus relay. This should expose two disks to VTL0 via vmbus.
 #[openvmm_test(
@@ -81,9 +205,22 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     let vtl0_nvme_lun = 1;
     let vtl2_nsid = 37;
     let scsi_instance = Guid::new_random();
-    let scsi_disk_sectors = 0x4_0000; // Must be at least 100MB so that the below 'dd' command works without issues
-    let nvme_disk_sectors: u64 = 0x5_0000; // Must be at least 100MB so that the below 'dd' command works without issues
-    let sector_size = 512;
+    const SCSI_DISK_SECTORS: u64 = 0x4_0000;
+    const NVME_DISK_SECTORS: u64 = 0x5_0000;
+    const SECTOR_SIZE: u64 = 512;
+    const EXPECTED_SCSI_DISK_SIZE_BYTES: u64 = SCSI_DISK_SECTORS * SECTOR_SIZE;
+    const EXPECTED_NVME_DISK_SIZE_BYTES: u64 = NVME_DISK_SECTORS * SECTOR_SIZE;
+
+    // Assumptions made by test infra & routines:
+    //
+    // 1. Some test-infra added disks are 64MiB in size. Since we find disks by size,
+    // ensure that our test disks are a different size.
+    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_unix`]),
+    // with some arbitrary buffer (5MiB in this case).
+    static_assertions::const_assert_ne!(EXPECTED_SCSI_DISK_SIZE_BYTES, 64 * 1024 * 1024);
+    static_assertions::const_assert!(EXPECTED_SCSI_DISK_SIZE_BYTES > 105 * 1024 * 1024);
+    static_assertions::const_assert_ne!(EXPECTED_NVME_DISK_SIZE_BYTES, 64 * 1024 * 1024);
+    static_assertions::const_assert!(EXPECTED_NVME_DISK_SIZE_BYTES > 105 * 1024 * 1024);
 
     let (vm, agent) = config
         .with_vmbus_redirect(true)
@@ -102,7 +239,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                             },
                             device: SimpleScsiDiskHandle {
                                 disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                    len: Some(scsi_disk_sectors * sector_size),
+                                    len: Some(SCSI_DISK_SECTORS * SECTOR_SIZE),
                                 })
                                 .into_resource(),
                                 read_only: false,
@@ -118,7 +255,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                 ));
                 c.vpci_devices.push(new_test_vtl2_nvme_device(
                     vtl2_nsid,
-                    nvme_disk_sectors * sector_size,
+                    NVME_DISK_SECTORS * SECTOR_SIZE,
                     NVME_INSTANCE,
                     None,
                 ));
@@ -153,96 +290,111 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
         .run()
         .await?;
 
-    let sh = agent.unix_shell();
+    test_storage_unix(
+        &agent,
+        vec![
+            ExpectedGuestDevice {
+                disk_size_sectors: SCSI_DISK_SECTORS as usize,
+                friendly_name: "scsi".to_string(),
+            },
+            ExpectedGuestDevice {
+                disk_size_sectors: NVME_DISK_SECTORS as usize,
+                friendly_name: "nvme".to_string(),
+            },
+        ],
+    )
+    .await?;
 
-    // Check that the correct devices are found in the VTL0 guest.
-    // The test framework adds additional devices (pipette, cloud-init, etc), so
-    // just check that there are the two devices with the expected sizes.
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
+#[openvmm_test(
+    openhcl_linux_direct_x64,
+    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn openhcl_linux_stripe_storvsp(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    const NVME_INSTANCE_1: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    const NVME_INSTANCE_2: Guid = guid::guid!("06a97a09-d5ad-4689-b638-9419d7346a68");
+    let vtl0_nvme_lun = 0;
+    let vtl2_nsid = 1;
+    const NVME_DISK_SECTORS: u64 = 0x2_0000;
+    const SECTOR_SIZE: u64 = 512;
+    const NUMBER_OF_STRIPE_DEVICES: u64 = 2;
+    const EXPECTED_STRIPED_DISK_SIZE_SECTORS: u64 = NVME_DISK_SECTORS * NUMBER_OF_STRIPE_DEVICES;
+    const EXPECTED_STRIPED_DISK_SIZE_BYTES: u64 = EXPECTED_STRIPED_DISK_SIZE_SECTORS * SECTOR_SIZE;
+    let scsi_instance = Guid::new_random();
+
+    // Assumptions made by test infra & routines:
     //
-    // TODO: Verify VMBUS instance ID, LUN, etc.
-    let devices = cmd!(sh, "sh -c 'ls -d /sys/block/sd*'").read().await?;
+    // 1. Some test-infra added disks are 64MiB in size. Since we find disks by size,
+    // ensure that our test disks are a different size.
+    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_unix`]),
+    // with some arbitrary buffer (5MiB in this case).
+    static_assertions::const_assert_ne!(EXPECTED_STRIPED_DISK_SIZE_BYTES, 64 * 1024 * 1024);
+    static_assertions::const_assert!(EXPECTED_STRIPED_DISK_SIZE_BYTES > 105 * 1024 * 1024);
 
-    let mut reported_sizes = Vec::new();
-    for device in devices.lines() {
-        let device_info_command =
-            format!("echo /dev/$(basename {device}) $(cat /sys/block/$(basename {device})/size)");
-        let line = cmd!(sh, "sh -c {device_info_command}")
-            .read()
-            .await?
-            .split_ascii_whitespace()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>();
-
-        let size = line[1].parse::<u64>().context("failed to parse size")?;
-
-        reported_sizes.push((line[0].clone(), size));
-    }
-
-    let scsi_drive_index = reported_sizes
-        .iter()
-        .position(|(_device, sectors)| *sectors == scsi_disk_sectors)
-        .context(format!(
-            "couldn't find scsi drive with expected sector count: {}",
-            scsi_disk_sectors
-        ))?;
-    let nvme_drive_index = reported_sizes
-        .iter()
-        .position(|(_device, sectors)| *sectors == nvme_disk_sectors)
-        .context(format!(
-            "couldn't find nvme drive with expected sector count: {}",
-            nvme_disk_sectors
-        ))?;
-    assert_ne!(scsi_drive_index, nvme_drive_index);
-
-    // Do IO to both devices. Generate a file with random contents so that we
-    // can verify that the writes (and reads) work correctly.
-    //
-    // - `{o,i}flag=direct` is needed to ensure that the IO is not served
-    //   from the guest's cache.
-    // - `conv=fsync` is needed to ensure that the write is flushed to the
-    //    device before `dd` exits.
-    // - `iflag=fullblock` is needed to ensure that `dd` reads the full
-    //   amount of data requested, otherwise it may read less and exit
-    //   early.
-    //
-    // TODO: use this same logic in other storage focused tests.
-    let test_io = async |device| -> anyhow::Result<()> {
-        cmd!(
-            sh,
-            "sh -c 'dd if=/dev/urandom of=/tmp/random_data bs=1M count=100'"
-        )
+    let (vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.vpci_devices.extend([
+                    new_test_vtl2_nvme_device(
+                        vtl2_nsid,
+                        NVME_DISK_SECTORS * SECTOR_SIZE,
+                        NVME_INSTANCE_1,
+                        None,
+                    ),
+                    new_test_vtl2_nvme_device(
+                        vtl2_nsid,
+                        NVME_DISK_SECTORS * SECTOR_SIZE,
+                        NVME_INSTANCE_2,
+                        None,
+                    ),
+                ]);
+            })
+            .with_custom_vtl2_settings(|v| {
+                v.dynamic.as_mut().unwrap().storage_controllers.push(
+                    Vtl2StorageControllerBuilder::scsi()
+                        .with_instance_id(scsi_instance)
+                        .with_protocol(ControllerType::Scsi)
+                        .add_lun(
+                            Vtl2LunBuilder::disk()
+                                .with_location(vtl0_nvme_lun)
+                                .with_chunk_size_in_kb(128)
+                                .with_physical_devices(vec![
+                                    Vtl2StorageBackingDeviceBuilder::new(
+                                        ControllerType::Nvme,
+                                        NVME_INSTANCE_1,
+                                        vtl2_nsid,
+                                    ),
+                                    Vtl2StorageBackingDeviceBuilder::new(
+                                        ControllerType::Nvme,
+                                        NVME_INSTANCE_2,
+                                        vtl2_nsid,
+                                    ),
+                                ]),
+                        )
+                        .build(),
+                )
+            })
+        })
         .run()
         .await?;
 
-        let write_to_device_cmd = format!(
-            "dd if=/tmp/random_data of={} bs=1M count=100 oflag=direct conv=fsync",
-            device
-        );
-        cmd!(sh, "sh -c {write_to_device_cmd}").run().await?;
-
-        let read_from_device_cmd = format!(
-            "dd if={} of=/tmp/verify_data bs=1M count=100 iflag=direct,fullblock",
-            device
-        );
-        cmd!(sh, "sh -c {read_from_device_cmd}").run().await?;
-
-        let diff_out = cmd!(sh, "sh -c 'diff -s /tmp/random_data /tmp/verify_data'")
-            .read()
-            .await?;
-        assert!(diff_out.contains("are identical"), "data mismatch");
-
-        cmd!(sh, "rm -f /tmp/random_data /tmp/verify_data")
-            .run()
-            .await?;
-
-        Ok(())
-    };
-
-    tracing::info!("Validating IO to device attached to VTL2 as SCSI");
-    test_io(reported_sizes[scsi_drive_index].0.as_str()).await?;
-
-    tracing::info!("Validating IO to device attached to VTL2 as NVMe");
-    test_io(reported_sizes[nvme_drive_index].0.as_str()).await?;
+    test_storage_unix(
+        &agent,
+        vec![ExpectedGuestDevice {
+            disk_size_sectors: (NVME_DISK_SECTORS * NUMBER_OF_STRIPE_DEVICES) as usize,
+            friendly_name: "striped-nvme".to_string(),
+        }],
+    )
+    .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -461,87 +613,3 @@ async fn openhcl_linux_storvsp_dvd_nvme(
 
     Ok(())
 }
-
-// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
-// #[openvmm_test(
-//     openhcl_linux_direct_x64,
-//     openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
-// )]
-// async fn openhcl_linux_stripe_storvsp(
-//     config: PetriVmBuilder<OpenVmmPetriBackend>,
-// ) -> Result<(), anyhow::Error> {
-//     const NVME_INSTANCE_1: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-//     const NVME_INSTANCE_2: Guid = guid::guid!("06a97a09-d5ad-4689-b638-9419d7346a68");
-//     let vtl0_nvme_lun = 0;
-//     let vtl2_nsid = 1;
-//     let nvme_disk_sectors: u64 = 0x10000;
-//     let sector_size = 512;
-//     let number_of_stripe_devices = 2;
-//     let scsi_instance = Guid::new_random();
-
-//     let (vm, agent) = config
-//         .with_vmbus_redirect(true)
-//         .modify_backend(move |b| {
-//             b.with_custom_config(|c| {
-//                 c.vpci_devices.extend([
-//                     new_test_vtl2_nvme_device(
-//                         vtl2_nsid,
-//                         nvme_disk_sectors * sector_size,
-//                         NVME_INSTANCE_1,
-//                         None,
-//                     ),
-//                     new_test_vtl2_nvme_device(
-//                         vtl2_nsid,
-//                         nvme_disk_sectors * sector_size,
-//                         NVME_INSTANCE_2,
-//                         None,
-//                     ),
-//                 ]);
-//             })
-//             .with_custom_vtl2_settings(|v| {
-//                 v.dynamic.as_mut().unwrap().storage_controllers.push(
-//                     Vtl2StorageControllerBuilder::scsi()
-//                         .with_instance_id(scsi_instance)
-//                         .with_protocol(ControllerType::Scsi)
-//                         .add_lun(
-//                             Vtl2LunBuilder::disk()
-//                                 .with_location(vtl0_nvme_lun)
-//                                 .with_chunk_size_in_kb(128)
-//                                 .with_physical_devices(vec![
-//                                     Vtl2StorageBackingDeviceBuilder::new(
-//                                         ControllerType::Nvme,
-//                                         NVME_INSTANCE_1,
-//                                         vtl2_nsid,
-//                                     ),
-//                                     Vtl2StorageBackingDeviceBuilder::new(
-//                                         ControllerType::Nvme,
-//                                         NVME_INSTANCE_2,
-//                                         vtl2_nsid,
-//                                     ),
-//                                 ]),
-//                         )
-//                         .build(),
-//                 )
-//             })
-//         })
-//         .run()
-//         .await?;
-
-//     let sh = agent.unix_shell();
-//     let output = sh.read_file("/sys/block/sda/size").await?;
-
-//     let reported_nvme_sectors = output
-//         .trim()
-//         .parse::<u64>()
-//         .context("failed to parse size")?;
-
-//     assert_eq!(
-//         reported_nvme_sectors,
-//         nvme_disk_sectors * number_of_stripe_devices
-//     );
-
-//     agent.power_off().await?;
-//     vm.wait_for_clean_teardown().await?;
-
-//     Ok(())
-// }

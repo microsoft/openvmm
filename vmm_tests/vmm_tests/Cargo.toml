@@ -48,6 +48,7 @@ futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+static_assertions.workspace = true
 
 hvlite_ttrpc_vmservice.workspace = true
 
