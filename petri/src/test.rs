@@ -5,11 +5,20 @@
 
 #[doc(hidden)]
 pub mod test_macro_support {
+    // UNSAFETY: Needed for linkme.
+    #![expect(unsafe_code)]
+
     use super::TestCase;
     pub use linkme;
 
     #[linkme::distributed_slice]
-    pub static TESTS: [fn() -> (&'static str, Vec<TestCase>)];
+    pub static TESTS: [Option<fn() -> (&'static str, Vec<TestCase>)>];
+
+    // Always have at least one entry to work around linker bugs.
+    //
+    // See <https://github.com/llvm/llvm-project/issues/65855>.
+    #[linkme::distributed_slice(TESTS)]
+    static WORKAROUND: Option<fn() -> (&'static str, Vec<TestCase>)> = None;
 }
 
 use crate::PetriLogSource;
@@ -43,8 +52,8 @@ macro_rules! multitest {
             use $crate::test_macro_support::linkme;
             #[linkme::distributed_slice($crate::test_macro_support::TESTS)]
             #[linkme(crate = linkme)]
-            static TEST: fn() -> (&'static str, Vec<$crate::TestCase>) =
-                || (module_path!(), $tests);
+            static TEST: Option<fn() -> (&'static str, Vec<$crate::TestCase>)> =
+                Some(|| (module_path!(), $tests));
         };
     };
 }
@@ -75,7 +84,7 @@ struct Test {
 impl Test {
     /// Returns all the tests defined in this crate.
     fn all() -> impl Iterator<Item = Self> {
-        TESTS.iter().flat_map(|f| {
+        TESTS.iter().flatten().flat_map(|f| {
             let (module, tests) = f();
             tests.into_iter().filter_map(move |test| {
                 let mut artifact_requirements = test.0.artifact_requirements()?;
