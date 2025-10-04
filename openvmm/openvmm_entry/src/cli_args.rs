@@ -21,6 +21,7 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
+use clap_complete;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::Hypervisor;
@@ -526,6 +527,10 @@ flags:
     /// write saved state .proto files to the specified path
     #[clap(long)]
     pub write_saved_state_proto: Option<PathBuf>,
+
+    /// generate shell completion script and exit
+    #[clap(long)]
+    pub generate_completions: Option<clap_complete::Shell>,
 
     /// specify the IMC hive file for booting Windows
     #[clap(long)]
