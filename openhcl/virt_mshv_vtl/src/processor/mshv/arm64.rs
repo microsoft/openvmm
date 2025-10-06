@@ -219,6 +219,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
                             }
                         },
                         HvArm64ResetType::SYSTEM_RESET => {
+                            // High bit set indicates vendor-specific reset code.
                             if message.reset_code & 0x80000000 != 0 {
                                 tracing::error!(
                                     reset_code = message.reset_code,
