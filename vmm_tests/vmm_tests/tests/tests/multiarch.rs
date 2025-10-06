@@ -5,10 +5,6 @@
 
 use anyhow::Context;
 use futures::StreamExt;
-use memstat::TestVPCount;
-use memstat::WaitPeriodSec;
-use memstat::idle_test;
-use pal_async::DefaultDriver;
 use petri::MemoryConfig;
 use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
@@ -488,12 +484,12 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 async fn memory_validation_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
-    driver: DefaultDriver,
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
-    idle_test(
+    memstat::idle_test(
         config,
-        TestVPCount::SmallVPCount,
-        WaitPeriodSec::ShortWait,
+        memstat::TestVPCount::SmallVPCount,
+        memstat::WaitPeriodSec::ShortWait,
         driver,
     )
     .await
@@ -512,12 +508,12 @@ async fn memory_validation_small<T: PetriVmmBackend>(
 async fn memory_validation_large<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
-    driver: DefaultDriver,
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
-    idle_test(
+    memstat::idle_test(
         config,
-        TestVPCount::LargeVPCount,
-        WaitPeriodSec::LongWait,
+        memstat::TestVPCount::LargeVPCount,
+        memstat::WaitPeriodSec::LongWait,
         driver,
     )
     .await
