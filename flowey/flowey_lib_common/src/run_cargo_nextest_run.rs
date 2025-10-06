@@ -266,9 +266,14 @@ impl FlowNode for Node {
                 let config_file = config_file.claim(ctx);
                 let all_tests_passed_var = all_tests_passed_write.claim(ctx);
                 let junit_xml_write = junit_xml_write.claim(ctx);
-                let nextest_list_output_file_write = nextest_list_output_file_write.claim(ctx);
                 let list_cmd = list_cmd.claim(ctx);
                 let cmd = cmd.claim(ctx);
+
+                let nextest_list_output_file_write = if list_cmd.is_some() {
+                    Some(nextest_list_output_file_write.claim(ctx))
+                } else {
+                    None
+                };
 
                 move |rt| {
                     let working_dir = rt.read(working_dir);
@@ -414,7 +419,10 @@ impl FlowNode for Node {
                             let mut file = fs_err::File::create_new(output_path.clone())?;
                             file.write_all(nextest_list_json.to_string().as_bytes())?;
 
-                            rt.write(nextest_list_output_file_write, &output_path.absolute()?);
+                            rt.write(
+                                nextest_list_output_file_write.unwrap(),
+                                &output_path.absolute()?,
+                            );
                         }
                     }
 

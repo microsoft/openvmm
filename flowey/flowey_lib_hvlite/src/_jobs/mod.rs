@@ -24,3 +24,4 @@ pub mod local_build_igvm;
 pub mod local_custom_vmfirmwareigvm_dll;
 pub mod local_restore_packages;
 pub mod test_local_flowey_build_igvm;
+pub mod verify_all_tests_run;

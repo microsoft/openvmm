@@ -1051,6 +1051,26 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(vmm_tests_run_job.finish());
         }
 
+        // {
+        //     let job = pipeline
+        //         .new_job(
+        //             FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+        //             FlowArch::X86_64,
+        //             "verify all tests run at least once",
+        //         )
+        //         .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+        //             FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+        //         ))
+        //         .dep_on(
+        //             |ctx| flowey_lib_hvlite::_jobs::verify_all_tests_run::Request {
+        //                 test_artifacts:
+        //                 done: ctx.new_done_handle(),
+        //             },
+        //         )
+        //         .finish();
+        //     all_jobs.push(job);
+        // }
+
         // test the flowey local backend by running cargo xflowey build-igvm on x64
         {
             let job = pipeline
