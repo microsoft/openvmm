@@ -475,6 +475,9 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     Ok(())
 }
 
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run these tests in debug builds.
+#[cfg(debug_assertions)]
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
@@ -496,6 +499,9 @@ async fn memory_validation_small<T: PetriVmmBackend>(
     .await
 }
 
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run these tests in debug builds.
+#[cfg(debug_assertions)]
 #[vmm_test_no_agent(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
