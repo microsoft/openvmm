@@ -475,9 +475,9 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     Ok(())
 }
 
-#[vmm_test_no_agent(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
 )]
@@ -496,9 +496,9 @@ async fn memory_validation_small<T: PetriVmmBackend>(
     .await
 }
 
-#[vmm_test_no_agent(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
 )]
