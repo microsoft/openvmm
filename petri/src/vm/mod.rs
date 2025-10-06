@@ -321,7 +321,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let mut tasks = Vec::new();
 
         {
-            const TIMEOUT_DURATION_MINUTES: u64 = 5;
+            const TIMEOUT_DURATION_MINUTES: u64 = 6;
             const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60);
             let log_source = resources.log_source.clone();
             let inspect_task =
@@ -640,6 +640,16 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Get whether the VM will use OpenHCL
     pub fn is_openhcl(&self) -> bool {
         self.config.firmware.is_openhcl()
+    }
+
+    /// Get the isolation type of the VM
+    pub fn isolation(&self) -> Option<IsolationType> {
+        self.config.firmware.isolation()
+    }
+
+    /// Get the machine architecture
+    pub fn arch(&self) -> MachineArch {
+        self.config.arch
     }
 
     /// Get the backend-specific config builder
