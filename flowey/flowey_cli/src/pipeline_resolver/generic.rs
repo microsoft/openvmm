@@ -50,6 +50,7 @@ pub struct ResolvedPipeline {
 pub struct ResolvedJobArtifact {
     pub flowey_var: String,
     pub name: String,
+    pub force_upload: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +113,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             name,
             published_by_job,
             used_by_jobs,
+            force_published: _,
         } in &artifacts
         {
             let no_existing = m
@@ -183,11 +185,16 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
 
         let artifacts_published: Vec<_> = artifacts_published
             .into_iter()
-            .map(|a| ResolvedJobArtifact {
-                flowey_var: flowey_core::pipeline::internal::consistent_artifact_runtime_var_name(
-                    &a, false,
-                ),
-                name: a,
+            .map(|a| {
+                let artifact_meta = artifacts.iter().find(|meta| meta.name == a).unwrap();
+                ResolvedJobArtifact {
+                    flowey_var:
+                        flowey_core::pipeline::internal::consistent_artifact_runtime_var_name(
+                            &a, false,
+                        ),
+                    name: a,
+                    force_upload: artifact_meta.force_published,
+                }
             })
             .collect();
         let artifacts_used: Vec<_> = artifacts_used
@@ -197,6 +204,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
                     &a, true,
                 ),
                 name: a,
+                force_upload: false,
             })
             .collect();
         let parameters_used: Vec<_> = parameters_used
@@ -245,6 +253,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         name: _,
         published_by_job,
         used_by_jobs,
+        force_published: _,
     } in artifacts
     {
         let published_idx = job_graph_idx[published_by_job.expect("checked in loop above")];

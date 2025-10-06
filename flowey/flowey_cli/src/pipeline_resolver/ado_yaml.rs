@@ -193,6 +193,7 @@ pub fn ado_yaml(
         for ResolvedJobArtifact {
             flowey_var: _,
             name,
+            ..
         } in artifacts_used
         {
             ado_steps.push({
@@ -310,7 +311,10 @@ EOF
 
         // next, emit ado steps to create dirs for artifacts which will be
         // published
-        for ResolvedJobArtifact { flowey_var, name } in artifacts_published {
+        for ResolvedJobArtifact {
+            flowey_var, name, ..
+        } in artifacts_published
+        {
             writeln!(
                 flowey_bootstrap_bash,
                 r#"mkdir -p "$(AgentTempDirNormal)/publish_artifacts/{name}""#
@@ -324,7 +328,10 @@ EOF
 
         // lastly, emit ado steps that report the dirs for any artifacts which
         // are used by this job
-        for ResolvedJobArtifact { flowey_var, name } in artifacts_used {
+        for ResolvedJobArtifact {
+            flowey_var, name, ..
+        } in artifacts_used
+        {
             // do NOT use ADO macro syntax $(...), since this is in the same
             // bootstrap block as where those ADO vars get defined, meaning it's
             // not available yet!
@@ -425,14 +432,21 @@ EOF
         for ResolvedJobArtifact {
             flowey_var: _,
             name,
+            force_upload,
         } in artifacts_published
         {
+            let force_upload = if *force_upload {
+                "always()"
+            } else {
+                "succeeded()"
+            };
             ado_steps.push({
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/{name}
                         displayName: '🌼📦 Publish {name}'
                         artifact: {name}
+                        condition: {force_upload}
                     "#
                 ))
                 .unwrap();
