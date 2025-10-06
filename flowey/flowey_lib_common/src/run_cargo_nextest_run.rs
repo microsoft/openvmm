@@ -240,6 +240,7 @@ impl FlowNode for Node {
                     Some(list_cmd)
                 }
             };
+            let has_list_cmd = list_cmd.is_some();
 
             let cmd = ctx.reqv(|v| crate::gen_cargo_nextest_run_cmd::Request {
                 run_kind_deps,
@@ -269,7 +270,7 @@ impl FlowNode for Node {
                 let list_cmd = list_cmd.claim(ctx);
                 let cmd = cmd.claim(ctx);
 
-                let nextest_list_output_file_write = if list_cmd.is_some() {
+                let nextest_list_output_file_write = if has_list_cmd {
                     Some(nextest_list_output_file_write.claim(ctx))
                 } else {
                     None
@@ -419,10 +420,11 @@ impl FlowNode for Node {
                             let mut file = fs_err::File::create_new(output_path.clone())?;
                             file.write_all(nextest_list_json.to_string().as_bytes())?;
 
-                            rt.write(
-                                nextest_list_output_file_write.unwrap(),
-                                &output_path.absolute()?,
-                            );
+                            if let Some(nextest_list_output_file_write) =
+                                nextest_list_output_file_write
+                            {
+                                rt.write(nextest_list_output_file_write, &output_path.absolute()?);
+                            }
                         }
                     }
 
@@ -433,20 +435,25 @@ impl FlowNode for Node {
             ctx.emit_minor_rust_step("write results", |ctx| {
                 let all_tests_passed = all_tests_passed_read.claim(ctx);
                 let junit_xml = junit_xml_read.claim(ctx);
-                let nextest_list_output = nextest_list_output_file_read.claim(ctx);
+                let nextest_list_output = if has_list_cmd {
+                    Some(nextest_list_output_file_read.claim(ctx))
+                } else {
+                    None
+                };
                 let results = results.claim(ctx);
 
                 move |rt| {
                     let all_tests_passed = rt.read(all_tests_passed);
                     let junit_xml = rt.read(junit_xml);
-                    let nextest_list_output = rt.read(nextest_list_output);
+
+                    let nextest_list_output = nextest_list_output.map(|v| rt.read(v));
 
                     rt.write(
                         results,
                         &TestResults {
                             all_tests_passed,
                             junit_xml,
-                            nextest_list_output: Some(nextest_list_output),
+                            nextest_list_output,
                         },
                     );
                 }

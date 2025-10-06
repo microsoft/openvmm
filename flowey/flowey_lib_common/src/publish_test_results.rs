@@ -68,11 +68,11 @@ impl FlowNode for Node {
         {
             resolve_side_effects.push(done);
 
-            if output_dir.is_some() && !matches!(ctx.backend(), FlowBackend::Local) {
-                anyhow::bail!(
-                    "Copying to a custom output directory is only supported on local backend."
-                )
-            }
+            // if output_dir.is_some() && !matches!(ctx.backend(), FlowBackend::Local) {
+            //     anyhow::bail!(
+            //         "Copying to a custom output directory is only supported on local backend."
+            //     )
+            // }
 
             let step_name = format!("publish test results: {label} (JUnit XML)");
             let artifact_name = format!("{label}-junit-xml");
@@ -102,9 +102,9 @@ impl FlowNode for Node {
                     }));
                 }
                 FlowBackend::Github => {
-                    let junit_xml = junit_xml.map(ctx, |p| {
-                        p.absolute().expect("invalid path").display().to_string()
-                    });
+                    // let junit_xml = junit_xml.map(ctx, |p| {
+                    //     p.absolute().expect("invalid path").display().to_string()
+                    // });
 
                     if let Some(nextest_list_json) = nextest_list_json {
                         let nextest_list_json = nextest_list_json.map(ctx, |p| {
@@ -125,17 +125,42 @@ impl FlowNode for Node {
                         );
                     }
 
-                    // Note: usually flowey's built-in artifact publishing API
-                    // should be used instead of this, but here we need to
-                    // manually upload the artifact now so that it is still
-                    // uploaded even if the pipeline fails.
-                    use_side_effects.push(
-                        ctx.emit_gh_step(step_name, "actions/upload-artifact@v4")
-                            .condition(has_junit_xml)
-                            .with("name", artifact_name)
-                            .with("path", junit_xml)
-                            .finish(ctx),
-                    );
+                    // // Note: usually flowey's built-in artifact publishing API
+                    // // should be used instead of this, but here we need to
+                    // // manually upload the artifact now so that it is still
+                    // // uploaded even if the pipeline fails.
+                    // use_side_effects.push(
+                    //     ctx.emit_gh_step(step_name, "actions/upload-artifact@v4")
+                    //         .condition(has_junit_xml)
+                    //         .with("name", artifact_name)
+                    //         .with("path", junit_xml)
+                    //         .finish(ctx),
+                    // );
+                    if let Some(output_dir) = output_dir.clone() {
+                        use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
+                            let output_dir = output_dir.claim(ctx);
+                            let has_junit_xml = has_junit_xml.claim(ctx);
+                            let junit_xml = junit_xml.claim(ctx);
+
+                            move |rt| {
+                                let output_dir = rt.read(output_dir);
+                                let has_junit_xml = rt.read(has_junit_xml);
+                                let junit_xml = rt.read(junit_xml);
+
+                                if has_junit_xml {
+                                    fs_err::copy(
+                                        junit_xml,
+                                        output_dir.join(format!("{artifact_name}.xml")),
+                                    )?;
+                                }
+
+                                Ok(())
+                            }
+                        }));
+                    } else {
+                        use_side_effects.push(has_junit_xml.into_side_effect());
+                        use_side_effects.push(junit_xml.into_side_effect());
+                    }
                 }
                 FlowBackend::Local => {
                     if let Some(output_dir) = output_dir.clone() {
