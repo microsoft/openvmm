@@ -210,11 +210,11 @@ impl SimpleFlowNode for Node {
         // CI, and at some point, we should actually improve the testing
         // story on windows, so that we can run with FeatureSet::All in CI.
         //
-        // On windows, we can't run with all features, as many crates
+        // On windows & mac, we can't build with all features, as many crates
         // require openSSL for crypto, which isn't supported in CI yet.
         let features = if matches!(
             target.operating_system,
-            target_lexicon::OperatingSystem::Windows
+            target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::MacOSX(_)
         ) {
             CargoFeatureSet::None
         } else {
