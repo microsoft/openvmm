@@ -201,11 +201,9 @@ pub struct HvEnlightenmentInformation {
     pub use_hypercall_for_mmio_access: bool,
     pub use_gpa_pinning_hypercall: bool,
     pub wake_vps: bool,
-    pub proxy_interrupt_doorbell_support: bool,
-    pub memory_type_locking_support: bool,
-    pub map_partition_event_log_buffer: bool,
-    // TODO: Currently a placeholder, final bit position
-    //       to be updated after Hyper-V changes. 
+    #[bits(3)]
+    _reserved3: u32,
+    // TODO: Currently a placeholder.
     pub posted_interrupt_redirection_support: bool,
     #[bits(4)]
     _reserved: u32,
