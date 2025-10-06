@@ -14,14 +14,15 @@ use vmm_test_macros::vmm_test_no_agent;
 
 // Test for vmbus relay
 // TODO: VBS isolation was failing and other targets too
-#[vmm_test_no_agent(
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64))
 )]
-#[cfg_attr(not(windows), expect(dead_code))]
 async fn vmbus_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let mut vm = config.with_vmbus_redirect(true).run_without_agent().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    let (vm, agent) = config.with_vmbus_redirect(true).run().await?;
+    agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
