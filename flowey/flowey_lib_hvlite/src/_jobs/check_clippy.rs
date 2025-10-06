@@ -214,7 +214,7 @@ impl SimpleFlowNode for Node {
         // require openSSL for crypto, which isn't supported in CI yet.
         let features = if matches!(
             target.operating_system,
-            target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::MacOSX(_)
+            target_lexicon::OperatingSystem::Windows | target_lexicon::OperatingSystem::Darwin(_)
         ) {
             CargoFeatureSet::None
         } else {
