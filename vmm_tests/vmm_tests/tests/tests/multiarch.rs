@@ -62,12 +62,6 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    hyperv_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_pcat_x64(vhd(ubuntu_2204_server_x64)),
-    hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -84,12 +78,10 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 }
 
 /// Basic boot test without agent
-// TODO: investigate why the shutdown ic doesn't work reliably with hyper-v
-// in our ubuntu image
-// TODO: re-enable TDX ubuntu tests once issues are resolved (here and below)
 #[vmm_test_no_agent(
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
     openvmm_pcat_x64(iso(freebsd_13_2_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
@@ -102,7 +94,7 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     Ok(())
 }
 
-// Basic vp "heavy" boot test with 16 VPs.
+// Basic vp "heavy" boot test with 16 VPs and 2 NUMA nodes.
 #[vmm_test(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
@@ -117,13 +109,17 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let is_openhcl = config.is_openhcl();
     let (vm, agent) = config
         .with_processor_topology(ProcessorTopology {
             vp_count: 16,
+            vps_per_socket: Some(8),
             ..Default::default()
         })
         // multiarch::openvmm_uefi_x64_windows_datacenter_core_2022_x64_boot_heavy
@@ -139,21 +135,19 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
     Ok(())
 }
 
-// Basic vp "heavy" boot test without agent with 16 VPs.
+// Basic vp "heavy" boot test without agent with 16 VPs and 2 NUMA nodes.
 #[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
 )]
 async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config
         .with_processor_topology(ProcessorTopology {
             vp_count: 16,
+            vps_per_socket: Some(8),
             ..Default::default()
         })
         .run_without_agent()
@@ -163,15 +157,32 @@ async fn boot_no_agent_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> a
     Ok(())
 }
 
+/// Basic boot test with a single VP.
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 1,
+            ..Default::default()
+        })
+        .run()
+        .await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Basic boot test without agent and with a single VP.
 #[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
 )]
 async fn boot_no_agent_single_proc<T: PetriVmmBackend>(
@@ -260,25 +271,11 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
 }
 
 /// Basic reboot test without agent
-// TODO: Reenable guests that use the framebuffer once #74 is fixed.
 #[vmm_test_no_agent(
-    openvmm_linux_direct_x64,
-    openvmm_openhcl_linux_direct_x64,
-    // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
-    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    // openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
 )]
 async fn reboot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
@@ -286,6 +283,83 @@ async fn reboot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     vm.send_enlightened_shutdown(ShutdownKind::Reboot).await?;
     vm.wait_for_reset_no_agent().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Configure Guest VSM and reboot the VM to verify it works.
+// TODO: Enable TDX once our runner has support for it.
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
+    //hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+)]
+#[cfg_attr(not(windows), expect(dead_code))]
+async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config.run().await?;
+    let shell = agent.windows_shell();
+
+    // Enable VBS
+    cmd!(shell, "reg")
+        .args([
+            "add",
+            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
+            "/v",
+            "EnableVirtualizationBasedSecurity",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "1",
+            "/f",
+        ])
+        .run()
+        .await?;
+    // Enable Credential Guard
+    cmd!(shell, "reg")
+        .args([
+            "add",
+            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
+            "/v",
+            "LsaCfgFlags",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "2",
+            "/f",
+        ])
+        .run()
+        .await?;
+    // Enable HVCI
+    cmd!(shell, "reg")
+        .args([
+            "add",
+            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity",
+            "/v",
+            "Enabled",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "1",
+            "/f",
+        ])
+        .run()
+        .await?;
+
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+    let shell = agent.windows_shell();
+
+    // Verify VBS is running
+    let output = cmd!(shell, "systeminfo").output().await?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    assert!(output_str.contains("Virtualization-based security: Status: Running"));
+    let output_running = &output_str[output_str.find("Services Running:").unwrap()..];
+    assert!(output_running.contains("Credential Guard"));
+    assert!(output_running.contains("Hypervisor enforced Code Integrity"));
+
+    agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
@@ -398,83 +472,6 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
         MachineArch::X86_64 => assert!(matches!(halt_reason, PetriHaltReason::TripleFault)),
         MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
     }
-    Ok(())
-}
-
-/// Configure Guest VSM and reboot the VM to verify it works.
-// TODO: Enable TDX once our runner has support for it.
-#[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
-    //hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
-)]
-#[cfg_attr(not(windows), expect(dead_code))]
-async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config.run().await?;
-    let shell = agent.windows_shell();
-
-    // Enable VBS
-    cmd!(shell, "reg")
-        .args([
-            "add",
-            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
-            "/v",
-            "EnableVirtualizationBasedSecurity",
-            "/t",
-            "REG_DWORD",
-            "/d",
-            "1",
-            "/f",
-        ])
-        .run()
-        .await?;
-    // Enable Credential Guard
-    cmd!(shell, "reg")
-        .args([
-            "add",
-            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa",
-            "/v",
-            "LsaCfgFlags",
-            "/t",
-            "REG_DWORD",
-            "/d",
-            "2",
-            "/f",
-        ])
-        .run()
-        .await?;
-    // Enable HVCI
-    cmd!(shell, "reg")
-        .args([
-            "add",
-            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity",
-            "/v",
-            "Enabled",
-            "/t",
-            "REG_DWORD",
-            "/d",
-            "1",
-            "/f",
-        ])
-        .run()
-        .await?;
-
-    agent.reboot().await?;
-    let agent = vm.wait_for_reset().await?;
-    let shell = agent.windows_shell();
-
-    // Verify VBS is running
-    let output = cmd!(shell, "systeminfo").output().await?;
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    assert!(output_str.contains("Virtualization-based security: Status: Running"));
-    let output_running = &output_str[output_str.find("Services Running:").unwrap()..];
-    assert!(output_running.contains("Credential Guard"));
-    assert!(output_running.contains("Hypervisor enforced Code Integrity"));
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
