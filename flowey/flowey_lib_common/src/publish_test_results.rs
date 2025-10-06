@@ -95,7 +95,7 @@ impl FlowNode for Node {
                         }
                     }));
                 }
-                FlowBackend::Github => {
+                FlowBackend::Github | FlowBackend::Local => {
                     if let Some(output_dir) = output_dir.clone() {
                         use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
                             let output_dir = output_dir.claim(ctx);
@@ -143,33 +143,6 @@ impl FlowNode for Node {
                         use_side_effects.push(junit_xml.into_side_effect());
                     }
                 }
-                FlowBackend::Local => {
-                    if let Some(output_dir) = output_dir.clone() {
-                        use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
-                            let output_dir = output_dir.claim(ctx);
-                            let has_junit_xml = has_junit_xml.claim(ctx);
-                            let junit_xml = junit_xml.claim(ctx);
-
-                            move |rt| {
-                                let output_dir = rt.read(output_dir);
-                                let has_junit_xml = rt.read(has_junit_xml);
-                                let junit_xml = rt.read(junit_xml);
-
-                                if has_junit_xml {
-                                    fs_err::copy(
-                                        junit_xml,
-                                        output_dir.join(format!("{artifact_name}.xml")),
-                                    )?;
-                                }
-
-                                Ok(())
-                            }
-                        }));
-                    } else {
-                        use_side_effects.push(has_junit_xml.into_side_effect());
-                        use_side_effects.push(junit_xml.into_side_effect());
-                    }
-                }
             }
 
             for (attachment_label, (attachment_path, publish_on_ado)) in attachments {
@@ -184,58 +157,37 @@ impl FlowNode for Node {
                                 .next()
                                 .is_some())
                 });
-                let attachment_path_string = attachment_path.map(ctx, |p| {
-                    p.absolute().expect("invalid path").display().to_string()
-                });
 
                 match ctx.backend() {
                     FlowBackend::Ado => {
                         if publish_on_ado {
-                            let (published_read, published_write) = ctx.new_var();
-                            use_side_effects.push(published_read);
+                            use_side_effects.push(attachment_exists.into_side_effect());
+                        } else if let Some(output_dir) = output_dir.clone() {
+                            use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
+                                let output_dir = output_dir.claim(ctx);
+                                let attachment_exists = attachment_exists.claim(ctx);
+                                let attachment_path = attachment_path.claim(ctx);
 
-                            // Note: usually flowey's built-in artifact publishing API
-                            // should be used instead of this, but here we need to
-                            // manually upload the artifact now so that it is still
-                            // uploaded even if the pipeline fails.
-                            ctx.emit_ado_step_with_condition(
-                                step_name.clone(),
-                                attachment_exists,
-                                |ctx| {
-                                    published_write.claim(ctx);
-                                    let attachment_path_string = attachment_path_string.claim(ctx);
-                                    move |rt| {
-                                        let path_var =
-                                            rt.get_var(attachment_path_string).as_raw_var_name();
-                                        // Artifact name includes the JobAttempt to
-                                        // differentiate between artifacts that were
-                                        // generated when rerunning failed jobs.
-                                        format!(
-                                            r#"
-                                            - publish: $({path_var})
-                                              artifact: {artifact_name}-$({})
-                                            "#,
-                                            AdoRuntimeVar::SYSTEM__JOB_ATTEMPT.as_raw_var_name()
-                                        )
+                                move |rt| {
+                                    let output_dir = rt.read(output_dir);
+                                    let attachment_exists = rt.read(attachment_exists);
+                                    let attachment_path = rt.read(attachment_path);
+
+                                    if attachment_exists {
+                                        copy_dir_all(
+                                            attachment_path,
+                                            output_dir.join(artifact_name),
+                                        )?;
                                     }
-                                },
-                            );
+
+                                    Ok(())
+                                }
+                            }));
                         } else {
                             use_side_effects.push(attachment_exists.into_side_effect());
-                            use_side_effects.push(attachment_path_string.into_side_effect());
                         }
                     }
-                    FlowBackend::Github => {
-                        // See above comment about manually publishing artifacts
-                        use_side_effects.push(
-                            ctx.emit_gh_step(step_name.clone(), "actions/upload-artifact@v4")
-                                .condition(attachment_exists)
-                                .with("name", artifact_name)
-                                .with("path", attachment_path_string)
-                                .finish(ctx),
-                        );
-                    }
-                    FlowBackend::Local => {
+                    FlowBackend::Github | FlowBackend::Local => {
                         if let Some(output_dir) = output_dir.clone() {
                             use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
                                 let output_dir = output_dir.claim(ctx);
@@ -260,7 +212,6 @@ impl FlowNode for Node {
                         } else {
                             use_side_effects.push(attachment_exists.into_side_effect());
                         }
-                        use_side_effects.push(attachment_path_string.into_side_effect());
                     }
                 }
             }
