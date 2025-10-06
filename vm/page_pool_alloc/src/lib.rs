@@ -858,7 +858,7 @@ impl Drop for PagePoolAllocator {
 
 impl user_driver::DmaClient for PagePoolAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        if len as u64 % PAGE_SIZE != 0 {
+        if !(len as u64).is_multiple_of(PAGE_SIZE) {
             anyhow::bail!("not a page-size multiple");
         }
 

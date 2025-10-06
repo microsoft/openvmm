@@ -350,7 +350,7 @@ struct VpSharedPages {
     register_page: hvdef::HvX64RegisterPage,
 }
 
-const _: () = assert!(size_of::<VpSharedPages>() % PAGE_SIZE == 0);
+const _: () = assert!(size_of::<VpSharedPages>().is_multiple_of(PAGE_SIZE));
 
 impl Drop for SidecarVp<'_> {
     fn drop(&mut self) {

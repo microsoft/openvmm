@@ -25,23 +25,25 @@ pub enum AkCertError {
     HeaderVersionMismatch { version: u32, expected_version: u32 },
     #[error("error in parsing response header")]
     ParseHeader(#[source] CommonError),
+    #[error("invalid response header version: {0}")]
+    InvalidResponseVersion(u32),
 }
 
 /// Parse a `AK_CERT_REQUEST` response and return the payload (i.e., the AK cert).
 ///
 /// Returns `Ok(Vec<u8>)` on successfully validating the response, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<Vec<u8>, AkCertError> {
-    use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_1;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
 
     let header = parse_response_header(response).map_err(AkCertError::ParseHeader)?;
 
     // Extract payload as per header version
-    // parse_response_header above has verified the header version already
     let header_size = match header.version {
-        IGVM_ATTEST_RESPONSE_VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
-        _ => size_of::<IgvmAttestAkCertResponseHeader>(),
+        IgvmAttestResponseVersion::VERSION_1 => size_of::<IgvmAttestCommonResponseHeader>(),
+        IgvmAttestResponseVersion::VERSION_2 => size_of::<IgvmAttestAkCertResponseHeader>(),
+        invalid_version => return Err(AkCertError::InvalidResponseVersion(invalid_version.0)),
     };
 
     Ok(response[header_size..header.data_size as usize].to_vec())

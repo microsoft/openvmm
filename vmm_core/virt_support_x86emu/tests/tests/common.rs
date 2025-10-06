@@ -101,6 +101,10 @@ impl CpuIo for MockCpu {
     async fn write_io(&self, _vp: VpIndex, _port: u16, _data: &[u8]) {
         todo!()
     }
+
+    fn fatal_error(&self, _error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
+        todo!()
+    }
 }
 
 /// Validates the given event is indeed a gpf

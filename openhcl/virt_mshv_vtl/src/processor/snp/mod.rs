@@ -48,6 +48,7 @@ use hvdef::hypercall::HypercallOutput;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use virt::EmulatorMonitorSupport;
 use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -246,7 +247,7 @@ impl HardwareIsolatedBacking for SnpBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: VpIndex,
+        vp_index: Option<VpIndex>,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
@@ -1217,7 +1218,7 @@ impl UhProcessor<'_, SnpBacked> {
         let mut has_intercept = self
             .runner
             .run()
-            .map_err(|e| VpHaltReason::Hypervisor(SnpRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(SnpRunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
@@ -1477,7 +1478,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::INVALID_VMCB => {
-                return Err(VpHaltReason::InvalidVmState(InvalidVmcb.into()));
+                return Err(dev.fatal_error(InvalidVmcb.into()));
             }
 
             SevExitCode::INVLPGB | SevExitCode::ILLEGAL_INVLPGB => {
@@ -1517,7 +1518,7 @@ impl UhProcessor<'_, SnpBacked> {
                 match self.runner.exit_message().header.typ {
                     HvMessageType::HvMessageTypeX64SevVmgexitIntercept => {
                         self.handle_vmgexit(dev, entered_from_vtl)
-                            .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+                            .map_err(|e| dev.fatal_error(e.into()))?;
                     }
                     _ => has_intercept = true,
                 }
@@ -1620,7 +1621,7 @@ impl UhProcessor<'_, SnpBacked> {
 
         // Process debug exceptions before handling other intercepts.
         if cfg!(feature = "gdb") && sev_error_code == SevExitCode::EXCP_DB {
-            return self.handle_debug_exception(entered_from_vtl);
+            return self.handle_debug_exception(dev, entered_from_vtl);
         }
 
         // If there is an unhandled intercept message from the hypervisor, then
@@ -1872,6 +1873,10 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
                 vtl,
             })
             .mmio_write(address, data);
+    }
+
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
     }
 }
 
@@ -2634,7 +2639,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
 }
 
 struct SnpTlbLockFlushAccess<'a> {
-    vp_index: VpIndex,
+    vp_index: Option<VpIndex>,
     partition: &'a UhPartitionInner,
     shared: &'a SnpBackedShared,
 }
@@ -2671,11 +2676,13 @@ impl TlbFlushLockAccess for SnpTlbLockFlushAccess<'_> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        hardware_cvm::tlb_lock::TlbLockAccess {
-            vp_index: self.vp_index,
-            cvm_partition: &self.shared.cvm,
+        if let Some(vp_index) = self.vp_index {
+            hardware_cvm::tlb_lock::TlbLockAccess {
+                vp_index,
+                cvm_partition: &self.shared.cvm,
+            }
+            .set_wait_for_tlb_locks(vtl);
         }
-        .set_wait_for_tlb_locks(vtl);
     }
 }
 

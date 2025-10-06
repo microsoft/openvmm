@@ -21,7 +21,7 @@ enum VmgsError
     VmgsInvalidFileSize = 7,
     VmgsInvalidString = 8,
     VmgsInvalidVmgs = 9,
-    VmgsFileInfoAllocated = 10,
+    VmgsFileInfoNotAllocated = 10,
     VmgsDecryptionFailed = 11,
     VmgsEncryptionFailed = 12,
     VmgsWriteFailed = 13,

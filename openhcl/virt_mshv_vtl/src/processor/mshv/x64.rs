@@ -52,6 +52,7 @@ use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
 use std::sync::atomic::Ordering::Relaxed;
+use virt::EmulatorMonitorSupport;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -247,7 +248,7 @@ impl BackingPrivate for HypervisorBackedX86 {
             let mut run = this
                 .runner
                 .run_sidecar()
-                .map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+                .map_err(|e| dev.fatal_error(e.into()))?;
             match stop.until_stop(run.wait()).await {
                 Ok(r) => r,
                 Err(stop) => {
@@ -260,19 +261,19 @@ impl BackingPrivate for HypervisorBackedX86 {
                     r
                 }
             }
-            .map_err(|e| VpHaltReason::InvalidVmState(ioctl::Error::Sidecar(e).into()))?
+            .map_err(|e| dev.fatal_error(ioctl::Error::Sidecar(e).into()))?
         } else {
             this.unlock_tlb_lock(Vtl::Vtl2);
             this.runner
                 .run()
-                .map_err(|e| VpHaltReason::Hypervisor(MshvRunVpError(e).into()))?
+                .map_err(|e| dev.fatal_error(MshvRunVpError(e).into()))?
         };
 
         if intercepted {
             let message_type = this.runner.exit_message().header.typ;
 
             let mut intercept_handler =
-                InterceptHandler::new(this).map_err(|e| VpHaltReason::InvalidVmState(e.into()))?;
+                InterceptHandler::new(this).map_err(|e| dev.fatal_error(e.into()))?;
 
             let stat = match message_type {
                 HvMessageType::HvMessageTypeX64IoPortIntercept => {
@@ -319,7 +320,7 @@ impl BackingPrivate for HypervisorBackedX86 {
                     &mut this.backing.stats.unrecoverable_exception
                 }
                 HvMessageType::HvMessageTypeExceptionIntercept => {
-                    intercept_handler.handle_exception()?;
+                    intercept_handler.handle_exception(dev)?;
                     &mut this.backing.stats.exception_intercept
                 }
                 reason => unreachable!("unknown exit reason: {:#x?}", reason),
@@ -752,9 +753,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             // Note: SGX memory should be included in this check, so if SGX is
             // no longer included in the lower_vtl_memory_layout, make sure the
             // appropriate changes are reflected here.
-            Err(VpHaltReason::InvalidVmState(
-                UnacceptedMemoryAccess(gpa).into(),
-            ))
+            Err(dev.fatal_error(UnacceptedMemoryAccess(gpa).into()))
         } else {
             self.handle_mmio_exit(dev).await
         }
@@ -859,7 +858,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         })
     }
 
-    fn handle_exception(&mut self) -> Result<(), VpHaltReason> {
+    fn handle_exception(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason> {
         let message = self
             .vp
             .runner
@@ -868,7 +867,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
         match x86defs::Exception(message.vector as u8) {
             x86defs::Exception::DEBUG if cfg!(feature = "gdb") => {
-                self.vp.handle_debug_exception(self.intercepted_vtl)?
+                self.vp.handle_debug_exception(dev, self.intercepted_vtl)?
             }
             _ => tracing::error!("unexpected exception type {:#x?}", message.vector),
         }
@@ -1358,13 +1357,8 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             .expect("set_vp_registers hypercall for setting pending event should not fail");
     }
 
-    fn check_monitor_write(&self, gpa: u64, bytes: &[u8]) -> bool {
-        self.vp
-            .partition
-            .monitor_page
-            .check_write(gpa, bytes, |connection_id| {
-                signal_mnf(self.devices, connection_id)
-            })
+    fn monitor_support(&self) -> Option<&dyn EmulatorMonitorSupport> {
+        Some(self)
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {

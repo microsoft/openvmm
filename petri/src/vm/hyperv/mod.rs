@@ -22,6 +22,7 @@ use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
 use crate::ShutdownKind;
 use crate::UefiConfig;
+use crate::VmmQuirks;
 use crate::disk_image::AgentImage;
 use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
@@ -38,7 +39,6 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
@@ -76,8 +76,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
             && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
     }
 
-    fn select_quirks(quirks: GuestQuirks) -> GuestQuirksInner {
-        quirks.hyperv
+    fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
+        (firmware.quirks().hyperv, VmmQuirks::default())
     }
 
     fn new(_resolver: &ArtifactResolver<'_>) -> Self {
@@ -106,11 +106,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             vmgs: _, // TODO
         } = config;
 
-        let PetriVmResources {
-            driver,
-            output_dir: _,
-            log_source,
-        } = resources;
+        let PetriVmResources { driver, log_source } = resources;
 
         let temp_dir = tempfile::tempdir()?;
 
@@ -301,6 +297,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             {
                 if agent_image.contains_pipette()
                     && matches!(firmware.os_flavor(), OsFlavor::Windows)
+                    && firmware.isolation().is_none()
                 {
                     // Make a file for the IMC hive. It's not guaranteed to be at a fixed
                     // location at runtime.
@@ -537,8 +534,24 @@ impl PetriVmRuntime for HyperVPetriRuntime {
         self.vm.restart_openhcl(flags).await
     }
 
+    async fn save_openhcl(
+        &mut self,
+        _new_openhcl: &ResolvedArtifact,
+        _flags: OpenHclServicingFlags,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("saving OpenHCL firmware separately is not yet supported on Hyper-V");
+    }
+
+    async fn restore_openhcl(&mut self) -> anyhow::Result<()> {
+        anyhow::bail!("restoring OpenHCL firmware separately is not yet supported on Hyper-V");
+    }
+
     fn take_framebuffer_access(&mut self) -> Option<vm::HyperVFramebufferAccess> {
         (!self.is_isolated).then(|| self.vm.get_framebuffer_access())
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        self.vm.reset().await
     }
 }
 

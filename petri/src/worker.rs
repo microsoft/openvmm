@@ -58,13 +58,13 @@ impl Worker {
         self.rpc.call_failable(VmRpc::PulseSaveRestore, ()).await
     }
 
-    pub(crate) async fn restart_openhcl(
+    pub(crate) async fn save_openhcl(
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
         flags: OpenHclServicingFlags,
         file: std::fs::File,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::service_underhill(
+        hvlite_helpers::underhill::save_underhill(
             &self.rpc,
             send,
             GuestServicingFlags {
@@ -76,11 +76,17 @@ impl Worker {
         .await
     }
 
-    pub(crate) async fn inspect_all(&self) -> String {
+    pub(crate) async fn restore_openhcl(
+        &self,
+        send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
+    ) -> anyhow::Result<()> {
+        hvlite_helpers::underhill::restore_underhill(&self.rpc, send).await
+    }
+
+    pub(crate) async fn inspect_all(&self) -> inspect::Node {
         let mut inspection = inspect::inspect("", &self.handle);
         inspection.resolve().await;
-        let results = inspection.results();
-        format!("{results:#}",)
+        inspection.results()
     }
 
     pub(crate) async fn shutdown(mut self) -> anyhow::Result<()> {

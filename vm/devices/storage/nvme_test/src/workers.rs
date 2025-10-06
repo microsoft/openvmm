@@ -10,7 +10,6 @@ mod io;
 pub use admin::NsidConflict;
 pub use coordinator::NvmeFaultControllerClient;
 pub use coordinator::NvmeWorkers;
-pub use coordinator::NvmeWorkersContext;
 
 use crate::PAGE_SIZE;
 use inspect::Inspect;
@@ -25,6 +24,6 @@ const MAX_DATA_TRANSFER_SIZE: usize = 256 * 1024;
 
 const _: () = assert!(
     MAX_DATA_TRANSFER_SIZE.is_power_of_two()
-        && MAX_DATA_TRANSFER_SIZE % PAGE_SIZE == 0
+        && MAX_DATA_TRANSFER_SIZE.is_multiple_of(PAGE_SIZE)
         && MAX_DATA_TRANSFER_SIZE / PAGE_SIZE > 1
 );

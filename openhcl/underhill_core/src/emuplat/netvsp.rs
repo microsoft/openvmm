@@ -697,10 +697,17 @@ impl HclNetworkVFManagerWorker {
                             let (saved_state, device) = device.save().await;
                             std::mem::forget(device);
 
-                            Some(ManaSavedState {
-                                mana_device: saved_state,
-                                pci_id: self.vtl2_pci_id.clone(),
-                            })
+                            if let Ok(saved_state) = saved_state {
+                                Some(ManaSavedState {
+                                    mana_device: saved_state,
+                                    pci_id: self.vtl2_pci_id.clone(),
+                                })
+                            } else {
+                                tracing::error!(
+                                    "Failed while saving MANA device state, returning None"
+                                );
+                                None
+                            }
                         } else {
                             tracing::warn!(
                                 "no MANA device present when saving state, returning None"

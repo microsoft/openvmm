@@ -3,10 +3,10 @@
 
 //! Wrappers for Hyper-V Powershell Cmdlets
 
-use super::vm::CommandError;
-use super::vm::run_cmd;
+use crate::CommandError;
 use crate::OpenHclServicingFlags;
 use crate::VmScreenshotMeta;
+use crate::run_host_cmd;
 use anyhow::Context;
 use core::str;
 use guid::Guid;
@@ -38,20 +38,37 @@ impl ps::AsVal for HyperVGeneration {
 }
 
 /// Hyper-V Guest State Isolation Type
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[serde(try_from = "i32")]
 pub enum HyperVGuestStateIsolationType {
     /// Trusted Launch (OpenHCL, SecureBoot, TPM)
-    TrustedLaunch,
+    TrustedLaunch = 0,
     /// VBS
-    Vbs,
+    Vbs = 1,
     /// SNP
-    Snp,
+    Snp = 2,
     /// TDX
-    Tdx,
+    Tdx = 3,
     /// OpenHCL but no isolation
-    OpenHCL,
+    OpenHCL = 16,
     /// No HCL and no isolation
-    Disabled,
+    Disabled = -1,
+}
+
+impl TryFrom<i32> for HyperVGuestStateIsolationType {
+    type Error = String;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            -1 => Ok(HyperVGuestStateIsolationType::Disabled),
+            0 => Ok(HyperVGuestStateIsolationType::TrustedLaunch),
+            1 => Ok(HyperVGuestStateIsolationType::Vbs),
+            2 => Ok(HyperVGuestStateIsolationType::Snp),
+            3 => Ok(HyperVGuestStateIsolationType::Tdx),
+            16 => Ok(HyperVGuestStateIsolationType::OpenHCL),
+            _ => Err(format!("Unknown isolation type: {}", value)),
+        }
+    }
 }
 
 impl ps::AsVal for HyperVGuestStateIsolationType {
@@ -108,7 +125,7 @@ pub struct HyperVNewVMArgs<'a> {
 
 /// Runs New-VM with the given arguments.
 pub async fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
-    let vmid = run_cmd(
+    let vmid = run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("New-VM")
             .arg("Name", args.name)
@@ -135,7 +152,7 @@ pub async fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
 
 /// Runs New-VM with the given arguments.
 pub async fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -193,7 +210,7 @@ pub async fn run_set_vm_processor(
     vmid: &Guid,
     args: &HyperVSetVMProcessorArgs,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -229,7 +246,7 @@ pub struct HyperVSetVMMemoryArgs {
 
 /// Runs Set-VMMemory with the given arguments.
 pub async fn run_set_vm_memory(vmid: &Guid, args: &HyperVSetVMMemoryArgs) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -294,7 +311,7 @@ impl ps::AsVal for ControllerType {
 pub async fn run_add_vm_hard_disk_drive(
     args: HyperVAddVMHardDiskDriveArgs<'_>,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", args.vmid)
@@ -331,7 +348,7 @@ pub struct HyperVAddVMDvdDriveArgs<'a> {
 
 /// Runs Add-VMDvdDrive with the given arguments.
 pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", args.vmid)
@@ -352,7 +369,7 @@ pub async fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::
 ///
 /// Returns the controller number.
 pub async fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
-    let output = run_cmd(
+    let output = run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -377,7 +394,7 @@ pub async fn run_set_vm_scsi_controller_target_vtl(
     controller_number: u32,
     target_vtl: u32,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -398,7 +415,7 @@ pub async fn run_set_vm_scsi_controller_target_vtl(
 
 /// Runs Dismount-VHD with the given arguments.
 pub async fn run_dismount_vhd(path: &Path) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Dismount-VHD")
             .arg("Path", path)
@@ -425,7 +442,7 @@ pub struct HyperVSetVMFirmwareArgs<'a> {
 
 /// Runs Set-VMFirmware with the given arguments.
 pub async fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", args.vmid)
@@ -457,7 +474,7 @@ pub async fn run_set_openhcl_firmware(
     igvm_file: &Path,
     increase_vtl2_memory: bool,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -482,7 +499,7 @@ pub async fn run_set_vm_command_line(
     ps_mod: &Path,
     command_line: &str,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -506,7 +523,7 @@ pub async fn run_set_initial_machine_configuration(
     ps_mod: &Path,
     imc_hive: &Path,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -526,7 +543,7 @@ pub async fn run_set_initial_machine_configuration(
 
 /// Enables the specified vm com port and binds it to the named pipe path
 pub async fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -548,7 +565,7 @@ pub async fn run_set_vmbus_redirect(
     ps_mod: &Path,
     enable: bool,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -579,7 +596,7 @@ pub async fn run_restart_openhcl(
             "enable_nvme_keepalive is not yet supported for HyperV VMs"
         ));
     }
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -668,7 +685,7 @@ pub async fn run_get_winevent(
         ps::Value::new("Message"),
     ]);
 
-    let output = run_cmd(
+    let output = run_host_cmd(
         builder
             .cmdlet("Select-Object")
             .positional(props)
@@ -812,7 +829,7 @@ pub async fn hyperv_halt_events(
 
 /// Get the IDs of the VM(s) with the specified name
 pub async fn vm_id_from_name(name: &str) -> anyhow::Result<Vec<Guid>> {
-    let output = run_cmd(
+    let output = run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Name", name)
@@ -854,7 +871,7 @@ pub enum VmShutdownIcStatus {
 
 /// Get the VM's shutdown IC status
 pub async fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> {
-    let status = run_cmd(
+    let status = run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -883,7 +900,7 @@ pub async fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcSt
 
 /// Runs Remove-VmNetworkAdapter to remove all network adapters from a VM.
 pub async fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -902,7 +919,7 @@ pub async fn run_remove_vm_scsi_controller(
     vmid: &Guid,
     controller_number: u32,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Get-VM")
             .arg("Id", vmid)
@@ -927,7 +944,7 @@ pub async fn run_get_vm_screenshot(
     temp_bin_path: &Path,
 ) -> anyhow::Result<VmScreenshotMeta> {
     // execute wmi via powershell
-    let output = run_cmd(
+    let output = run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -990,7 +1007,7 @@ pub async fn run_set_turn_off_on_guest_restart(
     ps_mod: &Path,
     enable: bool,
 ) -> anyhow::Result<()> {
-    run_cmd(
+    run_host_cmd(
         PowerShellBuilder::new()
             .cmdlet("Import-Module")
             .positional(ps_mod)
@@ -1006,4 +1023,47 @@ pub async fn run_set_turn_off_on_guest_restart(
     .await
     .map(|_| ())
     .context("set_turn_off_on_guest_restart")
+}
+
+/// Hyper-V Get VM Host Output
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct HyperVGetVmHost {
+    /// GuestIsolationTypes supported on the host. While GuestStateIsolationTypes contains values
+    /// for SNP and TDX, there are other factors that determine SNP/TDX support than just hardware
+    /// compatibility, hence we rely on SnpStatus and TdxStatus for that information.
+    #[serde(rename = "GuestIsolationTypes")]
+    pub guest_isolation_types: Vec<HyperVGuestStateIsolationType>,
+    /// Whether SNP is supported on the host.
+    #[serde(rename = "SnpStatus", deserialize_with = "int_to_bool")]
+    pub snp_status: bool,
+    /// Whether TDX is supported on the host.
+    #[serde(rename = "TdxStatus", deserialize_with = "int_to_bool")]
+    pub tdx_status: bool,
+}
+
+fn int_to_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = i32::deserialize(deserializer)?;
+    Ok(v == 1)
+}
+
+/// Gets the VM host information and returns the output string
+pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
+    let output = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-VMHost")
+            .pipeline()
+            .cmdlet("ConvertTo-Json")
+            .arg("Depth", 3)
+            .flag("Compress")
+            .finish()
+            .build(),
+    )
+    .await
+    .context("get_vm_host")?;
+
+    serde_json::from_str::<HyperVGetVmHost>(&output)
+        .map_err(|e| anyhow::anyhow!("failed to parse HyperVGetVmHost: {}", e))
 }

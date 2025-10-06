@@ -251,7 +251,7 @@ impl StripedDisk {
         let sector_count = devices[0].sector_count();
         let read_only = devices[0].is_read_only();
         let chunk_size_in_bytes = chunk_size_in_bytes.unwrap_or(CHUNK_SIZE_128K);
-        if chunk_size_in_bytes % sector_size != 0 {
+        if !chunk_size_in_bytes.is_multiple_of(sector_size) {
             return Err(NewDeviceError::InvalidChunkSize(
                 chunk_size_in_bytes,
                 sector_size,
@@ -296,7 +296,7 @@ impl StripedDisk {
             ));
         }
 
-        if logic_sector_count % (devices.len() as u64 * sector_count_per_chunk) != 0 {
+        if !logic_sector_count.is_multiple_of(devices.len() as u64 * sector_count_per_chunk) {
             return Err(NewDeviceError::InvalidStripingDiskSize(
                 logic_sector_count,
                 devices.len() as u64 * sector_count_per_chunk,

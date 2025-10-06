@@ -36,27 +36,53 @@ pub const KEY_RELEASE_RESPONSE_BUFFER_SIZE: usize = 16 * PAGE_SIZE;
 /// Currently the AK cert request only requires 1 page.
 pub const AK_CERT_RESPONSE_BUFFER_SIZE: usize = PAGE_SIZE;
 
-// IGVM Attest response header version
-pub const IGVM_ATTEST_RESPONSE_VERSION_1: u32 = 1;
-pub const IGVM_ATTEST_RESPONSE_VERSION_2: u32 = 2;
-pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: u32 = IGVM_ATTEST_RESPONSE_VERSION_2;
+/// Current IGVM Attest response header version.
+pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: IgvmAttestResponseVersion =
+    IgvmAttestResponseVersion::VERSION_2;
 
-/// Request structure (C-style)
+open_enum! {
+    /// IGVM Attest response header versions.
+    #[derive(Default, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum IgvmAttestResponseVersion: u32 {
+        /// Version 1
+        VERSION_1 = 1,
+        /// Version 2
+        VERSION_2 = 2,
+    }
+}
+
+/// Current IGVM Attest request header version.
+pub const IGVM_ATTEST_REQUEST_CURRENT_VERSION: IgvmAttestRequestVersion =
+    IgvmAttestRequestVersion::VERSION_2;
+
+open_enum! {
+    /// IGVM Attest request header versions.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum IgvmAttestRequestVersion: u32 {
+        /// Version 1
+        VERSION_1 = 1,
+        /// Version 2
+        VERSION_2 = 2,
+    }
+}
+
+/// Request base structure (C-style)
 /// The struct (includes the appended [`runtime_claims::RuntimeClaims`]) also serves as the
 /// attestation report in vTPM guest attestation.
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct IgvmAttestRequest {
+pub struct IgvmAttestRequestBase {
     /// Header (unmeasured)
     pub header: IgvmAttestRequestHeader,
     /// TEE attestation report
     pub attestation_report: [u8; ATTESTATION_REPORT_SIZE_MAX],
     /// Request data (unmeasured)
     pub request_data: IgvmAttestRequestData,
-    // Variable-length [`runtime_claims::RuntimeClaims`] (JSON string) in raw bytes will be
-    // appended to here.
-    // The hash of [`runtime_claims::RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
-    // in the `report_data` or equivalent field of the TEE attestation report.
+    // Data to be appended at the end of the struct:
+    // - Optional Extended request data [`IgvmAttestRequestDataExt`] (request version 2+).
+    // - Variable-length [`runtime_claims::RuntimeClaims`] (JSON string)
+    //   The hash of [`runtime_claims::RuntimeClaims`] in [`IgvmAttestHashType`] will be captured
+    //   in the `report_data` or equivalent field of the TEE attestation report.
 }
 
 open_enum! {
@@ -138,8 +164,6 @@ impl IgvmAttestRequestHeader {
     }
 }
 
-const IGVM_ATTEST_VERSION_CURRENT: u32 = 2;
-
 /// Bitmap of additional Igvm request attributes.
 /// 0 - error_code: Requesting IGVM Agent Error code
 /// 1 - retry: Retry preference
@@ -159,34 +183,47 @@ pub struct IgvmAttestRequestData {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestRequestVersion,
     /// Report type
     pub report_type: IgvmAttestReportType,
     /// Report data hash type
     pub report_data_hash_type: IgvmAttestHashType,
     /// Size of the appended raw runtime claims
     pub variable_data_size: u32,
-    /// Bitmap of additional requested attributes
-    pub capability_bitmap: IgvmCapabilityBitMap,
 }
 
 impl IgvmAttestRequestData {
     /// Create an `IgvmAttestRequestData` instance.
     pub fn new(
+        version: IgvmAttestRequestVersion,
         data_size: u32,
         report_type: IgvmAttestReportType,
         report_data_hash_type: IgvmAttestHashType,
         variable_data_size: u32,
-        capability_bitmap: IgvmCapabilityBitMap,
     ) -> Self {
         Self {
             data_size,
-            version: IGVM_ATTEST_VERSION_CURRENT,
+            version,
             report_type,
             report_data_hash_type,
             variable_data_size,
-            capability_bitmap,
         }
+    }
+}
+
+/// Unmeasured user data appended to `IgvmAttestRequestData` for version 2+,
+/// used for host attestation requests (C-style struct).
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct IgvmAttestRequestDataExt {
+    /// Bitmap of additional requested attributes
+    pub capability_bitmap: IgvmCapabilityBitMap,
+}
+
+impl IgvmAttestRequestDataExt {
+    /// Create an `IgvmAttestRequestDataExt` instance.
+    pub fn new(capability_bitmap: IgvmCapabilityBitMap) -> Self {
+        Self { capability_bitmap }
     }
 }
 
@@ -207,7 +244,7 @@ pub struct IgvmAttestCommonResponseHeader {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestResponseVersion,
 }
 
 /// The response header for `IGVM_ERROR_INFO` (C-style struct)
@@ -231,7 +268,7 @@ pub struct IgvmAttestKeyReleaseResponseHeader {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestResponseVersion,
     /// IgvmErrorInfo that contains RPC result and retry recommendation
     pub error_info: IgvmErrorInfo,
 }
@@ -244,7 +281,7 @@ pub struct IgvmAttestWrappedKeyResponseHeader {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestResponseVersion,
     /// IgvmErrorInfo that contains RPC result and retry recommendation
     pub error_info: IgvmErrorInfo,
 }
@@ -256,13 +293,13 @@ pub struct IgvmAttestAkCertResponseHeader {
     /// Data size
     pub data_size: u32,
     /// Version
-    pub version: u32,
+    pub version: IgvmAttestResponseVersion,
     /// IgvmErrorInfo that contains RPC result and retry recommendation
     pub error_info: IgvmErrorInfo,
 }
 
 /// Definition of the runt-time claims, which will be appended to the
-/// `IgvmAttestRequest` in raw bytes.
+/// `IgvmAttestRequestBase` in raw bytes.
 pub mod runtime_claims {
     use base64_serde::base64_serde_type;
     use mesh::MeshPayload;

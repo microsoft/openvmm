@@ -173,7 +173,7 @@ pub struct VmgsFileTable {
 }
 
 const_assert!(size_of::<VmgsFileTable>() == 4096);
-const_assert!(size_of::<VmgsFileTable>() as u32 % VMGS_BYTES_PER_BLOCK == 0);
+const_assert!((size_of::<VmgsFileTable>() as u32).is_multiple_of(VMGS_BYTES_PER_BLOCK));
 pub const VMGS_FILE_TABLE_BLOCK_SIZE: u32 =
     size_of::<VmgsFileTable>() as u32 / VMGS_BYTES_PER_BLOCK;
 
@@ -184,7 +184,7 @@ pub struct VmgsExtendedFileTable {
 }
 
 const_assert!(size_of::<VmgsExtendedFileTable>() == 4096);
-const_assert!(size_of::<VmgsExtendedFileTable>() as u32 % VMGS_BYTES_PER_BLOCK == 0);
+const_assert!((size_of::<VmgsExtendedFileTable>() as u32).is_multiple_of(VMGS_BYTES_PER_BLOCK));
 pub const VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE: u32 =
     size_of::<VmgsExtendedFileTable>() as u32 / VMGS_BYTES_PER_BLOCK;
 

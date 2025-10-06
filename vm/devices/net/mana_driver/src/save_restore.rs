@@ -6,7 +6,7 @@
 use mesh::payload::Protobuf;
 
 /// Mana saved state
-#[derive(Debug, Protobuf, Clone, Default)]
+#[derive(Debug, Protobuf, Clone)]
 #[mesh(package = "mana_driver")]
 pub struct ManaSavedState {
     /// The saved state of the MANA device driver
@@ -19,7 +19,7 @@ pub struct ManaSavedState {
 }
 
 /// Mana device saved state
-#[derive(Debug, Protobuf, Clone, Default)]
+#[derive(Debug, Protobuf, Clone)]
 #[mesh(package = "mana_driver")]
 pub struct ManaDeviceSavedState {
     /// Saved state for restoration of the GDMA driver
@@ -28,7 +28,7 @@ pub struct ManaDeviceSavedState {
 }
 
 /// Top level saved state for the GDMA driver's saved state
-#[derive(Protobuf, Clone, Debug, Default)]
+#[derive(Protobuf, Clone, Debug)]
 #[mesh(package = "mana_driver")]
 pub struct GdmaDriverSavedState {
     /// Memory to be restored by a DMA client
@@ -77,15 +77,11 @@ pub struct GdmaDriverSavedState {
     /// Link status by vport index
     #[mesh(12)]
     pub link_toggle: Vec<(u32, bool)>,
-
-    /// The HWC failure state
-    #[mesh(13)]
-    pub hwc_failure: bool,
 }
 
 /// The saved state of a completion queue or event queue for restoration
 /// during servicing
-#[derive(Clone, Protobuf, Debug, Default)]
+#[derive(Clone, Protobuf, Debug)]
 #[mesh(package = "mana_driver")]
 pub struct CqEqSavedState {
     /// The doorbell state of the queue, which is how the device is notified
@@ -114,7 +110,7 @@ pub struct CqEqSavedState {
 }
 
 /// Saved state of a doorbell for restoration during servicing
-#[derive(Clone, Protobuf, Debug, Default)]
+#[derive(Clone, Protobuf, Debug)]
 #[mesh(package = "mana_driver")]
 pub struct DoorbellSavedState {
     /// The doorbell's id
@@ -127,7 +123,7 @@ pub struct DoorbellSavedState {
 }
 
 /// Saved state of a work queue for restoration during servicing
-#[derive(Debug, Protobuf, Clone, Default)]
+#[derive(Debug, Protobuf, Clone)]
 #[mesh(package = "mana_driver")]
 pub struct WqSavedState {
     /// The doorbell state of the queue, which is how the device is notified
@@ -157,7 +153,7 @@ pub struct WqSavedState {
 
 /// Saved state for a memory region used by the driver
 /// to be restored by a DMA client during servicing
-#[derive(Debug, Protobuf, Clone, Default)]
+#[derive(Debug, Protobuf, Clone)]
 #[mesh(package = "mana_driver")]
 pub struct SavedMemoryState {
     /// The base page frame number of the memory region

@@ -135,6 +135,7 @@ where
             VpHaltReason::Cancel => Ok(StopReason::Cancel),
             VpHaltReason::PowerOff => Err(HaltReason::PowerOff),
             VpHaltReason::Reset => Err(HaltReason::Reset),
+            VpHaltReason::Hibernate => Err(HaltReason::Hibernate),
             VpHaltReason::TripleFault { vtl } => {
                 let registers = self.vp.access_state(vtl).registers().ok().map(Arc::new);
 
@@ -147,33 +148,6 @@ where
                 Err(HaltReason::TripleFault {
                     vp: self.vp_index.index(),
                     registers,
-                })
-            }
-            VpHaltReason::InvalidVmState(err) => {
-                tracing::error!(
-                    err = err.as_ref() as &dyn std::error::Error,
-                    "invalid VM state"
-                );
-                Err(HaltReason::InvalidVmState {
-                    vp: self.vp_index.index(),
-                })
-            }
-            VpHaltReason::EmulationFailure(err) => {
-                tracing::error!(
-                    err = err.as_ref() as &dyn std::error::Error,
-                    "emulation failure"
-                );
-                Err(HaltReason::VpError {
-                    vp: self.vp_index.index(),
-                })
-            }
-            VpHaltReason::Hypervisor(err) => {
-                tracing::error!(
-                    err = err.as_ref() as &dyn std::error::Error,
-                    "fatal vp error"
-                );
-                Err(HaltReason::VpError {
-                    vp: self.vp_index.index(),
                 })
             }
             VpHaltReason::SingleStep => {

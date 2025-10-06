@@ -78,6 +78,7 @@ impl PetriVmConfigOpenVmm {
                             .into_resource(),
                         }],
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));
@@ -169,12 +170,15 @@ impl PetriVmConfigOpenVmm {
                             .into_resource(),
                         }],
                         requests: None,
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));
             }
 
-            if matches!(self.firmware.os_flavor(), OsFlavor::Windows) {
+            if matches!(self.firmware.os_flavor(), OsFlavor::Windows)
+                && self.firmware.isolation().is_none()
+            {
                 // Make a file for the IMC hive. It's not guaranteed to be at a fixed
                 // location at runtime.
                 let mut imc_hive_file =

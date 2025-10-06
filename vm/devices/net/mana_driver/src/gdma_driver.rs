@@ -266,9 +266,8 @@ struct EqeWaitResult {
 
 impl<T: DeviceBacking> GdmaDriver<T> {
     pub fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
-        let device = match self.device.as_mut() {
-            Some(d) => d,
-            None => return Ok(()),
+        let Some(device) = self.device.as_mut() else {
+            return Ok(());
         };
 
         device.unmap_all_interrupts()
@@ -290,12 +289,15 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;
 
-        let dma_buffer = dma_buffer.map(Ok).unwrap_or_else(|| {
-            let dma_client = device.dma_client();
-            dma_client
-                .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
-                .context("failed to allocate DMA buffer")
-        })?;
+        let dma_buffer = match dma_buffer {
+            Some(buffer) => buffer,
+            None => {
+                let dma_client = device.dma_client();
+                dma_client
+                    .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
+                    .context("failed to allocate DMA buffer")?
+            }
+        };
 
         let pages = dma_buffer.pfns();
 
@@ -512,14 +514,16 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    pub async fn save(&mut self) -> GdmaDriverSavedState {
-        tracing::info!("saving gdma driver state");
+    pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
+        if self.hwc_failure {
+            anyhow::bail!("cannot save/restore after HWC failure");
+        }
 
         self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
 
-        GdmaDriverSavedState {
+        Ok(GdmaDriverSavedState {
             mem: SavedMemoryState {
                 base_pfn: self.dma_buffer.pfns()[0],
                 len: self.dma_buffer.len(),
@@ -535,8 +539,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             num_msix: self.num_msix,
             min_queue_avail: self.min_queue_avail,
             link_toggle: self.link_toggle.clone(),
-            hwc_failure: self.hwc_failure,
-        }
+        })
     }
 
     pub fn init(device: &mut T) -> anyhow::Result<(<T as DeviceBacking>::Registers, RegMap)> {
@@ -658,7 +661,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_subscribed: false,
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
-            hwc_failure: saved_state.hwc_failure,
+            hwc_failure: false,
             state_saved: false,
             db_id: db_id as u32,
         };

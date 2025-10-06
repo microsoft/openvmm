@@ -319,9 +319,7 @@ impl DeviceBacking for VfioDevice {
             .context("failed to unmap all msix vectors")?;
 
         // Clear local bookkeeping so re-mapping works correctly later.
-        for slot in &mut self.interrupts {
-            *slot = None;
-        }
+        self.interrupts.clear();
 
         Ok(())
     }
@@ -420,7 +418,9 @@ impl DeviceRegisterIo for vfio_sys::MappedRegion {
 
 impl MappedRegionWithFallback {
     fn mapping<T>(&self, offset: usize) -> *mut T {
-        assert!(offset <= self.mapping.len() - size_of::<T>() && offset % align_of::<T>() == 0);
+        assert!(
+            offset <= self.mapping.len() - size_of::<T>() && offset.is_multiple_of(align_of::<T>())
+        );
         if cfg!(feature = "mmio_simulate_fallback") {
             return std::ptr::NonNull::dangling().as_ptr();
         }
