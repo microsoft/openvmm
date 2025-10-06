@@ -113,7 +113,7 @@ pub struct FieldType<'a> {
     annotation: &'a str,
 }
 
-#[cfg_attr(not(feature = "std"), allow(dead_code))]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
 #[derive(Debug, Copy, Clone)]
 enum SequenceType<'a> {
     Optional,
@@ -121,7 +121,7 @@ enum SequenceType<'a> {
     Map(&'a str),
 }
 
-#[cfg_attr(not(feature = "std"), allow(dead_code))]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
 #[derive(Debug, Copy, Clone)]
 enum FieldKind<'a> {
     Builtin(&'a str),
@@ -293,7 +293,7 @@ impl<'a> FieldType<'a> {
 }
 
 /// A descriptor for a message field.
-#[cfg_attr(not(feature = "std"), allow(dead_code))]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
 #[derive(Debug, Copy, Clone)]
 pub struct FieldDescriptor<'a> {
     field_type: FieldType<'a>,
@@ -320,7 +320,7 @@ impl<'a> FieldDescriptor<'a> {
 }
 
 /// A description of a protobuf `oneof`.
-#[cfg_attr(not(feature = "std"), allow(dead_code))]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
 #[derive(Debug, Copy, Clone)]
 pub struct OneofDescriptor<'a> {
     name: &'a str,
@@ -336,7 +336,7 @@ impl<'a> OneofDescriptor<'a> {
 
 /// A message descriptor.
 #[derive(Debug, Copy, Clone)]
-#[cfg_attr(not(feature = "std"), allow(dead_code))]
+#[cfg_attr(not(feature = "std"), expect(dead_code))]
 pub struct MessageDescriptor<'a> {
     comment: &'a str,
     name: &'a str,
