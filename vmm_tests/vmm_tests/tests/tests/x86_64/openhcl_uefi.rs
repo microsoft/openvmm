@@ -6,6 +6,7 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
@@ -86,7 +87,9 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
 /// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
 /// should also validate that the kernel gets two different numa nodes.
 #[vmm_test_no_agent(hyperv_openhcl_uefi_x64(none), openvmm_openhcl_uefi_x64(none))]
-async fn no_numa_errors(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
+async fn no_numa_errors<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
     let vm = config
         .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
         .with_expect_no_boot_event()
