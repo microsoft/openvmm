@@ -76,7 +76,14 @@ struct ExpectedGuestDevice {
     friendly_name: String,
 }
 
-async fn test_storage_unix(
+/// Runs a series of validation steps inside the Linux guest to verify that the
+/// storage devices (especially as presented by OpenHCL's vSCSI implementation
+/// storvsp) are present and working correctly.
+///
+/// May `panic!`, `assert!`, or return an `Err` if any checks fail. Which
+/// mechanism is used depends on the nature of the failure ano the most
+/// convenient way to check for it in this routine.
+async fn test_storage_linux(
     agent: &PipetteClient,
     expected_devices: Vec<ExpectedGuestDevice>,
 ) -> anyhow::Result<()> {
@@ -215,7 +222,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
     //
     // 1. Some test-infra added disks are 64MiB in size. Since we find disks by size,
     // ensure that our test disks are a different size.
-    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_unix`]),
+    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_linux`]),
     // with some arbitrary buffer (5MiB in this case).
     static_assertions::const_assert_ne!(EXPECTED_SCSI_DISK_SIZE_BYTES, 64 * 1024 * 1024);
     static_assertions::const_assert!(EXPECTED_SCSI_DISK_SIZE_BYTES > 105 * 1024 * 1024);
@@ -290,7 +297,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
         .run()
         .await?;
 
-    test_storage_unix(
+    test_storage_linux(
         &agent,
         vec![
             ExpectedGuestDevice {
@@ -334,7 +341,7 @@ async fn openhcl_linux_stripe_storvsp(
     //
     // 1. Some test-infra added disks are 64MiB in size. Since we find disks by size,
     // ensure that our test disks are a different size.
-    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_unix`]),
+    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_linux`]),
     // with some arbitrary buffer (5MiB in this case).
     static_assertions::const_assert_ne!(EXPECTED_STRIPED_DISK_SIZE_BYTES, 64 * 1024 * 1024);
     static_assertions::const_assert!(EXPECTED_STRIPED_DISK_SIZE_BYTES > 105 * 1024 * 1024);
@@ -387,7 +394,7 @@ async fn openhcl_linux_stripe_storvsp(
         .run()
         .await?;
 
-    test_storage_unix(
+    test_storage_linux(
         &agent,
         vec![ExpectedGuestDevice {
             disk_size_sectors: (NVME_DISK_SECTORS * NUMBER_OF_STRIPE_DEVICES) as usize,
