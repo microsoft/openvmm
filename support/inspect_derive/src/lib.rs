@@ -386,8 +386,8 @@ fn impl_defs(
     let type_name = &input.ident;
     let tokens = if mutable {
         quote! {
-            #[cold]
             impl #impl_generics ::inspect::InspectMut for #type_name #type_generics #where_clause {
+                #[cold]
                 fn inspect_mut(&mut self, #req: ::inspect::Request<'_>) {
                     #fmt
                     #respond
@@ -396,8 +396,8 @@ fn impl_defs(
         }
     } else {
         quote! {
-            #[cold]
             impl #impl_generics ::inspect::Inspect for #type_name #type_generics #where_clause {
+                #[cold]
                 fn inspect(&self, #req: ::inspect::Request<'_>) {
                     #fmt
                     #respond
