@@ -73,7 +73,7 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
-    panic!("Force test failure to verify vmm-tests-results artifact publishing");
+    Ok(())
 }
 
 /// Test AK cert is persistent across boots on Linux.

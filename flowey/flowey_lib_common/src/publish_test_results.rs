@@ -68,7 +68,7 @@ impl FlowNode for Node {
         {
             resolve_side_effects.push(done);
 
-            let step_name = format!("publish test results: {label} (JUnit XML)");
+            let step_name = format!("copy test results to artifact directory: {label} (JUnit XML)");
             let artifact_name = format!("{label}-junit-xml");
 
             let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
@@ -146,7 +146,9 @@ impl FlowNode for Node {
             }
 
             for (attachment_label, (attachment_path, publish_on_ado)) in attachments {
-                let step_name = format!("publish test results: {label} ({attachment_label})");
+                let step_name = format!(
+                    "copy attachments to artifacts directory: {label} ({attachment_label})"
+                );
                 let artifact_name = format!("{label}-{attachment_label}");
 
                 let attachment_exists = attachment_path.map(ctx, |p| {
