@@ -16,8 +16,8 @@ use crate::run_cargo_build::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
-use flowey_lib_common::run_cargo_nextest_run::build_params::FeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::build_params::PanicAbortTests;
 use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
 
@@ -207,9 +207,9 @@ impl FlowNode for Node {
                 target.operating_system,
                 target_lexicon::OperatingSystem::Windows
             ) {
-                FeatureSet::Specific(vec!["ci".into()])
+                CargoFeatureSet::Specific(vec!["ci".into()])
             } else {
-                FeatureSet::All
+                CargoFeatureSet::All
             };
 
             let injected_env = ctx.reqv(|v| crate::init_cross_build::Request {

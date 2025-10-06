@@ -55,7 +55,7 @@ impl SimpleFlowNode for Node {
             out_name: "ohcldiag-dev".into(),
             crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
             profile: profile.into(),
-            features: [].into(),
+            features: Default::default(),
             target: target.as_triple(),
             no_split_dbg_info: false,
             extra_env: None,

@@ -17,7 +17,8 @@ tpm = ["openvmm_hcl_resources/tpm"]
 uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worker"]
 
 # Enable NVMe emulation.
-nvme = ["openvmm_hcl_resources/nvme", "underhill_entry/vpci"]
+nvme = ["openvmm_hcl_resources/nvme", "vpci"]
+vpci = ["underhill_entry/vpci"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_entry.workspace = true

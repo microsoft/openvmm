@@ -72,12 +72,12 @@ impl SimpleFlowNode for Node {
             profile: profile.into(),
             features: if with_crypto {
                 match target.as_triple().operating_system {
-                    target_lexicon::OperatingSystem::Windows => ["encryption_win".into()].into(),
-                    target_lexicon::OperatingSystem::Linux => ["encryption_ossl".into()].into(),
+                    target_lexicon::OperatingSystem::Windows => ["encryption_win"].into(),
+                    target_lexicon::OperatingSystem::Linux => ["encryption_ossl"].into(),
                     _ => unreachable!(),
                 }
             } else {
-                [].into()
+                Default::default()
             },
             target: target.as_triple(),
             no_split_dbg_info: false,

@@ -48,12 +48,16 @@ futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+static_assertions.workspace = true
 
 hvlite_ttrpc_vmservice.workspace = true
 
 mesh_rpc.workspace = true
 
 tempfile.workspace = true
+serde_json.workspace = true
+pipette_client.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

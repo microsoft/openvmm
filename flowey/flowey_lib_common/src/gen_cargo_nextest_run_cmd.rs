@@ -375,7 +375,7 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     cargo_profile: CargoBuildProfile,
     target: target_lexicon::Triple,
     packages: build_params::TestPackages,
-    features: build_params::FeatureSet,
+    features: crate::run_cargo_build::CargoFeatureSet,
     unstable_panic_abort_tests: Option<build_params::PanicAbortTests>,
     no_default_features: bool,
     mut extra_env: BTreeMap<String, String>,
@@ -412,26 +412,6 @@ pub(crate) fn cargo_nextest_build_args_and_env(
         v
     };
 
-    let features: Vec<String> = {
-        let mut v = Vec::new();
-
-        if no_default_features {
-            v.push("--no-default-features".into())
-        }
-
-        match features {
-            build_params::FeatureSet::All => v.push("--all-features".into()),
-            build_params::FeatureSet::Specific(features) => {
-                if !features.is_empty() {
-                    v.push("--features".into());
-                    v.push(features.join(","));
-                }
-            }
-        }
-
-        v
-    };
-
     let (z_panic_abort_tests, use_rustc_bootstrap) = match unstable_panic_abort_tests {
         Some(kind) => (
             Some("-Zpanic-abort-tests"),
@@ -452,7 +432,10 @@ pub(crate) fn cargo_nextest_build_args_and_env(
     args.push("--target".into());
     args.push(target);
     args.extend(packages);
-    args.extend(features);
+    if no_default_features {
+        args.push("--no-default-features".into())
+    }
+    args.extend(features.to_cargo_arg_strings());
 
     let mut env = BTreeMap::new();
     if use_rustc_bootstrap {

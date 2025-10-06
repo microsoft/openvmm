@@ -51,21 +51,23 @@ pub const MAX_MESSAGE_LENGTH: u16 = 0x1000; // 4KB
 // These messages are the result of known issues with our UEFI firmware that do
 // not seem to affect the guest.
 // TODO: Fix UEFI to resolve this errors/warnings
-const SUPPRESS_LOGS: [&str; 3] = [
+const SUPPRESS_LOGS: [&str; 5] = [
     "WARNING: There is mismatch of supported HashMask (0x2 - 0x7) between modules",
     "that are linking different HashInstanceLib instances!",
     "ConvertPages: failed to find range",
+    "ConvertPages: Incompatible memory types",
+    "ConvertPages: range",
 ];
 
 /// Represents a processed log entry from the EFI diagnostics buffer
 #[derive(Debug, Clone)]
 pub struct EfiDiagnosticsLog<'a> {
-    /// The debug level of the log entry
-    pub debug_level: u32,
+    /// The debug level of the log entry as a human-readable string
+    pub debug_level: Cow<'static, str>,
     /// Hypervisor reference ticks elapsed from UEFI
     pub ticks: u64,
-    /// The boot phase that produced this log entry
-    pub phase: u16,
+    /// The boot phase that produced this log entry as a human-readable string
+    pub phase: &'static str,
     /// The log message itself
     pub message: &'a str,
 }
@@ -106,65 +108,63 @@ fn phase_to_string(phase: u16) -> &'static str {
 }
 
 /// Rate-limited handler for EFI diagnostics logs during normal processing.
-pub fn log_diagnostic_ratelimited(log: EfiDiagnosticsLog<'_>, limit: u32) {
-    let debug_level_str = debug_level_to_string(log.debug_level);
-    let phase_str = phase_to_string(log.phase);
-
-    match log.debug_level {
-        DEBUG_WARN => tracelimit::warn_ratelimited!(
+pub fn log_diagnostic_ratelimited(log: EfiDiagnosticsLog<'_>, raw_debug_level: u32, limit: u32) {
+    if raw_debug_level & DEBUG_ERROR != 0 {
+        tracelimit::error_ratelimited!(
             limit: limit,
-            debug_level = %debug_level_str,
+            debug_level = %log.debug_level,
             ticks = log.ticks,
-            phase = %phase_str,
+            phase = %log.phase,
             log_message = log.message,
             "EFI log entry"
-        ),
-        DEBUG_ERROR => tracelimit::error_ratelimited!(
+        )
+    } else if raw_debug_level & DEBUG_WARN != 0 {
+        tracelimit::warn_ratelimited!(
             limit: limit,
-            debug_level = %debug_level_str,
+            debug_level = %log.debug_level,
             ticks = log.ticks,
-            phase = %phase_str,
+            phase = %log.phase,
             log_message = log.message,
             "EFI log entry"
-        ),
-        _ => tracelimit::info_ratelimited!(
+        )
+    } else {
+        tracelimit::info_ratelimited!(
             limit: limit,
-            debug_level = %debug_level_str,
+            debug_level = %log.debug_level,
             ticks = log.ticks,
-            phase = %phase_str,
+            phase = %log.phase,
             log_message = log.message,
             "EFI log entry"
-        ),
+        )
     }
 }
 
 /// Unrestricted handler for EFI diagnostics logs during inspection.
-pub fn log_diagnostic_unrestricted(log: EfiDiagnosticsLog<'_>) {
-    let debug_level_str = debug_level_to_string(log.debug_level);
-    let phase_str = phase_to_string(log.phase);
-
-    match log.debug_level {
-        DEBUG_WARN => tracing::warn!(
-            debug_level = %debug_level_str,
+pub fn log_diagnostic_unrestricted(log: EfiDiagnosticsLog<'_>, raw_debug_level: u32) {
+    if raw_debug_level & DEBUG_ERROR != 0 {
+        tracing::error!(
+            debug_level = %log.debug_level,
             ticks = log.ticks,
-            phase = %phase_str,
+            phase = %log.phase,
             log_message = log.message,
             "EFI log entry"
-        ),
-        DEBUG_ERROR => tracing::error!(
-            debug_level = %debug_level_str,
+        )
+    } else if raw_debug_level & DEBUG_WARN != 0 {
+        tracing::warn!(
+            debug_level = %log.debug_level,
             ticks = log.ticks,
-            phase = %phase_str,
+            phase = %log.phase,
             log_message = log.message,
             "EFI log entry"
-        ),
-        _ => tracing::info!(
-            debug_level = %debug_level_str,
+        )
+    } else {
+        tracing::info!(
+            debug_level = %log.debug_level,
             ticks = log.ticks,
-            phase = %phase_str,
+            phase = %log.phase,
             log_message = log.message,
             "EFI log entry"
-        ),
+        )
     }
 }
 
@@ -328,7 +328,7 @@ impl DiagnosticsServices {
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
     where
-        F: FnMut(EfiDiagnosticsLog<'_>),
+        F: FnMut(EfiDiagnosticsLog<'_>, u32),
     {
         // Prevent the guest from spamming diagnostics processing
         // unless explicitly allowed
@@ -447,12 +447,15 @@ impl DiagnosticsServices {
                     }
                 }
                 if !suppress {
-                    log_handler(EfiDiagnosticsLog {
+                    log_handler(
+                        EfiDiagnosticsLog {
+                            debug_level: debug_level_to_string(debug_level),
+                            ticks: time_stamp,
+                            phase: phase_to_string(phase),
+                            message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
+                        },
                         debug_level,
-                        ticks: time_stamp,
-                        phase,
-                        message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
-                    });
+                    );
                 }
                 is_accumulating = false;
                 entries_processed += 1;
@@ -472,12 +475,15 @@ impl DiagnosticsServices {
 
         // Process any remaining accumulated message
         if is_accumulating && !accumulated_message.is_empty() {
-            log_handler(EfiDiagnosticsLog {
+            log_handler(
+                EfiDiagnosticsLog {
+                    debug_level: debug_level_to_string(debug_level),
+                    ticks: time_stamp,
+                    phase: phase_to_string(phase),
+                    message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
+                },
                 debug_level,
-                ticks: time_stamp,
-                phase,
-                message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
-            });
+            );
             entries_processed += 1;
         }
 
@@ -502,14 +508,14 @@ impl UefiDevice {
     /// * `allow_reprocess` - If true, allows processing even if already processed for guest
     /// * `limit` - Maximum number of logs to process per period, or `None` for no limit
     pub(crate) fn process_diagnostics(&mut self, allow_reprocess: bool, limit: Option<u32>) {
-        if let Err(error) =
-            self.service
-                .diagnostics
-                .process_diagnostics(allow_reprocess, &self.gm, |log| match limit {
-                    Some(limit) => log_diagnostic_ratelimited(log, limit),
-                    None => log_diagnostic_unrestricted(log),
-                })
-        {
+        if let Err(error) = self.service.diagnostics.process_diagnostics(
+            allow_reprocess,
+            &self.gm,
+            |log, raw_debug_level| match limit {
+                Some(limit) => log_diagnostic_ratelimited(log, raw_debug_level, limit),
+                None => log_diagnostic_unrestricted(log, raw_debug_level),
+            },
+        ) {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
                 "failed to process diagnostics buffer"

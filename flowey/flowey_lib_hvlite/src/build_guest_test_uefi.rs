@@ -61,7 +61,7 @@ impl FlowNode for Node {
                     out_name: "guest_test_uefi".into(),
                     crate_type: CargoCrateType::Bin,
                     profile: profile.into(),
-                    features: [].into(),
+                    features: Default::default(),
                     target: target_lexicon::Triple {
                         architecture: arch.as_arch(),
                         operating_system: target_lexicon::OperatingSystem::Uefi,
