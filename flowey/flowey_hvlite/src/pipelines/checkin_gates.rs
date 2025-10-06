@@ -1013,7 +1013,7 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_artifact(format!("{label}-vmm-tests-results"));
 
             pipeline.force_publish_artifact(&pub_vmm_tests_results);
-            vmm_tests_results_artifacts.push(use_vmm_tests_results);
+            vmm_tests_results_artifacts.push((label.to_string(), use_vmm_tests_results));
 
             let use_vmm_tests_archive = match target {
                 CommonTriple::X86_64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_x86,
@@ -1053,25 +1053,28 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(vmm_tests_run_job.finish());
         }
 
-        // {
-        //     let job = pipeline
-        //         .new_job(
-        //             FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-        //             FlowArch::X86_64,
-        //             "verify all tests run at least once",
-        //         )
-        //         .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
-        //             FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-        //         ))
-        //         .dep_on(
-        //             |ctx| flowey_lib_hvlite::_jobs::verify_all_tests_run::Request {
-        //                 test_artifacts:
-        //                 done: ctx.new_done_handle(),
-        //             },
-        //         )
-        //         .finish();
-        //     all_jobs.push(job);
-        // }
+        {
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "verify all tests run at least once",
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                ))
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::verify_all_tests_run::Request {
+                        test_artifacts: vmm_tests_results_artifacts
+                            .iter()
+                            .map(|elem| (elem.0.clone(), ctx.use_artifact(&elem.1)))
+                            .collect(),
+                        done: ctx.new_done_handle(),
+                    },
+                )
+                .finish();
+            all_jobs.push(job);
+        }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64
         {
