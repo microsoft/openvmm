@@ -9301,6 +9301,7 @@ dependencies = [
  "scsidisk_resources",
  "serde",
  "serde_json",
+ "static_assertions",
  "storvsp_resources",
  "tempfile",
  "tmk_tests",

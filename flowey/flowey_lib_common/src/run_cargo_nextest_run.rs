@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::ExitStatus;
 use std::process::Stdio;
+
 #[derive(Serialize, Deserialize)]
 pub struct TestResults {
     pub all_tests_passed: bool,
@@ -21,6 +22,7 @@ pub struct TestResults {
 /// Parameters related to building nextest tests
 pub mod build_params {
     use crate::run_cargo_build::CargoBuildProfile;
+    use crate::run_cargo_build::CargoFeatureSet;
     use flowey::node::prelude::*;
     use std::collections::BTreeMap;
 
@@ -32,12 +34,6 @@ pub mod build_params {
         UsingNightly,
         /// Build with `RUSTC_BOOTSTRAP=1` set
         UsingRustcBootstrap,
-    }
-
-    #[derive(Serialize, Deserialize)]
-    pub enum FeatureSet {
-        All,
-        Specific(Vec<String>),
     }
 
     /// Types of things that can be documented
@@ -60,7 +56,7 @@ pub mod build_params {
         /// Packages to test for
         pub packages: ReadVar<TestPackages, C>,
         /// Cargo features to enable when building
-        pub features: FeatureSet,
+        pub features: CargoFeatureSet,
         /// Whether to disable default features
         pub no_default_features: bool,
         /// Whether to build tests with unstable `-Zpanic-abort-tests` flag
