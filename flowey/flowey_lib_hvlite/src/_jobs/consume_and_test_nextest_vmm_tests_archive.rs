@@ -205,8 +205,10 @@ impl SimpleFlowNode for Node {
         let test_log_path = test_log_path.depending_on(ctx, &results);
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
+        let nextest_list_json = results.map(ctx, |r| r.nextest_list_output);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
             junit_xml,
+            nextest_list_json: Some(nextest_list_json),
             test_label: junit_test_label,
             attachments: BTreeMap::from([("logs".to_string(), (test_log_path, false))]),
             output_dir: artifact_dir,

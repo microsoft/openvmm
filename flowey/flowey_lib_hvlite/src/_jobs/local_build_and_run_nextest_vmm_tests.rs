@@ -931,6 +931,7 @@ impl SimpleFlowNode for Node {
             let published_results =
                 ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
                     junit_xml,
+                    nextest_list_json: None,
                     test_label,
                     attachments: BTreeMap::new(), // the logs are already there
                     output_dir: Some(ReadVar::from_static(test_content_dir)),

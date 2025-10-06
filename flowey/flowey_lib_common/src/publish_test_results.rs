@@ -24,6 +24,8 @@ flowey_request! {
         /// To keep making forward progress, I've tweaked this node to accept an
         /// optional... but this ain't great.
         pub junit_xml: ReadVar<Option<PathBuf>>,
+        /// Path to the JSON output from `nextest list --json`.
+        pub nextest_list_json: Option<ReadVar<Option<PathBuf>>>,
         /// Brief string used when publishing the test.
         /// Must be unique to the pipeline.
         pub test_label: String,
@@ -57,6 +59,7 @@ impl FlowNode for Node {
 
         for Request {
             junit_xml,
+            nextest_list_json,
             test_label: label,
             attachments,
             output_dir,
@@ -77,6 +80,13 @@ impl FlowNode for Node {
             let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
             let junit_xml = junit_xml.map(ctx, |p| p.unwrap_or_default());
 
+            let has_nextest_list = nextest_list_json
+                .as_ref()
+                .map(|v| v.map(ctx, |p| p.is_some()));
+            let nextest_list_json = nextest_list_json
+                .as_ref()
+                .map(|v| v.map(ctx, |p| p.unwrap_or_default()));
+
             match ctx.backend() {
                 FlowBackend::Ado => {
                     use_side_effects.push(ctx.reqv(|v| {
@@ -95,6 +105,25 @@ impl FlowNode for Node {
                     let junit_xml = junit_xml.map(ctx, |p| {
                         p.absolute().expect("invalid path").display().to_string()
                     });
+
+                    if let Some(nextest_list_json) = nextest_list_json {
+                        let nextest_list_json = nextest_list_json.map(ctx, |p| {
+                            p.absolute().expect("invalid path").display().to_string()
+                        });
+
+                        let has_nextest_list = has_nextest_list.unwrap();
+
+                        use_side_effects.push(
+                            ctx.emit_gh_step(
+                                format!("publish test results: {label} (nextest list JSON)"),
+                                "actions/upload-artifact@v4",
+                            )
+                            .condition(has_nextest_list)
+                            .with("name", format!("{label}-nextest-list-json"))
+                            .with("path", nextest_list_json)
+                            .finish(ctx),
+                        );
+                    }
 
                     // Note: usually flowey's built-in artifact publishing API
                     // should be used instead of this, but here we need to
