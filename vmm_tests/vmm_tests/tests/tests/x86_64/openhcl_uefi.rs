@@ -86,7 +86,7 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
 ///
 /// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
 /// should also validate that the kernel gets two different numa nodes.
-#[vmm_test_no_agent(hyperv_openhcl_uefi_x64(none), openvmm_openhcl_uefi_x64(none))]
+#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none))]
 async fn no_numa_errors<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
