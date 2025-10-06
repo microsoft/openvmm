@@ -759,6 +759,7 @@ impl UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        save_restore_supported: bool,
         saved_mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
@@ -775,7 +776,7 @@ impl UhVmNetworkSettings {
             } else {
                 AllocationVisibility::Private
             },
-            persistent_allocations: true,
+            persistent_allocations: save_restore_supported,
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
@@ -917,6 +918,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        save_restore_supported: bool,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
@@ -951,6 +953,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 vmbus_server,
                 dma_client_spawner,
                 is_isolated,
+                save_restore_supported,
                 mana_state,
             )
             .await?;
@@ -3150,6 +3153,9 @@ async fn new_underhill_vm(
                 None
             };
 
+            let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
+            let save_restore_supported = env_cfg.mana_keep_alive && private_pool_available;
+
             let save_state = uh_network_settings
                 .add_network(
                     nic_config.instance_id,
@@ -3163,6 +3169,7 @@ async fn new_underhill_vm(
                     &vmbus_server,
                     dma_manager.client_spawner(),
                     isolation.is_isolated(),
+                    save_restore_supported,
                     nic_servicing_state,
                 )
                 .await?;

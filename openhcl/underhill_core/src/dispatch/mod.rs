@@ -115,6 +115,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        save_restore_supported: bool,
         mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState>;
 
@@ -587,8 +588,6 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            tracing::info!("state units stopped");
-
             let mut state = self.save(Some(deadline), nvme_keepalive, mana_keepalive).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
@@ -886,6 +885,7 @@ impl LoadedVm {
                 &self.vmbus_server,
                 self.dma_manager.client_spawner(),
                 self.isolation.is_isolated(),
+                self.mana_keep_alive,
                 None, // No existing mana state
             )
             .await?;
