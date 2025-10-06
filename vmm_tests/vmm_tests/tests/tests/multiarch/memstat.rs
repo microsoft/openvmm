@@ -195,6 +195,10 @@ impl MemStat {
     }
 
     /// Compares current statistics against baseline
+    /// For all 2VP tests general usage and underhill_vm process memory usage are given a 1MiB threshold
+    /// For all large (32VP or 64VP) tests general usage and underhill_vm process memory usage are given a 3MiB threshold
+    /// All other processes have a 250kB threshold
+    /// Kernel reservation has a threshold of 0 since there is no run-to-run variance with that statistic
     pub fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
         let baseline_usage = Self::get_upper_limit_value(&self.baseline_json[arch][vps]["usage"]);
         let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
@@ -232,6 +236,13 @@ impl MemStat {
             );
         }
 
+        /*
+            Note on reservation test:
+                - Kernel reservation does not experience run-to-run variance and is not expected to change frequently
+                - Therefore the threshold for kernel reservation is 0
+                - If a code change must increase the kernel reservation, then the "base" value for the "reservation" statistic can be updated in memstat_baseline.json
+                - Occasional increases in the kernel reservation are expected, but should be noted in such an event
+        */
         let baseline_reservation =
             Self::get_upper_limit_value(&self.baseline_json[arch][vps]["reservation"]);
         let cur_reservation =
