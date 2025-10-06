@@ -5,6 +5,7 @@
 
 mod openhcl_linux_direct;
 mod openhcl_uefi;
+mod storage;
 
 use anyhow::Context;
 use hvlite_defs::config::DeviceVtl;

@@ -2798,11 +2798,16 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         let path = igvm.context("no igvm file loaded")?;
                         let file = fs_err::File::open(path)?;
                         start = Instant::now();
-                        hvlite_helpers::underhill::service_underhill(
+                        hvlite_helpers::underhill::save_underhill(
                             &vm_rpc,
                             ged_rpc.as_ref().context("no GED")?,
                             GuestServicingFlags::default(),
                             file.into(),
+                        )
+                        .await?;
+                        hvlite_helpers::underhill::restore_underhill(
+                            &vm_rpc,
+                            ged_rpc.as_ref().context("no GED")?,
                         )
                         .await?;
                     }

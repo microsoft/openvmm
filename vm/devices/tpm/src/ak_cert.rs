@@ -74,6 +74,7 @@ pub trait RequestAkCert: Send + Sync {
         ek_pub_modulus: &[u8],
         ek_pub_exponent: &[u8],
         guest_input: &[u8],
+        is_attestation_report: bool,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Helper function to request an AK cert.
