@@ -494,8 +494,8 @@ async fn memory_validation_gp_small<T: PetriVmmBackend>(
 // so only run these tests in debug builds.
 #[cfg(debug_assertions)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_cvm_small<T: PetriVmmBackend>(
@@ -535,8 +535,8 @@ async fn memory_validation_gp_large<T: PetriVmmBackend>(
 // so only run these tests in debug builds.
 #[cfg(debug_assertions)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
 #[cfg_attr(not(windows), expect(dead_code))]
 async fn memory_validation_cvm_large<T: PetriVmmBackend>(
