@@ -83,7 +83,7 @@ use winapi::um::winnt;
 use winapi::um::winsock2;
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub struct SendSyncRawHandle(pub RawHandle);
 
 unsafe impl Send for SendSyncRawHandle {}

@@ -3,6 +3,8 @@
 
 //! A thread-local executor backed by WaitForMultipleObjects.
 
+#![expect(clippy::undocumented_unsafe_blocks)]
+
 use super::overlapped::IoOverlapped;
 use super::overlapped::OverlappedIoDriver;
 use super::overlapped::overlapped_io_done;
