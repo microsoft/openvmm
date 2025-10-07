@@ -1658,7 +1658,7 @@ impl Default for PetriVmgsDisk {
     fn default() -> Self {
         PetriVmgsDisk {
             disk: PetriDiskType::Memory,
-            // TODO: make this strict once we can set it in OpenHCL
+            // TODO: make this strict once we can set it in OpenHCL on Hyper-V
             encryption_policy: GuestStateEncryptionPolicy::None(false),
         }
     }
