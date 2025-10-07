@@ -29,7 +29,6 @@ pub enum KnownTestArtifacts {
     Gen2WindowsDataCenterCore2025X64Vhd,
     FreeBsd13_2X64Vhd,
     FreeBsd13_2X64Iso,
-    Ubuntu2204ServerX64Vhd,
     Ubuntu2404ServerX64Vhd,
     Ubuntu2404ServerAarch64Vhd,
     Windows11EnterpriseAarch64Vhdx,
@@ -78,11 +77,6 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
         KnownTestArtifacts::FreeBsd13_2X64Iso,
         petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::SIZE,
     ),
     KnownTestArtifactMeta::new(
         KnownTestArtifacts::Ubuntu2404ServerX64Vhd,

@@ -914,7 +914,7 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
-            KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
+            KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
             KnownTestArtifacts::VmgsWithBootEntry,
         ];
 
