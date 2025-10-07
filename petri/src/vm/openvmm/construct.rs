@@ -699,7 +699,7 @@ impl PetriVmConfigSetupCore<'_> {
 
                 append_cmdline(
                     &mut cmdline,
-                    &format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}"),
+                    format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}"),
                 );
 
                 let isolated = match self.firmware {
