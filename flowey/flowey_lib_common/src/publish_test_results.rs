@@ -160,79 +160,44 @@ impl FlowNode for Node {
                         .unwrap_or(false)
                 });
 
-                match ctx.backend() {
-                    FlowBackend::Ado => {
-                        if publish_on_ado {
-                            use_side_effects.push(attachment_exists.into_side_effect());
-                        } else if let Some(output_dir) = output_dir.clone() {
-                            use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
-                                let output_dir = output_dir.claim(ctx);
-                                let attachment_exists = attachment_exists.claim(ctx);
-                                let attachment_path_opt = attachment_path_opt.claim(ctx);
+                if matches!(ctx.backend(), FlowBackend::Ado) && !publish_on_ado {
+                    use_side_effects.push(attachment_exists.into_side_effect());
+                    use_side_effects.push(attachment_path_opt.into_side_effect());
+                    continue;
+                }
 
-                                move |rt| {
-                                    let output_dir = rt.read(output_dir);
-                                    let attachment_exists = rt.read(attachment_exists);
-                                    let attachment_path_opt = rt.read(attachment_path_opt);
+                if let Some(output_dir) = output_dir.clone() {
+                    use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
+                        let output_dir = output_dir.claim(ctx);
+                        let attachment_exists = attachment_exists.claim(ctx);
+                        let attachment_path_opt = attachment_path_opt.claim(ctx);
 
-                                    if attachment_exists {
-                                        if let Some(attachment_path) = attachment_path_opt {
-                                            if attachment_path.is_dir() {
-                                                copy_dir_all(
-                                                    attachment_path,
-                                                    output_dir.join(artifact_name),
-                                                )?;
-                                            } else {
-                                                fs_err::copy(
-                                                    attachment_path,
-                                                    output_dir.join(artifact_name),
-                                                )?;
-                                            }
-                                        }
+                        move |rt| {
+                            let output_dir = rt.read(output_dir);
+                            let attachment_exists = rt.read(attachment_exists);
+                            let attachment_path_opt = rt.read(attachment_path_opt);
+
+                            if attachment_exists {
+                                if let Some(attachment_path) = attachment_path_opt {
+                                    if attachment_path.is_dir() {
+                                        copy_dir_all(
+                                            attachment_path,
+                                            output_dir.join(artifact_name),
+                                        )?;
+                                    } else {
+                                        fs_err::copy(
+                                            attachment_path,
+                                            output_dir.join(artifact_name),
+                                        )?;
                                     }
-
-                                    Ok(())
                                 }
-                            }));
-                        } else {
-                            use_side_effects.push(attachment_exists.into_side_effect());
+                            }
+
+                            Ok(())
                         }
-                    }
-                    FlowBackend::Github | FlowBackend::Local => {
-                        if let Some(output_dir) = output_dir.clone() {
-                            use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
-                                let output_dir = output_dir.claim(ctx);
-                                let attachment_exists = attachment_exists.claim(ctx);
-                                let attachment_path_opt = attachment_path_opt.claim(ctx);
-
-                                move |rt| {
-                                    let output_dir = rt.read(output_dir);
-                                    let attachment_exists = rt.read(attachment_exists);
-                                    let attachment_path_opt = rt.read(attachment_path_opt);
-
-                                    if attachment_exists {
-                                        if let Some(attachment_path) = attachment_path_opt {
-                                            if attachment_path.is_dir() {
-                                                copy_dir_all(
-                                                    attachment_path,
-                                                    output_dir.join(artifact_name),
-                                                )?;
-                                            } else {
-                                                fs_err::copy(
-                                                    attachment_path,
-                                                    output_dir.join(artifact_name),
-                                                )?;
-                                            }
-                                        }
-                                    }
-
-                                    Ok(())
-                                }
-                            }));
-                        } else {
-                            use_side_effects.push(attachment_exists.into_side_effect());
-                        }
-                    }
+                    }));
+                } else {
+                    use_side_effects.push(attachment_exists.into_side_effect());
                 }
             }
         }
