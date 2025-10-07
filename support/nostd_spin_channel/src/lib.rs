@@ -1,4 +1,12 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! This crate provides a no_std, unbounded channel implementation with priority send capability.
+
 #![no_std]
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
 extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -11,7 +19,7 @@ use thiserror::Error;
 
 /// An unbounded channel implementation with priority send capability.
 /// This implementation works in no_std environments using spin-rs.
-/// It uses a VecDeque as the underlying buffer and provides blocking and non-blocking interfaces.
+/// It uses a VecDeque as the underlying buffer 
 pub struct Channel<T> {
     inner: Arc<ChannelInner<T>>,
 }
@@ -39,20 +47,23 @@ pub enum SendError {
 /// Error type for receiving operations
 #[derive(Debug, Eq, PartialEq, Error)]
 pub enum RecvError {
+    /// No messages available to receive
     #[error("receive failed because channel is empty")]
     Empty,
+    /// All senders have been dropped
     #[error("receive failed because all senders are disconnected")]
     Disconnected,
+    /// Channel is currently locked by another operation
     #[error("channel is locked by another operation")]
     Unavailable
 }
 
-/// Sender half of the channel
+/// Sender half of the channel 
 pub struct Sender<T> {
     inner: Arc<ChannelInner<T>>,
 }
 
-/// Receiver half of the channel
+/// Receiver half of the channel and provides blocking and non-blocking interfaces.
 pub struct Receiver<T> {
     inner: Arc<ChannelInner<T>>,
 }
@@ -282,5 +293,50 @@ impl<T> Drop for Sender<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         self.inner.receivers.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn send_and_recv_roundtrip() {
+        let channel = Channel::new();
+        let (sender, receiver) = channel.split();
+        sender.send(42usize).unwrap();
+        assert_eq!(receiver.recv().unwrap(), 42);
+    }
+
+    #[test]
+    fn priority_messages_arrive_first() {
+        let channel = Channel::new();
+        let (sender, receiver) = channel.split();
+        sender.send(1).unwrap();
+        sender.send_priority(99).unwrap();
+        assert_eq!(receiver.recv().unwrap(), 99);
+        assert_eq!(receiver.recv().unwrap(), 1);
+    }
+
+    #[test]
+    fn send_batch_preserves_order() {
+        let channel = Channel::new();
+        let (sender, receiver) = channel.split();
+        assert_eq!(sender.send_batch([1, 2, 3]).unwrap(), 3);
+        assert_eq!(receiver.try_recv_batch(8), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn try_recv_reports_empty_when_sender_alive() {
+        let (_sender, receiver) = Channel::<()>::new().split();
+        assert_eq!(receiver.try_recv().unwrap_err(), RecvError::Empty);
+    }
+
+    #[test]
+    fn recv_reports_disconnected_after_last_sender_dropped() {
+        let (sender, receiver) = Channel::<()>::new().split();
+        drop(sender);
+        assert_eq!(receiver.recv().unwrap_err(), RecvError::Disconnected);
     }
 }

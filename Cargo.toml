@@ -43,7 +43,7 @@ members = [
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   # opentmk
-  "opentmk/",
+  "opentmk",
 ]
 exclude = [
   "xsync",
