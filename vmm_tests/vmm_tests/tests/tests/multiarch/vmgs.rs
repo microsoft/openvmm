@@ -338,7 +338,7 @@ async fn vmgstool_update_key<T: PetriVmmBackend>(
         .arg(&vmgs_path)
         .arg("--first-key-path")
         .arg(&key1_path)
-        .arg("--first-key-path")
+        .arg("--second-key-path")
         .arg(&key2_path);
     run_host_cmd(cmd).await?;
 
