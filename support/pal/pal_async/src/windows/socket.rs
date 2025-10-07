@@ -318,6 +318,7 @@ impl AfdSocketReadyOp {
             };
 
             inner.interests.wake_ready(revents, wakers);
+            inner.in_flight_events = PollEvents::EMPTY;
             inner.cancelled = false;
             let next_events = inner.interests.events_to_poll();
             if next_events.is_empty() {
