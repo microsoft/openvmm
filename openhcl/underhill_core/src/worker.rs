@@ -3062,8 +3062,6 @@ async fn new_underhill_vm(
         );
     }
 
-    let mut vmbus_intercept_devices = Vec::new();
-
     let shutdown_relay = if let Some(recv) = intercepted_shutdown_ic {
         let mut shutdown_guest = ShutdownGuestIc::new();
         let recv_host_shutdown = shutdown_guest.get_shutdown_notifier();
@@ -3089,8 +3087,7 @@ async fn new_underhill_vm(
                 .context("shutdown relay dma client")?,
             shutdown_guest,
         )?;
-        vmbus_intercept_devices.push(shutdown_guest.detach(driver_source.simple(), recv)?);
-
+        shutdown_guest.detach(driver_source.simple(), recv)?;
         Some((recv_host_shutdown, send_guest_shutdown))
     } else {
         None
@@ -3218,7 +3215,6 @@ async fn new_underhill_vm(
         vmbus_server,
         host_vmbus_relay,
         _vmbus_devices: vmbus_devices,
-        _vmbus_intercept_devices: vmbus_intercept_devices,
         _ide_accel_devices: ide_accel_devices,
         network_settings,
         shutdown_relay,

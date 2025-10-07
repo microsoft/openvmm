@@ -647,10 +647,6 @@ impl RelayTask {
     async fn handle_offer(&mut self, offer: client::OfferInfo) -> Result<()> {
         let channel_id = offer.offer.channel_id.0;
 
-        if self.channels.contains_key(&ChannelId(channel_id)) {
-            anyhow::bail!("channel {channel_id} already exists");
-        }
-
         if let Some(intercept) = self.intercept_channels.get(&offer.offer.instance_id) {
             self.channels.insert(
                 ChannelId(channel_id),
@@ -658,6 +654,10 @@ impl RelayTask {
             );
             intercept.send(InterceptChannelRequest::Offer(offer));
             return Ok(());
+        }
+
+        if self.channels.contains_key(&ChannelId(channel_id)) {
+            anyhow::bail!("channel {channel_id} already exists");
         }
 
         // Used to Recv requests from the server.
