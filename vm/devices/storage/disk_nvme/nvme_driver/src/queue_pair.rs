@@ -28,6 +28,7 @@ use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use nvme_spec::AsynchronousEventRequestDw0;
 use nvme_spec::AsynchronousEventType;
+use nvme_spec::Completion;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
@@ -97,7 +98,7 @@ impl PendingCommands {
     }
 
     /// Inserts a command into the pending list, updating it with a new CID.
-    fn insert(&mut self, command: &mut spec::Command, respond: Rpc<(), spec::Completion>) {
+    fn insert(&mut self, command: &mut spec::Command, respond: CompletionAction) {
         let entry = self.commands.vacant_entry();
         assert!(entry.key() < Self::MAX_CIDS);
         assert_eq!(self.next_cid_high_bits % Self::CID_SEQ_OFFSET, Wrapping(0));
@@ -110,7 +111,7 @@ impl PendingCommands {
         });
     }
 
-    fn remove(&mut self, cid: u16) -> Rpc<(), spec::Completion> {
+    fn remove(&mut self, cid: u16) -> CompletionAction {
         let command = self
             .commands
             .try_remove((cid & Self::CID_KEY_MASK) as usize)
@@ -132,6 +133,10 @@ impl PendingCommands {
             .iter()
             .map(|(_index, cmd)| PendingCommandSavedState {
                 command: cmd.command,
+                store_aen: match cmd.respond {
+                    CompletionAction::StoreAen => Some(()),
+                    CompletionAction::Respond(_) => None,
+                },
             })
             .collect();
         PendingCommandsSavedState {
@@ -162,7 +167,10 @@ impl PendingCommands {
                         (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
                         PendingCommand {
                             command: state.command,
-                            respond: Rpc::detached(()),
+                            respond: match state.store_aen {
+                                Some(_) => CompletionAction::StoreAen,
+                                None => CompletionAction::Respond(Rpc::detached(())),
+                            },
                         },
                     )
                 })
@@ -633,12 +641,17 @@ struct PendingCommands {
     qid: u16,
 }
 
+enum CompletionAction {
+    Respond(Rpc<(), spec::Completion>),
+    StoreAen,
+}
+
 #[derive(Inspect)]
 struct PendingCommand {
     // Keep the command around for diagnostics.
     command: spec::Command,
     #[inspect(skip)]
-    respond: Rpc<(), spec::Completion>,
+    respond: CompletionAction,
 }
 
 enum Req {
@@ -727,9 +740,7 @@ impl QueueHandler {
                 Event::Request(req) => match req {
                     Req::Command(rpc) => {
                         let (mut command, respond) = rpc.split();
-                        self.commands.insert(&mut command, respond);
-                        self.sq.write(command).unwrap();
-                        self.stats.issued.increment();
+                        self.handle_command(command, CompletionAction::Respond(respond));
                     }
                     Req::Inspect(deferred) => deferred.inspect(&self),
                     Req::Save(queue_state) => {
@@ -741,10 +752,9 @@ impl QueueHandler {
                         // If this is the first AER request, start the aer
                         // processing loop.
                         if !self.manages_aers {
-                            let _ = Some(send.call(
-                                Req::Command,
-                                admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST),
-                            ));
+                            let command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
+                            self.handle_command(command, CompletionAction::StoreAen);
+
                             self.manages_aers = true; // Also indicates this is the admin queue.
                         }
 
@@ -765,35 +775,36 @@ impl QueueHandler {
                     }
                     self.sq.update_head(completion.sqhd);
 
-                    // If this is the admin queue we need to check for AER
-                    // completions.
-                    if self.manages_aers
-                        && AsynchronousEventRequestDw0::from_bits(completion.dw0).event_type()
-                            == AsynchronousEventType::NOTICE.0
-                    {
-                        // No need to save the sender, AERs will be processed
-                        // here anyways.
-                        let _ = Some(send.call(
-                            Req::Command,
-                            admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST),
-                        ));
-                        let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
+                    // Handle completion logic.
+                    match respond {
+                        CompletionAction::StoreAen => {
+                            // Resend AER.
+                            let command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
+                            self.handle_command(command, CompletionAction::StoreAen);
 
-                        // Complete if we can, else pend it.
-                        if let Some(send_aen) = self.send_aen.take() {
-                            send_aen.complete(aen);
-                        } else {
-                            self.pending_aen = Some(aen);
+                            // Complete the AEN or pend it.
+                            let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
+                            if let Some(send_aen) = self.send_aen.take() {
+                                send_aen.complete(aen);
+                            } else {
+                                self.pending_aen = Some(aen);
+                            }
                         }
-                    } else {
-                        // Normal completion, just respond to the caller.
-                        respond.complete(completion);
+                        CompletionAction::Respond(respond) => {
+                            respond.complete(completion);
+                        }
                     }
 
                     self.stats.completed.increment();
                 }
             }
         }
+    }
+
+    fn handle_command(&mut self, mut command: spec::Command, respond: CompletionAction) {
+        self.commands.insert(&mut command, respond);
+        self.sq.write(command).unwrap();
+        self.stats.issued.increment();
     }
 
     /// Save queue data for servicing.
