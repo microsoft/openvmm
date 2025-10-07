@@ -6,10 +6,12 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
+use vmm_test_macros::vmm_test_no_agent;
 
 async fn nvme_relay_test_core(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -84,11 +86,18 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
 ///
 /// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
 /// should also validate that the kernel gets two different numa nodes.
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
-async fn no_numa_errors(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
+#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none))]
+async fn no_numa_errors<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
     let vm = config
         .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
         .with_expect_no_boot_event()
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 2,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        })
         .run_without_agent()
         .await?;
 

@@ -3,6 +3,8 @@
 
 //! An executor backed by the Windows thread pool.
 
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
+
 use super::overlapped::IoOverlapped;
 use super::overlapped::OverlappedIoDriver;
 use super::overlapped::overlapped_io_done;

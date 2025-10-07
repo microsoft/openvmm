@@ -12,7 +12,6 @@ use petri::MemoryConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
-use petri::ShutdownKind;
 use petri_artifacts_common::tags::MachineArch;
 use pipette_client::PipetteClient;
 use pipette_client::cmd;
@@ -391,7 +390,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
             }
         }
     };
-    let mut vm = config
+    let (mut vm, agent) = config
         .with_processor_topology({
             ProcessorTopology {
                 vp_count,
@@ -404,9 +403,12 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
                 dynamic_memory_range: None,
             }
         })
-        .run_without_agent()
+        .run()
         .await?;
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+
+    // Wait for the guest to be booted
+    agent.ping().await?;
 
     // This wait is needed to let the idle VM fully instantiate its memory - provides more accurate memory usage results
     PolledTimer::new(&driver)
@@ -415,7 +417,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
 
     let memstat = MemStat::new(&vtl2_agent).await;
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    agent.power_off().await?;
     vm.wait_for_teardown().await?;
     memstat.compare_to_baseline(&arch_str, &format!("{}vp", vp_count))?;
 
