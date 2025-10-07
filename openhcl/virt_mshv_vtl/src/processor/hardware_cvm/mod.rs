@@ -880,9 +880,9 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         self.vp.update_proxy_irr_filter(self.intercepted_vtl);
 
         if self.vp.partition.use_posted_redirection {
-            // Try posted redirection - if any step fails, fall back to proxy delivery
-            if let Some(result) = self.try_posted_redirection(device_id, entry, vector, multicast, &target_processors) {
-                return result;
+            // Try posted redirection. Fall back to proxy delivery on any error.
+            if let Some(Ok(())) = self.try_posted_redirection(device_id, entry, vector, multicast, &target_processors) {
+                return Ok(());
             }
         }
 
@@ -896,7 +896,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         )
     }
 
-    /// Attempts posted interrupt redirection. Returns Some(result) if successful, None if any step fails.
+    /// Attempts posted interrupt redirection.
     fn try_posted_redirection(
         &mut self,
         device_id: u64,
@@ -910,7 +910,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return None;
         }
 
-        // Get the first processor index from the set
+        // Get the first processor index from the target processor set
         let first_processor_index = target_processors.iter().next()?;
         
         // Get the APIC ID for this processor
@@ -922,8 +922,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // Map the interrupt vector in VTL2
         let redirected_vector = self.vp.partition.hcl
             .map_redirected_device_interrupt(vector, first_apic_id, true)?;
-            
-        // Create a new ProcessorSet containing only the single target processor
+
+        // Create a new ProcessorSet containing only the first processor
         let mask_index = first_processor_index as usize / 64;
         let bit_position = first_processor_index % 64;
         let mut masks = vec![0u64; mask_index + 1];
@@ -942,12 +942,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         );
 
         match result {
-            Err(HvError::InvalidVtlState) => {
+            Ok(()) => Some(Ok(())),
+            Err(_) => {
                 // Undo interrupt vector mapping in VTL2 and fallback to proxy interrupt delivery
                 self.vp.partition.hcl.map_redirected_device_interrupt(vector, first_apic_id, false);
                 None // Fall back to proxy delivery
             }
-            other => Some(other),
         }
     }
 
