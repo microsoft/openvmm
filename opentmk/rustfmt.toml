@@ -1,4 +1,0 @@
-imports_granularity = "Item"      # Expands `use foo::{bar, baz};` into separate `use` lines
-reorder_imports = true            # Optional: sort imports
-normalize_imports = true          # Optional: standardize style (e.g., remove leading ::)
-group_imports = "StdExternalCrate" # Optional: group std/external/local with blank lines
