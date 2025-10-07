@@ -51,7 +51,7 @@ pub(crate) struct QueuePair {
     task: Task<QueueHandler>,
     #[inspect(skip)]
     cancel: Cancel,
-    #[inspect(with = "|x| inspect::send(&x.send, Req::Inspect)")]
+    #[inspect(flatten, with = "|x| inspect::send(&x.send, Req::Inspect)")]
     issuer: Arc<Issuer>,
     #[inspect(skip)]
     mem: MemoryBlock,

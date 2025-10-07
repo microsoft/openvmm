@@ -109,7 +109,7 @@ pub trait PollPostMessage: Send {
 
 #[derive(Inspect)]
 pub struct VmbusClient {
-    #[inspect(flatten, with = "|x| inspect::send(x, TaskRequest::Inspect)")]
+    #[inspect(flatten, send = "TaskRequest::Inspect")]
     task_send: mesh::Sender<TaskRequest>,
     #[inspect(skip)]
     access: VmbusClientAccess,

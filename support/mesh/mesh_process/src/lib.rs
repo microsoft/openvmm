@@ -244,7 +244,7 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
 /// ```
 #[derive(Inspect)]
 pub struct Mesh {
-    #[inspect(skip)]
+    #[inspect(rename = "name")]
     mesh_name: String,
     #[inspect(flatten, send = "MeshRequest::Inspect")]
     request: mesh::Sender<MeshRequest>,

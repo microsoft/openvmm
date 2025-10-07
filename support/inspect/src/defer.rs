@@ -33,6 +33,7 @@ use mesh::MeshPayload;
 /// fn inspect_remote(sender: &mesh::Sender<MyRpc>, req: inspect::Request<'_>) {
 ///     req.respond().merge(inspect::send(sender, MyRpc::Inspect));
 /// }
+/// ```
 pub fn send<'a, S: 'a + mesh::rpc::RpcSend + Copy, F: 'a + Fn(Deferred) -> S::Message>(
     sender: S,
     map: F,

@@ -580,13 +580,14 @@ impl VmTimeSourceBuilder {
 ///
 /// There is one of these per VM time clock (i.e. one per VM).
 #[derive(Inspect)]
-#[inspect(extra = "Self::inspect_extra")]
 struct PrimaryKeeper {
     #[inspect(skip)]
     req_recv: mesh::Receiver<KeeperRequest>,
     #[inspect(skip)]
     new_recv: mesh::Receiver<NewKeeperRequest>,
-    #[inspect(skip)]
+    #[inspect(
+        with = "|x| inspect::iter_by_key(x.iter().map(|(id, sender)| (id, inspect::send(sender, KeeperRequest::Inspect))))"
+    )]
     keepers: Vec<(u64, mesh::Sender<KeeperRequest>)>,
     #[inspect(skip)]
     next_id: u64,
@@ -607,15 +608,6 @@ enum NewKeeperRequest {
 }
 
 impl PrimaryKeeper {
-    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
-        resp.fields(
-            "keepers",
-            self.keepers
-                .iter()
-                .map(|&(id, ref s)| (id, inspect::send(s, KeeperRequest::Inspect))),
-        );
-    }
-
     async fn run(&mut self) {
         enum Event {
             New(NewKeeperRequest),
