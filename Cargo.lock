@@ -4632,7 +4632,7 @@ name = "nostd_spin_channel"
 version = "0.1.0"
 dependencies = [
  "spin 0.10.0",
- "thiserror 2.0.0",
+ "thiserror 2.0.16",
 ]
 
 [[package]]
@@ -5089,7 +5089,7 @@ name = "opentmk"
 version = "0.0.0"
 dependencies = [
  "arrayvec",
- "bitfield-struct",
+ "bitfield-struct 0.11.0",
  "cfg-if",
  "hvdef",
  "iced-x86",
@@ -5103,11 +5103,11 @@ dependencies = [
  "serde",
  "serde_json",
  "spin 0.10.0",
- "thiserror 2.0.0",
+ "thiserror 2.0.16",
  "uefi",
  "x86_64",
  "x86defs",
- "zerocopy 0.8.14",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
@@ -6866,28 +6866,6 @@ name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
-
-[[package]]
-name = "spki"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
-dependencies = [
- "base64ct",
- "der",
-]
-
-[[package]]
-name = "spin"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
-
-[[package]]
-name = "spin"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 dependencies = [
  "lock_api",
 ]
@@ -6899,6 +6877,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
 dependencies = [
  "lock_api",
+]
+
+[[package]]
+name = "spki"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
+dependencies = [
+ "base64ct",
+ "der",
 ]
 
 [[package]]
@@ -10234,7 +10222,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f042214de98141e9c8706e8192b73f56494087cc55ebec28ce10f26c5c364ae"
 dependencies = [
  "bit_field",
- "bitflags 2.6.0",
+ "bitflags 2.9.3",
  "rustversion",
  "volatile",
 ]
