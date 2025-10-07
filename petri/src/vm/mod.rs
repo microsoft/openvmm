@@ -733,7 +733,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// incorrect.
     ///
     /// - `timeout` is enforced on the client side
-    /// - `path` and `depth` are passed to the [`Inspect`] machinery.
+    /// - `path` and `depth` are passed to the [`inspect::Inspect`] machinery.
     pub async fn inspect_openhcl(
         &self,
         path: impl Into<String>,
