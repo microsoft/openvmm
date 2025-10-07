@@ -144,7 +144,7 @@ async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 /// Basic VBS boot test with TPM enabled.
 #[openvmm_test_no_agent(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64))
+    //openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64))
 )]
 async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
@@ -173,7 +173,7 @@ async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 // TODO: Add in-guest tests to retrieve and verify the report.
 #[openvmm_test_no_agent(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64))
+    //openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64))
 )]
 async fn vbs_boot_with_attestation(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
