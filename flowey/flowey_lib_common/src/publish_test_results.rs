@@ -142,11 +142,6 @@ impl FlowNode for Node {
                     "copy attachments to artifacts directory: {label} ({attachment_label})"
                 );
                 let artifact_name = format!("{label}-{attachment_label}");
-
-                // Normalize both variants to a `ReadVar<Option<PathBuf>>` so the rest of
-                // the logic can treat attachments uniformly. `Logs` always contains a
-                // `PathBuf`, so map it to `Some(path)`. `NextestListJson` already
-                // contains an `Option<PathBuf>`.
                 let attachment_path_opt = match attachment_kind {
                     Attachments::Logs(p) => p.map(ctx, Some),
                     Attachments::NextestListJson(p) => p,
@@ -217,10 +212,17 @@ impl FlowNode for Node {
 
                                     if attachment_exists {
                                         if let Some(attachment_path) = attachment_path_opt {
-                                            copy_dir_all(
-                                                attachment_path,
-                                                output_dir.join(artifact_name),
-                                            )?;
+                                            if attachment_path.is_dir() {
+                                                copy_dir_all(
+                                                    attachment_path,
+                                                    output_dir.join(artifact_name),
+                                                )?;
+                                            } else {
+                                                fs_err::copy(
+                                                    attachment_path,
+                                                    output_dir.join(artifact_name),
+                                                )?;
+                                            }
                                         }
                                     }
 
