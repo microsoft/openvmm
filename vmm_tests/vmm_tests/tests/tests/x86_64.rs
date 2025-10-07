@@ -72,7 +72,6 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
-
     Ok(())
 }
 

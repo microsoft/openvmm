@@ -399,21 +399,13 @@ impl FlowNode for Node {
                     if let Some(list_cmd) = list_cmd {
                         let (status, stdout_opt) = run_command(&list_cmd, &working_dir, true)?;
                         anyhow::ensure!(status.success(), "failed to list tests in executable");
-                        let stdout =
-                            stdout_opt.context("missing stdout from nextest list command")?;
-                        let nextest_list_json = get_nextest_list_output_from_stdout(&stdout)?;
+
+                        let nextest_list_json =
+                            get_nextest_list_output_from_stdout(&stdout_opt.unwrap())?;
                         if let Some(ref junit_xml_path) = junit_xml {
-                            anyhow::ensure!(
-                                junit_xml_path.is_file(),
-                                "expected junit xml to exist at {:?}",
-                                junit_xml_path
-                            );
-                            let containing_dir = junit_xml_path
-                                .parent()
-                                .context("junit xml has no parent")?
-                                .to_path_buf();
+                            let containing_dir = junit_xml_path.parent().unwrap().to_path_buf();
                             let output_path = containing_dir.join("nextest_list.json");
-                            let mut file = fs_err::File::create_new(output_path.clone())?;
+                            let mut file = fs_err::File::create_new(&output_path)?;
                             file.write_all(nextest_list_json.to_string().as_bytes())?;
 
                             if let Some(nextest_list_output_file_write) =
@@ -517,6 +509,8 @@ fn run_command(
 }
 
 fn get_nextest_list_output_from_stdout(output: &str) -> anyhow::Result<serde_json::Value> {
+    // nextest list prints a few lines of non-json output before the actual
+    // JSON output, so we need to find the first line that is valid JSON
     for line in output.lines() {
         if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(line) {
             return Ok(json_value);

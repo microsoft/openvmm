@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
+//! Verifies that all tests that are built are run at least once over the course of an entire pipeline run.
 use flowey::node::prelude::*;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -40,8 +40,9 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
-        // TODO: testing with GitHub first, will add ADO support later.
-        if ctx.backend() != FlowBackend::Github {
+        // It doesn't make sense for this node to run locally since there is no way for one machine
+        // to run all the vmm_tests we have.
+        if ctx.backend() == FlowBackend::Local {
             return Ok(());
         }
 
@@ -68,29 +69,10 @@ impl SimpleFlowNode for Node {
                         let junit_xml = artifact_dir.clone().join(&junit_xml);
                         let nextest_list = artifact_dir.clone().join(&nextest_list);
 
-                        assert!(
-                            junit_xml.exists(),
-                            "expected junit.xml file to exist at {}",
-                            junit_xml.display()
-                        );
-                        assert!(
-                            nextest_list.exists(),
-                            "expected nextest list file to exist at {}",
-                            nextest_list.display()
-                        );
-
                         let junit_test_names = get_testcase_names_from_junit_xml(&junit_xml)?;
-                        println!("Test names in {}:", junit_xml.display());
-                        for test_name in &junit_test_names {
-                            println!("{}", test_name);
-                        }
 
                         let nextest_test_names =
                             get_testcase_names_from_nextest_list_json(&nextest_list)?;
-                        println!("Test names in {}:", nextest_list.display());
-                        for test_name in &nextest_test_names {
-                            println!("{}", test_name);
-                        }
 
                         combined_junit_testcases.extend(junit_test_names.into_iter());
                         combined_nextest_testcases.extend(nextest_test_names.into_iter());

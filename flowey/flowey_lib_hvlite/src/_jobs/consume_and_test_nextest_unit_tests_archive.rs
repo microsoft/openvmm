@@ -58,7 +58,6 @@ impl SimpleFlowNode for Node {
         let junit_xml = results.map(ctx, |r| r.junit_xml);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
             junit_xml,
-            nextest_list_json: None,
             test_label: junit_test_label,
             attachments: BTreeMap::new(),
             output_dir: artifact_dir,
