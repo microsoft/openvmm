@@ -471,7 +471,7 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     Ok(())
 }
 
-#[vmm_test_no_agent(
+#[vmm_test(
     // hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
@@ -493,7 +493,7 @@ async fn memory_validation_gp_small<T: PetriVmmBackend>(
 // We can't get a VTL 2 pipette with release build CVM debugging restrictions,
 // so only run these tests in debug builds.
 #[cfg(debug_assertions)]
-#[vmm_test_no_agent(
+#[vmm_test(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
 )]
@@ -513,7 +513,7 @@ async fn memory_validation_cvm_small<T: PetriVmmBackend>(
 }
 
 #[cfg(debug_assertions)]
-#[vmm_test_no_agent(
+#[vmm_test(
     // hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
@@ -535,7 +535,7 @@ async fn memory_validation_gp_large<T: PetriVmmBackend>(
 // We can't get a VTL 2 pipette with release build CVM debugging restrictions,
 // so only run these tests in debug builds.
 #[cfg(debug_assertions)]
-#[vmm_test_no_agent(
+#[vmm_test(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64)),
 )]
