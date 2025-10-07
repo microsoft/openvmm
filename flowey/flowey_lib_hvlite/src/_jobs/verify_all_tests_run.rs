@@ -62,8 +62,8 @@ impl SimpleFlowNode for Node {
                         println!("Artifact dir: {}", artifact_dir.display());
                         assert!(artifact_dir.exists(), "expected artifact dir to exist");
 
-                        let junit_xml = prefix.clone() + "vmm-tests-junit-xml.xml";
-                        let nextest_list = prefix.clone() + "vmm-tests-nextest-list.json";
+                        let junit_xml = prefix.clone() + "-vmm-tests-junit-xml.xml";
+                        let nextest_list = prefix.clone() + "-vmm-tests-nextest-list.json";
 
                         let junit_xml = artifact_dir.clone().join(&junit_xml);
                         let nextest_list = artifact_dir.clone().join(&nextest_list);
