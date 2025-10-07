@@ -11,7 +11,7 @@
 //! Currently, the server supports the gRPC and ttrpc protocols, while the
 //! client only supports the ttrpc protocol.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 #[cfg(test)]
 extern crate self as mesh_rpc;

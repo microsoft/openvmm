@@ -3,10 +3,10 @@
 
 //! Code to build storage configuration from command line arguments.
 
+use crate::VmResources;
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::UnderhillDiskSource;
 use crate::disk_open;
-use crate::VmResources;
 use anyhow::Context;
 use guid::Guid;
 use hvlite_defs::config::Config;
@@ -24,9 +24,9 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
-use vtl2_settings_proto::storage_controller;
 use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
+use vtl2_settings_proto::storage_controller;
 
 pub(super) struct StorageBuilder {
     vtl0_ide_disks: Vec<IdeDeviceConfig>,
@@ -243,7 +243,7 @@ impl StorageBuilder {
         };
 
         let (luns, location) = match target {
-            // TODO: once hvlite supports VTL2 with PCAT VTL0, remove this restriction.
+            // TODO: once openvmm supports VTL2 with PCAT VTL0, remove this restriction.
             DiskLocation::Ide(_, _) => {
                 anyhow::bail!("ide target currently not supported for Underhill (no PCAT support)")
             }
@@ -300,6 +300,7 @@ impl StorageBuilder {
                     devices: std::mem::take(&mut self.vtl0_scsi_devices),
                     io_queue_depth: None,
                     requests: Some(recv),
+                    poll_mode_queue_depth: None,
                 }
                 .into_resource(),
             ));
@@ -323,6 +324,7 @@ impl StorageBuilder {
                     devices: std::mem::take(&mut self.vtl2_scsi_devices),
                     io_queue_depth: None,
                     requests: None,
+                    poll_mode_queue_depth: None,
                 }
                 .into_resource(),
             ));
@@ -377,6 +379,8 @@ impl StorageBuilder {
         Ok(())
     }
 
+    /// Generate VTL2 settings for storage devices offered to the guest via
+    /// OpenHCL.
     pub fn build_underhill(&self) -> Vec<StorageController> {
         let mut storage_controllers = Vec::new();
         if !self.underhill_scsi_luns.is_empty() {

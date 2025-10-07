@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Tools for building a disk image for a VM.
+
 use anyhow::Context;
 use fatfs::FormatVolumeOptions;
 use fatfs::FsOptions;
@@ -19,12 +21,22 @@ use std::path::Path;
 pub struct AgentImage {
     os_flavor: OsFlavor,
     pipette: Option<ResolvedArtifact>,
+    extras: Vec<(String, ResolvedArtifact)>,
 }
 
 impl AgentImage {
     /// Resolves the artifacts needed to build a disk image for a VM.
-    pub fn new(resolver: &ArtifactResolver<'_>, arch: MachineArch, os_flavor: OsFlavor) -> Self {
-        let pipette = match (os_flavor, arch) {
+    pub fn new(os_flavor: OsFlavor) -> Self {
+        Self {
+            os_flavor,
+            pipette: None,
+            extras: Vec::new(),
+        }
+    }
+
+    /// Adds the appropriate pipette binary to the image
+    pub fn with_pipette(mut self, resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
+        self.pipette = match (self.os_flavor, arch) {
             (OsFlavor::Windows, MachineArch::X86_64) => Some(
                 resolver
                     .require(common_artifacts::PIPETTE_WINDOWS_X64)
@@ -45,59 +57,78 @@ impl AgentImage {
                     .require(common_artifacts::PIPETTE_LINUX_AARCH64)
                     .erase(),
             ),
-            (OsFlavor::FreeBsd | OsFlavor::Uefi, _) => None,
+            (OsFlavor::FreeBsd | OsFlavor::Uefi, _) => {
+                todo!("No pipette binary yet for os");
+            }
         };
-        Self { os_flavor, pipette }
+        self
+    }
+
+    /// Check if the image contains pipette
+    pub fn contains_pipette(&self) -> bool {
+        self.pipette.is_some()
+    }
+
+    /// Adds an extra file to the disk image.
+    pub fn add_file(&mut self, name: &str, artifact: ResolvedArtifact) {
+        self.extras.push((name.to_string(), artifact));
     }
 
     /// Builds a disk image containing pipette and any files needed for the guest VM
     /// to run pipette.
-    pub fn build(&self) -> anyhow::Result<tempfile::NamedTempFile> {
-        match self.os_flavor {
+    pub fn build(&self) -> anyhow::Result<Option<tempfile::NamedTempFile>> {
+        let mut files = self
+            .extras
+            .iter()
+            .map(|(name, artifact)| (name.as_str(), PathOrBinary::Path(artifact.as_ref())))
+            .collect::<Vec<_>>();
+        let volume_label = match self.os_flavor {
             OsFlavor::Windows => {
                 // Windows doesn't use cloud-init, so we only need pipette
                 // (which is configured via the IMC hive).
-                build_disk_image(
-                    b"pipette    ",
-                    &[(
-                        "pipette.exe",
-                        PathOrBinary::Path(self.pipette.as_ref().unwrap().as_ref()),
-                    )],
-                )
+                if let Some(pipette) = self.pipette.as_ref() {
+                    files.push(("pipette.exe", PathOrBinary::Path(pipette.as_ref())));
+                }
+                b"pipette    "
             }
             OsFlavor::Linux => {
+                if let Some(pipette) = self.pipette.as_ref() {
+                    files.push(("pipette", PathOrBinary::Path(pipette.as_ref())));
+                }
                 // Linux uses cloud-init, so we need to include the cloud-init
                 // configuration files as well.
-                build_disk_image(
-                    b"cidata     ", // cloud-init looks for a volume label of "cidata",
-                    &[
-                        (
-                            "pipette",
-                            PathOrBinary::Path(self.pipette.as_ref().unwrap().as_ref()),
-                        ),
-                        (
-                            "meta-data",
-                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/meta-data")),
-                        ),
-                        (
-                            "user-data",
-                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data")),
-                        ),
-                        // Specify a non-present NIC to work around https://github.com/canonical/cloud-init/issues/5511
-                        // TODO: support dynamically configuring the network based on vm configuration
-                        (
-                            "network-config",
+                files.extend([
+                    (
+                        "meta-data",
+                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/meta-data")),
+                    ),
+                    (
+                        "user-data",
+                        if self.pipette.is_some() {
+                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data"))
+                        } else {
                             PathOrBinary::Binary(include_bytes!(
-                                "../guest-bootstrap/network-config"
-                            )),
-                        ),
-                    ],
-                )
+                                "../guest-bootstrap/user-data-no-agent"
+                            ))
+                        },
+                    ),
+                    // Specify a non-present NIC to work around https://github.com/canonical/cloud-init/issues/5511
+                    // TODO: support dynamically configuring the network based on vm configuration
+                    (
+                        "network-config",
+                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/network-config")),
+                    ),
+                ]);
+                b"cidata     " // cloud-init looks for a volume label of "cidata",
             }
-            OsFlavor::FreeBsd | OsFlavor::Uefi => {
-                // No pipette binary yet.
-                todo!()
-            }
+            // Nothing OS-specific yet for other flavors
+            _ => b"cidata     ",
+        };
+
+        if files.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(build_disk_image(volume_label, &files)?))
         }
     }
 }

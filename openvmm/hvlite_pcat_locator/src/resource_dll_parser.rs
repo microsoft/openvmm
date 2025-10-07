@@ -4,12 +4,12 @@
 //! Function to parse a resource dll for a given ID.
 
 use crate::DllResourceDescriptor;
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use fs_err::File;
-use object::read::pe::PeFile64;
 use object::LittleEndian;
 use object::ReadCache;
+use object::read::pe::PeFile64;
 
 /// Tries to read the given resource from a resource dll. If the given data
 /// buffer is not a valid PE file this function returns Ok(None). If it is a PE

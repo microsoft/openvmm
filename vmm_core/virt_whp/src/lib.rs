@@ -4,9 +4,10 @@
 //! WHP implementation of the virt::generic interfaces.
 
 #![cfg(all(windows, guest_is_native))]
+#![expect(missing_docs)]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod apic;
 pub mod device;
@@ -43,14 +44,11 @@ use range_map_vec::RangeMap;
 use std::convert::Infallible;
 use std::ops::Index;
 use std::ops::IndexMut;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Waker;
 use thiserror::Error;
-use virt::io::CpuIo;
-use virt::irqcon::MsiRequest;
-use virt::vm::AccessVmState;
 use virt::IsolationType;
 use virt::NeedsYield;
 use virt::PageVisibility;
@@ -61,15 +59,22 @@ use virt::ProtoPartitionConfig;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
+use virt::irqcon::MsiRequest;
+use virt::vm::AccessVmState;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::monitor::MonitorPage;
-use vmcore::reference_time_source::ReferenceTimeSource;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
-use vp::WhpRunVpError;
 use vp_state::WhpVpStateAccess;
 use x86defs::cpuid::Vendor;
+
+#[cfg(guest_arch = "aarch64")]
+pub use aarch64::WHP_PMU_GSIV;
 
 #[derive(Debug)]
 pub struct Whp;
@@ -103,6 +108,7 @@ pub struct WhpPartitionInner {
     cpuid: virt::CpuidLeafSet,
     vtl0_alias_map_offset: Option<u64>,
     monitor_page: MonitorPage,
+    hvstate: Hv1State,
     isolation: IsolationType,
 }
 
@@ -112,7 +118,6 @@ struct VtlPartition {
     whp: whp::Partition,
     #[inspect(skip)]
     vplcs: Vec<Vplc>,
-    hvstate: Hv1State,
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.read()).inspect(req))")]
     ranges: RwLock<Vec<memory::MappedRange>>,
 
@@ -126,6 +131,8 @@ struct VtlPartition {
     mapper: Box<dyn MemoryMapper>,
 
     lapic: LocalApicKind,
+
+    hypervisor_enlightened: bool,
 }
 
 #[derive(Inspect)]
@@ -142,7 +149,7 @@ enum LocalApicKind {
 enum Hv1State {
     Disabled,
     #[inspect(transparent)]
-    Emulated(GlobalHv),
+    Emulated(GlobalHv<3>),
     Offloaded,
 }
 
@@ -158,7 +165,7 @@ struct WhpVp {
     scrub_next: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     scan_irr: AtomicBool,
 }
 
@@ -168,7 +175,7 @@ struct RunState {
     active_vtl: Vtl,
     enabled_vtls: VtlSet,
     runnable_vtls: VtlSet,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     vtl2_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     vtl2_wakeup_vmtime: Option<VmTimeAccess>,
     #[inspect(skip)]
@@ -196,19 +203,14 @@ struct PerVtlRunState {
     #[cfg(guest_arch = "x86_64")]
     lapic: Option<apic::ApicState>,
     hv: Option<ProcessorVtlHv>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     // Only used when `hv` is `None`.
     vp_assist_page: u64,
 }
 
 impl PerVtlRunState {
-    pub fn new(
-        lapic: &LocalApicKind,
-        hv: &Hv1State,
-        vp_info: &TargetVpInfo,
-        guest_memory: &GuestMemory,
-    ) -> Self {
+    pub fn new(lapic: &LocalApicKind, hv: &Hv1State, vp_info: &TargetVpInfo, vtl: Vtl) -> Self {
         #[cfg(guest_arch = "aarch64")]
         let LocalApicKind::Offloaded = lapic;
         Self {
@@ -219,7 +221,7 @@ impl PerVtlRunState {
                 None
             },
             hv: if let Hv1State::Emulated(hv) = hv {
-                Some(hv.add_vp(guest_memory.clone(), vp_info.base.vp_index, Vtl::Vtl0))
+                Some(hv.add_vp(vp_info.base.vp_index, vtl))
             } else {
                 None
             },
@@ -450,6 +452,8 @@ impl virt::ResetPartition for WhpPartition {
                 .reset(true);
         }
 
+        self.inner.hvstate.reset(&self.inner.gm);
+
         Ok(())
     }
 }
@@ -460,6 +464,8 @@ impl virt::ScrubVtl for WhpPartition {
     fn scrub(&self, vtl: Vtl) -> Result<(), Error> {
         assert!(!self.inner.isolation.is_isolated());
         assert_eq!(vtl, Vtl::Vtl2);
+
+        tracing::info!(?vtl, "scrubbing partition");
 
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
 
@@ -605,10 +611,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
     type Processor<'a> = WhpProcessor<'a>;
     type Error = Error;
 
-    #[cfg_attr(
-        not(all(guest_arch = "aarch64", feature = "unstable_whp")),
-        allow(unused_variables)
-    )]
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
         let vp = WhpProcessor {
             vp: WhpVpRef {
@@ -623,8 +625,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 .vtl2
                 .as_ref()
                 .map(|vtl2| &vtl2.vplcs[self.index.index() as usize]),
-
-            tlb_lock: false,
         };
 
         let vp_info = &vp.inner.vp_info;
@@ -639,6 +639,13 @@ impl virt::BindProcessor for WhpProcessorBinder {
                         .set_register(whp::Register64::InitialApicId, vp_info.apic_id.into())
                         .for_op("set initial apic id")?;
                 }
+            }
+
+            #[cfg(all(guest_arch = "aarch64", not(feature = "unstable_whp")))]
+            {
+                let _ = vp_info;
+                let _ = vtlp;
+                let _ = vtl;
             }
 
             #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
@@ -669,11 +676,6 @@ pub struct WhpProcessor<'a> {
     state: RunState,
     vplc0: &'a Vplc,
     vplc2: Option<&'a Vplc>,
-
-    /// Whether the VTL 0 TLB is locked by VTL 2 or not.
-    // TODO: This doesn't actually control anything, we just
-    // track it so we can report it back correctly when asked.
-    tlb_lock: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -682,6 +684,7 @@ struct WhpVpRef<'a> {
     index: VpIndex,
 }
 
+// TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("whp error, failed to {operation}")]
@@ -690,8 +693,6 @@ pub enum Error {
         #[source]
         source: whp::WHvError,
     },
-    #[error("vtl2 memory process creation")]
-    Vtl2MemoryProcess(#[source] std::io::Error),
     #[error("guest debugging not supported")]
     GuestDebuggingNotSupported,
     #[error(transparent)]
@@ -701,11 +702,13 @@ pub enum Error {
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
     #[error("resetting memory mappings failed")]
-    ResetMemoryMapping(#[source] virt::Error),
+    ResetMemoryMapping(#[source] anyhow::Error),
     #[error("accepting pages failed")]
-    AcceptPages(#[source] virt::Error),
+    AcceptPages(#[source] anyhow::Error),
     #[error("invalid apic base")]
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 trait WhpResultExt<T> {
@@ -730,24 +733,13 @@ impl virt::Hypervisor for Whp {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<WhpProtoPartition<'a>, Error> {
-        let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {
-            whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
-            #[cfg(guest_arch = "x86_64")]
-            whp::abi::WHvProcessorVendorAmd => Vendor::AMD,
-            #[cfg(guest_arch = "x86_64")]
-            whp::abi::WHvProcessorVendorHygon => Vendor::HYGON,
-            #[cfg(guest_arch = "aarch64")]
-            whp::abi::WHvProcessorVendorArm => Vendor([0; 12]),
-            _ => panic!("unsupported processor vendor"),
-        };
-
-        let vtl0 = VtlPartition::new(&config, vendor, Vtl::Vtl0)?;
+        let vtl0 = VtlPartition::new(&config, Vtl::Vtl0)?;
         let vtl2 = if config
             .hv_config
             .as_ref()
             .is_some_and(|cfg| cfg.vtl2.is_some())
         {
-            Some(VtlPartition::new(&config, vendor, Vtl::Vtl2)?)
+            Some(VtlPartition::new(&config, Vtl::Vtl2)?)
         } else {
             None
         };
@@ -862,16 +854,16 @@ impl ProtoPartition for WhpProtoPartition<'_> {
                         vtls: RunStateVtls {
                             vtl0: PerVtlRunState::new(
                                 &partition.inner.vtl0.lapic,
-                                &partition.inner.vtl0.hvstate,
+                                &partition.inner.hvstate,
                                 &vp.vp().vp_info,
-                                &partition.inner.gm,
+                                Vtl::Vtl0,
                             ),
                             vtl2: partition.inner.vtl2.as_ref().map(|p| {
                                 PerVtlRunState::new(
                                     &p.lapic,
-                                    &p.hvstate,
+                                    &partition.inner.hvstate,
                                     &vp.vp().vp_info,
-                                    &partition.inner.gm,
+                                    Vtl::Vtl2,
                                 )
                             }),
                         },
@@ -906,9 +898,9 @@ impl WhpPartitionInner {
             // hypervisor will do this automatically, but it doesn't hurt to do this
             // again.
             let mask = [0, 0, 1 << 21, 0];
-            let value = match proto_config.processor_topology.apic_mode() {
-                ApicMode::XApic => [0; 4],
-                ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled => mask,
+            let (value, use_apic_msrs) = match proto_config.processor_topology.apic_mode() {
+                ApicMode::XApic => ([0; 4], true),
+                ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled => (mask, false),
             };
             cpuid.push(
                 virt::CpuidLeaf::new(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, value)
@@ -918,13 +910,21 @@ impl WhpPartitionInner {
             // Add in the synthetic hv leaves if necessary.
             if let Some(hv_config) = &proto_config.hv_config {
                 if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
-                    cpuid.extend(hv1_emulator::cpuid::hv_cpuid_leaves(
-                        proto_config.processor_topology,
-                        IsolationType::None,
-                        false,
-                        [0; 4],
-                        None,
-                    ));
+                    let enlightenments = hvdef::HvEnlightenmentInformation::new()
+                        .with_deprecate_auto_eoi(true)
+                        .with_use_relaxed_timing(true)
+                        .with_use_ex_processor_masks(true)
+                        .with_use_apic_msrs(use_apic_msrs);
+                    const MAX_CPUS: u32 = 2048;
+                    cpuid.extend_from_slice(
+                        &hv1_emulator::cpuid::make_hv_cpuid_leaves(
+                            hv1_emulator::cpuid::SUPPORTED_FEATURES,
+                            enlightenments,
+                            MAX_CPUS,
+                        )
+                        .map(|(f, v)| virt::CpuidLeaf::new(f.0, [v.eax, v.ebx, v.ecx, v.edx])),
+                    );
+                    hv1_emulator::cpuid::process_hv_cpuid_leaves(&mut cpuid, false, [0; 4]);
                 }
             }
 
@@ -938,13 +938,11 @@ impl WhpPartitionInner {
             .as_ref()
             .and_then(|cfg| cfg.vtl2.as_ref())
         {
-            if vtl2_config.vtl0_alias_map {
-                vtl0_alias_map_offset = Some(1 << (config.mem_layout.physical_address_size() - 1));
-            }
+            vtl0_alias_map_offset = config.vtl0_alias_map;
 
             // TODO: Supporting the alias map with isolation requires additional
             // mapper changes that are not implemented yet.
-            if vtl2_config.vtl0_alias_map && proto_config.isolation.is_isolated() {
+            if vtl0_alias_map_offset.is_some() && proto_config.isolation.is_isolated() {
                 todo!("alias map and isolation requires memory mapper changes")
             }
 
@@ -1008,7 +1006,8 @@ impl WhpPartitionInner {
                         &[output.Eax, output.Ebx, output.Ecx, output.Edx],
                     )
                 },
-            );
+            )
+            .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
@@ -1016,6 +1015,37 @@ impl WhpPartitionInner {
         };
         #[cfg(guest_arch = "aarch64")]
         let caps = virt::aarch64::Aarch64PartitionCapabilities {};
+
+        let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {
+            whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
+            #[cfg(guest_arch = "x86_64")]
+            whp::abi::WHvProcessorVendorAmd => Vendor::AMD,
+            #[cfg(guest_arch = "x86_64")]
+            whp::abi::WHvProcessorVendorHygon => Vendor::HYGON,
+            #[cfg(guest_arch = "aarch64")]
+            whp::abi::WHvProcessorVendorArm => Vendor([0; 12]),
+            _ => panic!("unsupported processor vendor"),
+        };
+
+        let hvstate = if proto_config.hv_config.is_some() {
+            if vtl0.hypervisor_enlightened {
+                Hv1State::Offloaded
+            } else {
+                let tsc_frequency = vtl0.whp.tsc_frequency().for_op("get tsc frequency")?;
+                let ref_time = ReferenceTimeSource::new(VmTimeReferenceTimeSource::new(
+                    proto_config.vmtime.clone(),
+                ));
+                Hv1State::Emulated(GlobalHv::new(GlobalHvParams {
+                    max_vp_count: proto_config.processor_topology.vp_count(),
+                    vendor,
+                    tsc_frequency,
+                    ref_time,
+                    is_ref_time_backed_by_tsc: false,
+                }))
+            }
+        } else {
+            Hv1State::Disabled
+        };
 
         let inner = Self {
             vtl0,
@@ -1031,6 +1061,7 @@ impl WhpPartitionInner {
             cpuid,
             vtl0_alias_map_offset,
             monitor_page: MonitorPage::new(),
+            hvstate,
             isolation: proto_config.isolation,
         };
 
@@ -1079,13 +1110,12 @@ impl WhpPartitionInner {
     }
 
     fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: HvMessageType, payload: &[u8]) {
-        let vtlp = self.vtlp(vtl);
         let message = HvMessage::new(typ, 0, payload);
         let Some(vpref) = self.vp(vp) else {
             tracelimit::warn_ratelimited!(vp = vp.index(), "invalid vp for post message");
             return;
         };
-        match &vtlp.hvstate {
+        match &self.hvstate {
             Hv1State::Offloaded | Hv1State::Emulated(_) => {
                 vpref.post_message(vtl, sint, &message);
             }
@@ -1103,13 +1133,12 @@ impl WhpPartitionInner {
 }
 
 /// A time implementation based on VmTime.
-impl ReferenceTimeSource for VmTimeReferenceTimeSource {
-    fn now_100ns(&self) -> u64 {
-        self.vmtime.now().as_100ns()
-    }
-
-    fn is_backed_by_tsc(&self) -> bool {
-        false
+impl GetReferenceTime for VmTimeReferenceTimeSource {
+    fn now(&self) -> ReferenceTimeResult {
+        ReferenceTimeResult {
+            ref_time: self.vmtime.now().as_100ns(),
+            system_time: None,
+        }
     }
 }
 
@@ -1126,8 +1155,10 @@ impl VmTimeReferenceTimeSource {
 }
 
 impl VtlPartition {
-    fn new(config: &ProtoPartitionConfig<'_>, vendor: Vendor, vtl: Vtl) -> Result<Self, Error> {
+    fn new(config: &ProtoPartitionConfig<'_>, vtl: Vtl) -> Result<Self, Error> {
         let mut hypervisor_enlightened = false;
+
+        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
 
         let user_mode_apic = config.user_mode_apic
             || config
@@ -1141,6 +1172,10 @@ impl VtlPartition {
                 config.processor_topology.apic_mode(),
                 vm_topology::processor::x86::ApicMode::XApic
             );
+            if x2apic_capable {
+                // Needed to set the x2apic bit.
+                extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
+            }
             let lapic = virt_support_apic::LocalApicSet::builder()
                 .x2apic_capable(x2apic_capable)
                 .hyperv_enlightenments(config.hv_config.is_some())
@@ -1160,7 +1195,6 @@ impl VtlPartition {
             ))
             .for_op("set processor count")?;
 
-        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
         #[cfg(guest_arch = "x86_64")]
         {
             use vm_topology::processor::x86::ApicMode;
@@ -1338,23 +1372,6 @@ impl VtlPartition {
             whp.create_vp(index).create().for_op("create vp")?;
         }
 
-        let hvstate = if config.hv_config.is_some() {
-            if hypervisor_enlightened {
-                Hv1State::Offloaded
-            } else {
-                let tsc_frequency = whp.tsc_frequency().for_op("get tsc frequency")?;
-                let ref_time = Box::new(VmTimeReferenceTimeSource::new(config.vmtime.clone()));
-                Hv1State::Emulated(GlobalHv::new(GlobalHvParams {
-                    max_vp_count: config.processor_topology.vp_count(),
-                    vendor,
-                    tsc_frequency,
-                    ref_time,
-                }))
-            }
-        } else {
-            Hv1State::Disabled
-        };
-
         let vplcs = config
             .processor_topology
             .vps()
@@ -1413,7 +1430,6 @@ impl VtlPartition {
 
         Ok(Self {
             whp,
-            hvstate,
             vplcs,
             #[cfg(guest_arch = "x86_64")]
             software_devices: virt::x86::apic_software_device::ApicSoftwareDevices::new(
@@ -1422,32 +1438,43 @@ impl VtlPartition {
             ranges: Default::default(),
             mapper,
             lapic,
+            hypervisor_enlightened,
         })
     }
 
     /// Reset this partition back into the state before starting VPs.
     fn reset(&self) -> Result<(), Error> {
         self.whp.reset().for_op("reset partition")?;
-        self.hvstate.reset();
         self.reset_mappings().map_err(Error::ResetMemoryMapping)?;
         Ok(())
     }
 }
 
-struct WhpNoVtlProtections;
-impl hv1_emulator::hv::VtlProtectHypercallOverlay for WhpNoVtlProtections {
-    fn change_overlay(&mut self, _gpn: u64) {}
-    fn disable_overlay(&mut self) {}
+struct WhpNoVtlProtections<'a>(&'a GuestMemory);
+impl<'a> hv1_emulator::VtlProtectAccess for WhpNoVtlProtections<'a> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, hvdef::HvError> {
+        Ok(self.0.lock_gpns(false, &[gpn]).unwrap())
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), hvdef::HvError> {
+        Ok(())
+    }
 }
 
 impl Hv1State {
-    fn reset(&self) {
+    fn reset(&self, guest_memory: &GuestMemory) {
         match self {
             Hv1State::Emulated(hv) => hv.reset(
                 [
-                    &mut WhpNoVtlProtections
-                        as &mut dyn hv1_emulator::hv::VtlProtectHypercallOverlay,
-                    &mut WhpNoVtlProtections,
+                    &mut WhpNoVtlProtections(guest_memory)
+                        as &mut dyn hv1_emulator::VtlProtectAccess,
+                    &mut WhpNoVtlProtections(guest_memory),
+                    &mut WhpNoVtlProtections(guest_memory),
                 ]
                 .into(),
             ),
@@ -1465,8 +1492,6 @@ impl Drop for WhpProcessor<'_> {
 }
 
 impl<'p> virt::Processor for WhpProcessor<'p> {
-    type Error = Error;
-    type RunVpError = WhpRunVpError;
     type StateAccess<'a>
         = WhpVpStateAccess<'a, 'p>
     where
@@ -1476,7 +1501,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <WhpVpStateAccess<'_, 'p> as virt::vp::AccessVpState>::Error> {
         Err(Error::GuestDebuggingNotSupported)
     }
 
@@ -1490,17 +1515,16 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<WhpRunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         self.run_vp(stop, dev).await
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
+    fn flush_async_requests(&mut self) {
         // TODO: flush more (e.g. HvStartVp context)
-        self.flush_apic(Vtl::Vtl0)?;
+        self.flush_apic(Vtl::Vtl0);
         if self.state.vtls.vtl2.is_some() {
-            self.flush_apic(Vtl::Vtl2)?;
+            self.flush_apic(Vtl::Vtl2);
         }
-        Ok(())
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
@@ -1515,10 +1539,27 @@ impl virt::Hv1 for WhpPartition {
     #[cfg(guest_arch = "aarch64")]
     type Device = virt::aarch64::gic_software_device::GicSoftwareDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        match &self.inner.hvstate {
+            Hv1State::Emulated(hv) => Some(hv.ref_time_source().clone()),
+            Hv1State::Offloaded => Some(ReferenceTimeSource::from(self.inner.clone() as Arc<_>)),
+            Hv1State::Disabled => None,
+        }
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         Some(self)
+    }
+}
+
+impl GetReferenceTime for WhpPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        ReferenceTimeResult {
+            ref_time: self.vtl0.whp.reference_time().unwrap(),
+            system_time: None,
+        }
     }
 }
 
@@ -1574,8 +1615,8 @@ mod x86 {
     use crate::WhpPartition;
     use crate::WhpPartitionInner;
     use hvdef::Vtl;
-    use virt::irqcon::MsiRequest;
     use virt::VpIndex;
+    use virt::irqcon::MsiRequest;
 
     impl WhpPartitionInner {
         pub(crate) fn synic_interrupt(
@@ -1633,8 +1674,11 @@ mod aarch64 {
     use crate::WhpPartitionAndVtl;
     use crate::WhpPartitionInner;
     use hvdef::Vtl;
-    use virt::irqcon::MsiRequest;
     use virt::VpIndex;
+    use virt::irqcon::MsiRequest;
+
+    /// On aarch64, the platform configured GSIV value for the PMU.
+    pub const WHP_PMU_GSIV: u32 = 0x17;
 
     impl WhpPartitionInner {
         pub(crate) fn synic_interrupt(

@@ -3,10 +3,10 @@
 
 use crate::KvmError;
 use crate::KvmPartition;
+use virt::VpIndex;
 use virt::state::HvRegisterState;
 use virt::x86::vm;
 use virt::x86::vm::AccessVmState;
-use virt::VpIndex;
 
 impl AccessVmState for &'_ KvmPartition {
     type Error = KvmError;

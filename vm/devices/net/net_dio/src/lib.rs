@@ -4,13 +4,14 @@
 //! An endpoint built on the vmswitch DirectIO interface.
 
 #![cfg(windows)]
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod resolver;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
 use inspect::InspectMut;
-use net_backend::next_packet;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::Queue;
@@ -18,8 +19,10 @@ use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
+use net_backend::next_packet;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::io::ErrorKind;
@@ -190,7 +193,7 @@ impl Queue for DioQueue {
         Ok((true, n))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         Ok(0)
     }
 

@@ -18,14 +18,14 @@ use std::io;
 use std::os::raw::c_int;
 use std::os::windows::prelude::*;
 use std::time::Duration;
-use windows_sys::Win32::Networking::WinSock::setsockopt;
-use windows_sys::Win32::Networking::WinSock::WSAGetLastError;
 use windows_sys::Win32::Networking::WinSock::AF_HYPERV;
 use windows_sys::Win32::Networking::WinSock::SOCKET_ERROR;
-use windows_sys::Win32::System::Hypervisor::HVSOCKET_CONNECT_TIMEOUT;
+use windows_sys::Win32::Networking::WinSock::WSAGetLastError;
+use windows_sys::Win32::Networking::WinSock::setsockopt;
 use windows_sys::Win32::System::Hypervisor::HV_GUID_PARENT;
 use windows_sys::Win32::System::Hypervisor::HV_GUID_ZERO;
 use windows_sys::Win32::System::Hypervisor::HV_PROTOCOL_RAW;
+use windows_sys::Win32::System::Hypervisor::HVSOCKET_CONNECT_TIMEOUT;
 use windows_sys::Win32::System::Hypervisor::SOCKADDR_HV;
 
 /// Creates an AF_HYPERV service ID from an AF_VSOCK port.

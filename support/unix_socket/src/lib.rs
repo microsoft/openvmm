@@ -9,7 +9,6 @@
 //! <https://github.com/rust-lang/rust/issues/56533>
 
 #![cfg_attr(not(windows), forbid(unsafe_code))]
-#![warn(missing_docs)]
 
 mod windows;
 

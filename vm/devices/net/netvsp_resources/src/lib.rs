@@ -4,15 +4,14 @@
 //! Resource definitions for netvsp devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use guid::Guid;
 use mesh::MeshPayload;
 use net_backend_resources::mac_address::MacAddress;
-use vm_resource::kind::NetEndpointHandleKind;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::NetEndpointHandleKind;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 /// A handle to a netvsp device.
 #[derive(MeshPayload)]

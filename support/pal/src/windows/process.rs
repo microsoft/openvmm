@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::job::Job;
 use super::BorrowedHandleExt;
 use super::Process;
+use super::job::Job;
 use ntapi::ntpsapi::NtCurrentProcess;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -20,10 +20,10 @@ use winapi::um::processenv::GetStdHandle;
 use winapi::um::processthreadsapi::CreateProcessAsUserW;
 use winapi::um::processthreadsapi::DeleteProcThreadAttributeList;
 use winapi::um::processthreadsapi::InitializeProcThreadAttributeList;
-use winapi::um::processthreadsapi::TerminateProcess;
-use winapi::um::processthreadsapi::UpdateProcThreadAttribute;
 use winapi::um::processthreadsapi::LPPROC_THREAD_ATTRIBUTE_LIST;
 use winapi::um::processthreadsapi::STARTUPINFOW;
+use winapi::um::processthreadsapi::TerminateProcess;
+use winapi::um::processthreadsapi::UpdateProcThreadAttribute;
 use winapi::um::winbase::CREATE_SUSPENDED;
 use winapi::um::winbase::CREATE_UNICODE_ENVIRONMENT;
 use winapi::um::winbase::EXTENDED_STARTUPINFO_PRESENT;
@@ -1004,8 +1004,8 @@ pub(crate) fn terminate(exit_code: i32) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::empty_process;
     use super::EmptyProcess;
+    use super::empty_process;
 
     #[test]
     fn test_empty() {

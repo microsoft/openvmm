@@ -1,35 +1,38 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+#![expect(missing_docs)]
+
 mod bnic;
 mod dma;
 mod hwc;
 mod queues;
 pub mod resolver;
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use chipset_device::ChipsetDevice;
+use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use device_emulators::ReadWriteRequestType;
 use futures::FutureExt;
 use gdma_defs::CqEqDoorbellValue;
-use gdma_defs::RegMap;
-use gdma_defs::SmcMessageType;
-use gdma_defs::SmcProtoHdr;
-use gdma_defs::WqDoorbellValue;
 use gdma_defs::DB_CQ;
 use gdma_defs::DB_EQ;
 use gdma_defs::DB_RQ;
 use gdma_defs::DB_RQ_CLIENT_DATA;
 use gdma_defs::DB_SQ;
 use gdma_defs::PAGE_SIZE64;
+use gdma_defs::RegMap;
 use gdma_defs::SMC_MSG_TYPE_DESTROY_HWC_VERSION;
 use gdma_defs::SMC_MSG_TYPE_ESTABLISH_HWC_VERSION;
 use gdma_defs::SMC_MSG_TYPE_REPORT_HWC_TIMEOUT_VERSION;
+use gdma_defs::SmcMessageType;
+use gdma_defs::SmcProtoHdr;
+use gdma_defs::WqDoorbellValue;
 use guestmem::GuestMemory;
 use hwc::Devices;
 use hwc::HwControl;

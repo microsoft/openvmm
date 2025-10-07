@@ -71,7 +71,7 @@ struct AtomicBitmap(Vec<AtomicU64>);
 
 impl AtomicBitmap {
     fn new(n: usize) -> Self {
-        Self((0..(n + 63) / 64).map(|_| AtomicU64::new(0)).collect())
+        Self((0..n.div_ceil(64)).map(|_| AtomicU64::new(0)).collect())
     }
 
     fn set(&self, n: usize) -> bool {

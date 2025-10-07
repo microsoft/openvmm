@@ -16,8 +16,8 @@ use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Acquire;
 use hvdef::HvError;
 use hvdef::HypercallCode;
-use minimal_rt::arch::msr::write_msr;
 use minimal_rt::arch::Serial;
+use minimal_rt::arch::msr::write_msr;
 use x86defs::Exception;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -34,6 +34,7 @@ mod addr_space {
     const PTE_GLOBALS: usize = 4;
     const PTE_ASSIST_PAGE: usize = 5;
     const PTE_CONTROL_PAGE: usize = 6;
+    const PTE_REGISTER_PAGE: usize = 7;
     const PTE_TEMPORARY_MAP: usize = 256;
     const PTE_STACK: usize = PTE_STACK_END - sidecar_defs::STACK_PAGES;
     const PTE_STACK_END: usize = 512;
@@ -58,6 +59,7 @@ mod addr_space {
         pt_pa: u64,
         control_page_pa: u64,
         command_page_pa: u64,
+        reg_page_pa: u64,
         memory: &mut impl Iterator<Item = u64>,
     ) -> u64 {
         pt.fill(x86defs::Pte::new());
@@ -72,6 +74,7 @@ mod addr_space {
         pt[PTE_HYPERCALL_INPUT] = pte_data(memory.next().unwrap());
         pt[PTE_HYPERCALL_OUTPUT] = pte_data(memory.next().unwrap());
         pt[PTE_CONTROL_PAGE] = pte_data(control_page_pa);
+        pt[PTE_REGISTER_PAGE] = pte_data(reg_page_pa);
         globals_pa
     }
 
@@ -121,6 +124,15 @@ mod addr_space {
         unsafe { pte(PTE_ASSIST_PAGE).read() }.address()
     }
 
+    pub fn register_page() -> *mut hvdef::HvX64RegisterPage {
+        (per_vp(PTE_REGISTER_PAGE)) as *mut _
+    }
+
+    pub fn register_page_pa() -> u64 {
+        // SAFETY: the register page PTE is not changing concurrently.
+        unsafe { pte(PTE_REGISTER_PAGE).read() }.address()
+    }
+
     pub fn hypercall_input() -> *mut [u8; 4096] {
         (per_vp(PTE_HYPERCALL_INPUT)) as *mut [u8; 4096]
     }
@@ -147,7 +159,6 @@ mod addr_space {
 struct VpGlobals {
     hv_vp_index: u32,
     node_cpu_index: u32,
-    reg_page_pa: u64,
     overlays_mapped: bool,
     register_page_mapped: bool,
 }
@@ -169,9 +180,9 @@ macro_rules! log {
     };
 }
 use core::mem::size_of;
-use hvdef::hypercall::HvInputVtl;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
+use hvdef::hypercall::HvInputVtl;
 pub(crate) use log;
 use minimal_rt::arch::InstrIoAccess;
 
@@ -189,14 +200,14 @@ fn log_fmt(args: core::fmt::Arguments<'_>) {
 }
 
 #[cfg_attr(minimal_rt, panic_handler)]
-#[cfg_attr(not(minimal_rt), allow(dead_code))]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
     let stack_va_to_pa = |ptr| {
         addr_space::stack()
             .offset_of(ptr as u64)
             .map(|offset| addr_space::stack_base_pa() + offset as usize)
     };
-    minimal_rt::enlightened_panic::report(panic, stack_va_to_pa);
+    minimal_rt::enlightened_panic::report(*b"SIDECARK", panic, stack_va_to_pa);
     if !AFTER_INIT.load(Acquire) {
         let _ = writeln!(Serial::new(InstrIoAccess), "{panic}");
     }
@@ -298,13 +309,13 @@ fn eoi() {
     }
 }
 
-#[cfg_attr(not(minimal_rt), allow(dead_code))]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 extern "C" fn irq_handler() {
     eoi();
     log!("irq");
 }
 
-#[cfg_attr(not(minimal_rt), allow(dead_code))]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 extern "C" fn exception_handler(exception: Exception, rsp: u64) -> ! {
     // SAFETY: reading cr2 has no safety requirements.
     let cr2 = unsafe {

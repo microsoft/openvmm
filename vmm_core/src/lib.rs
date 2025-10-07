@@ -4,6 +4,9 @@
 //! Core building blocks for managing vm and vm related state to build a vmm.
 //! Used by both hvlite and underhill today.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 pub mod acpi_builder;
 pub mod cpuid;
 pub mod device_builder;

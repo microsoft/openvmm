@@ -62,21 +62,13 @@ pub trait SyscallResult: Sized {
 
 impl SyscallResult for i32 {
     fn syscall_result(self) -> Result<Self, Errno> {
-        if self >= 0 {
-            Ok(self)
-        } else {
-            Err(errno())
-        }
+        if self >= 0 { Ok(self) } else { Err(errno()) }
     }
 }
 
 impl SyscallResult for isize {
     fn syscall_result(self) -> Result<Self, Errno> {
-        if self >= 0 {
-            Ok(self)
-        } else {
-            Err(errno())
-        }
+        if self >= 0 { Ok(self) } else { Err(errno()) }
     }
 }
 

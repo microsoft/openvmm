@@ -8,12 +8,14 @@ use crate::pipeline_resolver::generic::ResolvedJobArtifact;
 use crate::pipeline_resolver::generic::ResolvedJobUseParameter;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
-use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
 use flowey_core::node::RuntimeVarDb;
+use flowey_core::node::steps::rust::RustRuntimeServices;
+use flowey_core::pipeline::HostExt;
+use flowey_core::pipeline::PipelineBackendHint;
 use flowey_core::pipeline::internal::Parameter;
 use petgraph::prelude::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -21,13 +23,12 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub struct ResolvedRunnableNode {
-    pub node_handle: NodeHandle,
-    pub steps: Vec<(
-        usize,
-        String,
-        Box<dyn for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static>,
-    )>,
+struct ResolvedRunnableStep {
+    node_handle: NodeHandle,
+    label: String,
+    code: Box<dyn for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static>,
+    idx: usize,
+    can_merge: bool,
 }
 
 /// Directly run the pipeline using flowey
@@ -118,16 +119,7 @@ fn direct_run_do_work(
             continue;
         }
 
-        // xtask-fmt allow-target-arch oneoff-flowey
-        let flow_arch = if cfg!(target_arch = "x86_64") {
-            FlowArch::X86_64
-        // xtask-fmt allow-target-arch oneoff-flowey
-        } else if cfg!(target_arch = "aarch64") {
-            FlowArch::Aarch64
-        } else {
-            unreachable!("flowey only runs on X86_64 or Aarch64 at the moment")
-        };
-
+        let flow_arch = FlowArch::host(PipelineBackendHint::Local);
         match (arch, flow_arch) {
             (FlowArch::X86_64, FlowArch::X86_64) | (FlowArch::Aarch64, FlowArch::Aarch64) => (),
             _ => {
@@ -136,11 +128,13 @@ fn direct_run_do_work(
             }
         }
 
-        let platform_ok = match platform {
-            FlowPlatform::Windows => cfg!(windows) || (cfg!(target_os = "linux") && windows_as_wsl),
-            FlowPlatform::Linux(_) => cfg!(target_os = "linux"),
-            FlowPlatform::MacOs => cfg!(target_os = "macos"),
-            platform => panic!("unknown platform {platform}"),
+        let flow_platform = FlowPlatform::host(PipelineBackendHint::Local);
+        let platform_ok = match (platform, flow_platform) {
+            (FlowPlatform::Windows, FlowPlatform::Windows) => true,
+            (FlowPlatform::Windows, FlowPlatform::Linux(_)) if windows_as_wsl => true,
+            (FlowPlatform::Linux(_), FlowPlatform::Linux(_)) => true,
+            (FlowPlatform::MacOs, FlowPlatform::MacOs) => true,
+            _ => false,
         };
 
         if !platform_ok {
@@ -160,7 +154,7 @@ fn direct_run_do_work(
         }
 
         let nodes = {
-            let mut resolved_local_nodes = Vec::new();
+            let mut resolved_local_steps = Vec::new();
 
             let (mut output_graph, _, err_unreachable_nodes) =
                 crate::flow_resolver::stage1_dag::stage1_dag(
@@ -193,23 +187,38 @@ fn direct_run_do_work(
             for idx in output_order.into_iter().rev() {
                 let OutputGraphEntry { node_handle, step } = output_graph[idx].1.take().unwrap();
 
-                let mut steps = Vec::new();
-                let (label, code, idx) = match step {
+                let (label, code, idx, can_merge) = match step {
                     Step::Anchor { .. } => continue,
-                    Step::Rust { label, code, idx } => (label, code, idx),
+                    Step::Rust {
+                        label,
+                        code,
+                        idx,
+                        can_merge,
+                    } => (label, code, idx, can_merge),
                     Step::AdoYaml { .. } => {
-                        anyhow::bail!("{} emitted ADO YAML. Fix the node by checking `ctx.backend()` appropriately", node_handle.modpath())
+                        anyhow::bail!(
+                            "{} emitted ADO YAML. Fix the node by checking `ctx.backend()` appropriately",
+                            node_handle.modpath()
+                        )
                     }
                     Step::GitHubYaml { .. } => {
-                        anyhow::bail!("{} emitted GitHub YAML. Fix the node by checking `ctx.backend()` appropriately", node_handle.modpath())
+                        anyhow::bail!(
+                            "{} emitted GitHub YAML. Fix the node by checking `ctx.backend()` appropriately",
+                            node_handle.modpath()
+                        )
                     }
                 };
-                steps.push((idx, label, code.lock().take().unwrap()));
 
-                resolved_local_nodes.push(ResolvedRunnableNode { node_handle, steps })
+                resolved_local_steps.push(ResolvedRunnableStep {
+                    node_handle,
+                    label,
+                    code: code.lock().take().unwrap(),
+                    idx,
+                    can_merge,
+                });
             }
 
-            resolved_local_nodes
+            resolved_local_steps
         };
 
         let mut in_mem_var_db = crate::var_db::in_memory::InMemoryVarDb::new();
@@ -329,25 +338,39 @@ fn direct_run_do_work(
             }
         }
 
-        for ResolvedRunnableNode { node_handle, steps } in nodes {
-            for (idx, label, code) in steps {
-                let node_working_dir = out_dir.join(".work").join(format!(
-                    "{}_{}",
-                    node_handle.modpath().replace("::", "__"),
-                    idx
-                ));
-                if !node_working_dir.exists() {
-                    fs_err::create_dir(&node_working_dir)?;
-                }
-                std::env::set_current_dir(node_working_dir)?;
+        for ResolvedRunnableStep {
+            node_handle,
+            label,
+            code,
+            idx,
+            can_merge,
+        } in nodes
+        {
+            let node_working_dir = out_dir.join(".work").join(format!(
+                "{}_{}",
+                node_handle.modpath().replace("::", "__"),
+                idx
+            ));
+            if !node_working_dir.exists() {
+                fs_err::create_dir(&node_working_dir)?;
+            }
+            std::env::set_current_dir(node_working_dir)?;
 
+            if can_merge {
+                log::debug!("minor step: {} ({})", label, node_handle.modpath(),);
+            } else {
                 log::info!(
                     // green color
                     "\x1B[0;32m=== {} ({}) ===\x1B[0m",
                     label,
                     node_handle.modpath(),
                 );
-                code(&mut runtime_services)?;
+            }
+            code(&mut runtime_services)?;
+            if can_merge {
+                log::debug!("done!");
+                log::debug!(""); // log a newline, for the pretty
+            } else {
                 log::info!("\x1B[0;32m=== done! ===\x1B[0m");
                 log::info!(""); // log a newline, for the pretty
             }

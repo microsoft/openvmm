@@ -1,26 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use diag_client::kmsg_stream::KmsgStream;
 use fs_err::File;
 use fs_err::PathExt;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::StreamExt;
+use futures::io::BufReader;
 use jiff::Timestamp;
+use kmsg::KmsgParsedEntry;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::level_filters::LevelFilter;
 use tracing::Level;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -115,6 +115,31 @@ impl PetriLogSource {
             .json_log
             .write_attachment(path.file_name().unwrap().as_ref());
         println!("[[ATTACHMENT|{}]]", path.display());
+    }
+
+    /// Traces and logs the result of a test run in the format expected by our tooling.
+    pub fn log_test_result(&self, name: &str, r: &anyhow::Result<()>) {
+        let result_path = match &r {
+            Ok(()) => {
+                tracing::info!("test passed");
+                "petri.passed"
+            }
+            Err(err) => {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "test failed"
+                );
+                "petri.failed"
+            }
+        };
+        // Write a file to the output directory to indicate whether the test
+        // passed, for easy scanning via tools.
+        fs_err::write(self.0.root_path.join(result_path), name).unwrap();
+    }
+
+    /// Returns the output directory for log files.
+    pub fn output_dir(&self) -> &Path {
+        &self.0.root_path
     }
 }
 
@@ -288,7 +313,7 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 
     fn make_writer(&'a self) -> Self::Writer {
         LogWriter {
-            inner: &self.0 .0,
+            inner: &self.0.0,
             level: Level::INFO,
             timestamp: None,
         }
@@ -296,7 +321,7 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 
     fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
         LogWriter {
-            inner: &self.0 .0,
+            inner: &self.0.0,
             level: *meta.level(),
             timestamp: None,
         }
@@ -304,43 +329,107 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 }
 
 /// Logs lines from `reader` into `log_file`.
-pub async fn log_stream(
+///
+/// Attempts to parse lines as `SyslogParsedEntry`, extracting the log level.
+/// Passes through any non-conforming logs.
+pub async fn log_task(
     log_file: PetriLogFile,
     reader: impl AsyncRead + Unpin + Send + 'static,
+    name: &str,
 ) -> anyhow::Result<()> {
+    tracing::info!("connected to {name}");
     let mut buf = Vec::new();
     let mut reader = BufReader::new(reader);
     loop {
         buf.clear();
-        let n = (&mut reader).take(256).read_until(b'\n', &mut buf).await?;
-        if n == 0 {
-            break;
+        match (&mut reader).take(256).read_until(b'\n', &mut buf).await {
+            Ok(0) => {
+                tracing::info!("disconnected from {name}: EOF");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::info!("disconnected from {name}: error: {e:#}");
+                return Err(e.into());
+            }
+            _ => {}
         }
 
         let string_buf = String::from_utf8_lossy(&buf);
         let string_buf_trimmed = string_buf.trim_end();
-        log_file.write_entry(string_buf_trimmed);
+
+        if let Some(message) = kmsg::SyslogParsedEntry::new(string_buf_trimmed) {
+            let level = kernel_level_to_tracing_level(message.level);
+            log_file.write_entry_fmt(None, level, format_args!("{}", message.display(false)));
+        } else {
+            log_file.write_entry(string_buf_trimmed);
+        }
     }
-    Ok(())
+}
+
+/// Maps kernel log levels to tracing levels.
+fn kernel_level_to_tracing_level(kernel_level: u8) -> Level {
+    match kernel_level {
+        0..=3 => Level::ERROR,
+        4 => Level::WARN,
+        5..=6 => Level::INFO,
+        7 => Level::DEBUG,
+        _ => Level::INFO,
+    }
 }
 
 /// read from the kmsg stream and write entries to the log
 pub async fn kmsg_log_task(
     log_file: PetriLogFile,
-    mut file_stream: KmsgStream,
+    diag_client: diag_client::DiagClient,
 ) -> anyhow::Result<()> {
-    while let Some(data) = file_stream.next().await {
-        match data {
-            Ok(data) => {
-                let message = kmsg::KmsgParsedEntry::new(&data)?;
-                log_file.write_entry(message.display(false));
-            }
-            Err(err) => {
-                tracing::info!("kmsg disconnected: {err:?}");
-                break;
+    loop {
+        diag_client.wait_for_server().await?;
+        let mut kmsg = diag_client.kmsg(true).await?;
+        tracing::info!("kmsg connected");
+        while let Some(data) = kmsg.next().await {
+            match data {
+                Ok(data) => {
+                    let message = KmsgParsedEntry::new(&data).unwrap();
+                    let level = kernel_level_to_tracing_level(message.level);
+                    log_file.write_entry_fmt(
+                        None,
+                        level,
+                        format_args!("{}", message.display(false)),
+                    );
+                }
+                Err(err) => {
+                    tracing::info!("kmsg disconnected: {err:#}");
+                    break;
+                }
             }
         }
     }
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kernel_level_to_tracing_level() {
+        // Test emergency to error levels (0-3)
+        assert_eq!(kernel_level_to_tracing_level(0), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(1), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(2), Level::ERROR);
+        assert_eq!(kernel_level_to_tracing_level(3), Level::ERROR);
+
+        // Test warning level (4)
+        assert_eq!(kernel_level_to_tracing_level(4), Level::WARN);
+
+        // Test notice and info levels (5-6)
+        assert_eq!(kernel_level_to_tracing_level(5), Level::INFO);
+        assert_eq!(kernel_level_to_tracing_level(6), Level::INFO);
+
+        // Test debug level (7)
+        assert_eq!(kernel_level_to_tracing_level(7), Level::DEBUG);
+
+        // Test unknown level (fallback)
+        assert_eq!(kernel_level_to_tracing_level(8), Level::INFO);
+        assert_eq!(kernel_level_to_tracing_level(255), Level::INFO);
+    }
 }

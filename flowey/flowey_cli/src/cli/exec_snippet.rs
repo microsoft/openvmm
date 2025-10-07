@@ -3,27 +3,23 @@
 
 use crate::cli::FlowBackendCli;
 use anyhow::Context;
+use flowey_core::node::FlowArch;
+use flowey_core::node::FlowBackend;
+use flowey_core::node::FlowPlatform;
+use flowey_core::node::GhOutput;
+use flowey_core::node::GhToRust;
+use flowey_core::node::NodeHandle;
+use flowey_core::node::RustToGh;
 use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::user_facing::ClaimedGhParam;
 use flowey_core::node::user_facing::GhPermission;
 use flowey_core::node::user_facing::GhPermissionValue;
-use flowey_core::node::FlowArch;
-use flowey_core::node::FlowBackend;
-use flowey_core::node::FlowPlatform;
-use flowey_core::node::GhVarState;
-use flowey_core::node::NodeHandle;
 use flowey_core::pipeline::HostExt;
 use flowey_core::pipeline::PipelineBackendHint;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::path::PathBuf;
-
-pub struct StepIdx<'a> {
-    pub node_modpath: &'a str,
-    pub snippet_idx: usize,
-}
 
 pub fn construct_exec_snippet_cli(
     flowey_bin: &str,
@@ -32,22 +28,6 @@ pub fn construct_exec_snippet_cli(
     job_idx: usize,
 ) -> String {
     format!(r#"{flowey_bin} e {job_idx} {node_modpath} {snippet_idx}"#)
-}
-
-pub fn construct_exec_snippet_cli_multi(
-    flowey_bin: &str,
-    job_idx: usize,
-    steps: Vec<StepIdx<'_>>,
-) -> String {
-    let mut s = format!("{flowey_bin} e {job_idx}");
-    for StepIdx {
-        node_modpath,
-        snippet_idx,
-    } in steps
-    {
-        write!(s, " \\\n    {node_modpath} {snippet_idx}").unwrap();
-    }
-    s
 }
 
 /// (internal) execute an inline code snippet from the given node.
@@ -80,7 +60,8 @@ impl ExecSnippet {
         let mut runtime_var_db = super::var_db::open_var_db(job_idx)?;
 
         let working_dir: PathBuf = {
-            let Some(working_dir) = runtime_var_db.try_get_var(VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR)
+            let Some((working_dir, _)) =
+                runtime_var_db.try_get_var(VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR)
             else {
                 anyhow::bail!("var db was not seeded with {VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR}");
             };
@@ -249,6 +230,7 @@ impl flowey_core::node::NodeCtxBackend for ExecSnippetCtx<'_, '_> {
     fn on_emit_rust_step(
         &mut self,
         label: &str,
+        _can_merge: bool,
         code: Box<
             dyn for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
         >,
@@ -311,10 +293,10 @@ impl flowey_core::node::NodeCtxBackend for ExecSnippetCtx<'_, '_> {
         _uses: &str,
         _with: BTreeMap<String, ClaimedGhParam>,
         _condvar: Option<String>,
-        _outputs: BTreeMap<String, Vec<GhVarState>>,
+        _outputs: BTreeMap<String, Vec<GhOutput>>,
         _permissions: BTreeMap<GhPermission, GhPermissionValue>,
-        _gh_to_rust: Vec<GhVarState>,
-        _rust_to_gh: Vec<GhVarState>,
+        _gh_to_rust: Vec<GhToRust>,
+        _rust_to_gh: Vec<RustToGh>,
     ) {
         self.idx_tracker += 1;
     }

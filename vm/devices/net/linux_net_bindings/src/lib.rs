@@ -4,6 +4,7 @@
 // C API bingings based on /usr/include/linux/if.h and
 // /usr/include/linux/if_tun.h.
 
+#![expect(missing_docs)]
 #![cfg(unix)]
 // UNSAFETY: bindgen generated code.
 #![expect(unsafe_code)]
@@ -15,9 +16,8 @@ use std::os::raw::c_int;
 // Generated using:
 //
 // bindgen --no-layout-tests --with-derive-default --wrap-unsafe-ops --no-doc-comments /usr/include/linux/if.h
-#[allow(non_camel_case_types)]
-#[allow(dead_code)]
-#[allow(non_upper_case_globals)]
+#[expect(non_camel_case_types)]
+#[expect(non_upper_case_globals)]
 #[expect(clippy::missing_safety_doc)]
 #[expect(clippy::undocumented_unsafe_blocks)]
 #[expect(clippy::ref_as_ptr)]
@@ -27,9 +27,7 @@ pub mod gen_if;
 // Generated using:
 //
 // bindgen --no-layout-tests --with-derive-default --wrap-unsafe-ops --no-doc-comments /usr/include/linux/if_tun.h
-#[allow(non_camel_case_types)]
-#[allow(dead_code)]
-#[allow(non_upper_case_globals)]
+#[expect(non_camel_case_types)]
 #[expect(clippy::missing_safety_doc)]
 #[expect(clippy::undocumented_unsafe_blocks)]
 #[expect(clippy::ref_as_ptr)]

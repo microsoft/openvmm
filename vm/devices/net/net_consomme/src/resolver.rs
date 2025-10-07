@@ -2,14 +2,14 @@
 // Licensed under the MIT License.
 
 use crate::ConsommeEndpoint;
-use consomme::ConsommeState;
+use consomme::ConsommeParams;
 use net_backend::resolve::ResolveEndpointParams;
 use net_backend::resolve::ResolvedEndpoint;
 use net_backend_resources::consomme::ConsommeHandle;
 use thiserror::Error;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::NetEndpointHandleKind;
-use vm_resource::ResolveResource;
 
 pub struct ConsommeResolver;
 
@@ -35,14 +35,14 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
         resource: ConsommeHandle,
         input: ResolveEndpointParams,
     ) -> Result<Self::Output, Self::Error> {
-        let mut state = ConsommeState::new().map_err(ResolveConsommeError::Consomme)?;
+        let mut state = ConsommeParams::new().map_err(ResolveConsommeError::Consomme)?;
         state.client_mac.0 = input.mac_address.to_bytes();
         if let Some(cidr) = &resource.cidr {
             state
                 .set_cidr(cidr)
                 .map_err(ResolveConsommeError::InvalidCidr)?;
         }
-        let endpoint = ConsommeEndpoint::new_with_state(state);
+        let endpoint = ConsommeEndpoint::new(state);
         Ok(endpoint.into())
     }
 }

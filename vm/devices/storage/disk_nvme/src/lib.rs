@@ -4,16 +4,18 @@
 //! Disk backend implementation that uses a user-mode NVMe driver based on VFIO.
 
 #![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
+#![expect(missing_docs)]
 
 use async_trait::async_trait;
-use disk_backend::pr;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::MediumErrorDetails;
+use disk_backend::pr;
 use inspect::Inspect;
 use nvme_common::from_nvme_reservation_report;
-use nvme_spec::nvm;
 use nvme_spec::Status;
+use nvme_spec::nvm;
 use pal::unix::affinity::get_cpu_number;
 use std::io;
 
@@ -318,26 +320,25 @@ fn map_nvme_error(err: nvme_driver::RequestError) -> DiskError {
 
                 // MediumError
                 Status::DATA_TRANSFER_ERROR | Status::CAPACITY_EXCEEDED => {
-                    DiskError::Io(io::Error::new(io::ErrorKind::Other, err))
+                    DiskError::Io(io::Error::other(err))
                 }
-                Status::MEDIA_WRITE_FAULT => DiskError::MediumError(
-                    io::Error::new(io::ErrorKind::Other, err),
-                    MediumErrorDetails::WriteFault,
-                ),
+                Status::MEDIA_WRITE_FAULT => {
+                    DiskError::MediumError(io::Error::other(err), MediumErrorDetails::WriteFault)
+                }
                 Status::MEDIA_UNRECOVERED_READ_ERROR => DiskError::MediumError(
-                    io::Error::new(io::ErrorKind::Other, err),
+                    io::Error::other(err),
                     MediumErrorDetails::UnrecoveredReadError,
                 ),
                 Status::MEDIA_END_TO_END_GUARD_CHECK_ERROR => DiskError::MediumError(
-                    io::Error::new(io::ErrorKind::Other, err),
+                    io::Error::other(err),
                     MediumErrorDetails::GuardCheckFailed,
                 ),
                 Status::MEDIA_END_TO_END_APPLICATION_TAG_CHECK_ERROR => DiskError::MediumError(
-                    io::Error::new(io::ErrorKind::Other, err),
+                    io::Error::other(err),
                     MediumErrorDetails::ApplicationTagCheckFailed,
                 ),
                 Status::MEDIA_END_TO_END_REFERENCE_TAG_CHECK_ERROR => DiskError::MediumError(
-                    io::Error::new(io::ErrorKind::Other, err),
+                    io::Error::other(err),
                     MediumErrorDetails::ReferenceTagCheckFailed,
                 ),
 
@@ -345,7 +346,7 @@ fn map_nvme_error(err: nvme_driver::RequestError) -> DiskError {
                     DiskError::AbortDueToPreemptAndAbort
                 }
 
-                _ => DiskError::Io(io::Error::new(io::ErrorKind::Other, err)),
+                _ => DiskError::Io(io::Error::other(err)),
             }
         }
         nvme_driver::RequestError::Memory(err) => DiskError::MemoryAccess(err.into()),

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
+#![expect(missing_docs)]
 
 use arbitrary::Unstructured;
 use chipset::cmos_rtc::Rtc;
@@ -18,7 +19,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
     let initial_cmos = u.arbitrary()?;
 
     // TODO: write a streamlined "fuzz driver" impl instead of using pal_async
-    pal_async::DefaultPool::run_with(|driver| async move {
+    pal_async::DefaultPool::run_with(async |driver| {
         let mut vm_time_keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
         let vm_time_source = vm_time_keeper.builder().build(&driver).await.unwrap();
 

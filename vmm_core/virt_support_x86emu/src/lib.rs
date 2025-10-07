@@ -3,6 +3,7 @@
 
 //! Support for emulating x86 instructions.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod emulate;

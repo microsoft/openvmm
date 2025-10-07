@@ -12,11 +12,11 @@ use net_backend::resolve::ResolveEndpointParams;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::PciDeviceHandleKind;
 
 /// Resource resolver for [`GdmaDeviceHandle`].
 pub struct GdmaDeviceResolver;
@@ -45,7 +45,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaDeviceHandle> for GdmaDeviceR
         resource: GdmaDeviceHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let vports = try_join_all(resource.vports.into_iter().map(|vport| async move {
+        let vports = try_join_all(resource.vports.into_iter().map(async |vport| {
             let endpoint = resolver
                 .resolve(
                     vport.endpoint,

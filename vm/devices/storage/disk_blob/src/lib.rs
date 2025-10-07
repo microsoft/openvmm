@@ -4,7 +4,6 @@
 //! A disk backend for "blobs", i.e. raw disk data that can be accessed through
 //! a simple interface such as HTTP.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod blob;

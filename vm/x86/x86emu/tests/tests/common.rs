@@ -2,13 +2,13 @@
 // Licensed under the MIT License.
 
 use futures::FutureExt;
-use iced_x86::code_asm::CodeAssembler;
 use iced_x86::IcedError;
+use iced_x86::code_asm::CodeAssembler;
 use std::fmt::Debug;
-use x86defs::cpuid::Vendor;
 use x86defs::RFlags;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
+use x86defs::cpuid::Vendor;
 use x86emu::Cpu;
 use x86emu::Emulator;
 use x86emu::Error;
@@ -409,9 +409,8 @@ impl<T: TestRegister> Cpu for SingleCellCpu<T> {
         self.xmm[reg]
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, reg: usize, value: u128) {
         self.xmm[reg] = value;
-        Ok(())
     }
 }
 
@@ -539,7 +538,7 @@ impl Cpu for MultipleCellCpu {
         self.state.rflags = v
     }
 
-    fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, _reg: usize, _value: u128) {
         todo!()
     }
 

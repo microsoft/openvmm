@@ -7,8 +7,8 @@
 //! is a start providing assurance that HvLite virtualization model is appropriate for
 //! KVM/aarch64.
 
-#![allow(dead_code)]
-#![cfg(all(target_os = "linux", guest_is_native, guest_arch = "aarch64"))]
+#![expect(dead_code)]
+#![cfg(all(target_os = "linux", guest_arch = "aarch64"))]
 
 use crate::KvmError;
 use crate::KvmPartition;
@@ -20,9 +20,6 @@ use core::panic;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
-use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3;
-use kvm::kvm_regs;
-use kvm::user_pt_regs;
 use kvm::KVM_CAP_ARM_VM_IPA_SIZE;
 use kvm::KVM_DEV_ARM_VGIC_CTRL_INIT;
 use kvm::KVM_DEV_ARM_VGIC_GRP_ADDR;
@@ -30,21 +27,25 @@ use kvm::KVM_DEV_ARM_VGIC_GRP_CTRL;
 use kvm::KVM_DEV_ARM_VGIC_GRP_NR_IRQS;
 use kvm::KVM_VGIC_V3_ADDR_TYPE_DIST;
 use kvm::KVM_VGIC_V3_ADDR_TYPE_REDIST;
+use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3;
+use kvm::kvm_regs;
+use kvm::user_pt_regs;
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use virt::io::CpuIo;
-use virt::vp::Registers;
-use virt::vp::SystemRegisters;
-use virt::x86::DebugState;
 use virt::NeedsYield;
 use virt::PartitionCapabilities;
 use virt::ProtoPartitionConfig;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
+use virt::vp::Registers;
+use virt::vp::SystemRegisters;
+use virt::x86::DebugState;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 
 // linux/arch/arm64/include/asm/sysreg.h
@@ -376,8 +377,6 @@ impl virt::vm::AccessVmState for &KvmPartition {
 }
 
 impl virt::Processor for KvmProcessor<'_> {
-    type Error = KvmError;
-    type RunVpError = KvmRunVpError;
     type StateAccess<'a>
         = &'a mut Self
     where
@@ -387,7 +386,7 @@ impl virt::Processor for KvmProcessor<'_> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
         unimplemented!()
     }
 
@@ -395,7 +394,7 @@ impl virt::Processor for KvmProcessor<'_> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<Self::RunVpError>> {
+    ) -> Result<Infallible, VpHaltReason> {
         loop {
             self.inner.needs_yield.maybe_yield().await;
             stop.check()?;
@@ -407,7 +406,7 @@ impl virt::Processor for KvmProcessor<'_> {
             // the register state is up-to-date for save.
             let mut pending_exit = false;
             loop {
-                let exit = if self.inner.eval.load(Ordering::Relaxed) {
+                let exit = if self.inner.eval.load(Ordering::Relaxed) || stop.check().is_err() {
                     // Break out of the loop as soon as there is no pending exit.
                     if !pending_exit {
                         self.inner.eval.store(false, Ordering::Relaxed);
@@ -420,7 +419,7 @@ impl virt::Processor for KvmProcessor<'_> {
                     self.runner.run()
                 };
 
-                let exit = exit.map_err(|err| VpHaltReason::Hypervisor(KvmRunVpError::Run(err)))?;
+                let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;
                 match exit {
                     kvm::Exit::Interrupted => {
@@ -439,15 +438,13 @@ impl virt::Processor for KvmProcessor<'_> {
                         dev.handle_eoi(irq.into());
                     }
                     kvm::Exit::InternalError { error, .. } => {
-                        return Err(VpHaltReason::Hypervisor(KvmRunVpError::InternalError(
-                            error,
-                        )));
+                        return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
                     }
                     kvm::Exit::FailEntry {
                         hardware_entry_failure_reason,
                     } => {
                         tracing::error!(hardware_entry_failure_reason, "VP entry failed");
-                        return Err(VpHaltReason::InvalidVmState(KvmRunVpError::InvalidVpState));
+                        return Err(dev.fatal_error(KvmRunVpError::InvalidVpState.into()));
                     }
                     _ => panic!("unhandled exit: {:?}", exit),
                 }
@@ -455,9 +452,7 @@ impl virt::Processor for KvmProcessor<'_> {
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
-        Ok(())
-    }
+    fn flush_async_requests(&mut self) {}
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         debug_assert_eq!(vtl, Vtl::Vtl0);
@@ -506,7 +501,9 @@ impl KvmProtoPartition<'_> {
         const GIC_ALIGNMENT: u64 = 0x10000;
         let gic_dist_base: u64 = self.config.processor_topology.gic_distributor_base();
         let gic_redist_base: u64 = self.config.processor_topology.gic_redistributors_base();
-        if gic_dist_base % GIC_ALIGNMENT != 0 || gic_redist_base % GIC_ALIGNMENT != 0 {
+        if !gic_dist_base.is_multiple_of(GIC_ALIGNMENT)
+            || !gic_redist_base.is_multiple_of(GIC_ALIGNMENT)
+        {
             return Err(KvmError::Misaligned);
         }
 
@@ -693,6 +690,11 @@ impl virt::Hv1 for KvmPartition {
     type Error = KvmError;
     type Device = virt::UnimplementedDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        // TODO once Hyper-V enlightenments are implemented.
+        None
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
@@ -747,7 +749,13 @@ impl virt::Synic for KvmPartition {
         unimplemented!()
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn vmcore::synic::GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        _vp: u32,
+        _sint: u8,
+        _flag: u16,
+    ) -> Box<dyn vmcore::synic::GuestEventPort> {
         unimplemented!()
     }
 

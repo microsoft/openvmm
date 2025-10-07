@@ -9,9 +9,9 @@
 use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
 use crate::memory::PAGE_SIZE64;
-use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::sync::atomic::AtomicU8;

@@ -3,8 +3,6 @@
 
 //! An asynchronous IO platform.
 
-#![warn(missing_docs)]
-
 #[cfg(test)]
 extern crate self as pal_async;
 
@@ -17,7 +15,6 @@ pub mod socket;
 pub mod timer;
 pub mod wait;
 
-mod any;
 pub mod driver;
 #[cfg(any(test, feature = "tests"))]
 pub mod executor_tests;

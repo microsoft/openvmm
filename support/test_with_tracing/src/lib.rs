@@ -3,6 +3,8 @@
 
 //! Crate for defining tests that have tracing output.
 
+#![forbid(unsafe_code)]
+
 #[cfg(test)]
 extern crate self as test_with_tracing;
 

@@ -4,6 +4,8 @@
 //! Guest-to-host notification infrastructure, abstracting over [platform
 //! events](pal_event::Event), and [task events](SlimEvent).
 
+#![forbid(unsafe_code)]
+
 use crate::interrupt::Interrupt;
 use crate::local_only::LocalOnly;
 use crate::slim_event::SlimEvent;
@@ -12,8 +14,8 @@ use pal_async::driver::Driver;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;

@@ -4,6 +4,7 @@
 //! This module implements the the Underhill initial process.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 // UNSAFETY: Calling libc functions to set up global system state.
 #![expect(unsafe_code)]
 
@@ -15,10 +16,10 @@ mod syslog;
 pub use options::Options;
 
 use anyhow::Context;
-use libc::c_void;
 use libc::STDERR_FILENO;
 use libc::STDIN_FILENO;
 use libc::STDOUT_FILENO;
+use libc::c_void;
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::ffi::OsStr;
@@ -575,11 +576,14 @@ fn do_main() -> anyhow::Result<()> {
     }
 
     // Start loading modules in parallel.
-    std::thread::spawn(|| {
+    let thread = std::thread::spawn(|| {
         if let Err(err) = load_modules("/lib/modules") {
             panic!("failed to load modules: {:#}", err);
         }
     });
+    if std::env::var("OPENHCL_WAIT_FOR_MODULES").as_deref() == Ok("1") {
+        thread.join().unwrap();
+    }
 
     run(&options, new_env)
 }

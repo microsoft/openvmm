@@ -3,12 +3,14 @@
 
 //! aarch64 intrinsics.
 
+#![cfg_attr(minimal_rt, expect(clippy::missing_safety_doc))]
+
 /// Hand rolled implementation of memcpy.
 #[cfg(minimal_rt)]
 // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
 // there is no libc for this to conflict with.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn memcpy(mut dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
     // SAFETY: the caller guarantees the pointers and length are correct.
     unsafe {
         core::arch::asm!(r#"
@@ -23,7 +25,7 @@ unsafe extern "C" fn memcpy(mut dest: *mut u8, src: *const u8, len: usize) -> *m
 2:
         add     x0, x0, x2
     "#,
-        inout("x0") dest,
+        inout("x0") dest => _,
         in("x1") src,
         in("x2") len,
         );
@@ -36,7 +38,7 @@ unsafe extern "C" fn memcpy(mut dest: *mut u8, src: *const u8, len: usize) -> *m
 // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
 // there is no libc for this to conflict with.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn memset(mut ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
+unsafe extern "C" fn memset(ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
     // SAFETY: the caller guarantees the pointer and length are correct.
     unsafe {
         core::arch::asm!(r#"
@@ -50,7 +52,7 @@ unsafe extern "C" fn memset(mut ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
         add     x0, x0, x2
 2:
         "#,
-        inout("x0") ptr,
+        inout("x0") ptr => _,
         in("x1") val,
         in("x2") len);
     }
@@ -72,7 +74,7 @@ unsafe extern "C" fn __stack_chk_fail() {
 }
 
 /// Causes a processor fault.
-#[inline]
+#[inline(always)]
 pub fn fault() -> ! {
     // SAFETY: faults the processor, so the program ends.
     unsafe {
@@ -82,7 +84,7 @@ pub fn fault() -> ! {
 }
 
 /// Spins forever, preserving some context in the registers.
-#[inline]
+#[inline(always)]
 pub fn dead_loop(code0: u64, code1: u64, code2: u64) -> ! {
     // SAFETY: no safety requirements.
     unsafe {

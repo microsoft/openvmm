@@ -1,20 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::ak_cert::TpmAkCertType;
 use crate::Tpm;
 use crate::TpmError;
+use crate::ak_cert::TpmAkCertType;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 
 pub struct TpmDeviceResolver;
 
@@ -33,6 +33,8 @@ pub enum ResolveTpmError {
     ResolveGetAttestationReport(#[source] ResolveError),
     #[error("error resolving request ak cert")]
     ResolveRequestAkCert(#[source] ResolveError),
+    #[error("error resolving request TPM logger")]
+    ResolveTpmLogger(#[source] ResolveError),
     #[error("error creating tpm")]
     Tpm(#[source] TpmError),
     #[error(
@@ -70,6 +72,13 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
                     .map_err(ResolveTpmError::ResolveRequestAkCert)?
                     .0,
             ),
+            TpmAkCertTypeResource::SwAttested(request_ak_cert) => TpmAkCertType::SwAttested(
+                resolver
+                    .resolve(request_ak_cert, &())
+                    .await
+                    .map_err(ResolveTpmError::ResolveRequestAkCert)?
+                    .0,
+            ),
             TpmAkCertTypeResource::Trusted(request_ak_cert) => TpmAkCertType::Trusted(
                 resolver
                     .resolve(request_ak_cert, &())
@@ -77,6 +86,9 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
                     .map_err(ResolveTpmError::ResolveRequestAkCert)?
                     .0,
             ),
+            TpmAkCertTypeResource::TrustedPreProvisionedOnly => {
+                TpmAkCertType::TrustedPreProvisionedOnly
+            }
             TpmAkCertTypeResource::None => TpmAkCertType::None,
         };
 
@@ -92,6 +104,18 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             }
         });
 
+        let logger = if let Some(r) = resource.logger {
+            Some(
+                resolver
+                    .resolve(r, &())
+                    .await
+                    .map_err(ResolveTpmError::ResolveTpmLogger)?
+                    .0,
+            )
+        } else {
+            None
+        };
+
         let tpm = Tpm::new(
             resource.register_layout,
             input.encrypted_guest_memory.clone(),
@@ -102,6 +126,8 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             input.is_restoring,
             ak_cert_type,
             resource.guest_secret_key,
+            logger,
+            resource.is_confidential_vm,
         )
         .await
         .map_err(ResolveTpmError::Tpm)?;

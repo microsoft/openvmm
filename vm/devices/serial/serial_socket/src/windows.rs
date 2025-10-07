@@ -13,20 +13,20 @@ use pal::windows::pipe::PipeExt;
 use pal_async::driver::Driver;
 use pal_async::pipe::PolledPipe;
 use pal_async::windows::pipe::ListeningPipe;
+use serial_core::SerialIo;
 use serial_core::resources::ResolveSerialBackendParams;
 use serial_core::resources::ResolvedSerialBackend;
-use serial_core::SerialIo;
 use std::fs::File;
 use std::io;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
-use vm_resource::declare_static_resolver;
-use vm_resource::kind::SerialBackendHandle;
+use std::task::ready;
 use vm_resource::ResolveResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::declare_static_resolver;
+use vm_resource::kind::SerialBackendHandle;
 
 #[derive(Debug, MeshPayload)]
 pub struct OpenWindowsPipeSerialConfig {
@@ -54,14 +54,11 @@ enum PipeState {
 
 impl Inspect for PipeState {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(
-            match self {
-                PipeState::Done => "done",
-                PipeState::Listening(_) => "listening",
-                PipeState::Connected(_) => "connected",
-            }
-            .into(),
-        )
+        req.value(match self {
+            PipeState::Done => "done",
+            PipeState::Listening(_) => "listening",
+            PipeState::Connected(_) => "connected",
+        })
     }
 }
 

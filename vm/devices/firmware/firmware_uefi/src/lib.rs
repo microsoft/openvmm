@@ -47,6 +47,7 @@
 //! VMM specific infrastructure (via some kind of compile-time feature flag
 //! infrastructure).
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod platform;
@@ -55,25 +56,27 @@ pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use firmware_uefi_custom_vars::CustomVars;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
-use pal_async::local::block_with_io;
+use pal_async::local::block_on;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
+use service::diagnostics::DEFAULT_LOGS_PER_PERIOD;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
 use std::task::Context;
+use std::task::Poll;
 use thiserror::Error;
-use uefi_nvram_storage::InspectableNvramStorage;
+use uefi_nvram_storage::VmmNvramStorage;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::vmtime::VmTimeSource;
 use watchdog_core::platform::WatchdogPlatform;
@@ -103,6 +106,7 @@ struct UefiDeviceServices {
     generation_id: service::generation_id::GenerationIdServices,
     #[inspect(mut)]
     time: service::time::TimeServices,
+    diagnostics: service::diagnostics::DiagnosticsServices,
 }
 
 // Begin and end range are inclusive.
@@ -127,10 +131,11 @@ pub struct UefiConfig {
 /// Various runtime objects used by the UEFI device + underlying services.
 pub struct UefiRuntimeDeps<'a> {
     pub gm: GuestMemory,
-    pub nvram_storage: Box<dyn InspectableNvramStorage>,
+    pub nvram_storage: Box<dyn VmmNvramStorage>,
     pub logger: Box<dyn UefiLogger>,
     pub vmtime: &'a VmTimeSource,
     pub watchdog_platform: Box<dyn WatchdogPlatform>,
+    pub watchdog_recv: mesh::Receiver<()>,
     pub generation_id_deps: generation_id::GenerationIdRuntimeDeps,
     pub vsm_config: Option<Box<dyn VsmConfig>>,
     pub time_source: Box<dyn InspectableLocalClock>,
@@ -138,6 +143,7 @@ pub struct UefiRuntimeDeps<'a> {
 
 /// The Hyper-V UEFI services chipset device.
 #[derive(InspectMut)]
+#[inspect(extra = "UefiDevice::inspect_extra")]
 pub struct UefiDevice {
     // Fixed configuration
     use_mmio: bool,
@@ -153,6 +159,10 @@ pub struct UefiDevice {
     // Volatile state
     #[inspect(hex)]
     address: u32,
+
+    // Receiver for watchdog timeout events
+    #[inspect(skip)]
+    watchdog_recv: mesh::Receiver<()>,
 }
 
 impl UefiDevice {
@@ -167,16 +177,19 @@ impl UefiDevice {
             logger,
             vmtime,
             watchdog_platform,
+            watchdog_recv,
             generation_id_deps,
             vsm_config,
             time_source,
         } = runtime_deps;
 
+        // Create the UEFI device with the rest of the services.
         let uefi = UefiDevice {
             use_mmio: cfg.use_mmio,
             command_set: cfg.command_set,
             address: 0,
             gm,
+            watchdog_recv,
             service: UefiDeviceServices {
                 nvram: service::nvram::NvramServices::new(
                     nvram_storage,
@@ -198,8 +211,10 @@ impl UefiDevice {
                     generation_id_deps,
                 ),
                 time: service::time::TimeServices::new(time_source),
+                diagnostics: service::diagnostics::DiagnosticsServices::new(),
             },
         };
+
         Ok(uefi)
     }
 
@@ -221,7 +236,7 @@ impl UefiDevice {
 
     fn write_data(&mut self, addr: u32, data: u32) {
         match UefiCommand(addr) {
-            UefiCommand::NVRAM => block_with_io(|_| self.nvram_handle_command(data.into())),
+            UefiCommand::NVRAM => block_on(self.nvram_handle_command(data.into())),
             UefiCommand::EVENT_LOG_FLUSH => self.event_log_flush(data),
             UefiCommand::WATCHDOG_RESOLUTION
             | UefiCommand::WATCHDOG_CONFIG
@@ -251,8 +266,34 @@ impl UefiDevice {
                     );
                 }
             }
+            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
+                tracelimit::info_ratelimited!(?addr, data, "set gpa for diagnostics");
+                self.service.diagnostics.set_gpa(data)
+            }
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
+                self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD))
+            }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
+    }
+
+    /// Extra inspection fields for the UEFI device.
+    fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
+        resp.field_mut_with("process_diagnostics", |v| {
+            // NOTE: Today, the inspect source code will fail if we invoke like below
+            // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
+            // mutable paths in the inspect graph.
+            if v.is_some() {
+                self.process_diagnostics(true, None);
+                Result::<_, std::convert::Infallible>::Ok(
+                    "attempted to process diagnostics through inspect".to_string(),
+                )
+            } else {
+                Result::<_, std::convert::Infallible>::Ok(
+                    "Use: inspect -u 1 vm/uefi/process_diagnostics".to_string(),
+                )
+            }
+        });
     }
 }
 
@@ -268,6 +309,7 @@ impl ChangeDeviceState for UefiDevice {
         self.service.event_log.reset();
         self.service.uefi_watchdog.watchdog.reset();
         self.service.generation_id.reset();
+        self.service.diagnostics.reset();
     }
 }
 
@@ -287,8 +329,17 @@ impl ChipsetDevice for UefiDevice {
 
 impl PollDevice for UefiDevice {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
+        // Poll services
         self.service.uefi_watchdog.watchdog.poll(cx);
         self.service.generation_id.poll(cx);
+
+        // Poll watchdog timeout events
+        if let Poll::Ready(Ok(())) = self.watchdog_recv.poll_recv(cx) {
+            // NOTE: Do not allow reprocessing diagnostics here.
+            // UEFI programs the watchdog's configuration, so we should assume that
+            // this path could trigger multiple times.
+            self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD));
+        }
     }
 }
 
@@ -399,6 +450,10 @@ open_enum::open_enum! {
         WATCHDOG_RESOLUTION          = 0x28,
         WATCHDOG_COUNT               = 0x29,
 
+        // EFI Diagnostics
+        SET_EFI_DIAGNOSTICS_GPA      = 0x2B,
+        PROCESS_EFI_DIAGNOSTICS      = 0x2C,
+
         // Event Logging (Windows 8.1 MQ/M0)
         EVENT_LOG_FLUSH              = 0x30,
 
@@ -431,6 +486,7 @@ mod save_restore {
     use vmcore::save_restore::SaveRestore;
 
     mod state {
+        use crate::service::diagnostics::DiagnosticsServices;
         use crate::service::event_log::EventLogServices;
         use crate::service::generation_id::GenerationIdServices;
         use crate::service::nvram::NvramServices;
@@ -456,6 +512,8 @@ mod save_restore {
             pub generation_id: <GenerationIdServices as SaveRestore>::SavedState,
             #[mesh(6)]
             pub time: <TimeServices as SaveRestore>::SavedState,
+            #[mesh(7)]
+            pub diagnostics: <DiagnosticsServices as SaveRestore>::SavedState,
         }
     }
 
@@ -467,6 +525,7 @@ mod save_restore {
                 use_mmio: _,
                 command_set: _,
                 gm: _,
+                watchdog_recv: _,
                 service:
                     UefiDeviceServices {
                         nvram,
@@ -474,6 +533,7 @@ mod save_restore {
                         uefi_watchdog,
                         generation_id,
                         time,
+                        diagnostics,
                     },
                 address,
             } = self;
@@ -486,6 +546,7 @@ mod save_restore {
                 watchdog: uefi_watchdog.save()?,
                 generation_id: generation_id.save()?,
                 time: time.save()?,
+                diagnostics: diagnostics.save()?,
             })
         }
 
@@ -498,6 +559,7 @@ mod save_restore {
                 watchdog,
                 generation_id,
                 time,
+                diagnostics,
             } = state;
 
             self.address = address;
@@ -507,6 +569,7 @@ mod save_restore {
             self.service.uefi_watchdog.restore(watchdog)?;
             self.service.generation_id.restore(generation_id)?;
             self.service.time.restore(time)?;
+            self.service.diagnostics.restore(diagnostics)?;
 
             Ok(())
         }

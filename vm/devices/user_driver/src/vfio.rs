@@ -6,11 +6,11 @@
 #![cfg(target_os = "linux")]
 #![cfg(feature = "vfio")]
 
-use crate::interrupt::DeviceInterrupt;
-use crate::interrupt::DeviceInterruptSource;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
+use crate::interrupt::DeviceInterrupt;
+use crate::interrupt::DeviceInterruptSource;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -23,9 +23,9 @@ use pal_event::Event;
 use std::os::fd::AsFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::Arc;
 use std::time::Duration;
 use uevent::UeventListener;
 use vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX;
@@ -95,8 +95,8 @@ impl VfioDevice {
         let instance_path = Path::new("/sys").join(vmbus_device.strip_prefix("../../..")?);
         let vfio_arrived_path = instance_path.join("vfio-dev");
         let uevent_listener = UeventListener::new(&driver_source.simple())?;
-        let wait_for_vfio_device = uevent_listener
-            .wait_for_matching_child(&vfio_arrived_path, move |_, _| async move { Some(()) });
+        let wait_for_vfio_device =
+            uevent_listener.wait_for_matching_child(&vfio_arrived_path, async |_, _| Some(()));
         let mut ctx = mesh::CancelContext::new().with_timeout(Duration::from_secs(1));
         // Ignore any errors and always attempt to open.
         let _ = ctx.until_cancelled(wait_for_vfio_device).await;
@@ -307,6 +307,22 @@ impl DeviceBacking for VfioDevice {
 
         Ok(interrupt.insert(new_interrupt).interrupt.clone())
     }
+
+    fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
+        if self.interrupts.is_empty() {
+            return Ok(());
+        }
+
+        let count = self.interrupts.len() as u32;
+        self.device
+            .unmap_msix(0, count)
+            .context("failed to unmap all msix vectors")?;
+
+        // Clear local bookkeeping so re-mapping works correctly later.
+        self.interrupts.clear();
+
+        Ok(())
+    }
 }
 
 struct InterruptTask {
@@ -402,7 +418,9 @@ impl DeviceRegisterIo for vfio_sys::MappedRegion {
 
 impl MappedRegionWithFallback {
     fn mapping<T>(&self, offset: usize) -> *mut T {
-        assert!(offset <= self.mapping.len() - size_of::<T>() && offset % align_of::<T>() == 0);
+        assert!(
+            offset <= self.mapping.len() - size_of::<T>() && offset.is_multiple_of(align_of::<T>())
+        );
         if cfg!(feature = "mmio_simulate_fallback") {
             return std::ptr::NonNull::dangling().as_ptr();
         }

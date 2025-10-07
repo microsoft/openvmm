@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
@@ -157,7 +157,7 @@ impl VirtioDevice for VirtioFsDevice {
         let mut workers = self.workers.drain(..).collect::<Vec<_>>();
         self.driver
             .spawn("shutdown-virtiofs-queues".to_owned(), async move {
-                futures::future::join_all(workers.iter_mut().map(|worker| async {
+                futures::future::join_all(workers.iter_mut().map(async |worker| {
                     worker.stop().await;
                 }))
                 .await;

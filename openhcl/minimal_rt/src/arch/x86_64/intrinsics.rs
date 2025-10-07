@@ -3,12 +3,14 @@
 
 //! x86_64 intrinsics.
 
+#![cfg_attr(minimal_rt, expect(clippy::missing_safety_doc))]
+
 /// Hand rolled implementation of memset.
 #[cfg(minimal_rt)]
 // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
 // there is no libc for this to conflict with.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn memset(mut ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
+unsafe extern "C" fn memset(ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
     // SAFETY: The caller guarantees that the pointer and length are correct.
     unsafe {
         core::arch::asm!(r#"
@@ -17,7 +19,7 @@ unsafe extern "C" fn memset(mut ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
             "#,
             in("rax") val,
             in("rcx") len,
-            inout("rdi") ptr);
+            inout("rdi") ptr => _);
     }
     ptr
 }
@@ -27,7 +29,7 @@ unsafe extern "C" fn memset(mut ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
 // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
 // there is no libc for this to conflict with.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn memcpy(mut dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
     // SAFETY: The caller guarantees that the pointers and length are correct.
     unsafe {
         core::arch::asm!(r#"
@@ -36,7 +38,7 @@ unsafe extern "C" fn memcpy(mut dest: *mut u8, src: *const u8, len: usize) -> *m
             "#,
             in("rsi") src,
             in("rcx") len,
-            inout("rdi") dest);
+            inout("rdi") dest => _);
     }
     dest
 }

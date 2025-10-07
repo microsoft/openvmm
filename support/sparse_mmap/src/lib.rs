@@ -5,7 +5,8 @@
 
 // UNSAFETY: Manual pointer manipulation, dealing with mmap, and a signal handler.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(missing_docs)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod alloc;
 mod trycopy_windows_arm64;
@@ -13,12 +14,12 @@ mod trycopy_windows_x64;
 pub mod unix;
 pub mod windows;
 
-pub use sys::alloc_shared_memory;
-pub use sys::new_mappable_from_file;
 pub use sys::AsMappableRef;
 pub use sys::Mappable;
 pub use sys::MappableRef;
 pub use sys::SparseMapping;
+pub use sys::alloc_shared_memory;
+pub use sys::new_mappable_from_file;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicU8;
@@ -118,10 +119,10 @@ enum OsAccessError {
     #[error("access violation")]
     AccessViolation,
     #[cfg(unix)]
-    #[error("SIGSEGV (si_code = {0:x}")]
+    #[error("SIGSEGV (si_code = {0:x})")]
     Sigsegv(u32),
     #[cfg(unix)]
-    #[error("SIGSEGV (si_code = {0:x}")]
+    #[error("SIGBUS (si_code = {0:x})")]
     Sigbus(u32),
 }
 
@@ -192,12 +193,13 @@ impl MemoryError {
 /// PAGE_NOACCESS/PROT_NONE, and some are mapped with PAGE_READWRITE/PROT_WRITE.
 pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(), MemoryError> {
     let mut failure = MaybeUninit::uninit();
+    let len = count * size_of::<T>();
     // SAFETY: guaranteed by caller.
     let ret = unsafe {
         try_memmove(
             dest.cast::<u8>(),
             src.cast::<u8>(),
-            count * size_of::<T>(),
+            len,
             failure.as_mut_ptr(),
         )
     };
@@ -206,7 +208,7 @@ pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(
         _ => Err(MemoryError::new(
             Some(src.cast()),
             dest.cast(),
-            count,
+            len,
             // SAFETY: failure is initialized in the failure path.
             unsafe { failure.assume_init_ref() },
         )),
@@ -231,21 +233,15 @@ pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(
 /// some are mapped with PAGE_READWRITE/PROT_WRITE.
 pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<(), MemoryError> {
     let mut failure = MaybeUninit::uninit();
+    let len = count * size_of::<T>();
     // SAFETY: guaranteed by caller.
-    let ret = unsafe {
-        try_memset(
-            dest.cast::<u8>(),
-            val.into(),
-            count * size_of::<T>(),
-            failure.as_mut_ptr(),
-        )
-    };
+    let ret = unsafe { try_memset(dest.cast::<u8>(), val.into(), len, failure.as_mut_ptr()) };
     match ret {
         0 => Ok(()),
         _ => Err(MemoryError::new(
             None,
             dest.cast(),
-            count,
+            len,
             // SAFETY: failure is initialized in the failure path.
             unsafe { failure.assume_init_ref() },
         )),
@@ -259,7 +255,8 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
 /// swap failed, or `Err(MemoryError::AccessViolation)` if the swap could not be
 /// attempted due to an access violation.
 ///
-/// Panics if the size is not 1, 2, 4, or 8 bytes.
+/// Fails at compile time if the size is not 1, 2, 4, or 8 bytes, or if the type
+/// is under-aligned.
 ///
 /// # Safety
 ///
@@ -276,6 +273,10 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
     mut current: T,
     new: T,
 ) -> Result<Result<T, T>, MemoryError> {
+    const {
+        assert!(matches!(size_of::<T>(), 1 | 2 | 4 | 8));
+        assert!(align_of::<T>() >= size_of::<T>());
+    };
     let mut failure = MaybeUninit::uninit();
     // SAFETY: guaranteed by caller
     let ret = unsafe {
@@ -304,7 +305,7 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
                 std::mem::transmute_copy::<T, u64>(&new),
                 failure.as_mut_ptr(),
             ),
-            _ => panic!("unsupported size"),
+            _ => unreachable!(),
         }
     };
     match ret {
@@ -320,82 +321,13 @@ pub unsafe fn try_compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownL
     }
 }
 
-/// Atomically swaps the value at `dest` with `new` when `*dest` is `current`,
-/// using a sequentially-consistent memory ordering.
+/// Reads the value at `src` using one or more read instructions.
 ///
-/// Returns `Ok(true)` if the swap was successful, `Ok(false)` if the swap
-/// failed (after updating `current`), or `Err(MemoryError::AccessViolation)` if
-/// the swap could not be attempted due to an access violation.
-///
-/// Panics if `current` and `new` are not the same size or that size is not
-/// 1, 2, 4, or 8 bytes.
-///
-/// # Safety
-///
-/// This routine is safe to use if the memory pointed to by `dest` is being
-/// concurrently mutated.
-///
-/// WARNING: This routine should only be used when you know that `dest` is
-/// valid, reserved addresses but you do not know if they are mapped with the
-/// appropriate protection. For example, this routine is useful if `dest` is a
-/// sparse mapping where some pages are mapped with PAGE_NOACCESS/PROT_NONE, and
-/// some are mapped with PAGE_READWRITE/PROT_WRITE.
-pub unsafe fn try_compare_exchange_ref<
-    T: IntoBytes + FromBytes + Immutable + KnownLayout + ?Sized,
->(
-    dest: *mut u8,
-    current: &mut T,
-    new: &T,
-) -> Result<bool, MemoryError> {
-    let mut failure = MaybeUninit::uninit();
-    // SAFETY: guaranteed by caller
-    let ret = unsafe {
-        match (size_of_val(current), size_of_val(new)) {
-            (1, 1) => try_cmpxchg8(
-                dest,
-                &mut *current.as_mut_bytes().as_mut_ptr(),
-                new.as_bytes()[0],
-                failure.as_mut_ptr(),
-            ),
-            (2, 2) => try_cmpxchg16(
-                dest.cast(),
-                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
-                u16::from_ne_bytes(new.as_bytes().try_into().unwrap()),
-                failure.as_mut_ptr(),
-            ),
-            (4, 4) => try_cmpxchg32(
-                dest.cast(),
-                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
-                u32::from_ne_bytes(new.as_bytes().try_into().unwrap()),
-                failure.as_mut_ptr(),
-            ),
-            (8, 8) => try_cmpxchg64(
-                dest.cast(),
-                &mut *current.as_mut_bytes().as_mut_ptr().cast(),
-                u64::from_ne_bytes(new.as_bytes().try_into().unwrap()),
-                failure.as_mut_ptr(),
-            ),
-            _ => panic!("unsupported or mismatched size"),
-        }
-    };
-    if ret < 0 {
-        return Err(MemoryError::new(
-            None,
-            dest.cast(),
-            size_of_val(current),
-            // SAFETY: failure is initialized in the failure path.
-            unsafe { failure.assume_init_ref() },
-        ));
-    }
-    Ok(ret > 0)
-}
-
-/// Reads the value at `src` treating the pointer as a volatile access.
+/// If `T` is 1, 2, 4, or 8 bytes in size, then exactly one read instruction is
+/// used.
 ///
 /// Returns `Ok(T)` if the read was successful, or `Err(MemoryError)` if the
 /// read was unsuccessful.
-///
-/// Panics if the size is not 1, 2, 4, or 8 bytes.
 ///
 /// # Safety
 ///
@@ -419,7 +351,12 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
             2 => try_read16(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
             4 => try_read32(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
             8 => try_read64(dest.as_mut_ptr().cast(), src.cast(), failure.as_mut_ptr()),
-            _ => panic!("unsupported size"),
+            _ => try_memmove(
+                dest.as_mut_ptr().cast(),
+                src.cast::<u8>(),
+                size_of::<T>(),
+                failure.as_mut_ptr(),
+            ),
         }
     };
     match ret {
@@ -437,12 +374,13 @@ pub unsafe fn try_read_volatile<T: FromBytes + Immutable + KnownLayout>(
     }
 }
 
-/// Writes `value` at `dest` treating the pointer as a volatile access.
+/// Writes `value` at `dest` using one or more write instructions.
+///
+/// If `T` is 1, 2, 4, or 8 bytes in size, then exactly one write instruction is
+/// used.
 ///
 /// Returns `Ok(())` if the write was successful, or `Err(MemoryError)` if the
 /// write was unsuccessful.
-///
-/// Panics if the size is not 1, 2, 4, or 8 bytes.
 ///
 /// # Safety
 ///
@@ -482,7 +420,12 @@ pub unsafe fn try_write_volatile<T: IntoBytes + Immutable + KnownLayout>(
                 std::mem::transmute_copy(value),
                 failure.as_mut_ptr(),
             ),
-            _ => panic!("unsupported size"),
+            _ => try_memmove(
+                dest.cast(),
+                std::ptr::from_ref(value).cast(),
+                size_of::<T>(),
+                failure.as_mut_ptr(),
+            ),
         }
     };
     match ret {
@@ -511,13 +454,49 @@ impl SparseMapping {
         sys::page_size()
     }
 
+    fn check(&self, offset: usize, len: usize) -> Result<(), SparseMappingError> {
+        if self.len() < offset || self.len() - offset < len {
+            return Err(SparseMappingError::OutOfBounds);
+        }
+        Ok(())
+    }
+
+    /// Reads a type `T` from `offset` in the sparse mapping using a single read instruction.
+    ///
+    /// Panics if `T` is not 1, 2, 4, or 8 bytes in size.
+    pub fn read_volatile<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        offset: usize,
+    ) -> Result<T, SparseMappingError> {
+        assert!(self.is_local(), "cannot read from remote mappings");
+
+        self.check(offset, size_of::<T>())?;
+        // SAFETY: the bounds have been checked above.
+        unsafe { try_read_volatile(self.as_ptr().byte_add(offset).cast()) }
+            .map_err(SparseMappingError::Memory)
+    }
+
+    /// Writes a type `T` at `offset` in the sparse mapping using a single write instruciton.
+    ///
+    /// Panics if `T` is not 1, 2, 4, or 8 bytes in size.
+    pub fn write_volatile<T: IntoBytes + Immutable + KnownLayout>(
+        &self,
+        offset: usize,
+        value: &T,
+    ) -> Result<(), SparseMappingError> {
+        assert!(self.is_local(), "cannot write to remote mappings");
+
+        self.check(offset, size_of::<T>())?;
+        // SAFETY: the bounds have been checked above.
+        unsafe { try_write_volatile(self.as_ptr().byte_add(offset).cast(), value) }
+            .map_err(SparseMappingError::Memory)
+    }
+
     /// Tries to write into the sparse mapping.
     pub fn write_at(&self, offset: usize, data: &[u8]) -> Result<(), SparseMappingError> {
         assert!(self.is_local(), "cannot write to remote mappings");
 
-        if self.len() < offset || self.len() - offset < data.len() {
-            return Err(SparseMappingError::OutOfBounds);
-        }
+        self.check(offset, data.len())?;
         // SAFETY: the bounds have been checked above.
         unsafe {
             let dest = self.as_ptr().cast::<u8>().add(offset);
@@ -529,9 +508,7 @@ impl SparseMapping {
     pub fn read_at(&self, offset: usize, data: &mut [u8]) -> Result<(), SparseMappingError> {
         assert!(self.is_local(), "cannot read from remote mappings");
 
-        if self.len() < offset || self.len() - offset < data.len() {
-            return Err(SparseMappingError::OutOfBounds);
-        }
+        self.check(offset, data.len())?;
         // SAFETY: the bounds have been checked above.
         unsafe {
             let src = (self.as_ptr() as *const u8).add(offset);
@@ -544,25 +521,27 @@ impl SparseMapping {
         &self,
         offset: usize,
     ) -> Result<T, SparseMappingError> {
-        let mut obj = MaybeUninit::<T>::uninit();
-        // SAFETY: `obj` is a valid target for writes.
-        unsafe {
-            self.read_at(
-                offset,
-                std::slice::from_raw_parts_mut(obj.as_mut_ptr().cast::<u8>(), size_of::<T>()),
-            )?;
+        if matches!(size_of::<T>(), 1 | 2 | 4 | 8) {
+            self.read_volatile(offset)
+        } else {
+            let mut obj = MaybeUninit::<T>::uninit();
+            // SAFETY: `obj` is a valid target for writes.
+            unsafe {
+                self.read_at(
+                    offset,
+                    std::slice::from_raw_parts_mut(obj.as_mut_ptr().cast::<u8>(), size_of::<T>()),
+                )?;
+            }
+            // SAFETY: `obj` was fully initialized by `read_at`.
+            Ok(unsafe { obj.assume_init() })
         }
-        // SAFETY: `obj` was fully initialized by `read_at`.
-        Ok(unsafe { obj.assume_init() })
     }
 
     /// Tries to fill a region of the sparse mapping with `val`.
     pub fn fill_at(&self, offset: usize, val: u8, len: usize) -> Result<(), SparseMappingError> {
         assert!(self.is_local(), "cannot fill remote mappings");
 
-        if self.len() < offset || self.len() - offset < len {
-            return Err(SparseMappingError::OutOfBounds);
-        }
+        self.check(offset, len)?;
         // SAFETY: the bounds have been checked above.
         unsafe {
             let dest = self.as_ptr().cast::<u8>().add(offset);
@@ -809,7 +788,6 @@ mod tests {
                     .unwrap(),
                 2
             );
-            assert!(try_compare_exchange_ref(base.add(8), &mut [2u8, 0], &[3, 0]).unwrap());
             try_compare_exchange(base.add(page_size), 0, 2).unwrap_err();
         }
     }

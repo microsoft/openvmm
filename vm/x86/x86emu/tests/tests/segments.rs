@@ -6,9 +6,9 @@ use super::common::SingleCellCpu;
 use super::common::TestCpu;
 use futures::FutureExt;
 use iced_x86::code_asm::*;
-use x86defs::cpuid::Vendor;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
+use x86defs::cpuid::Vendor;
 use x86emu::Cpu;
 use x86emu::Emulator;
 use x86emu::Gp;
@@ -108,7 +108,7 @@ fn null_selector() {
 }
 
 #[test]
-#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(3)")]
+#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4099)")]
 fn rpl() {
     do_data_segment_test(|cpu| {
         let mut emu_ds = cpu.segment(Segment::DS);
@@ -118,7 +118,7 @@ fn rpl() {
 }
 
 #[test]
-#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(3)")]
+#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4098)")]
 fn cpl() {
     do_data_segment_test(|cpu| {
         let mut emu_ss = cpu.segment(Segment::SS);
@@ -128,7 +128,7 @@ fn cpl() {
 }
 
 #[test]
-#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(3)")]
+#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4098)")]
 fn system_segment() {
     do_data_segment_test(|cpu| {
         let mut emu_ds = cpu.segment(Segment::DS);

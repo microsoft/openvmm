@@ -51,9 +51,9 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let (client_id, write_client_id) = ctx.new_secret_var();
-        let (tenant_id, write_tenant_id) = ctx.new_secret_var();
-        let (subscription_id, write_subscription_id) = ctx.new_secret_var();
+        let (client_id, write_client_id) = ctx.new_var();
+        let (tenant_id, write_tenant_id) = ctx.new_var();
+        let (subscription_id, write_subscription_id) = ctx.new_var();
 
         ctx.emit_rust_step("Read Azure Login Credentials", |ctx| {
             let write_client_id = write_client_id.claim(ctx);

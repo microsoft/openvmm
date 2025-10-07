@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 //! UEFI specific loader definitions and implementation.
-#![allow(non_camel_case_types)]
 
 pub mod config;
 
@@ -11,9 +10,9 @@ use aarch64 as arch;
 #[cfg(guest_arch = "x86_64")]
 use x86_64 as arch;
 
-pub use arch::load;
 pub use arch::CONFIG_BLOB_GPA_BASE;
 pub use arch::IMAGE_SIZE;
+pub use arch::load;
 
 use guid::Guid;
 use thiserror::Error;
@@ -359,8 +358,8 @@ pub mod x86_64 {
     use super::ConfigType;
     use super::Error;
     use super::LoadInfo;
-    use crate::common::import_default_gdt;
     use crate::common::DEFAULT_GDT_SIZE;
+    use crate::common::import_default_gdt;
     use crate::cpuid::HV_PSP_CPUID_PAGE;
     use crate::importer::BootPageAcceptance;
     use crate::importer::IgvmParameterType;
@@ -368,12 +367,12 @@ pub mod x86_64 {
     use crate::importer::IsolationType;
     use crate::importer::StartupMemoryType;
     use crate::importer::X86Register;
-    use crate::uefi::get_sec_entry_point_offset;
     use crate::uefi::SEC_FIRMWARE_VOLUME_OFFSET;
+    use crate::uefi::get_sec_entry_point_offset;
     use hvdef::HV_PAGE_SIZE;
+    use page_table::IdentityMapSize;
     use page_table::x64::align_up_to_page_size;
     use page_table::x64::build_page_tables_64;
-    use page_table::IdentityMapSize;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -499,12 +498,9 @@ pub mod x86_64 {
                     importer,
                     CONFIG_BLOB_GPA_BASE / HV_PAGE_SIZE,
                     match isolation.isolation_type {
-                        IsolationType::Snp => {
-                            let table = shared_vis_page_tables
-                                .as_ref()
-                                .expect("should be shared vis page tables");
-                            table
-                        }
+                        IsolationType::Snp => shared_vis_page_tables
+                            .as_ref()
+                            .expect("should be shared vis page tables"),
                         _ => &[],
                     },
                 )?
@@ -932,7 +928,7 @@ pub mod aarch64 {
             }
             ConfigType::None => 0,
             ConfigType::Igvm => {
-                return Err(Error::InvalidConfigType("igvm not supported".to_owned()))
+                return Err(Error::InvalidConfigType("igvm not supported".to_owned()));
             }
         };
 

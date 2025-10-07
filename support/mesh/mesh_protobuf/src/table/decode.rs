@@ -3,14 +3,16 @@
 
 //! Table-based decoding.
 
+#![expect(clippy::missing_safety_doc)]
+
 use super::StructMetadata;
 use super::TableEncoder;
-use crate::inplace::InplaceOption;
-use crate::protobuf::FieldReader;
-use crate::protobuf::MessageReader;
 use crate::Error;
 use crate::FieldDecode;
 use crate::MessageDecode;
+use crate::inplace::InplaceOption;
+use crate::protobuf::FieldReader;
+use crate::protobuf::MessageReader;
 use alloc::slice;
 use alloc::vec;
 use core::marker::PhantomData;

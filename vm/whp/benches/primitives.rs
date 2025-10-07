@@ -9,14 +9,14 @@
 #[expect(unsafe_code)]
 #[expect(clippy::undocumented_unsafe_blocks)]
 mod windows {
-    use criterion::criterion_group;
     use criterion::BenchmarkId;
     use criterion::Criterion;
     use criterion::Throughput;
+    use criterion::criterion_group;
     use std::os::windows::io::RawHandle;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
     use winapi::um::memoryapi::*;
     use winapi::um::synchapi::*;
     use winapi::um::winnt::MEM_COMMIT;
@@ -184,10 +184,12 @@ mod windows {
         {
             let an = ea as usize;
             let bn = eb as usize;
-            std::thread::spawn(move || loop {
-                unsafe {
-                    assert!(WaitForSingleObject(an as RawHandle, 0xffffffff) == 0);
-                    assert!(SetEvent(bn as RawHandle) != 0);
+            std::thread::spawn(move || {
+                loop {
+                    unsafe {
+                        assert!(WaitForSingleObject(an as RawHandle, 0xffffffff) == 0);
+                        assert!(SetEvent(bn as RawHandle) != 0);
+                    }
                 }
             })
         };

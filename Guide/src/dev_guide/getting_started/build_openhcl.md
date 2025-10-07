@@ -76,9 +76,8 @@ the details of its CLI.
 
 `ohcldiag-dev` is typically built as a Windows binary.
 
-This can be done directly from Windows, or using cross-compilation from WSL2, as
-described in the [Suggested Dev Environment](../getting_started/suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows)
-section of the Guide.
+This can be done directly from Windows, or using
+[cross-compilation from WSL2](../getting_started/cross_compile.md).
 
 The command to build `ohcldiag-dev` is simply:
 

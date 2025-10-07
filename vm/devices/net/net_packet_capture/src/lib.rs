@@ -3,17 +3,19 @@
 
 //! `pcapng` compatible packet capture endpoint implementation.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 use async_trait::async_trait;
-use futures::lock::Mutex;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
-use net_backend::next_packet;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
@@ -22,21 +24,23 @@ use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxId;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
-use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
-use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
-use pcap_file::pcapng::PcapNgWriter;
+use net_backend::next_packet;
 use pcap_file::DataLink;
 use pcap_file::PcapError;
 use pcap_file::PcapResult;
+use pcap_file::pcapng::PcapNgWriter;
+use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
+use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
 use std::borrow::Cow;
 use std::io::Write;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
@@ -452,6 +456,10 @@ impl PacketCaptureQueue {
 
 #[async_trait]
 impl Queue for PacketCaptureQueue {
+    async fn update_target_vp(&mut self, target_vp: u32) {
+        self.current_mut().update_target_vp(target_vp).await
+    }
+
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.current_mut().poll_ready(cx)
     }
@@ -541,7 +549,7 @@ impl Queue for PacketCaptureQueue {
         self.current_mut().tx_avail(segments)
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
         self.current_mut().tx_poll(done)
     }
 

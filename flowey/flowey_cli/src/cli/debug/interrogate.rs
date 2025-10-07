@@ -2,15 +2,17 @@
 // Licensed under the MIT License.
 
 use crate::cli::FlowBackendCli;
+use flowey_core::node::FlowArch;
+use flowey_core::node::FlowBackend;
+use flowey_core::node::FlowPlatform;
+use flowey_core::node::GhOutput;
+use flowey_core::node::GhToRust;
+use flowey_core::node::NodeHandle;
+use flowey_core::node::RustToGh;
 use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::user_facing::ClaimedGhParam;
 use flowey_core::node::user_facing::GhPermission;
 use flowey_core::node::user_facing::GhPermissionValue;
-use flowey_core::node::FlowArch;
-use flowey_core::node::FlowBackend;
-use flowey_core::node::FlowPlatform;
-use flowey_core::node::GhVarState;
-use flowey_core::node::NodeHandle;
 use flowey_core::pipeline::HostExt;
 use flowey_core::pipeline::PipelineBackendHint;
 use std::collections::BTreeMap;
@@ -112,6 +114,7 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
     fn on_emit_rust_step(
         &mut self,
         label: &str,
+        _can_merge: bool,
         _code: Box<
             dyn for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
         >,
@@ -169,10 +172,10 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
         _uses: &str,
         _with: BTreeMap<String, ClaimedGhParam>,
         _condvar: Option<String>,
-        _outputs: BTreeMap<String, Vec<GhVarState>>,
+        _outputs: BTreeMap<String, Vec<GhOutput>>,
         _permissions: BTreeMap<GhPermission, GhPermissionValue>,
-        _gh_to_rust: Vec<GhVarState>,
-        _rust_to_gh: Vec<GhVarState>,
+        _gh_to_rust: Vec<GhToRust>,
+        _rust_to_gh: Vec<RustToGh>,
     ) {
         println!("[step][yaml]    # {}", label);
         self.idx_tracker += 1;

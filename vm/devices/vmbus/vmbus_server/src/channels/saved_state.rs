@@ -1,12 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::MnfUsage;
+use super::Notifier;
 use super::OfferError;
 use super::OfferParamsInternal;
 use super::OfferedInfo;
 use super::RestoreState;
 use super::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
+pub use inner::SavedState;
 use mesh::payload::Protobuf;
 use std::fmt::Display;
 use thiserror::Error;
@@ -20,52 +23,6 @@ use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::monitor::MonitorId;
 
 impl super::Server {
-    /// Restores state.
-    ///
-    /// This may be called before or after channels have been offered. After
-    /// calling this routine, [`ServerWithNotifier::restore_channel`] should be
-    /// called for each channel to be restored, possibly interleaved with
-    /// additional calls to offer or revoke channels.
-    ///
-    /// Once all channels are in the appropriate state,
-    /// [`ServerWithNotifier::post_restore`] should be called. This will revoke
-    /// any channels that were in the saved state but were not restored via
-    /// `restore_channel`.
-    pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
-        tracing::trace!(?saved, "restoring channel state");
-
-        if let Some(saved) = saved.state {
-            self.state = saved.connection.restore()?;
-
-            for saved_channel in saved.channels {
-                self.restore_one_channel(saved_channel)?;
-            }
-
-            for saved_gpadl in saved.gpadls {
-                self.restore_one_gpadl(saved_gpadl)?;
-            }
-        } else if let Some(saved) = saved.disconnected_state {
-            self.state = super::ConnectionState::Disconnected;
-            for saved_channel in saved.reserved_channels {
-                self.restore_one_channel(saved_channel)?;
-            }
-
-            for saved_gpadl in saved.reserved_gpadls {
-                self.restore_one_gpadl(saved_gpadl)?;
-            }
-        }
-
-        self.pending_messages
-            .0
-            .reserve(saved.pending_messages.len());
-
-        for message in saved.pending_messages {
-            self.pending_messages.0.push_back(message.restore()?);
-        }
-
-        Ok(())
-    }
-
     fn restore_one_channel(&mut self, saved_channel: Channel) -> Result<(), RestoreError> {
         let (info, stub_offer, state) = saved_channel.restore()?;
         if let Some((offer_id, channel)) = self.channels.get_by_key_mut(&saved_channel.key) {
@@ -79,13 +36,13 @@ impl super::Server {
 
             // The channel's monitor ID can be already set if it was set by the device, which is
             // the case with relay channels. In that case, it must match the saved ID.
-            if channel.offer.monitor_id.is_some()
-                && channel.offer.monitor_id != saved_channel.monitor_id
-            {
-                return Err(RestoreError::MismatchedMonitorId(
-                    channel.offer.monitor_id.unwrap(),
-                    saved_channel.monitor_id,
-                ));
+            if let MnfUsage::Relayed { monitor_id } = channel.offer.use_mnf {
+                if info.monitor_id != Some(MonitorId(monitor_id)) {
+                    return Err(RestoreError::MismatchedMonitorId(
+                        monitor_id,
+                        saved_channel.monitor_id,
+                    ));
+                }
             }
 
             self.assigned_channels
@@ -144,13 +101,15 @@ impl super::Server {
 
     /// Saves state.
     pub fn save(&self) -> SavedState {
-        let state = self.save_connected_state();
-        let disconnected_state = state.is_none().then(|| self.save_disconnected_state());
-        SavedState {
-            state,
-            disconnected_state,
+        SavedStateData {
+            state: if let Some(state) = self.save_connected_state() {
+                SavedConnectionState::Connected(state)
+            } else {
+                SavedConnectionState::Disconnected(self.save_disconnected_state())
+            },
             pending_messages: self.save_pending_messages(),
         }
+        .into()
     }
 
     fn save_connected_state(&self) -> Option<ConnectedState> {
@@ -210,6 +169,97 @@ impl super::Server {
     }
 }
 
+impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
+    /// Restores state.
+    ///
+    /// This may be called before or after channels have been offered. After
+    /// calling this routine, [`restore_channel`] should be
+    /// called for each channel to be restored, possibly interleaved with
+    /// additional calls to offer or revoke channels.
+    ///
+    /// Once all channels are in the appropriate state,
+    /// [`revoke_unclaimed_channels`] should be called. This will revoke
+    /// any channels that were in the saved state but were not restored via
+    /// [`restore_channel`].
+    ///
+    /// [`revoke_unclaimed_channels`]: super::ServerWithNotifier::revoke_unclaimed_channels
+    /// [`restore_channel`]: super::ServerWithNotifier::restore_channel
+    pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
+        tracing::trace!(?saved, "restoring channel state");
+
+        let saved = SavedStateData::from(saved);
+        match saved.state {
+            SavedConnectionState::Connected(saved) => {
+                self.inner.state = saved.connection.restore()?;
+
+                // Restore server state, and resend server notifications if needed. If these notifications
+                // were processed before the save, it's harmless as the values will be the same.
+                let request = match self.inner.state {
+                    super::ConnectionState::Connecting {
+                        info,
+                        next_action: _,
+                    } => Some(super::ModifyConnectionRequest {
+                        version: Some(info.version),
+                        interrupt_page: info.interrupt_page.into(),
+                        monitor_page: info.monitor_page.map(|mp| mp.gpas).into(),
+                        target_message_vp: Some(info.target_message_vp),
+                        notify_relay: true,
+                    }),
+                    super::ConnectionState::Connected(info) => {
+                        Some(super::ModifyConnectionRequest {
+                            version: None,
+                            monitor_page: info.monitor_page.map(|mp| mp.gpas).into(),
+                            interrupt_page: info.interrupt_page.into(),
+                            target_message_vp: Some(info.target_message_vp),
+                            // If the save didn't happen while modifying, the relay doesn't need to be notified
+                            // of this info as it doesn't constitute a change, we're just restoring existing
+                            // connection state.
+                            notify_relay: info.modifying,
+                        })
+                    }
+                    // No action needed for these states; if disconnecting, check_disconnected will resend
+                    // the reset request if needed.
+                    super::ConnectionState::Disconnected
+                    | super::ConnectionState::Disconnecting { .. } => None,
+                };
+
+                if let Some(request) = request {
+                    self.notifier.modify_connection(request)?;
+                }
+
+                for saved_channel in saved.channels {
+                    self.inner.restore_one_channel(saved_channel)?;
+                }
+
+                for saved_gpadl in saved.gpadls {
+                    self.inner.restore_one_gpadl(saved_gpadl)?;
+                }
+            }
+            SavedConnectionState::Disconnected(saved) => {
+                self.inner.state = super::ConnectionState::Disconnected;
+                for saved_channel in saved.reserved_channels {
+                    self.inner.restore_one_channel(saved_channel)?;
+                }
+
+                for saved_gpadl in saved.reserved_gpadls {
+                    self.inner.restore_one_gpadl(saved_gpadl)?;
+                }
+            }
+        }
+
+        self.inner
+            .pending_messages
+            .0
+            .reserve(saved.pending_messages.len());
+
+        for message in saved.pending_messages {
+            self.inner.pending_messages.0.push_back(message.restore()?);
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RestoreError {
     #[error(transparent)]
@@ -265,47 +315,123 @@ pub enum RestoreError {
     MessageTooLarge,
 }
 
-#[derive(Debug, Protobuf, Clone)]
+mod inner {
+    use super::*;
+
+    /// The top-level saved state for the VMBus channels library. It is placed in its own module to
+    /// keep the internals private, and the only thing you can do with it is convert to/from
+    /// `SavedStateData`. This enforces that users always consider both the connected and
+    /// disconnected states.
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "vmbus.server.channels")]
+    pub struct SavedState {
+        #[mesh(1)]
+        state: Option<ConnectedState>,
+        // Disconnected state is used to save any open reserved channels while the guest is
+        // disconnected. It is mutually exclusive with `state`, but is separate to maintain saved
+        // state compatibility.
+        // N.B. In a saved state created by the current version, either state or disconnected_state
+        //      is always `Some`, but for older versions, it is possible that both are `None`. They
+        //      can never both be `Some`.
+        #[mesh(2)]
+        disconnected_state: Option<DisconnectedState>,
+        #[mesh(3)]
+        pending_messages: Vec<OutgoingMessage>,
+    }
+
+    impl From<SavedStateData> for SavedState {
+        fn from(value: SavedStateData) -> Self {
+            let (state, disconnected_state) = match value.state {
+                SavedConnectionState::Connected(connected) => (Some(connected), None),
+                SavedConnectionState::Disconnected(disconnected) => (None, Some(disconnected)),
+            };
+
+            Self {
+                state,
+                disconnected_state,
+                pending_messages: value.pending_messages,
+            }
+        }
+    }
+
+    impl From<SavedState> for SavedStateData {
+        fn from(value: SavedState) -> Self {
+            Self {
+                state: if let Some(connected) = value.state {
+                    SavedConnectionState::Connected(connected)
+                } else {
+                    // Older saved state versions may not have a disconnected state, in which case
+                    // we use an empty value which has no channels or gpadls.
+                    SavedConnectionState::Disconnected(value.disconnected_state.unwrap_or_default())
+                },
+                pending_messages: value.pending_messages,
+            }
+        }
+    }
+}
+
+/// Represents either connected or disconnected saved state.
+#[derive(Debug, Clone)]
+pub enum SavedConnectionState {
+    Connected(ConnectedState),
+    Disconnected(DisconnectedState),
+}
+
+/// Alternative representation of the saved state that ensures that all code paths deal with either
+/// the connected or disconnected state, and cannot neglect one.
+#[derive(Debug, Clone)]
+pub struct SavedStateData {
+    pub state: SavedConnectionState,
+    pub pending_messages: Vec<OutgoingMessage>,
+}
+
+impl SavedStateData {
+    /// Finds a channel in the saved state.
+    pub fn find_channel(&self, offer: OfferKey) -> Option<&Channel> {
+        let (channels, _) = self.channels_and_gpadls();
+        channels.iter().find(|c| c.key == offer)
+    }
+
+    /// Retrieves all the channels and GPADLs from the saved state.
+    /// If disconnected, returns any reserved channels and their GPADLs.
+    pub fn channels_and_gpadls(&self) -> (&[Channel], &[Gpadl]) {
+        match &self.state {
+            SavedConnectionState::Connected(connected) => (&connected.channels, &connected.gpadls),
+            SavedConnectionState::Disconnected(disconnected) => (
+                &disconnected.reserved_channels,
+                &disconnected.reserved_gpadls,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-pub struct SavedState {
+pub struct ConnectedState {
     #[mesh(1)]
-    state: Option<ConnectedState>,
-    // Disconnected state is used to save any open reserved channels while the guest is
-    // disconnected. It is mutually exclusive with `state`, but is separate to maintain saved state
-    // compatibility.
+    pub connection: Connection,
     #[mesh(2)]
-    disconnected_state: Option<DisconnectedState>,
+    pub channels: Vec<Channel>,
     #[mesh(3)]
-    pending_messages: Vec<OutgoingMessage>,
+    pub gpadls: Vec<Gpadl>,
+}
+
+#[derive(Default, Debug, Clone, Protobuf)]
+#[mesh(package = "vmbus.server.channels")]
+pub struct DisconnectedState {
+    #[mesh(1)]
+    pub reserved_channels: Vec<Channel>,
+    #[mesh(2)]
+    pub reserved_gpadls: Vec<Gpadl>,
 }
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct ConnectedState {
+pub struct VersionInfo {
     #[mesh(1)]
-    connection: Connection,
+    pub version: u32,
     #[mesh(2)]
-    channels: Vec<Channel>,
-    #[mesh(3)]
-    gpadls: Vec<Gpadl>,
-}
-
-#[derive(Debug, Clone, Protobuf)]
-#[mesh(package = "vmbus.server.channels")]
-struct DisconnectedState {
-    #[mesh(1)]
-    reserved_channels: Vec<Channel>,
-    #[mesh(2)]
-    reserved_gpadls: Vec<Gpadl>,
-}
-
-#[derive(Debug, Clone, Protobuf)]
-#[mesh(package = "vmbus.server.channels")]
-struct VersionInfo {
-    #[mesh(1)]
-    version: u32,
-    #[mesh(2)]
-    feature_flags: u32,
+    pub feature_flags: u32,
 }
 
 impl VersionInfo {
@@ -338,7 +464,7 @@ impl VersionInfo {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum Connection {
+pub enum Connection {
     #[mesh(1)]
     Disconnecting {
         #[mesh(1)]
@@ -379,6 +505,8 @@ enum Connection {
         client_id: Option<Guid>,
         #[mesh(8)]
         trusted: bool,
+        #[mesh(9)]
+        paused: bool,
     },
 }
 
@@ -409,6 +537,7 @@ impl Connection {
                 modifying: info.modifying,
                 client_id: Some(info.client_id),
                 trusted: info.trusted,
+                paused: info.paused,
             }),
             super::ConnectionState::Disconnecting {
                 next_action,
@@ -439,6 +568,7 @@ impl Connection {
                     offers_sent: false,
                     modifying: false,
                     client_id: client_id.unwrap_or(Guid::ZERO),
+                    paused: false,
                 },
                 next_action: next_action.restore(),
             },
@@ -451,6 +581,7 @@ impl Connection {
                 modifying,
                 client_id,
                 trusted,
+                paused,
             } => super::ConnectionState::Connected(super::ConnectionInfo {
                 version: version.restore(trusted)?,
                 trusted,
@@ -460,6 +591,7 @@ impl Connection {
                 target_message_vp,
                 modifying,
                 client_id: client_id.unwrap_or(Guid::ZERO),
+                paused,
             }),
             Connection::Disconnecting { next_action } => super::ConnectionState::Disconnecting {
                 next_action: next_action.restore(),
@@ -472,7 +604,7 @@ impl Connection {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum ConnectionAction {
+pub enum ConnectionAction {
     #[mesh(1)]
     None,
     #[mesh(2)]
@@ -516,17 +648,17 @@ impl ConnectionAction {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct Channel {
+pub struct Channel {
     #[mesh(1)]
-    key: OfferKey,
+    pub key: OfferKey,
     #[mesh(2)]
-    channel_id: u32,
+    pub channel_id: u32,
     #[mesh(3)]
-    offered_connection_id: u32,
+    pub offered_connection_id: u32,
     #[mesh(4)]
-    state: ChannelState,
+    pub state: ChannelState,
     #[mesh(5)]
-    monitor_id: Option<u8>,
+    pub monitor_id: Option<u8>,
 }
 
 impl Channel {
@@ -534,7 +666,7 @@ impl Channel {
         let info = value.info.as_ref()?;
         let key = value.offer.key();
         if let Some(state) = ChannelState::save(&value.state) {
-            tracing::info!(%key, %state, "channel saved");
+            tracing::trace!(%key, %state, "channel saved");
             Some(Channel {
                 channel_id: info.channel_id.0,
                 offered_connection_id: info.connection_id,
@@ -568,29 +700,48 @@ impl Channel {
         tracing::info!(key = %self.key, %state, "channel restored");
         Ok((info, stub_offer, state))
     }
+
+    pub fn channel_id(&self) -> u32 {
+        self.channel_id
+    }
+
+    pub fn key(&self) -> OfferKey {
+        self.key
+    }
+
+    pub fn open_request(&self) -> Option<OpenRequest> {
+        match self.state {
+            ChannelState::Closed => None,
+            ChannelState::Opening { request, .. } => Some(request),
+            ChannelState::Open { params, .. } => Some(params),
+            ChannelState::Closing { params, .. } => Some(params),
+            ChannelState::ClosingReopen { params, .. } => Some(params),
+            ChannelState::Revoked => None,
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct InitiateContactRequest {
+pub struct InitiateContactRequest {
     #[mesh(1)]
-    version_requested: u32,
+    pub version_requested: u32,
     #[mesh(2)]
-    target_message_vp: u32,
+    pub target_message_vp: u32,
     #[mesh(3)]
-    monitor_page: MonitorPageRequest,
+    pub monitor_page: MonitorPageRequest,
     #[mesh(4)]
-    target_sint: u8,
+    pub target_sint: u8,
     #[mesh(5)]
-    target_vtl: u8,
+    pub target_vtl: u8,
     #[mesh(6)]
-    feature_flags: u32,
+    pub feature_flags: u32,
     #[mesh(7)]
-    interrupt_page: Option<u64>,
+    pub interrupt_page: Option<u64>,
     #[mesh(8)]
-    client_id: Guid,
+    pub client_id: Guid,
     #[mesh(9)]
-    trusted: bool,
+    pub trusted: bool,
 }
 
 impl InitiateContactRequest {
@@ -625,32 +776,36 @@ impl InitiateContactRequest {
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct MonitorPageGpas {
+pub struct MonitorPageGpas {
     #[mesh(1)]
-    parent_to_child: u64,
+    pub parent_to_child: u64,
     #[mesh(2)]
-    child_to_parent: u64,
+    pub child_to_parent: u64,
 }
 
 impl MonitorPageGpas {
-    fn save(value: super::MonitorPageGpas) -> Self {
+    fn save(value: super::MonitorPageGpaInfo) -> Self {
+        assert!(
+            !value.server_allocated,
+            "cannot save with server-allocated monitor pages"
+        );
         Self {
-            child_to_parent: value.child_to_parent,
-            parent_to_child: value.parent_to_child,
+            child_to_parent: value.gpas.child_to_parent,
+            parent_to_child: value.gpas.parent_to_child,
         }
     }
 
-    fn restore(self) -> super::MonitorPageGpas {
-        super::MonitorPageGpas {
+    fn restore(self) -> super::MonitorPageGpaInfo {
+        super::MonitorPageGpaInfo::from_guest_gpas(super::MonitorPageGpas {
             child_to_parent: self.child_to_parent,
             parent_to_child: self.parent_to_child,
-        }
+        })
     }
 }
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum MonitorPageRequest {
+pub enum MonitorPageRequest {
     #[mesh(1)]
     None,
     #[mesh(2)]
@@ -663,9 +818,9 @@ impl MonitorPageRequest {
     fn save(value: super::MonitorPageRequest) -> Self {
         match value {
             super::MonitorPageRequest::None => MonitorPageRequest::None,
-            super::MonitorPageRequest::Some(mp) => {
-                MonitorPageRequest::Some(MonitorPageGpas::save(mp))
-            }
+            super::MonitorPageRequest::Some(mp) => MonitorPageRequest::Some(MonitorPageGpas::save(
+                super::MonitorPageGpaInfo::from_guest_gpas(mp),
+            )),
             super::MonitorPageRequest::Invalid => MonitorPageRequest::Invalid,
         }
     }
@@ -673,7 +828,7 @@ impl MonitorPageRequest {
     fn restore(self) -> super::MonitorPageRequest {
         match self {
             MonitorPageRequest::None => super::MonitorPageRequest::None,
-            MonitorPageRequest::Some(mp) => super::MonitorPageRequest::Some(mp.restore()),
+            MonitorPageRequest::Some(mp) => super::MonitorPageRequest::Some(mp.restore().gpas),
             MonitorPageRequest::Invalid => super::MonitorPageRequest::Invalid,
         }
     }
@@ -681,11 +836,11 @@ impl MonitorPageRequest {
 
 #[derive(Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct SignalInfo {
+pub struct SignalInfo {
     #[mesh(1)]
-    event_flag: u16,
+    pub event_flag: u16,
     #[mesh(2)]
-    connection_id: u32,
+    pub connection_id: u32,
 }
 
 impl SignalInfo {
@@ -706,21 +861,21 @@ impl SignalInfo {
 
 #[derive(Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct OpenRequest {
+pub struct OpenRequest {
     #[mesh(1)]
-    open_id: u32,
+    pub open_id: u32,
     #[mesh(2)]
-    ring_buffer_gpadl_id: GpadlId,
+    pub ring_buffer_gpadl_id: GpadlId,
     #[mesh(3)]
-    target_vp: u32,
+    pub target_vp: u32,
     #[mesh(4)]
-    downstream_ring_buffer_page_offset: u32,
+    pub downstream_ring_buffer_page_offset: u32,
     #[mesh(5)]
-    user_data: [u8; 120],
+    pub user_data: [u8; 120],
     #[mesh(6)]
-    guest_specified_interrupt_info: Option<SignalInfo>,
+    pub guest_specified_interrupt_info: Option<SignalInfo>,
     #[mesh(7)]
-    flags: u16,
+    pub flags: u16,
 }
 
 impl OpenRequest {
@@ -756,7 +911,7 @@ impl OpenRequest {
 
 #[derive(Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum ModifyState {
+pub enum ModifyState {
     #[mesh(1)]
     NotModifying,
     #[mesh(2)]
@@ -788,13 +943,13 @@ impl ModifyState {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct ReservedState {
+pub struct ReservedState {
     #[mesh(1)]
-    version: VersionInfo,
+    pub version: VersionInfo,
     #[mesh(2)]
-    vp: u32,
+    pub vp: u32,
     #[mesh(3)]
-    sint: u8,
+    pub sint: u8,
 }
 
 impl ReservedState {
@@ -835,7 +990,7 @@ impl ReservedState {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-enum ChannelState {
+pub enum ChannelState {
     #[mesh(1)]
     Closed,
     #[mesh(2)]
@@ -975,21 +1130,22 @@ impl Display for ChannelState {
 
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
-struct Gpadl {
+pub struct Gpadl {
     #[mesh(1)]
-    id: u32,
+    pub id: u32,
     #[mesh(2)]
-    channel_id: u32,
+    pub channel_id: u32,
     #[mesh(3)]
-    count: u16,
+    pub count: u16,
     #[mesh(4)]
-    buf: Vec<u64>,
+    pub buf: Vec<u64>,
     #[mesh(5)]
-    state: GpadlState,
+    pub state: GpadlState,
 }
 
 impl Gpadl {
     fn save(gpadl_id: GpadlId, channel_id: ChannelId, gpadl: &super::Gpadl) -> Option<Self> {
+        tracing::trace!(id = %gpadl_id.0, channel_id = %channel_id.0, "gpadl saved");
         Some(Gpadl {
             id: gpadl_id.0,
             channel_id: channel_id.0,
@@ -1034,11 +1190,15 @@ impl Gpadl {
             state,
         })
     }
+
+    pub fn is_tearing_down(&self) -> bool {
+        self.state == GpadlState::TearingDown
+    }
 }
 
 #[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
 #[mesh(package = "vmbus.server.channels")]
-enum GpadlState {
+pub enum GpadlState {
     #[mesh(1)]
     InProgress,
     #[mesh(2)]
@@ -1051,7 +1211,7 @@ enum GpadlState {
 
 #[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
 #[mesh(package = "vmbus.server.channels")]
-struct OutgoingMessage(Vec<u8>);
+pub struct OutgoingMessage(pub Vec<u8>);
 
 impl OutgoingMessage {
     fn save(value: &vmbus_core::OutgoingMessage) -> Self {

@@ -9,10 +9,23 @@ use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum VmgstoolOutput {
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    LinuxBin {
+        #[serde(rename = "vmgstool")]
+        bin: PathBuf,
+        #[serde(rename = "vmgstool.dbg")]
+        dbg: PathBuf,
+    },
+    WindowsBin {
+        #[serde(rename = "vmgstool.exe")]
+        exe: PathBuf,
+        #[serde(rename = "vmgstool.pdb")]
+        pdb: PathBuf,
+    },
 }
+
+impl Artifact for VmgstoolOutput {}
 
 flowey_request! {
     pub struct Request {
@@ -59,12 +72,12 @@ impl SimpleFlowNode for Node {
             profile: profile.into(),
             features: if with_crypto {
                 match target.as_triple().operating_system {
-                    target_lexicon::OperatingSystem::Windows => ["encryption_win".into()].into(),
-                    target_lexicon::OperatingSystem::Linux => ["encryption_ossl".into()].into(),
+                    target_lexicon::OperatingSystem::Windows => ["encryption_win"].into(),
+                    target_lexicon::OperatingSystem::Linux => ["encryption_ossl"].into(),
                     _ => unreachable!(),
                 }
             } else {
-                [].into()
+                Default::default()
             },
             target: target.as_triple(),
             no_split_dbg_info: false,
@@ -73,7 +86,7 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        ctx.emit_rust_step("report built vmgstool", |ctx| {
+        ctx.emit_minor_rust_step("report built vmgstool", |ctx| {
             let vmgstool = vmgstool.claim(ctx);
             let output = output.claim(ctx);
             move |rt| {
@@ -91,8 +104,6 @@ impl SimpleFlowNode for Node {
                 };
 
                 rt.write(vmgstool, &output);
-
-                Ok(())
             }
         });
 

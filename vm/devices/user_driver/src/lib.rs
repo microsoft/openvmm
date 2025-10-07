@@ -5,6 +5,7 @@
 
 // UNSAFETY: Manual memory management around buffers and mmap.
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
@@ -12,7 +13,6 @@ use memory::MemoryBlock;
 use std::sync::Arc;
 
 pub mod backoff;
-pub mod emulated;
 pub mod interrupt;
 pub mod lockmem;
 pub mod memory;
@@ -44,6 +44,13 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// This can be called multiple times for the same interrupt without disconnecting
     /// previous mappings. The last `cpu` value will be used as the target CPU.
     fn map_interrupt(&mut self, msix: u32, cpu: u32) -> anyhow::Result<DeviceInterrupt>;
+
+    /// Unmaps and disables all previously mapped interrupts.
+    ///
+    /// Default implementation is a no-op for backends that do not support interrupt unmapping.
+    fn unmap_all_interrupts(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Access to device registers.
@@ -67,6 +74,6 @@ pub trait DmaClient: Send + Sync + Inspect {
     /// TODO: string tag for allocation?
     fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
 
-    /// Attach to a previously allocated memory block.
-    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
+    /// Attach all previously allocated memory blocks.
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<MemoryBlock>>;
 }

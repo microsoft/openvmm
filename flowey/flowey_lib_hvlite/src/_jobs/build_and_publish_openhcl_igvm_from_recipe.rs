@@ -67,14 +67,21 @@ impl SimpleFlowNode for Node {
             let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
             let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
             let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
+            let (read_built_sidecar, built_sidecar) = ctx.new_var();
             ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
                 custom_target,
-                profile,
+                build_profile: profile,
+                release_cfg: match profile {
+                    OpenvmmHclBuildProfile::Debug => false,
+                    OpenvmmHclBuildProfile::Release | OpenvmmHclBuildProfile::OpenvmmHclShip => {
+                        true
+                    }
+                },
                 recipe: recipe.clone(),
                 built_openvmm_hcl,
                 built_openhcl_boot,
                 built_openhcl_igvm,
-                built_sidecar: None,
+                built_sidecar,
             });
 
             built_igvm_files.push(read_built_openhcl_igvm.map(ctx, {
@@ -82,21 +89,23 @@ impl SimpleFlowNode for Node {
                 move |x| (recipe, x)
             }));
 
-            built_extras.push(
-                read_built_openvmm_hcl
-                    .zip(ctx, read_built_openhcl_boot)
-                    .zip(ctx, read_built_openhcl_igvm.clone())
-                    .map(ctx, {
-                        let recipe = recipe.clone();
-                        |((openvmm_hcl_bin, openhcl_boot), openhcl_igvm)| OpenhclIgvmExtras {
-                            recipe,
-                            openvmm_hcl_bin,
-                            openhcl_map: openhcl_igvm.igvm_map,
-                            openhcl_boot,
-                            sidecar: None,
-                        }
-                    }),
-            );
+            built_extras.push(ctx.emit_minor_rust_stepv(
+                "collect openhcl component paths",
+                |ctx| {
+                    let recipe = recipe.clone();
+                    let read_built_openvmm_hcl = read_built_openvmm_hcl.claim(ctx);
+                    let read_built_openhcl_boot = read_built_openhcl_boot.claim(ctx);
+                    let read_built_openhcl_igvm = read_built_openhcl_igvm.claim(ctx);
+                    let read_built_sidecar = read_built_sidecar.claim(ctx);
+                    |rt| OpenhclIgvmExtras {
+                        recipe,
+                        openvmm_hcl_bin: rt.read(read_built_openvmm_hcl),
+                        openhcl_map: rt.read(read_built_openhcl_igvm).igvm_map,
+                        openhcl_boot: rt.read(read_built_openhcl_boot),
+                        sidecar: rt.read(read_built_sidecar),
+                    }
+                },
+            ));
         }
 
         let mut did_publish = Vec::new();

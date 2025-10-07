@@ -7,24 +7,25 @@ use guid::Guid;
 use hvlite_pcat_locator::RomFileLocation;
 use input_core::InputData;
 use memory_range::MemoryRange;
-use mesh::payload::Protobuf;
 use mesh::MeshPayload;
+use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use std::fmt;
 use std::fs::File;
-use vm_resource::kind::DiskHandleKind;
+use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_resource::Resource;
-use vmotherboard::options::BaseChipsetManifest;
+use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::options::BaseChipsetManifest;
 
 #[derive(MeshPayload, Debug)]
 pub struct Config {
     pub load_mode: LoadMode,
     pub floppy_disks: Vec<floppy_resources::FloppyDiskConfig>,
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
+    pub pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
     pub memory: MemoryConfig,
     pub processor_topology: ProcessorTopologyConfig,
@@ -43,8 +44,7 @@ pub struct Config {
     pub virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
-    pub format_vmgs: bool,
-    pub vmgs_disk: Option<Resource<DiskHandleKind>>,
+    pub vmgs: Option<VmgsResource>,
     pub secure_boot_enabled: bool,
     pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
@@ -53,26 +53,38 @@ pub struct Config {
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
+    // This is used for testing. TODO: resourcify, and also store this in VMGS.
+    pub rtc_delta_milliseconds: i64,
+    /// allow the guest to reset without notifying the client
+    pub automatic_guest_reset: bool,
 }
 
 // ARM64 needs a larger low gap.
-const DEFAULT_LOW_MMAP_GAP_SIZE: u64 = 1024
-    * 1024
-    * if cfg!(guest_arch = "aarch64") {
-        512
-    } else {
-        128
-    };
+const DEFAULT_LOW_MMAP_GAP_SIZE_X86: u64 = 1024 * 1024 * 128;
+const DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64: u64 = 1024 * 1024 * 512;
 
-/// Default mmio gaps for a partition.
-pub const DEFAULT_MMIO_GAPS: [MemoryRange; 2] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE..0x1_0000_0000), // nMB just below 4GB
+/// Default mmio gaps for an x86 partition.
+pub const DEFAULT_MMIO_GAPS_X86: [MemoryRange; 2] = [
+    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_X86..0x1_0000_0000), // nMB just below 4GB
     MemoryRange::new(0xF_E000_0000..0x10_0000_0000), // 512MB just below 64GB, then up to 64GB
 ];
 
-/// Default mmio gaps if VTL2 is enabled.
-pub const DEFAULT_MMIO_GAPS_WITH_VTL2: [MemoryRange; 3] = [
-    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE..0x1_0000_0000), // nMB just below 4GB
+/// Default mmio gaps for x86 if VTL2 is enabled.
+pub const DEFAULT_MMIO_GAPS_X86_WITH_VTL2: [MemoryRange; 3] = [
+    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_X86..0x1_0000_0000), // nMB just below 4GB
+    MemoryRange::new(0xF_E000_0000..0x20_0000_0000), // 512MB just below 64GB, then up to 128GB
+    MemoryRange::new(0x20_0000_0000..0x20_4000_0000), // 128GB to 129 GB
+];
+
+/// Default mmio gaps for an aarch64 partition.
+pub const DEFAULT_MMIO_GAPS_AARCH64: [MemoryRange; 2] = [
+    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64..0x1_0000_0000), // nMB just below 4GB
+    MemoryRange::new(0xF_E000_0000..0x10_0000_0000), // 512MB just below 64GB, then up to 64GB
+];
+
+/// Default mmio gaps for aarch64 if VTL2 is enabled.
+pub const DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2: [MemoryRange; 3] = [
+    MemoryRange::new(0x1_0000_0000 - DEFAULT_LOW_MMAP_GAP_SIZE_AARCH64..0x1_0000_0000), // nMB just below 4GB
     MemoryRange::new(0xF_E000_0000..0x20_0000_0000), // 512MB just below 64GB, then up to 128GB
     MemoryRange::new(0x20_0000_0000..0x20_4000_0000), // 128GB to 129 GB
 ];
@@ -84,6 +96,8 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
 } else {
     0xEFFE_E000
 };
+
+pub const DEFAULT_PCIE_ECAM_BASE: u64 = 0x8_0000_0000; // 32GB, size depends on configuration
 
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
@@ -104,6 +118,7 @@ pub enum LoadMode {
         enable_serial: bool,
         enable_vpci_boot: bool,
         uefi_console_mode: Option<UefiConsoleMode>,
+        default_boot_always_attempt: bool,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -153,21 +168,40 @@ pub enum Vtl2BaseAddressType {
 }
 
 #[derive(Debug, MeshPayload)]
+pub struct PcieRootComplexConfig {
+    pub index: u32,
+    pub name: String,
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    pub low_mmio_size: u32,
+    pub high_mmio_size: u64,
+    pub ports: Vec<PcieRootPortConfig>,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieRootPortConfig {
+    pub name: String,
+}
+
+#[derive(Debug, MeshPayload)]
 pub struct VpciDeviceConfig {
     pub vtl: DeviceVtl,
+    /// The ID of the device. Vpci devices are identified by a portion of `data2` and `data3` of the
+    /// instance ID, which is used to generate the guest-visible device ID.
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
 }
 
 #[derive(Debug, Protobuf)]
-pub struct ProcessorTopologyConfig<T = TargetTopologyConfig> {
+pub struct ProcessorTopologyConfig {
     pub proc_count: u32,
     pub vps_per_socket: Option<u32>,
     pub enable_smt: Option<bool>,
-    pub arch: T,
+    pub arch: Option<ArchTopologyConfig>,
 }
 
-#[derive(Debug, Protobuf, Default)]
+#[derive(Debug, Protobuf, Default, Clone)]
 pub struct X86TopologyConfig {
     pub apic_id_offset: u32,
     pub x2apic: X2ApicConfig,
@@ -188,27 +222,39 @@ pub enum X2ApicConfig {
     Enabled,
 }
 
-#[derive(Debug, Protobuf, Default)]
-pub struct Aarch64TopologyConfig {
-    pub gic_config: Option<GicConfig>,
+#[derive(Debug, Protobuf, Default, Clone)]
+pub enum PmuGsivConfig {
+    #[default]
+    /// Use the hypervisor's platform GSIV value for the PMU.
+    Platform,
+    /// Use the specified GSIV value for the PMU.
+    Gsiv(u32),
 }
 
-#[derive(Debug, Protobuf)]
+#[derive(Debug, Protobuf, Default, Clone)]
+pub struct Aarch64TopologyConfig {
+    pub gic_config: Option<GicConfig>,
+    pub pmu_gsiv: PmuGsivConfig,
+}
+
+#[derive(Debug, Protobuf, Clone)]
 pub struct GicConfig {
     pub gic_distributor_base: u64,
     pub gic_redistributors_base: u64,
 }
 
-#[cfg(guest_arch = "x86_64")]
-pub type TargetTopologyConfig = X86TopologyConfig;
-#[cfg(guest_arch = "aarch64")]
-pub type TargetTopologyConfig = Aarch64TopologyConfig;
+#[derive(Debug, Protobuf, Clone)]
+pub enum ArchTopologyConfig {
+    X86(X86TopologyConfig),
+    Aarch64(Aarch64TopologyConfig),
+}
 
 #[derive(Debug, MeshPayload)]
 pub struct MemoryConfig {
     pub mem_size: u64,
     pub mmio_gaps: Vec<MemoryRange>,
     pub prefetch_memory: bool,
+    pub pcie_ecam_base: u64,
 }
 
 #[derive(Debug, MeshPayload, Default)]

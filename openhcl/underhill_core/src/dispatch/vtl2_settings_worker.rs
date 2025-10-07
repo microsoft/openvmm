@@ -4,11 +4,12 @@
 //! Implements VTL2 settings worker
 
 use super::LoadedVm;
-use crate::nvme_manager::NvmeDiskConfig;
+use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
-use disk_backend::resolve::ResolveDiskParameters;
+use cvm_tracing::CVM_ALLOWED;
 use disk_backend::Disk;
+use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend_resources::AutoFormattedDiskHandle;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use futures::StreamExt;
@@ -18,10 +19,10 @@ use ide_resources::GuestMedia;
 use ide_resources::IdeControllerConfig;
 use ide_resources::IdeDeviceConfig;
 use ide_resources::IdePath;
+use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use scsidisk_resources::SimpleScsiDiskHandle;
@@ -38,8 +39,8 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiControllerRequest;
 use storvsp_resources::ScsiDeviceAndPath;
 use thiserror::Error;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use uevent::UeventListener;
 use underhill_config::DiskParameters;
 use underhill_config::NicDevice;
@@ -51,13 +52,14 @@ use underhill_config::Vtl2SettingsDynamic;
 use underhill_config::Vtl2SettingsErrorCode;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_threadpool::AffinitizedThreadpool;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::PciDeviceHandleKind;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::ResolveError;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::PciDeviceHandleKind;
+use vm_resource::kind::VmbusDeviceHandleKind;
+use vmcore::vm_task::VmTaskDriverSource;
 
 #[derive(Error, Debug)]
 enum Error<'a> {
@@ -122,7 +124,9 @@ enum Error<'a> {
     },
     #[error("failed to parse Device ID: LUN = {lun:?}, device_id = {device_id:?}")]
     StorageBadDeviceId { lun: u8, device_id: &'a str },
-    #[error("failed to parse Product Revision Level: LUN = {lun:?}, product_revision_level = {product_revision_level:?}")]
+    #[error(
+        "failed to parse Product Revision Level: LUN = {lun:?}, product_revision_level = {product_revision_level:?}"
+    )]
     StorageBadProductRevisionLevel {
         lun: u8,
         product_revision_level: &'a str,
@@ -261,7 +265,7 @@ impl Vtl2SettingsWorker {
 
         while let Some(req) = settings_recv.next().await {
             req.0
-                .handle(|buf| async {
+                .handle(async |buf| {
                     self.handle_modify_vtl2_settings(uevent_listener, &{ buf })
                         .await
                 })
@@ -301,7 +305,7 @@ impl Vtl2SettingsWorker {
 
         let new_settings = vtl2_settings.dynamic;
 
-        tracing::info!("Received VTL2 settings {:?}", new_settings);
+        tracing::info!(CVM_ALLOWED, ?new_settings, "Received VTL2 settings");
 
         let mut todos: Vec<Vtl2ConfigAcquireResource> = Vec::new();
 
@@ -330,14 +334,18 @@ impl Vtl2SettingsWorker {
                 .await
             {
                 Err(e) => {
-                    tracing::error!("Error acquiring VTL2 configuration resources: {:?}", e);
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        ?e,
+                        "Error acquiring VTL2 configuration resources"
+                    );
                     errors.push(e);
                 }
                 Ok(()) => {
                     // NOTHING BEYOND CAN FAIL
                     // We assume recover action for commit is to re-create the VM
                     if let Err(e) = self.commit_configuration_changes(to_commits).await {
-                        tracing::error!("Error commit VTL2 configuration changes: {:?}", e);
+                        tracing::error!(CVM_ALLOWED, ?e, "Error commit VTL2 configuration changes");
                         errors.push(e);
                     }
                 }
@@ -348,7 +356,7 @@ impl Vtl2SettingsWorker {
             return Err(errors);
         }
 
-        tracing::info!("VTL2 settings modified");
+        tracing::info!(CVM_ALLOWED, "VTL2 settings modified");
         self.old_settings = new_settings;
         Ok(())
     }
@@ -429,11 +437,12 @@ impl Vtl2SettingsWorker {
                         })?;
 
                     if let Some(dvd) = dvd {
-                        assert!(self
-                            .interfaces
-                            .scsi_dvds
-                            .insert(StorageDevicePath::Scsi(scsi_path), dvd)
-                            .is_none());
+                        assert!(
+                            self.interfaces
+                                .scsi_dvds
+                                .insert(StorageDevicePath::Scsi(scsi_path), dvd)
+                                .is_none()
+                        );
                     }
                 }
                 Vtl2ConfigCommit::RmDisk(controller_id, scsi_path) => {
@@ -516,26 +525,25 @@ pub(crate) async fn handle_vtl2_config_rpc(
 ) {
     match message {
         Vtl2ConfigNicRpc::Modify(rpc) => {
-            rpc.handle(|nic_settings| {
+            rpc.handle(async |nic_settings| {
                 let modify_settings = vm.network_settings.as_mut().map(|settings| {
                     settings.modify_network_settings(nic_settings.0, nic_settings.1)
                 });
-                async {
-                    modify_settings
-                        .context("network modifications not supported for this VM")?
-                        .await
-                }
+                modify_settings
+                    .context("network modifications not supported for this VM")?
+                    .await
             })
             .await
         }
         Vtl2ConfigNicRpc::Add(rpc) => {
-            rpc.handle(|nic_settings| {
+            rpc.handle(async |nic_settings| {
                 vm.add_vf_manager(threadpool, nic_settings.0, nic_settings.1, nic_settings.2)
+                    .await
             })
             .await
         }
         Vtl2ConfigNicRpc::Remove(rpc) => {
-            rpc.handle(|instance_id| vm.remove_vf_manager(instance_id))
+            rpc.handle(async |instance_id| vm.remove_vf_manager(instance_id).await)
                 .await
         }
     }
@@ -545,13 +553,14 @@ pub async fn disk_from_disk_type(
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
     resolver: &ResourceResolver,
+    driver_source: &VmTaskDriverSource,
 ) -> Result<Disk, Vtl2SettingsErrorInfo> {
     let disk = resolver
         .resolve(
             disk_type,
             ResolveDiskParameters {
                 read_only,
-                _async_trait_workaround: &(),
+                driver_source,
             },
         )
         .await
@@ -880,7 +889,7 @@ pub struct UhScsiControllerConfig {
     )>,
 }
 
-#[cfg_attr(not(feature = "vpci"), allow(dead_code))]
+#[cfg_attr(not(feature = "vpci"), expect(dead_code))]
 pub struct UhVpciDeviceConfig {
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
@@ -950,7 +959,7 @@ struct StorageContext<'a> {
     use_nvme_vfio: bool,
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(CVM_ALLOWED))]
 async fn make_disk_type_from_physical_device(
     ctx: &mut CancelContext,
     storage_context: &StorageContext<'_>,
@@ -1014,7 +1023,7 @@ async fn make_disk_type_from_physical_device(
                     }
                 }
             })
-            .instrument(tracing::info_span!("get_devname"))
+            .instrument(tracing::info_span!("get_devname", CVM_ALLOWED))
             .await??;
         Ok(devname)
     }
@@ -1040,7 +1049,7 @@ async fn make_disk_type_from_physical_device(
                     devname.as_ref(),
                     "bdi".as_ref(),
                 ]))
-                .instrument(tracing::info_span!("wait_for_bdi")),
+                .instrument(tracing::info_span!("wait_for_bdi", CVM_ALLOWED)),
         )
         .await??;
         Ok(())
@@ -1276,7 +1285,7 @@ async fn make_disk_type(
                 Ok(disk_type) => Some(disk_type),
                 Err(err_info) => match err_info.code() {
                     Vtl2SettingsErrorCode::StorageCannotOpenVtl2Device => {
-                        tracing::warn!("Check if ISO is present on drive: {:?}", err_info);
+                        tracing::warn!(CVM_ALLOWED, ?err_info, "Check if ISO is present on drive");
                         None
                     }
                     _ => Err(err_info)?,
@@ -1309,7 +1318,7 @@ async fn make_nvme_disk_config(
     })
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(CVM_ALLOWED))]
 async fn make_ide_controller_config(
     ctx: &mut CancelContext,
     storage_context: &StorageContext<'_>,
@@ -1351,7 +1360,7 @@ async fn make_ide_controller_config(
     }
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(CVM_ALLOWED))]
 async fn make_scsi_controller_config(
     ctx: &mut CancelContext,
     storage_context: &StorageContext<'_>,
@@ -1373,6 +1382,22 @@ async fn make_scsi_controller_config(
         scsi_disks.push(disk_cfg);
     }
 
+    // Set poll_mode_queue_depth = 4 for remote disk based on experiment results.
+    // Azure VMs have the fixed SCSI controller ids. Both host and guest agents
+    // rely on the fixed ids. It is assumed that data (remote) disks are attached
+    // to SCSI controller with this specific id.
+    let poll_mode_queue_depth =
+        if instance_id == guid::guid!("f8b3781b-1e82-4818-a1c3-63d806ec15bb") {
+            Some(4)
+        } else {
+            None
+        };
+    tracing::info!(
+        %instance_id,
+        poll_mode_queue_depth,
+        "poll mode queue depth chosen based on controller instance id",
+    );
+
     let (send, recv) = mesh::channel();
     // The choice of max 256 scsi subchannels is somewhat arbitrary. But
     // for now, it provides a decent trade off between unbounded number of
@@ -1384,13 +1409,14 @@ async fn make_scsi_controller_config(
             devices: scsi_disks,
             io_queue_depth: Some(controller.io_queue_depth.unwrap_or(default_io_queue_depth)),
             requests: Some(recv),
+            poll_mode_queue_depth,
         },
         request: send,
         dvds,
     })
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(CVM_ALLOWED))]
 async fn make_nvme_controller_config(
     ctx: &mut CancelContext,
     storage_context: &StorageContext<'_>,
@@ -1493,11 +1519,16 @@ async fn check_block_sysfs_ready(devname: &str) -> bool {
     match blocking::unblock(move || fs_err::File::open(Path::new("/dev").join(dev_clone))).await {
         Ok(_) => true,
         Err(err) if err.raw_os_error() == Some(libc::ENXIO) => {
-            tracing::info!(devname, "block device not ready, waiting for uevent");
+            tracing::info!(
+                CVM_ALLOWED,
+                devname,
+                "block device not ready, waiting for uevent"
+            );
             false
         }
         Err(err) => {
             tracing::warn!(
+                CVM_ALLOWED,
                 error = &err as &dyn std::error::Error,
                 devname,
                 "block device failed to open during scan"
@@ -1531,24 +1562,21 @@ async fn get_nvme_namespace_devname(
 
     // Look for a child node with the correct namespace ID.
     let devname = uevent_listener
-        .wait_for_matching_child(&nvme_devpath, move |path, uevent| {
-            let prefix = prefix.clone();
-            async move {
-                let name = path.file_name()?.to_str()?;
-                if !name.starts_with(&prefix) {
-                    return None;
-                }
-                match nsid_matches(&path, nsid) {
-                    Ok(true) => {
-                        if uevent || check_block_sysfs_ready(name).await {
-                            Some(Ok(name.to_string()))
-                        } else {
-                            None
-                        }
+        .wait_for_matching_child(&nvme_devpath, async |path, uevent| {
+            let name = path.file_name()?.to_str()?;
+            if !name.starts_with(&prefix) {
+                return None;
+            }
+            match nsid_matches(&path, nsid) {
+                Ok(true) => {
+                    if uevent || check_block_sysfs_ready(name).await {
+                        Some(Ok(name.to_string()))
+                    } else {
+                        None
                     }
-                    Ok(false) => None,
-                    Err(err) => Some(Err(err)),
                 }
+                Ok(false) => None,
+                Err(err) => Some(Err(err)),
             }
         })
         .await??;
@@ -1563,7 +1591,7 @@ async fn get_scsi_host_number(
     // Wait for a node of the name host<n> to show up.
     let controller_path = PathBuf::from(format!("/sys/bus/vmbus/devices/{instance_id}"));
     let host_number = uevent_listener
-        .wait_for_matching_child(&controller_path, move |name, _uevent| async move {
+        .wait_for_matching_child(&controller_path, async |name, _uevent| {
             name.file_name()?
                 .to_str()?
                 .strip_prefix("host")?
@@ -1589,7 +1617,7 @@ async fn get_vscsi_devname(
     ));
 
     uevent_listener
-        .wait_for_matching_child(&block_devpath, |path, uevent| async move {
+        .wait_for_matching_child(&block_devpath, async |path, uevent| {
             let name = path.file_name()?.to_str()?;
             if uevent || check_block_sysfs_ready(name).await {
                 Some(name.to_string())
@@ -1610,7 +1638,7 @@ async fn nvme_controller_path_from_vmbus_instance_id(
     let (pci_id, mut devpath) = vpci_path(instance_id);
     devpath.push("nvme");
     let devpath = uevent_listener
-        .wait_for_matching_child(&devpath, move |path, _uevent| async move { Some(path) })
+        .wait_for_matching_child(&devpath, async |path, _uevent| Some(path))
         .await?;
     wait_for_pci_path(&pci_id).await;
     Ok(devpath)
@@ -1780,7 +1808,7 @@ impl InitialControllers {
 
         let vtl2_settings = dps.general.vtl2_settings.as_ref();
 
-        tracing::info!("Initial VTL2 settings {:?}", vtl2_settings);
+        tracing::info!(CVM_ALLOWED, ?vtl2_settings, "Initial VTL2 settings");
 
         let fixed = vtl2_settings.map_or_else(Default::default, |s| s.fixed.clone());
         let dynamic = vtl2_settings.map(|s| &s.dynamic);

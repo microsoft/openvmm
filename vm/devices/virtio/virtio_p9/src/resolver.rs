@@ -5,13 +5,13 @@
 
 use crate::VirtioPlan9Device;
 use plan9::Plan9FileSystem;
+use virtio::LegacyWrapper;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
-use virtio::LegacyWrapper;
 use virtio_resources::p9::VirtioPlan9Handle;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
-use vm_resource::ResolveResource;
 
 /// Resolver for virtio-9p devices.
 pub struct VirtioPlan9Resolver;

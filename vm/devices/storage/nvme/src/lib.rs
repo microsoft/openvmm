@@ -4,7 +4,6 @@
 //! An implementation of an NVMe controller emulator.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod error;
 mod namespace;

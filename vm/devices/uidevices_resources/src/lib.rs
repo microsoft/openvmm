@@ -4,15 +4,14 @@
 //! Resource definitions for UI devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use mesh::MeshPayload;
+use vm_resource::Resource;
+use vm_resource::ResourceId;
 use vm_resource::kind::FramebufferHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
 use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_resource::Resource;
-use vm_resource::ResourceId;
 
 /// Handle for a synthetic keyboard device.
 #[derive(MeshPayload)]

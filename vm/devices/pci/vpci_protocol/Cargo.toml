@@ -1,0 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vpci_protocol"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitfield-struct.workspace = true
+guid.workspace = true
+open_enum.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

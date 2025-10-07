@@ -13,28 +13,29 @@ use crate::queues;
 use crate::queues::Doorbell;
 use crate::queues::DoorbellPage;
 use anyhow::Context;
-use futures::lock::Mutex;
 use futures::StreamExt;
+use futures::lock::Mutex;
+use gdma_defs::GdmaDevId;
+use gdma_defs::GdmaDevType;
+use gdma_defs::GdmaQueueType;
+use gdma_defs::GdmaRegisterDeviceResp;
 use gdma_defs::bnic::ManaQueryDeviceCfgResp;
 use gdma_defs::bnic::ManaQueryFilterStateResponse;
 use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaQueryVportCfgResp;
 use gdma_defs::bnic::STATISTICS_FLAGS_ALL;
-use gdma_defs::GdmaDevId;
-use gdma_defs::GdmaDevType;
-use gdma_defs::GdmaQueueType;
-use gdma_defs::GdmaRegisterDeviceResp;
 use inspect::Inspect;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::sync::Arc;
+use tracing::Instrument;
+use user_driver::DeviceBacking;
+use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
-use user_driver::DeviceBacking;
-use user_driver::DmaClient;
 use vmcore::vm_task::VmTaskDriverSource;
 
 enum LinkStatus {
@@ -77,7 +78,9 @@ impl<T: DeviceBacking> ManaDevice<T> {
         num_vps: u32,
         max_queues_per_vport: u16,
     ) -> anyhow::Result<Self> {
-        let mut gdma = GdmaDriver::new(driver, device, num_vps).await?;
+        let mut gdma = GdmaDriver::new(driver, device, num_vps, None)
+            .instrument(tracing::info_span!("new_gdma_driver"))
+            .await?;
         gdma.test_eq().await?;
 
         gdma.verify_vf_driver_version().await?;
@@ -276,8 +279,7 @@ impl VportState {
 
     /// Get current filter setting if known.
     pub fn get_direction_to_vtl0(&self) -> Option<bool> {
-        let direction_to_vtl0 = *self.direction_to_vtl0.lock();
-        direction_to_vtl0
+        *self.direction_to_vtl0.lock()
     }
 }
 

@@ -3,17 +3,18 @@
 
 //! Disk resources, for use with [`vm_resource`].
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod layer;
 
+use mesh::Cell;
 use mesh::MeshPayload;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::DiskLayerHandleKind;
+use std::time::Duration;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::DiskLayerHandleKind;
 
 // Define config types here so that you don't have to pull in the individual
 // crates just to describe the configuration.
@@ -32,6 +33,19 @@ pub struct DiskWithReservationsHandle(pub Resource<DiskHandleKind>);
 
 impl ResourceId<DiskHandleKind> for DiskWithReservationsHandle {
     const ID: &'static str = "prwrap";
+}
+
+/// Disk handle for a delay disk.
+#[derive(MeshPayload)]
+pub struct DelayDiskHandle {
+    /// The underlying disk resource.
+    pub disk: Resource<DiskHandleKind>,
+    /// The delay to add to each I/O operation.
+    pub delay: Cell<Duration>,
+}
+
+impl ResourceId<DiskHandleKind> for DelayDiskHandle {
+    const ID: &'static str = "delay";
 }
 
 /// Disk handle for a fixed VHD1 disk.

@@ -7,8 +7,8 @@ use super::Builder;
 use super::Child;
 use super::FdOp;
 use super::SandboxFailureMode;
-use crate::unix::errno;
 use crate::unix::SyscallResult;
+use crate::unix::errno;
 use caps::CapsHashSet;
 use landlock::RulesetCreated;
 use seccompiler::SeccompFilter;
@@ -90,7 +90,7 @@ impl Builder<'_> {
         // Common page sizes are 4KiB, 16KiB, and 64KiB. The stack size must be a multiple
         // of the page size.
         let stack_len: usize = std::cmp::max(16 * 1024, page_size);
-        assert!(stack_len % page_size == 0);
+        assert!(stack_len.is_multiple_of(page_size));
 
         // Create a stack with one guard page.
         let stack_len = stack_len + page_size;

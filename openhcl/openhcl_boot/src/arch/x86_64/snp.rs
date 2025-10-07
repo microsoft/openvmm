@@ -8,8 +8,8 @@ use core::arch::asm;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
-use x86defs::snp::GhcbInfo;
 use x86defs::X86X_AMD_MSR_GHCB;
+use x86defs::snp::GhcbInfo;
 
 pub struct Ghcb;
 
@@ -19,7 +19,7 @@ pub enum AcceptGpaStatus {
     Retry,
 }
 
-#[allow(dead_code)] // Printed via Debug in the error case.
+#[expect(dead_code)] // Printed via Debug in the error case.
 #[derive(Debug)]
 pub enum AcceptGpaError {
     MemorySecurityViolation {
@@ -33,7 +33,11 @@ pub enum AcceptGpaError {
 }
 
 impl Ghcb {
-    unsafe fn sev_vmgexit() {
+    /// # Safety
+    ///
+    /// Regardless of the content of the GHCB page or MSR, this instruction should not be able
+    /// to cause memory safety issues.
+    fn sev_vmgexit() {
         // SAFETY: Using the `vmgexit` instruction forces an exit to the hypervisor but doesn't
         // directly change program state.
         unsafe {
@@ -85,9 +89,9 @@ fn pvalidate(
     validate: bool,
 ) -> Result<AcceptGpaStatus, AcceptGpaError> {
     if large_page {
-        assert!(va % x86defs::X64_LARGE_PAGE_SIZE == 0);
+        assert!(va.is_multiple_of(x86defs::X64_LARGE_PAGE_SIZE));
     } else {
-        assert!(va % hvdef::HV_PAGE_SIZE == 0)
+        assert!(va.is_multiple_of(hvdef::HV_PAGE_SIZE))
     }
 
     let validate_page = validate as u32;
@@ -145,7 +149,7 @@ pub fn set_page_acceptance(
             MemoryRange::from_4k_gpn_range(page_base..page_base + 1),
             true,
         );
-        if page_base % pages_per_large_page == 0 && page_count >= pages_per_large_page {
+        if page_base.is_multiple_of(pages_per_large_page) && page_count >= pages_per_large_page {
             let res = pvalidate(page_base, mapping.data.as_ptr() as u64, true, validate)?;
             match res {
                 AcceptGpaStatus::Success => {

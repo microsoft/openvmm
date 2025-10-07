@@ -3,6 +3,11 @@
 
 //! Transparent encoding for types that are a wrapper around another type.
 
+use crate::FieldDecode;
+use crate::FieldEncode;
+use crate::MessageDecode;
+use crate::MessageEncode;
+use crate::Result;
 use crate::inplace::InplaceOption;
 use crate::protobuf::FieldReader;
 use crate::protobuf::FieldSizer;
@@ -16,11 +21,6 @@ use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
 use crate::table::decode::DecoderEntry;
 use crate::table::encode::EncoderEntry;
-use crate::FieldDecode;
-use crate::FieldEncode;
-use crate::MessageDecode;
-use crate::MessageEncode;
-use crate::Result;
 use core::mem::MaybeUninit;
 use core::ptr;
 

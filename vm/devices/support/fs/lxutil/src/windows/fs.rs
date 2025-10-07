@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::VolumeState;
 use super::symlink;
 use super::util;
-use super::VolumeState;
 use ::windows::Wdk::Storage::FileSystem;
 use ::windows::Wdk::System::SystemServices;
 use ::windows::Win32::Foundation;
@@ -517,7 +517,7 @@ pub fn allocation_size_to_block_count(allocation_size: i64, block_size: u32) -> 
 
     if size >= block_size as u64 {
         result = size / LX_UTIL_FS_ALLOCATION_BLOCK_SIZE;
-        if size % LX_UTIL_FS_ALLOCATION_BLOCK_SIZE != 0 {
+        if !size.is_multiple_of(LX_UTIL_FS_ALLOCATION_BLOCK_SIZE) {
             result += 1;
         }
     }

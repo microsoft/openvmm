@@ -6,7 +6,6 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod builder;
 pub mod parser;

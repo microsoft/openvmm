@@ -6,21 +6,21 @@
 //! Currently this supports IO-APIC version 0x11, from the PIIX4 era. This
 //! version does not support an EOI register (unlike version 0x20 and newer).
 
+use self::spec::IO_APIC_VERSION;
+use self::spec::IOAPIC_DEVICE_MMIO_REGION_SIZE;
 use self::spec::IndexRegister;
 use self::spec::IoApicId;
 use self::spec::IoApicVersion;
-use self::spec::RedirectionEntry;
-use self::spec::IOAPIC_DEVICE_MMIO_REGION_SIZE;
-use self::spec::IO_APIC_VERSION;
 use self::spec::REDIRECTION_WRITE_MASK;
-use crate::ioapic::spec::Register;
+use self::spec::RedirectionEntry;
 use crate::ioapic::spec::IOAPIC_DEVICE_MMIO_REGION_MASK;
+use crate::ioapic::spec::Register;
+use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::HandleEoi;
 use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -416,9 +416,9 @@ impl ChipsetDevice for IoApicDevice {
 }
 
 mod save_restore {
+    use super::IoApicDevice;
     use super::spec::IndexRegister;
     use super::spec::RedirectionEntry;
-    use super::IoApicDevice;
     use thiserror::Error;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;

@@ -4,7 +4,6 @@
 //! RAM-backed disk layer implementation.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod resolver;
 
@@ -24,8 +23,8 @@ use guestmem::MemoryWrite;
 use inspect::Inspect;
 use parking_lot::RwLock;
 use scsi_buffers::RequestBuffers;
-use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt;
 use std::fmt::Debug;
 use std::sync::atomic::AtomicU64;
@@ -114,7 +113,7 @@ impl RamDiskLayer {
             if size == 0 {
                 return Err(Error::EmptyDisk);
             }
-            if size % SECTOR_SIZE as u64 != 0 {
+            if !size.is_multiple_of(SECTOR_SIZE as u64) {
                 return Err(Error::NotSectorMultiple {
                     disk_size: size,
                     sector_size: SECTOR_SIZE,

@@ -4,6 +4,7 @@
 //! Definitions relating to the x86 architecture, including the core CPU and
 //! its interrupt controller (APIC).
 
+#![expect(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 
@@ -115,6 +116,30 @@ impl<'a> arbitrary::Arbitrary<'a> for SegmentAttributes {
     }
 }
 
+/// Segment selector (what goes into a segment register)
+#[bitfield(u16)]
+#[derive(PartialEq, Eq)]
+pub struct SegmentSelector {
+    #[bits(2)]
+    /// Request Privilege Level (ring 0-3, where 0 is the highest)
+    pub rpl: u8,
+    /// Table indicator: 0 - GDT, 1 - LDT
+    pub ti: bool,
+    #[bits(13)]
+    /// Index in the descriptor table
+    pub index: u16,
+}
+
+impl SegmentSelector {
+    pub const fn as_bits(&self) -> u16 {
+        self.0
+    }
+
+    pub fn from_gdt_index(index: u16, rpl: u8) -> Self {
+        Self::new().with_index(index).with_rpl(rpl).with_ti(false)
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct SegmentRegister {
     pub base: u64,
@@ -178,6 +203,7 @@ pub const X86X_MSR_EBL_CR_POWERON: u32 = 0x2a;
 pub const X86X_IA32_MSR_SMI_COUNT: u32 = 0x34;
 pub const X86X_IA32_MSR_FEATURE_CONTROL: u32 = 0x3a;
 pub const X86X_MSR_PPIN_CTL: u32 = 0x4e;
+pub const X86X_MSR_BIOS_UPDT_TRIG: u32 = 0x79;
 pub const X86X_MSR_MC_UPDATE_PATCH_LEVEL: u32 = 0x8b;
 pub const X86X_MSR_PLATFORM_INFO: u32 = 0xce;
 pub const X86X_MSR_UMWAIT_CONTROL: u32 = 0xe1;
@@ -261,7 +287,7 @@ pub const DR6_SINGLE_STEP: u64 = 0x4000;
 pub struct RFlags {
     // FLAGS
     pub carry: bool,
-    _reserved0: bool,
+    pub reserved_must_be_1: bool,
     pub parity: bool,
     _reserved1: bool,
     pub adjust: bool,
@@ -292,9 +318,10 @@ pub struct RFlags {
     _reserved5: u32,
 }
 
-impl Default for RFlags {
-    fn default() -> Self {
-        Self(2)
+impl RFlags {
+    /// Returns the reset value of the RFLAGS register.
+    pub fn at_reset() -> Self {
+        Self::new().with_reserved_must_be_1(true)
     }
 }
 
@@ -373,6 +400,17 @@ impl LargeGdtEntry {
     }
 }
 
+#[repr(C, packed)]
+#[derive(Clone, Copy, Immutable, KnownLayout, IntoBytes, FromBytes)]
+pub struct Tss64 {
+    pub _mbz0: u32,
+    pub rsp: [u64; 3],
+    pub ist: [u64; 8],
+    pub _mbz1: u64,
+    pub _mbz2: u16,
+    pub io_map_base: u16,
+}
+
 open_enum! {
     pub enum Exception: u8 {
         DIVIDE_ERROR = 0x0,
@@ -392,6 +430,7 @@ open_enum! {
         ALIGNMENT_CHECK = 0x11,
         MACHINE_CHECK = 0x12,
         SIMD_FLOATING_POINT_EXCEPTION = 0x13,
+        CONTROL_PROTECTION_EXCEPTION = 0x15,
         SEV_VMM_COMMUNICATION = 0x1D,
     }
 }

@@ -7,8 +7,7 @@ use clap::Parser;
 use clap::ValueEnum;
 use std::path::PathBuf;
 use std::process::Command;
-use vmm_test_images::KnownIso;
-use vmm_test_images::KnownVhd;
+use vmm_test_images::KnownTestArtifacts;
 
 /// Download an image from Azure Blob Storage.
 ///
@@ -18,12 +17,9 @@ pub struct DownloadImageTask {
     /// The folder to download the images to.
     #[clap(short, long, default_value = "images")]
     output_folder: PathBuf,
-    /// The VHDs to download.
+    /// The test artifacts to download.
     #[clap(long)]
-    vhds: Vec<KnownVhd>,
-    /// The ISOs to download.
-    #[clap(long)]
-    isos: Vec<KnownIso>,
+    artifacts: Vec<KnownTestArtifacts>,
     /// Redownload images even if the file already exists.
     #[clap(short, long)]
     force: bool,
@@ -34,16 +30,14 @@ const CONTAINER: &str = "vhds";
 
 impl Xtask for DownloadImageTask {
     fn run(mut self, _ctx: crate::XtaskCtx) -> anyhow::Result<()> {
-        if self.vhds.is_empty() && self.isos.is_empty() {
-            self.vhds = KnownVhd::value_variants().to_vec();
-            self.isos = KnownIso::value_variants().to_vec();
+        if self.artifacts.is_empty() {
+            self.artifacts = KnownTestArtifacts::value_variants().to_vec();
         }
 
         let filenames = self
-            .vhds
+            .artifacts
             .into_iter()
             .map(|x| x.filename())
-            .chain(self.isos.into_iter().map(|x| x.filename()))
             .collect::<Vec<_>>();
 
         if !self.output_folder.exists() {

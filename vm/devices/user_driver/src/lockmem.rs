@@ -90,7 +90,7 @@ impl Drop for Mapping {
 
 impl LockedMemory {
     pub fn new(len: usize) -> anyhow::Result<Self> {
-        if len % PAGE_SIZE != 0 {
+        if !len.is_multiple_of(PAGE_SIZE) {
             anyhow::bail!("not a page-size multiple");
         }
         let mapping = Mapping::new(len).context("failed to create mapping")?;
@@ -131,11 +131,7 @@ impl crate::DmaClient for LockedMemorySpawner {
         Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
     }
 
-    fn attach_dma_buffer(
-        &self,
-        _len: usize,
-        _base_pfn: u64,
-    ) -> anyhow::Result<crate::memory::MemoryBlock> {
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<crate::memory::MemoryBlock>> {
         anyhow::bail!("restore not supported for lockmem")
     }
 }

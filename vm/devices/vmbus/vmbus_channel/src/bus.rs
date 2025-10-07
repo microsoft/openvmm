@@ -7,11 +7,12 @@ use async_trait::async_trait;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
-use mesh::MeshPayload;
 use std::fmt::Display;
+use std::time::Duration;
 use vmbus_core::protocol;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::UserDefinedData;
@@ -22,6 +23,8 @@ use vmcore::interrupt::Interrupt;
 pub struct OfferInput {
     /// Parameters describing the offer.
     pub params: OfferParams,
+    /// The event to signal when the guest needs attention.
+    pub event: Interrupt,
     /// A mesh channel to send channel-related requests to.
     pub request_send: mesh::Sender<ChannelRequest>,
     /// A mesh channel to receive channel-related requests to.
@@ -78,8 +81,12 @@ impl OfferResources {
 #[derive(Debug, MeshPayload)]
 pub enum ChannelRequest {
     /// Open the channel.
-    Open(Rpc<OpenRequest, Option<OpenResult>>),
+    Open(Rpc<OpenRequest, bool>),
     /// Close the channel.
+    ///
+    /// Although there is no response from the host, this is still modeled as an
+    /// RPC so that the caller can know that the vmbus client's state has been
+    /// updated.
     Close(Rpc<(), ()>),
     /// Create a new GPADL.
     Gpadl(Rpc<GpadlRequest, bool>),
@@ -87,14 +94,6 @@ pub enum ChannelRequest {
     TeardownGpadl(Rpc<GpadlId, ()>),
     /// Modify the channel's target VP.
     Modify(Rpc<ModifyRequest, i32>),
-}
-
-/// The successful result of an open request.
-#[derive(Debug, MeshPayload)]
-pub struct OpenResult {
-    /// The interrupt object vmbus should signal when the guest signals the
-    /// host.
-    pub guest_to_host_interrupt: Interrupt,
 }
 
 /// GPADL information from the guest.
@@ -123,8 +122,8 @@ pub enum ModifyRequest {
 pub enum ChannelServerRequest {
     /// A request to restore the channel.
     ///
-    /// The input parameter provides the open result if the channel was saved open.
-    Restore(FailableRpc<Option<OpenResult>, RestoreResult>),
+    /// The input parameter indicates if the channel was saved open.
+    Restore(FailableRpc<bool, RestoreResult>),
     /// A request to revoke the channel.
     ///
     /// A channel can also be revoked by dropping it. This request is only necessary if you need to
@@ -171,8 +170,7 @@ pub trait ParentBus: Send + Sync {
     /// time.
     fn clone_bus(&self) -> Box<dyn ParentBus>;
 
-    /// Returns whether [`OpenResult::guest_to_host_interrupt`] needs to be
-    /// backed by an OS event.
+    /// Returns whether [`OfferInput::event`] needs to be backed by an OS event.
     ///
     /// TODO: Remove this and just return the appropriate notify type directly
     /// once subchannel creation and enable are separated.
@@ -274,11 +272,12 @@ pub struct OfferParams {
     pub channel_type: ChannelType,
     /// The subchannel index. Index 0 indicates a primary (normal channel).
     pub subchannel_index: u16,
-    /// Indicates whether the channel's interrupts should use monitor pages.
-    pub use_mnf: bool,
+    /// Indicates whether the channel's interrupts should use monitor pages,
+    /// and the interrupt latency if it's enabled.
+    pub mnf_interrupt_latency: Option<Duration>,
     /// The order in which channels with the same interface will be offered to
     /// the guest (optional).
-    pub offer_order: Option<u32>,
+    pub offer_order: Option<u64>,
     /// Indicates whether the channel supports using encrypted memory for any
     /// external GPADLs and GPA direct ranges. This is only used when hardware
     /// isolation is in use.

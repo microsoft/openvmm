@@ -4,121 +4,66 @@
 //! Common processor support for hardware-isolated partitions.
 
 pub mod apic;
-mod tlb_lock;
+pub mod tlb_lock;
 
 use super::UhEmulationState;
 use super::UhProcessor;
-use super::UhRunVpError;
-use crate::processor::HardwareIsolatedBacking;
-use crate::processor::UhHypercallHandler;
-use crate::validate_vtl_gpa_flags;
+use crate::CvmVtl1State;
+use crate::GpnSource;
 use crate::GuestVsmState;
-use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
 use crate::InitialVpContextOperation;
 use crate::TlbFlushLockAccess;
 use crate::VpStartEnableVtl;
 use crate::WakeReason;
+use crate::processor::HardwareIsolatedBacking;
+use crate::processor::UhHypercallHandler;
+use crate::validate_vtl_gpa_flags;
+use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryErrorKind;
 use hv1_emulator::RequestInterrupt;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvFlushFlags;
-use hvdef::hypercall::TranslateGvaResultCode;
+use hv1_structs::VtlArray;
 use hvdef::HvCacheType;
 use hvdef::HvError;
+use hvdef::HvInterceptAccessType;
+use hvdef::HvInterruptType;
 use hvdef::HvMapGpaFlags;
+use hvdef::HvMessage;
+use hvdef::HvMessageType;
+use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmVpSecureVtlConfig;
 use hvdef::HvResult;
-use hvdef::HvSynicSint;
 use hvdef::HvVtlEntryReason;
+use hvdef::HvX64InterceptMessageHeader;
+use hvdef::HvX64MemoryAccessInfo;
+use hvdef::HvX64MemoryInterceptMessage;
+use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_READ;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_WRITE;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvFlushFlags;
+use hvdef::hypercall::TranslateGvaResultCode;
 use std::iter::zip;
-use std::sync::Arc;
+use virt::Processor;
 use virt::io::CpuIo;
+use virt::irqcon::MsiRequest;
 use virt::vp::AccessVpState;
 use virt::x86::MsrError;
-use virt::Processor;
+use virt::x86::MsrErrorExt;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vm_topology::memory::AddressType;
+use x86defs::cpuid;
+use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
-
-impl<'b, T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
-{
-    pub fn hcvm_enable_partition_vtl(
-        &mut self,
-        partition_id: u64,
-        target_vtl: Vtl,
-        flags: hvdef::hypercall::EnablePartitionVtlFlags,
-    ) -> HvResult<()> {
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err(HvError::InvalidPartitionId);
-        }
-
-        let target_vtl = GuestVtl::try_from(target_vtl).map_err(|_| HvError::AccessDenied)?;
-        if target_vtl != GuestVtl::Vtl1 {
-            return Err(HvError::AccessDenied);
-        }
-
-        if flags.enable_supervisor_shadow_stack() || flags.enable_hardware_hvpt() {
-            return Err(HvError::InvalidParameter);
-        }
-
-        let mut gvsm_state = self.vp.partition.guest_vsm.write();
-
-        match *gvsm_state {
-            GuestVsmState::NotPlatformSupported => return Err(HvError::AccessDenied),
-            GuestVsmState::NotGuestEnabled => (),
-            GuestVsmState::Enabled { vtl1: _ } => {
-                // VTL 1 cannot be already enabled
-                return Err(HvError::VtlAlreadyEnabled);
-            }
-        }
-
-        self.vp.partition.hcl.enable_partition_vtl(
-            target_vtl,
-            // These flags are managed and enforced internally; CVMs can't rely
-            // on the hypervisor
-            0.into(),
-        )?;
-
-        *gvsm_state = GuestVsmState::Enabled {
-            vtl1: GuestVsmVtl1State::HardwareCvm {
-                state: crate::HardwareCvmVtl1State {
-                    mbec_enabled: flags.enable_mbec(),
-                    ..Default::default()
-                },
-            },
-        };
-
-        let protector = self
-            .vp
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .expect("exists for a cvm");
-
-        // Grant VTL 1 access to lower VTL memory
-        tracing::debug!("Granting VTL 1 access to lower VTL memory");
-        protector.change_default_vtl_protections(
-            GuestVtl::Vtl1,
-            hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-            self.vp,
-        )?;
-
-        tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
-
-        tracing::info!("Enabled vtl 1 on the partition");
-
-        Ok(())
-    }
-}
+use zerocopy::IntoBytes;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
@@ -194,6 +139,21 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     Err(HvError::InvalidParameter)
                 }
             }
+            HvX64RegisterName::PendingEvent0 => {
+                if vtl >= self.intercepted_vtl {
+                    return Err(HvError::InvalidParameter);
+                }
+                Ok(())
+            }
+            HvX64RegisterName::CrInterceptControl
+            | HvX64RegisterName::CrInterceptCr0Mask
+            | HvX64RegisterName::CrInterceptCr4Mask
+            | HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
+                if vtl != GuestVtl::Vtl1 {
+                    return Err(HvError::AccessDenied);
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -204,7 +164,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         match err {
             super::vp_state::Error::SetRegisters(_) => HvError::OperationFailed,
             super::vp_state::Error::GetRegisters(_) => HvError::OperationFailed,
-            super::vp_state::Error::SetEfer(_, _) => HvError::InvalidRegisterValue,
+            super::vp_state::Error::InvalidValue(_, _, _) => HvError::InvalidRegisterValue,
             super::vp_state::Error::Unimplemented(_) => HvError::InvalidParameter,
             super::vp_state::Error::InvalidApicBase(_) => HvError::InvalidRegisterValue,
         }
@@ -214,7 +174,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         &mut self,
         vtl: GuestVtl,
         name: hvdef::HvRegisterName,
-    ) -> HvResult<hvdef::HvRegisterValue> {
+    ) -> HvResult<HvRegisterValue> {
         self.validate_register_access(vtl, name)?;
         // TODO: when get vp register i.e. in access vp state gets refactored,
         // clean this up.
@@ -434,8 +394,33 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 .lapic
                 .apic_base()
                 .into()),
+            control_reg @ (HvX64RegisterName::CrInterceptControl
+            | HvX64RegisterName::CrInterceptCr0Mask
+            | HvX64RegisterName::CrInterceptCr4Mask
+            | HvX64RegisterName::CrInterceptIa32MiscEnableMask) => {
+                let vtl1 = self
+                    .vp
+                    .backing
+                    .cvm_state_mut()
+                    .vtl1
+                    .as_ref()
+                    .ok_or(HvError::InvalidVtlState)?;
+                Ok(match control_reg {
+                    HvX64RegisterName::CrInterceptControl => {
+                        u64::from(vtl1.reg_intercept.intercept_control)
+                    }
+                    HvX64RegisterName::CrInterceptCr0Mask => vtl1.reg_intercept.cr0_mask,
+                    HvX64RegisterName::CrInterceptCr4Mask => vtl1.reg_intercept.cr4_mask,
+                    HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
+                        vtl1.reg_intercept.ia32_misc_enable_mask
+                    }
+                    _ => unreachable!(),
+                }
+                .into())
+            }
             _ => {
                 tracing::error!(
+                    CVM_ALLOWED,
                     ?name,
                     "guest invoked getvpregister with unsupported register"
                 );
@@ -443,12 +428,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             }
         }
     }
-}
 
-impl<'b, T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
-{
     fn set_vp_register(
         &mut self,
         vtl: GuestVtl,
@@ -472,9 +452,26 @@ where
                 GuestVtl::Vtl0,
                 HvRegisterVsmVpSecureVtlConfig::from(reg.value.as_u64()),
             ),
-            HvX64RegisterName::VpAssistPage => self.vp.backing.cvm_state_mut().hv[vtl]
-                .msr_write_vp_assist_page(reg.value.as_u64())
-                .map_err(|_| HvError::InvalidRegisterValue),
+            HvX64RegisterName::VpAssistPage => {
+                let self_index = self.vp.vp_index();
+                self.vp.backing.cvm_state_mut().hv[vtl]
+                    .msr_write_vp_assist_page(
+                        reg.value.as_u64(),
+                        &mut CvmVtlProtectAccess {
+                            vtl,
+                            protector: B::cvm_partition_state(self.vp.shared)
+                                .isolated_memory_protector
+                                .as_ref(),
+                            tlb_access: &mut B::tlb_flush_lock_access(
+                                Some(self_index),
+                                self.vp.partition,
+                                self.vp.shared,
+                            ),
+                            guest_memory: &self.vp.partition.gm[vtl],
+                        },
+                    )
+                    .map_err(|_| HvError::InvalidRegisterValue)
+            }
             virt_msr @ (HvX64RegisterName::Star
             | HvX64RegisterName::Cstar
             | HvX64RegisterName::Lstar
@@ -482,6 +479,9 @@ where
             | HvX64RegisterName::SysenterEip
             | HvX64RegisterName::SysenterEsp
             | HvX64RegisterName::Sfmask) => {
+                // Checked that the intercepted vtl is strictly higher than the
+                // target VTL, so no need to check for registered intercepts.
+
                 let mut msrs = self
                     .vp
                     .access_state(vtl.into())
@@ -502,13 +502,16 @@ where
                     .set_virtual_msrs(&msrs)
                     .map_err(Self::reg_access_error_to_hv_err)
             }
-            HvX64RegisterName::TscAux => self
-                .vp
-                .access_state(vtl.into())
-                .set_tsc_aux(&virt::vp::TscAux {
-                    value: reg.value.as_u64(),
-                })
-                .map_err(Self::reg_access_error_to_hv_err),
+            HvX64RegisterName::TscAux => {
+                // Checked that the intercepted vtl is strictly higher than the
+                // target VTL, so no need to check for registered intercepts.
+                self.vp
+                    .access_state(vtl.into())
+                    .set_tsc_aux(&virt::vp::TscAux {
+                        value: reg.value.as_u64(),
+                    })
+                    .map_err(Self::reg_access_error_to_hv_err)
+            }
 
             debug_reg @ (HvX64RegisterName::Dr3 | HvX64RegisterName::Dr7) => {
                 let mut debug_registers = self
@@ -544,6 +547,8 @@ where
             | HvX64RegisterName::Rip
             | HvX64RegisterName::Rflags
             | HvX64RegisterName::Rsp) => {
+                // Checked that the intercepted vtl is strictly higher than the
+                // target VTL, so no need to check for registered intercepts.
                 let mut registers = self
                     .vp
                     .access_state(vtl.into())
@@ -602,9 +607,25 @@ where
             | HvX64RegisterName::Stimer2Count
             | HvX64RegisterName::Stimer3Config
             | HvX64RegisterName::Stimer3Count
-            | HvX64RegisterName::VsmVina) => self.vp.backing.cvm_state_mut().hv[vtl]
-                .synic
-                .write_reg(&self.vp.partition.gm[vtl], synic_reg.into(), reg.value),
+            | HvX64RegisterName::VsmVina) => {
+                let self_index = self.vp.vp_index();
+                self.vp.backing.cvm_state_mut().hv[vtl].synic.write_reg(
+                    synic_reg.into(),
+                    reg.value,
+                    &mut CvmVtlProtectAccess {
+                        vtl,
+                        protector: B::cvm_partition_state(self.vp.shared)
+                            .isolated_memory_protector
+                            .as_ref(),
+                        tlb_access: &mut B::tlb_flush_lock_access(
+                            Some(self_index),
+                            self.vp.partition,
+                            self.vp.shared,
+                        ),
+                        guest_memory: &self.vp.partition.gm[vtl],
+                    },
+                )
+            }
             HvX64RegisterName::ApicBase => {
                 // No changes are allowed on this path.
                 let current = self.vp.backing.cvm_state_mut().lapics[vtl]
@@ -615,23 +636,182 @@ where
                 }
                 Ok(())
             }
+            HvX64RegisterName::PendingEvent0 => {
+                // Currently no support to inject the event into a VTL other
+                // than VTL 0.
+                if vtl != GuestVtl::Vtl0 {
+                    return Err(HvError::AccessDenied);
+                }
+
+                self.set_vtl0_pending_event(HvX64PendingExceptionEvent::from(reg.value.as_u128()))
+            }
+            HvX64RegisterName::CrInterceptControl => {
+                if vtl != GuestVtl::Vtl1 {
+                    return Err(HvError::AccessDenied);
+                }
+
+                self.set_vtl1_cr_intercept_control(hvdef::HvRegisterCrInterceptControl::from(
+                    reg.value.as_u64(),
+                ))
+            }
+            mask_reg @ (HvX64RegisterName::CrInterceptCr0Mask
+            | HvX64RegisterName::CrInterceptCr4Mask
+            | HvX64RegisterName::CrInterceptIa32MiscEnableMask) => {
+                let vtl1 = self
+                    .vp
+                    .backing
+                    .cvm_state_mut()
+                    .vtl1
+                    .as_mut()
+                    .ok_or(HvError::InvalidVtlState)?;
+                match mask_reg {
+                    HvX64RegisterName::CrInterceptCr0Mask => {
+                        vtl1.reg_intercept.cr0_mask = reg.value.as_u64();
+                    }
+                    HvX64RegisterName::CrInterceptCr4Mask => {
+                        vtl1.reg_intercept.cr4_mask = reg.value.as_u64();
+                    }
+                    HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
+                        vtl1.reg_intercept.ia32_misc_enable_mask = reg.value.as_u64();
+                    }
+                    _ => unreachable!(),
+                }
+                Ok(())
+            }
             _ => {
                 tracing::error!(
-                    ?reg,
+                    CVM_ALLOWED,
+                    reg = ?reg.name,
                     "guest invoked SetVpRegisters with unsupported register",
                 );
                 Err(HvError::InvalidParameter)
             }
         }
+    }
 
-        // TODO GUEST VSM: interrupt rewinding
+    fn set_vtl0_pending_event(&mut self, event: HvX64PendingExceptionEvent) -> HvResult<()> {
+        let set_event = if event.event_pending() {
+            // Only exception events are supported.
+            if event.event_type() != hvdef::HV_X64_PENDING_EVENT_EXCEPTION {
+                return Err(HvError::InvalidRegisterValue);
+            }
+
+            // Only recognized architectural exceptions are permitted.  This
+            // excludes exceptions not common to Intel/AMD platforms
+            // (#VE, #VC, #SX, #HV are excluded).
+
+            if (event.vector() > (x86defs::Exception::CONTROL_PROTECTION_EXCEPTION.0 as u16))
+                || !matches!(
+                    x86defs::Exception(event.vector() as u8),
+                    x86defs::Exception::DIVIDE_ERROR
+                        | x86defs::Exception::DEBUG
+                        | x86defs::Exception::BREAKPOINT
+                        | x86defs::Exception::OVERFLOW
+                        | x86defs::Exception::BOUND_RANGE_EXCEEDED
+                        | x86defs::Exception::INVALID_OPCODE
+                        | x86defs::Exception::DEVICE_NOT_AVAILABLE
+                        | x86defs::Exception::DOUBLE_FAULT
+                        | x86defs::Exception::INVALID_TSS
+                        | x86defs::Exception::SEGMENT_NOT_PRESENT
+                        | x86defs::Exception::STACK_SEGMENT_FAULT
+                        | x86defs::Exception::GENERAL_PROTECTION_FAULT
+                        | x86defs::Exception::PAGE_FAULT
+                        | x86defs::Exception::FLOATING_POINT_EXCEPTION
+                        | x86defs::Exception::ALIGNMENT_CHECK
+                        | x86defs::Exception::MACHINE_CHECK
+                        | x86defs::Exception::SIMD_FLOATING_POINT_EXCEPTION
+                        | x86defs::Exception::CONTROL_PROTECTION_EXCEPTION
+                )
+            {
+                return Err(HvError::InvalidRegisterValue);
+            }
+
+            // Error codes are only permitted for recognized architecural
+            // exceptions.
+
+            if event.deliver_error_code()
+                && !matches!(
+                    x86defs::Exception(event.vector().try_into().unwrap()),
+                    x86defs::Exception::DOUBLE_FAULT
+                        | x86defs::Exception::INVALID_TSS
+                        | x86defs::Exception::SEGMENT_NOT_PRESENT
+                        | x86defs::Exception::STACK_SEGMENT_FAULT
+                        | x86defs::Exception::GENERAL_PROTECTION_FAULT
+                        | x86defs::Exception::PAGE_FAULT
+                        | x86defs::Exception::ALIGNMENT_CHECK
+                        | x86defs::Exception::CONTROL_PROTECTION_EXCEPTION
+                )
+            {
+                return Err(HvError::InvalidRegisterValue);
+            }
+
+            Some(event)
+        } else {
+            None
+        };
+
+        self.vp
+            .backing
+            .cvm_state_mut()
+            .vtl1
+            .as_mut()
+            .unwrap()
+            .vtl0_exit_pending_event = set_event;
+
+        self.vp.exit_activities[GuestVtl::Vtl0].set_pending_event(true);
+
+        Ok(())
+    }
+
+    fn set_vtl1_cr_intercept_control(
+        &mut self,
+        intercept_control: hvdef::HvRegisterCrInterceptControl,
+    ) -> HvResult<()> {
+        // We support intercepting all writes except msr_sgx_launch_control_write, but no reads.
+        let supported_controls = hvdef::HvRegisterCrInterceptControl::new()
+            .with_cr0_write(true)
+            .with_cr4_write(true)
+            .with_xcr0_write(true)
+            .with_ia32_misc_enable_write(true)
+            .with_msr_lstar_write(true)
+            .with_msr_star_write(true)
+            .with_msr_cstar_write(true)
+            .with_apic_base_msr_write(true)
+            .with_msr_efer_write(true)
+            .with_gdtr_write(true)
+            .with_idtr_write(true)
+            .with_ldtr_write(true)
+            .with_tr_write(true)
+            .with_msr_sysenter_cs_write(true)
+            .with_msr_sysenter_eip_write(true)
+            .with_msr_sysenter_esp_write(true)
+            .with_msr_sfmask_write(true)
+            .with_msr_tsc_aux_write(true)
+            .with_msr_xss_write(true)
+            .with_msr_scet_write(true)
+            .with_msr_pls_ssp_write(true)
+            .with_msr_interrupt_ssp_table_addr_write(true);
+
+        if u64::from(intercept_control) & !u64::from(supported_controls) != 0 {
+            return Err(HvError::InvalidRegisterValue);
+        }
+
+        B::cr_intercept_registration(self.vp, intercept_control);
+
+        self.vp
+            .backing
+            .cvm_state_mut()
+            .vtl1
+            .as_mut()
+            .unwrap()
+            .reg_intercept
+            .intercept_control = intercept_control;
+        Ok(())
     }
 }
 
-impl<'b, T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibility
-    for UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
+impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibility
+    for UhHypercallHandler<'_, '_, T, B>
 {
     fn modify_gpa_visibility(
         &mut self,
@@ -649,7 +829,7 @@ where
             "modify_gpa_visibility"
         );
 
-        if self.vp.partition.hide_isolation {
+        if self.vp.cvm_partition().hide_isolation {
             return Err((HvError::AccessDenied, 0));
         }
 
@@ -660,11 +840,14 @@ where
         };
 
         self.vp
-            .partition
+            .cvm_partition()
             .isolated_memory_protector
-            .as_ref()
-            .ok_or((HvError::AccessDenied, 0))?
-            .change_host_visibility(shared, gpa_pages, self.vp)
+            .change_host_visibility(
+                self.intercepted_vtl,
+                shared,
+                gpa_pages,
+                &mut self.vp.tlb_flush_lock_access(),
+            )
     }
 }
 
@@ -684,7 +867,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         self.vp.partition.request_proxy_irr_filter_update(
             self.intercepted_vtl,
             vector as u8,
-            self.vp.vp_index().index(),
+            self.vp.vp_index(),
         );
 
         // Update `proxy_irr_blocked` for this VP itself
@@ -703,7 +886,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         )
     }
 
-    pub fn hcvm_validate_flush_inputs(
+    pub(crate) fn hcvm_validate_flush_inputs(
         &mut self,
         processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
@@ -735,7 +918,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters
         vp_index: u32,
         vtl: Option<Vtl>,
         registers: &[hvdef::HvRegisterName],
-        output: &mut [hvdef::HvRegisterValue],
+        output: &mut [HvRegisterValue],
     ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err((HvError::AccessDenied, 0));
@@ -797,10 +980,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrup
     }
 }
 
-impl<'b, T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
-    for UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
+    for UhHypercallHandler<'_, '_, T, B>
 {
     fn set_vp_registers(
         &mut self,
@@ -817,9 +998,9 @@ where
             return Err((HvError::InvalidVpIndex, 0));
         }
 
-        let target_vtl = vtl
-            .map_or_else(|| Ok(self.intercepted_vtl), |vtl| vtl.try_into())
-            .map_err(|_| (HvError::InvalidParameter, 0))?;
+        let target_vtl = self
+            .target_vtl_no_higher(vtl.unwrap_or_else(|| self.intercepted_vtl.into()))
+            .map_err(|e| (e, 0))?;
 
         for (i, reg) in registers.iter().enumerate() {
             self.set_vp_register(target_vtl, reg).map_err(|e| (e, i))?;
@@ -831,18 +1012,20 @@ where
 
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandler<'_, '_, T, B> {
     fn is_vtl_call_allowed(&self) -> bool {
-        tracing::trace!("checking if vtl call is allowed");
-
         // Only allowed from VTL 0
         if self.intercepted_vtl != GuestVtl::Vtl0 {
             tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
                 "vtl call not allowed from vtl {:?}",
                 self.intercepted_vtl
             );
             false
-        } else if !*self.vp.cvm_vp_inner().vtl1_enabled.lock() {
-            // VTL 1 must be enabled on the vp
-            tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not enabled");
+        } else if self.vp.backing.cvm_state().vtl1.is_none() {
+            // VTL 1 must be active on the vp
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                "vtl call not allowed because vtl 1 is not enabled"
+            );
             false
         } else {
             true
@@ -850,22 +1033,19 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
     }
 
     fn vtl_call(&mut self) {
-        tracing::trace!("handling vtl call");
-
-        B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
-
-        self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
-            .set_return_reason(HvVtlEntryReason::VTL_CALL)
-            .expect("setting return reason cannot fail");
+        self.vp.raise_vtl(
+            self.intercepted_vtl,
+            GuestVtl::Vtl1,
+            HvVtlEntryReason::VTL_CALL,
+        );
     }
 }
 
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHandler<'_, '_, T, B> {
     fn is_vtl_return_allowed(&self) -> bool {
-        tracing::trace!("checking if vtl return is allowed");
-
         if self.intercepted_vtl != GuestVtl::Vtl1 {
             tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
                 "vtl return not allowed from vtl {:?}",
                 self.intercepted_vtl
             );
@@ -876,13 +1056,11 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
     }
 
     fn vtl_return(&mut self, fast: bool) {
-        tracing::trace!("handling vtl return");
-
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
         let hv = &mut self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
         if hv.synic.vina().auto_reset() {
-            hv.set_vina_asserted(false).unwrap();
+            hv.set_vina_asserted(false);
         }
 
         B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
@@ -891,19 +1069,13 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
         // - rewind interrupts
 
         if !fast {
-            let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
-                .return_registers()
-                .expect("getting return registers shouldn't fail");
+            let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1].return_registers();
             let mut vp_state = self.vp.access_state(Vtl::Vtl0);
-            let mut registers = vp_state
-                .registers()
-                .expect("getting registers shouldn't fail");
+            let mut registers = vp_state.registers().unwrap();
             registers.rax = rax;
             registers.rcx = rcx;
 
-            vp_state
-                .set_registers(&registers)
-                .expect("setting registers shouldn't fail");
+            vp_state.set_registers(&registers).unwrap();
         }
     }
 }
@@ -940,20 +1112,15 @@ impl<T, B: HardwareIsolatedBacking>
         let target_vp_inner = self.vp.cvm_partition().vp_inner(target_vp);
 
         // The target VTL must have been enabled.
-        if target_vtl == GuestVtl::Vtl1 && !*target_vp_inner.vtl1_enabled.lock() {
+        if target_vtl == GuestVtl::Vtl1 && !*target_vp_inner.vtl1_enable_called.lock() {
             return Err(HvError::InvalidVpState);
         }
 
         // If lower VTL startup has been suppressed, then the request must be
-        // coming from a secure VTL.
+        // coming from a secure VTL. We know guest VSM has been enabled from the
+        // previous check.
         if self.intercepted_vtl == GuestVtl::Vtl0
-            && self
-                .vp
-                .partition
-                .guest_vsm
-                .read()
-                .get_hardware_cvm()
-                .is_some_and(|state| state.deny_lower_vtl_startup)
+            && self.vp.cvm_partition().is_lower_vtl_startup_denied()
         {
             return Err(HvError::AccessDenied);
         }
@@ -987,18 +1154,21 @@ impl<T, B: HardwareIsolatedBacking>
             context: *vp_context,
         };
 
-        let target_vp = &self.vp.partition.vps[target_vp as usize];
-        *target_vp.hv_start_enable_vtl_vp[target_vtl].lock() = Some(Box::new(start_state));
-        target_vp.wake(target_vtl, WakeReason::HV_START_ENABLE_VP_VTL);
+        *self
+            .vp
+            .cvm_partition()
+            .vp_inner(target_vp)
+            .hv_start_enable_vtl_vp[target_vtl]
+            .lock() = Some(Box::new(start_state));
+        self.vp.partition.vps[target_vp as usize]
+            .wake(target_vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
         Ok(())
     }
 }
 
-impl<'b, T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
-    for UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
+    for UhHypercallHandler<'_, '_, T, B>
 {
     fn modify_vtl_protection_mask(
         &mut self,
@@ -1018,12 +1188,7 @@ where
             return Err((HvError::InvalidParameter, 0));
         }
 
-        let protector = self
-            .vp
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .expect("has a memory protector");
+        let protector = &self.vp.cvm_partition().isolated_memory_protector;
 
         // A VTL cannot change its own VTL permissions until it has enabled VTL protection and
         // configured default permissions. Higher VTLs are not under this restriction (as they may
@@ -1032,26 +1197,117 @@ where
             return Err((HvError::AccessDenied, 0));
         }
 
-        // VTL 1 mut be enabled already.
-        let mut guest_vsm_lock = self.vp.partition.guest_vsm.write();
-        let guest_vsm = guest_vsm_lock
-            .get_hardware_cvm_mut()
-            .ok_or((HvError::InvalidVtlState, 0))?;
+        // VTL 1 must be enabled already.
+        let guest_vsm_lock = self.vp.cvm_partition().guest_vsm.read();
+        let GuestVsmState::Enabled { vtl1, .. } = &*guest_vsm_lock else {
+            return Err((HvError::InvalidVtlState, 0));
+        };
 
         if !validate_vtl_gpa_flags(
             map_flags,
-            guest_vsm.mbec_enabled,
-            guest_vsm.shadow_supervisor_stack_enabled,
+            vtl1.mbec_enabled,
+            vtl1.shadow_supervisor_stack_enabled,
         ) {
             return Err((HvError::InvalidRegisterValue, 0));
         }
 
-        // The contract for VSM is that the VTL protections describe what
-        // the lower VTLs are allowed to access. Hardware CVMs set the
-        // protections on the VTL itself. Therefore, for a hardware CVM,
-        // given that only VTL 1 can set the protections, the default
-        // permissions should be changed for VTL 0.
-        protector.change_vtl_protections(GuestVtl::Vtl0, gpa_pages, map_flags, self.vp)
+        // The contract for VSM is that the VTL protections describe what the
+        // lower VTLs are allowed to access. Hardware CVMs set the protections
+        // on the VTL itself. Therefore, for a hardware CVM, given that only VTL
+        // 1 can set the protections, the permissions should be changed for VTL
+        // 0.
+        protector.change_vtl_protections(
+            GuestVtl::Vtl0,
+            gpa_pages,
+            map_flags,
+            &mut self.vp.tlb_flush_lock_access(),
+        )
+    }
+}
+
+impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::QuerySparseGpaPageHostVisibility
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn query_gpa_visibility(
+        &mut self,
+        partition_id: u64,
+        gpa_pages: &[u64],
+        host_visibility: &mut [HostVisibilityType],
+    ) -> HvRepResult {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        if self.vp.cvm_partition().hide_isolation {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        self.vp
+            .cvm_partition()
+            .isolated_memory_protector
+            .query_host_visibility(gpa_pages, host_visibility)
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn enable_partition_vtl(
+        &mut self,
+        partition_id: u64,
+        target_vtl: Vtl,
+        flags: hvdef::hypercall::EnablePartitionVtlFlags,
+    ) -> HvResult<()> {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::InvalidPartitionId);
+        }
+
+        let target_vtl = GuestVtl::try_from(target_vtl).map_err(|_| HvError::AccessDenied)?;
+        if target_vtl != GuestVtl::Vtl1 {
+            return Err(HvError::AccessDenied);
+        }
+
+        if flags.enable_supervisor_shadow_stack() || flags.enable_hardware_hvpt() {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let mut gvsm_state = self.vp.cvm_partition().guest_vsm.write();
+
+        match *gvsm_state {
+            GuestVsmState::NotPlatformSupported => return Err(HvError::AccessDenied),
+            GuestVsmState::NotGuestEnabled => (),
+            GuestVsmState::Enabled { vtl1: _ } => {
+                // VTL 1 cannot be already enabled
+                return Err(HvError::VtlAlreadyEnabled);
+            }
+        }
+
+        self.vp.partition.hcl.enable_partition_vtl(
+            target_vtl,
+            // These flags are managed and enforced internally; CVMs can't rely
+            // on the hypervisor
+            0.into(),
+        )?;
+
+        *gvsm_state = GuestVsmState::Enabled {
+            vtl1: CvmVtl1State::new(flags.enable_mbec()),
+        };
+
+        let protector = &self.vp.cvm_partition().isolated_memory_protector;
+
+        // Grant VTL 1 access to lower VTL memory
+        tracing::debug!("Granting VTL 1 access to lower VTL memory");
+        protector.change_default_vtl_protections(
+            GuestVtl::Vtl1,
+            hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+            &mut self.vp.tlb_flush_lock_access(),
+        )?;
+
+        tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
+
+        tracing::info!(CVM_ALLOWED, "Enabled vtl 1 on the partition");
+
+        Ok(())
     }
 }
 
@@ -1088,12 +1344,17 @@ impl<T, B: HardwareIsolatedBacking>
         // If handling on behalf of VTL 0, then lock to make sure that no other
         // VP makes this call on behalf of VTL 0.
         let gvsm_state = {
-            let mut gvsm_state = self.vp.partition.guest_vsm.write();
+            let guest_vsm_lock = self.vp.cvm_partition().guest_vsm.write();
 
             // Should be enabled on the partition
-            let vtl1_state = gvsm_state
-                .get_hardware_cvm_mut()
-                .ok_or(HvError::InvalidVtlState)?;
+            let vtl1 = parking_lot::RwLockWriteGuard::try_map(guest_vsm_lock, |gvsm| {
+                if let GuestVsmState::Enabled { vtl1, .. } = &mut *gvsm {
+                    Some(vtl1)
+                } else {
+                    None
+                }
+            })
+            .map_err(|_| HvError::InvalidVtlState)?;
 
             let current_vp_index = self.vp.vp_index().index();
 
@@ -1102,16 +1363,16 @@ impl<T, B: HardwareIsolatedBacking>
             // the higher VTL has not been enabled on any other VP because at that
             // point, the higher VTL should be orchestrating its own enablement.
             if self.intercepted_vtl < GuestVtl::Vtl1 {
-                if vtl1_state.enabled_on_any_vp || vp_index != current_vp_index {
+                if vtl1.enabled_on_any_vp || vp_index != current_vp_index {
                     return Err(HvError::AccessDenied);
                 }
 
-                Some(gvsm_state)
+                Some(vtl1)
             } else {
                 // If handling on behalf of VTL 1, then some other VP (i.e. the
                 // bsp) must have already handled EnableVpVtl. No partition-wide
                 // state is changing, so no need to hold the lock
-                assert!(vtl1_state.enabled_on_any_vp);
+                assert!(vtl1.enabled_on_any_vp);
                 None
             }
         };
@@ -1122,20 +1383,20 @@ impl<T, B: HardwareIsolatedBacking>
             .vp
             .cvm_partition()
             .vp_inner(vp_index)
-            .vtl1_enabled
+            .vtl1_enable_called
             .lock();
 
         if *vtl1_enabled {
             return Err(HvError::VtlAlreadyEnabled);
         }
 
-        // Register the VMSA with the hypervisor
         let hv_vp_context = match self.vp.partition.isolation {
             virt::IsolationType::None | virt::IsolationType::Vbs => unreachable!(),
             virt::IsolationType::Snp => {
                 // For VTL 1, user mode needs to explicitly register the VMSA
                 // with the hypervisor via the EnableVpVtl hypercall.
-                let vmsa_pfn = self.vp.partition.hcl.vtl1_vmsa_pfn(vp_index);
+                let target_cpu_index = self.vp.partition.vps[vp_index as usize].cpu_index;
+                let vmsa_pfn = self.vp.partition.hcl.vtl1_vmsa_pfn(target_cpu_index);
                 let sev_control = hvdef::HvX64RegisterSevControl::new()
                     .with_enable_encrypted_state(true)
                     .with_vmsa_gpa_page_number(vmsa_pfn);
@@ -1145,23 +1406,21 @@ impl<T, B: HardwareIsolatedBacking>
 
                 hv_vp_context
             }
-            virt::IsolationType::Tdx => {
-                // TODO TDX GUEST VSM
-                hvdef::hypercall::InitialVpContextX64::new_zeroed()
-            }
+            virt::IsolationType::Tdx => hvdef::hypercall::InitialVpContextX64::new_zeroed(),
         };
 
+        // Tell the hypervisor to enable VTL 1, and register any needed state
         self.vp
             .partition
             .hcl
             .enable_vp_vtl(vp_index, vtl, hv_vp_context)?;
 
         // Cannot fail from here
-        if let Some(mut gvsm) = gvsm_state {
+        if let Some(mut vtl1) = gvsm_state {
             // It's valid to only set this when gvsm_state is Some (when VTL 0
             // was intercepted) only because we assert above that if VTL 1 was
             // intercepted, some vp has already enabled VTL 1 on it.
-            gvsm.get_hardware_cvm_mut().unwrap().enabled_on_any_vp = true;
+            vtl1.enabled_on_any_vp = true;
         }
 
         *vtl1_enabled = true;
@@ -1171,9 +1430,13 @@ impl<T, B: HardwareIsolatedBacking>
             context: *vp_context,
         };
 
-        let target_vp = &self.vp.partition.vps[vp_index as usize];
-        *target_vp.hv_start_enable_vtl_vp[vtl].lock() = Some(Box::new(enable_vp_vtl_state));
-        target_vp.wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
+        *self
+            .vp
+            .cvm_partition()
+            .vp_inner(vp_index)
+            .hv_start_enable_vtl_vp[vtl]
+            .lock() = Some(Box::new(enable_vp_vtl_state));
+        self.vp.partition.vps[vp_index as usize].wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
         tracing::debug!(vp_index, "enabled vtl 1 on vp");
 
@@ -1220,24 +1483,12 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
         }
 
         match virt_support_x86emu::translate::translate_gva_to_gpa(
-            &self.vp.partition.gm[target_vtl], // TODO GUEST VSM: This doesn't have VTL access checks.
+            &self.vp.partition.gm[target_vtl],
             gva,
             &self.vp.backing.translation_registers(self.vp, target_vtl),
             virt_support_x86emu::translate::TranslateFlags::from_hv_flags(control_flags),
         ) {
             Ok(virt_support_x86emu::translate::TranslateResult { gpa, cache_info }) => {
-                // TODO GUEST VSM: at the moment, the guest is only using this
-                // to check for overlay pages related to drivers and executable
-                // code. Only the hypercall code page overlay matches that
-                // description. However, for full correctness this should be
-                // extended to check for all overlay pages.
-                let overlay_page = hvdef::hypercall::MsrHypercallContents::from(
-                    self.vp.backing.cvm_state_mut().hv[target_vtl]
-                        .msr_read(hvdef::HV_X64_MSR_HYPERCALL)
-                        .unwrap(),
-                )
-                .gpn();
-
                 let cache_type = match cache_info {
                     TranslateCachingInfo::NoPaging => HvCacheType::HvCacheTypeWriteBack.0 as u8,
                     TranslateCachingInfo::Paging { pat_index } => {
@@ -1251,7 +1502,12 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
                 Ok(hvdef::hypercall::TranslateVirtualAddressOutput {
                     translation_result: hvdef::hypercall::TranslateGvaResult::new()
                         .with_result_code(TranslateGvaResultCode::SUCCESS.0)
-                        .with_overlay_page(gpn == overlay_page)
+                        .with_overlay_page(
+                            self.vp
+                                .cvm_partition()
+                                .isolated_memory_protector
+                                .is_overlay_page(self.intercepted_vtl, gpn),
+                        )
                         .with_cache_type(cache_type),
                     gpa_page: gpn,
                 })
@@ -1265,101 +1521,204 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
     }
 }
 
-/// A small struct for delaying requested TLB flushes.
-/// This is only used in the context of the `write_msr_cvm` function,
-/// in which the only MSR of relevance is the hypercall overlay MSR, which
-/// only performs a basic TLB flush.
-struct DelayedTlbFlushAccess {
-    vtl: Option<GuestVtl>,
+pub(crate) struct CvmVtlProtectAccess<'a> {
+    pub vtl: GuestVtl,
+    pub protector: &'a dyn crate::ProtectIsolatedMemory,
+    pub tlb_access: &'a mut dyn TlbFlushLockAccess,
+    pub guest_memory: &'a GuestMemory,
 }
 
-impl TlbFlushLockAccess for DelayedTlbFlushAccess {
-    fn flush(&mut self, vtl: GuestVtl) {
-        assert!(self.vtl.is_none());
-        self.vtl = Some(vtl);
+impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        check_perms: HvMapGpaFlags,
+        new_perms: Option<HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, HvError> {
+        self.protector.register_overlay_page(
+            self.vtl,
+            gpn,
+            GpnSource::GuestMemory,
+            check_perms,
+            new_perms,
+            self.tlb_access,
+        )?;
+        // TODO: underhill_mem should really be responsible for constructing the
+        // LockedPages, but that requires some refactoring. For now, we just use
+        // guest memory to lock the pages. When this is cleaned up, don't forget
+        // to also cleanup how underhill_mem handles locking overlay pages.
+        Ok(self.guest_memory.lock_gpns(false, &[gpn]).unwrap())
     }
 
-    fn flush_entire(&mut self) {
-        unimplemented!()
-    }
-
-    fn set_wait_for_tlb_locks(&mut self, _vtl: GuestVtl) {
-        unimplemented!()
-    }
-}
-
-struct HypercallOverlayAccess {
-    vtl: GuestVtl,
-    protector: Arc<dyn crate::ProtectIsolatedMemory>,
-    tlb_access: DelayedTlbFlushAccess,
-}
-
-impl hv1_emulator::hv::VtlProtectHypercallOverlay for HypercallOverlayAccess {
-    fn change_overlay(&mut self, gpn: u64) {
+    fn unlock_overlay_page(&mut self, gpn: u64) -> Result<(), HvError> {
         self.protector
-            .change_hypercall_overlay(self.vtl, gpn, &mut self.tlb_access)
-    }
-
-    fn disable_overlay(&mut self) {
-        self.protector
-            .disable_hypercall_overlay(self.vtl, &mut self.tlb_access)
+            .unregister_overlay_page(self.vtl, gpn, self.tlb_access)
     }
 }
 
-impl<B: HardwareIsolatedBacking> UhProcessor<'_, B>
-where
-    Self: TlbFlushLockAccess,
-{
+#[expect(private_bounds)]
+impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
+    pub(crate) fn read_msr_cvm(&self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
+        self.backing.cvm_state().hv[vtl]
+            .msr_read(msr)
+            .or_else_if_unknown(|| self.read_crash_msr(msr, vtl))
+    }
+
     pub(crate) fn write_msr_cvm(
         &mut self,
         msr: u32,
         value: u64,
         vtl: GuestVtl,
     ) -> Result<(), MsrError> {
-        let hv = &mut self.backing.cvm_state_mut().hv[vtl];
-        // If updated is Synic MSR, then check if its proxy or previous was proxy
-        // in either case, we need to update the `proxy_irr_blocked`
-        let mut irr_filter_update = false;
-        if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
-            let sint_curr = HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
-            let sint_new = HvSynicSint::from(value);
-            if sint_curr.proxy() || sint_new.proxy() {
-                irr_filter_update = true;
-            }
+        if let Ok(()) = self.write_crash_msr(msr, value, vtl) {
+            return Ok(());
         }
 
-        // Perform this delay dance with the TLB flush to avoid a double borrow.
-        // We need the whole UhProcessor to perform a flush, but the hv emulator
-        // is inside the UhProcessor.
-        let mut access = HypercallOverlayAccess {
+        let self_index = self.vp_index();
+        let hv = &mut self.backing.cvm_state_mut().hv[vtl];
+
+        let mut access = CvmVtlProtectAccess {
             vtl,
-            protector: self
-                .partition
+            protector: B::cvm_partition_state(self.shared)
                 .isolated_memory_protector
-                .as_ref()
-                .unwrap()
-                .clone(),
-            tlb_access: DelayedTlbFlushAccess { vtl: None },
+                .as_ref(),
+            tlb_access: &mut B::tlb_flush_lock_access(
+                Some(self_index),
+                self.partition,
+                self.shared,
+            ),
+            guest_memory: &self.partition.gm[vtl],
         };
         let r = hv.msr_write(msr, value, &mut access);
-        if let Some(vtl) = access.tlb_access.vtl {
-            self.flush(vtl);
-        }
 
-        if !matches!(r, Err(MsrError::Unknown)) {
-            // Check if proxy filter update was required (in case of SINT writes)
-            if irr_filter_update {
-                self.update_proxy_irr_filter(vtl);
-            }
+        // If the MSR is a synic MSR, then update the `proxy_irr_blocked`
+        if vtl == GuestVtl::Vtl0
+            && !matches!(r, Err(MsrError::Unknown))
+            && matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15)
+        {
+            self.update_proxy_irr_filter(vtl);
         }
         r
+    }
+
+    pub(crate) fn cvm_cpuid_result(&mut self, vtl: GuestVtl, leaf: u32, subleaf: u32) -> [u32; 4] {
+        // Get the base fixed values.
+        let [mut eax, mut ebx, mut ecx, mut edx] =
+            self.partition.cpuid_result(leaf, subleaf, &[0, 0, 0, 0]);
+
+        // Apply fixups. These must be runtime changes only, for parts of cpuid
+        // that are dynamic (either beccause it's a function of the current VP's
+        // identity or the current VP or partition state).
+        //
+        // We rely on the cpuid set being accurate during partition startup,
+        // without running through this code, so violations of this principle
+        // may cause the partition to be constructed improperly.
+        match CpuidFunction(leaf) {
+            CpuidFunction::VersionAndFeatures => {
+                let cr4 = B::cr4(self, vtl);
+                ecx = cpuid::VersionAndFeaturesEcx::from(ecx)
+                    .with_os_xsave(cr4 & x86defs::X64_CR4_OSXSAVE != 0)
+                    .into();
+                ebx = cpuid::VersionAndFeaturesEbx::from(ebx)
+                    .with_initial_apic_id(self.inner.vp_info.apic_id as u8)
+                    .into();
+            }
+            CpuidFunction::ExtendedTopologyEnumeration => {
+                if subleaf == 0 || subleaf == 1 {
+                    edx = self.inner.vp_info.apic_id;
+                }
+            }
+            CpuidFunction::ExtendedStateEnumeration => match subleaf {
+                0 => {
+                    let mut state = self.access_state(vtl.into());
+                    let xfem = state.xcr().expect("can't fail to get xfem").value;
+                    drop(state);
+                    ebx = self.partition.caps.xsave.standard_len_for(xfem);
+                }
+                1 => {
+                    if cpuid::ExtendedStateEnumerationSubleaf1Eax::from(eax).xsave_s() {
+                        let mut state = self.access_state(vtl.into());
+                        let xfem = state.xcr().expect("can't fail to get xfem").value;
+                        let xss = state.xss().expect("can't fail to get xss").value;
+                        drop(state);
+                        ebx = self.partition.caps.xsave.compact_len_for(xfem | xss);
+                    }
+                }
+                _ => {}
+            },
+            CpuidFunction::ProcessorTopologyDefinition
+                if self.partition.caps.vendor.is_amd_compatible() =>
+            {
+                let apic_id = self.inner.vp_info.apic_id;
+                let vps_per_socket = self.cvm_partition().vps_per_socket;
+                eax = cpuid::ProcessorTopologyDefinitionEax::from(eax)
+                    .with_extended_apic_id(apic_id)
+                    .into();
+
+                let topology_ebx = cpuid::ProcessorTopologyDefinitionEbx::from(ebx);
+                let mut new_unit_id = apic_id & (vps_per_socket - 1);
+
+                if topology_ebx.threads_per_compute_unit() > 0 {
+                    new_unit_id /= 2;
+                }
+
+                ebx = topology_ebx.with_compute_unit_id(new_unit_id as u8).into();
+
+                // TODO SNP: Ideally we would use the actual value of this property from the host, but
+                // we currently have no way of obtaining it. 1 is the default value for all current VMs.
+                let amd_nodes_per_socket = 1u32;
+
+                let node_id = apic_id
+                    >> (vps_per_socket
+                        .trailing_zeros()
+                        .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
+                // TODO: just set this part statically.
+                let nodes_per_processor = amd_nodes_per_socket - 1;
+
+                ecx = cpuid::ProcessorTopologyDefinitionEcx::from(ecx)
+                    .with_node_id(node_id as u8)
+                    .with_nodes_per_processor(nodes_per_processor as u8)
+                    .into();
+            }
+            CpuidFunction::ExtendedSevFeatures
+                if self.partition.caps.vendor.is_amd_compatible() =>
+            {
+                // SEV features are not exposed to lower VTLs at this time.
+                //
+                // TODO: set this in cvm_cpuid.
+                eax = 0;
+                ebx = 0;
+                ecx = 0;
+                edx = 0;
+            }
+            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION) => {
+                // If VSM has been revoked (or just isn't available) then don't
+                // recommend the use of TLB flush hypercalls. They are only needed
+                // for synchronization between VTLs, and the non-hypercall direct
+                // path is always more efficient.
+                if matches!(
+                    *self.cvm_partition().guest_vsm.read(),
+                    GuestVsmState::NotPlatformSupported
+                ) {
+                    // The only bit we care about here is within the first 32 bits,
+                    // so just truncating is fine.
+                    let eax_bit = hvdef::HvEnlightenmentInformation::new()
+                        .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+                        .into_bits() as u32;
+                    eax &= !eax_bit;
+                }
+            }
+
+            _ => {}
+        }
+        [eax, ebx, ecx, edx]
     }
 
     fn set_vsm_partition_config(
         &mut self,
         value: HvRegisterVsmPartitionConfig,
         vtl: GuestVtl,
-    ) -> Result<(), HvError> {
+    ) -> HvResult<()> {
         if vtl != GuestVtl::Vtl1 {
             return Err(HvError::InvalidParameter);
         }
@@ -1377,19 +1736,15 @@ where
             return Err(HvError::InvalidRegisterValue);
         }
 
-        // VTL 1 mut be enabled already.
-        let mut guest_vsm_lock = self.partition.guest_vsm.write();
-        let guest_vsm = guest_vsm_lock
-            .get_hardware_cvm_mut()
-            .ok_or(HvError::InvalidVtlState)?;
+        // VTL 1 must be enabled already.
+        let mut guest_vsm_lock = self.cvm_partition().guest_vsm.write();
+        let GuestVsmState::Enabled { vtl1, .. } = &mut *guest_vsm_lock else {
+            return Err(HvError::InvalidVtlState);
+        };
 
         let protections = HvMapGpaFlags::from(value.default_vtl_protection_mask() as u32);
 
-        let protector = self
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .expect("isolated memory protector must exist for a CVM");
+        let protector = &self.cvm_partition().isolated_memory_protector;
         // VTL protection cannot be disabled once enabled.
         if !value.enable_vtl_protection() && protector.vtl1_protections_enabled() {
             return Err(HvError::InvalidRegisterValue);
@@ -1397,8 +1752,8 @@ where
 
         if !validate_vtl_gpa_flags(
             protections,
-            guest_vsm.mbec_enabled,
-            guest_vsm.shadow_supervisor_stack_enabled,
+            vtl1.mbec_enabled,
+            vtl1.shadow_supervisor_stack_enabled,
         ) {
             return Err(HvError::InvalidRegisterValue);
         }
@@ -1420,86 +1775,94 @@ where
             }
         }
 
-        protector.change_default_vtl_protections(targeted_vtl, protections, self)?;
+        protector.change_default_vtl_protections(
+            targeted_vtl,
+            protections,
+            &mut self.tlb_flush_lock_access(),
+        )?;
 
-        // TODO GUEST VSM: actually use the enable_vtl_protection value when
-        // deciding whether to check vtl access();
+        // TODO GUEST VSM: should only be set if enable_vtl_protection is true?
+        // We're not to spec but match the HCL, so good enough for now?
         protector.set_vtl1_protections_enabled();
 
         // Note: Zero memory on reset will happen regardless of this value,
         // since reset that involves resetting from UEFI isn't supported, and
         // the partition will get torn down and reconstructed by the host.
-        guest_vsm.zero_memory_on_reset = value.zero_memory_on_reset();
-        guest_vsm.deny_lower_vtl_startup = value.deny_lower_vtl_startup();
+        vtl1.zero_memory_on_reset = value.zero_memory_on_reset();
+        vtl1.deny_lower_vtl_startup = value.deny_lower_vtl_startup();
 
         Ok(())
     }
-}
 
-impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// Returns the partition-wide CVM state.
-    pub fn cvm_partition(&self) -> &'_ crate::UhCvmPartitionState {
+    pub(crate) fn cvm_partition(&self) -> &'_ crate::UhCvmPartitionState {
         B::cvm_partition_state(self.shared)
     }
 
     /// Returns the per-vp cvm inner state for this vp
-    pub fn cvm_vp_inner(&self) -> &'_ crate::UhCvmVpInner {
-        self.cvm_partition()
-            .vp_inner(self.inner.vp_info.base.vp_index.index())
+    pub(crate) fn cvm_vp_inner(&self) -> &'_ crate::UhCvmVpInner {
+        self.cvm_partition().vp_inner(self.vp_index().index())
+    }
+
+    /// Returns the appropriately backed TLB flush and lock access
+    pub(crate) fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + use<'_, B> {
+        B::tlb_flush_lock_access(Some(self.vp_index()), self.partition, self.shared)
     }
 
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
-    /// VINA when appropriate. The `is_interrupt_pending` function should return
-    /// true if an interrupt of appropriate priority, or an NMI, is pending for
-    /// the given VTL. The boolean specifies whether RFLAGS.IF should be checked.
-    /// Returns true if interrupt reprocessing is required.
-    pub(crate) fn hcvm_handle_cross_vtl_interrupts(
-        &mut self,
-        is_interrupt_pending: impl Fn(&mut Self, GuestVtl, bool) -> bool,
-    ) -> Result<bool, UhRunVpError> {
+    /// VINA when appropriate. Returns true if interrupt reprocessing is required.
+    fn cvm_handle_cross_vtl_interrupts(&mut self, dev: &impl CpuIo) -> bool {
+        let cvm_state = self.backing.cvm_state();
+
+        // If VTL1 is not yet enabled, there is nothing to do.
+        if cvm_state.vtl1.is_none() {
+            return false;
+        }
+
+        // Check for VTL preemption - which ignores RFLAGS.IF
+        if cvm_state.exit_vtl == GuestVtl::Vtl0
+            && B::is_interrupt_pending(self, GuestVtl::Vtl1, false, dev)
+        {
+            self.raise_vtl(GuestVtl::Vtl0, GuestVtl::Vtl1, HvVtlEntryReason::INTERRUPT);
+        }
+
         let mut reprocessing_required = false;
 
-        if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl0 {
-            // Check for VTL preemption - which ignores RFLAGS.IF
-            if is_interrupt_pending(self, GuestVtl::Vtl1, false) {
-                B::switch_vtl(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
-                self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
-                    .set_return_reason(HvVtlEntryReason::INTERRUPT)
-                    .map_err(UhRunVpError::VpAssistPage)?;
+        // Check for VINA
+        if self.backing.cvm_state().exit_vtl == GuestVtl::Vtl1
+            && B::is_interrupt_pending(self, GuestVtl::Vtl0, true, dev)
+        {
+            let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
+            let vina = hv.synic.vina();
+
+            if vina.enabled() && !hv.vina_asserted() {
+                hv.set_vina_asserted(true);
+                self.partition
+                    .synic_interrupt(self.vp_index(), GuestVtl::Vtl1)
+                    .request_interrupt(vina.vector().into(), vina.auto_eoi());
+                reprocessing_required = true;
             }
         }
 
-        if self.backing.cvm_state_mut().exit_vtl == GuestVtl::Vtl1 {
-            // Check for VINA
-            if is_interrupt_pending(self, GuestVtl::Vtl0, true) {
-                let vp_index = self.vp_index();
-                let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
-                if hv.synic.vina().enabled()
-                    && !hv.vina_asserted().map_err(UhRunVpError::VpAssistPage)?
-                {
-                    hv.set_vina_asserted(true)
-                        .map_err(UhRunVpError::VpAssistPage)?;
-                    self.partition
-                        .synic_interrupt(vp_index, GuestVtl::Vtl1)
-                        .request_interrupt(
-                            hv.synic.vina().vector().into(),
-                            hv.synic.vina().auto_eoi(),
-                        );
-                    reprocessing_required = true;
-                }
-            }
-        }
-
-        Ok(reprocessing_required)
+        reprocessing_required
     }
 
-    pub(crate) fn hcvm_handle_vp_start_enable_vtl(
-        &mut self,
-        vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError> {
-        if let Some(start_enable_vtl_state) = self.inner.hv_start_enable_vtl_vp[vtl].lock().take() {
+    pub(crate) fn hcvm_handle_vp_start_enable_vtl(&mut self, vtl: GuestVtl) {
+        let context = {
+            self.cvm_vp_inner().hv_start_enable_vtl_vp[vtl]
+                .lock()
+                .take()
+        };
+        if let Some(start_enable_vtl_state) = context {
+            if vtl == GuestVtl::Vtl1 {
+                assert!(*self.cvm_vp_inner().vtl1_enable_called.lock());
+                if let InitialVpContextOperation::EnableVpVtl = start_enable_vtl_state.operation {
+                    self.backing.cvm_state_mut().vtl1 = Some(crate::GuestVsmVpState::new());
+                }
+            }
+
             tracing::debug!(
-                vp_index = self.inner.cpu_index,
+                vp_index = self.vp_index().index(),
                 ?vtl,
                 ?start_enable_vtl_state.operation,
                 "setting up vp with initial registers"
@@ -1509,12 +1872,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 &mut self.access_state(vtl.into()),
                 &(start_enable_vtl_state.context),
             )
-            .map_err(UhRunVpError::State)?;
+            .unwrap();
 
             if let InitialVpContextOperation::StartVp = start_enable_vtl_state.operation {
                 match vtl {
                     GuestVtl::Vtl0 => {
-                        if *self.cvm_vp_inner().vtl1_enabled.lock() {
+                        if self.backing.cvm_state().vtl1.is_some() {
                             // When starting a VP targeting VTL on a
                             // hardware confidential VM, if VTL 1 has been
                             // enabled, switch to it (the highest enabled
@@ -1540,12 +1903,311 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 }
             }
         }
+    }
 
-        Ok(())
+    fn cvm_handle_exit_activity(&mut self) {
+        let exit_vtl = self.backing.cvm_state().exit_vtl;
+        if self.exit_activities[exit_vtl].pending_event() {
+            self.cvm_deliver_exit_pending_event();
+        }
+
+        self.exit_activities[exit_vtl] = Default::default();
+    }
+
+    pub(crate) fn cvm_deliver_exit_pending_event(&mut self) {
+        let next_vtl = self.backing.cvm_state().exit_vtl;
+
+        // Currently, the only pending event that needs to be delivered on exit
+        // are those that VTL 1 injects into VTL 0.
+        if next_vtl == GuestVtl::Vtl0 {
+            let pending_event = self
+                .backing
+                .cvm_state()
+                .vtl1
+                .as_ref()
+                .and_then(|vtl1| vtl1.vtl0_exit_pending_event);
+
+            if let Some(pending_event) = pending_event {
+                let double_fault = {
+                    if let Some(pending_event_vector) = B::pending_event_vector(self, next_vtl) {
+                        if pending_event.vector()
+                            > x86defs::Exception::CONTROL_PROTECTION_EXCEPTION.0 as u16
+                        {
+                            false
+                        } else {
+                            let incoming_exception =
+                                x86defs::Exception(pending_event.vector() as u8);
+                            let current_exception = x86defs::Exception(pending_event_vector);
+
+                            let is_contributory_exception =
+                                |exception: x86defs::Exception| -> bool {
+                                    matches!(
+                                        exception,
+                                        x86defs::Exception::DIVIDE_ERROR
+                                            | x86defs::Exception::INVALID_TSS
+                                            | x86defs::Exception::SEGMENT_NOT_PRESENT
+                                            | x86defs::Exception::STACK_SEGMENT_FAULT
+                                            | x86defs::Exception::GENERAL_PROTECTION_FAULT
+                                            | x86defs::Exception::CONTROL_PROTECTION_EXCEPTION
+                                    )
+                                };
+
+                            match (current_exception, incoming_exception) {
+                                (
+                                    x86defs::Exception::PAGE_FAULT,
+                                    x86defs::Exception::PAGE_FAULT,
+                                ) => true,
+                                (x86defs::Exception::PAGE_FAULT, second_exception) => {
+                                    is_contributory_exception(second_exception)
+                                }
+                                (first_exception, second_exception) => {
+                                    is_contributory_exception(first_exception)
+                                        && is_contributory_exception(second_exception)
+                                }
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if double_fault {
+                    let double_fault_event = HvX64PendingExceptionEvent::new()
+                        .with_vector(x86defs::Exception::DOUBLE_FAULT.0 as u16)
+                        .with_deliver_error_code(true)
+                        .with_error_code(0);
+                    B::set_pending_exception(self, next_vtl, double_fault_event);
+                } else {
+                    B::set_pending_exception(self, next_vtl, pending_event);
+                }
+
+                // The pending event takes precedence over any halts or idles
+                // (but not halts for the TLB lock).
+                self.backing.cvm_state_mut().lapics[next_vtl].activity = virt::vp::MpState::Running;
+
+                self.backing
+                    .cvm_state_mut()
+                    .vtl1
+                    .as_mut()
+                    .unwrap()
+                    .vtl0_exit_pending_event = None;
+            }
+        }
     }
 
     pub(crate) fn hcvm_vtl1_inspectable(&self) -> bool {
-        *self.cvm_vp_inner().vtl1_enabled.lock()
+        self.backing.cvm_state().vtl1.is_some()
+    }
+
+    /// Returns whether a higher VTL has registered for write intercepts on the
+    /// register.
+    fn cvm_is_protected_register_write(
+        &self,
+        vtl: GuestVtl,
+        reg: HvX64RegisterName,
+        value: u64,
+    ) -> bool {
+        if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
+            let configured_intercepts = &self
+                .backing
+                .cvm_state()
+                .vtl1
+                .as_ref()
+                .unwrap()
+                .reg_intercept;
+            let intercept_control = configured_intercepts.intercept_control;
+            return match reg {
+                HvX64RegisterName::Cr0 => {
+                    if intercept_control.cr0_write() {
+                        true
+                    } else {
+                        (B::cr0(self, vtl) ^ value) & configured_intercepts.cr0_mask != 0
+                    }
+                }
+                HvX64RegisterName::Cr4 => {
+                    if intercept_control.cr4_write() {
+                        true
+                    } else {
+                        (B::cr4(self, vtl) ^ value) & configured_intercepts.cr4_mask != 0
+                    }
+                }
+                HvX64RegisterName::Xfem => intercept_control.xcr0_write(),
+                HvX64RegisterName::Gdtr => intercept_control.gdtr_write(),
+                HvX64RegisterName::Idtr => intercept_control.idtr_write(),
+                HvX64RegisterName::Ldtr => intercept_control.ldtr_write(),
+                HvX64RegisterName::Tr => intercept_control.tr_write(),
+                _ => unreachable!("unexpected secure register"),
+            };
+        }
+        false
+    }
+
+    /// Checks if a higher VTL registered for write intercepts on the register,
+    /// and sends the intercept as required.
+    ///
+    /// If an intercept message is posted then no further processing is required.
+    /// The instruction pointer should not be advanced, since the instruction
+    /// pointer must continue to point to the instruction that generated the
+    /// intercept.
+    #[must_use]
+    pub(crate) fn cvm_try_protect_secure_register_write(
+        &mut self,
+        vtl: GuestVtl,
+        reg: HvX64RegisterName,
+        value: u64,
+    ) -> bool {
+        let send_intercept = self.cvm_is_protected_register_write(vtl, reg, value);
+        if send_intercept {
+            let message_state = B::intercept_message_state(self, vtl, false);
+
+            self.send_intercept_message(
+                GuestVtl::Vtl1,
+                &crate::processor::InterceptMessageType::Register { reg, value }
+                    .generate_hv_message(self.vp_index(), vtl, message_state, false),
+            );
+        }
+
+        send_intercept
+    }
+
+    /// Checks if a higher VTL registered for write intercepts on the MSR, and
+    /// sends the intercept as required.
+    ///
+    /// If an intercept message is posted then no further processing is required.
+    /// The instruction pointer should not be advanced, since the instruction
+    /// pointer must continue to point to the instruction that generated the
+    /// intercept.
+    #[must_use]
+    pub(crate) fn cvm_try_protect_msr_write(&mut self, vtl: GuestVtl, msr: u32) -> bool {
+        if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
+            let configured_intercepts = self
+                .backing
+                .cvm_state()
+                .vtl1
+                .as_ref()
+                .unwrap()
+                .reg_intercept
+                .intercept_control;
+
+            // Note: writes to X86X_IA32_MSR_MISC_ENABLE are dropped, so don't
+            // need to check the mask.
+
+            let send_intercept = match msr {
+                x86defs::X86X_MSR_LSTAR => configured_intercepts.msr_lstar_write(),
+                x86defs::X86X_MSR_STAR => configured_intercepts.msr_star_write(),
+                x86defs::X86X_MSR_CSTAR => configured_intercepts.msr_cstar_write(),
+                x86defs::X86X_MSR_APIC_BASE => configured_intercepts.apic_base_msr_write(),
+                x86defs::X86X_MSR_EFER => configured_intercepts.msr_efer_write(),
+                x86defs::X86X_MSR_SYSENTER_CS => configured_intercepts.msr_sysenter_cs_write(),
+                x86defs::X86X_MSR_SYSENTER_EIP => configured_intercepts.msr_sysenter_eip_write(),
+                x86defs::X86X_MSR_SYSENTER_ESP => configured_intercepts.msr_sysenter_esp_write(),
+                x86defs::X86X_MSR_SFMASK => configured_intercepts.msr_sfmask_write(),
+                x86defs::X86X_MSR_TSC_AUX => configured_intercepts.msr_tsc_aux_write(),
+                x86defs::X86X_MSR_XSS => configured_intercepts.msr_xss_write(),
+                x86defs::X86X_MSR_S_CET => configured_intercepts.msr_scet_write(),
+                x86defs::X86X_MSR_PL0_SSP
+                | x86defs::X86X_MSR_PL1_SSP
+                | x86defs::X86X_MSR_PL2_SSP => configured_intercepts.msr_pls_ssp_write(),
+                x86defs::X86X_MSR_INTERRUPT_SSP_TABLE_ADDR => {
+                    configured_intercepts.msr_interrupt_ssp_table_addr_write()
+                }
+                _ => false,
+            };
+
+            if send_intercept {
+                let message_state = B::intercept_message_state(self, vtl, false);
+
+                self.send_intercept_message(
+                    GuestVtl::Vtl1,
+                    &crate::processor::InterceptMessageType::Msr { msr }.generate_hv_message(
+                        self.vp_index(),
+                        vtl,
+                        message_state,
+                        false,
+                    ),
+                );
+
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Checks if a higher VTL registered for intercepts on io port and sends
+    /// the intercept as required.
+    ///
+    /// If an intercept message is posted then no further processing is
+    /// required. The instruction pointer should not be advanced, since the
+    /// instruction pointer must continue to point to the instruction that
+    /// generated the intercept.
+    pub(crate) fn cvm_try_protect_io_port_access(
+        &mut self,
+        vtl: GuestVtl,
+        port_number: u16,
+        is_read: bool,
+        access_size: u8,
+        string_access: bool,
+        rep_access: bool,
+    ) -> bool {
+        if vtl == GuestVtl::Vtl0 {
+            let send_intercept = {
+                if let GuestVsmState::Enabled { vtl1 } = &*self.cvm_partition().guest_vsm.read() {
+                    if is_read {
+                        vtl1.io_read_intercepts[port_number as usize]
+                    } else {
+                        vtl1.io_write_intercepts[port_number as usize]
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if send_intercept {
+                let message_state = B::intercept_message_state(self, vtl, true);
+
+                self.send_intercept_message(
+                    GuestVtl::Vtl1,
+                    &crate::processor::InterceptMessageType::IoPort {
+                        port_number,
+                        access_size,
+                        string_access,
+                        rep_access,
+                    }
+                    .generate_hv_message(
+                        self.vp_index(),
+                        vtl,
+                        message_state,
+                        is_read,
+                    ),
+                );
+
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn cvm_send_synthetic_cluster_ipi(
+        &mut self,
+        vtl: GuestVtl,
+        vector: u32,
+        processors: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if vtl != GuestVtl::Vtl0 {
+            return Err(HvError::InvalidVtlState);
+        }
+
+        if !(16..=255).contains(&vector) {
+            return Err(HvError::InvalidParameter);
+        }
+
+        for vp_index in processors {
+            self.partition
+                .synic_interrupt(virt::VpIndex::new(vp_index), vtl)
+                .request_interrupt(vector, false)
+        }
+        Ok(())
     }
 
     fn get_vsm_vp_secure_config_vtl(
@@ -1559,15 +2221,15 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         let requesting_vtl = requesting_vtl.into();
 
-        let guest_vsm_lock = self.partition.guest_vsm.read();
-        let guest_vsm = guest_vsm_lock
-            .get_hardware_cvm()
-            .ok_or(HvError::InvalidVtlState)?;
+        let guest_vsm_lock = self.cvm_partition().guest_vsm.read();
+        let GuestVsmState::Enabled { vtl1, .. } = &*guest_vsm_lock else {
+            return Err(HvError::InvalidVtlState);
+        };
 
         let tlb_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
 
         Ok(HvRegisterVsmVpSecureVtlConfig::new()
-            .with_mbec_enabled(guest_vsm.mbec_enabled)
+            .with_mbec_enabled(vtl1.mbec_enabled)
             .with_tlb_locked(tlb_locked))
     }
 
@@ -1576,7 +2238,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         requesting_vtl: GuestVtl,
         target_vtl: GuestVtl,
         config: HvRegisterVsmVpSecureVtlConfig,
-    ) -> Result<(), HvError> {
+    ) -> HvResult<()> {
         tracing::debug!(
             ?requesting_vtl,
             ?target_vtl,
@@ -1592,14 +2254,16 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         let requesting_vtl = requesting_vtl.into();
 
-        let guest_vsm_lock = self.partition.guest_vsm.read();
-        let guest_vsm = guest_vsm_lock
-            .get_hardware_cvm()
-            .ok_or(HvError::InvalidVtlState)?;
+        {
+            let guest_vsm_lock = self.cvm_partition().guest_vsm.read();
+            let GuestVsmState::Enabled { vtl1, .. } = &*guest_vsm_lock else {
+                return Err(HvError::InvalidVtlState);
+            };
 
-        // MBEC must always be enabled or disabled partition-wide.
-        if config.mbec_enabled() != guest_vsm.mbec_enabled {
-            return Err(HvError::InvalidRegisterValue);
+            // MBEC must always be enabled or disabled partition-wide.
+            if config.mbec_enabled() != vtl1.mbec_enabled {
+                return Err(HvError::InvalidRegisterValue);
+            }
         }
 
         let tlb_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
@@ -1610,6 +2274,300 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         };
 
         Ok(())
+    }
+
+    fn raise_vtl(
+        &mut self,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
+        entry_reason: HvVtlEntryReason,
+    ) {
+        assert!(source_vtl < target_vtl);
+        B::switch_vtl(self, source_vtl, target_vtl);
+        self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
+    }
+
+    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &HvMessage) {
+        tracing::trace!(?message, "sending intercept to {:?}", vtl);
+
+        if let Err(e) = self.backing.cvm_state_mut().hv[vtl]
+            .synic
+            .post_intercept_message(
+                message,
+                &mut self
+                    .partition
+                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+            )
+        {
+            // Dropping this allows us to try to deliver any existing
+            // interrupt. In the case of sending an intercept to VTL 1
+            // because of VTL 0 behavior, since the VTL 0 instruction
+            // pointer is not advanced, the VTL 0 guest will exit on the
+            // same instruction again, providing another opportunity to
+            // deliver the intercept.
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                error = &e as &dyn std::error::Error,
+                ?vtl,
+                ?message,
+                "error sending intercept"
+            );
+        }
+    }
+
+    pub(crate) fn cvm_process_interrupts(
+        &mut self,
+        scan_irr: VtlArray<bool, 2>,
+        first_scan_irr: &mut bool,
+        dev: &impl CpuIo,
+    ) -> bool {
+        self.cvm_handle_exit_activity();
+
+        if self.backing.untrusted_synic_mut().is_some() {
+            self.update_synic(GuestVtl::Vtl0, true);
+        }
+
+        for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
+            // Process interrupts.
+            self.update_synic(vtl, false);
+
+            B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr);
+        }
+        *first_scan_irr = false;
+
+        self.cvm_handle_cross_vtl_interrupts(dev)
+    }
+
+    fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
+        fn duration_from_100ns(n: u64) -> std::time::Duration {
+            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
+            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
+        }
+
+        loop {
+            let hv = &mut self.backing.cvm_state_mut().hv[vtl];
+
+            let ref_time_now = hv.ref_time_now();
+            let synic = if untrusted_synic {
+                debug_assert_eq!(vtl, GuestVtl::Vtl0);
+                self.backing.untrusted_synic_mut().unwrap()
+            } else {
+                &mut hv.synic
+            };
+            let (ready_sints, next_ref_time) = synic.scan(
+                ref_time_now,
+                &mut self
+                    .partition
+                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+            );
+            if let Some(next_ref_time) = next_ref_time {
+                // Convert from reference timer basis to vmtime basis via
+                // difference of programmed timer and current reference time.
+                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
+                let timeout = self
+                    .vmtime
+                    .now()
+                    .wrapping_add(duration_from_100ns(ref_diff));
+                self.vmtime.set_timeout_if_before(timeout);
+            }
+            if ready_sints == 0 {
+                break;
+            }
+            self.deliver_synic_messages(vtl, ready_sints);
+            // Loop around to process the synic again.
+        }
+    }
+
+    pub(crate) fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
+        let proxied_sints = self.backing.cvm_state().hv[vtl].synic.proxied_sints();
+        let pending_sints =
+            self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
+                if proxied_sints & (1 << sint) != 0 {
+                    if let Some(synic) = self.backing.untrusted_synic_mut() {
+                        synic.post_message(
+                            sint,
+                            message,
+                            &mut self
+                                .partition
+                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+                        )
+                    } else {
+                        self.partition.hcl.post_message_direct(
+                            self.inner.vp_info.base.vp_index.index(),
+                            sint,
+                            message,
+                        )
+                    }
+                } else {
+                    self.backing.cvm_state_mut().hv[vtl].synic.post_message(
+                        sint,
+                        message,
+                        &mut self
+                            .partition
+                            .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+                    )
+                }
+            });
+
+        self.request_sint_notifications(vtl, pending_sints);
+    }
+
+    /// Checks if a memory fault for the given VTL and GPA should be emulated,
+    /// or otherwise handled. Returns true if emulation is required, false if
+    /// all the necessary work is now done.
+    pub(crate) fn check_mem_fault(
+        &mut self,
+        vtl: GuestVtl,
+        gpa: u64,
+        is_write: bool,
+        extra_info: impl std::fmt::Debug,
+    ) -> bool {
+        let vtom = self.partition.caps.vtom.unwrap_or(0);
+        let is_shared = (gpa & vtom) == vtom && vtom != 0;
+        let canonical_gpa = gpa & !vtom;
+
+        // Only emulate the access if the gpa is mmio or outside of ram.
+        let address_type = self
+            .partition
+            .lower_vtl_memory_layout
+            .probe_address(canonical_gpa);
+
+        match address_type {
+            Some(AddressType::Mmio) => {
+                // Emulate the access.
+                true
+            }
+            Some(AddressType::Ram) => {
+                let (access_check, access_type) = if is_write {
+                    (
+                        self.partition.gm[vtl].probe_gpa_writable(gpa),
+                        HvInterceptAccessType::WRITE,
+                    )
+                } else {
+                    (
+                        self.partition.gm[vtl].probe_gpa_readable(gpa),
+                        HvInterceptAccessType::READ,
+                    )
+                };
+
+                match access_check {
+                    Ok(()) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            ?extra_info,
+                            ?access_type,
+                            "possible spurious memory access violation, ignoring"
+                        );
+                    }
+                    Err(GuestMemoryErrorKind::VtlProtected) if vtl == GuestVtl::Vtl0 => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            ?extra_info,
+                            ?access_type,
+                            "guest accessed protected gpa, sending intercept"
+                        );
+                        let state = B::intercept_message_state(self, vtl, false);
+                        // TODO: We may want to fill in tpr_priority and gva
+                        // but tests pass without them.
+                        self.send_intercept_message(
+                            GuestVtl::Vtl1,
+                            &HvMessage::new(
+                                HvMessageType::HvMessageTypeGpaIntercept,
+                                0,
+                                HvX64MemoryInterceptMessage {
+                                    header: HvX64InterceptMessageHeader {
+                                        vp_index: self.vp_index().index(),
+                                        instruction_length_and_cr8: state
+                                            .instruction_length_and_cr8,
+                                        intercept_access_type: access_type,
+                                        execution_state: hvdef::HvX64VpExecutionState::new()
+                                            .with_cpl(state.cpl)
+                                            .with_vtl(vtl.into())
+                                            .with_efer_lma(state.efer_lma),
+                                        cs_segment: state.cs,
+                                        rip: state.rip,
+                                        rflags: state.rflags,
+                                    },
+                                    cache_type: HvCacheType::HvCacheTypeWriteBack,
+                                    memory_access_info: HvX64MemoryAccessInfo::new(),
+                                    tpr_priority: 0,
+                                    reserved: 0,
+                                    guest_virtual_address: 0,
+                                    guest_physical_address: gpa,
+                                    instruction_byte_count: 0,
+                                    instruction_bytes: [0; 16],
+                                }
+                                .as_bytes(),
+                            ),
+                        );
+                    }
+                    // TODO: Handle other error kinds differently?
+                    Err(_) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            ?access_type,
+                            "guest accessed inaccessible gpa, injecting MC"
+                        );
+                        // TODO: Implement IA32_MCG_STATUS MSR for more reporting
+                        B::set_pending_exception(
+                            self,
+                            vtl,
+                            HvX64PendingExceptionEvent::new()
+                                .with_vector(x86defs::Exception::MACHINE_CHECK.0 as u16),
+                        );
+                    }
+                }
+                false
+            }
+            None => {
+                if self.partition.monitor_page.gpa() == Some(gpa & !(hvdef::HV_PAGE_SIZE - 1)) {
+                    if !is_write {
+                        tracing::debug!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "spurious exit for guest monitor page read"
+                        );
+                    }
+
+                    // Emulate monitor page writes, but not reads.
+                    is_write
+                } else {
+                    if !self.cvm_partition().hide_isolation {
+                        // TODO: Addresses outside of ram and mmio probably should
+                        // not be accessed by the guest, if it has been told about
+                        // isolation. While it's okay as we will return FFs or
+                        // discard writes for addresses that are not mmio, we should
+                        // consider if instead we should also inject a machine check
+                        // for such accesses. The guest should not access any
+                        // addresses not described to it.
+                        //
+                        // For now, log that the guest did this.
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            gpa,
+                            ?vtl,
+                            is_shared,
+                            ?extra_info,
+                            "guest accessed gpa not described in memory layout, emulating anyways"
+                        );
+                    }
+
+                    // Emulate the access.
+                    true
+                }
+            }
+        }
     }
 }
 
@@ -1633,25 +2591,29 @@ pub(crate) fn validate_xsetbv_exit(input: XsetbvExitInput) -> Option<u64> {
     } = input;
 
     if rcx != 0 {
-        tracelimit::warn_ratelimited!(rcx, "xsetbv exit: rcx is not set to 0");
+        tracelimit::warn_ratelimited!(CVM_ALLOWED, rcx, "xsetbv exit: rcx is not set to 0");
         return None;
     }
 
     if cpl != 0 {
-        tracelimit::warn_ratelimited!(cpl, "xsetbv exit: invalid cpl");
+        tracelimit::warn_ratelimited!(CVM_ALLOWED, cpl, "xsetbv exit: invalid cpl");
         return None;
     }
 
     let osxsave_flag = cr4 & x86defs::X64_CR4_OSXSAVE;
     if osxsave_flag == 0 {
-        tracelimit::warn_ratelimited!(cr4, "xsetbv exit: cr4 osxsave not set");
+        tracelimit::warn_ratelimited!(CVM_ALLOWED, cr4, "xsetbv exit: cr4 osxsave not set");
         return None;
     }
 
     let xfem = (rdx << 32) | (rax & 0xffffffff);
 
     if (xfem & x86defs::xsave::XFEATURE_X87) == 0 {
-        tracelimit::warn_ratelimited!(xfem, "xsetbv exit: xfem legacy x87 bit not set");
+        tracelimit::warn_ratelimited!(
+            CVM_ALLOWED,
+            xfem,
+            "xsetbv exit: xfem legacy x87 bit not set"
+        );
         return None;
     }
 
@@ -1659,8 +2621,6 @@ pub(crate) fn validate_xsetbv_exit(input: XsetbvExitInput) -> Option<u64> {
 }
 
 impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationState<'_, '_, T, B> {
-    type Error = UhRunVpError;
-
     fn guest_memory(&self) -> &GuestMemory {
         &self.vp.partition.gm[self.vtl]
     }
@@ -1669,7 +2629,164 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
         self.vp.set_tlb_lock(Vtl::Vtl2, self.vtl)
     }
 
-    fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
-        Ok(self.vp.backing.translation_registers(self.vp, self.vtl))
+    fn registers(&mut self) -> TranslationRegisters {
+        self.vp.backing.translation_registers(self.vp, self.vtl)
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpi
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn send_synthetic_cluster_ipi(
+        &mut self,
+        target_vtl: Option<Vtl>,
+        vector: u32,
+        flags: u8,
+        processor_set: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if flags != 0 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let target_vtl =
+            self.target_vtl_no_higher(target_vtl.unwrap_or_else(|| self.intercepted_vtl.into()))?;
+
+        self.vp
+            .cvm_send_synthetic_cluster_ipi(target_vtl, vector, processor_set)
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpiEx
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn send_synthetic_cluster_ipi_ex(
+        &mut self,
+        target_vtl: Option<Vtl>,
+        vector: u32,
+        flags: u8,
+        processor_set: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if flags != 0 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let target_vtl =
+            self.target_vtl_no_higher(target_vtl.unwrap_or_else(|| self.intercepted_vtl.into()))?;
+
+        self.vp
+            .cvm_send_synthetic_cluster_ipi(target_vtl, vector, processor_set)
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn install_intercept(
+        &mut self,
+        partition_id: u64,
+        access_type_mask: u32,
+        intercept_type: hvdef::hypercall::HvInterceptType,
+        intercept_parameters: hvdef::hypercall::HvInterceptParameters,
+    ) -> HvResult<()> {
+        tracing::debug!(
+            vp_index = self.vp.vp_index().index(),
+            ?access_type_mask,
+            ?intercept_type,
+            ?intercept_parameters,
+            "HvInstallIntercept"
+        );
+
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::AccessDenied);
+        }
+
+        if self.intercepted_vtl == GuestVtl::Vtl0 {
+            return Err(HvError::AccessDenied);
+        }
+
+        match intercept_type {
+            hvdef::hypercall::HvInterceptType::HvInterceptTypeX64IoPort => {
+                if access_type_mask
+                    & !(HV_INTERCEPT_ACCESS_MASK_READ | HV_INTERCEPT_ACCESS_MASK_WRITE)
+                    != 0
+                {
+                    return Err(HvError::InvalidParameter);
+                }
+
+                let mut gvsm_lock = self.vp.cvm_partition().guest_vsm.write();
+
+                let GuestVsmState::Enabled { vtl1, .. } = &mut *gvsm_lock else {
+                    return Err(HvError::InvalidVtlState);
+                };
+
+                let io_port = intercept_parameters.io_port() as usize;
+
+                vtl1.io_read_intercepts.set(
+                    io_port,
+                    access_type_mask & HV_INTERCEPT_ACCESS_MASK_READ != 0,
+                );
+
+                vtl1.io_write_intercepts.set(
+                    io_port,
+                    access_type_mask & HV_INTERCEPT_ACCESS_MASK_WRITE != 0,
+                );
+
+                // TODO GUEST VSM: flush io port accesses on other VPs before
+                // returning back to VTL 0
+            }
+            _ => return Err(HvError::InvalidParameter),
+        }
+
+        Ok(())
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn assert_virtual_interrupt(
+        &mut self,
+        partition_id: u64,
+        interrupt_control: hvdef::HvInterruptControl,
+        destination_address: u64,
+        requested_vector: u32,
+        target_vtl: Vtl,
+    ) -> HvResult<()> {
+        let target_vtl = self.target_vtl_no_higher(target_vtl)?;
+
+        if partition_id != hvdef::HV_PARTITION_ID_SELF || target_vtl == self.intercepted_vtl {
+            return Err(HvError::AccessDenied);
+        }
+
+        // Only fixed interrupts and NMIs are supported today.
+        if !matches!(
+            interrupt_control.interrupt_type(),
+            HvInterruptType::HvX64InterruptTypeFixed | HvInterruptType::HvX64InterruptTypeNmi
+        ) {
+            return Err(HvError::InvalidParameter);
+        }
+
+        self.vp.partition.request_msi(
+            target_vtl,
+            MsiRequest::new_x86(
+                x86defs::apic::DeliveryMode(
+                    interrupt_control
+                        .interrupt_type()
+                        .0
+                        .try_into()
+                        .map_err(|_| HvError::InvalidParameter)?,
+                ),
+                destination_address
+                    .try_into()
+                    .map_err(|_| HvError::InvalidParameter)?,
+                interrupt_control.x86_logical_destination_mode(),
+                requested_vector
+                    .try_into()
+                    .map_err(|_| HvError::InvalidParameter)?,
+                interrupt_control.x86_level_triggered(),
+            ),
+        );
+
+        Ok(())
     }
 }

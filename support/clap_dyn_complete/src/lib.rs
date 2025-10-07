@@ -25,7 +25,6 @@
 //! requiring the binary to include its own completion engine.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use clap::Parser;
 use futures::future::BoxFuture;
@@ -287,7 +286,7 @@ pub trait CustomCompleterFactory: Send + Sync {
     type CustomCompleter: CustomCompleter + 'static;
 
     /// Build a new [`CustomCompleter`].
-    fn build(&self, ctx: &RootCtx<'_>) -> impl std::future::Future<Output = Self::CustomCompleter>;
+    fn build(&self, ctx: &RootCtx<'_>) -> impl Future<Output = Self::CustomCompleter>;
 }
 
 /// A custom completer for a particular argument.
@@ -298,7 +297,7 @@ pub trait CustomCompleter: Send + Sync {
         ctx: &RootCtx<'_>,
         subcommand_path: &[&str],
         arg_id: &str,
-    ) -> impl Send + std::future::Future<Output = Vec<String>>;
+    ) -> impl Send + Future<Output = Vec<String>>;
 }
 
 #[async_trait::async_trait]
@@ -425,7 +424,7 @@ fn recurse_completions<'a>(
                 let val = matches
                     .get_raw(positional.get_id().as_str())
                     .unwrap_or_default()
-                    .last()
+                    .next_back()
                     .unwrap_or_default()
                     .to_str()
                     .unwrap_or_default();

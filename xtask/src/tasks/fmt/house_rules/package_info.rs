@@ -32,7 +32,7 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
     }
 
     let contents = fs_err::read_to_string(f)?;
-    let mut parsed = contents.parse::<toml_edit::Document>()?;
+    let mut parsed = contents.parse::<toml_edit::DocumentMut>()?;
 
     let mut excluded_from_workspace = false;
     if let Some(metadata) = parsed

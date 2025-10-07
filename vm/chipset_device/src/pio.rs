@@ -3,8 +3,8 @@
 
 //! Port IO intercepts
 
-use crate::io::IoResult;
 use crate::ChipsetDevice;
+use crate::io::IoResult;
 use std::ops::RangeInclusive;
 
 /// Implemented by devices which use port IO intercepts.

@@ -9,8 +9,8 @@
 //! [1]: <https://github.com/firecracker-microvm/firecracker/blob/7b2e87dc65fc45162303e5708b83c379cf1b0426/docs/vsock.md>
 
 use super::Guid;
-use crate::ring::RingMem;
 use crate::HvsockRelayChannelHalf;
+use crate::ring::RingMem;
 use anyhow::Context;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
@@ -113,7 +113,7 @@ impl HvsockRelay {
         &self,
         ctx: &mut CancelContext,
         service_id: Guid,
-    ) -> impl std::future::Future<Output = anyhow::Result<UnixStream>> + Send + use<> {
+    ) -> impl Future<Output = anyhow::Result<UnixStream>> + Send + use<> {
         let inner = self.inner.clone();
         let host_send = self.host_send.clone();
         let (send, recv) = mesh::oneshot();
@@ -584,15 +584,15 @@ mod tests {
     use crate::ring::FlatRingMem;
     use futures::AsyncReadExt;
     use futures::AsyncWriteExt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::Driver;
     use pal_async::socket::PolledSocket;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
-    use pal_async::DefaultDriver;
     use unix_socket::UnixStream;
-    use vmbus_async::pipe::connected_byte_pipes;
     use vmbus_async::pipe::BytePipe;
+    use vmbus_async::pipe::connected_byte_pipes;
 
     fn setup_relay<T: Driver + Spawn>(
         driver: &T,

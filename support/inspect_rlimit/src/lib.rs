@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calls to libc functions to get rlimit info.
 // TODO: replace unsafe with calls into the rlimit crate.
@@ -10,7 +11,7 @@
 
 use cfg_if::cfg_if;
 use inspect::Inspect;
-use inspect::Value;
+use inspect::ValueKind;
 use libc::rlimit;
 use std::num::ParseIntError;
 use thiserror::Error;
@@ -102,7 +103,7 @@ impl Inspect for RlimitResource {
             libc::prlimit(pid, self.resource, std::ptr::null(), &mut rlimit)
         };
         if r != 0 {
-            req.value(std::io::Error::last_os_error().to_string().into());
+            req.value(std::io::Error::last_os_error().to_string());
             return;
         }
 
@@ -121,7 +122,7 @@ impl Inspect for RlimitResource {
             }
             let v = *sel(rlimit);
             let v = if v == !0 {
-                Value::from("unlimited")
+                ValueKind::from("unlimited")
             } else {
                 v.into()
             };

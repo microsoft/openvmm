@@ -1,16 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 use aarch64emu::AccessCpuState;
 use aarch64emu::Cpu;
 use aarch64emu::Emulator;
 use aarch64emu::InterceptState;
 use pal_async::async_test;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum TestCpuError {
@@ -1370,7 +1372,7 @@ where
             i % 32
         }
         let mut register_indices = [0_u8; 3];
-        getrandom::getrandom(&mut register_indices).expect("rng failure");
+        getrandom::fill(&mut register_indices).expect("rng failure");
         let rt = get_next_valid_reg_index(register_indices[0]);
         let rn = get_next_valid_reg_index(register_indices[1]);
         let rn = if rt != 31 && rn == rt {
@@ -2538,7 +2540,7 @@ async fn verify_load_fp_register_register_offset() {
                 valid_index % 32
             }
             let mut register_indices = [0_u8; 3];
-            getrandom::getrandom(&mut register_indices).expect("rng failure");
+            getrandom::fill(&mut register_indices).expect("rng failure");
             // fp available registers are q0-q31
             let rt = register_indices[0] % 32;
             let rn = get_next_valid_reg_index(register_indices[1], true);

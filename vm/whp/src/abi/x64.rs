@@ -3,8 +3,6 @@
 
 #![cfg(target_arch = "x86_64")]
 
-use super::bitops;
-use super::bitops_base;
 use super::WHV_CPUID_OUTPUT;
 use super::WHV_MEMORY_ACCESS_TYPE;
 use super::WHV_PROCESSOR_FEATURES;
@@ -12,6 +10,8 @@ use super::WHV_PROCESSOR_FEATURES1;
 use super::WHV_REGISTER_NAME;
 use super::WHV_RUN_VP_EXIT_REASON;
 use super::WHV_UINT128;
+use super::bitops;
+use super::bitops_base;
 
 pub const WHvX64RegisterRax: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00000000);
 pub const WHvX64RegisterRcx: WHV_REGISTER_NAME = WHV_REGISTER_NAME(0x00000001);

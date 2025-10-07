@@ -67,7 +67,7 @@ pub mod publish {
                 done,
             } = request;
 
-            let files = ctx.emit_rust_stepv("describe OpenHCL igvm artifact", |ctx| {
+            let files = ctx.emit_minor_rust_stepv("describe OpenHCL igvm artifact", |ctx| {
                 let openhcl_igvm_files = openhcl_igvm_files.claim(ctx);
                 |rt| {
                     let mut files = Vec::new();
@@ -107,7 +107,7 @@ pub mod publish {
                             ));
                         }
                     }
-                    Ok(files)
+                    files
                 }
             });
 

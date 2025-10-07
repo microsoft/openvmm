@@ -3,12 +3,12 @@
 
 //! Resources for the encrypted disk device.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::DiskHandleKind;
 
 /// A handle to an encrypted disk.
 #[derive(MeshPayload)]

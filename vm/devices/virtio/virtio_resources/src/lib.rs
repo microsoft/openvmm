@@ -6,13 +6,14 @@
 //! Device-specific definitions are here to avoid needing to pull in a device
 //! implementation crate just to construct the device's config.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::PciDeviceHandleKind;
-use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::PciDeviceHandleKind;
+use vm_resource::kind::VirtioDeviceHandle;
 
 /// A resource for mapping a virtio device as a PCI device.
 #[derive(MeshPayload)]
@@ -24,8 +25,8 @@ impl ResourceId<PciDeviceHandleKind> for VirtioPciDeviceHandle {
 
 pub mod p9 {
     use mesh::MeshPayload;
-    use vm_resource::kind::VirtioDeviceHandle;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
 
     #[derive(MeshPayload)]
     pub struct VirtioPlan9Handle {
@@ -41,8 +42,8 @@ pub mod p9 {
 
 pub mod fs {
     use mesh::MeshPayload;
-    use vm_resource::kind::VirtioDeviceHandle;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
 
     #[derive(MeshPayload)]
     pub struct VirtioFsHandle {
@@ -68,8 +69,8 @@ pub mod fs {
 
 pub mod pmem {
     use mesh::MeshPayload;
-    use vm_resource::kind::VirtioDeviceHandle;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
 
     #[derive(MeshPayload)]
     pub struct VirtioPmemHandle {
@@ -84,10 +85,10 @@ pub mod pmem {
 pub mod net {
     use mesh::MeshPayload;
     use net_backend_resources::mac_address::MacAddress;
-    use vm_resource::kind::NetEndpointHandleKind;
-    use vm_resource::kind::VirtioDeviceHandle;
     use vm_resource::Resource;
     use vm_resource::ResourceId;
+    use vm_resource::kind::NetEndpointHandleKind;
+    use vm_resource::kind::VirtioDeviceHandle;
 
     #[derive(MeshPayload)]
     pub struct VirtioNetHandle {

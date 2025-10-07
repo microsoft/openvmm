@@ -1,17 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
-    clippy::field_reassign_with_default // protocol code benefits from imperative field assignment
-)]
-
+use super::Fuse;
+use super::Mapper;
 use super::protocol::*;
 use super::reply::ReplySender;
 use super::request::FuseOperation;
 use super::request::Request;
 use super::request::RequestReader;
-use super::Fuse;
-use super::Mapper;
 use parking_lot::RwLock;
 use std::io;
 use std::sync::atomic;

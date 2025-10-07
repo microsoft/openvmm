@@ -19,6 +19,10 @@ pub const SEV_INTR_TYPE_SW: u32 = 4;
 pub const REG_TWEAK_BITMAP_OFFSET: usize = 0x100;
 pub const REG_TWEAK_BITMAP_SIZE: usize = 0x40;
 
+/// Value for the `msg_version` member in [`SNP_GUEST_REQ_MSG_VERSION`].
+/// Use 1 for now.
+pub const SNP_GUEST_REQ_MSG_VERSION: u32 = 1;
+
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct SevEventInjectInfo {
@@ -184,7 +188,7 @@ pub struct SevIoAccessInfo {
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct SevNpfInfo {
     pub present: bool,
-    pub read_write: bool,
+    pub is_write: bool,
     pub user: bool,
     pub reserved_bit_set: bool,
     pub fetch: bool,
@@ -469,159 +473,187 @@ pub const GHCB_PAGE_HYPERCALL_OUTPUT_OFFSET: usize = 4080;
 // Exit Codes.
 open_enum::open_enum! {
     pub enum SevExitCode: u64 {
-        CR0_READ = 0,
-        CR1_READ = 1,
-        CR2_READ = 2,
-        CR3_READ = 3,
-        CR4_READ = 4,
-        CR5_READ = 5,
-        CR6_READ = 6,
-        CR7_READ = 7,
-        CR8_READ = 8,
-        CR9_READ = 9,
-        CR10_READ = 10,
-        CR11_READ = 11,
-        CR12_READ = 12,
-        CR13_READ = 13,
-        CR14_READ = 14,
-        CR15_READ = 15,
-        CR0_WRITE = 16,
-        CR1_WRITE = 17,
-        CR2_WRITE = 18,
-        CR3_WRITE = 19,
-        CR4_WRITE = 20,
-        CR5_WRITE = 21,
-        CR6_WRITE = 22,
-        CR7_WRITE = 23,
-        CR8_WRITE = 24,
-        CR9_WRITE = 25,
-        CR10_WRITE = 26,
-        CR11_WRITE = 27,
-        CR12_WRITE = 28,
-        CR13_WRITE = 29,
-        CR14_WRITE = 30,
-        CR15_WRITE = 31,
-        DR0_READ = 32,
-        DR1_READ = 33,
-        DR2_READ = 34,
-        DR3_READ = 35,
-        DR4_READ = 36,
-        DR5_READ = 37,
-        DR6_READ = 38,
-        DR7_READ = 39,
-        DR8_READ = 40,
-        DR9_READ = 41,
-        DR10_READ = 42,
-        DR11_READ = 43,
-        DR12_READ = 44,
-        DR13_READ = 45,
-        DR14_READ = 46,
-        DR15_READ = 47,
-        DR0_WRITE = 48,
-        DR1_WRITE = 49,
-        DR2_WRITE = 50,
-        DR3_WRITE = 51,
-        DR4_WRITE = 52,
-        DR5_WRITE = 53,
-        DR6_WRITE = 54,
-        DR7_WRITE = 55,
-        DR8_WRITE = 56,
-        DR9_WRITE = 57,
-        DR10_WRITE = 58,
-        DR11_WRITE = 59,
-        DR12_WRITE = 60,
-        DR13_WRITE = 61,
-        DR14_WRITE = 62,
-        DR15_WRITE = 63,
-        EXCP0 = 64,
-        EXCP_DB = 65,
-        EXCP2 = 66,
-        EXCP3 = 67,
-        EXCP4 = 68,
-        EXCP5 = 69,
-        EXCP6 = 70,
-        EXCP7 = 71,
-        EXCP8 = 72,
-        EXCP9 = 73,
-        EXCP10 = 74,
-        EXCP11 = 75,
-        EXCP12 = 76,
-        EXCP13 = 77,
-        EXCP14 = 78,
-        EXCP15 = 79,
-        EXCP16 = 80,
-        EXCP17 = 81,
-        EXCP18 = 82,
-        EXCP19 = 83,
-        EXCP20 = 84,
-        EXCP21 = 85,
-        EXCP22 = 86,
-        EXCP23 = 87,
-        EXCP24 = 88,
-        EXCP25 = 89,
-        EXCP26 = 90,
-        EXCP27 = 91,
-        EXCP28 = 92,
-        EXCP29 = 93,
-        EXCP30 = 94,
-        EXCP31 = 95,
-        INTR = 96,
-        NMI = 97,
-        SMI = 98,
-        INIT = 99,
-        VINTR = 100,
-        CR0_SEL_WRITE = 101,
-        IDTR_READ = 102,
-        GDTR_READ = 103,
-        LDTR_READ = 104,
-        TR_READ = 105,
-        IDTR_WRITE = 106,
-        GDTR_WRITE = 107,
-        LDTR_WRITE = 108,
-        TR_WRITE = 109,
-        RDTSC = 110,
-        RDPMC = 111,
-        PUSHF = 112,
-        POPF = 113,
-        CPUID = 114,
-        RSM = 115,
-        IRET = 116,
-        SWINT = 117,
-        INVD = 118,
-        PAUSE = 119,
-        HLT = 120,
-        INVLPG = 121,
-        INVLPGA = 122,
-        IOIO = 123,
-        MSR = 124,
-        TASK_SWITCH = 125,
-        FERR_FREEZE = 126,
-        SHUTDOWN = 127,
-        VMRUN = 128,
-        VMMCALL = 129,
-        VMLOAD = 130,
-        VMSAVE = 131,
-        STGI = 132,
-        CLGI = 133,
-        SKINIT = 134,
-        RDTSCP = 135,
-        ICEBP = 136,
-        WBINVD = 137,
-        MONITOR = 138,
-        MWAIT = 139,
-        MWAIT_CONDITIONAL = 140,
-        XSETBV = 141,
-        INVLPGB = 160,
-        ILLEGAL_INVLPGB = 161,
-        NPF = 1024,
-        AVIC_INCOMPLETE_IPI = 1025,
-        AVIC_NOACCEL = 1026,
-        VMGEXIT = 1027,
-        PAGE_NOT_VALIDATED = 1028,
+        CR0_READ = 0x0,
+        CR1_READ = 0x1,
+        CR2_READ = 0x2,
+        CR3_READ = 0x3,
+        CR4_READ = 0x4,
+        CR5_READ = 0x5,
+        CR6_READ = 0x6,
+        CR7_READ = 0x7,
+        CR8_READ = 0x8,
+        CR9_READ = 0x9,
+        CR10_READ = 0xa,
+        CR11_READ = 0xb,
+        CR12_READ = 0xc,
+        CR13_READ = 0xd,
+        CR14_READ = 0xe,
+        CR15_READ = 0xf,
+        CR0_WRITE = 0x10,
+        CR1_WRITE = 0x11,
+        CR2_WRITE = 0x12,
+        CR3_WRITE = 0x13,
+        CR4_WRITE = 0x14,
+        CR5_WRITE = 0x15,
+        CR6_WRITE = 0x16,
+        CR7_WRITE = 0x17,
+        CR8_WRITE = 0x18,
+        CR9_WRITE = 0x19,
+        CR10_WRITE = 0x1a,
+        CR11_WRITE = 0x1b,
+        CR12_WRITE = 0x1c,
+        CR13_WRITE = 0x1d,
+        CR14_WRITE = 0x1e,
+        CR15_WRITE = 0x1f,
+        DR0_READ = 0x20,
+        DR1_READ = 0x21,
+        DR2_READ = 0x22,
+        DR3_READ = 0x23,
+        DR4_READ = 0x24,
+        DR5_READ = 0x25,
+        DR6_READ = 0x26,
+        DR7_READ = 0x27,
+        DR8_READ = 0x28,
+        DR9_READ = 0x29,
+        DR10_READ = 0x2a,
+        DR11_READ = 0x2b,
+        DR12_READ = 0x2c,
+        DR13_READ = 0x2d,
+        DR14_READ = 0x2e,
+        DR15_READ = 0x2f,
+        DR0_WRITE = 0x30,
+        DR1_WRITE = 0x31,
+        DR2_WRITE = 0x32,
+        DR3_WRITE = 0x33,
+        DR4_WRITE = 0x34,
+        DR5_WRITE = 0x35,
+        DR6_WRITE = 0x36,
+        DR7_WRITE = 0x37,
+        DR8_WRITE = 0x38,
+        DR9_WRITE = 0x39,
+        DR10_WRITE = 0x3a,
+        DR11_WRITE = 0x3b,
+        DR12_WRITE = 0x3c,
+        DR13_WRITE = 0x3d,
+        DR14_WRITE = 0x3e,
+        DR15_WRITE = 0x3f,
+        EXCP0 = 0x40,
+        EXCP_DB = 0x41,
+        EXCP2 = 0x42,
+        EXCP3 = 0x43,
+        EXCP4 = 0x44,
+        EXCP5 = 0x45,
+        EXCP6 = 0x46,
+        EXCP7 = 0x47,
+        EXCP8 = 0x48,
+        EXCP9 = 0x49,
+        EXCP10 = 0x4a,
+        EXCP11 = 0x4b,
+        EXCP12 = 0x4c,
+        EXCP13 = 0x4d,
+        EXCP14 = 0x4e,
+        EXCP15 = 0x4f,
+        EXCP16 = 0x50,
+        EXCP17 = 0x51,
+        EXCP18 = 0x52,
+        EXCP19 = 0x53,
+        EXCP20 = 0x54,
+        EXCP21 = 0x55,
+        EXCP22 = 0x56,
+        EXCP23 = 0x57,
+        EXCP24 = 0x58,
+        EXCP25 = 0x59,
+        EXCP26 = 0x5a,
+        EXCP27 = 0x5b,
+        EXCP28 = 0x5c,
+        EXCP29 = 0x5d,
+        EXCP30 = 0x5e,
+        EXCP31 = 0x5f,
+        INTR = 0x60,
+        NMI = 0x61,
+        SMI = 0x62,
+        INIT = 0x63,
+        VINTR = 0x64,
+        CR0_SEL_WRITE = 0x65,
+        IDTR_READ = 0x66,
+        GDTR_READ = 0x67,
+        LDTR_READ = 0x68,
+        TR_READ = 0x69,
+        IDTR_WRITE = 0x6a,
+        GDTR_WRITE = 0x6b,
+        LDTR_WRITE = 0x6c,
+        TR_WRITE = 0x6d,
+        RDTSC = 0x6e,
+        RDPMC = 0x6f,
+        PUSHF = 0x70,
+        POPF = 0x71,
+        CPUID = 0x72,
+        RSM = 0x73,
+        IRET = 0x74,
+        SWINT = 0x75,
+        INVD = 0x76,
+        PAUSE = 0x77,
+        HLT = 0x78,
+        INVLPG = 0x79,
+        INVLPGA = 0x7a,
+        IOIO = 0x7b,
+        MSR = 0x7c,
+        TASK_SWITCH = 0x7d,
+        FERR_FREEZE = 0x7e,
+        SHUTDOWN = 0x7f,
+        VMRUN = 0x80,
+        VMMCALL = 0x81,
+        VMLOAD = 0x82,
+        VMSAVE = 0x83,
+        STGI = 0x84,
+        CLGI = 0x85,
+        SKINIT = 0x86,
+        RDTSCP = 0x87,
+        ICEBP = 0x88,
+        WBINVD = 0x89,
+        MONITOR = 0x8a,
+        MWAIT = 0x8b,
+        MWAIT_CONDITIONAL = 0x8c,
+        XSETBV = 0x8d,
+        RDPRU = 0x8e,
+        EFER_WRITE_TRAP = 0x8f,
+        CR0_WRITE_TRAP = 0x90,
+        CR1_WRITE_TRAP = 0x91,
+        CR2_WRITE_TRAP = 0x92,
+        CR3_WRITE_TRAP = 0x93,
+        CR4_WRITE_TRAP = 0x94,
+        CR5_WRITE_TRAP = 0x95,
+        CR6_WRITE_TRAP = 0x96,
+        CR7_WRITE_TRAP = 0x97,
+        CR8_WRITE_TRAP = 0x98,
+        CR9_WRITE_TRAP = 0x99,
+        CR10_WRITE_TRAP = 0x9a,
+        CR11_WRITE_TRAP = 0x9b,
+        CR12_WRITE_TRAP = 0x9c,
+        CR13_WRITE_TRAP = 0x9d,
+        CR14_WRITE_TRAP = 0x9e,
+        CR15_WRITE_TRAP = 0x9f,
+        INVLPGB = 0xa0,
+        ILLEGAL_INVLPGB = 0xa1,
+        INVPCID = 0xa2,
+        BUSLOCK = 0xa5,
+        IDLE_HLT = 0xa6,
+        NPF = 0x400,
+        AVIC_INCOMPLETE_IPI = 0x401,
+        AVIC_NOACCEL = 0x402,
+        VMGEXIT = 0x403,
+        PAGE_NOT_VALIDATED = 0x404,
+
+        // SEV-ES software-defined exit codes
         SNP_GUEST_REQUEST = 0x80000011,
         SNP_EXTENDED_GUEST_REQUEST = 0x80000012,
         HV_DOORBELL_PAGE = 0x80000014,
+
+        // SEV-SNP hardware error codes
         INVALID_VMCB = 0xffff_ffff_ffff_ffff,
+        VMSA_BUSY = 0xffff_ffff_ffff_fffe,
+        IDLE_REQUIRED = 0xffff_ffff_ffff_fffd,
+        INVALID_PMC = 0xffff_ffff_ffff_fffc,
     }
 }
 
@@ -786,3 +818,215 @@ pub struct SevInvlpgbEcx {
     reserved: u64,
     pub large_page: bool,
 }
+
+#[bitfield(u64)]
+pub struct MovCrxDrxInfo {
+    #[bits(4)]
+    pub gpr_number: u64,
+    #[bits(59)]
+    pub reserved: u64,
+    pub mov_crx: bool,
+}
+
+/// Request structure for the `SNP_GET_REPORT` request.
+/// See `MSG_REPORT_REQ` in Table 21, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpReportReq {
+    /// Guest-provided data to be included in the attestation report.
+    pub user_data: [u8; 64],
+    /// The VMPL to put in the attestation report. Must be greater than
+    /// or equal to the current VMPL and, at most, three.
+    pub vmpl: u32,
+    /// Reserved
+    // TODO SNP: Support VLEK feature if needed
+    pub rsvd: [u8; 28],
+}
+
+pub const SNP_REPORT_RESP_DATA_SIZE: usize =
+    size_of::<u32>() + size_of::<u32>() + 24 + size_of::<SnpReport>();
+
+/// Response structure for the `SNP_GET_REPORT` request.
+/// See `MSG_REPORT_RSP` in Table 24, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpReportResp {
+    /// The status of key derivation operation.
+    /// 0h: Success.
+    /// 16h: Invalid parameters.
+    /// 27h: Invalid key selection.
+    pub status: u32,
+    /// Size in bytes of the report.
+    pub report_size: u32,
+    /// Reserved
+    pub _reserved0: [u8; 24],
+    /// The attestation report generated by the firmware.
+    pub report: SnpReport,
+}
+
+/// Size of the [`SnpReport`].
+pub const SNP_REPORT_SIZE: usize = 0x4a0;
+
+/// Size of `report_data` member in [`SnpReport`].
+pub const SNP_REPORT_DATA_SIZE: usize = 64;
+
+/// Report structure.
+/// See `ATTESTATION_REPORT` in Table 22, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpReport {
+    /// Version number of this attestation report.
+    /// Set to 2h for this specification.
+    pub version: u32,
+    /// The guest SVN.
+    pub guest_svn: u32,
+    /// The guest policy.
+    pub policy: u64,
+    /// The family ID provided at launch.
+    pub family: u128,
+    /// The image ID provided at launch.
+    pub image_id: u128,
+    /// The request VMPL for the attestation
+    /// report.
+    pub vmpl: u32,
+    /// The signature algorithm used to sign
+    /// this report.
+    pub signature_algo: u32,
+    /// CurrentTcb.
+    pub current_tcb: u64,
+    /// Information about the platform.
+    pub platform_info: u64,
+    /// Flags
+    pub flags: u32,
+    /// Reserved
+    pub _reserved0: u32,
+    /// Guest-provided data.
+    pub report_data: [u8; SNP_REPORT_DATA_SIZE],
+    /// The measurement calculated at
+    /// launch.
+    pub measurement: [u8; 48],
+    /// Data provided by the hypervisor at
+    /// launch.
+    pub host_data: [u8; 32],
+    /// SHA-384 digest of the ID public key
+    /// that signed the ID block provided in
+    /// SNP_LAUNCH_FINISH.
+    pub id_key_digest: [u8; 48],
+    /// SHA-384 digest of the Author public
+    /// key that certified the ID key, if
+    /// provided in SNP_LAUNCH_FINISH.
+    pub author_key_digest: [u8; 48],
+    /// Report ID of this guest.
+    pub report_id: [u8; 32],
+    /// Report ID of this guest’s migration
+    /// agent
+    pub report_id_ma: [u8; 32],
+    /// Reported TCB version used to derive
+    /// the VCEK that signed this report.
+    pub reported_tcb: u64,
+    /// Reserved
+    pub _reserved1: [u8; 24],
+    /// If MaskChipId is set to 0, Identifier
+    /// unique to the chip as output by
+    /// GET_ID. Otherwise, set to 0h.
+    pub chip_id: [u8; 64],
+    /// CommittedTcb.
+    pub committed_tcb: u64,
+    /// The build number of CurrentVersion.
+    pub current_build: u8,
+    /// The minor number of CurrentVersion.
+    pub current_minor: u8,
+    /// The major number of CurrentVersion.
+    pub current_major: u8,
+    /// Reserved
+    pub _reserved2: u8,
+    /// The build number of CommittedVersion.
+    pub committed_build: u8,
+    /// The minor version of CommittedVersion.
+    pub committed_minor: u8,
+    /// The major version of CommittedVersion.
+    pub committed_major: u8,
+    /// Reserved
+    pub _reserved3: u8,
+    /// The CurrentTcb at the time the guest
+    /// was launched or imported.
+    pub launch_tcb: u64,
+    /// Reserved
+    pub _reserved4: [u8; 168],
+    /// Signature of bytes inclusive of this report.
+    pub signature: [u8; 512],
+}
+
+static_assertions::const_assert_eq!(SNP_REPORT_SIZE, size_of::<SnpReport>());
+
+/// Request structure for the `SNP_GET_DERIVED_KEY` request.
+/// See `MSG_KEY_REQ` in Table 18, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpDerivedKeyReq {
+    /// Selects the root key from which to derive the key.
+    /// 0 indicates VCEK
+    /// 1 indicates VMRK
+    // TODO: Support VLEK feature if needed
+    pub root_key_select: u32,
+    /// Reserved
+    pub rsvd: u32,
+    /// Bitmask indicating which data will be mixed into the
+    /// derived key.
+    pub guest_field_select: u64,
+    /// The VMPL to mix into the derived key. Must be greater
+    /// than or equal to the current VMPL.
+    pub vmpl: u32,
+    /// The guest SVN to mix into the key. Must not exceed the
+    /// guest SVN provided at launch in the ID block.
+    pub guest_svn: u32,
+    /// The TCB version to mix into the derived key. Must not
+    /// exceed CommittedTcb.
+    pub tcb_version: u64,
+}
+
+/// Indicate which guest-selectable fields will be mixed into the key.
+/// See `GUEST_FIELD_SELECT` in Table 19, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
+#[bitfield(u64)]
+pub struct GuestFieldSelect {
+    /// Indicate that the guest policy will be mixed into the key.
+    pub guest_policy: bool,
+    /// Indicate that the image ID of the guest will be mixed into the key.
+    pub image_id: bool,
+    /// Indicate the family ID of the guest will be mixed into the key.
+    pub family_id: bool,
+    /// Indicate the measurement of the guest during launch will be mixed into the key.
+    pub measurement: bool,
+    /// Indicate that the guest-provided SVN will be mixed into the key.
+    pub guest_svn: bool,
+    /// Indicate that the guest-provided TCB_VERSION will be mixed into the key.
+    pub tcb_version: bool,
+    /// Reserved
+    #[bits(58)]
+    pub _reserved: u64,
+}
+
+/// See `DERIVED_KEY` in Table 20, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
+pub const SNP_DERIVED_KEY_SIZE: usize = 32;
+
+/// Response structure for the `SNP_GET_DERIVED_KEY` request.
+/// See `MSG_KEY_RSP` in Table 20, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpDerivedKeyResp {
+    /// The status of key derivation operation.
+    /// 0h: Success.
+    /// 16h: Invalid parameters.
+    /// 27h: Invalid key selection.
+    pub status: u32,
+    /// Reserved
+    pub _reserved: [u8; 28],
+    /// The requested derived key.
+    pub derived_key: [u8; SNP_DERIVED_KEY_SIZE],
+}
+
+static_assertions::const_assert_eq!(
+    // The size of the response data defined by the SNP specification.
+    64,
+    size_of::<SnpDerivedKeyResp>()
+);

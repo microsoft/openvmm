@@ -3,7 +3,9 @@
 
 // Virtualization Based Security (VBS) platform definitions defined by Hyper-V
 
-#![allow(non_camel_case_types)]
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+#![expect(non_camel_case_types)]
 
 use bitfield_struct::bitfield;
 use igvm_defs::PAGE_SIZE_4K;

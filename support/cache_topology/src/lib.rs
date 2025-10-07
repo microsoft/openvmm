@@ -4,7 +4,6 @@
 //! Provides ways to describe a machine's cache topology and to query it from
 //! the current running machine.
 
-#![warn(missing_docs)]
 // UNSAFETY: needed to call Win32 functions to query cache topology
 #![cfg_attr(windows, expect(unsafe_code))]
 

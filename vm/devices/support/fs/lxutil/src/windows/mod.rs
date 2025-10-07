@@ -3,7 +3,7 @@
 
 // UNSAFETY: Calling into lxutil external dll.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod macros;
 
@@ -30,9 +30,9 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use winapi::shared::basetsd;
 use winapi::shared::ntdef;
 use winapi::um::winnt;
@@ -322,8 +322,8 @@ impl LxVolume {
             // Try to read the link target from the reparse data.
             let target_string = self.state.read_reparse_link(&handle)?;
             // TODO: Remove this once LxUtilSymlinkRead is implemented and re-work to just use the Option
-            if target_string.is_some() {
-                target = target_string.unwrap();
+            if let Some(target_string) = target_string {
+                target = target_string;
             }
 
             // If the function succeeded but returned a NULL buffer, this is a V1 LX symlink which must be
@@ -939,7 +939,7 @@ impl LxVolume {
 
             /// Only the required header for FSCTL_SET_REPARSE_POINT, with data length of zero.
             /// See ntifs.h REPARSE_DATA_BUFFER.
-            #[allow(non_camel_case_types, non_snake_case)]
+            #[expect(non_snake_case)]
             #[repr(C)]
             #[derive(Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
             struct REPARSE_DATA_BUFFER {

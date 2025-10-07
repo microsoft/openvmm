@@ -13,18 +13,18 @@ use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MappedMemoryRegion;
+use pal_async::DefaultPool;
 use pal_async::driver::Driver;
 use pal_async::task::Spawn;
 use pal_async::wait::PolledWait;
-use pal_async::DefaultPool;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::io::Error;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use task_control::AsyncRun;
 use task_control::StopTask;
 use task_control::TaskControl;
@@ -298,9 +298,7 @@ impl Stream for VirtioQueue {
             return Poll::Ready(None);
         };
 
-        Poll::Ready(Some(
-            r.map_err(|err| Error::new(std::io::ErrorKind::Other, err)),
-        ))
+        Poll::Ready(Some(r.map_err(Error::other)))
     }
 }
 
@@ -585,7 +583,7 @@ impl<T: LegacyVirtioDevice> VirtioDevice for LegacyWrapper<T> {
         let mut workers = self.workers.drain(..).collect::<Vec<_>>();
         self.driver
             .spawn("shutdown-legacy-virtio-queues".to_owned(), async move {
-                futures::future::join_all(workers.iter_mut().map(|worker| async {
+                futures::future::join_all(workers.iter_mut().map(async |worker| {
                     worker.stop().await;
                     if let Some(VirtioQueueStateInner::Running { queue, .. }) =
                         worker.state_mut().map(|s| &s.inner)
@@ -611,21 +609,21 @@ impl<T: LegacyVirtioDevice> Drop for LegacyWrapper<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PciInterruptModel;
     use crate::spec::pci::*;
     use crate::spec::queue::*;
     use crate::spec::*;
     use crate::transport::VirtioMmioDevice;
     use crate::transport::VirtioPciDevice;
-    use crate::PciInterruptModel;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::pci::PciConfigSpace;
     use futures::StreamExt;
     use guestmem::GuestMemoryAccess;
     use guestmem::GuestMemoryBackingError;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use pci_core::msi::MsiInterruptSet;
     use pci_core::spec::caps::CapabilityId;
     use pci_core::spec::cfg_space;
@@ -636,8 +634,8 @@ mod tests {
     use std::ptr::NonNull;
     use std::time::Duration;
     use test_with_tracing::test;
-    use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
     use vmcore::line_interrupt::LineInterrupt;
+    use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
 
@@ -686,7 +684,9 @@ mod tests {
             {
                 if end > next {
                     let next_end = next + next_data.len() as u64;
-                    panic!("overlapping memory map: {address:#x}..{end:#x} > {next:#x}..={next_end:#x}");
+                    panic!(
+                        "overlapping memory map: {address:#x}..{end:#x} > {next:#x}..={next_end:#x}"
+                    );
                 }
                 if end == next && next_writable == writable {
                     data.extend(next_data.as_slice());
@@ -699,7 +699,9 @@ mod tests {
             {
                 let prev_end = prev + prev_data.len() as u64;
                 if prev_end > address {
-                    panic!("overlapping memory map: {prev:#x}..{prev_end:#x} > {address:#x}..={end:#x}");
+                    panic!(
+                        "overlapping memory map: {prev:#x}..{prev_end:#x} > {address:#x}..={end:#x}"
+                    );
                 }
                 if prev_end == address && prev_writable == writable {
                     prev_data.extend_from_slice(&data);

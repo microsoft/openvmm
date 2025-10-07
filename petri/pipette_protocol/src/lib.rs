@@ -4,14 +4,14 @@
 //! The pipette protocol used for host-to-guest agent communications. It is
 //! defined as messages over a mesh point-to-point connection.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+use mesh::MeshPayload;
+use mesh::payload::Timestamp;
 use mesh::pipe::ReadPipe;
 use mesh::pipe::WritePipe;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
-use mesh::MeshPayload;
 
 /// The port used for the pipette connection over AF_VSOCK.
 pub const PIPETTE_VSOCK_PORT: u32 = 0x1337;
@@ -42,9 +42,11 @@ pub enum PipetteRequest {
     /// pipette is terminated during the shutdown process.
     Shutdown(FailableRpc<ShutdownRequest, ()>),
     /// Reads the full contents of a file.
-    ReadFile(FailableRpc<ReadFileRequest, ()>),
+    ReadFile(FailableRpc<ReadFileRequest, u64>),
     /// Writes a file
-    WriteFile(FailableRpc<WriteFileRequest, ()>),
+    WriteFile(FailableRpc<WriteFileRequest, u64>),
+    /// Get the current time in the guest.
+    GetTime(Rpc<(), Timestamp>),
 }
 
 /// A request to execute a command inside the guest.

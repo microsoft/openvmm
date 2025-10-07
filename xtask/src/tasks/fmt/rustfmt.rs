@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::fs_helpers::git_diffed;
 use crate::Xtask;
+use crate::fs_helpers::git_diffed;
 use clap::Parser;
 use std::path::PathBuf;
 use xshell::cmd;

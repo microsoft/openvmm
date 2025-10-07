@@ -12,24 +12,24 @@ use pal_async::driver::Driver;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
+use serial_core::SerialIo;
 use serial_core::resources::ResolveSerialBackendParams;
 use serial_core::resources::ResolvedSerialBackend;
-use serial_core::SerialIo;
 use socket2::Socket;
 use std::io;
 use std::net::TcpListener;
 use std::net::TcpStream;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
-use vm_resource::declare_static_resolver;
-use vm_resource::kind::SerialBackendHandle;
 use vm_resource::ResolveResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::declare_static_resolver;
+use vm_resource::kind::SerialBackendHandle;
 
 #[derive(Debug, MeshPayload)]
 pub struct OpenSocketSerialConfig {

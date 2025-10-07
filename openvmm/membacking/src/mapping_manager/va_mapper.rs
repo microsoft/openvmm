@@ -31,6 +31,7 @@ use crate::RemoteProcess;
 use futures::executor::block_on;
 use guestmem::GuestMemoryAccess;
 use guestmem::PageFaultAction;
+use guestmem::PageFaultError;
 use memory_range::MemoryRange;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -295,7 +296,10 @@ unsafe impl GuestMemoryAccess for VaMapper {
             self.inner
                 .request_mapping(MemoryRange::bounding(address..address + len as u64), write),
         ) {
-            return PageFaultAction::Fail(err.into());
+            return PageFaultAction::Fail(PageFaultError::new(
+                guestmem::GuestMemoryErrorKind::OutOfRange,
+                err,
+            ));
         }
         PageFaultAction::Retry
     }

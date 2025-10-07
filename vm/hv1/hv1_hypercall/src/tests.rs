@@ -17,11 +17,11 @@ use crate::X64RegisterIo;
 use crate::X64RegisterState;
 use guestmem::GuestMemory;
 use guestmem::PAGE_SIZE;
-use hvdef::hypercall::Control;
-use hvdef::hypercall::HypercallOutput;
+use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvResult;
-use hvdef::HV_PAGE_SIZE_USIZE;
+use hvdef::hypercall::Control;
+use hvdef::hypercall::HypercallOutput;
 use open_enum::open_enum;
 use sparse_mmap::SparseMapping;
 use std::vec;
@@ -336,7 +336,7 @@ struct TestController {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     enum TestHypercallCode: u16 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
         CallSimpleNoOutput = 0x1001,
         CallSimple = 0x1002,
         CallRepNoOutput = 0x1003,
@@ -916,13 +916,13 @@ impl TestController {
     where
         InputHeaderT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
-        assert!(size_of::<InputHeaderT>() % 8 == 0);
+        assert!(size_of::<InputHeaderT>().is_multiple_of(8));
         *InputHeaderT::ref_from_bytes(vec![FILL_PATTERN; size_of::<TestInput>() / 8].as_bytes())
             .unwrap()
     }
 
     fn generate_var_header(size: usize) -> Vec<u8> {
-        let mut x = vec![FILL_PATTERN + 1; (size + 7) / 8].as_bytes().to_vec();
+        let mut x = vec![FILL_PATTERN + 1; size.div_ceil(8)].as_bytes().to_vec();
         x.truncate(size);
         x
     }
@@ -932,7 +932,7 @@ impl TestController {
         InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         let size = rep_count * size_of::<InRepT>();
-        let pattern_count = (size + 7) / 8;
+        let pattern_count = size.div_ceil(8);
         let mut reps = Vec::new();
         for i in 0..pattern_count {
             reps.push(FILL_PATTERN + 2 + i as u64);
@@ -946,7 +946,7 @@ impl TestController {
     where
         OutputT: IntoBytes + FromBytes + FromZeros + Sized + Copy + Immutable + KnownLayout,
     {
-        assert!(size_of::<TestOutput>() % 16 == 0);
+        assert!(size_of::<TestOutput>().is_multiple_of(16));
         *OutputT::ref_from_bytes(vec![!FILL_PATTERN; size_of::<TestOutput>() / 8].as_bytes())
             .unwrap()
     }
@@ -956,7 +956,7 @@ impl TestController {
         OutRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         let size = rep_count * size_of::<OutRepT>();
-        let pattern_count = (size + 7) / 8;
+        let pattern_count = size.div_ceil(8);
         let mut reps = Vec::new();
         for i in 0..pattern_count {
             reps.push(!FILL_PATTERN - 2 - i as u64);
@@ -1223,9 +1223,9 @@ where
     OutputT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
     OutRepT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
 {
-    assert!(size_of::<InputT>() % 8 == 0);
-    assert!(size_of::<OutputT>() % 8 == 0);
-    assert!(var_header.len() % 8 == 0);
+    assert!(size_of::<InputT>().is_multiple_of(8));
+    assert!(size_of::<OutputT>().is_multiple_of(8));
+    assert!(var_header.len().is_multiple_of(8));
     assert!(params.in_offset < PAGE_SIZE);
     assert!(params.out_offset < PAGE_SIZE);
     assert!(size_of::<OutputT>() == 0 || output_reps.is_empty());
@@ -1336,7 +1336,7 @@ where
         // since the test may explicitly be trying to test straddling.
         let pair_count = io
             .fast_register_pair_count()
-            .min((combined_input.len() + 15) / 16);
+            .min(combined_input.len().div_ceil(16));
 
         if pair_count != 0 {
             let mut input_buffer = vec![[0u64; 2]; pair_count];
@@ -1400,7 +1400,7 @@ where
 
                 output_buffer.as_bytes().split_at(size_of::<OutputT>())
             } else {
-                output_buffer = vec![[0u64; 2]; (output_len + 15) / 16];
+                output_buffer = vec![[0u64; 2]; output_len.div_ceil(16)];
                 io.get_fast_output(input_register_pairs.unwrap(), &mut output_buffer);
                 let output_buffer = &mut output_buffer.as_mut_bytes()[..output_len];
 
@@ -1579,7 +1579,7 @@ fn hypercall_simple(test_params: TestParams) {
     let io = (test_params.io_builder())(&mut handler);
     let modified_mask = io.get_modified_mask() & !io.get_io_register_mask();
     let target_regpairs = if test_params.fast {
-        (expected_output_size + 15) / 16
+        expected_output_size.div_ceil(16)
     } else {
         0
     };
@@ -1672,14 +1672,16 @@ fn hypercall_rep(test_params: TestParams) {
     );
 
     let elements_processed = test_params.test_result.expected_elements_processed();
-    let elements_processed =
-        if test_params.fast && elements_processed % 2 != 0 && elements_processed < rep_count {
-            // Since only 16 byte writes are supported, the top 8 bytes are 0s.
-            assert_eq!(output_reps[elements_processed], 0);
-            elements_processed + 1
-        } else {
-            elements_processed
-        };
+    let elements_processed = if test_params.fast
+        && !elements_processed.is_multiple_of(2)
+        && elements_processed < rep_count
+    {
+        // Since only 16 byte writes are supported, the top 8 bytes are 0s.
+        assert_eq!(output_reps[elements_processed], 0);
+        elements_processed + 1
+    } else {
+        elements_processed
+    };
 
     assert_eq!(
         output_reps[elements_processed..].as_bytes(),
@@ -1692,11 +1694,13 @@ fn hypercall_rep(test_params: TestParams) {
             .as_bytes()
             .len();
 
-        if (rep_start * size_of::<u64>()) % 16 != 0 {
+        if !(rep_start * size_of::<u64>()).is_multiple_of(16) {
             expected_output_size += (rep_start * size_of::<u64>()) % 16;
         }
 
-        if (test_params.test_result.expected_elements_processed() * size_of::<u64>()) % 16 != 0 {
+        if !(test_params.test_result.expected_elements_processed() * size_of::<u64>())
+            .is_multiple_of(16)
+        {
             expected_output_size += 16
                 - ((test_params.test_result.expected_elements_processed() * size_of::<u64>()) % 16);
         }
@@ -1705,7 +1709,7 @@ fn hypercall_rep(test_params: TestParams) {
         let io = (test_params.io_builder())(&mut handler);
         let modified_mask = io.get_modified_mask() & !io.get_io_register_mask();
         let target_regpairs = if test_params.fast {
-            (expected_output_size + 15) / 16
+            expected_output_size.div_ceil(16)
         } else {
             0
         };
@@ -1798,7 +1802,7 @@ fn hypercall_variable(test_params: TestParams) {
     let io = (test_params.io_builder())(&mut handler);
     let modified_mask = io.get_modified_mask() & !io.get_io_register_mask();
     let target_regpairs = if test_params.fast {
-        (expected_output_size + 15) / 16
+        expected_output_size.div_ceil(16)
     } else {
         0
     };
@@ -1862,14 +1866,16 @@ fn hypercall_variable_rep(test_params: TestParams) {
     );
 
     let elements_processed = test_params.test_result.expected_elements_processed();
-    let elements_processed =
-        if test_params.fast && elements_processed % 2 != 0 && elements_processed < rep_count {
-            // Since only 16 byte writes are supported, the top 8 bytes are 0s.
-            assert_eq!(output_reps[elements_processed], 0);
-            elements_processed + 1
-        } else {
-            elements_processed
-        };
+    let elements_processed = if test_params.fast
+        && !elements_processed.is_multiple_of(2)
+        && elements_processed < rep_count
+    {
+        // Since only 16 byte writes are supported, the top 8 bytes are 0s.
+        assert_eq!(output_reps[elements_processed], 0);
+        elements_processed + 1
+    } else {
+        elements_processed
+    };
 
     assert_eq!(
         output_reps[elements_processed..].as_bytes(),
@@ -1881,11 +1887,13 @@ fn hypercall_variable_rep(test_params: TestParams) {
         .as_bytes()
         .len();
 
-    if (rep_start * size_of::<u64>()) % 16 != 0 {
+    if !(rep_start * size_of::<u64>()).is_multiple_of(16) {
         expected_output_size += (rep_start * size_of::<u64>()) % 16;
     }
 
-    if (test_params.test_result.expected_elements_processed() * size_of::<u64>()) % 16 != 0 {
+    if !(test_params.test_result.expected_elements_processed() * size_of::<u64>())
+        .is_multiple_of(16)
+    {
         expected_output_size +=
             16 - ((test_params.test_result.expected_elements_processed() * size_of::<u64>()) % 16);
     }
@@ -1894,7 +1902,7 @@ fn hypercall_variable_rep(test_params: TestParams) {
     let io = (test_params.io_builder())(&mut handler);
     let modified_mask = io.get_modified_mask() & !io.get_io_register_mask();
     let target_regpairs = if test_params.fast {
-        (expected_output_size + 15) / 16
+        expected_output_size.div_ceil(16)
     } else {
         0
     };
@@ -2264,7 +2272,7 @@ fn max_test_fast_rep_count(abi: &TestHypercallAbi) -> usize {
     // of that is for the input reps (8 bytes each in our tests) and half is for the output
     // reps. However output must be on a 16 byte alignment.
     let mut max_rep_count = (abi.max_fast_output_size() - size_of::<TestInput>()) / (8 + 8);
-    if max_rep_count % 2 != 0 {
+    if !max_rep_count.is_multiple_of(2) {
         max_rep_count -= 1;
     }
 

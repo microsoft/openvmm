@@ -1,13 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::VpHaltReason;
 use hvdef::Vtl;
 use std::future::Future;
 use vm_topology::processor::VpIndex;
 
 /// This trait provides the operations between the VP dispatch loop and the
 /// platform's devices.
-pub trait CpuIo: Send + Sync {
+pub trait CpuIo {
     /// Check if a given address will be handled by a device.
     fn is_mmio(&self, address: u64) -> bool;
 
@@ -47,4 +48,15 @@ pub trait CpuIo: Send + Sync {
     /// Programmed IO write.
     #[must_use]
     fn write_io(&self, vp: VpIndex, port: u16, data: &[u8]) -> impl Future<Output = ()>;
+
+    /// Report an internal fatal error.
+    ///
+    /// The intention behind this method is to allow the top-level VMM
+    /// to specify an error handling policy, while still being able to capture
+    /// stacks and other context from the point of failure. We previously would
+    /// return a `VpHaltReason::Panic` here, but that meant the stack trace
+    /// would be from the point of the panic handler, which lost context.
+    /// See vmotherboard's `FatalErrorPolicy` for an example.
+    #[track_caller]
+    fn fatal_error(&self, error: Box<dyn std::error::Error + Send + Sync>) -> VpHaltReason;
 }

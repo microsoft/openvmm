@@ -15,9 +15,9 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use uefi_specs::hyperv::time::VmEfiTime;
 use uefi_specs::uefi::common::EfiStatus;
+use uefi_specs::uefi::time::EFI_TIME;
 use uefi_specs::uefi::time::EfiDaylight;
 use uefi_specs::uefi::time::EfiTimezone;
-use uefi_specs::uefi::time::EFI_TIME;
 
 #[derive(Debug, Error)]
 pub enum TimeServiceError {
@@ -147,7 +147,7 @@ impl UefiDevice {
                 time,
             },
             Err(e) => {
-                tracing::error!("get_time: {}", e);
+                tracing::debug!("get_time: {}", e);
                 VmEfiTime {
                     status: EfiStatus::DEVICE_ERROR.into(),
                     time: Default::default(),
@@ -166,7 +166,7 @@ impl UefiDevice {
         let status = match self.service.time.set_time(vm_time.time) {
             Ok(_) => EfiStatus::SUCCESS,
             Err(e) => {
-                tracing::error!("set_time: {}", e);
+                tracing::debug!("set_time: {}", e);
                 match e {
                     TimeServiceError::InvalidArg => EfiStatus::INVALID_PARAMETER,
                     _ => EfiStatus::DEVICE_ERROR,

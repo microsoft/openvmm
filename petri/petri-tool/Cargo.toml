@@ -1,0 +1,22 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "petri-tool"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+petri.workspace = true
+petri_artifacts_common.workspace = true
+petri_artifact_resolver_openvmm_known_paths.workspace = true
+
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true
+
+[package.metadata.xtask.house-rules]
+# emits a binary, where kebab-case is more natural
+allow-dash-in-name = true

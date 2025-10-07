@@ -38,7 +38,8 @@
 //!    device-specific trait that provides additional parameters. But the
 //!    pattern should be the same.
 
-#![warn(missing_docs)]
+// UNSAFETY: Needed to use linkme for deriving SavedStateRoot.
+#![expect(unsafe_code)]
 
 /// Derives [`SavedStateRoot`] for a type.
 ///
@@ -69,12 +70,12 @@
 pub use save_restore_derive::SavedStateRoot;
 
 use mesh::payload;
-use mesh::payload::encoding::ImpossibleField;
-use mesh::payload::message::ProtobufAny;
-use mesh::payload::protofile::MessageDescription;
 use mesh::payload::DefaultEncoding;
 use mesh::payload::DescribedProtobuf;
 use mesh::payload::Protobuf;
+use mesh::payload::encoding::ImpossibleField;
+use mesh::payload::message::ProtobufAny;
+use mesh::payload::protofile::MessageDescription;
 
 /// Implemented by objects which can be saved/restored
 pub trait SaveRestore {
@@ -245,7 +246,9 @@ pub mod private {
                 fn do_not_impl_this_manually(&self) {}
             }
             const _: () = {
-                use $crate::save_restore::private::{linkme, protofile, SAVED_STATE_ROOTS};
+                use $crate::save_restore::private::SAVED_STATE_ROOTS;
+                use $crate::save_restore::private::linkme;
+                use $crate::save_restore::private::protofile;
 
                 #[linkme::distributed_slice(SAVED_STATE_ROOTS)]
                 #[linkme(crate = linkme)]

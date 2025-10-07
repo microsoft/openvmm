@@ -3,14 +3,14 @@
 
 //! Single-threaded task pools backed by platform-specific IO backends.
 
-use crate::task::task_queue;
 use crate::task::Schedule;
 use crate::task::Scheduler;
 use crate::task::Spawn;
 use crate::task::TaskMetadata;
 use crate::task::TaskQueue;
-use std::future::poll_fn;
+use crate::task::task_queue;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;
@@ -65,14 +65,12 @@ impl<T: IoBackend + Default> IoPool<T> {
 
     /// Creates and runs a task pool, seeding it with an initial future
     /// `f(driver)`, until all tasks have completed.
-    pub fn run_with<F, Fut>(f: F) -> Fut::Output
+    pub fn run_with<F, R>(f: F) -> R
     where
-        F: FnOnce(IoDriver<T>) -> Fut,
-        Fut: Future + Send,
-        Fut::Output: 'static + Send,
+        F: AsyncFnOnce(IoDriver<T>) -> R,
     {
         let mut pool = Self::named(std::thread::current().name().unwrap_or_else(|| T::name()));
-        let fut = f(pool.driver());
+        let fut = f(pool.driver.clone());
         drop(pool.driver.scheduler);
         pool.driver
             .inner

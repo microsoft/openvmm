@@ -6,18 +6,17 @@
 //!
 //! It will unconditionally report that no floppy drives are present.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use arrayvec::ArrayVec;
 use bitfield_struct::bitfield;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use open_enum::open_enum;

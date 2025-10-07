@@ -3,16 +3,16 @@
 
 //! The client for connecting to the Underhill diagnostics server.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod kmsg_stream;
 
 use anyhow::Context;
-use diag_proto::network_packet_capture_request::OpData;
-use diag_proto::network_packet_capture_request::Operation;
 use diag_proto::ExecRequest;
 use diag_proto::WaitRequest;
 use diag_proto::WaitResponse;
+use diag_proto::network_packet_capture_request::OpData;
+use diag_proto::network_packet_capture_request::Operation;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
@@ -348,7 +348,7 @@ impl mesh_rpc::client::Dial for VmConnector {
                     diag_proto::VSOCK_CONTROL_PORT,
                 )
                 .await
-                .map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
+                .map_err(std::io::Error::other)?;
                 Ok(PolledSocket::new(&self.driver, socket.into())?)
             }
             VmType::HybridVsock(path) => {
@@ -358,7 +358,7 @@ impl mesh_rpc::client::Dial for VmConnector {
                     diag_proto::VSOCK_CONTROL_PORT,
                 )
                 .await
-                .map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
+                .map_err(std::io::Error::other)?;
                 Ok(socket)
             }
             VmType::None => unreachable!(),

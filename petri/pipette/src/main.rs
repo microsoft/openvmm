@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
         return winsvc::start_service();
     }
 
-    pal_async::DefaultPool::run_with(|driver| async move {
+    pal_async::DefaultPool::run_with(async |driver| {
         let agent = agent::Agent::new(driver).await?;
         agent.run().await
     })

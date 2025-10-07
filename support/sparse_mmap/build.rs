@@ -1,9 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// build.rs scripts don't read the clippy config from .cargo/config.toml, hence
-// the manual inline override
-#![expect(clippy::uninlined_format_args)]
+#![expect(missing_docs)]
 
 fn main() {
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {

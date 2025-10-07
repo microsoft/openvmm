@@ -4,16 +4,19 @@
 //! This module defines a trait and implementations thereof for network
 //! backends.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 pub mod loopback;
 pub mod null;
 pub mod resolve;
 pub mod tests;
 
 use async_trait::async_trait;
-use futures::lock::Mutex;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
+use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -26,6 +29,7 @@ use std::future::pending;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use thiserror::Error;
 
 /// Per-queue configuration.
 pub struct QueueConfig<'a> {
@@ -133,6 +137,14 @@ pub struct RssConfig<'a> {
     pub flags: u32, // TODO
 }
 
+#[derive(Error, Debug)]
+pub enum TxError {
+    #[error("error requiring queue restart. {0}")]
+    TryRestart(#[source] anyhow::Error),
+    #[error("unrecoverable error. {0}")]
+    Fatal(#[source] anyhow::Error),
+}
+
 /// A trait for sending and receiving network packets.
 #[async_trait]
 pub trait Queue: Send + InspectMut {
@@ -156,7 +168,7 @@ pub trait Queue: Send + InspectMut {
     fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)>;
 
     /// Polls the device for transmit completions.
-    fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize>;
+    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError>;
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
@@ -437,6 +449,10 @@ pub struct DisconnectableEndpoint {
     null_endpoint: Box<dyn Endpoint>,
     cached_state: Option<DisconnectableEndpointCachedState>,
     receive_update: Arc<Mutex<mesh::Receiver<DisconnectableEndpointUpdate>>>,
+    notify_disconnect_complete: Option<(
+        Rpc<(), Option<Box<dyn Endpoint>>>,
+        Option<Box<dyn Endpoint>>,
+    )>,
 }
 
 impl InspectMut for DisconnectableEndpoint {
@@ -457,6 +473,7 @@ impl DisconnectableEndpoint {
                 null_endpoint: Box::new(NullEndpoint::new()),
                 cached_state: None,
                 receive_update: Arc::new(Mutex::new(endpoint_rx)),
+                notify_disconnect_complete: None,
             },
             control,
         )
@@ -533,6 +550,12 @@ impl Endpoint for DisconnectableEndpoint {
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
+        // If the previous message disconnected the endpoint, notify the caller
+        // that the operation has completed, returning the old endpoint.
+        if let Some((rpc, old_endpoint)) = self.notify_disconnect_complete.take() {
+            rpc.handle(async |_| old_endpoint).await;
+        }
+
         enum Message {
             DisconnectableEndpointUpdate(DisconnectableEndpointUpdate),
             UpdateFromEndpoint(EndpointAction),
@@ -573,8 +596,11 @@ impl Endpoint for DisconnectableEndpoint {
                 DisconnectableEndpointUpdate::EndpointDisconnected(rpc),
             ) => {
                 let old_endpoint = self.endpoint.take();
-                self.endpoint = None;
-                rpc.handle(|_| async { old_endpoint }).await;
+                // Wait until the next call into this function to notify the
+                // caller that the operation has completed. This makes it more
+                // likely that the endpoint is no longer referenced (old queues
+                // have been disposed, etc.).
+                self.notify_disconnect_complete = Some((rpc, old_endpoint));
                 EndpointAction::RestartRequired
             }
             Message::UpdateFromEndpoint(update) => update,

@@ -15,7 +15,6 @@ use vm_topology::memory::MemoryLayout;
 
 pub fn test_layout() -> MemoryLayout {
     MemoryLayout::new(
-        36,
         64 * 4096,
         &[
             MemoryRange::new(64 * 4096..65 * 4096),

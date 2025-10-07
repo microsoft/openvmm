@@ -3,9 +3,9 @@
 
 #![cfg(target_arch = "x86_64")]
 
-use crate::abi;
 use crate::RegisterName;
 use crate::RegisterValue;
+use crate::abi;
 
 /// 64-bit registers
 #[repr(u32)]

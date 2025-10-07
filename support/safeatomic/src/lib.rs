@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![no_std]
 // UNSAFETY: Manual pointer manipulation and transmutes to/from atomic types.
 #![expect(unsafe_code)]

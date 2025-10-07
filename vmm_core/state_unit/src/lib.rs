@@ -28,36 +28,36 @@
 //! This model allows for asynchronous, highly concurrent state changes, and it
 //! works across process boundaries thanks to `mesh`.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
-use futures::future::join_all;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::join_all;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::MeshPayload;
+use mesh::Receiver;
+use mesh::Sender;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
-use mesh::Receiver;
-use mesh::Sender;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
-use std::collections::hash_map;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::future::Future;
 use std::pin::pin;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 use thiserror::Error;
 use tracing::Instrument;
@@ -83,11 +83,6 @@ pub enum StateRequest {
     /// Restore state of a stopped unit.
     Restore(FailableRpc<SavedStateBlob, ()>),
 
-    /// Perform any post-restore actions.
-    ///
-    /// Sent after all dependencies have been restored but before starting.
-    PostRestore(FailableRpc<(), ()>),
-
     /// Inspect state.
     Inspect(inspect::Deferred),
 }
@@ -97,7 +92,7 @@ pub enum StateRequest {
 /// Implementing this is optional, to be used with [`UnitBuilder::spawn`] or
 /// [`StateRequest::apply`]; state units can also directly process incoming
 /// [`StateRequest`]s.
-#[allow(async_fn_in_trait)] // Don't need Send bounds
+#[expect(async_fn_in_trait)] // Don't need Send bounds
 pub trait StateUnit: InspectMut {
     /// Start asynchronous processing.
     async fn start(&mut self);
@@ -119,13 +114,6 @@ pub trait StateUnit: InspectMut {
     ///
     /// Must only be called while stopped.
     async fn restore(&mut self, buffer: SavedStateBlob) -> Result<(), RestoreError>;
-
-    /// Complete the restore process, after all dependencies have been restored.
-    ///
-    /// Must only be called while stopped.
-    async fn post_restore(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 /// Runs a simple unit that only needs to respond to state requests.
@@ -177,8 +165,7 @@ impl StateRequest {
             | StateRequest::Stop(_)
             | StateRequest::Reset(_)
             | StateRequest::Save(_)
-            | StateRequest::Restore(_)
-            | StateRequest::PostRestore(_) => {
+            | StateRequest::Restore(_) => {
                 // Handle for concurrent inspect requests.
                 enum Event {
                     OpDone,
@@ -202,12 +189,14 @@ impl StateRequest {
     /// Runs this state request against `unit`.
     pub async fn apply(self, unit: &mut impl StateUnit) {
         match self {
-            StateRequest::Start(rpc) => rpc.handle(|()| async { unit.start().await }).await,
-            StateRequest::Stop(rpc) => rpc.handle(|()| async { unit.stop().await }).await,
-            StateRequest::Reset(rpc) => rpc.handle_failable(|()| unit.reset()).await,
-            StateRequest::Save(rpc) => rpc.handle_failable(|()| unit.save()).await,
-            StateRequest::Restore(rpc) => rpc.handle_failable(|buffer| unit.restore(buffer)).await,
-            StateRequest::PostRestore(rpc) => rpc.handle_failable(|()| unit.post_restore()).await,
+            StateRequest::Start(rpc) => rpc.handle(async |()| unit.start().await).await,
+            StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
+            StateRequest::Reset(rpc) => rpc.handle_failable(async |()| unit.reset().await).await,
+            StateRequest::Save(rpc) => rpc.handle_failable(async |()| unit.save().await).await,
+            StateRequest::Restore(rpc) => {
+                rpc.handle_failable(async |buffer| unit.restore(buffer).await)
+                    .await
+            }
             StateRequest::Inspect(req) => req.inspect(unit),
         }
     }
@@ -229,7 +218,6 @@ enum State {
     Resetting,
     Saving,
     Restoring,
-    PostRestoring,
 }
 
 #[derive(Debug)]
@@ -345,9 +333,10 @@ impl Inspect for Inner {
                             .join(",")
                     });
                 }
-                resp.field("unit_state", unit.state);
-                unit.send
-                    .send(StateRequest::Inspect(resp.request().defer()))
+                resp.field("unit_state", unit.state)
+                    .merge(inspect::adhoc(|req| {
+                        unit.send.send(StateRequest::Inspect(req.defer()))
+                    }));
             });
         }
     }
@@ -357,10 +346,12 @@ impl Inspect for Inner {
 #[derive(Protobuf)]
 #[mesh(package = "state_unit")]
 pub struct SavedStateUnit {
+    /// The name of the state unit.
     #[mesh(1)]
-    name: String,
+    pub name: String,
+    /// The opaque saved state blob.
     #[mesh(2)]
-    state: SavedStateBlob,
+    pub state: SavedStateBlob,
 }
 
 /// An error from a state transition.
@@ -463,9 +454,8 @@ impl StateUnits {
         self.running
     }
 
-    /// Starts any units that are individually stopped (either because of a call
-    /// to [`StateUnits::stop_subset`] or because they were added via
-    /// [`StateUnits::add`] while the VM was running.
+    /// Starts any units that are individually stopped, because they were added
+    /// via [`StateUnits::add`] while the VM was running.
     ///
     /// Does nothing if all units are stopped, via [`StateUnits::stop`].
     pub async fn start_stopped_units(&mut self) {
@@ -507,62 +497,6 @@ impl StateUnits {
         )
         .await;
         self.running = false;
-    }
-
-    /// Stops just the units in `units`.
-    ///
-    /// This can be useful, for example, if you need to temporarily stop the
-    /// virtual processors for a short time without stopping the VM devices
-    /// (which might itself take too long).
-    ///
-    /// Units within this set will be stopped in reverse dependency order, but
-    /// other units that have dependencies on the units being stopped will
-    /// continue running.
-    pub async fn stop_subset(&mut self, units: impl IntoIterator<Item = &'_ UnitHandle>) {
-        if self.running {
-            self.run_op(
-                "stop",
-                Some(&units.into_iter().map(|h| h.id.id).collect::<Vec<_>>()),
-                State::Running,
-                State::Stopping,
-                State::Stopped,
-                StateRequest::Stop,
-                |_, _| Some(()),
-                |unit| &unit.dependents,
-            )
-            .await;
-        }
-    }
-
-    /// Resets just the units in `units`. The units must be stopped, either via
-    /// a call to [`StateUnits::stop`] or [`StateUnits::stop_subset`].
-    ///
-    /// Units within this set will be reset in dependency order, but other units
-    /// that have dependencies on the units being reset will not be reset. This
-    /// may cause inconsistencies in VM state depending on the details of the
-    /// state units being reset, so this must be used with knowledge of the
-    /// state units.
-    ///
-    /// Panics if the specified units are not stopped.
-    pub async fn force_reset(
-        &mut self,
-        units: impl IntoIterator<Item = &'_ UnitHandle>,
-    ) -> Result<(), StateTransitionError> {
-        let r = self
-            .run_op(
-                "reset",
-                Some(&units.into_iter().map(|h| h.id.id).collect::<Vec<_>>()),
-                State::Stopped,
-                State::Resetting,
-                State::Stopped,
-                StateRequest::Reset,
-                |_, _| Some(()),
-                |unit| &unit.dependencies,
-            )
-            .await;
-
-        check("force_reset", r)?;
-        Ok(())
     }
 
     /// Resets all the state units.
@@ -683,30 +617,6 @@ impl StateUnits {
 
         check("restore", r)?;
 
-        self.post_restore().await?;
-        Ok(())
-    }
-
-    /// Completes the restore operation on all state units.
-    ///
-    /// Panics if running.
-    async fn post_restore(&mut self) -> Result<(), StateTransitionError> {
-        // Post-restore in any order because all state should be up-to-date
-        // after restore.
-        let r = self
-            .run_op(
-                "post_restore",
-                None,
-                State::Stopped,
-                State::PostRestoring,
-                State::Stopped,
-                StateRequest::PostRestore,
-                |_, _| Some(()),
-                |_| &[],
-            )
-            .await;
-
-        check("post_restore", r)?;
         Ok(())
     }
 
@@ -860,8 +770,6 @@ struct ReadyState {
 impl ReadySet {
     async fn wait(&self, op: &str, id: u64, deps: &[u64]) -> bool {
         for dep in deps {
-            // Note that the dependency might not be found if this is part of
-            // `stop_subset` or `TemporaryStop::reset`.
             if let Some(dep) = self.0.get(dep) {
                 if !dep.ready.is_ready() {
                     tracing::debug!(
@@ -1092,11 +1000,11 @@ mod tests {
     use crate::run_unit;
     use inspect::InspectMut;
     use mesh::payload::Protobuf;
-    use pal_async::async_test;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
     use std::time::Duration;
     use test_with_tracing::test;
     use vmcore::save_restore::RestoreError;
@@ -1145,10 +1053,6 @@ mod tests {
                 Err(RestoreError::SavedStateNotSupported)
             }
         }
-
-        async fn post_restore(&mut self) -> anyhow::Result<()> {
-            Ok(())
-        }
     }
 
     impl InspectMut for TestUnit {
@@ -1177,15 +1081,11 @@ mod tests {
 
         async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
             pal_async::timer::PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
+                .sleep(Duration::from_millis(100))
                 .await;
 
             self.dep.store(true, Ordering::Relaxed);
 
-            Ok(())
-        }
-
-        async fn post_restore(&mut self) -> anyhow::Result<()> {
             Ok(())
         }
     }
@@ -1202,7 +1102,7 @@ mod tests {
 
         let a_val = Arc::new(AtomicBool::new(true));
 
-        let a = units
+        let _a = units
             .add("a")
             .spawn(&driver, |recv| {
                 run_unit(
@@ -1227,13 +1127,7 @@ mod tests {
         units.stop().await;
         units.start().await;
 
-        units.stop_subset([a.handle()]).await;
-        units.start_stopped_units().await;
-
         units.stop().await;
-
-        units.stop_subset([a.handle()]).await;
-        units.start_stopped_units().await;
 
         let state = units.save().await.unwrap();
 

@@ -14,19 +14,21 @@
 //! which means it's invalid to reference it as a `&[u16]`, or any similar
 //! wrapper type (e.g: `widestring::U16CStr`).
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod storage_backend;
 
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guid::Guid;
 use std::fmt::Debug;
 use storage_backend::StorageBackend;
 use ucs2::Ucs2LeSlice;
-use uefi_nvram_storage::in_memory;
+use uefi_nvram_storage::EFI_TIME;
 use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
-use uefi_nvram_storage::EFI_TIME;
+use uefi_nvram_storage::in_memory;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -92,6 +94,9 @@ pub struct HclCompatNvram<S> {
     // reduced allocator pressure
     #[cfg_attr(feature = "inspect", inspect(skip))] // internal bookkeeping - not worth inspecting
     nvram_buf: Vec<u8>,
+
+    // whether the NVRAM has been loaded, either from storage or saved state
+    loaded: bool,
 }
 
 /// "Quirks" to take into account when loading/storing nvram blob data.
@@ -127,24 +132,30 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             in_memory: in_memory::InMemoryNvram::new(),
 
             nvram_buf: Vec::new(),
+
+            loaded: false,
         }
     }
 
     async fn lazy_load_from_storage(&mut self) -> Result<(), NvramStorageError> {
         let res = self.lazy_load_from_storage_inner().await;
         if let Err(e) = &res {
+            tracing::error!(CVM_ALLOWED, "storage contains corrupt nvram state");
             tracing::error!(
+                CVM_CONFIDENTIAL,
                 error = e as &dyn std::error::Error,
                 "storage contains corrupt nvram state"
-            )
+            );
         }
         res
     }
 
     async fn lazy_load_from_storage_inner(&mut self) -> Result<(), NvramStorageError> {
-        if !self.nvram_buf.is_empty() {
+        if self.loaded {
             return Ok(());
         }
+
+        tracing::info!("loading uefi nvram from storage");
 
         let nvram_buf = self
             .storage
@@ -192,7 +203,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                 _ => {
                     return Err(NvramStorageError::Load(
                         format!("unknown header type: {:?}", header.header_type).into(),
-                    ))
+                    ));
                 }
             }
 
@@ -251,7 +262,15 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                             var.push(0);
                             ucs2::Ucs2LeVec::from_vec_with_nul(var)
                         };
-                        tracing::warn!(?var, "skipping corrupt nvram var (missing null term)");
+                        tracing::warn!(
+                            CVM_ALLOWED,
+                            "skipping corrupt nvram var (missing null term)"
+                        );
+                        tracing::warn!(
+                            CVM_CONFIDENTIAL,
+                            ?var,
+                            "skipping corrupt nvram var (missing null term)"
+                        );
                         continue;
                     } else {
                         return Err(NvramStorageError::Load(e.into()));
@@ -276,11 +295,13 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             ));
         }
 
+        self.loaded = true;
         Ok(())
     }
 
     /// Dump in-memory nvram to the underlying storage device.
     async fn flush_storage(&mut self) -> Result<(), NvramStorageError> {
+        tracing::info!("flushing uefi nvram to storage");
         self.nvram_buf.clear();
 
         for in_memory::VariableEntry {
@@ -461,6 +482,30 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
     }
 }
 
+#[cfg(feature = "save_restore")]
+mod save_restore {
+    use super::*;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+
+    impl<S: StorageBackend> SaveRestore for HclCompatNvram<S> {
+        type SavedState = <in_memory::InMemoryNvram as SaveRestore>::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            self.in_memory.save()
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            if state.nvram.is_some() {
+                self.in_memory.restore(state)?;
+                self.loaded = true;
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::storage_backend::StorageBackend;
@@ -520,16 +565,14 @@ mod test {
         let timestamp = EFI_TIME::default();
 
         let name_ok = Ucs2LeVec::from_vec_with_nul(
-            std::iter::repeat([0, b'a'])
-                .take((EFI_MAX_VARIABLE_NAME_SIZE / 2) - 1)
+            std::iter::repeat_n([0, b'a'], (EFI_MAX_VARIABLE_NAME_SIZE / 2) - 1)
                 .chain(Some([0, 0]))
                 .flat_map(|x| x.into_iter())
                 .collect(),
         )
         .unwrap();
         let name_too_big = Ucs2LeVec::from_vec_with_nul(
-            std::iter::repeat([0, b'a'])
-                .take(EFI_MAX_VARIABLE_NAME_SIZE / 2)
+            std::iter::repeat_n([0, b'a'], EFI_MAX_VARIABLE_NAME_SIZE / 2)
                 .chain(Some([0, 0]))
                 .flat_map(|x| x.into_iter())
                 .collect(),

@@ -3,8 +3,10 @@
 
 //! A worker for running a VNC server.
 
-use anyhow::anyhow;
+#![forbid(unsafe_code)]
+
 use anyhow::Context;
+use anyhow::anyhow;
 use futures::FutureExt;
 use input_core::InputData;
 use input_core::KeyboardData;
@@ -13,8 +15,8 @@ use mesh::message::MeshField;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
-use pal_async::local::block_with_io;
 use pal_async::local::LocalDriver;
+use pal_async::local::block_with_io;
 use pal_async::socket::Listener;
 use pal_async::socket::PolledSocket;
 use pal_async::timer::PolledTimer;
@@ -104,7 +106,7 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
         self,
         mut rpc_recv: mesh::Receiver<WorkerRpc<VncParameters<T>>>,
     ) -> anyhow::Result<()> {
-        block_with_io(|driver| async move {
+        block_with_io(async |driver| {
             tracing::info!(
                 address = ?self.listener.local_addr().unwrap(),
                 "VNC server listening",

@@ -13,6 +13,7 @@
 //! Future refactors / reorganization may want to split these devices up into
 //! their own crates.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod battery;

@@ -9,6 +9,7 @@ use crate::importer::SegmentRegister;
 use crate::importer::TableRegister;
 use crate::importer::X86Register;
 use hvdef::HV_PAGE_SIZE;
+use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 use x86defs::GdtEntry;
 use x86defs::X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES;
@@ -91,25 +92,26 @@ pub fn import_default_gdt(
     Ok(())
 }
 
+/// Returned when the MMIO layout is not supported.
+#[derive(Debug, Error)]
+#[error("exactly two MMIO gaps are required")]
+pub struct UnsupportedMmio;
+
 /// Computes the x86 variable MTRRs that describe the given memory layout. This
 /// is intended to be used to setup MTRRs for booting a guest with two mmio
 /// gaps, such as booting Linux, UEFI, or PCAT.
 ///
 /// N.B. Currently this panics if there are not exactly two MMIO ranges.
-pub fn compute_variable_mtrrs(memory: &MemoryLayout) -> Vec<X86Register> {
+pub fn compute_variable_mtrrs(
+    memory: &MemoryLayout,
+    physical_address_width: u8,
+) -> Result<Vec<X86Register>, UnsupportedMmio> {
     const WRITEBACK: u64 = 0x6;
 
-    assert_eq!(
-        memory.mmio().len(),
-        2,
-        "only two MMIO gaps are supported currently"
-    );
+    let &[mmio_gap_low, mmio_gap_high] = memory.mmio().try_into().map_err(|_| UnsupportedMmio)?;
 
-    let mmio_gap_low = memory.mmio()[0];
-    let mmio_gap_high = memory.mmio()[1];
-
-    // Clamp the GpaSpaceSize to something reasonable
-    let gpa_space_size = memory.physical_address_size().clamp(36, 52);
+    // Clamp the width to something reasonable.
+    let gpa_space_size = physical_address_width.clamp(36, 52);
 
     // The MMIO limits will be the basis of the MTRR calculations
     // as page count doesn't work when there may be gaps between memory blocks.
@@ -165,7 +167,7 @@ pub fn compute_variable_mtrrs(memory: &MemoryLayout) -> Vec<X86Register> {
         }
     }
 
-    result
+    Ok(result)
 }
 
 fn mtrr_mask(gpa_space_size: u8, maximum_address: u64) -> u64 {

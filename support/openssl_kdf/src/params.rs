@@ -5,11 +5,11 @@
 // information.
 
 use crate::cvt_p;
+use crate::sys::OSSL_PARAM;
+use crate::sys::OSSL_PARAM_END;
 use crate::sys::OSSL_PARAM_construct_int;
 use crate::sys::OSSL_PARAM_construct_octet_string;
 use crate::sys::OSSL_PARAM_construct_utf8_string;
-use crate::sys::OSSL_PARAM;
-use crate::sys::OSSL_PARAM_END;
 use libc::c_char;
 use libc::c_int;
 use libc::c_void;

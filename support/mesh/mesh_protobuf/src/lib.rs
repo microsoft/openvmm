@@ -17,7 +17,6 @@
 //! values, such as ports, handles, and file descriptors, whose ownership is to
 //! be transferred to the target node.
 
-#![warn(missing_docs)]
 // UNSAFETY: Serialization and deserialization of structs directly.
 #![expect(unsafe_code)]
 #![warn(clippy::std_instead_of_alloc)]
@@ -488,6 +487,8 @@ enum DecodeError {
     InvalidUtf32,
     #[error("wrong buffer size for u128")]
     BadU128,
+    #[error("wrong buffer size for ipv6 address")]
+    BadIpv6,
     #[error("invalid UTF-8 string")]
     InvalidUtf8(#[source] core::str::Utf8Error),
     #[error("missing required field")]
@@ -565,27 +566,30 @@ pub type Result<T> = core::result::Result<T, Error>;
 mod tests {
     extern crate std;
 
-    use super::encode;
     use super::SerializedMessage;
+    use super::encode;
+    use crate::DecodeError;
+    use crate::FieldDecode;
+    use crate::FieldEncode;
+    use crate::NoResources;
     use crate::decode;
     use crate::encoding::BorrowedCowField;
     use crate::encoding::OwningCowField;
     use crate::encoding::VecField;
     use crate::protobuf::read_varint;
-    use crate::DecodeError;
-    use crate::FieldDecode;
-    use crate::FieldEncode;
-    use crate::NoResources;
     use alloc::borrow::Cow;
     use alloc::collections::BTreeMap;
     use alloc::vec;
     use core::convert::Infallible;
     use core::error::Error;
     use core::fmt::Write;
+    use core::net::Ipv4Addr;
+    use core::net::Ipv6Addr;
     use core::num::NonZeroU32;
+    use core::str::FromStr as _;
     use core::time::Duration;
-    use expect_test::expect;
     use expect_test::Expect;
+    use expect_test::expect;
     use mesh_derive::Protobuf;
     use std::prelude::rust_2021::*;
     use std::println;
@@ -622,7 +626,7 @@ mod tests {
                             .try_into()
                             .unwrap(),
                     );
-                    writeln!(s, "fixed64 {n}").ok();
+                    writeln!(s, "fixed64 {n:#018x}").ok();
                     v = &v[8..];
                 }
                 2 => {
@@ -644,7 +648,7 @@ mod tests {
                             .try_into()
                             .unwrap(),
                     );
-                    writeln!(s, "fixed32 {n}").ok();
+                    writeln!(s, "fixed32 {n:#010x}").ok();
                     v = &v[4..];
                 }
                 n => Err(DecodeError::UnknownWireType(n))?,
@@ -806,6 +810,30 @@ mod tests {
                 1: bytes <0a0268691006>
                 1: bytes <0a03686d6d1002>
                 raw: 0a060a02686910060a070a03686d6d1002"#]),
+        );
+        assert_field_roundtrips(
+            Ipv4Addr::from_str("1.2.3.4").unwrap(),
+            expect!([r#"
+                1: fixed32 0x01020304
+                raw: 0d04030201"#]),
+        );
+        assert_field_roundtrips(
+            Ipv4Addr::UNSPECIFIED,
+            expect!([r#"
+            empty
+            raw: "#]),
+        );
+        assert_field_roundtrips(
+            Ipv6Addr::from_str("1:2:3:4:5:6:7:8").unwrap(),
+            expect!([r#"
+            1: bytes <00010002000300040005000600070008>
+            raw: 0a1000010002000300040005000600070008"#]),
+        );
+        assert_field_roundtrips(
+            Ipv6Addr::UNSPECIFIED,
+            expect!([r#"
+            empty
+            raw: "#]),
         );
     }
 

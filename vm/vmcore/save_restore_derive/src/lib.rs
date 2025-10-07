@@ -1,9 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 use quote::quote;
-use syn::parse_macro_input;
 use syn::DeriveInput;
+use syn::parse_macro_input;
 
 // Documented in the save_restore module.
 #[proc_macro_derive(SavedStateRoot)]

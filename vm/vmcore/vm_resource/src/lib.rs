@@ -10,7 +10,6 @@
 //! link in different resource resolvers to support different resource types
 //! depending on compile-time configuration.
 
-#![warn(missing_docs)]
 // UNSAFETY: Uses transmute to allow for type erasure.
 #![expect(unsafe_code)]
 
@@ -636,8 +635,8 @@ mod tests {
     use super::ResourceKind;
     use super::ResourceResolver;
     use crate::CanResolveTo;
-    use mesh::payload::Protobuf;
     use mesh::MeshPayload;
+    use mesh::payload::Protobuf;
     use pal_async::async_test;
     use std::convert::Infallible;
 

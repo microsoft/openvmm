@@ -30,7 +30,6 @@
 //!
 
 #![cfg(unix)]
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use filepath::FilePath;

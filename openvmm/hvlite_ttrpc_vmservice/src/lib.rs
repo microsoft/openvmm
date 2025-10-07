@@ -3,6 +3,7 @@
 
 //! Rust binadings to the `vmservice.proto` TTRPC API
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 #![expect(clippy::enum_variant_names, clippy::large_enum_variant)]
 

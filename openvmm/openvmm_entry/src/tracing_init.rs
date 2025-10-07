@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use anyhow::anyhow;
 use anyhow::Context as _;
+use anyhow::anyhow;
 use std::io::IsTerminal;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;

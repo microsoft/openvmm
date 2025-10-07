@@ -5,6 +5,8 @@
 //!
 //! Currently incomplete (missing defs for non-fixed disks).
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 use self::packed_nums::*;
@@ -15,7 +17,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u32_be = zerocopy::U32<zerocopy::BigEndian>;
     pub type u64_be = zerocopy::U64<zerocopy::BigEndian>;

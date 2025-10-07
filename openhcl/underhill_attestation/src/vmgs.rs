@@ -4,13 +4,13 @@
 //! Implementation of the helper functions for accessing VMGS entries.
 
 use guid::Guid;
+use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
+use openhcl_attestation_protocol::vmgs::GUEST_SECRET_KEY_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::GuestSecretKey;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtectorById;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
-use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
-use openhcl_attestation_protocol::vmgs::GUEST_SECRET_KEY_MAX_SIZE;
 use thiserror::Error;
 use vmgs::FileId;
 use vmgs::Vmgs;
@@ -100,7 +100,7 @@ pub async fn read_key_protector(
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))
                 .map(|k| k.0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
-        Err(vmgs::Error::FileInfoAllocated) => Ok(KeyProtector::new_zeroed()),
+        Err(vmgs::Error::FileInfoNotAllocated) => Ok(KeyProtector::new_zeroed()),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id }),
     }
 }
@@ -143,7 +143,7 @@ pub async fn read_key_protector_by_id(
                 })
             }
         },
-        Err(vmgs::Error::FileInfoAllocated) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
+        Err(vmgs::Error::FileInfoNotAllocated) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id }),
     }
 }
@@ -197,7 +197,7 @@ pub async fn read_security_profile(vmgs: &mut Vmgs) -> Result<SecurityProfile, R
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?
                 .0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
-        Err(vmgs::Error::FileInfoAllocated) => Ok(SecurityProfile::new_zeroed()),
+        Err(vmgs::Error::FileInfoNotAllocated) => Ok(SecurityProfile::new_zeroed()),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err })?,
     }
 }
@@ -209,10 +209,15 @@ pub async fn read_hardware_key_protector(
     use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
 
     let file_id = FileId::HW_KEY_PROTECTOR;
-    let data = vmgs
-        .read_file(file_id)
-        .await
-        .map_err(|vmgs_err| ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id })?;
+    let data = match vmgs.read_file(file_id).await {
+        Ok(data) => data,
+        Err(vmgs::Error::FileInfoNotAllocated) => {
+            return Err(ReadFromVmgsError::EntryNotFound(file_id));
+        }
+        Err(vmgs_err) => {
+            return Err(ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id });
+        }
+    };
 
     if data.len() != HW_KEY_PROTECTOR_SIZE {
         Err(ReadFromVmgsError::EntrySizeUnexpected {
@@ -265,7 +270,7 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?
                 .0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
-        Err(vmgs::Error::FileInfoAllocated) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
+        Err(vmgs::Error::FileInfoNotAllocated) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err }),
     }
 }
@@ -275,18 +280,18 @@ mod tests {
     use super::*;
     use disk_backend::Disk;
     use disklayer_ram::ram_disk;
-    use openhcl_attestation_protocol::vmgs::DekKp;
-    use openhcl_attestation_protocol::vmgs::GspKp;
-    use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorHeader;
-    use openhcl_attestation_protocol::vmgs::KeyProtector;
-    use openhcl_attestation_protocol::vmgs::KeyProtectorById;
     use openhcl_attestation_protocol::vmgs::AES_CBC_IV_LENGTH;
     use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
+    use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorHeader;
     use openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE;
+    use openhcl_attestation_protocol::vmgs::KeyProtector;
+    use openhcl_attestation_protocol::vmgs::KeyProtectorById;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
 
@@ -299,7 +304,7 @@ mod tests {
     async fn new_formatted_vmgs() -> Vmgs {
         let disk = new_test_file();
 
-        Vmgs::format_new(disk).await.unwrap()
+        Vmgs::format_new(disk, None).await.unwrap()
     }
 
     fn new_hardware_key_protector() -> HardwareKeyProtector {

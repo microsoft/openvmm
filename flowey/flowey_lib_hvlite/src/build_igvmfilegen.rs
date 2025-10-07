@@ -3,21 +3,34 @@
 
 //! Build `igvmfilegen` binaries
 
-use crate::run_cargo_build::common::CommonProfile;
+use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum IgvmfilegenOutput {
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    LinuxBin {
+        #[serde(rename = "igvmfilegen")]
+        bin: PathBuf,
+        #[serde(rename = "igvmfilegen.dbg")]
+        dbg: PathBuf,
+    },
+    WindowsBin {
+        #[serde(rename = "igvmfilegen.exe")]
+        exe: PathBuf,
+        #[serde(rename = "igvmfilegen.pdb")]
+        pdb: PathBuf,
+    },
 }
+
+impl Artifact for IgvmfilegenOutput {}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IgvmfilegenBuildParams {
     pub target: CommonTriple,
-    pub profile: CommonProfile,
+    pub profile: BuildProfile,
 }
 
 flowey_request! {
@@ -54,7 +67,7 @@ impl FlowNode for Node {
                 crate_name: "igvmfilegen".into(),
                 out_name: "igvmfilegen".into(),
                 crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
-                profile: profile.into(),
+                profile,
                 features: Default::default(),
                 target: target.as_triple(),
                 no_split_dbg_info: false,
@@ -63,7 +76,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built igvmfilegen", |ctx| {
+            ctx.emit_minor_rust_step("report built igvmfilegen", |ctx| {
                 let outvars = outvars.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -83,8 +96,6 @@ impl FlowNode for Node {
                     for var in outvars {
                         rt.write(var, &output);
                     }
-
-                    Ok(())
                 }
             });
         }

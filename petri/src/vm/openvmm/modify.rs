@@ -3,20 +3,23 @@
 
 //! Helpers to modify a [`PetriVmConfigOpenVmm`] from its defaults.
 
-use super::PetriVmConfigOpenVmm;
+// TODO: Delete all modification functions that are not backend-specific
+// from this file, add necessary settings to the backend-agnostic
+// `PetriVmConfig`, and add corresponding functions to `PetriVmBuilder`.
+
 use super::MANA_INSTANCE;
+use super::NIC_MAC_ADDRESS;
+use super::PetriVmConfigOpenVmm;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
-use fs_err::File;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
+use get_resources::ged::IgvmAttestTestConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
-use petri_artifacts_common::tags::IsOpenhclIgvm;
-use petri_artifacts_core::ResolvedArtifact;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
@@ -25,22 +28,6 @@ use vmotherboard::ChipsetDeviceHandle;
 use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
-    /// Enable VMBus redirection.
-    pub fn with_vmbus_redirect(mut self) -> Self {
-        self.config
-            .vmbus
-            .as_mut()
-            .expect("vmbus not configured")
-            .vtl2_redirect = true;
-
-        let Some(ged) = &mut self.ged else {
-            panic!("VMBus redirection is only supported for OpenHCL.")
-        };
-        ged.vmbus_redirection = true;
-
-        self
-    }
-
     /// Enable the VTL0 alias map.
     // TODO: Remove once #912 is fixed.
     pub fn with_vtl0_alias_map(mut self) -> Self {
@@ -67,6 +54,8 @@ impl PetriVmConfigOpenVmm {
                     ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
                     register_layout: TpmRegisterLayout::IoPort,
                     guest_secret_key: None,
+                    logger: None,
+                    is_confidential_vm: self.firmware.isolation().is_some(),
                 }
                 .into_resource(),
             });
@@ -75,41 +64,6 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
-        self
-    }
-
-    /// Set the VM to use a single processor.
-    /// This is useful mainly for heavier OpenHCL tests, as our WHP emulation
-    /// layer is rather slow when dealing with cross-cpu communication.
-    pub fn with_single_processor(mut self) -> Self {
-        self.config.processor_topology.proc_count = 1;
-        self
-    }
-
-    /// Enable secure boot for the VM.
-    pub fn with_secure_boot(mut self) -> Self {
-        if !self.firmware.is_uefi() {
-            panic!("Secure boot is only supported for UEFI firmware.");
-        }
-        if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().secure_boot_enabled = true;
-        } else {
-            self.config.secure_boot_enabled = true;
-        }
-        self
-    }
-
-    /// Inject Windows secure boot templates into the VM's UEFI.
-    pub fn with_windows_secure_boot_template(mut self) -> Self {
-        if !self.firmware.is_uefi() {
-            panic!("Secure boot templates are only supported for UEFI firmware.");
-        }
-        if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().secure_boot_template =
-                get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows;
-        } else {
-            self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_windows();
-        }
         self
     }
 
@@ -136,70 +90,108 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Enable an emulated mana device for the VM.
-    pub fn with_nic(mut self) -> Self {
-        self.config.vpci_devices.push(VpciDeviceConfig {
-            vtl: DeviceVtl::Vtl2,
-            instance_id: MANA_INSTANCE,
-            resource: GdmaDeviceHandle {
-                vports: vec![VportDefinition {
-                    mac_address: [0x00, 0x15, 0x5D, 0x12, 0x12, 0x12].into(),
-                    endpoint: net_backend_resources::consomme::ConsommeHandle { cidr: None }
-                        .into_resource(),
-                }],
-            }
-            .into_resource(),
-        });
+    /// Enable TPM state persistence
+    pub fn with_tpm_state_persistence(mut self) -> Self {
+        if !self.firmware.is_openhcl() {
+            panic!("TPM state persistence is only supported for OpenHCL.")
+        };
 
-        self.vtl2_settings
-            .as_mut()
-            .unwrap()
-            .dynamic
-            .as_mut()
-            .unwrap()
-            .nic_devices
-            .push(vtl2_settings_proto::NicDeviceLegacy {
-                instance_id: MANA_INSTANCE.to_string(),
-                subordinate_instance_id: None,
-                max_sub_channels: None,
+        let ged = self.ged.as_mut().expect("No GED to configure TPM");
+
+        // Disable no_persistent_secrets implies preserving TPM states
+        // across boots
+        ged.no_persistent_secrets = false;
+
+        self
+    }
+
+    /// Set test config for the GED's IGVM attest request handler
+    pub fn with_igvm_attest_test_config(mut self, config: IgvmAttestTestConfig) -> Self {
+        if !self.firmware.is_openhcl() {
+            panic!("IGVM Attest test config is only supported for OpenHCL.")
+        };
+
+        let ged = self.ged.as_mut().expect("No GED to configure TPM");
+
+        ged.igvm_attest_test_config = Some(config);
+
+        self
+    }
+
+    /// Enable a synthnic for the VM.
+    ///
+    /// Uses a mana emulator and the paravisor if a paravisor is present.
+    pub fn with_nic(mut self) -> Self {
+        let endpoint =
+            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        if self.resources.vtl2_settings.is_some() {
+            self.config.vpci_devices.push(VpciDeviceConfig {
+                vtl: DeviceVtl::Vtl2,
+                instance_id: MANA_INSTANCE,
+                resource: GdmaDeviceHandle {
+                    vports: vec![VportDefinition {
+                        mac_address: NIC_MAC_ADDRESS,
+                        endpoint,
+                    }],
+                }
+                .into_resource(),
             });
 
+            self.resources
+                .vtl2_settings
+                .as_mut()
+                .unwrap()
+                .dynamic
+                .as_mut()
+                .unwrap()
+                .nic_devices
+                .push(vtl2_settings_proto::NicDeviceLegacy {
+                    instance_id: MANA_INSTANCE.to_string(),
+                    subordinate_instance_id: None,
+                    max_sub_channels: None,
+                });
+        } else {
+            const NETVSP_INSTANCE: guid::Guid = guid::guid!("c6c46cc3-9302-4344-b206-aef65e5bd0a2");
+            self.config.vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                netvsp_resources::NetvspHandle {
+                    instance_id: NETVSP_INSTANCE,
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                    max_queues: None,
+                }
+                .into_resource(),
+            ));
+        }
+
         self
     }
 
-    /// Add custom command line arguments to OpenHCL.
-    pub fn with_openhcl_command_line(mut self, additional_cmdline: &str) -> Self {
-        if !self.firmware.is_openhcl() {
-            panic!("Not an OpenHCL firmware.");
+    /// Specifies whether the UEFI will always attempt a default boot
+    pub fn with_default_boot_always_attempt(mut self, val: bool) -> Self {
+        match self.config.load_mode {
+            LoadMode::Uefi {
+                ref mut default_boot_always_attempt,
+                ..
+            } => {
+                *default_boot_always_attempt = val;
+            }
+            LoadMode::Igvm { .. } => {
+                let ged = self.ged.as_mut().expect("no GED to configure DPS");
+                match ged.firmware {
+                    get_resources::ged::GuestFirmwareConfig::Uefi {
+                        ref mut default_boot_always_attempt,
+                        ..
+                    } => {
+                        *default_boot_always_attempt = val;
+                    }
+                    _ => {
+                        panic!("not a UEFI boot");
+                    }
+                }
+            }
+            _ => panic!("not a UEFI boot"),
         }
-        let LoadMode::Igvm { cmdline, .. } = &mut self.config.load_mode else {
-            unreachable!()
-        };
-        cmdline.push(' ');
-        cmdline.push_str(additional_cmdline);
-        self
-    }
-
-    /// Enable confidential filtering, even if the VM is not confidential.
-    pub fn with_confidential_filtering(self) -> Self {
-        if !self.firmware.is_openhcl() {
-            panic!("Confidential filtering is only supported for OpenHCL");
-        }
-        self.with_openhcl_command_line(&format!(
-            "{}=1 {}=0",
-            underhill_confidentiality::OPENHCL_CONFIDENTIAL_ENV_VAR_NAME,
-            underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
-        ))
-    }
-
-    /// Load a custom OpenHCL firmware file.
-    pub fn with_custom_openhcl<A: IsOpenhclIgvm>(mut self, artifact: ResolvedArtifact<A>) -> Self {
-        let LoadMode::Igvm { file, .. } = &mut self.config.load_mode else {
-            panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
-        };
-        *file = File::open(artifact)
-            .expect("Failed to open custom OpenHCL file")
-            .into();
         self
     }
 
@@ -208,6 +200,7 @@ impl PetriVmConfigOpenVmm {
     // with_nic, etc. methods.
     pub fn with_custom_vtl2_settings(mut self, f: impl FnOnce(&mut Vtl2Settings)) -> Self {
         f(self
+            .resources
             .vtl2_settings
             .as_mut()
             .expect("Custom VTL 2 settings are only supported with OpenHCL."));
@@ -231,6 +224,23 @@ impl PetriVmConfigOpenVmm {
     /// pattern.
     pub fn with_custom_config(mut self, f: impl FnOnce(&mut Config)) -> Self {
         f(&mut self.config);
+        self
+    }
+
+    /// Specifies whether VTL2 should be allowed to access VTL0 memory before it
+    /// sets any VTL protections.
+    ///
+    /// This is needed just for the TMK VMM, and only until it gains support for
+    /// setting VTL protections.
+    pub fn with_allow_early_vtl0_access(mut self, allow: bool) -> Self {
+        self.config
+            .hypervisor
+            .with_vtl2
+            .as_mut()
+            .unwrap()
+            .late_map_vtl0_memory =
+            (!allow).then_some(hvlite_defs::config::LateMapVtl0MemoryPolicy::InjectException);
+
         self
     }
 }

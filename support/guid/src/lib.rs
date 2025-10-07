@@ -3,7 +3,6 @@
 
 //! Provides the [`Guid`] type with the same layout as the Windows type `GUID`.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use std::str::FromStr;
@@ -77,7 +76,7 @@ impl Guid {
     /// Return a new randomly-generated Version 4 UUID
     pub fn new_random() -> Self {
         let mut guid = Guid::default();
-        getrandom::getrandom(guid.as_mut_bytes()).expect("rng failure");
+        getrandom::fill(guid.as_mut_bytes()).expect("rng failure");
 
         guid.data3 = guid.data3 & 0xfff | 0x4000;
         // Variant 1
@@ -153,6 +152,32 @@ impl std::fmt::Display for Guid {
         write!(
             f,
             "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            self.data1,
+            self.data2,
+            self.data3,
+            self.data4[0],
+            self.data4[1],
+            self.data4[2],
+            self.data4[3],
+            self.data4[4],
+            self.data4[5],
+            self.data4[6],
+            self.data4[7],
+        )
+    }
+}
+
+impl std::fmt::LowerHex for Guid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::fmt::UpperHex for Guid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
             self.data1,
             self.data2,
             self.data3,
@@ -310,8 +335,8 @@ mod windows {
 
 #[cfg(test)]
 mod tests {
-    use super::guid;
     use super::Guid;
+    use super::guid;
 
     #[test]
     fn test_display_guid() {

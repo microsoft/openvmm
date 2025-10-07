@@ -4,15 +4,14 @@
 //! Resources for the TPM device.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use inspect::Inspect;
 use mesh::MeshPayload;
-use vm_resource::kind::ChipsetDeviceHandleKind;
-use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceKind;
+use vm_resource::kind::ChipsetDeviceHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 
 /// A handle to a TPM device.
 #[derive(MeshPayload)]
@@ -29,6 +28,10 @@ pub struct TpmDeviceHandle {
     pub register_layout: TpmRegisterLayout,
     /// Optional guest secret TPM key to be imported
     pub guest_secret_key: Option<Vec<u8>>,
+    /// Optional logger to send event to the host
+    pub logger: Option<Resource<TpmLoggerKind>>,
+    /// Whether or not the TPM is in a confidential VM
+    pub is_confidential_vm: bool,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {
@@ -47,6 +50,9 @@ impl ResourceKind for RequestAkCertKind {
 pub enum TpmAkCertTypeResource {
     /// No Ak cert.
     None,
+    /// Expects an AK cert that is not hardware-attested
+    /// to be pre-provisioned. Used by TVM
+    TrustedPreProvisionedOnly,
     /// Authorized AK cert that is not hardware-attested.
     /// Used by TVM
     Trusted(Resource<RequestAkCertKind>),
@@ -54,6 +60,10 @@ pub enum TpmAkCertTypeResource {
     /// a TEE attestation report).
     /// Used by CVM
     HwAttested(Resource<RequestAkCertKind>),
+    /// Authorized and software-attested AK cert (backed by
+    /// a software-based VM attestation report).
+    /// Used by Vbs VM
+    SwAttested(Resource<RequestAkCertKind>),
 }
 
 /// The vTPM control area register layout
@@ -63,4 +73,11 @@ pub enum TpmRegisterLayout {
     IoPort,
     /// MMIO
     Mmio,
+}
+
+/// A resource kind for TPM logger.
+pub enum TpmLoggerKind {}
+
+impl ResourceKind for TpmLoggerKind {
+    const NAME: &'static str = "tpm_logger";
 }

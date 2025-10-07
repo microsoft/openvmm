@@ -4,16 +4,16 @@
 //! Helper type for mesh-encoding a type that must first be translated to
 //! another type.
 
-use super::encoding::MessageEncoding;
-use super::fmt;
-use super::protobuf::MessageReader;
-use super::protobuf::MessageSizer;
-use super::protobuf::MessageWriter;
 use super::DefaultEncoding;
 use super::InplaceOption;
 use super::MessageDecode;
 use super::MessageEncode;
 use super::Result;
+use super::encoding::MessageEncoding;
+use super::fmt;
+use super::protobuf::MessageReader;
+use super::protobuf::MessageSizer;
+use super::protobuf::MessageWriter;
 use crate::inplace;
 use core::ops::Deref;
 use core::ops::DerefMut;

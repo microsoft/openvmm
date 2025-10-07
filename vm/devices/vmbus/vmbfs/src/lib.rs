@@ -13,7 +13,6 @@
 //! It is also used for Windows container boot, but this is not currently
 //! supported.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod backing;

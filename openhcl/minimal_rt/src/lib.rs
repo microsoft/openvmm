@@ -7,7 +7,6 @@
 #![no_std]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod arch;
 pub mod enlightened_panic;

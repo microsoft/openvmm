@@ -2,12 +2,15 @@
 // Licensed under the MIT License.
 
 use super::WhpPartitionInner;
-use chipset_device::io::IoResult;
-use chipset_device::mmio::MmioIntercept;
-use chipset_device::pci::PciConfigSpace;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoResult;
+use chipset_device::mmio::ControlMmioIntercept;
+use chipset_device::mmio::MmioIntercept;
+use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::pci::PciConfigSpace;
 use hv1_hypercall::HvInterruptParameters;
 use hvdef::Vtl;
+use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
 use pci_core::bar_mapping::BarMappings;
@@ -21,9 +24,9 @@ use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use whp::VpciInterruptTarget;
 use winapi::um::winnt;
@@ -109,8 +112,8 @@ impl MsiInterruptTarget for Device {
     }
 }
 
-impl VpciInterruptMapper for Device {
-    fn register_interrupt(
+impl MapVpciInterrupt for Device {
+    async fn register_interrupt(
         &self,
         vector_count: u32,
         params: &VpciInterruptParameters<'_>,
@@ -138,7 +141,7 @@ impl VpciInterruptMapper for Device {
         Ok(r)
     }
 
-    fn unregister_interrupt(&self, address: u64, data: u32) {
+    async fn unregister_interrupt(&self, address: u64, data: u32) {
         let mut interrupts = self.interrupts.lock();
         let (index, m) = interrupts
             .iter_mut()
@@ -257,6 +260,56 @@ impl MmioMapping {
     }
 }
 
+/// A type to control the intercept mapping of a BAR.
+struct BarIntercept {
+    /// Associated BAR register index
+    pub index: u8,
+    /// Size of MMIO region
+    pub len: u64,
+    /// Intercept control
+    pub control: Box<dyn ControlMmioIntercept>,
+}
+
+pub struct BarIntercepts(Vec<BarIntercept>);
+
+impl Inspect for BarIntercepts {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let mut res = req.respond();
+        for bar in self.0.iter() {
+            res.field(&format!("bar{}", bar.index), format!("{:#x?}", bar.len));
+        }
+    }
+}
+
+impl BarIntercepts {
+    fn new(register_mmio: &mut dyn RegisterMmioIntercept, probed_bars: [u32; 6]) -> BarIntercepts {
+        let mut controls = Vec::new();
+        let parsed = BarMappings::parse(&[0; 6], &probed_bars);
+        for parsed_mapping in parsed.iter() {
+            controls.push(BarIntercept {
+                index: parsed_mapping.index,
+                len: parsed_mapping.len,
+                control: register_mmio
+                    .new_io_region(&format!("bar{}", parsed_mapping.index), parsed_mapping.len),
+            });
+        }
+        Self(controls)
+    }
+
+    pub fn map(&mut self, mappings: &BarMappings) {
+        for (intercept, mapping) in self.0.iter_mut().zip(mappings.iter()) {
+            assert!(intercept.len == mapping.len);
+            intercept.control.map(mapping.base_address);
+        }
+    }
+
+    pub fn unmap(&mut self) {
+        for intercept in self.0.iter_mut() {
+            intercept.control.unmap();
+        }
+    }
+}
+
 pub struct AssignedPciDevice {
     device: Arc<Device>,
     probed_bars: [u32; 6],
@@ -267,6 +320,7 @@ pub struct AssignedPciDevice {
     active_bars: BarMappings,
     mmio: Vec<MmioMapping>,
     mmio_enabled: bool,
+    bar_intercepts: BarIntercepts,
     // use a bare u16 (instead of `cfg_space::Command`) to avoid any possible
     // truncation during passthrough
     command: u16,
@@ -279,10 +333,14 @@ impl InspectMut for AssignedPciDevice {
 }
 
 impl AssignedPciDevice {
-    pub fn new(device: Arc<Device>) -> Result<Self, whp::WHvError> {
+    pub fn new(
+        register_mmio: &mut dyn RegisterMmioIntercept,
+        device: Arc<Device>,
+    ) -> Result<Self, whp::WHvError> {
         let probed_bars = device.device().probed_bars()?.Value;
         let bar_flags = parse_probed_bars(probed_bars);
         let power_reg = probe_power_register(&device.device());
+        let bar_intercepts = BarIntercepts::new(register_mmio, probed_bars);
         Ok(Self {
             device,
             probed_bars,
@@ -292,6 +350,7 @@ impl AssignedPciDevice {
             power_state: 3,
             active_bars: Default::default(),
             mmio: Vec::new(),
+            bar_intercepts,
             command: 0,
             mmio_enabled: false,
         })
@@ -356,6 +415,7 @@ impl AssignedPciDevice {
                 Ok(mmio) => {
                     self.mmio = mmio.into_iter().map(MmioMapping).collect();
                     self.active_bars = BarMappings::parse(&self.bars, &self.probed_bars);
+                    self.bar_intercepts.map(&self.active_bars);
                     self.mmio_enabled = true;
                     // TODO: map MMIO on command write for efficient access
                 }
@@ -366,6 +426,7 @@ impl AssignedPciDevice {
 
     fn disable_mmio(&mut self) {
         if self.mmio_enabled {
+            self.bar_intercepts.unmap();
             self.active_bars = Default::default();
             self.mmio.clear();
             self.device

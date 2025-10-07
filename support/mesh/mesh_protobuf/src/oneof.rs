@@ -4,6 +4,13 @@
 //! Encoding support for protobuf `oneof` fields, which are derived from Rust
 //! enums.
 
+use crate::Error;
+use crate::FieldDecode;
+use crate::FieldEncode;
+use crate::MessageDecode;
+use crate::MessageEncode;
+use crate::Result;
+use crate::ResultExt;
 use crate::inplace::InplaceOption;
 use crate::protobuf::FieldReader;
 use crate::protobuf::MessageReader;
@@ -13,13 +20,6 @@ use crate::protofile::DescribeField;
 use crate::protofile::DescribeMessage;
 use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
-use crate::Error;
-use crate::FieldDecode;
-use crate::FieldEncode;
-use crate::MessageDecode;
-use crate::MessageEncode;
-use crate::Result;
-use crate::ResultExt;
 use thiserror::Error;
 
 /// An encoder type for `oneof` fields derived from Rust enums.

@@ -13,11 +13,11 @@ use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-use zerocopy::Unaligned;
 use zerocopy::LE;
 use zerocopy::U16;
 use zerocopy::U32;
 use zerocopy::U64;
+use zerocopy::Unaligned;
 
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
@@ -38,6 +38,7 @@ open_enum! {
         APIC = 0x0,
         IO_APIC = 0x1,
         INTERRUPT_SOURCE_OVERRIDE = 0x2,
+        LOCAL_NMI_SOURCE = 0x4,
         X2APIC = 0x9,
         GICC = 0xb,
         GICD = 0xc,
@@ -179,6 +180,31 @@ impl MadtInterruptSourceOverride {
     }
 }
 
+// EFI_ACPI_6_2_LOCAL_APIC_NMI_STRUCTURE
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct MadtLocalNmiSource {
+    pub typ: MadtType,
+    pub length: u8,
+    pub acpi_processor_uid: u8,
+    pub flags: u16,
+    pub local_apic_lint: u8,
+}
+
+const_assert_eq!(size_of::<MadtLocalNmiSource>(), 6);
+
+impl MadtLocalNmiSource {
+    pub fn new() -> Self {
+        Self {
+            typ: MadtType::LOCAL_NMI_SOURCE,
+            length: size_of::<Self>() as u8,
+            acpi_processor_uid: 1, // 0xFF indicates all processors. UID 1 is the BSP
+            flags: 0,
+            local_apic_lint: 1,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MadtGicd {
@@ -237,7 +263,12 @@ pub struct MadtGicc {
 const_assert_eq!(size_of::<MadtGicc>(), 80);
 
 impl MadtGicc {
-    pub fn new(acpi_processor_uid: u32, mpidr: u64, gicr: u64) -> Self {
+    pub fn new(
+        acpi_processor_uid: u32,
+        mpidr: u64,
+        gicr: u64,
+        performance_monitoring_gsiv: u32,
+    ) -> Self {
         Self {
             typ: MadtType::GICC,
             length: size_of::<Self>() as u8,
@@ -245,6 +276,7 @@ impl MadtGicc {
             acpi_processor_uid: acpi_processor_uid.into(),
             mpidr: mpidr.into(),
             gicr_base_address: gicr.into(),
+            performance_monitoring_gsiv: performance_monitoring_gsiv.into(),
             ..Self::new_zeroed()
         }
     }

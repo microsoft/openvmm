@@ -1,19 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "ioperf")]
 pub mod ioperf;
 
-#[cfg(feature = "fuzz_helpers")]
-pub mod protocol;
-#[cfg(feature = "fuzz_helpers")]
+#[cfg(feature = "test")]
 pub mod test_helpers;
 
-#[cfg(not(feature = "fuzz_helpers"))]
-mod protocol;
-#[cfg(not(feature = "fuzz_helpers"))]
+#[cfg(not(feature = "test"))]
 mod test_helpers;
 
 pub mod resolver;
@@ -24,14 +21,14 @@ use crate::ring::gparange::MultiPagedRangeBuf;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use fast_select::FastSelect;
-use futures::select_biased;
 use futures::FutureExt;
 use futures::StreamExt;
-use guestmem::ranges::PagedRange;
+use futures::select_biased;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -40,13 +37,12 @@ use inspect_counters::Histogram;
 use oversized_box::OversizedBox;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use protocol::NtStatus;
 use ring::OutgoingPacketType;
-use scsi::srb::SrbStatus;
-use scsi::srb::SrbStatusAndFlags;
 use scsi::AdditionalSenseCode;
 use scsi::ScsiOp;
 use scsi::ScsiStatus;
+use scsi::srb::SrbStatus;
+use scsi::srb::SrbStatusAndFlags;
 use scsi_buffers::RequestBuffers;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
@@ -57,10 +53,12 @@ use slab::Slab;
 use std::collections::hash_map::Entry;
 use std::collections::hash_map::HashMap;
 use std::fmt::Debug;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering::Relaxed;
 use std::task::Context;
 use std::task::Poll;
 use storvsp_resources::ScsiPath;
@@ -76,6 +74,7 @@ use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenRequest;
@@ -85,9 +84,8 @@ use vmbus_channel::channel::DeviceResources;
 use vmbus_channel::channel::RestoreControl;
 use vmbus_channel::channel::SaveRestoreVmbusDevice;
 use vmbus_channel::channel::VmbusDevice;
-use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
-use vmbus_channel::RawAsyncChannel;
+use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_core::protocol::UserDefinedData;
 use vmbus_ring as ring;
 use vmbus_ring::RingMem;
@@ -101,6 +99,12 @@ use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
+
+/// The IO queue depth at which the controller switches from guest-signal-driven
+/// to poll-mode operation. This optimization reduces the guest exit rate by
+/// relying on (typically-interrupt-driven) IO completions to drive polling for
+/// new IO requests.
+const DEFAULT_POLL_MODE_QUEUE_DEPTH: u32 = 1;
 
 pub struct StorageDevice {
     instance_id: Guid,
@@ -140,6 +144,10 @@ impl InspectMut for StorageDevice {
                 .iter()
                 .filter(|task| task.worker.has_state())
                 .enumerate(),
+        )
+        .field(
+            "poll_mode_queue_depth",
+            inspect::AtomicMut(&self.controller.poll_mode_queue_depth),
         );
     }
 }
@@ -185,10 +193,10 @@ struct WorkerStats {
 #[repr(u16)]
 #[derive(Copy, Clone, Debug, Inspect, PartialEq, Eq, PartialOrd, Ord)]
 enum Version {
-    Win6 = protocol::VERSION_WIN6,
-    Win7 = protocol::VERSION_WIN7,
-    Win8 = protocol::VERSION_WIN8,
-    Blue = protocol::VERSION_BLUE,
+    Win6 = storvsp_protocol::VERSION_WIN6,
+    Win7 = storvsp_protocol::VERSION_WIN7,
+    Win8 = storvsp_protocol::VERSION_WIN8,
+    Blue = storvsp_protocol::VERSION_BLUE,
 }
 
 #[derive(Debug, Error)]
@@ -198,10 +206,10 @@ struct UnsupportedVersion(u16);
 impl Version {
     fn parse(major_minor: u16) -> Result<Self, UnsupportedVersion> {
         let version = match major_minor {
-            protocol::VERSION_WIN6 => Self::Win6,
-            protocol::VERSION_WIN7 => Self::Win7,
-            protocol::VERSION_WIN8 => Self::Win8,
-            protocol::VERSION_BLUE => Self::Blue,
+            storvsp_protocol::VERSION_WIN6 => Self::Win6,
+            storvsp_protocol::VERSION_WIN7 => Self::Win7,
+            storvsp_protocol::VERSION_WIN8 => Self::Win8,
+            storvsp_protocol::VERSION_BLUE => Self::Blue,
             version => return Err(UnsupportedVersion(version)),
         };
         assert_eq!(version as u16, major_minor);
@@ -210,8 +218,8 @@ impl Version {
 
     fn max_request_size(&self) -> usize {
         match self {
-            Version::Win8 | Version::Blue => protocol::SCSI_REQUEST_LEN_V2,
-            Version::Win6 | Version::Win7 => protocol::SCSI_REQUEST_LEN_V1,
+            Version::Win8 | Version::Blue => storvsp_protocol::SCSI_REQUEST_LEN_V2,
+            Version::Win6 | Version::Win7 => storvsp_protocol::SCSI_REQUEST_LEN_V1,
         }
     }
 }
@@ -299,7 +307,7 @@ enum PacketError {
     #[error("Not transactional")]
     NotTransactional,
     #[error("Unrecognized operation {0:?}")]
-    UnrecognizedOperation(protocol::Operation),
+    UnrecognizedOperation(storvsp_protocol::Operation),
     #[error("Invalid packet type")]
     InvalidPacketType,
     #[error("Invalid data transfer length")]
@@ -318,7 +326,10 @@ struct Range {
 }
 
 impl Range {
-    fn new(buf: MultiPagedRangeBuf<GpnList>, request: &protocol::ScsiRequest) -> Option<Self> {
+    fn new(
+        buf: MultiPagedRangeBuf<GpnList>,
+        request: &storvsp_protocol::ScsiRequest,
+    ) -> Option<Self> {
         let len = request.data_transfer_length as usize;
         let is_write = request.data_in != 0;
         // Ensure there is exactly one range and it's large enough, or there are
@@ -372,27 +383,27 @@ fn parse_packet<T: RingMem>(
         .ok_or(PacketError::NotTransactional)?;
 
     let mut reader = packet.reader();
-    let header: protocol::Packet = reader.read_plain().map_err(PacketError::Access)?;
+    let header: storvsp_protocol::Packet = reader.read_plain().map_err(PacketError::Access)?;
     // You would expect that this should be limited to the current protocol
     // version's maximum packet size, but this is not what Hyper-V does, and
     // Linux 6.1 relies on this behavior during protocol initialization.
-    let request_size = reader.len().min(protocol::SCSI_REQUEST_LEN_MAX);
+    let request_size = reader.len().min(storvsp_protocol::SCSI_REQUEST_LEN_MAX);
     let data = match header.operation {
-        protocol::Operation::BEGIN_INITIALIZATION => PacketData::BeginInitialization,
-        protocol::Operation::END_INITIALIZATION => PacketData::EndInitialization,
-        protocol::Operation::QUERY_PROTOCOL_VERSION => {
-            let mut version = protocol::ProtocolVersion::new_zeroed();
+        storvsp_protocol::Operation::BEGIN_INITIALIZATION => PacketData::BeginInitialization,
+        storvsp_protocol::Operation::END_INITIALIZATION => PacketData::EndInitialization,
+        storvsp_protocol::Operation::QUERY_PROTOCOL_VERSION => {
+            let mut version = storvsp_protocol::ProtocolVersion::new_zeroed();
             reader
                 .read(version.as_mut_bytes())
                 .map_err(PacketError::Access)?;
             PacketData::QueryProtocolVersion(version.major_minor)
         }
-        protocol::Operation::QUERY_PROPERTIES => PacketData::QueryProperties,
-        protocol::Operation::EXECUTE_SRB => {
+        storvsp_protocol::Operation::QUERY_PROPERTIES => PacketData::QueryProperties,
+        storvsp_protocol::Operation::EXECUTE_SRB => {
             let mut full_request = pool.pop().unwrap_or_else(|| {
                 Arc::new(ScsiRequestAndRange {
                     external_data: Range::default(),
-                    request: protocol::ScsiRequest::new_zeroed(),
+                    request: storvsp_protocol::ScsiRequest::new_zeroed(),
                     request_size,
                 })
             });
@@ -410,10 +421,10 @@ fn parse_packet<T: RingMem>(
 
             PacketData::ExecuteScsi(full_request)
         }
-        protocol::Operation::RESET_LUN => PacketData::ResetLun,
-        protocol::Operation::RESET_ADAPTER => PacketData::ResetAdapter,
-        protocol::Operation::RESET_BUS => PacketData::ResetBus,
-        protocol::Operation::CREATE_SUB_CHANNELS => {
+        storvsp_protocol::Operation::RESET_LUN => PacketData::ResetLun,
+        storvsp_protocol::Operation::RESET_ADAPTER => PacketData::ResetAdapter,
+        storvsp_protocol::Operation::RESET_BUS => PacketData::ResetBus,
+        storvsp_protocol::Operation::CREATE_SUB_CHANNELS => {
             let mut sub_channel_count: u16 = 0;
             reader
                 .read(sub_channel_count.as_mut_bytes())
@@ -443,11 +454,11 @@ impl WorkerInner {
         packet_type: OutgoingPacketType<'_>,
         request_size: usize,
         transaction_id: u64,
-        operation: protocol::Operation,
-        status: NtStatus,
+        operation: storvsp_protocol::Operation,
+        status: storvsp_protocol::NtStatus,
         payload: &[u8],
     ) -> Result<(), WorkerError> {
-        let header = protocol::Packet {
+        let header = storvsp_protocol::Packet {
             operation,
             flags: 0,
             status,
@@ -460,7 +471,7 @@ impl WorkerInner {
         // exactly the largest possible packet size for the negotiated protocol
         // version.
         let len = size_of_val(&header) + size_of_val(payload);
-        let padding = [0; protocol::SCSI_REQUEST_LEN_MAX];
+        let padding = [0; storvsp_protocol::SCSI_REQUEST_LEN_MAX];
         let (payload_bytes, padding_bytes) = if len > packet_size {
             (&payload[..packet_size - size_of_val(&header)], &[][..])
         } else {
@@ -485,8 +496,8 @@ impl WorkerInner {
     fn send_packet<M: RingMem, P: IntoBytes + Immutable + KnownLayout>(
         &mut self,
         writer: &mut queue::WriteHalf<'_, M>,
-        operation: protocol::Operation,
-        status: NtStatus,
+        operation: storvsp_protocol::Operation,
+        status: storvsp_protocol::NtStatus,
         payload: &P,
     ) -> Result<(), WorkerError> {
         self.send_vmbus_packet(
@@ -504,7 +515,7 @@ impl WorkerInner {
         &mut self,
         writer: &mut queue::WriteHalf<'_, M>,
         packet: &Packet,
-        status: NtStatus,
+        status: storvsp_protocol::NtStatus,
         payload: &P,
     ) -> Result<(), WorkerError> {
         self.send_vmbus_packet(
@@ -512,7 +523,7 @@ impl WorkerInner {
             OutgoingPacketType::Completion,
             packet.request_size,
             packet.transaction_id,
-            protocol::Operation::COMPLETE_IO,
+            storvsp_protocol::Operation::COMPLETE_IO,
             status,
             payload.as_bytes(),
         )
@@ -529,7 +540,7 @@ impl ScsiCommandQueue {
     async fn execute_scsi(
         &self,
         external_data: &Range,
-        request: &protocol::ScsiRequest,
+        request: &storvsp_protocol::ScsiRequest,
     ) -> ScsiResult {
         let op = ScsiOp(request.payload[0]);
         let external_data = external_data.buffer(&self.mem);
@@ -612,7 +623,7 @@ impl ScsiCommandQueue {
             }
             _ if controller_disk.is_some() => {
                 let mut cdb = [0; 16];
-                cdb.copy_from_slice(&request.payload[0..protocol::CDB16GENERIC_LENGTH]);
+                cdb.copy_from_slice(&request.payload[0..storvsp_protocol::CDB16GENERIC_LENGTH]);
                 controller_disk
                     .unwrap()
                     .disk
@@ -630,7 +641,7 @@ impl ScsiCommandQueue {
                     .unwrap()
                     .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 if external_data.len() < cdb.allocation_length.get() as usize
-                    || request.data_in != protocol::SCSI_IOCTL_DATA_IN
+                    || request.data_in != storvsp_protocol::SCSI_IOCTL_DATA_IN
                     || (cdb.allocation_length.get() as usize) < size_of::<scsi::InquiryDataHeader>()
                 {
                     ScsiResult {
@@ -727,7 +738,7 @@ impl<T: RingMem + 'static> Worker<T> {
         Ok(Self {
             inner: WorkerInner {
                 protocol,
-                request_size: protocol::SCSI_REQUEST_LEN_V1,
+                request_size: storvsp_protocol::SCSI_REQUEST_LEN_V1,
                 controller: controller.clone(),
                 channel_index,
                 scsi_queue: Arc::new(ScsiCommandQueue {
@@ -862,8 +873,9 @@ impl WorkerInner {
     }
 }
 
-const MAX_VMBUS_PACKET_SIZE: usize =
-    ring::PacketSize::in_band(size_of::<protocol::Packet>() + protocol::SCSI_REQUEST_LEN_MAX);
+const MAX_VMBUS_PACKET_SIZE: usize = ring::PacketSize::in_band(
+    size_of::<storvsp_protocol::Packet>() + storvsp_protocol::SCSI_REQUEST_LEN_MAX,
+);
 
 impl<T: RingMem> Worker<T> {
     /// Processes the protocol state machine.
@@ -878,11 +890,11 @@ impl<T: RingMem> Worker<T> {
                             _ = self.fast_select.select((self.rescan_notification.select_next_some(),)).fuse() => {
                                 if version >= Version::Win7
                                 {
-                                    self.inner.send_packet(&mut self.queue.split().1, protocol::Operation::ENUMERATE_BUS, NtStatus::SUCCESS, &())?;
+                                    self.inner.send_packet(&mut self.queue.split().1, storvsp_protocol::Operation::ENUMERATE_BUS, storvsp_protocol::NtStatus::SUCCESS, &())?;
                                 }
                             }
                         }
-                    }
+                    };
                 }
                 ProtocolState::Init(state) => {
                     let (mut reader, mut writer) = self.queue.split();
@@ -899,7 +911,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::SUCCESS,
+                                    storvsp_protocol::NtStatus::SUCCESS,
                                     &(),
                                 )?;
                                 *self.inner.protocol.state.write() =
@@ -909,7 +921,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::INVALID_DEVICE_STATE,
+                                    storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
                                     &(),
                                 )?;
                             }
@@ -921,8 +933,8 @@ impl<T: RingMem> Worker<T> {
                                     self.inner.send_completion(
                                         &mut writer,
                                         &packet,
-                                        NtStatus::SUCCESS,
-                                        &protocol::ProtocolVersion {
+                                        storvsp_protocol::NtStatus::SUCCESS,
+                                        &storvsp_protocol::ProtocolVersion {
                                             major_minor,
                                             reserved: 0,
                                         },
@@ -939,8 +951,8 @@ impl<T: RingMem> Worker<T> {
                                     self.inner.send_completion(
                                         &mut writer,
                                         &packet,
-                                        NtStatus::REVISION_MISMATCH,
-                                        &protocol::ProtocolVersion {
+                                        storvsp_protocol::NtStatus::REVISION_MISMATCH,
+                                        &storvsp_protocol::ProtocolVersion {
                                             major_minor,
                                             reserved: 0,
                                         },
@@ -953,7 +965,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::INVALID_DEVICE_STATE,
+                                    storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
                                     &(),
                                 )?;
                             }
@@ -966,12 +978,12 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::SUCCESS,
-                                    &protocol::ChannelProperties {
+                                    storvsp_protocol::NtStatus::SUCCESS,
+                                    &storvsp_protocol::ChannelProperties {
                                         max_transfer_bytes: 0x40000, // 256KB
                                         flags: {
                                             if multi_channel_supported {
-                                                protocol::STORAGE_CHANNEL_SUPPORTS_MULTI_CHANNEL
+                                                storvsp_protocol::STORAGE_CHANNEL_SUPPORTS_MULTI_CHANNEL
                                             } else {
                                                 0
                                             }
@@ -1000,7 +1012,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::INVALID_DEVICE_STATE,
+                                    storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
                                     &(),
                                 )?;
                             }
@@ -1026,14 +1038,14 @@ impl<T: RingMem> Worker<T> {
                                         self.inner.send_completion(
                                             &mut writer,
                                             &packet,
-                                            NtStatus::INVALID_PARAMETER,
+                                            storvsp_protocol::NtStatus::INVALID_PARAMETER,
                                             &(),
                                         )?;
                                     } else {
                                         self.inner.send_completion(
                                             &mut writer,
                                             &packet,
-                                            NtStatus::SUCCESS,
+                                            storvsp_protocol::NtStatus::SUCCESS,
                                             &(),
                                         )?;
                                         *self.inner.protocol.state.write() =
@@ -1047,7 +1059,7 @@ impl<T: RingMem> Worker<T> {
                                     self.inner.send_completion(
                                         &mut writer,
                                         &packet,
-                                        NtStatus::SUCCESS,
+                                        storvsp_protocol::NtStatus::SUCCESS,
                                         &(),
                                     )?;
                                     // Reset the rescan notification event now, before the guest has a
@@ -1066,7 +1078,7 @@ impl<T: RingMem> Worker<T> {
                                     self.inner.send_completion(
                                         &mut writer,
                                         &packet,
-                                        NtStatus::INVALID_DEVICE_STATE,
+                                        storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
                                         &(),
                                     )?;
                                 }
@@ -1079,23 +1091,23 @@ impl<T: RingMem> Worker<T> {
     }
 }
 
-fn convert_srb_status_to_nt_status(srb_status: SrbStatus) -> NtStatus {
+fn convert_srb_status_to_nt_status(srb_status: SrbStatus) -> storvsp_protocol::NtStatus {
     match srb_status {
-        SrbStatus::BUSY => NtStatus::DEVICE_BUSY,
-        SrbStatus::SUCCESS => NtStatus::SUCCESS,
+        SrbStatus::BUSY => storvsp_protocol::NtStatus::DEVICE_BUSY,
+        SrbStatus::SUCCESS => storvsp_protocol::NtStatus::SUCCESS,
         SrbStatus::INVALID_LUN
         | SrbStatus::INVALID_TARGET_ID
         | SrbStatus::NO_DEVICE
-        | SrbStatus::NO_HBA => NtStatus::DEVICE_DOES_NOT_EXIST,
-        SrbStatus::COMMAND_TIMEOUT | SrbStatus::TIMEOUT => NtStatus::IO_TIMEOUT,
-        SrbStatus::SELECTION_TIMEOUT => NtStatus::DEVICE_NOT_CONNECTED,
+        | SrbStatus::NO_HBA => storvsp_protocol::NtStatus::DEVICE_DOES_NOT_EXIST,
+        SrbStatus::COMMAND_TIMEOUT | SrbStatus::TIMEOUT => storvsp_protocol::NtStatus::IO_TIMEOUT,
+        SrbStatus::SELECTION_TIMEOUT => storvsp_protocol::NtStatus::DEVICE_NOT_CONNECTED,
         SrbStatus::BAD_FUNCTION | SrbStatus::BAD_SRB_BLOCK_LENGTH => {
-            NtStatus::INVALID_DEVICE_REQUEST
+            storvsp_protocol::NtStatus::INVALID_DEVICE_REQUEST
         }
-        SrbStatus::DATA_OVERRUN => NtStatus::BUFFER_OVERFLOW,
-        SrbStatus::REQUEST_FLUSHED => NtStatus::UNSUCCESSFUL,
-        SrbStatus::ABORTED => NtStatus::CANCELLED,
-        _ => NtStatus::IO_DEVICE_ERROR,
+        SrbStatus::DATA_OVERRUN => storvsp_protocol::NtStatus::BUFFER_OVERFLOW,
+        SrbStatus::REQUEST_FLUSHED => storvsp_protocol::NtStatus::UNSUCCESSFUL,
+        SrbStatus::ABORTED => storvsp_protocol::NtStatus::CANCELLED,
+        _ => storvsp_protocol::NtStatus::IO_DEVICE_ERROR,
     }
 }
 
@@ -1121,6 +1133,7 @@ impl WorkerInner {
         let (mut reader, mut writer) = queue.split();
         let mut total_completions = 0;
         let mut total_submissions = 0;
+        let poll_mode_queue_depth = self.controller.poll_mode_queue_depth.load(Relaxed) as usize;
 
         loop {
             // Drive IOs forward and collect completions.
@@ -1164,7 +1177,7 @@ impl WorkerInner {
                 if self.scsi_requests_states.len() >= self.max_io_queue_depth {
                     break;
                 }
-                let mut batch = if self.scsi_requests_states.is_empty() {
+                let mut batch = if self.scsi_requests_states.len() < poll_mode_queue_depth {
                     if let Poll::Ready(batch) = reader.poll_read_batch(cx) {
                         batch.map_err(WorkerError::Queue)?
                     } else {
@@ -1256,24 +1269,24 @@ impl WorkerInner {
             payload[..size_of_val(&sense)].copy_from_slice(sense.as_bytes());
             tracing::trace!(sense_info = ?payload, sense_key = payload[2], asc = payload[12], "execute_scsi");
         };
-        let response = protocol::ScsiRequest {
-            length: size_of::<protocol::ScsiRequest>() as u16,
+        let response = storvsp_protocol::ScsiRequest {
+            length: size_of::<storvsp_protocol::ScsiRequest>() as u16,
             scsi_status: result.scsi_status,
             srb_status: SrbStatusAndFlags::new()
                 .with_status(result.srb_status)
                 .with_autosense_valid(result.sense_data.is_some()),
             data_transfer_length: result.tx as u32,
-            cdb_length: protocol::CDB16GENERIC_LENGTH as u8,
-            sense_info_ex_length: protocol::VMSCSI_SENSE_BUFFER_SIZE as u8,
+            cdb_length: storvsp_protocol::CDB16GENERIC_LENGTH as u8,
+            sense_info_ex_length: storvsp_protocol::VMSCSI_SENSE_BUFFER_SIZE as u8,
             payload,
-            ..protocol::ScsiRequest::new_zeroed()
+            ..storvsp_protocol::ScsiRequest::new_zeroed()
         };
         self.send_vmbus_packet(
             writer,
             OutgoingPacketType::Completion,
             request_size,
             state.transaction_id,
-            protocol::Operation::COMPLETE_IO,
+            storvsp_protocol::Operation::COMPLETE_IO,
             status,
             response.as_bytes(),
         )?;
@@ -1294,7 +1307,7 @@ impl WorkerInner {
             }
             PacketData::ResetAdapter | PacketData::ResetBus | PacketData::ResetLun => {
                 // These operations have always been no-ops.
-                self.send_completion(writer, &packet, NtStatus::SUCCESS, &())?;
+                self.send_completion(writer, &packet, storvsp_protocol::NtStatus::SUCCESS, &())?;
                 false
             }
             PacketData::CreateSubChannels(new_subchannel_count) if self.channel_index == 0 => {
@@ -1303,7 +1316,12 @@ impl WorkerInner {
                     .enable_subchannels(new_subchannel_count)
                 {
                     tracelimit::warn_ratelimited!(?err, "cannot create subchannels");
-                    self.send_completion(writer, &packet, NtStatus::INVALID_PARAMETER, &())?;
+                    self.send_completion(
+                        writer,
+                        &packet,
+                        storvsp_protocol::NtStatus::INVALID_PARAMETER,
+                        &(),
+                    )?;
                     false
                 } else {
                     // Update the subchannel count in the protocol state for save.
@@ -1316,13 +1334,23 @@ impl WorkerInner {
                         unreachable!()
                     }
 
-                    self.send_completion(writer, &packet, NtStatus::SUCCESS, &())?;
+                    self.send_completion(
+                        writer,
+                        &packet,
+                        storvsp_protocol::NtStatus::SUCCESS,
+                        &(),
+                    )?;
                     false
                 }
             }
             _ => {
                 tracelimit::warn_ratelimited!(data = ?packet.data, "unexpected packet on ready");
-                self.send_completion(writer, &packet, NtStatus::INVALID_DEVICE_STATE, &())?;
+                self.send_completion(
+                    writer,
+                    &packet,
+                    storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
+                    &(),
+                )?;
                 false
             }
         };
@@ -1375,7 +1403,7 @@ struct ScsiRequestState {
 #[derive(Debug)]
 struct ScsiRequestAndRange {
     external_data: Range,
-    request: protocol::ScsiRequest,
+    request: storvsp_protocol::ScsiRequest,
     request_size: usize,
 }
 
@@ -1558,6 +1586,7 @@ impl ScsiControllerDisk {
 struct ScsiControllerState {
     disks: RwLock<HashMap<ScsiPath, ScsiControllerDisk>>,
     rescan_notification_source: Mutex<Vec<futures::channel::mpsc::Sender<()>>>,
+    poll_mode_queue_depth: AtomicU32,
 }
 
 pub struct ScsiController {
@@ -1566,10 +1595,17 @@ pub struct ScsiController {
 
 impl ScsiController {
     pub fn new() -> Self {
+        Self::new_with_poll_mode_queue_depth(None)
+    }
+
+    pub fn new_with_poll_mode_queue_depth(poll_mode_queue_depth: Option<u32>) -> Self {
         Self {
             state: Arc::new(ScsiControllerState {
                 disks: Default::default(),
                 rescan_notification_source: Mutex::new(Vec::new()),
+                poll_mode_queue_depth: AtomicU32::new(
+                    poll_mode_queue_depth.unwrap_or(DEFAULT_POLL_MODE_QUEUE_DEPTH),
+                ),
             }),
         }
     }
@@ -1623,10 +1659,10 @@ impl ScsiControllerState {
 impl VmbusDevice for StorageDevice {
     fn offer(&self) -> OfferParams {
         if let Some(path) = self.ide_path {
-            let offer_properties = protocol::OfferProperties {
+            let offer_properties = storvsp_protocol::OfferProperties {
                 path_id: path.path,
                 target_id: path.target,
-                flags: protocol::OFFER_PROPERTIES_FLAG_IDE_DEVICE,
+                flags: storvsp_protocol::OFFER_PROPERTIES_FLAG_IDE_DEVICE,
                 ..FromZeros::new_zeroed()
             };
             let mut user_defined = UserDefinedData::new_zeroed();
@@ -1636,7 +1672,7 @@ impl VmbusDevice for StorageDevice {
             OfferParams {
                 interface_name: "ide-accel".to_owned(),
                 instance_id: self.instance_id,
-                interface_id: protocol::IDE_ACCELERATOR_INTERFACE_ID,
+                interface_id: storvsp_protocol::IDE_ACCELERATOR_INTERFACE_ID,
                 channel_type: ChannelType::Interface { user_defined },
                 ..Default::default()
             }
@@ -1644,7 +1680,7 @@ impl VmbusDevice for StorageDevice {
             OfferParams {
                 interface_name: "scsi".to_owned(),
                 instance_id: self.instance_id,
-                interface_id: protocol::SCSI_INTERFACE_ID,
+                interface_id: storvsp_protocol::SCSI_INTERFACE_ID,
                 ..Default::default()
             }
         }
@@ -1735,13 +1771,12 @@ impl SaveRestoreVmbusDevice for StorageDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::protocol;
     use super::*;
+    use crate::test_helpers::TestWorker;
     use crate::test_helpers::parse_guest_completion;
     use crate::test_helpers::parse_guest_completion_check_flags_status;
-    use crate::test_helpers::TestWorker;
-    use pal_async::async_test;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use scsi::srb::SrbStatus;
     use test_with_tracing::test;
     use vmbus_channel::connected_async_channels;
@@ -1848,10 +1883,10 @@ mod tests {
             transaction_id: 0,
         };
 
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::BEGIN_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -1859,14 +1894,14 @@ mod tests {
 
         guest.verify_completion(parse_guest_completion).await;
 
-        let header = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROTOCOL_VERSION,
+        let header = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROTOCOL_VERSION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
 
         let mut buf = [0u8; 128];
-        protocol::ProtocolVersion {
+        storvsp_protocol::ProtocolVersion {
             major_minor: !0,
             reserved: 0,
         }
@@ -1887,10 +1922,10 @@ mod tests {
                     assert_eq!(
                         packet
                             .reader()
-                            .read_plain::<protocol::Packet>()
+                            .read_plain::<storvsp_protocol::Packet>()
                             .unwrap()
                             .status,
-                        NtStatus::REVISION_MISMATCH
+                        storvsp_protocol::NtStatus::REVISION_MISMATCH
                     );
                     Ok(())
                 })
@@ -1921,10 +1956,10 @@ mod tests {
         };
 
         // Protocol negotiation done out of order
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::END_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::END_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -1938,10 +1973,10 @@ mod tests {
                 assert_eq!(
                     packet
                         .reader()
-                        .read_plain::<protocol::Packet>()
+                        .read_plain::<storvsp_protocol::Packet>()
                         .unwrap()
                         .status,
-                    NtStatus::INVALID_DEVICE_STATE
+                    storvsp_protocol::NtStatus::INVALID_DEVICE_STATE
                 );
                 Ok(())
             })
@@ -1971,10 +2006,10 @@ mod tests {
         };
 
         // Send packet with unrecognized operation
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::REMOVE_DEVICE,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::REMOVE_DEVICE,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -1982,7 +2017,7 @@ mod tests {
 
         match worker.teardown().await {
             Err(WorkerError::PacketError(PacketError::UnrecognizedOperation(
-                protocol::Operation::REMOVE_DEVICE,
+                storvsp_protocol::Operation::REMOVE_DEVICE,
             ))) => {}
             result => panic!("Worker failed with unexpected result {:?}!", result),
         }
@@ -2010,23 +2045,23 @@ mod tests {
             transaction_id: 0,
         };
 
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::BEGIN_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
             .await;
         guest.verify_completion(parse_guest_completion).await;
 
-        let version_packet = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROTOCOL_VERSION,
+        let version_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROTOCOL_VERSION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
-        let version = protocol::ProtocolVersion {
-            major_minor: protocol::VERSION_BLUE,
+        let version = storvsp_protocol::ProtocolVersion {
+            major_minor: storvsp_protocol::VERSION_BLUE,
             reserved: 0,
         };
         guest
@@ -2034,10 +2069,10 @@ mod tests {
             .await;
         guest.verify_completion(parse_guest_completion).await;
 
-        let properties_packet = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROPERTIES,
+        let properties_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROPERTIES,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[properties_packet.as_bytes()])
@@ -2045,10 +2080,10 @@ mod tests {
 
         guest.verify_completion(parse_guest_completion).await;
 
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::CREATE_SUB_CHANNELS,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::CREATE_SUB_CHANNELS,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         // Create sub channels more than maximum_sub_channel_count
         guest
@@ -2063,10 +2098,10 @@ mod tests {
                 assert_eq!(
                     packet
                         .reader()
-                        .read_plain::<protocol::Packet>()
+                        .read_plain::<storvsp_protocol::Packet>()
                         .unwrap()
                         .status,
-                    NtStatus::INVALID_PARAMETER
+                    storvsp_protocol::NtStatus::INVALID_PARAMETER
                 );
                 Ok(())
             })
@@ -2098,10 +2133,10 @@ mod tests {
         guest.perform_protocol_negotiation().await;
 
         // Protocol negotiation done out of order
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::BEGIN_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -2109,7 +2144,11 @@ mod tests {
 
         guest
             .verify_completion(|p| {
-                parse_guest_completion_check_flags_status(p, 0, NtStatus::INVALID_DEVICE_STATE)
+                parse_guest_completion_check_flags_status(
+                    p,
+                    0,
+                    storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
+                )
             })
             .await;
     }
@@ -2313,23 +2352,23 @@ mod tests {
             None,
         );
 
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::BEGIN_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
             .await;
         guest.verify_completion(parse_guest_completion).await;
 
-        let version_packet = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROTOCOL_VERSION,
+        let version_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROTOCOL_VERSION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
-        let version = protocol::ProtocolVersion {
-            major_minor: protocol::VERSION_BLUE,
+        let version = storvsp_protocol::ProtocolVersion {
+            major_minor: storvsp_protocol::VERSION_BLUE,
             reserved: 0,
         };
         guest
@@ -2337,20 +2376,20 @@ mod tests {
             .await;
         guest.verify_completion(parse_guest_completion).await;
 
-        let properties_packet = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROPERTIES,
+        let properties_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROPERTIES,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[properties_packet.as_bytes()])
             .await;
         guest.verify_completion(parse_guest_completion).await;
 
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::END_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::END_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])

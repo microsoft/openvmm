@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(unix)]
 // UNSAFETY: Manual memory management with mmap and vfio ioctls.
 #![expect(unsafe_code)]
@@ -15,27 +16,27 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::os::unix::prelude::*;
 use std::path::Path;
+use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_ACTION_TRIGGER;
+use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_DATA_EVENTFD;
+use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_DATA_NONE;
+use vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX;
 use vfio_bindings::bindings::vfio::vfio_device_info;
 use vfio_bindings::bindings::vfio::vfio_group_status;
 use vfio_bindings::bindings::vfio::vfio_irq_info;
 use vfio_bindings::bindings::vfio::vfio_irq_set;
 use vfio_bindings::bindings::vfio::vfio_region_info;
-use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_ACTION_TRIGGER;
-use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_DATA_EVENTFD;
-use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_DATA_NONE;
-use vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX;
 
 mod ioctl {
     use nix::request_code_none;
     use std::os::raw::c_char;
     use std::os::raw::c_int;
+    use vfio_bindings::bindings::vfio::VFIO_BASE;
+    use vfio_bindings::bindings::vfio::VFIO_TYPE;
     use vfio_bindings::bindings::vfio::vfio_device_info;
     use vfio_bindings::bindings::vfio::vfio_group_status;
     use vfio_bindings::bindings::vfio::vfio_irq_info;
     use vfio_bindings::bindings::vfio::vfio_irq_set;
     use vfio_bindings::bindings::vfio::vfio_region_info;
-    use vfio_bindings::bindings::vfio::VFIO_BASE;
-    use vfio_bindings::bindings::vfio::VFIO_TYPE;
 
     const VFIO_PRIVATE_BASE: u32 = 200;
 
@@ -396,6 +397,33 @@ impl Device {
         unsafe {
             ioctl::vfio_device_set_irqs(self.file.as_raw_fd(), &param.header)
                 .context("failed to set msi-x trigger")?;
+        }
+        Ok(())
+    }
+
+    /// Disable (unmap) a contiguous range of previously mapped MSI-X vectors.
+    ///
+    /// This issues VFIO_DEVICE_SET_IRQS with ACTION_TRIGGER + DATA_NONE and a
+    /// non-zero count, which per VFIO semantics removes the eventfd bindings
+    /// for the specified range starting at `start`.
+    pub fn unmap_msix(&self, start: u32, count: u32) -> anyhow::Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let header = vfio_irq_set {
+            argsz: size_of::<vfio_irq_set>() as u32,
+            flags: VFIO_IRQ_SET_ACTION_TRIGGER | VFIO_IRQ_SET_DATA_NONE,
+            index: VFIO_PCI_MSIX_IRQ_INDEX,
+            start,
+            count,
+            data: Default::default(),
+        };
+
+        // SAFETY: The file descriptor is valid; header constructed per VFIO spec.
+        unsafe {
+            ioctl::vfio_device_set_irqs(self.file.as_raw_fd(), &header)
+                .context("failed to unmap msix vectors")?;
         }
         Ok(())
     }

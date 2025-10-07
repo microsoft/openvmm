@@ -7,7 +7,6 @@
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use anyhow::Context;
 use hcl_mapper::HclMapper;
@@ -18,8 +17,8 @@ use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::PagePoolAllocatorSpawner;
 use std::sync::Arc;
-use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::DmaClient;
+use user_driver::lockmem::LockedMemorySpawner;
 
 /// Save restore support for [`OpenhclDmaManager`].
 pub mod save_restore {
@@ -74,7 +73,7 @@ pub mod save_restore {
                 (Some(_), None) => {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "saved state for shared pool but no shared pool"
-                    )))
+                    )));
                 }
                 (None, Some(_)) => {
                     // It's possible that previously we did not have a shared
@@ -92,7 +91,7 @@ pub mod save_restore {
                 (Some(_), None) => {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "saved state for private pool but no private pool"
-                    )))
+                    )));
                 }
                 (None, Some(_)) => {
                     // It's possible that previously we did not have a private
@@ -156,7 +155,7 @@ pub struct DmaClientParameters {
 struct DmaManagerInner {
     shared_spawner: Option<PagePoolAllocatorSpawner>,
     private_spawner: Option<PagePoolAllocatorSpawner>,
-    lower_vtl: Arc<DmaManagerLowerVtl>,
+    lower_vtl: Option<Arc<DmaManagerLowerVtl>>,
 }
 
 /// Used by [`OpenhclDmaManager`] to modify VTL permissions via
@@ -165,6 +164,9 @@ struct DmaManagerInner {
 /// This is required due to some users (like the GET or partition struct itself)
 /// that are constructed before the partition struct which normally implements
 /// this trait.
+///
+/// This type should never be created on a hardware isolated VM, as the
+/// hypervisor is untrusted.
 struct DmaManagerLowerVtl {
     mshv_hvcall: hcl::ioctl::MshvHvcall,
 }
@@ -262,7 +264,12 @@ impl DmaManagerInner {
                             private
                                 .allocator(device_name.into())
                                 .context("failed to create private allocator")?,
-                            self.lower_vtl.clone(),
+                            self.lower_vtl
+                                .as_ref()
+                                .ok_or(anyhow::anyhow!(
+                                    "lower vtl not available on hardware isolated platforms"
+                                ))?
+                                .clone(),
                         ))
                     }
                 },
@@ -291,7 +298,12 @@ impl DmaManagerInner {
                         // lowering VTL permissions is required.
                         DmaClientBacking::LockedMemoryLowerVtl(LowerVtlMemorySpawner::new(
                             LockedMemorySpawner,
-                            self.lower_vtl.clone(),
+                            self.lower_vtl
+                                .as_ref()
+                                .ok_or(anyhow::anyhow!(
+                                    "lower vtl not available on hardware isolated platforms"
+                                ))?
+                                .clone(),
                         ))
                     }
                 },
@@ -309,6 +321,7 @@ impl OpenhclDmaManager {
         shared_ranges: &[MemoryRange],
         private_ranges: &[MemoryRange],
         vtom: u64,
+        isolation_type: virt::IsolationType,
     ) -> anyhow::Result<Self> {
         let shared_pool = if shared_ranges.is_empty() {
             None
@@ -338,7 +351,11 @@ impl OpenhclDmaManager {
             inner: Arc::new(DmaManagerInner {
                 shared_spawner: shared_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 private_spawner: private_pool.as_ref().map(|pool| pool.allocator_spawner()),
-                lower_vtl: DmaManagerLowerVtl::new().context("failed to create lower vtl")?,
+                lower_vtl: if isolation_type.is_hardware_isolated() {
+                    None
+                } else {
+                    Some(DmaManagerLowerVtl::new().context("failed to create lower vtl")?)
+                },
             }),
             shared_pool,
             private_pool,
@@ -421,21 +438,13 @@ impl DmaClientBacking {
         }
     }
 
-    fn attach_dma_buffer(
-        &self,
-        len: usize,
-        base_pfn: u64,
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
         match self {
-            DmaClientBacking::SharedPool(allocator) => allocator.attach_dma_buffer(len, base_pfn),
-            DmaClientBacking::PrivatePool(allocator) => allocator.attach_dma_buffer(len, base_pfn),
-            DmaClientBacking::LockedMemory(spawner) => spawner.attach_dma_buffer(len, base_pfn),
-            DmaClientBacking::PrivatePoolLowerVtl(spawner) => {
-                spawner.attach_dma_buffer(len, base_pfn)
-            }
-            DmaClientBacking::LockedMemoryLowerVtl(spawner) => {
-                spawner.attach_dma_buffer(len, base_pfn)
-            }
+            DmaClientBacking::SharedPool(allocator) => allocator.attach_pending_buffers(),
+            DmaClientBacking::PrivatePool(allocator) => allocator.attach_pending_buffers(),
+            DmaClientBacking::LockedMemory(spawner) => spawner.attach_pending_buffers(),
+            DmaClientBacking::PrivatePoolLowerVtl(spawner) => spawner.attach_pending_buffers(),
+            DmaClientBacking::LockedMemoryLowerVtl(spawner) => spawner.attach_pending_buffers(),
         }
     }
 }
@@ -456,11 +465,7 @@ impl DmaClient for OpenhclDmaClient {
         self.backing.allocate_dma_buffer(total_size)
     }
 
-    fn attach_dma_buffer(
-        &self,
-        len: usize,
-        base_pfn: u64,
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        self.backing.attach_dma_buffer(len, base_pfn)
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        self.backing.attach_pending_buffers()
     }
 }

@@ -4,6 +4,7 @@
 //! Tests for the cpu topology-related subleaves.
 use super::super::*;
 use super::*;
+use virt::CpuidLeafSet;
 use zerocopy::FromZeros;
 
 #[test]
@@ -51,11 +52,15 @@ fn real_topology() {
 
     let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     })
     .unwrap();
 
+    let cpuid = CpuidLeafSet::new(cpuid.to_leaves());
+
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 0),
         CpuidResult {
             eax: 0x1,
             ebx: 0x2,
@@ -65,7 +70,7 @@ fn real_topology() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 1),
         CpuidResult {
             eax: 0x4,
             ebx: 0x10,
@@ -75,7 +80,7 @@ fn real_topology() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 2),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 2),
         ZERO_CPUID_RESULT
     );
 }
@@ -86,7 +91,7 @@ fn initialize_topology(
     nc: u8,
     lps_per_package: u8,
     threads_per_compute_unit: u8,
-) -> Result<CpuidResults, CpuidResultsError> {
+) -> Result<CpuidLeafSet, CpuidResultsError> {
     let mut pages = vec![HvPspCpuidPage::new_zeroed(), HvPspCpuidPage::new_zeroed()];
 
     pages[0].count += 1;
@@ -152,9 +157,12 @@ fn initialize_topology(
 
     fill_required_leaves(&mut pages, None);
 
-    CpuidResults::new(CpuidResultsIsolationType::Snp {
+    CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+        access_vsm: false,
+        vtom: 0x80000000,
+    }
+    .build()
 }
 
 #[test]
@@ -243,7 +251,7 @@ fn legacy_topology() {
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 0),
         CpuidResult {
             eax: 0x0,
             ebx: 0x1,
@@ -253,7 +261,7 @@ fn legacy_topology() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 1),
         CpuidResult {
             eax: 0x0,
             ebx: 0x1,
@@ -293,7 +301,7 @@ fn legacy_topology() {
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 0),
         CpuidResult {
             eax: 0x0,
             ebx: 0x1,
@@ -303,7 +311,7 @@ fn legacy_topology() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 1),
         CpuidResult {
             eax: 0x3,
             ebx: 0x8,
@@ -384,7 +392,7 @@ fn topology() {
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 0),
         CpuidResult {
             eax: 0x0,
             ebx: 0x1,
@@ -394,7 +402,7 @@ fn topology() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 1),
         CpuidResult {
             eax: 0x6,
             ebx: 0x40,
@@ -419,7 +427,7 @@ fn topology() {
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 0),
         CpuidResult {
             eax: 0x0,
             ebx: 0x1,
@@ -429,7 +437,7 @@ fn topology() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 1),
         CpuidResult {
             eax: 0x8,
             ebx: 0x100,
@@ -453,7 +461,7 @@ fn topology() {
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 0),
         CpuidResult {
             eax: 0x1,
             ebx: 0x2,
@@ -463,7 +471,7 @@ fn topology() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedTopologyEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedTopologyEnumeration, 1),
         CpuidResult {
             eax: 0x8,
             ebx: 0x100,

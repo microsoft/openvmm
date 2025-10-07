@@ -4,6 +4,7 @@
 //! A TAP interface based endpoint.
 
 #![cfg(unix)]
+#![expect(missing_docs)]
 
 pub mod resolver;
 mod tap;
@@ -11,7 +12,6 @@ mod tap;
 use async_trait::async_trait;
 use futures::io::AsyncRead;
 use inspect::InspectMut;
-use net_backend::linearize;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::Queue;
@@ -19,8 +19,10 @@ use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
+use net_backend::linearize;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -233,7 +235,7 @@ impl Queue for TapQueue {
         Ok((completed_synchronously, n))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         // Packets are sent synchronously so there is no no need to check here if
         // sending has been completed.
         Ok(0)

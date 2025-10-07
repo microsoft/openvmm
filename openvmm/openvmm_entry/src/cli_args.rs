@@ -21,12 +21,12 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
+use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::PcatBootDevice;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::X2ApicConfig;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -92,11 +92,10 @@ pub struct Options {
     #[clap(long, requires("hv"))]
     pub get: bool,
 
-    /// The disk to use for the GET VMGS.
-    ///
-    /// If this is not provided, then a 4MB RAM disk will be used.
-    #[clap(long)]
-    pub get_vmgs: Option<DiskCliKind>,
+    /// Disable GET and related devices for using the OpenHCL paravisor, even
+    /// when --vtl2 is passed.
+    #[clap(long, conflicts_with("get"))]
+    pub no_get: bool,
 
     /// disable the VTL0 alias map presented to VTL2 by default
     #[clap(long, requires("vtl2"))]
@@ -130,21 +129,22 @@ pub struct Options {
     #[clap(long_help = r#"
 e.g: --disk memdiff:file:/path/to/disk.vhd
 
-syntax: \<path\> | kind:<arg>[,flag,opt=arg,...]
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
 valid disk kinds:
     `mem:<len>`                    memory backed disk
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                  file-backed disk
+        <path>: path to file
 
 flags:
     `ro`                           open disk as read-only
     `dvd`                          specifies that device is cd/dvd and it is read_only
     `vtl2`                         assign this disk to VTL2
-    `uh`                           relay this disk to VTL0 through Underhill
+    `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as SCSI)
+    `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as SCSI)
 "#)]
     #[clap(long, value_name = "FILE")]
     pub disk: Vec<DiskCli>,
@@ -153,19 +153,21 @@ flags:
     #[clap(long_help = r#"
 e.g: --nvme memdiff:file:/path/to/disk.vhd
 
-syntax: \<path\> | kind:<arg>[,flag,opt=arg,...]
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
 valid disk kinds:
     `mem:<len>`                    memory backed disk
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                  file-backed disk
+        <path>: path to file
 
 flags:
     `ro`                           open disk as read-only
     `vtl2`                         assign this disk to VTL2
+    `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as NVMe)
+    `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as NVMe)
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
@@ -180,7 +182,7 @@ flags:
 
     /// expose a virtual NIC with the given backend (consomme | dio | tap | none)
     ///
-    /// Prefix with `uh:` to add this NIC via Mana emulation through Underhill,
+    /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// or `vtl2:` to assign this NIC to VTL2.
     #[clap(long)]
     pub net: Vec<NicConfigCli>,
@@ -233,35 +235,35 @@ flags:
     #[clap(long, conflicts_with("virtio_console"))]
     pub virtio_console_pci: bool,
 
-    /// COM1 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com1: Option<SerialConfigCli>,
 
-    /// COM2 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM2 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com2: Option<SerialConfigCli>,
 
-    /// COM3 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM3 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com3: Option<SerialConfigCli>,
 
-    /// COM4 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<SerialConfigCli>,
 
-    /// virtio serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// virtio serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub virtio_serial: Option<SerialConfigCli>,
 
-    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
-    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
-    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none))
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
@@ -338,7 +340,7 @@ flags:
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
     ///
-    /// Prefix with `uh:` to add this NIC via Mana emulation through Underhill,
+    /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// or `vtl2:` to assign this NIC to VTL2.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
@@ -387,9 +389,28 @@ flags:
     #[clap(long, value_parser = vmbus_core::parse_vmbus_version)]
     pub vmbus_max_version: Option<u32>,
 
-    /// path to vmgs file. if no file is provided, fallback to in-memory vmgs implementation
-    #[clap(long, value_name = "PATH")]
-    pub vmgs_file: Option<PathBuf>,
+    /// The disk to use for the VMGS.
+    ///
+    /// If this is not provided, guest state will be stored in memory.
+    #[clap(long_help = r#"
+e.g: --vmgs memdiff:file:/path/to/file.vmgs
+
+syntax: <path> | kind:<arg>[,flag]
+
+valid disk kinds:
+    `mem:<len>`                     memory backed disk
+        <len>: length of ramdisk, e.g.: `1G` or `VMGS_DEFAULT`
+    `memdiff:<disk>[;create=<len>]` memory backed diff disk
+        <disk>: lower disk, e.g.: `file:base.img`
+    `file:<path>`                   file-backed disk
+        <path>: path to file
+
+flags:
+    `fmt`                           reprovision the VMGS before boot
+    `fmt-on-fail`                   reprovision the VMGS before boot if it is corrupted
+"#)]
+    #[clap(long)]
+    pub vmgs: Option<VmgsCli>,
 
     /// VGA firmware file
     #[clap(long, requires("pcat"), value_name = "FILE")]
@@ -413,6 +434,12 @@ flags:
     /// This is a hidden argument used internally.
     #[clap(long, hide(true))]
     pub relay_console_path: Option<PathBuf>,
+
+    /// the title of the console window spawned from the relay console.
+    ///
+    /// This is a hidden argument used internally.
+    #[clap(long, hide(true))]
+    pub relay_console_title: Option<String>,
 
     /// enable in-hypervisor gdb debugger
     #[clap(long, value_name = "PORT")]
@@ -448,22 +475,22 @@ flags:
     #[clap(long_help = r#"
 e.g: --ide memdiff:file:/path/to/disk.vhd
 
-syntax: \<path\> | kind:<arg>[,flag,opt=arg,...]
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
 valid disk kinds:
     `mem:<len>`                    memory backed disk
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                  file-backed disk
+        <path>: path to file
 
 flags:
     `ro`                           open disk as read-only
     `s`                            attach drive to secondary ide channel
     `dvd`                          specifies that device is cd/dvd and it is read_only
 "#)]
-    #[clap(long, value_name = "FILE")]
+    #[clap(long, value_name = "FILE", requires("pcat"))]
     pub ide: Vec<IdeDiskCli>,
 
     /// attach a floppy drive (should be able to be passed multiple times). VM must be generation 1 (no UEFI)
@@ -471,29 +498,29 @@ flags:
     #[clap(long_help = r#"
 e.g: --floppy memdiff:/path/to/disk.vfd,ro
 
-syntax: \<path\> | kind:<arg>[,flag,opt=arg,...]
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
 valid disk kinds:
     `mem:<len>`                    memory backed disk
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:\<path\>`                  file-backed disk
-        \<path\>: path to file
+    `file:<path>`                  file-backed disk
+        <path>: path to file
 
 flags:
     `ro`                           open disk as read-only
 "#)]
-    #[clap(long, value_name = "FILE", requires("pcat"), conflicts_with("uefi"))]
+    #[clap(long, value_name = "FILE", requires("pcat"))]
     pub floppy: Vec<FloppyDiskCli>,
 
     /// enable guest watchdog device
     #[clap(long)]
     pub guest_watchdog: bool,
 
-    /// enable Underhill's guest crash dump device, targeting the specified path
+    /// enable OpenHCL's guest crash dump device, targeting the specified path
     #[clap(long)]
-    pub underhill_dump_path: Option<PathBuf>,
+    pub openhcl_dump_path: Option<PathBuf>,
 
     /// halt the VM when the guest requests a reset, instead of resetting it
     #[clap(long)]
@@ -518,9 +545,38 @@ flags:
     /// set the uefi console mode
     #[clap(long)]
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
+
+    /// Perform a default boot even if boot entries exist and fail
+    #[clap(long)]
+    pub default_boot_always_attempt: bool,
+
+    /// Attach a PCI Express root complex to the VM
+    #[clap(long_help = r#"
+e.g: --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G
+
+syntax: <name>[,opt=arg,...]
+
+options:
+    `segment=<value>`              configures the PCI Express segment, default 0
+    `start_bus=<value>`            lowest valid bus number, default 0
+    `end_bus=<value>`              highest valid bus number, default 255
+    `low_mmio=<size>`              low MMIO window size, default 4M
+    `high_mmio=<size>`             high MMIO window size, default 1G
+"#)]
+    #[clap(long, conflicts_with("pcat"))]
+    pub pcie_root_complex: Vec<PcieRootComplexCli>,
+
+    /// Attach a PCI Express root port to the VM
+    #[clap(long_help = r#"
+e.g: --pcie-root-port rc0:rc0rp0
+
+syntax: <root_complex_name>:<name>
+"#)]
+    #[clap(long, conflicts_with("pcat"))]
+    pub pcie_root_port: Vec<PcieRootPortCli>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FsArgs {
     pub tag: String,
     pub path: String,
@@ -541,7 +597,7 @@ impl FromStr for FsArgs {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FsArgsWithOptions {
     /// The file system tag.
     pub tag: String,
@@ -583,28 +639,32 @@ pub enum SecureBootTemplateCli {
 }
 
 fn parse_memory(s: &str) -> anyhow::Result<u64> {
-    || -> Option<u64> {
-        let mut b = s.as_bytes();
-        if s.ends_with('B') {
-            b = &b[..b.len() - 1]
-        }
-        if b.is_empty() {
-            return None;
-        }
-        let multi = match b[b.len() - 1] as char {
-            'T' => Some(1024 * 1024 * 1024 * 1024),
-            'G' => Some(1024 * 1024 * 1024),
-            'M' => Some(1024 * 1024),
-            'K' => Some(1024),
-            _ => None,
-        };
-        if multi.is_some() {
-            b = &b[..b.len() - 1]
-        }
-        let n: u64 = std::str::from_utf8(b).ok()?.parse().ok()?;
-        Some(n * multi.unwrap_or(1))
-    }()
-    .with_context(|| format!("invalid memory size '{0}'", s))
+    if s == "VMGS_DEFAULT" {
+        Ok(vmgs_format::VMGS_DEFAULT_CAPACITY)
+    } else {
+        || -> Option<u64> {
+            let mut b = s.as_bytes();
+            if s.ends_with('B') {
+                b = &b[..b.len() - 1]
+            }
+            if b.is_empty() {
+                return None;
+            }
+            let multi = match b[b.len() - 1] as char {
+                'T' => Some(1024 * 1024 * 1024 * 1024),
+                'G' => Some(1024 * 1024 * 1024),
+                'M' => Some(1024 * 1024),
+                'K' => Some(1024),
+                _ => None,
+            };
+            if multi.is_some() {
+                b = &b[..b.len() - 1]
+            }
+            let n: u64 = std::str::from_utf8(b).ok()?.parse().ok()?;
+            Some(n * multi.unwrap_or(1))
+        }()
+        .with_context(|| format!("invalid memory size '{0}'", s))
+    }
 }
 
 /// Parse a number from a string that could be prefixed with 0x to indicate hex.
@@ -615,7 +675,7 @@ fn parse_number(s: &str) -> Result<u64, std::num::ParseIntError> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DiskCliKind {
     // mem:<len>
     Memory(u64),
@@ -640,8 +700,11 @@ pub enum DiskCliKind {
     },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
-    // file:<path>
-    File(PathBuf),
+    // file:<path>[;create=<len>]
+    File {
+        path: PathBuf,
+        create_with_len: Option<u64>,
+    },
     // blob:<type>:<url>
     Blob {
         kind: BlobKind,
@@ -653,18 +716,38 @@ pub enum DiskCliKind {
         key_file: PathBuf,
         disk: Box<DiskCliKind>,
     },
+    // delay:<delay_ms>:<kind>
+    DelayDiskWrapper {
+        delay_ms: u64,
+        disk: Box<DiskCliKind>,
+    },
 }
 
-#[derive(ValueEnum, Clone, Copy)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
 pub enum DiskCipher {
     #[clap(name = "xts-aes-256")]
     XtsAes256,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BlobKind {
     Flat,
     Vhd1,
+}
+
+fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
+    Ok(match arg.split_once(';') {
+        Some((path, len)) => {
+            let Some(len) = len.strip_prefix("create=") else {
+                anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
+            };
+
+            let len = parse_memory(len)?;
+
+            (path.into(), Some(len))
+        }
+        None => (arg.into(), None),
+    })
 }
 
 impl FromStr for DiskCliKind {
@@ -673,31 +756,27 @@ impl FromStr for DiskCliKind {
     fn from_str(s: &str) -> anyhow::Result<Self> {
         let disk = match s.split_once(':') {
             // convenience support for passing bare paths as file disks
-            None => DiskCliKind::File(PathBuf::from(s)),
+            None => {
+                let (path, create_with_len) = parse_path_and_len(s)?;
+                DiskCliKind::File {
+                    path,
+                    create_with_len,
+                }
+            }
             Some((kind, arg)) => match kind {
                 "mem" => DiskCliKind::Memory(parse_memory(arg)?),
                 "memdiff" => DiskCliKind::MemoryDiff(Box::new(arg.parse()?)),
-                "sql" => match arg.split_once(';') {
-                    Some((path, len)) => {
-                        let Some(len) = len.strip_prefix("create=") else {
-                            anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
-                        };
-
-                        DiskCliKind::Sqlite {
-                            path: path.into(),
-                            create_with_len: Some(parse_memory(len)?),
-                        }
+                "sql" => {
+                    let (path, create_with_len) = parse_path_and_len(arg)?;
+                    DiskCliKind::Sqlite {
+                        path,
+                        create_with_len,
                     }
-                    None => DiskCliKind::Sqlite {
-                        path: arg.into(),
-                        create_with_len: None,
-                    },
-                },
+                }
                 "sqldiff" => {
                     let (path_and_opts, kind) =
                         arg.split_once(':').context("expected path[;opts]:kind")?;
                     let disk = Box::new(kind.parse()?);
-
                     match path_and_opts.split_once(';') {
                         Some((path, create)) => {
                             if create != "create" {
@@ -727,7 +806,13 @@ impl FromStr for DiskCliKind {
                     }
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
-                "file" => DiskCliKind::File(PathBuf::from(arg)),
+                "file" => {
+                    let (path, create_with_len) = parse_path_and_len(arg)?;
+                    DiskCliKind::File {
+                        path,
+                        create_with_len,
+                    }
+                }
                 "blob" => {
                     let (blob_kind, url) = arg.split_once(':').context("expected kind:url")?;
                     let blob_kind = match blob_kind {
@@ -757,9 +842,12 @@ impl FromStr for DiskCliKind {
                     //
                     // in this case, we actually want to treat that leading `d:` as part of the
                     // path, rather than as a disk with `kind == 'd'`
-                    let path_buf = PathBuf::from(s);
-                    if path_buf.has_root() {
-                        DiskCliKind::File(path_buf)
+                    let (path, create_with_len) = parse_path_and_len(s)?;
+                    if path.has_root() {
+                        DiskCliKind::File {
+                            path,
+                            create_with_len,
+                        }
                     } else {
                         anyhow::bail!("invalid disk kind {kind}");
                     }
@@ -767,6 +855,40 @@ impl FromStr for DiskCliKind {
             },
         };
         Ok(disk)
+    }
+}
+
+#[derive(Clone)]
+pub struct VmgsCli {
+    pub kind: DiskCliKind,
+    pub provision: ProvisionVmgs,
+}
+
+#[derive(Copy, Clone)]
+pub enum ProvisionVmgs {
+    OnEmpty,
+    OnFailure,
+    True,
+}
+
+impl FromStr for VmgsCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let (kind, opt) = s
+            .split_once(',')
+            .map(|(k, o)| (k, Some(o)))
+            .unwrap_or((s, None));
+        let kind = kind.parse()?;
+
+        let provision = match opt {
+            None => ProvisionVmgs::OnEmpty,
+            Some("fmt-on-fail") => ProvisionVmgs::OnFailure,
+            Some("fmt") => ProvisionVmgs::True,
+            Some(opt) => anyhow::bail!("unknown option: '{opt}'"),
+        };
+
+        Ok(VmgsCli { kind, provision })
     }
 }
 
@@ -816,7 +938,7 @@ impl FromStr for DiskCli {
         }
 
         if underhill.is_some() && vtl != DeviceVtl::Vtl0 {
-            anyhow::bail!("`uh` is incompatible with `vtl2`");
+            anyhow::bail!("`uh` or `uh-nvme` is incompatible with `vtl2`");
         }
 
         Ok(DiskCli {
@@ -878,7 +1000,7 @@ impl FromStr for IdeDiskCli {
 }
 
 // <kind>[,ro]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FloppyDiskCli {
     pub kind: DiskCliKind,
     pub read_only: bool,
@@ -888,6 +1010,9 @@ impl FromStr for FloppyDiskCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
+        if s.is_empty() {
+            anyhow::bail!("empty disk spec");
+        }
         let mut opts = s.split(',');
         let kind = opts.next().unwrap().parse()?;
 
@@ -929,48 +1054,104 @@ impl FromStr for DebugconSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | none)
-#[derive(Clone)]
+/// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | file=\<path\> | none)
+#[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
     Console,
-    NewConsole(Option<PathBuf>),
+    NewConsole(Option<PathBuf>, Option<String>),
     Stderr,
     Pipe(PathBuf),
     Tcp(SocketAddr),
+    File(PathBuf),
 }
 
 impl FromStr for SerialConfigCli {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let ret = match s {
+        let keyvalues = SerialConfigCli::parse_keyvalues(s)?;
+
+        let first_key = match keyvalues.first() {
+            Some(first_pair) => first_pair.0.as_str(),
+            None => Err("invalid serial configuration: no values supplied")?,
+        };
+        let first_value = keyvalues.first().unwrap().1.as_ref();
+
+        let ret = match first_key {
             "none" => SerialConfigCli::None,
             "console" => SerialConfigCli::Console,
             "stderr" => SerialConfigCli::Stderr,
-            "term" => SerialConfigCli::NewConsole(None),
-            s if s.starts_with("term=") => {
-                SerialConfigCli::NewConsole(Some(PathBuf::from(s.strip_prefix("term=").unwrap())))
-            }
-            s if s.starts_with("listen=") => {
-                let s = s.strip_prefix("listen=").unwrap();
-                if let Some(tcp) = s.strip_prefix("tcp:") {
-                    let addr = tcp
-                        .parse()
-                        .map_err(|err| format!("invalid tcp address: {err}"))?;
-                    SerialConfigCli::Tcp(addr)
-                } else {
-                    SerialConfigCli::Pipe(s.into())
+            "file" => match first_value {
+                Some(path) => SerialConfigCli::File(path.into()),
+                None => Err("invalid serial configuration: file requires a value")?,
+            },
+            "term" => match first_value {
+                Some(path) => {
+                    // If user supplies a name key, use it to title the window
+                    let window_name = keyvalues.iter().find(|(key, _)| key == "name");
+                    let window_name = match window_name {
+                        Some((_, Some(name))) => Some(name.clone()),
+                        _ => None,
+                    };
+
+                    SerialConfigCli::NewConsole(Some(path.into()), window_name)
                 }
+                None => SerialConfigCli::NewConsole(None, None),
+            },
+            "listen" => match first_value {
+                Some(path) => {
+                    if let Some(tcp) = path.strip_prefix("tcp:") {
+                        let addr = tcp
+                            .parse()
+                            .map_err(|err| format!("invalid tcp address: {err}"))?;
+                        SerialConfigCli::Tcp(addr)
+                    } else {
+                        SerialConfigCli::Pipe(path.into())
+                    }
+                }
+                None => Err(
+                    "invalid serial configuration: listen requires a value of tcp:addr or pipe",
+                )?,
+            },
+            _ => {
+                return Err(format!(
+                    "invalid serial configuration: '{}' is not a known option",
+                    first_key
+                ));
             }
-            _ => return Err("invalid serial configuration".into()),
         };
 
         Ok(ret)
     }
 }
 
-#[derive(Clone)]
+impl SerialConfigCli {
+    /// Parse a comma separated list of key=value options into a vector of
+    /// key/value pairs.
+    fn parse_keyvalues(s: &str) -> Result<Vec<(String, Option<String>)>, String> {
+        let mut ret = Vec::new();
+
+        // For each comma separated item in the supplied list
+        for item in s.split(',') {
+            // Split on the = for key and value
+            // If no = is found, treat key as key and value as None
+            let mut eqsplit = item.split('=');
+            let key = eqsplit.next();
+            let value = eqsplit.next();
+
+            if let Some(key) = key {
+                ret.push((key.to_owned(), value.map(|x| x.to_owned())));
+            } else {
+                // An empty key is invalid
+                return Err("invalid key=value pair in serial config".into());
+            }
+        }
+        Ok(ret)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum EndpointConfigCli {
     None,
     Consomme { cidr: Option<String> },
@@ -1000,7 +1181,7 @@ impl FromStr for EndpointConfigCli {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NicConfigCli {
     pub vtl: DeviceVtl,
     pub endpoint: EndpointConfigCli,
@@ -1113,7 +1294,7 @@ fn parse_vtl2_relocation(s: &str) -> Result<Vtl2BaseAddressType, UnknownVtl2Relo
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum SmtConfigCli {
     Auto,
     Force,
@@ -1138,7 +1319,7 @@ impl FromStr for SmtConfigCli {
     }
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn parse_x2apic(s: &str) -> Result<X2ApicConfig, &'static str> {
     let r = match s {
         "auto" => X2ApicConfig::Auto,
@@ -1163,7 +1344,7 @@ pub enum IsolationCli {
     Vbs,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PcatBootOrderCli(pub [PcatBootDevice; 4]);
 
 impl FromStr for PcatBootOrderCli {
@@ -1205,6 +1386,116 @@ pub enum UefiConsoleModeCli {
     None,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieRootComplexCli {
+    pub name: String,
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    pub low_mmio: u32,
+    pub high_mmio: u64,
+}
+
+impl FromStr for PcieRootComplexCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 4 * 1024 * 1024; // 4M
+        const DEFAULT_PCIE_CRS_HIGH_SIZE: u64 = 1024 * 1024 * 1024; // 1G
+
+        let mut opts = s.split(',');
+        let name = opts.next().context("expected root complex name")?;
+        if name.is_empty() {
+            anyhow::bail!("must provide a root complex name");
+        }
+
+        let mut segment = 0;
+        let mut start_bus = 0;
+        let mut end_bus = 255;
+        let mut low_mmio = DEFAULT_PCIE_CRS_LOW_SIZE;
+        let mut high_mmio = DEFAULT_PCIE_CRS_HIGH_SIZE;
+        for opt in opts {
+            let mut s = opt.split('=');
+            let opt = s.next().context("expected option")?;
+            match opt {
+                "segment" => {
+                    let seg_str = s.next().context("expected segment number")?;
+                    segment = u16::from_str(seg_str).context("failed to parse segment number")?;
+                }
+                "start_bus" => {
+                    let bus_str = s.next().context("expected start bus number")?;
+                    start_bus =
+                        u8::from_str(bus_str).context("failed to parse start bus number")?;
+                }
+                "end_bus" => {
+                    let bus_str = s.next().context("expected end bus number")?;
+                    end_bus = u8::from_str(bus_str).context("failed to parse end bus number")?;
+                }
+                "low_mmio" => {
+                    let low_mmio_str = s.next().context("expected low MMIO size")?;
+                    low_mmio = parse_memory(low_mmio_str)
+                        .context("failed to parse low MMIO size")?
+                        .try_into()?;
+                }
+                "high_mmio" => {
+                    let high_mmio_str = s.next().context("expected high MMIO size")?;
+                    high_mmio =
+                        parse_memory(high_mmio_str).context("failed to parse high MMIO size")?;
+                }
+                opt => anyhow::bail!("unknown option: '{opt}'"),
+            }
+        }
+
+        if start_bus >= end_bus {
+            anyhow::bail!("start_bus must be less than or equal to end_bus");
+        }
+
+        Ok(PcieRootComplexCli {
+            name: name.to_string(),
+            segment,
+            start_bus,
+            end_bus,
+            low_mmio,
+            high_mmio,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieRootPortCli {
+    pub root_complex_name: String,
+    pub name: String,
+}
+
+impl FromStr for PcieRootPortCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = s.split(',');
+        let names = opts.next().context("expected root port identifiers")?;
+        if names.is_empty() {
+            anyhow::bail!("must provide root port identifiers");
+        }
+
+        let mut s = names.split(':');
+        let rc_name = s.next().context("expected name of parent root complex")?;
+        let rp_name = s.next().context("expected root port name")?;
+
+        if let Some(extra) = s.next() {
+            anyhow::bail!("unexpected token: '{extra}'")
+        }
+
+        if let Some(extra) = opts.next() {
+            anyhow::bail!("unexpected token: '{extra}'")
+        }
+
+        Ok(PcieRootPortCli {
+            root_complex_name: rc_name.to_string(),
+            name: rp_name.to_string(),
+        })
+    }
+}
+
 /// Read a environment variable that may / may-not have a target-specific
 /// prefix. e.g: `default_value_from_arch_env("FOO")` would first try and read
 /// from `FOO`, and if that's not found, it will try `X86_64_FOO`.
@@ -1233,5 +1524,587 @@ pub struct OptionalPathBuf(pub Option<PathBuf>);
 impl From<&std::ffi::OsStr> for OptionalPathBuf {
     fn from(s: &std::ffi::OsStr) -> Self {
         OptionalPathBuf(if s.is_empty() { None } else { Some(s.into()) })
+    }
+}
+
+#[cfg(test)]
+// UNSAFETY: Needed to set and remove environment variables in tests
+#[expect(unsafe_code)]
+mod tests {
+    use super::*;
+
+    fn with_env_var<F, R>(name: &str, value: &str, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        // SAFETY:
+        // Safe in a testing context because it won't be changed concurrently
+        unsafe {
+            std::env::set_var(name, value);
+        }
+        let result = f();
+        // SAFETY:
+        // Safe in a testing context because it won't be changed concurrently
+        unsafe {
+            std::env::remove_var(name);
+        }
+        result
+    }
+
+    #[test]
+    fn test_parse_file_disk_with_create() {
+        let s = "file:test.vhd;create=1G";
+        let disk = DiskCliKind::from_str(s).unwrap();
+
+        match disk {
+            DiskCliKind::File {
+                path,
+                create_with_len,
+            } => {
+                assert_eq!(path, PathBuf::from("test.vhd"));
+                assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
+            }
+            _ => panic!("Expected File variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_direct_file_with_create() {
+        let s = "test.vhd;create=1G";
+        let disk = DiskCliKind::from_str(s).unwrap();
+
+        match disk {
+            DiskCliKind::File {
+                path,
+                create_with_len,
+            } => {
+                assert_eq!(path, PathBuf::from("test.vhd"));
+                assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
+            }
+            _ => panic!("Expected File variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_memory_disk() {
+        let s = "mem:1G";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::Memory(size) => {
+                assert_eq!(size, 1024 * 1024 * 1024); // 1G
+            }
+            _ => panic!("Expected Memory variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_memory_diff_disk() {
+        let s = "memdiff:file:base.img";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::MemoryDiff(inner) => match *inner {
+                DiskCliKind::File {
+                    path,
+                    create_with_len,
+                } => {
+                    assert_eq!(path, PathBuf::from("base.img"));
+                    assert_eq!(create_with_len, None);
+                }
+                _ => panic!("Expected File variant inside MemoryDiff"),
+            },
+            _ => panic!("Expected MemoryDiff variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sqlite_disk() {
+        let s = "sql:db.sqlite;create=2G";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::Sqlite {
+                path,
+                create_with_len,
+            } => {
+                assert_eq!(path, PathBuf::from("db.sqlite"));
+                assert_eq!(create_with_len, Some(2 * 1024 * 1024 * 1024));
+            }
+            _ => panic!("Expected Sqlite variant"),
+        }
+
+        // Test without create option
+        let s = "sql:db.sqlite";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::Sqlite {
+                path,
+                create_with_len,
+            } => {
+                assert_eq!(path, PathBuf::from("db.sqlite"));
+                assert_eq!(create_with_len, None);
+            }
+            _ => panic!("Expected Sqlite variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sqlite_diff_disk() {
+        // Test with create option
+        let s = "sqldiff:diff.sqlite;create:file:base.img";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::SqliteDiff { path, create, disk } => {
+                assert_eq!(path, PathBuf::from("diff.sqlite"));
+                assert!(create);
+                match *disk {
+                    DiskCliKind::File {
+                        path,
+                        create_with_len,
+                    } => {
+                        assert_eq!(path, PathBuf::from("base.img"));
+                        assert_eq!(create_with_len, None);
+                    }
+                    _ => panic!("Expected File variant inside SqliteDiff"),
+                }
+            }
+            _ => panic!("Expected SqliteDiff variant"),
+        }
+
+        // Test without create option
+        let s = "sqldiff:diff.sqlite:file:base.img";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::SqliteDiff { path, create, disk } => {
+                assert_eq!(path, PathBuf::from("diff.sqlite"));
+                assert!(!create);
+                match *disk {
+                    DiskCliKind::File {
+                        path,
+                        create_with_len,
+                    } => {
+                        assert_eq!(path, PathBuf::from("base.img"));
+                        assert_eq!(create_with_len, None);
+                    }
+                    _ => panic!("Expected File variant inside SqliteDiff"),
+                }
+            }
+            _ => panic!("Expected SqliteDiff variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_autocache_sqlite_disk() {
+        // Test with environment variable set
+        let disk = with_env_var("OPENVMM_AUTO_CACHE_PATH", "/tmp/cache", || {
+            DiskCliKind::from_str("autocache::file:disk.vhd").unwrap()
+        });
+        assert!(matches!(
+            disk,
+            DiskCliKind::AutoCacheSqlite {
+                cache_path,
+                key,
+                disk: _disk,
+            } if cache_path == "/tmp/cache" && key.is_none()
+        ));
+
+        // Test without environment variable
+        assert!(DiskCliKind::from_str("autocache::file:disk.vhd").is_err());
+    }
+
+    #[test]
+    fn test_parse_disk_errors() {
+        assert!(DiskCliKind::from_str("invalid:").is_err());
+        assert!(DiskCliKind::from_str("memory:extra").is_err());
+
+        // Test sqlite: without environment variable
+        assert!(DiskCliKind::from_str("sqlite:").is_err());
+    }
+
+    #[test]
+    fn test_parse_errors() {
+        // Invalid memory size
+        assert!(DiskCliKind::from_str("mem:invalid").is_err());
+
+        // Invalid syntax for SQLiteDiff
+        assert!(DiskCliKind::from_str("sqldiff:path").is_err());
+
+        // Missing OPENVMM_AUTO_CACHE_PATH for AutoCacheSqlite
+        // SAFETY:
+        // Safe in a testing context because it won't be changed concurrently
+        unsafe {
+            std::env::remove_var("OPENVMM_AUTO_CACHE_PATH");
+        }
+        assert!(DiskCliKind::from_str("autocache:key:file:disk.vhd").is_err());
+
+        // Invalid blob kind
+        assert!(DiskCliKind::from_str("blob:invalid:url").is_err());
+
+        // Invalid cipher
+        assert!(DiskCliKind::from_str("crypt:invalid:key.bin:file:disk.vhd").is_err());
+
+        // Invalid format for crypt (missing parts)
+        assert!(DiskCliKind::from_str("crypt:xts-aes-256:key.bin").is_err());
+
+        // Invalid disk kind
+        assert!(DiskCliKind::from_str("invalid:path").is_err());
+
+        // Missing create size
+        assert!(DiskCliKind::from_str("file:disk.vhd;create=").is_err());
+    }
+
+    #[test]
+    fn test_fs_args_from_str() {
+        let args = FsArgs::from_str("tag1,/path/to/fs").unwrap();
+        assert_eq!(args.tag, "tag1");
+        assert_eq!(args.path, "/path/to/fs");
+
+        // Test error cases
+        assert!(FsArgs::from_str("tag1").is_err());
+        assert!(FsArgs::from_str("tag1,/path,extra").is_err());
+    }
+
+    #[test]
+    fn test_fs_args_with_options_from_str() {
+        let args = FsArgsWithOptions::from_str("tag1,/path/to/fs,opt1,opt2").unwrap();
+        assert_eq!(args.tag, "tag1");
+        assert_eq!(args.path, "/path/to/fs");
+        assert_eq!(args.options, "opt1;opt2");
+
+        // Test without options
+        let args = FsArgsWithOptions::from_str("tag1,/path/to/fs").unwrap();
+        assert_eq!(args.tag, "tag1");
+        assert_eq!(args.path, "/path/to/fs");
+        assert_eq!(args.options, "");
+
+        // Test error case
+        assert!(FsArgsWithOptions::from_str("tag1").is_err());
+    }
+
+    #[test]
+    fn test_serial_config_from_str() {
+        assert_eq!(
+            SerialConfigCli::from_str("none").unwrap(),
+            SerialConfigCli::None
+        );
+        assert_eq!(
+            SerialConfigCli::from_str("console").unwrap(),
+            SerialConfigCli::Console
+        );
+        assert_eq!(
+            SerialConfigCli::from_str("stderr").unwrap(),
+            SerialConfigCli::Stderr
+        );
+
+        // Test file config
+        let file_config = SerialConfigCli::from_str("file=/path/to/file").unwrap();
+        if let SerialConfigCli::File(path) = file_config {
+            assert_eq!(path.to_str().unwrap(), "/path/to/file");
+        } else {
+            panic!("Expected File variant");
+        }
+
+        // Test term config with name
+        match SerialConfigCli::from_str("term=/dev/pts/0,name=MyTerm").unwrap() {
+            SerialConfigCli::NewConsole(Some(path), Some(name)) => {
+                assert_eq!(path.to_str().unwrap(), "/dev/pts/0");
+                assert_eq!(name, "MyTerm");
+            }
+            _ => panic!("Expected NewConsole variant with name"),
+        }
+
+        // Test term config without name
+        match SerialConfigCli::from_str("term=/dev/pts/0").unwrap() {
+            SerialConfigCli::NewConsole(Some(path), None) => {
+                assert_eq!(path.to_str().unwrap(), "/dev/pts/0");
+            }
+            _ => panic!("Expected NewConsole variant without name"),
+        }
+
+        // Test TCP config
+        match SerialConfigCli::from_str("listen=tcp:127.0.0.1:1234").unwrap() {
+            SerialConfigCli::Tcp(addr) => {
+                assert_eq!(addr.to_string(), "127.0.0.1:1234");
+            }
+            _ => panic!("Expected Tcp variant"),
+        }
+
+        // Test pipe config
+        match SerialConfigCli::from_str("listen=/path/to/pipe").unwrap() {
+            SerialConfigCli::Pipe(path) => {
+                assert_eq!(path.to_str().unwrap(), "/path/to/pipe");
+            }
+            _ => panic!("Expected Pipe variant"),
+        }
+
+        // Test error cases
+        assert!(SerialConfigCli::from_str("").is_err());
+        assert!(SerialConfigCli::from_str("unknown").is_err());
+        assert!(SerialConfigCli::from_str("file").is_err());
+        assert!(SerialConfigCli::from_str("listen").is_err());
+    }
+
+    #[test]
+    fn test_endpoint_config_from_str() {
+        // Test none
+        assert!(matches!(
+            EndpointConfigCli::from_str("none").unwrap(),
+            EndpointConfigCli::None
+        ));
+
+        // Test consomme without cidr
+        match EndpointConfigCli::from_str("consomme").unwrap() {
+            EndpointConfigCli::Consomme { cidr: None } => (),
+            _ => panic!("Expected Consomme variant without cidr"),
+        }
+
+        // Test consomme with cidr
+        match EndpointConfigCli::from_str("consomme:192.168.0.0/24").unwrap() {
+            EndpointConfigCli::Consomme { cidr: Some(cidr) } => {
+                assert_eq!(cidr, "192.168.0.0/24");
+            }
+            _ => panic!("Expected Consomme variant with cidr"),
+        }
+
+        // Test dio without id
+        match EndpointConfigCli::from_str("dio").unwrap() {
+            EndpointConfigCli::Dio { id: None } => (),
+            _ => panic!("Expected Dio variant without id"),
+        }
+
+        // Test dio with id
+        match EndpointConfigCli::from_str("dio:test_id").unwrap() {
+            EndpointConfigCli::Dio { id: Some(id) } => {
+                assert_eq!(id, "test_id");
+            }
+            _ => panic!("Expected Dio variant with id"),
+        }
+
+        // Test tap
+        match EndpointConfigCli::from_str("tap:tap0").unwrap() {
+            EndpointConfigCli::Tap { name } => {
+                assert_eq!(name, "tap0");
+            }
+            _ => panic!("Expected Tap variant"),
+        }
+
+        // Test error case
+        assert!(EndpointConfigCli::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_nic_config_from_str() {
+        use hvlite_defs::config::DeviceVtl;
+
+        // Test basic endpoint
+        let config = NicConfigCli::from_str("none").unwrap();
+        assert_eq!(config.vtl, DeviceVtl::Vtl0);
+        assert!(config.max_queues.is_none());
+        assert!(!config.underhill);
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with vtl2
+        let config = NicConfigCli::from_str("vtl2:none").unwrap();
+        assert_eq!(config.vtl, DeviceVtl::Vtl2);
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with queues
+        let config = NicConfigCli::from_str("queues=4:none").unwrap();
+        assert_eq!(config.max_queues, Some(4));
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with underhill
+        let config = NicConfigCli::from_str("uh:none").unwrap();
+        assert!(config.underhill);
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test error cases
+        assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
+        assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
+    }
+
+    #[test]
+    fn test_smt_config_from_str() {
+        assert_eq!(SmtConfigCli::from_str("auto").unwrap(), SmtConfigCli::Auto);
+        assert_eq!(
+            SmtConfigCli::from_str("force").unwrap(),
+            SmtConfigCli::Force
+        );
+        assert_eq!(SmtConfigCli::from_str("off").unwrap(), SmtConfigCli::Off);
+
+        // Test error cases
+        assert!(SmtConfigCli::from_str("invalid").is_err());
+        assert!(SmtConfigCli::from_str("").is_err());
+    }
+
+    #[test]
+    fn test_pcat_boot_order_from_str() {
+        // Test single device
+        let order = PcatBootOrderCli::from_str("optical").unwrap();
+        assert_eq!(order.0[0], PcatBootDevice::Optical);
+
+        // Test multiple devices
+        let order = PcatBootOrderCli::from_str("hdd,net").unwrap();
+        assert_eq!(order.0[0], PcatBootDevice::HardDrive);
+        assert_eq!(order.0[1], PcatBootDevice::Network);
+
+        // Test error cases
+        assert!(PcatBootOrderCli::from_str("invalid").is_err());
+        assert!(PcatBootOrderCli::from_str("optical,optical").is_err()); // duplicate device
+    }
+
+    #[test]
+    fn test_floppy_disk_from_str() {
+        // Test basic disk
+        let disk = FloppyDiskCli::from_str("file:/path/to/floppy.img").unwrap();
+        assert!(!disk.read_only);
+        match disk.kind {
+            DiskCliKind::File {
+                path,
+                create_with_len,
+            } => {
+                assert_eq!(path.to_str().unwrap(), "/path/to/floppy.img");
+                assert_eq!(create_with_len, None);
+            }
+            _ => panic!("Expected File variant"),
+        }
+
+        // Test with read-only flag
+        let disk = FloppyDiskCli::from_str("file:/path/to/floppy.img,ro").unwrap();
+        assert!(disk.read_only);
+
+        // Test error cases
+        assert!(FloppyDiskCli::from_str("").is_err());
+        assert!(FloppyDiskCli::from_str("file:/path/to/floppy.img,invalid").is_err());
+    }
+
+    #[test]
+    fn test_pcie_root_complex_from_str() {
+        const ONE_MB: u64 = 1024 * 1024;
+        const ONE_GB: u64 = 1024 * ONE_MB;
+
+        const DEFAULT_LOW_MMIO: u32 = (4 * ONE_MB) as u32;
+        const DEFAULT_HIGH_MMIO: u64 = ONE_GB;
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc0").unwrap(),
+            PcieRootComplexCli {
+                name: "rc0".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc1,segment=1").unwrap(),
+            PcieRootComplexCli {
+                name: "rc1".to_string(),
+                segment: 1,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc2,start_bus=32").unwrap(),
+            PcieRootComplexCli {
+                name: "rc2".to_string(),
+                segment: 0,
+                start_bus: 32,
+                end_bus: 255,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc3,end_bus=31").unwrap(),
+            PcieRootComplexCli {
+                name: "rc3".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 31,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc4,start_bus=32,end_bus=127,high_mmio=2G").unwrap(),
+            PcieRootComplexCli {
+                name: "rc4".to_string(),
+                segment: 0,
+                start_bus: 32,
+                end_bus: 127,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: 2 * ONE_GB,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc5,segment=2,start_bus=32,end_bus=127").unwrap(),
+            PcieRootComplexCli {
+                name: "rc5".to_string(),
+                segment: 2,
+                start_bus: 32,
+                end_bus: 127,
+                low_mmio: DEFAULT_LOW_MMIO,
+                high_mmio: DEFAULT_HIGH_MMIO,
+            }
+        );
+
+        assert_eq!(
+            PcieRootComplexCli::from_str("rc6,low_mmio=1M,high_mmio=64G").unwrap(),
+            PcieRootComplexCli {
+                name: "rc6".to_string(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                low_mmio: ONE_MB as u32,
+                high_mmio: 64 * ONE_GB,
+            }
+        );
+
+        // Error cases
+        assert!(PcieRootComplexCli::from_str("").is_err());
+        assert!(PcieRootComplexCli::from_str("poorly,").is_err());
+        assert!(PcieRootComplexCli::from_str("configured,complex").is_err());
+        assert!(PcieRootComplexCli::from_str("fails,start_bus=foo").is_err());
+        assert!(PcieRootComplexCli::from_str("fails,start_bus=32,end_bus=31").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,start_bus=256").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,end_bus=256").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,low_mmio=5G").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,low_mmio=aG").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,high_mmio=bad").is_err());
+        assert!(PcieRootComplexCli::from_str("rc,high_mmio").is_err());
+    }
+
+    #[test]
+    fn test_pcie_root_port_from_str() {
+        assert_eq!(
+            PcieRootPortCli::from_str("rc0:rc0rp0").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "rc0".to_string(),
+                name: "rc0rp0".to_string()
+            }
+        );
+
+        assert_eq!(
+            PcieRootPortCli::from_str("my_rc:port2").unwrap(),
+            PcieRootPortCli {
+                root_complex_name: "my_rc".to_string(),
+                name: "port2".to_string()
+            }
+        );
+
+        // Error cases
+        assert!(PcieRootPortCli::from_str("").is_err());
+        assert!(PcieRootPortCli::from_str("rp0").is_err());
+        assert!(PcieRootPortCli::from_str("rp0,opt").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0:rp3").is_err());
+        assert!(PcieRootPortCli::from_str("rc0:rp0,rp3").is_err());
     }
 }

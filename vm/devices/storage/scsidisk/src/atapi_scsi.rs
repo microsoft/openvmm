@@ -5,24 +5,24 @@
 //! [`AsyncScsiDisk`].
 //!
 
-use crate::illegal_request_sense;
 use crate::SenseDataSlot;
+use crate::illegal_request_sense;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
-use scsi::srb::SrbStatus;
 use scsi::AdditionalSenseCode;
 use scsi::ScsiOp;
 use scsi::ScsiStatus;
 use scsi::SenseKey;
+use scsi::srb::SrbStatus;
 use scsi_buffers::RequestBuffers;
-use scsi_core::save_restore::SavedSenseData;
-use scsi_core::save_restore::ScsiDvdSavedState;
-use scsi_core::save_restore::ScsiSavedState;
+use scsi_core::ASYNC_SCSI_DISK_STACK_SIZE;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
 use scsi_core::ScsiResult;
 use scsi_core::ScsiSaveRestore;
-use scsi_core::ASYNC_SCSI_DISK_STACK_SIZE;
+use scsi_core::save_restore::SavedSenseData;
+use scsi_core::save_restore::ScsiDvdSavedState;
+use scsi_core::save_restore::ScsiSavedState;
 use scsi_defs as scsi;
 use stackfuture::StackFuture;
 use std::sync::Arc;

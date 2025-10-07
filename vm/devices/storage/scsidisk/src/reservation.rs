@@ -5,6 +5,7 @@
 
 use super::ScsiError;
 use super::SimpleScsiDisk;
+use crate::RequestBuffers;
 use crate::scsi;
 use crate::scsi::PriFullStatusDescriptorHeader;
 use crate::scsi::PriFullStatusListHeader;
@@ -12,7 +13,6 @@ use crate::scsi::PriRegistrationListHeader;
 use crate::scsi::PriReportCapabilities;
 use crate::scsi::PriReservationDescriptor;
 use crate::scsi::PriReservationListHeader;
-use crate::RequestBuffers;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use scsi::AdditionalSenseCode;

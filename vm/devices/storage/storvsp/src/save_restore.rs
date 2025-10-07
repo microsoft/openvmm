@@ -5,7 +5,6 @@
 
 use self::state::Drive;
 use self::state::DriveSavedState;
-use crate::protocol;
 use crate::Range;
 use crate::ScsiPath;
 use crate::ScsiRequestAndRange;
@@ -217,7 +216,7 @@ impl state::ScsiRequestSavedState {
             request,
         } = self;
 
-        let mut protocol_request = protocol::ScsiRequest::new_zeroed();
+        let mut protocol_request = storvsp_protocol::ScsiRequest::new_zeroed();
         protocol_request
             .as_mut_bytes()
             .get_mut(..request.len())

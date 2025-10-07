@@ -5,15 +5,16 @@
 
 use self::vmservice::nic_config::Backend;
 use crate::serial_io::bind_serial;
-use crate::DEFAULT_MMIO_GAPS;
+use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context;
 use awaitgroup::WaitGroup;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
+use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
@@ -23,8 +24,8 @@ use hvlite_defs::config::VirtioBus;
 use hvlite_defs::config::VmbusConfig;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
+use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_helpers::disk::open_disk_type;
 use hvlite_ttrpc_vmservice as vmservice;
 use inspect::Inspect;
@@ -32,10 +33,10 @@ use inspect::InspectionBuilder;
 use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
 use inspect_proto::UpdateResponse2;
-use mesh::error::RemoteError;
-use mesh::rpc::RpcSend;
 use mesh::CancelReason;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
+use mesh::rpc::RpcSend;
 use mesh_rpc::service::Code;
 use mesh_rpc::service::Status;
 use mesh_worker::RegisteredWorkers;
@@ -43,9 +44,9 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use netvsp_resources::NetvspHandle;
-use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
+use pal_async::task::Spawn;
 use parking_lot::Mutex;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
@@ -58,9 +59,9 @@ use storvsp_resources::ScsiDeviceAndPath;
 use unix_socket::UnixListener;
 use virtio_resources::VirtioPciDeviceHandle;
 use vm_manifest_builder::VmManifestBuilder;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::VmbusDeviceHandleKind;
 use vmm_core_defs::HaltReason;
 
 #[derive(mesh::MeshPayload)]
@@ -123,7 +124,7 @@ impl Worker for TtrpcWorker {
     }
 
     fn run(self, recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mut service = VmService {
                 driver,
                 vm: None,
@@ -457,6 +458,7 @@ impl VmService {
             load_mode,
             ide_disks: vec![],
             floppy_disks: vec![],
+            pcie_root_complexes: vec![],
             vpci_devices: vec![],
             memory: MemoryConfig {
                 mem_size: req_config
@@ -466,8 +468,9 @@ impl VmService {
                     .memory_mb
                     .checked_mul(0x100000)
                     .context("invalid memory configuration")?,
-                mmio_gaps: DEFAULT_MMIO_GAPS.into(),
+                mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
                 prefetch_memory: false,
+                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
@@ -498,14 +501,15 @@ impl VmService {
             vmbus_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_disk: None,
-            format_vmgs: false,
+            vmgs: None,
             secure_boot_enabled: false,
             custom_uefi_vars: Default::default(),
             firmware_event_send: None,
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
             generation_id_recv: None,
+            rtc_delta_milliseconds: 0,
+            automatic_guest_reset: true,
         };
 
         let mut scsi_rpc = None;
@@ -524,6 +528,7 @@ impl VmService {
                         devices,
                         io_queue_depth: None,
                         requests: Some(recv),
+                        poll_mode_queue_depth: None,
                     }
                     .into_resource(),
                 ));

@@ -46,7 +46,7 @@ impl MessageQueues {
             .queues
             .lock()
             .iter()
-            .map(|queue| queue.iter().copied().map(HvMessage::into_bytes).collect())
+            .map(|queue| queue.iter().map(|m| zerocopy::transmute!(*m)).collect())
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
@@ -59,7 +59,10 @@ impl MessageQueues {
         let queues = &mut self.queues.lock();
         for (dest, src) in queues.iter_mut().zip(&value.queues) {
             dest.truncate(0);
-            dest.extend(src.iter().copied().map(HvMessage::from_bytes));
+            dest.extend(src.iter().map(|m| {
+                let m: HvMessage = zerocopy::transmute!(*m);
+                m
+            }));
         }
 
         let pending = queues

@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod srb;
 

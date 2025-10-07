@@ -3,6 +3,7 @@
 
 //! Protocol definitions for sending events to remote nodes.
 
+use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -37,7 +38,8 @@ impl From<Uuid> for crate::common::Uuid {
 pub struct Event {
     pub port_id: Uuid,
     pub event_type: EventType,
-    pub reserved: [u8; 7],
+    pub flags: EventFlags,
+    pub reserved: [u8; 6],
     pub seq: u64,
     pub resource_count: u32,
     pub message_size: u32,
@@ -47,12 +49,22 @@ open_enum::open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum EventType: u8 {
         MESSAGE = 1,
-        CLOSE_PORT = 2,
         CHANGE_PEER = 3,
         ACKNOWLEDGE_CHANGE_PEER = 4,
         ACKNOWLEDGE_PORT = 5,
         FAIL_PORT = 6,
     }
+}
+
+#[bitfield(u8)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct EventFlags {
+    /// The event contains a port message.
+    pub message: bool,
+    /// The port is closing.
+    pub close: bool,
+    #[bits(6)]
+    _reserved: u8,
 }
 
 #[repr(C)]

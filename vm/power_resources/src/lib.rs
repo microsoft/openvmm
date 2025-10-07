@@ -4,7 +4,6 @@
 //! Power request resources, for powering off, restarting, and hibernating VMs.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use mesh::payload::Protobuf;
 use std::sync::Arc;

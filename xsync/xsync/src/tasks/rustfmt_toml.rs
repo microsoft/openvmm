@@ -58,7 +58,7 @@ impl Cmd for RustfmtToml {
         match base_fmt_toml {
             Ok(base_fmt_toml) => {
                 log::info!("base rustfmt.toml found, regenerating overlay rustfmt.toml",);
-                let mut base_fmt_toml = toml_edit::Document::from_str(&base_fmt_toml)?;
+                let mut base_fmt_toml = toml_edit::DocumentMut::from_str(&base_fmt_toml)?;
                 base_fmt_toml.fmt();
                 let generated_fmt_toml = format!(
                     "{}{}",

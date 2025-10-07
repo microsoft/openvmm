@@ -18,8 +18,10 @@ x86defs.workspace = true
 inspect.workspace = true
 tracelimit.workspace = true
 parking_lot.workspace = true
+safeatomic.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

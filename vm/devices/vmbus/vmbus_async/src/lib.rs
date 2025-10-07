@@ -3,7 +3,6 @@
 
 //! Vmbus channel implementations using async.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod async_dgram;

@@ -4,6 +4,7 @@
 //! Linux /dev/mshv implementation of the virt::generic interfaces.
 
 #![cfg(all(target_os = "linux", guest_is_native, guest_arch = "x86_64"))]
+#![expect(missing_docs)]
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
@@ -15,8 +16,7 @@ use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::X64RegisterIo;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_EXECUTE;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -24,8 +24,12 @@ use hvdef::HvMessageType;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64VpExecutionState;
 use hvdef::Vtl;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_EXECUTE;
+use hvdef::hypercall::HvRegisterAssoc;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mshv_bindings::MSHV_SET_MEM_BIT_EXECUTABLE;
+use mshv_bindings::MSHV_SET_MEM_BIT_WRITABLE;
 use mshv_bindings::hv_message;
 use mshv_bindings::hv_register_assoc;
 use mshv_bindings::hv_register_value;
@@ -35,14 +39,13 @@ use mshv_bindings::hv_x64_memory_intercept_message;
 use mshv_bindings::hv_x64_segment_register;
 use mshv_bindings::mshv_install_intercept;
 use mshv_bindings::mshv_user_mem_region;
-use mshv_bindings::HV_MAP_GPA_EXECUTABLE;
-use mshv_bindings::HV_MAP_GPA_READABLE;
-use mshv_bindings::HV_MAP_GPA_WRITABLE;
-use mshv_ioctls::set_registers_64;
 use mshv_ioctls::InterruptRequest;
 use mshv_ioctls::Mshv;
+use mshv_ioctls::MshvError;
 use mshv_ioctls::VcpuFd;
 use mshv_ioctls::VmFd;
+use mshv_ioctls::set_bits;
+use mshv_ioctls::set_registers_64;
 use pal::unix::pthread::*;
 use pal_event::Event;
 use parking_lot::Mutex;
@@ -53,9 +56,6 @@ use std::sync::Arc;
 use std::sync::Once;
 use std::sync::Weak;
 use thiserror::Error;
-use virt::io::CpuIo;
-use virt::irqcon::MsiRequest;
-use virt::x86::max_physical_address_size_from_cpuid;
 use virt::Hv1;
 use virt::NeedsYield;
 use virt::PartitionAccessState;
@@ -65,14 +65,20 @@ use virt::ProtoPartitionConfig;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
-use virt_support_x86emu::emulate::emulate_translate_gva;
+use virt::io::CpuIo;
+use virt::irqcon::MsiRequest;
+use virt::x86::max_physical_address_size_from_cpuid;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
+use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::interrupt::Interrupt;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
@@ -107,7 +113,7 @@ impl virt::Hypervisor for LinuxMshv {
         }
 
         // Open /dev/mshv.
-        let mshv = Mshv::new().map_err(|err| Error::OpenMshv(err.into()))?;
+        let mshv = Mshv::new().map_err(Error::OpenMshv)?;
 
         // Create VM.
         //
@@ -132,6 +138,9 @@ impl virt::Hypervisor for LinuxMshv {
             break;
         }
 
+        vmfd.initialize()
+            .map_err(|e| Error::CreateVMInitFailed(e.into()))?;
+
         // Create virtual CPUs.
         let mut vps: Vec<MshvVpInner> = Vec::new();
         for vp in config.processor_topology.vps_arch() {
@@ -142,7 +151,7 @@ impl virt::Hypervisor for LinuxMshv {
 
             let vcpufd = vmfd
                 .create_vcpu(vp.base.vp_index.index() as u8)
-                .map_err(|err| Error::CreateVcpu(err.into()))?;
+                .map_err(Error::CreateVcpu)?;
 
             vps.push(MshvVpInner {
                 vcpufd,
@@ -162,7 +171,7 @@ impl virt::Hypervisor for LinuxMshv {
             intercept_parameter: Default::default(),
         };
         vmfd.install_intercept(intercept_args)
-            .map_err(|err| Error::InstallIntercept(err.into()))?;
+            .map_err(Error::InstallIntercept)?;
 
         // Set up a signal for forcing vcpufd.run() ioctl to exit.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
@@ -204,7 +213,7 @@ pub struct MshvProtoPartition<'a> {
 impl ProtoPartition for MshvProtoPartition<'_> {
     type Partition = MshvPartition;
     type ProcessorBinder = MshvProcessorBinder;
-    type Error = Infallible;
+    type Error = Error;
 
     fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
         // This call should never fail unless there is a kernel or hypervisor
@@ -234,7 +243,8 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                     .get_cpuid_values(function, index, 0, 0)
                     .expect("cpuid should not fail")
             },
-        );
+        )
+        .map_err(Error::Capabilities)?;
 
         // Attach all the resources created above to a Partition object.
         let partition = MshvPartition {
@@ -360,10 +370,31 @@ impl Hv1 for MshvPartition {
     type Error = Error;
     type Device = virt::UnimplementedDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        Some(ReferenceTimeSource::from(self.inner.clone() as Arc<_>))
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+}
+
+impl GetReferenceTime for MshvPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        let mut regs = [hv_register_assoc {
+            name: hvdef::HvAllArchRegisterName::TimeRefCount.0,
+            value: hv_register_value { reg64: 0 },
+            ..Default::default()
+        }];
+        self.vp(VpIndex::BSP).vcpufd.get_reg(&mut regs).unwrap();
+        // SAFETY: the value has been written by the kernel.
+        let ref_time = unsafe { regs[0].value.reg64 };
+        ReferenceTimeResult {
+            ref_time,
+            system_time: None,
+        }
     }
 }
 
@@ -427,8 +458,14 @@ impl MshvProcessor<'_> {
         message: &hv_message,
         devices: &impl CpuIo,
         interruption_pending: bool,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
-        let cache = self.emulation_cache().map_err(VpHaltReason::Hypervisor)?;
+    ) -> Result<(), VpHaltReason> {
+        let cache = self.emulation_cache();
+        let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
+            gm: &self.partition.gm,
+            kx_gm: &self.partition.gm,
+            ux_gm: &self.partition.gm,
+        };
+
         let mut support = MshvEmulationState {
             partition: self.partition,
             processor: self.inner,
@@ -437,14 +474,14 @@ impl MshvProcessor<'_> {
             interruption_pending,
             cache,
         };
-        virt_support_x86emu::emulate::emulate(&mut support, &self.partition.gm, devices).await
+        virt_support_x86emu::emulate::emulate(&mut support, &emu_mem, devices).await
     }
 
     async fn handle_io_port_intercept(
         &self,
         message: &hv_message,
         devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let info = message.to_ioport_info().unwrap();
         let access_info = info.access_info;
         // SAFETY: This union only contains one field.
@@ -480,8 +517,7 @@ impl MshvProcessor<'_> {
                 (mshv_bindings::hv_register_name_HV_X64_REGISTER_RAX, ret_rax),
             ];
 
-            set_registers_64!(self.inner.vcpufd, arr_reg_name_value)
-                .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+            set_registers_64!(self.inner.vcpufd, arr_reg_name_value).unwrap();
         }
 
         Ok(())
@@ -491,33 +527,21 @@ impl MshvProcessor<'_> {
         &self,
         message: &hv_message,
         devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    ) -> Result<(), VpHaltReason> {
         let execution_state = message.to_memory_info().unwrap().header.execution_state;
         // SAFETY: This union only contains one field.
         let mmio_execution_state = unsafe { execution_state.__bindgen_anon_1 };
         let interruption_pending = mmio_execution_state.interruption_pending() != 0;
 
-        self.emulate(message, devices, interruption_pending).await?;
-
-        Ok(())
+        self.emulate(message, devices, interruption_pending).await
     }
 
-    fn handle_synic_deliverable_exit(
-        &self,
-        message: &hv_message,
-        _devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    fn handle_synic_deliverable_exit(&self, message: &hv_message, _devices: &impl CpuIo) {
         let info = message.to_sint_deliverable_info().unwrap();
-
         self.flush_messages(info.deliverable_sints);
-        Ok(())
     }
 
-    fn handle_hypercall_intercept(
-        &self,
-        message: &hv_message,
-        devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    fn handle_hypercall_intercept(&self, message: &hv_message, devices: &impl CpuIo) {
         let info = message.to_hypercall_intercept_info().unwrap();
         let execution_state = info.header.execution_state;
         // SAFETY: Accessing the raw field of this union is always safe.
@@ -627,8 +651,6 @@ impl MshvProcessor<'_> {
                 .set_reg(&dirty_regs)
                 .expect("RIP setting is not a fallable operation");
         }
-
-        Ok(())
     }
 
     fn flush_messages(&self, deliverable_sints: u16) {
@@ -666,8 +688,8 @@ impl MshvProcessor<'_> {
         }
     }
 
-    fn emulation_cache(&self) -> Result<MshvEmuCache, MshvRunVpError> {
-        let regs = self.inner.vcpufd.get_regs()?;
+    fn emulation_cache(&self) -> MshvEmuCache {
+        let regs = self.inner.vcpufd.get_regs().unwrap();
         let gps = [
             regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
             regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
@@ -687,14 +709,14 @@ impl MshvProcessor<'_> {
         let cr0 = sregs.cr0;
         let efer = sregs.efer;
 
-        Ok(MshvEmuCache {
+        MshvEmuCache {
             gps,
             segs,
             rip,
             rflags: rflags.into(),
             cr0,
             efer,
-        })
+        }
     }
 }
 
@@ -708,8 +730,6 @@ struct MshvEmulationState<'a> {
 }
 
 impl EmulatorSupport for MshvEmulationState<'_> {
-    type Error = MshvRunVpError;
-
     fn vp_index(&self) -> VpIndex {
         self.vp_index
     }
@@ -768,7 +788,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         hvu128_to_u128(unsafe { &reg.value.reg128 })
     }
 
-    fn set_xmm(&mut self, reg: usize, value: u128) -> Result<(), Self::Error> {
+    fn set_xmm(&mut self, reg: usize, value: u128) {
         assert!(reg < 16);
         let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
         // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same layout.
@@ -777,11 +797,10 @@ impl EmulatorSupport for MshvEmulationState<'_> {
                 name, value,
             )))
         };
-        self.processor.vcpufd.set_reg(&[reg])?;
-        Ok(())
+        self.processor.vcpufd.set_reg(&[reg]).unwrap();
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
+    fn flush(&mut self) {
         let arr_reg_name_value = [
             (
                 mshv_bindings::hv_register_name_HV_X64_REGISTER_RIP,
@@ -857,23 +876,40 @@ impl EmulatorSupport for MshvEmulationState<'_> {
             ),
         ];
 
-        set_registers_64!(self.processor.vcpufd, arr_reg_name_value)?;
-        Ok(())
+        set_registers_64!(self.processor.vcpufd, arr_reg_name_value).unwrap();
     }
 
     fn instruction_bytes(&self) -> &[u8] {
         match HvMessageType(self.message.header.message_type) {
-            HvMessageType::HvMessageTypeGpaIntercept | HvMessageType::HvMessageTypeUnmappedGpa => {
+            HvMessageType::HvMessageTypeGpaIntercept
+            | HvMessageType::HvMessageTypeUnmappedGpa
+            | HvMessageType::HvMessageTypeUnacceptedGpa => {
                 // SAFETY: We have checked the message type.
-                let info: &hv_x64_memory_intercept_message =
-                    unsafe { std::mem::transmute(&self.message) };
-                &info.instruction_bytes[..info.instruction_byte_count as usize]
+                unsafe {
+                    let info = (&raw const self.message.u.payload)
+                        .cast::<hv_x64_memory_intercept_message>();
+                    let instruction_bytes = &raw const (*info).instruction_bytes;
+                    let instruction_byte_count =
+                        std::ptr::read_unaligned(&raw const (*info).instruction_byte_count);
+                    std::slice::from_raw_parts(
+                        instruction_bytes.cast(),
+                        instruction_byte_count as usize,
+                    )
+                }
             }
             HvMessageType::HvMessageTypeX64IoPortIntercept => {
                 // SAFETY: We have checked the message type.
-                let info: &hv_x64_io_port_intercept_message =
-                    unsafe { std::mem::transmute(&self.message) };
-                &info.instruction_bytes[..info.instruction_byte_count as usize]
+                unsafe {
+                    let info = (&raw const self.message.u.payload)
+                        .cast::<hv_x64_io_port_intercept_message>();
+                    let instruction_bytes = &raw const (*info).instruction_bytes;
+                    let instruction_byte_count =
+                        std::ptr::read_unaligned(&raw const (*info).instruction_byte_count);
+                    std::slice::from_raw_parts(
+                        instruction_bytes.cast(),
+                        instruction_byte_count as usize,
+                    )
+                }
             }
             _ => unreachable!(),
         }
@@ -882,26 +918,26 @@ impl EmulatorSupport for MshvEmulationState<'_> {
     fn physical_address(&self) -> Option<u64> {
         if self.message.header.message_type == HvMessageType::HvMessageTypeGpaIntercept.0
             || self.message.header.message_type == HvMessageType::HvMessageTypeUnmappedGpa.0
+            || self.message.header.message_type == HvMessageType::HvMessageTypeUnacceptedGpa.0
         {
-            // SAFETY: We have checked the message type.
-            let info: &hv_x64_memory_intercept_message =
-                unsafe { std::mem::transmute(&self.message) };
+            let info = self.message.to_memory_info().unwrap();
             Some(info.guest_physical_address)
         } else {
             None
         }
     }
 
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         if (self.message.header.message_type != HvMessageType::HvMessageTypeGpaIntercept.0)
             && (self.message.header.message_type != HvMessageType::HvMessageTypeUnmappedGpa.0)
+            && (self.message.header.message_type != HvMessageType::HvMessageTypeUnacceptedGpa.0)
         {
             return None;
         }
 
-        // SAFETY: We have checked the message type.
-        let message: &hv_x64_memory_intercept_message =
-            unsafe { std::mem::transmute(&self.message) };
+        let message = self.message.to_memory_info().unwrap();
 
         // SAFETY: access to union as uint8 is safe because in this case, the actual
         // type doesn't matter so much as the bits
@@ -933,7 +969,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
-    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), virt_support_x86emu::emulate::EmuCheckVtlAccessError> {
         // TODO: No VTL2 supported so always return Ok.
         Ok(())
     }
@@ -942,7 +978,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         &mut self,
         gva: u64,
         mode: TranslateMode,
-    ) -> Result<Result<EmuTranslateResult, EmuTranslateError>, Self::Error> {
+    ) -> Result<EmuTranslateResult, EmuTranslateError> {
         emulate_translate_gva(self, gva, mode)
     }
 
@@ -972,7 +1008,9 @@ impl EmulatorSupport for MshvEmulationState<'_> {
             .flatten()
             .any(|range| {
                 (range.guest_pfn..range.guest_pfn + range.size).contains(&gpa)
-                    && (!write || range.flags & HV_MAP_GPA_WRITABLE == HV_MAP_GPA_WRITABLE)
+                    && (!write
+                        || range.flags & set_bits!(u8, MSHV_SET_MEM_BIT_WRITABLE)
+                            == set_bits!(u8, MSHV_SET_MEM_BIT_WRITABLE))
             })
     }
 
@@ -990,8 +1028,6 @@ impl EmulatorSupport for MshvEmulationState<'_> {
 }
 
 impl TranslateGvaSupport for MshvEmulationState<'_> {
-    type Error = MshvRunVpError;
-
     fn guest_memory(&self) -> &GuestMemory {
         &self.partition.gm
     }
@@ -1000,7 +1036,7 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
         // The hypervisor automatically acquires the TLB lock for exo partitions.
     }
 
-    fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
+    fn registers(&mut self) -> TranslationRegisters {
         let mut reg = [
             HvX64RegisterName::Cr0,
             HvX64RegisterName::Cr4,
@@ -1013,15 +1049,18 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
 
         // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same size.
         unsafe {
-            self.processor.vcpufd.get_reg(std::mem::transmute::<
-                &mut [HvRegisterAssoc],
-                &mut [hv_register_assoc],
-            >(&mut reg[..]))?;
+            self.processor
+                .vcpufd
+                .get_reg(std::mem::transmute::<
+                    &mut [HvRegisterAssoc],
+                    &mut [hv_register_assoc],
+                >(&mut reg[..]))
+                .unwrap();
         }
 
         let [cr0, cr4, efer, cr3, rflags, ss] = reg.map(|v| v.value);
 
-        Ok(TranslationRegisters {
+        TranslationRegisters {
             cr0: cr0.as_u64(),
             cr4: cr4.as_u64(),
             efer: efer.as_u64(),
@@ -1029,23 +1068,21 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
             rflags: rflags.as_u64(),
             ss: from_seg(ss.as_segment()),
             encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
-        })
+        }
     }
 }
 
-// TODO: get the real type exported.
-type MshvError = Box<dyn std::error::Error + Send + Sync>;
-
+// TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("operation not supported")]
     NotSupported,
     #[error("create_vm failed")]
     CreateVMFailed,
+    #[error("failed to initialize VM")]
+    CreateVMInitFailed(#[source] anyhow::Error),
     #[error("failed to create VCPU")]
     CreateVcpu(#[source] MshvError),
-    #[error("emulator GPA translation error")]
-    EmulatorTranslateGPA,
     #[error("vtl2 not supported")]
     Vtl2NotSupported,
     #[error("isolation not supported")]
@@ -1056,10 +1093,10 @@ pub enum Error {
     OpenMshv(#[source] MshvError),
     #[error("register access error")]
     Register(#[source] MshvError),
-    #[error("interrupt assertion failed")]
-    AssertInterrupt(#[source] MshvError),
     #[error("install instercept failed")]
     InstallIntercept(#[source] MshvError),
+    #[error("host does not support required cpu capabilities")]
+    Capabilities(virt::PartitionCapabilitiesError),
 }
 
 impl MshvPartitionInner {
@@ -1118,7 +1155,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         addr: u64,
         writable: bool,
         exec: bool,
-    ) -> Result<(), virt::Error> {
+    ) -> anyhow::Result<()> {
         let mut state = self.memory.lock();
 
         // Memory slots cannot be resized but can be moved within the guest
@@ -1140,19 +1177,19 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         }
         let slot_to_use = slot_to_use.unwrap();
 
-        let mut flags = HV_MAP_GPA_READABLE;
+        let mut flags = 0;
         if writable {
-            flags |= HV_MAP_GPA_WRITABLE;
+            flags |= set_bits!(u8, MSHV_SET_MEM_BIT_WRITABLE);
         }
         if exec {
-            flags |= HV_MAP_GPA_EXECUTABLE;
+            flags |= set_bits!(u8, MSHV_SET_MEM_BIT_EXECUTABLE);
         }
-
         let mem_region = mshv_user_mem_region {
             size: size as u64,
-            guest_pfn: addr,
+            guest_pfn: addr >> HV_PAGE_SHIFT,
             userspace_addr: data as u64,
             flags,
+            rsvd: [0; 7],
         };
 
         self.vmfd.map_user_memory(mem_region)?;
@@ -1160,13 +1197,15 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         Ok(())
     }
 
-    fn unmap_range(&self, addr: u64, size: u64) -> Result<(), virt::Error> {
+    fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let mut state = self.memory.lock();
         let (slot, range) = state
             .ranges
             .iter_mut()
             .enumerate()
-            .find(|(_, range)| range.as_ref().map(|r| (r.guest_pfn, r.size)) == Some((addr, size)))
+            .find(|(_, range)| {
+                range.as_ref().map(|r| (r.guest_pfn, r.size)) == Some((addr >> HV_PAGE_SHIFT, size))
+            })
             .expect("can only unmap existing ranges of exact size");
 
         self.vmfd.unmap_user_memory(range.unwrap())?;
@@ -1271,8 +1310,21 @@ fn hvu128_to_u128(r: &hv_u128) -> u128 {
 
 fn u128_to_hvu128(value: u128) -> hv_u128 {
     hv_u128 {
-        high_part: (value & (u64::MAX as u128)) as u64,
-        low_part: (value >> 64) as u64,
+        high_part: (value >> 64) as u64,
+        low_part: (value & (u64::MAX as u128)) as u64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn u128_roundtrip() {
+        let original = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
+        let hv = u128_to_hvu128(original);
+        let roundtrip = hvu128_to_u128(&hv);
+        assert_eq!(roundtrip, original);
     }
 }
 
@@ -1319,8 +1371,6 @@ impl InspectMut for MshvProcessor<'_> {
 }
 
 impl virt::Processor for MshvProcessor<'_> {
-    type Error = Error;
-    type RunVpError = MshvRunVpError;
     type StateAccess<'a>
         = &'a mut Self
     where
@@ -1330,7 +1380,7 @@ impl virt::Processor for MshvProcessor<'_> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
         Err(Error::NotSupported)
     }
 
@@ -1338,9 +1388,7 @@ impl virt::Processor for MshvProcessor<'_> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<MshvRunVpError>> {
-        #![allow(non_upper_case_globals)]
-
+    ) -> Result<Infallible, VpHaltReason> {
         let vpinner = self.inner;
         let _cleaner = MshvVpInnerCleaner { vpinner };
         let vcpufd = &vpinner.vcpufd;
@@ -1353,8 +1401,7 @@ impl virt::Processor for MshvProcessor<'_> {
             vpinner.needs_yield.maybe_yield().await;
             stop.check()?;
 
-            let hv_message: hv_message = Default::default();
-            match vcpufd.run(hv_message) {
+            match vcpufd.run() {
                 Ok(exit) => match HvMessageType(exit.header.message_type) {
                     HvMessageType::HvMessageTypeUnrecoverableException => {
                         return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
@@ -1368,11 +1415,11 @@ impl virt::Processor for MshvProcessor<'_> {
                     }
                     HvMessageType::HvMessageTypeSynicSintDeliverable => {
                         tracing::trace!("SYNIC_SINT_DELIVERABLE");
-                        self.handle_synic_deliverable_exit(&exit, dev)?;
+                        self.handle_synic_deliverable_exit(&exit, dev);
                     }
                     HvMessageType::HvMessageTypeHypercallIntercept => {
                         tracing::trace!("HYPERCALL_INTERCEPT");
-                        self.handle_hypercall_intercept(&exit, dev)?;
+                        self.handle_hypercall_intercept(&exit, dev);
                     }
                     exit => {
                         panic!("Unhandled vcpu exit code {exit:?}");
@@ -1390,21 +1437,12 @@ impl virt::Processor for MshvProcessor<'_> {
         }
     }
 
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError> {
-        Ok(())
-    }
+    fn flush_async_requests(&mut self) {}
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         self
     }
-}
-
-#[derive(Debug, Error)]
-
-pub enum MshvRunVpError {
-    #[error("/dev/mshv error")]
-    MsHv(#[from] vmm_sys_util::errno::Error),
 }
 
 fn x86emu_sreg_from_mshv_sreg(reg: mshv_bindings::SegmentRegister) -> SegmentRegister {
@@ -1435,10 +1473,20 @@ impl virt::Synic for MshvPartition {
             .post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort> {
         Box::new(MshvGuestEventPort {
             partition: Arc::downgrade(&self.inner),
-            params: Default::default(),
+            params: Arc::new(Mutex::new(MshvEventPortParams {
+                vp: VpIndex::new(vp),
+                sint,
+                flag,
+            })),
         })
     }
 
@@ -1451,7 +1499,7 @@ impl virt::Synic for MshvPartition {
 #[derive(Debug, Clone)]
 struct MshvGuestEventPort {
     partition: Weak<MshvPartitionInner>,
-    params: Arc<Mutex<Option<MshvEventPortParams>>>,
+    params: Arc<Mutex<MshvEventPortParams>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1466,39 +1514,23 @@ impl GuestEventPort for MshvGuestEventPort {
         let partition = self.partition.clone();
         let params = self.params.clone();
         Interrupt::from_fn(move || {
-            if let Some(MshvEventPortParams { vp, sint, flag }) = *params.lock() {
-                if let Some(partition) = partition.upgrade() {
-                    partition
-                        .vmfd
-                        .signal_event_direct(vp.index(), sint, flag)
-                        .unwrap_or_else(|_| {
-                            panic!(
-                                "Failed signal synic sint {} on vp {:?} with flag {}",
-                                sint, vp, flag
-                            )
-                        });
-                }
+            let MshvEventPortParams { vp, sint, flag } = *params.lock();
+            if let Some(partition) = partition.upgrade() {
+                partition
+                    .vmfd
+                    .signal_event_direct(vp.index(), sint, flag)
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "Failed signal synic sint {} on vp {:?} with flag {}",
+                            sint, vp, flag
+                        )
+                    });
             }
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        _vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.lock() = Some(MshvEventPortParams {
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-        });
-
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }

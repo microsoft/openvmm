@@ -39,7 +39,7 @@ impl UnixStream {
         // Generate a random path to bind to.
         let mut path = std::env::temp_dir();
         let mut n = [0; 16];
-        getrandom::getrandom(&mut n).unwrap();
+        getrandom::fill(&mut n).unwrap();
         path.push(format!("{:x}", u128::from_ne_bytes(n)));
         let listener = UnixListener::bind(&path)?;
 

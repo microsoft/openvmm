@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 //! Provides the [`open_enum`] macro.
 
@@ -24,7 +25,7 @@
 /// # #[macro_use] extern crate open_enum; fn main() {
 /// use open_enum::open_enum;
 /// open_enum! {
-///     #[allow(dead_code)] // This will apply to the generated struct defn
+///     #[expect(dead_code)] // This will apply to the generated struct defn
 ///     pub enum ExampleEnumName: u32 {
 ///         #![expect(missing_docs)] // This will apply to all subfields of the enum
 ///         THIS_IS_AN_ENUM = 32,
@@ -34,7 +35,7 @@
 /// //
 /// // #[repr(transparent)]
 //  // #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-/// // #[allow(dead_code)]
+/// // #[expect(dead_code)]
 /// // struct ExampleEnumName(u32);
 /// //
 /// // #[expect(missing_docs)]

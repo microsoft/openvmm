@@ -99,7 +99,7 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        ctx.emit_rust_step("report built vmfirmwareigvm_dll", |ctx| {
+        ctx.emit_minor_rust_step("report built vmfirmwareigvm_dll", |ctx| {
             let vmfirmwareigvm_dll = vmfirmwareigvm_dll.claim(ctx);
             let output = output.claim(ctx);
             move |rt| {
@@ -114,8 +114,6 @@ impl SimpleFlowNode for Node {
                 };
 
                 rt.write(vmfirmwareigvm_dll, &output);
-
-                Ok(())
             }
         });
 

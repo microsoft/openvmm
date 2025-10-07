@@ -4,19 +4,19 @@
 //! Remote Procedure Call functionality.
 
 use super::error::RemoteResult;
-use crate::error::RemoteError;
-use crate::oneshot;
 use crate::OneshotReceiver;
 use crate::OneshotSender;
 use crate::RecvError;
+use crate::error::RemoteError;
+use crate::oneshot;
 use mesh_node::message::MeshField;
 use mesh_protobuf::Protobuf;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 use thiserror::Error;
 
 /// An RPC message for a request with input of type `I` and output of type `R`.
@@ -70,10 +70,9 @@ impl<I, R: 'static + Send> Rpc<I, R> {
 
     /// Handles an RPC request by calling `f`, awaiting its result, and sending
     /// the result to the initiator.
-    pub async fn handle<F, Fut>(self, f: F)
+    pub async fn handle<F>(self, f: F)
     where
-        F: FnOnce(I) -> Fut,
-        Fut: Future<Output = R>,
+        F: AsyncFnOnce(I) -> R,
     {
         let r = f(self.0).await;
         self.1.send(r);
@@ -85,10 +84,9 @@ impl<I, R: 'static + Send> Rpc<I, R> {
     /// If `f` fails, the error is propagated back to the caller, and the RPC
     /// channel is dropped (resulting in a `RecvError::Closed` on the
     /// initiator).
-    pub async fn handle_must_succeed<F, Fut, E>(self, f: F) -> Result<(), E>
+    pub async fn handle_must_succeed<F, E>(self, f: F) -> Result<(), E>
     where
-        F: FnOnce(I) -> Fut,
-        Fut: Future<Output = Result<R, E>>,
+        F: AsyncFnOnce(I) -> Result<R, E>,
     {
         let r = f(self.0).await?;
         self.1.send(r);
@@ -116,10 +114,9 @@ impl<I, R: 'static + Send> Rpc<I, Result<R, RemoteError>> {
     /// Handles an RPC request by calling `f`, awaiting its result, and sending
     /// the result to the initiator, after converting any error to a
     /// [`RemoteError`].
-    pub async fn handle_failable<F, Fut, E>(self, f: F)
+    pub async fn handle_failable<F, E>(self, f: F)
     where
-        F: FnOnce(I) -> Fut,
-        Fut: Future<Output = Result<R, E>>,
+        F: AsyncFnOnce(I) -> Result<R, E>,
         E: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         let r = f(self.0).await;
@@ -296,24 +293,7 @@ impl<T: 'static + Send> RpcSend for OneshotSender<T> {
     }
 }
 
-#[cfg(feature = "newchan")]
 impl<T: 'static + Send> RpcSend for &mesh_channel_core::Sender<T> {
-    type Message = T;
-    fn send_rpc(self, message: T) {
-        self.send(message);
-    }
-}
-
-#[cfg(not(feature = "newchan_spsc"))]
-impl<T: 'static + Send> RpcSend for &crate::Sender<T> {
-    type Message = T;
-    fn send_rpc(&self, message: T) {
-        self.send(message);
-    }
-}
-
-#[cfg(not(feature = "newchan_mpsc"))]
-impl<T: 'static + Send> RpcSend for &crate::MpscSender<T> {
     type Message = T;
     fn send_rpc(self, message: T) {
         self.send(message);

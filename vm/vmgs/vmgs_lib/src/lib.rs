@@ -6,13 +6,14 @@
 // UNSAFETY: Exporting no_mangle extern C functions and dealing with the raw
 // pointers necessary to do so.
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 use core::slice;
 use disk_backend::Disk;
 use disk_vhd1::Vhd1Disk;
 use futures::executor::block_on;
-use std::ffi::c_char;
 use std::ffi::CStr;
+use std::ffi::c_char;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -35,7 +36,7 @@ pub enum VmgsError {
     InvalidFileSize = 7,
     InvalidString = 8,
     InvalidVmgs = 9,
-    FileInfoAllocated = 10,
+    FileInfoNotAllocated = 10,
     DecryptionFailed = 11,
     EncryptionFailed = 12,
     WriteFailed = 13,
@@ -121,18 +122,17 @@ async fn do_read(
     file_id: FileId,
     key: Option<&[u8]>,
 ) -> Result<Vec<u8>, VmgsError> {
-    let mut vmgs = Vmgs::open(open_disk(file_path, true)?)
+    let mut vmgs = Vmgs::open(open_disk(file_path, true)?, None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
     let info = vmgs
         .get_file_info(file_id)
-        .map_err(|_| VmgsError::FileInfoAllocated)?;
+        .map_err(|_| VmgsError::FileInfoNotAllocated)?;
     let data_size = info.valid_bytes;
 
     if let Some(encryption_key) = key {
-        let _key_index = vmgs
-            .unlock_with_encryption_key(encryption_key)
+        vmgs.unlock_with_encryption_key(encryption_key)
             .await
             .map_err(|_| VmgsError::DecryptionFailed)?;
     }
@@ -211,7 +211,7 @@ async fn do_write(
     file.read_to_end(&mut buf)
         .map_err(|_| VmgsError::CantReadFile)?;
 
-    let mut vmgs = Vmgs::open(open_disk(file_path, false)?)
+    let mut vmgs = Vmgs::open(open_disk(file_path, false)?, None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -297,7 +297,9 @@ async fn do_create(
         }
     }
 
-    if file_size != 0 && file_size < (VMGS_BYTES_PER_BLOCK * 4) as u64 || file_size % 512 != 0 {
+    if file_size != 0 && file_size < (VMGS_BYTES_PER_BLOCK * 4) as u64
+        || !file_size.is_multiple_of(512)
+    {
         return Err(VmgsError::InvalidFileSize);
     }
     let file_size = if file_size == 0 {
@@ -320,12 +322,12 @@ async fn do_create(
 
     let disk = Vhd1Disk::open_fixed(file, false).map_err(|_| VmgsError::FileDisk)?;
 
-    let mut vmgs = Vmgs::format_new(Disk::new(disk).map_err(|_| VmgsError::FileDisk)?)
+    let mut vmgs = Vmgs::format_new(Disk::new(disk).map_err(|_| VmgsError::FileDisk)?, None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
     if let Some(encryption_key) = key {
-        vmgs.add_new_encryption_key(encryption_key, EncryptionAlgorithm::AES_GCM)
+        vmgs.update_encryption_key(encryption_key, EncryptionAlgorithm::AES_GCM)
             .await
             .map_err(|_| VmgsError::EncryptionFailed)?;
     }
@@ -367,13 +369,13 @@ pub unsafe extern "C" fn query_size_vmgs(
 }
 
 async fn do_query_size(file_path: &str, file_id: FileId) -> Result<u64, VmgsError> {
-    let vmgs = Vmgs::open(open_disk(file_path, true)?)
+    let vmgs = Vmgs::open(open_disk(file_path, true)?, None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
     let info = vmgs
         .get_file_info(file_id)
-        .map_err(|_| VmgsError::FileInfoAllocated)?;
+        .map_err(|_| VmgsError::FileInfoNotAllocated)?;
 
     Ok(info.valid_bytes)
 }

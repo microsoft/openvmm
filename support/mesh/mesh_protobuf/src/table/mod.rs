@@ -56,17 +56,17 @@ pub unsafe trait StructMetadata {
 #[cfg(test)]
 #[expect(clippy::undocumented_unsafe_blocks)]
 mod tests {
+    use super::StructMetadata;
+    use super::TableEncoder;
     use super::decode::ErasedDecoderEntry;
     use super::decode::StructDecodeMetadata;
     use super::encode::ErasedEncoderEntry;
     use super::encode::StructEncodeMetadata;
-    use super::StructMetadata;
-    use super::TableEncoder;
+    use crate::FieldDecode;
+    use crate::FieldEncode;
     use crate::encoding::StringField;
     use crate::encoding::VarintField;
     use crate::tests::as_expect_str;
-    use crate::FieldDecode;
-    use crate::FieldEncode;
     use core::mem::offset_of;
     use expect_test::expect;
 

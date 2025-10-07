@@ -6,9 +6,9 @@
 //! version.
 use super::super::*;
 use super::*;
+use x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX;
 use x86defs::snp::HvPspCpuidLeaf;
 use x86defs::snp::HvPspCpuidPage;
-use x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX;
 use zerocopy::FromZeros;
 
 /// Tests that xfem results put into page 0 are ignored
@@ -47,13 +47,16 @@ fn extended_state_enumeration_wrong_page() {
 
     fill_required_leaves(&mut pages, None);
 
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+        access_vsm: false,
+        vtom: 0x80000000,
+    }
+    .build()
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
         CpuidResult {
             eax: u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK)
                 | xsave::X86X_XSAVE_LEGACY_FEATURES as u32,
@@ -64,7 +67,7 @@ fn extended_state_enumeration_wrong_page() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
         CpuidResult {
             eax: 0xb,
             ebx: 0xffffffff,
@@ -161,14 +164,17 @@ fn real_xfem() {
 
     fill_required_leaves(&mut pages, None);
 
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+        access_vsm: false,
+        vtom: 0x80000000,
+    }
+    .build()
     .unwrap();
 
     // results generated from running the HCL implementation
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
         CpuidResult {
             eax: 0x7,
             ebx: 0x240,
@@ -178,7 +184,7 @@ fn real_xfem() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
         CpuidResult {
             eax: 0xb,
             ebx: 0x240,
@@ -188,7 +194,7 @@ fn real_xfem() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 2),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 2),
         CpuidResult {
             eax: 0x100,
             ebx: 0x240,
@@ -198,7 +204,7 @@ fn real_xfem() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0xb),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 0xb),
         CpuidResult {
             eax: 0x10,
             ebx: 0x0,
@@ -208,7 +214,7 @@ fn real_xfem() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0xc),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 0xc),
         CpuidResult {
             eax: 0x18,
             ebx: 0x0,
@@ -218,7 +224,7 @@ fn real_xfem() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedFeatures, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedFeatures, 0),
         CpuidResult {
             eax: 0x0,
             ebx: 0x219c05a9,
@@ -237,7 +243,7 @@ fn run_fake_xfem_test(
     subleaf1_eax: u32,
     subleaf1_mask_low: u32,
     adjustable_leaf_eax: u32,
-    validation_fn: impl FnOnce(&CpuidResults),
+    validation_fn: impl FnOnce(&CpuidLeafSet),
 ) {
     let mut pages = vec![HvPspCpuidPage::new_zeroed(), HvPspCpuidPage::new_zeroed()];
     pages[0].cpuid_leaf_info[0] = HvPspCpuidLeaf {
@@ -331,9 +337,12 @@ fn run_fake_xfem_test(
         }
     }
 
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+        access_vsm: false,
+        vtom: 0x80000000,
+    }
+    .build()
     .unwrap();
 
     validation_fn(&cpuid);
@@ -342,7 +351,7 @@ fn run_fake_xfem_test(
         // These should get masked out
         if !allowed_subleaf(i) {
             assert_eq!(
-                cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, i),
+                cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, i),
                 ZERO_CPUID_RESULT
             );
         }
@@ -355,11 +364,15 @@ fn xfem_baseline() {
     let xsave_mask_low = 0xffffffff;
     let xss_mask_low = 0xffffffff;
 
-    let validation = |cpuid: &CpuidResults| {
+    let validation = |cpuid: &CpuidLeafSet| {
+        let result = |a: CpuidFunction, b| {
+            let [eax, ebx, ecx, edx] = cpuid.result(a.0, b, &[0; 4]);
+            CpuidResult { eax, ebx, ecx, edx }
+        };
         // expected results generated from running it through the HCL's
         // implementation
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedFeatures, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedFeatures, 0),
             CpuidResult {
                 eax: 0,
                 ebx: 0,
@@ -369,7 +382,7 @@ fn xfem_baseline() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
             CpuidResult {
                 eax: u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK)
                     | xsave::X86X_XSAVE_LEGACY_FEATURES as u32,
@@ -380,7 +393,7 @@ fn xfem_baseline() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
             CpuidResult {
                 eax: 0xb,
                 ebx: 0xffffffff,
@@ -393,7 +406,7 @@ fn xfem_baseline() {
             if (1 << i) & u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK) as u64 != 0 {
                 println!("testing extended state enumeration subleaf {i}");
                 assert_eq!(
-                    cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, i),
+                    cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, i),
                     CpuidResult {
                         eax: 0xff,
                         ebx: 1 << (i % 32),
@@ -405,7 +418,7 @@ fn xfem_baseline() {
         }
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_U
             ),
@@ -418,7 +431,7 @@ fn xfem_baseline() {
         );
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_S
             ),
@@ -445,11 +458,15 @@ fn xfem_cet() {
     // make xsave_s and xsave_c true so that the xss mask is considered
     let xss_eax = 0xffffffff;
 
-    let validation = |cpuid: &CpuidResults| {
+    let validation = |cpuid: &CpuidLeafSet| {
+        let result = |a: CpuidFunction, b| {
+            let [eax, ebx, ecx, edx] = cpuid.result(a.0, b, &[0; 4]);
+            CpuidResult { eax, ebx, ecx, edx }
+        };
         // expected results generated from running it through the HCL's
         // implementation
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedFeatures, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedFeatures, 0),
             CpuidResult {
                 eax: 0,
                 ebx: 0,
@@ -459,7 +476,7 @@ fn xfem_cet() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
             CpuidResult {
                 eax: u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK)
                     | xsave::X86X_XSAVE_LEGACY_FEATURES as u32,
@@ -470,7 +487,7 @@ fn xfem_cet() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
             CpuidResult {
                 eax: 0xb,
                 ebx: 0xffffffff,
@@ -482,7 +499,7 @@ fn xfem_cet() {
         for i in 0..64 {
             if (1 << i) & u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK) as u64 != 0 {
                 assert_eq!(
-                    cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, i),
+                    cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, i),
                     CpuidResult {
                         eax: 0xff,
                         ebx: 1 << (i % 32),
@@ -494,7 +511,7 @@ fn xfem_cet() {
         }
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_U
             ),
@@ -502,7 +519,7 @@ fn xfem_cet() {
         );
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_S
             ),
@@ -523,11 +540,15 @@ fn xfem_xsave_mask() {
     // test the mask capabilities, so xsave_s and xsave_c should be 1
     let subleaf1_eax = 0xffffffff;
 
-    let validation = |cpuid: &CpuidResults| {
+    let validation = |cpuid: &CpuidLeafSet| {
+        let result = |a: CpuidFunction, b| {
+            let [eax, ebx, ecx, edx] = cpuid.result(a.0, b, &[0; 4]);
+            CpuidResult { eax, ebx, ecx, edx }
+        };
         // expected results generated from running it through the HCL's
         // implementation
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedFeatures, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedFeatures, 0),
             CpuidResult {
                 eax: 0,
                 ebx: 0,
@@ -537,7 +558,7 @@ fn xfem_xsave_mask() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
             CpuidResult {
                 eax: u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK)
                     | xsave::X86X_XSAVE_LEGACY_FEATURES as u32,
@@ -548,7 +569,7 @@ fn xfem_xsave_mask() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
             CpuidResult {
                 eax: 0xb,
                 ebx: 0xffffffff,
@@ -560,7 +581,7 @@ fn xfem_xsave_mask() {
         for i in 0..64 {
             if (1 << i) & u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK) as u64 != 0 {
                 assert_eq!(
-                    cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, i),
+                    cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, i),
                     CpuidResult {
                         eax: 0xff,
                         ebx: 1 << (i % 32),
@@ -572,7 +593,7 @@ fn xfem_xsave_mask() {
         }
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_U
             ),
@@ -580,7 +601,7 @@ fn xfem_xsave_mask() {
         );
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_S
             ),
@@ -601,11 +622,15 @@ fn xfem_xss_mask() {
     // test the mask capabilities, so xsave_s and xsave_c should be 1
     let subleaf1_eax = 0xffffffff;
 
-    let validation = |cpuid: &CpuidResults| {
+    let validation = |cpuid: &CpuidLeafSet| {
+        let result = |a: CpuidFunction, b| {
+            let [eax, ebx, ecx, edx] = cpuid.result(a.0, b, &[0; 4]);
+            CpuidResult { eax, ebx, ecx, edx }
+        };
         // expected results generated from running it through the HCL's
         // implementation
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedFeatures, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedFeatures, 0),
             CpuidResult {
                 eax: 0,
                 ebx: 0,
@@ -615,7 +640,7 @@ fn xfem_xss_mask() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
             CpuidResult {
                 eax: xsave::X86X_XSAVE_LEGACY_FEATURES as u32,
                 ebx: 0x0,
@@ -625,7 +650,7 @@ fn xfem_xss_mask() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
             CpuidResult {
                 eax: 0xb,
                 ebx: 0xffffffff,
@@ -637,14 +662,14 @@ fn xfem_xss_mask() {
         for i in 0..64 {
             if (1 << i) & u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK) as u64 != 0 {
                 assert_eq!(
-                    cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, i),
+                    cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, i),
                     ZERO_CPUID_RESULT
                 );
             }
         }
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_U
             ),
@@ -657,7 +682,7 @@ fn xfem_xss_mask() {
         );
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_S
             ),
@@ -681,11 +706,15 @@ fn xfem_masked_out() {
     // make xsave_s and xsave_c 1 to test xss mask
     let subleaf1_eax = 0xffffffff;
 
-    let validation = |cpuid: &CpuidResults| {
+    let validation = |cpuid: &CpuidLeafSet| {
+        let result = |a: CpuidFunction, b| {
+            let [eax, ebx, ecx, edx] = cpuid.result(a.0, b, &[0; 4]);
+            CpuidResult { eax, ebx, ecx, edx }
+        };
         // expected results generated from running it through the HCL's
         // implementation
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedFeatures, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedFeatures, 0),
             CpuidResult {
                 eax: 0,
                 ebx: 0,
@@ -695,7 +724,7 @@ fn xfem_masked_out() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
             CpuidResult {
                 eax: xsave::X86X_XSAVE_LEGACY_FEATURES as u32,
                 ebx: 0x0,
@@ -705,7 +734,7 @@ fn xfem_masked_out() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
             CpuidResult {
                 eax: 0xb,
                 ebx: 0xffffffff,
@@ -717,14 +746,14 @@ fn xfem_masked_out() {
         for i in 0..64 {
             if (1 << i) & u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK) as u64 != 0 {
                 assert_eq!(
-                    cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, i),
+                    cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, i),
                     ZERO_CPUID_RESULT
                 );
             }
         }
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_U
             ),
@@ -732,7 +761,7 @@ fn xfem_masked_out() {
         );
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_S
             ),
@@ -762,11 +791,15 @@ fn xfem_xsave_cs() {
             .with_xsave_c(true),
     );
 
-    let validation = |cpuid: &CpuidResults| {
+    let validation = |cpuid: &CpuidLeafSet| {
+        let result = |a: CpuidFunction, b| {
+            let [eax, ebx, ecx, edx] = cpuid.result(a.0, b, &[0; 4]);
+            CpuidResult { eax, ebx, ecx, edx }
+        };
         // expected results generated from running it through the HCL's
         // implementation
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedFeatures, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedFeatures, 0),
             CpuidResult {
                 eax: 0,
                 ebx: 0,
@@ -776,7 +809,7 @@ fn xfem_xsave_cs() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
             CpuidResult {
                 eax: u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK)
                     | xsave::X86X_XSAVE_LEGACY_FEATURES as u32,
@@ -787,7 +820,7 @@ fn xfem_xsave_cs() {
         );
 
         assert_eq!(
-            cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+            cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
             CpuidResult {
                 eax: 0x1,
                 ebx: 0xffffffff,
@@ -799,7 +832,7 @@ fn xfem_xsave_cs() {
         for i in 0..64 {
             if (1 << i) & u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK) as u64 != 0 {
                 assert_eq!(
-                    cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, i),
+                    cpuid_result(cpuid, CpuidFunction::ExtendedStateEnumeration, i),
                     CpuidResult {
                         eax: 0xff,
                         ebx: 1 << (i % 32),
@@ -811,7 +844,7 @@ fn xfem_xsave_cs() {
         }
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_U
             ),
@@ -819,7 +852,7 @@ fn xfem_xsave_cs() {
         );
 
         assert_eq!(
-            cpuid.registered_result(
+            result(
                 CpuidFunction::ExtendedStateEnumeration,
                 xsave::XSAVE_SUPERVISOR_FEATURE_INDEX_CET_S
             ),
@@ -911,13 +944,16 @@ fn xfem_bounds() {
 
     fill_required_leaves(&mut pages, None);
 
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+        access_vsm: false,
+        vtom: 0x80000000,
+    }
+    .build()
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedFeatures, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedFeatures, 0),
         CpuidResult {
             eax: 0,
             ebx: 0,
@@ -927,7 +963,7 @@ fn xfem_bounds() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 0),
         CpuidResult {
             eax: u32::from(XSAVE_ADDITIONAL_SUBLEAF_MASK)
                 | xsave::X86X_XSAVE_LEGACY_FEATURES as u32,
@@ -938,7 +974,7 @@ fn xfem_bounds() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedStateEnumeration, 1),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedStateEnumeration, 1),
         CpuidResult {
             eax: 0xb,
             ebx: 0xffffffff,
@@ -948,7 +984,8 @@ fn xfem_bounds() {
     );
 
     assert_eq!(
-        cpuid.registered_result(
+        cpuid_result(
+            &cpuid,
             CpuidFunction::ExtendedStateEnumeration,
             MAX_EXTENDED_STATE_ENUMERATION_SUBLEAF
         ),
@@ -956,7 +993,8 @@ fn xfem_bounds() {
     );
 
     assert_eq!(
-        cpuid.registered_result(
+        cpuid_result(
+            &cpuid,
             CpuidFunction::ExtendedStateEnumeration,
             MAX_EXTENDED_STATE_ENUMERATION_SUBLEAF + 1
         ),
@@ -1002,9 +1040,12 @@ fn xfem_missing_subleaf0() {
     );
 
     assert!(matches!(
-        CpuidResults::new(CpuidResultsIsolationType::Snp {
+        CpuidResultsIsolationType::Snp {
             cpuid_pages: pages.as_slice().as_bytes(),
-        }),
+            access_vsm: false,
+            vtom: 0x80000000,
+        }
+        .build(),
         Err(CpuidResultsError::MissingRequiredResult(
             CpuidFunction::ExtendedStateEnumeration,
             Some(0)
@@ -1049,9 +1090,12 @@ fn xfem_missing_subleaf1() {
     );
 
     assert!(matches!(
-        CpuidResults::new(CpuidResultsIsolationType::Snp {
+        CpuidResultsIsolationType::Snp {
             cpuid_pages: pages.as_slice().as_bytes(),
-        }),
+            access_vsm: false,
+            vtom: 0x80000000,
+        }
+        .build(),
         Err(CpuidResultsError::MissingRequiredResult(
             CpuidFunction::ExtendedStateEnumeration,
             Some(1)
@@ -1110,9 +1154,12 @@ fn xfem_missing_additional_subleaf() {
     );
 
     assert!(matches!(
-        CpuidResults::new(CpuidResultsIsolationType::Snp {
+        CpuidResultsIsolationType::Snp {
             cpuid_pages: pages.as_slice().as_bytes(),
-        }),
+            access_vsm: false,
+            vtom: 0x80000000,
+        }
+        .build(),
         Err(CpuidResultsError::MissingRequiredResult(
             CpuidFunction::ExtendedStateEnumeration,
             Some(2)

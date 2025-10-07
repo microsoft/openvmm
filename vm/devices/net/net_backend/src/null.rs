@@ -3,8 +3,6 @@
 
 //! Null (disconnected) endpoint.
 
-use crate::resolve::ResolveEndpointParams;
-use crate::resolve::ResolvedEndpoint;
 use crate::BufferAccess;
 use crate::Endpoint;
 use crate::MultiQueueSupport;
@@ -12,18 +10,21 @@ use crate::Queue;
 use crate::QueueConfig;
 use crate::RssConfig;
 use crate::RxId;
+use crate::TxError;
 use crate::TxId;
 use crate::TxOffloadSupport;
 use crate::TxSegment;
+use crate::resolve::ResolveEndpointParams;
+use crate::resolve::ResolvedEndpoint;
 use async_trait::async_trait;
 use inspect::InspectMut;
 use net_backend_resources::null::NullHandle;
 use std::convert::Infallible;
 use std::task::Context;
 use std::task::Poll;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::NetEndpointHandleKind;
-use vm_resource::ResolveResource;
 
 pub struct NullResolver;
 
@@ -114,7 +115,7 @@ impl Queue for NullQueue {
         Ok((true, packets.len()))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         Ok(0)
     }
 

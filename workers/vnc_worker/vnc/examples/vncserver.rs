@@ -37,7 +37,7 @@ impl vnc::Input for IgnoreInput {
 }
 
 fn main() -> Result<(), Error> {
-    block_with_io(|driver| async move {
+    block_with_io(async |driver| {
         let light_grey = pixel(127, 127, 127);
         let dark_grey = pixel(63, 63, 63);
         // Checkerboard pattern.

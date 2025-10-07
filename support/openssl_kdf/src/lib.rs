@@ -12,6 +12,7 @@
 
 // Currently this crate is only consumed by other cfg(unix) crates.
 #![cfg(unix)]
+#![expect(missing_docs)]
 // UNSAFETY: Calls into openssl.
 #![expect(unsafe_code)]
 

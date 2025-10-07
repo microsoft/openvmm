@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::tests::common::run_test;
 use crate::tests::common::RFLAGS_LOGIC_MASK;
+use crate::tests::common::run_test;
 use iced_x86::code_asm::*;
 use x86emu::Cpu;
 use x86emu::Gp;

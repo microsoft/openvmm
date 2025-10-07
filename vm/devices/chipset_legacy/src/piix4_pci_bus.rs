@@ -3,11 +3,11 @@
 
 //! PIIX4 - PCI bus
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use inspect::InspectMut;
 use pci_bus::GenericPciBus;
 use vmcore::device_state::ChangeDeviceState;

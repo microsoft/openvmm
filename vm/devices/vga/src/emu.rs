@@ -9,13 +9,13 @@ use crate::render::RenderState;
 use crate::render::TextRenderState;
 use crate::spec;
 use crate::spec::CrtControlReg;
+use crate::spec::VGA_FUNCTION_SELECT_AND;
+use crate::spec::VGA_FUNCTION_SELECT_NORMAL;
+use crate::spec::VGA_FUNCTION_SELECT_OR;
 use crate::spec::VgaAttribReg;
 use crate::spec::VgaGraphicsReg;
 use crate::spec::VgaPort;
 use crate::spec::VgaSequencerReg;
-use crate::spec::VGA_FUNCTION_SELECT_AND;
-use crate::spec::VGA_FUNCTION_SELECT_NORMAL;
-use crate::spec::VGA_FUNCTION_SELECT_OR;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use framebuffer::FramebufferLocalControl;
@@ -1454,7 +1454,6 @@ impl Emulator {
         }
 
         if self.state.persistent_state.crt_regs_locked {
-            #[expect(clippy::comparison_chain)]
             if reg == CrtControlReg::OVERFLOW_REGISTER {
                 // Only update bit 4.
                 value &= 0x10;

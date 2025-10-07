@@ -9,11 +9,11 @@ use super::InternalHaltReason;
 #[cfg(feature = "gdb")]
 use anyhow::Context as _;
 use async_trait::async_trait;
+use futures::FutureExt;
+use futures::StreamExt;
 use futures::future::JoinAll;
 use futures::future::TryJoinAll;
 use futures::stream::select_with_strategy;
-use futures::FutureExt;
-use futures::StreamExt;
 use futures_concurrency::future::Race;
 use futures_concurrency::stream::Merge;
 use guestmem::GuestMemory;
@@ -22,20 +22,17 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use pal_async::local::block_with_io;
 use parking_lot::Mutex;
 use slab::Slab;
 use std::future::Future;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
 use tracing::instrument;
-use virt::io::CpuIo;
-use virt::vp::AccessVpState;
 use virt::InitialRegs;
 use virt::Processor;
 use virt::StopVp;
@@ -43,6 +40,8 @@ use virt::StopVpSource;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::VpStopped;
+use virt::io::CpuIo;
+use virt::vp::AccessVpState;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::save_restore::ProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
@@ -136,36 +135,19 @@ where
             VpHaltReason::Cancel => Ok(StopReason::Cancel),
             VpHaltReason::PowerOff => Err(HaltReason::PowerOff),
             VpHaltReason::Reset => Err(HaltReason::Reset),
+            VpHaltReason::Hibernate => Err(HaltReason::Hibernate),
             VpHaltReason::TripleFault { vtl } => {
                 let registers = self.vp.access_state(vtl).registers().ok().map(Arc::new);
 
+                tracing::error!(?vtl, vp = self.vp_index.index(), "triple fault");
                 self.trace_fault(
                     vtl,
                     vtl_guest_memory[vtl as usize].as_ref(),
                     registers.as_deref(),
                 );
-                tracing::error!(?vtl, "triple fault");
                 Err(HaltReason::TripleFault {
                     vp: self.vp_index.index(),
                     registers,
-                })
-            }
-            VpHaltReason::InvalidVmState(err) => {
-                tracing::error!(err = &err as &dyn std::error::Error, "invalid vm state");
-                Err(HaltReason::InvalidVmState {
-                    vp: self.vp_index.index(),
-                })
-            }
-            VpHaltReason::EmulationFailure(error) => {
-                tracing::error!(error, "emulation failure");
-                Err(HaltReason::VpError {
-                    vp: self.vp_index.index(),
-                })
-            }
-            VpHaltReason::Hypervisor(err) => {
-                tracing::error!(err = &err as &dyn std::error::Error, "fatal vp error");
-                Err(HaltReason::VpError {
-                    vp: self.vp_index.index(),
                 })
             }
             VpHaltReason::SingleStep => {
@@ -261,8 +243,8 @@ where
 {
     fn inspect_vtl(&mut self, gm: Option<&GuestMemory>, req: inspect::Request<'_>, vtl: Vtl) {
         let mut resp = req.respond();
-        resp.field("enabled", true);
-        self.vp.access_state(vtl).inspect_all(resp.request());
+        resp.field("enabled", true)
+            .merge(self.vp.access_state(vtl).inspect_all());
 
         let _ = gm;
         #[cfg(all(guest_arch = "x86_64", feature = "gdb"))]
@@ -294,6 +276,8 @@ where
         guest_memory: Option<&GuestMemory>,
         registers: Option<&virt::x86::vp::Registers>,
     ) {
+        use cvm_tracing::CVM_CONFIDENTIAL;
+
         #[cfg(not(feature = "gdb"))]
         let _ = (guest_memory, vtl);
 
@@ -338,10 +322,33 @@ where
             efer,
         } = *registers;
         tracing::error!(
-            rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15, rip,
+            CVM_CONFIDENTIAL,
+            vp = self.vp_index.index(),
+            ?vtl,
+            rax,
+            rcx,
+            rdx,
+            rbx,
+            rsp,
+            rbp,
+            rsi,
+            rdi,
+            r8,
+            r9,
+            r10,
+            r11,
+            r12,
+            r13,
+            r14,
+            r15,
+            rip,
             rflags,
+            "triple fault register state",
         );
         tracing::error!(
+            CVM_CONFIDENTIAL,
+            ?vtl,
+            vp = self.vp_index.index(),
             ?cs,
             ?ds,
             ?es,
@@ -358,6 +365,7 @@ where
             cr4,
             cr8,
             efer,
+            "triple fault system register state",
         );
 
         #[cfg(feature = "gdb")]
@@ -366,6 +374,7 @@ where
                 vp_state::next_instruction(guest_memory, self, vtl, registers)
             {
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     instruction = instr.to_string(),
                     ?bytes,
                     "faulting instruction"
@@ -687,7 +696,6 @@ impl Drop for Halted<'_> {
 struct Inner {
     #[inspect(flatten)]
     halt: Arc<Halt>,
-    #[cfg_attr(not(feature = "gdb"), allow(dead_code))]
     #[inspect(skip)]
     vtl_guest_memory: [Option<GuestMemory>; NUM_VTLS],
 }
@@ -710,10 +718,12 @@ struct Vp {
 
 impl Inspect for Vp {
     fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        resp.merge(&self.vp_info);
-        self.send
-            .send(VpEvent::State(StateEvent::Inspect(resp.request().defer())));
+        req.respond()
+            .merge(&self.vp_info)
+            .merge(inspect::adhoc(|req| {
+                self.send
+                    .send(VpEvent::State(StateEvent::Inspect(req.defer())))
+            }));
     }
 }
 
@@ -765,7 +775,7 @@ impl VpSet {
     }
 
     /// Initiates a halt to the VPs.
-    #[cfg_attr(not(feature = "gdb"), allow(dead_code))]
+    #[cfg_attr(not(feature = "gdb"), expect(dead_code))]
     pub fn halt(&mut self, reason: HaltReason) {
         self.inner.halt.halt(reason);
     }
@@ -800,7 +810,7 @@ impl VpSet {
         self.vps
             .iter()
             .enumerate()
-            .map(|(index, vp)| async move {
+            .map(async |(index, vp)| {
                 let data = vp
                     .send
                     .call(|x| VpEvent::State(StateEvent::Save(x)), ())
@@ -1034,7 +1044,15 @@ impl RunnerCanceller {
 
 /// Error returned when a VP run is cancelled.
 #[derive(Debug)]
-pub struct RunCancelled;
+pub struct RunCancelled(bool);
+
+impl RunCancelled {
+    /// Returns `true` if the run was cancelled by the user, or `false` if it was
+    /// cancelled by the VP itself.
+    pub fn is_user_cancelled(&self) -> bool {
+        self.0
+    }
+}
 
 struct RunnerInner {
     vp: VpIndex,
@@ -1081,7 +1099,7 @@ impl VpRunner {
                 let r = (self.recv.next().map(Ok), self.cancel_recv.next().map(Err))
                     .race()
                     .await
-                    .map_err(|_| RunCancelled)?;
+                    .map_err(|_| RunCancelled(true))?;
                 match r {
                     Some(VpEvent::Start) => {
                         assert_eq!(self.inner.state, VpState::Stopped);
@@ -1106,7 +1124,7 @@ impl VpRunner {
 
             let mut stop_complete = None;
             let mut state_requests = Vec::new();
-            let mut cancelled = false;
+            let mut cancelled_by_user = None;
             {
                 enum Event {
                     Vp(VpEvent),
@@ -1173,7 +1191,7 @@ impl VpRunner {
                         Event::Cancel => {
                             tracing::debug!("run cancelled externally");
                             stop.stop();
-                            cancelled = true;
+                            cancelled_by_user = Some(true);
                         }
                         Event::Teardown => {
                             tracing::debug!("tearing down");
@@ -1187,7 +1205,7 @@ impl VpRunner {
                                 }
                                 Ok(StopReason::Cancel) => {
                                     tracing::debug!("run cancelled internally");
-                                    cancelled = true;
+                                    cancelled_by_user = Some(false);
                                 }
                                 Err(halt_reason) => {
                                     tracing::debug!("VP halted");
@@ -1208,8 +1226,8 @@ impl VpRunner {
                 send.send(());
             }
 
-            if cancelled {
-                return Err(RunCancelled);
+            if let Some(by_user) = cancelled_by_user {
+                return Err(RunCancelled(by_user));
             }
         }
     }
@@ -1220,8 +1238,10 @@ impl RunnerInner {
         match event {
             StateEvent::Inspect(deferred) => {
                 deferred.respond(|resp| {
-                    resp.field("state", self.state);
-                    vp.inspect_vp(&self.inner.vtl_guest_memory, resp.request());
+                    resp.field("state", self.state)
+                        .merge(inspect::adhoc_mut(|req| {
+                            vp.inspect_vp(&self.inner.vtl_guest_memory, req)
+                        }));
                 });
             }
             StateEvent::SetInitialRegs(rpc) => {
@@ -1352,7 +1372,7 @@ mod vp_state {
         vtl: Vtl,
         gva: u64,
         buf: &mut [u8],
-    ) -> Result<(), anyhow::Error> {
+    ) -> anyhow::Result<()> {
         let mut offset = 0;
         while offset < buf.len() {
             let gpa = translate_gva(guest_memory, debug, vtl, gva + offset as u64)
@@ -1370,7 +1390,7 @@ mod vp_state {
         vtl: Vtl,
         gva: u64,
         buf: &[u8],
-    ) -> Result<(), anyhow::Error> {
+    ) -> anyhow::Result<()> {
         let mut offset = 0;
         while offset < buf.len() {
             let gpa = translate_gva(guest_memory, debug, vtl, gva + offset as u64)
@@ -1500,11 +1520,9 @@ impl<T: virt::Partition> RequestYield for T {
 /// waker needs to ask the VP to yield).
 pub fn block_on_vp<F: Future>(partition: Arc<dyn RequestYield>, vp: VpIndex, fut: F) -> F::Output {
     let mut fut = pin!(fut);
-    block_with_io(|_| {
-        std::future::poll_fn(|cx| {
-            let waker = Arc::new(VpWaker::new(partition.clone(), vp, cx.waker().clone())).into();
-            let mut cx = Context::from_waker(&waker);
-            fut.poll_unpin(&mut cx)
-        })
-    })
+    pal_async::local::block_on(std::future::poll_fn(|cx| {
+        let waker = Arc::new(VpWaker::new(partition.clone(), vp, cx.waker().clone())).into();
+        let mut cx = Context::from_waker(&waker);
+        fut.poll_unpin(&mut cx)
+    }))
 }

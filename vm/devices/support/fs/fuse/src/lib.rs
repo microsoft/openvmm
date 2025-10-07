@@ -4,6 +4,8 @@
 //! A Rust helper library for creating File-system in User Space (FUSE) daemons, aimed in
 //! particular at virtio-fs.
 
+#![expect(missing_docs)]
+
 #[cfg(unix)]
 mod conn;
 pub mod protocol;

@@ -7,6 +7,7 @@ use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -113,17 +114,19 @@ impl FlowNode for Node {
                         crate::run_cargo_build::BuildProfile::UnderhillShip
                     }
                 },
-                features: features
-                    .iter()
-                    .map(|f| {
-                        match f {
-                            OpenvmmHclFeature::Gdb => "gdb",
-                            OpenvmmHclFeature::Tpm => "tpm",
-                            OpenvmmHclFeature::LocalOnlyCustom(s) => s,
-                        }
-                        .into()
-                    })
-                    .collect(),
+                features: CargoFeatureSet::Specific(
+                    features
+                        .iter()
+                        .map(|f| {
+                            match f {
+                                OpenvmmHclFeature::Gdb => "gdb",
+                                OpenvmmHclFeature::Tpm => "tpm",
+                                OpenvmmHclFeature::LocalOnlyCustom(s) => s,
+                            }
+                            .into()
+                        })
+                        .collect(),
+                ),
                 target,
                 no_split_dbg_info,
                 extra_env: None,
@@ -131,7 +134,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built openvmm_hcl", |ctx| {
+            ctx.emit_minor_rust_step("report built openvmm_hcl", |ctx| {
                 let outvars = outvars.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -145,8 +148,6 @@ impl FlowNode for Node {
                     for var in outvars {
                         rt.write(var, &output);
                     }
-
-                    Ok(())
                 }
             });
         }
