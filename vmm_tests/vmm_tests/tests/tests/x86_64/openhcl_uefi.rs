@@ -58,7 +58,9 @@ async fn nvme_relay_test_core(
         assert_eq!(devices.len(), 1, "Expected exactly one NVMe device");
         assert_eq!(
             props.save_restore_supported,
-            devices[0].node.bool_child_value("save_restore_supported")?
+            devices[0]
+                .node
+                .child_value::<bool>("save_restore_supported")?
         );
 
         // For now, assume that the first device is just the one we expect.
@@ -78,11 +80,11 @@ async fn nvme_relay_test_core(
             )
             .await?;
 
-        assert_eq!(props.qsize, device_details.unsigned_child_value("qsize")?);
+        assert_eq!(props.qsize, device_details.child_value::<u64>("qsize")?);
 
         assert_eq!(
             props.nvme_keepalive,
-            device_details.bool_child_value("nvme_keepalive")?
+            device_details.child_value::<bool>("nvme_keepalive")?
         );
     }
 
