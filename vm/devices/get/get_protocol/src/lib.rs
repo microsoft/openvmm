@@ -1765,18 +1765,10 @@ impl BatteryStatusNotification {
 pub struct InjectDebugInterruptNotification {
     pub message_header: HeaderGuestNotification,
     pub vtl: u8,
+    pub _pad: u8,
 }
 
-impl InjectDebugInterruptNotification {
-    pub fn new(
-        vtl: u8,
-    ) -> Self {
-        Self {
-            message_header: HeaderGeneric::new(GuestNotifications::INJECT_DEBUG_INTERRUPT),
-            vtl,
-        }
-    }
-}
+const_assert_eq!(6, size_of::<InjectDebugInterruptNotification>());
 
 #[bitfield(u64)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]

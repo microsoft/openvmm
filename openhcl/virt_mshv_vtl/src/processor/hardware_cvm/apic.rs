@@ -5,6 +5,7 @@
 
 use crate::UhProcessor;
 use crate::processor::HardwareIsolatedBacking;
+use crate::processor::NMI_SUPPRESS_LINT1_REQUESTED;
 use cvm_tracing::CVM_ALLOWED;
 use hcl::GuestVtl;
 use virt::Processor;
@@ -28,6 +29,8 @@ pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {
     fn handle_extint(&mut self, vtl: GuestVtl) {
         tracelimit::warn_ratelimited!(CVM_ALLOWED, ?vtl, "extint not supported");
     }
+
+    fn supports_nmi_masking(&mut self) -> bool;
 }
 
 pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, B>>(
@@ -53,6 +56,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
         extint,
         sipi,
         nmi,
+        lint1,
         interrupt,
     } = vp.backing.cvm_state_mut().lapics[vtl]
         .lapic
@@ -93,10 +97,21 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
     }
 
     // Interrupts are ignored while waiting for SIPI.
+    let supports_nmi_masking = apic_backing.supports_nmi_masking();
     let lapic = &mut apic_backing.vp().backing.cvm_state_mut().lapics[vtl];
     if lapic.activity != MpState::WaitForSipi {
-        if nmi || lapic.nmi_pending {
+        if lint1 {
+            if supports_nmi_masking || !lapic.cross_vtl_nmi_requested {
+                lapic.nmi_suppression |= NMI_SUPPRESS_LINT1_REQUESTED;
+                lapic.nmi_pending = true;
+            }
+        }
+
+        if nmi {
             lapic.nmi_pending = true;
+        }
+
+        if lapic.nmi_pending {
             apic_backing.handle_nmi(vtl);
         }
 

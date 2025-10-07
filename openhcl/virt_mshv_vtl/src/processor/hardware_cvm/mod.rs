@@ -2752,6 +2752,17 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
             return Err(HvError::InvalidParameter);
         }
 
+        if matches!(
+            interrupt_control.interrupt_type(),
+            HvInterruptType::HvX64InterruptTypeNmi
+        ) {
+            // Note whether this is a cross-VTL NMI request.  If so, this must be
+            // visible before any NMIs are requested.
+            if self.intercepted_vtl == GuestVtl::Vtl1 && target_vtl == GuestVtl::Vtl0 {
+                self.vp.backing.cvm_state_mut().lapics[target_vtl].cross_vtl_nmi_requested = true;
+            }
+        }
+
         self.vp.partition.request_msi(
             target_vtl,
             MsiRequest::new_x86(
