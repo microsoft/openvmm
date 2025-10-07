@@ -32,12 +32,15 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
+#[derive(InspectMut)]
 pub struct NvmeWorkers {
     #[inspect(skip)]
     _task: Task<()>,
     #[inspect(flatten, send = "CoordinatorRequest::Inspect")]
     send: mesh::Sender<CoordinatorRequest>,
-    doorbells: Vec<Arc<DoorbellRegister>>,
+    #[inspect(skip)]
+    doorbells: Arc<RwLock<DoorbellMemory>>,
+    #[inspect(skip)]
     state: EnableState,
 }
 
