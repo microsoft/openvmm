@@ -1459,6 +1459,10 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
         self.vp.backing.vtls[vtl].private_regs.rip = 0;
         self.vp.backing.cvm.lapics[vtl].activity = MpState::Running;
     }
+
+    fn supports_nmi_masking(&mut self) -> bool {
+        true
+    }
 }
 
 impl UhProcessor<'_, TdxBacked> {
