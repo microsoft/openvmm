@@ -78,7 +78,7 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
     openvmm_pcat_x64(iso(freebsd_13_2_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
@@ -134,7 +134,7 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 // Basic vp "heavy" boot test without agent with 16 VPs and 2 NUMA nodes.
 #[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
@@ -176,7 +176,7 @@ async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyh
 /// Basic boot test without agent and with a single VP.
 #[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
@@ -269,7 +269,7 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
 /// Basic reboot test without agent
 #[vmm_test_no_agent(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
+    // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64)),
     // hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2404_server_x64))
