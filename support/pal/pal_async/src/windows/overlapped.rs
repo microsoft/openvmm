@@ -3,6 +3,8 @@
 
 //! Windows overlapped IO support.
 
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
+
 use crate::driver::Driver;
 use crate::driver::PollImpl;
 use crate::waker::WakerList;

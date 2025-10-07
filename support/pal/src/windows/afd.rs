@@ -32,7 +32,7 @@ pub struct PollInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct PollHandleInfo {
     pub handle: SendSyncRawHandle,
     pub events: u32,
