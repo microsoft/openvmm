@@ -211,15 +211,17 @@ impl AfdSocketReady {
     /// Reports an AFD IO completion.
     ///
     /// # Safety
-    /// Must be called only when an IO has completed for `overlapped`.
+    /// Must be called only when an IO has completed for `overlapped`, which
+    /// must be a pointer to the `overlapped` field of an `AfdSocketReadyOp`.
+    /// This must have been started with a call to `AfdSocketReadyOp::issue_io`.
     pub unsafe fn io_complete(
         afd_handle: &impl AfdHandle,
         overlapped: *mut OVERLAPPED,
         wakers: &mut WakerList,
     ) {
         let op_ptr = overlapped.cast::<AfdSocketReadyOp>();
-        // SAFETY: `overlapped` must be a valid pointer to the `overlapped` field of an
-        // `AfdSocketReadyOp` that has completed IO.
+        // SAFETY: caller ensures `overlapped` is a valid pointer to the
+        // `overlapped` field of an `AfdSocketReadyOp` that has completed.
         let op = unsafe { &*op_ptr };
         let (status, _) = op.overlapped.io_status().expect("io should be done");
         let mut inner = op.inner.lock();
