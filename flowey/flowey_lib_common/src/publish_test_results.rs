@@ -182,10 +182,17 @@ impl FlowNode for Node {
 
                                     if attachment_exists {
                                         if let Some(attachment_path) = attachment_path_opt {
-                                            copy_dir_all(
-                                                attachment_path,
-                                                output_dir.join(artifact_name),
-                                            )?;
+                                            if attachment_path.is_dir() {
+                                                copy_dir_all(
+                                                    attachment_path,
+                                                    output_dir.join(artifact_name),
+                                                )?;
+                                            } else {
+                                                fs_err::copy(
+                                                    attachment_path,
+                                                    output_dir.join(artifact_name),
+                                                )?;
+                                            }
                                         }
                                     }
 
