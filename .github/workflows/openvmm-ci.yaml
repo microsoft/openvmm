@@ -1646,7 +1646,7 @@ jobs:
         flowey.exe e 14 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey.exe e 14 flowey_lib_common::publish_test_results 5
       shell: bash
-    - name: 'publish test results: x64-windows-intel-vmm-tests (logs)'
+    - name: 'copy attachments to artifacts directory: x64-windows-intel-vmm-tests (logs)'
       run: |-
         flowey.exe e 14 flowey_lib_common::publish_test_results 6
         flowey.exe e 14 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
@@ -1656,7 +1656,7 @@ jobs:
         flowey.exe e 14 flowey_lib_common::publish_test_results 2
         flowey.exe e 14 flowey_lib_common::publish_test_results 3
       shell: bash
-    - name: 'publish test results: x64-windows-intel-vmm-tests (JUnit XML)'
+    - name: 'copy test results to artifact directory: x64-windows-intel-vmm-tests (JUnit XML)'
       run: flowey.exe e 14 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -1927,7 +1927,7 @@ jobs:
         flowey.exe e 15 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey.exe e 15 flowey_lib_common::publish_test_results 5
       shell: bash
-    - name: 'publish test results: x64-windows-intel-tdx-vmm-tests (logs)'
+    - name: 'copy attachments to artifacts directory: x64-windows-intel-tdx-vmm-tests (logs)'
       run: |-
         flowey.exe e 15 flowey_lib_common::publish_test_results 6
         flowey.exe e 15 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
@@ -1937,7 +1937,7 @@ jobs:
         flowey.exe e 15 flowey_lib_common::publish_test_results 2
         flowey.exe e 15 flowey_lib_common::publish_test_results 3
       shell: bash
-    - name: 'publish test results: x64-windows-intel-tdx-vmm-tests (JUnit XML)'
+    - name: 'copy test results to artifact directory: x64-windows-intel-tdx-vmm-tests (JUnit XML)'
       run: flowey.exe e 15 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -2201,7 +2201,7 @@ jobs:
         flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey.exe e 16 flowey_lib_common::publish_test_results 5
       shell: bash
-    - name: 'publish test results: x64-windows-amd-vmm-tests (logs)'
+    - name: 'copy attachments to artifacts directory: x64-windows-amd-vmm-tests (logs)'
       run: |-
         flowey.exe e 16 flowey_lib_common::publish_test_results 6
         flowey.exe e 16 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
@@ -2211,7 +2211,7 @@ jobs:
         flowey.exe e 16 flowey_lib_common::publish_test_results 2
         flowey.exe e 16 flowey_lib_common::publish_test_results 3
       shell: bash
-    - name: 'publish test results: x64-windows-amd-vmm-tests (JUnit XML)'
+    - name: 'copy test results to artifact directory: x64-windows-amd-vmm-tests (JUnit XML)'
       run: flowey.exe e 16 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -2482,7 +2482,7 @@ jobs:
         flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey.exe e 17 flowey_lib_common::publish_test_results 5
       shell: bash
-    - name: 'publish test results: x64-windows-amd-snp-vmm-tests (logs)'
+    - name: 'copy attachments to artifacts directory: x64-windows-amd-snp-vmm-tests (logs)'
       run: |-
         flowey.exe e 17 flowey_lib_common::publish_test_results 6
         flowey.exe e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
@@ -2492,7 +2492,7 @@ jobs:
         flowey.exe e 17 flowey_lib_common::publish_test_results 2
         flowey.exe e 17 flowey_lib_common::publish_test_results 3
       shell: bash
-    - name: 'publish test results: x64-windows-amd-snp-vmm-tests (JUnit XML)'
+    - name: 'copy test results to artifact directory: x64-windows-amd-snp-vmm-tests (JUnit XML)'
       run: flowey.exe e 17 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -2756,7 +2756,7 @@ jobs:
         flowey e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey e 18 flowey_lib_common::publish_test_results 5
       shell: bash
-    - name: 'publish test results: x64-linux-vmm-tests (logs)'
+    - name: 'copy attachments to artifacts directory: x64-linux-vmm-tests (logs)'
       run: |-
         flowey e 18 flowey_lib_common::publish_test_results 6
         flowey e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
@@ -2766,7 +2766,7 @@ jobs:
         flowey e 18 flowey_lib_common::publish_test_results 2
         flowey e 18 flowey_lib_common::publish_test_results 3
       shell: bash
-    - name: 'publish test results: x64-linux-vmm-tests (JUnit XML)'
+    - name: 'copy test results to artifact directory: x64-linux-vmm-tests (JUnit XML)'
       run: flowey e 18 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
@@ -3077,7 +3077,7 @@ jobs:
         flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
         flowey.exe e 19 flowey_lib_common::publish_test_results 5
       shell: bash
-    - name: 'publish test results: aarch64-windows-vmm-tests (logs)'
+    - name: 'copy attachments to artifacts directory: aarch64-windows-vmm-tests (logs)'
       run: |-
         flowey.exe e 19 flowey_lib_common::publish_test_results 6
         flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 2
@@ -3087,7 +3087,7 @@ jobs:
         flowey.exe e 19 flowey_lib_common::publish_test_results 2
         flowey.exe e 19 flowey_lib_common::publish_test_results 3
       shell: bash
-    - name: 'publish test results: aarch64-windows-vmm-tests (JUnit XML)'
+    - name: 'copy test results to artifact directory: aarch64-windows-vmm-tests (JUnit XML)'
       run: flowey.exe e 19 flowey_lib_common::publish_test_results 4
       shell: bash
     - name: report test results to overall pipeline status
