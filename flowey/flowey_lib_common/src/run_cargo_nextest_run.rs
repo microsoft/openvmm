@@ -408,6 +408,9 @@ impl FlowNode for Node {
                             let mut file = fs_err::File::create_new(&output_path)?;
                             file.write_all(nextest_list_json.to_string().as_bytes())?;
 
+                            log::info!("containing dir: {}", containing_dir.display());
+                            log::info!("wrote nextest list output to {}", output_path.display());
+
                             if let Some(nextest_list_output_file_write) =
                                 nextest_list_output_file_write
                             {
