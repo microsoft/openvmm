@@ -13,6 +13,7 @@ use crate::PetriTestParams;
 use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
+use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use mesh::CancelContext;
@@ -723,12 +724,31 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         Ok(())
     }
 
+    /// Invoke Inspect on the running OpenHCL instance.
+    ///
+    /// IMPORTANT: As mentioned in the Guide, inspect output is *not* guaranteed
+    /// to be stable. Use this to test that components in OpenHCL are working as
+    /// you would expect. But, if you are adding a test simply to verify that
+    /// the inspect output as some other tool depends on it, then you should be
+    /// making a change to `ohcldiag` instead (and write a test to make sure
+    /// that `ohcldiag` produces the stable output that you need).
+    ///
+    /// - `timeout` is enforced on the client side
+    /// - `path` and `depth` are passed to the [`Inspect`] machinery.
+    pub async fn inspect_openhcl(
+        &self,
+        path: impl Into<String>,
+        depth: Option<usize>,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<inspect::Node> {
+        self.openhcl_diag()?
+            .inspect(path.into().as_str(), depth, timeout)
+            .await
+    }
+
     /// Test that we are able to inspect OpenHCL.
     pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
-        self.openhcl_diag()?
-            .inspect("", None, None)
-            .await
-            .map(|_| ())
+        self.inspect_openhcl("", None, None).await.map(|_| ())
     }
 
     /// Wait for VTL 2 to report that it is ready to respond to commands.
@@ -920,21 +940,17 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     async fn set_console_loglevel(&self, level: u8) -> anyhow::Result<()> {
-        match self.openhcl_diag() {
-            Ok(diag) => {
-                diag.kmsg().await?;
-                let res = diag
-                    .run_vtl2_command("dmesg", &["-n", &level.to_string()])
-                    .await?;
+        let diag = self
+            .openhcl_diag()
+            .context("failed to open VTL2 diagnostic channel")?;
+        diag.kmsg().await?;
+        let res = diag
+            .run_vtl2_command("dmesg", &["-n", &level.to_string()])
+            .await?;
 
-                if !res.exit_status.success() {
-                    anyhow::bail!("failed to set console loglevel: {:?}", res);
-                }
-            }
-            Err(e) => {
-                anyhow::bail!("failed to open VTl2 diagnostic channel: {}", e);
-            }
-        };
+        if !res.exit_status.success() {
+            anyhow::bail!("failed to set console loglevel: {:?}", res);
+        }
 
         Ok(())
     }

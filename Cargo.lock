@@ -9273,6 +9273,7 @@ dependencies = [
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",
  "hyperv_ic_resources",
+ "inspect",
  "jiff",
  "kmsg",
  "mesh",
