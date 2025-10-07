@@ -3,8 +3,6 @@
 
 //! Memory Validation for VMM Tests
 
-#![cfg_attr(not(debug_assertions), expect(dead_code))]
-
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::IsolationType;
