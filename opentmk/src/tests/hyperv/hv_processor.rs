@@ -2,7 +2,7 @@ use hvdef::Vtl;
 use nostd_spin_channel::Channel;
 
 use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecutor;
+use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
 use crate::tmk_assert;
 
@@ -22,7 +22,7 @@ where
     // Testing BSP VTL Bringup
     {
         let (tx, rx) = Channel::new().split();
-        let result = ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
+        let result = ctx.start_on_vp(VpExecToken::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
             let vp = ctx.get_current_vp();
             tmk_assert!(vp.is_ok(), "vp should be valid");
 
@@ -49,7 +49,7 @@ where
         {
             let (tx, rx) = Channel::new().split();
             let result =
-                ctx.start_on_vp(VpExecutor::new(i, Vtl::Vtl1).command(move |ctx: &mut T| {
+                ctx.start_on_vp(VpExecToken::new(i, Vtl::Vtl1).command(move |ctx: &mut T| {
                     let vp = ctx.get_current_vp();
                     tmk_assert!(vp.is_ok(), "vp should be valid");
 
@@ -73,7 +73,7 @@ where
         {
             let (tx, rx) = Channel::new().split();
             let result =
-                ctx.start_on_vp(VpExecutor::new(i, Vtl::Vtl0).command(move |ctx: &mut T| {
+                ctx.start_on_vp(VpExecToken::new(i, Vtl::Vtl0).command(move |ctx: &mut T| {
                     let vp = ctx.get_current_vp();
                     tmk_assert!(vp.is_ok(), "vp should be valid");
 

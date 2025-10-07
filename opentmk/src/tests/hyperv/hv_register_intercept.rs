@@ -43,7 +43,7 @@ where
 {
     use hvdef::Vtl;
 
-    use crate::context::VpExecutor;
+    use crate::context::VpExecToken;
 
     let vp_count = ctx.get_vp_count();
     tmk_assert!(vp_count.is_ok(), "get_vp_count should succeed");
@@ -57,7 +57,7 @@ where
     let r = ctx.setup_partition_vtl(Vtl::Vtl1);
     tmk_assert!(r.is_ok(), "setup_partition_vtl should succeed");
 
-    let r = ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
+    let r = ctx.start_on_vp(VpExecToken::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
         let r = ctx.setup_secure_intercept(0x30);
         tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
@@ -84,7 +84,7 @@ where
     }));
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
-    _ = ctx.queue_command_vp(VpExecutor::new(0x0, Vtl::Vtl1).command(|ctx: &mut T| {
+    _ = ctx.queue_command_vp(VpExecToken::new(0x0, Vtl::Vtl1).command(|ctx: &mut T| {
         log::info!("successfully resumed running VTL1 on vp0 after intercept");
         ctx.switch_to_low_vtl();
     }));

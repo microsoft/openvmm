@@ -21,12 +21,12 @@ use crate::context::MsrPlatformTrait;
 #[cfg(feature = "nightly")]
 use crate::context::SecureInterceptPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecutor;
+use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
 use crate::platform::hyperv::arch::hypercall::HvCall;
 use crate::platform::hyperv::ctx::cmdt;
+use crate::platform::hyperv::ctx::get_vp_set;
 use crate::platform::hyperv::ctx::vtl_transform;
-#[cfg(feature = "nightly")]
 use crate::platform::hyperv::ctx::HvTestCtx;
 use crate::tmkdefs::TmkError;
 use crate::tmkdefs::TmkResult;
@@ -120,7 +120,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     /// Push a command onto the per-VP linked-list so it will be executed
     /// by the busy-loop running in `exec_handler`. No scheduling happens
     /// here – we simply enqueue.
-    fn queue_command_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
+    fn queue_command_vp(&mut self, cmd: VpExecToken<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, cmd) = cmd.get();
         let cmd = cmd.ok_or(TmkError::QueueCommandFailed)?;
         cmdt()
@@ -141,13 +141,13 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     ///   executor loop can pick the command up.  
     /// in short every VP acts as an executor engine and
     /// spins in `exec_handler` waiting for work.
-    fn start_on_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
+    fn start_on_vp(&mut self, cmd: VpExecToken<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, cmd) = cmd.get();
         let cmd = cmd.ok_or(TmkError::InvalidParameter)?;
         if vtl >= Vtl::Vtl2 {
             return Err(TmkError::InvalidParameter);
         }
-        let is_vp_running = self.vp_running.get(&vp_index);
+        let is_vp_running = get_vp_set().lock().get(&vp_index).cloned();
         if let Some(_running_vtl) = is_vp_running {
             log::debug!("both vtl0 and vtl1 are running for VP: {:?}", vp_index);
         } else {
@@ -162,7 +162,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                     Vtl::Vtl1,
                 ));
                 self.switch_to_high_vtl();
-                self.vp_running.insert(vp_index);
+                get_vp_set().lock().insert(vp_index);
             } else {
                 let (tx, rx) = nostd_spin_channel::Channel::<TmkResult<()>>::new().split();
                 let self_vp_idx = self.my_vp_idx;
@@ -176,7 +176,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                             return;
                         }
                         log::debug!("successfully enabled VTL1 for VP{}", vp_index);
-                        let r = ctx.start_running_vp_with_default_context(VpExecutor::new(
+                        let r = ctx.start_running_vp_with_default_context(VpExecToken::new(
                             vp_index,
                             Vtl::Vtl0,
                         ));
@@ -196,7 +196,9 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                 if let Ok(r) = rx {
                     r?;
                 }
-                self.vp_running.insert(vp_index);
+                get_vp_set()
+                .lock()
+                .insert(vp_index);
             }
         }
         cmdt()
@@ -219,7 +221,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     /// context.
     fn start_running_vp_with_default_context(
         &mut self,
-        cmd: VpExecutor<HvTestCtx>,
+        cmd: VpExecToken<HvTestCtx>,
     ) -> TmkResult<()> {
         let (vp_index, vtl, _cmd) = cmd.get();
         let vp_ctx = self.get_default_context(vtl)?;

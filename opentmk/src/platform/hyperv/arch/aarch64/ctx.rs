@@ -7,7 +7,7 @@ use hvdef::HvRegisterValue;
 use hvdef::Vtl;
 use memory_range::MemoryRange;
 use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecutor;
+use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
 use crate::platform::hyperv::ctx::vtl_transform;
 use crate::platform::hyperv::ctx::HvTestCtx;
@@ -35,11 +35,11 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         unimplemented!();
     }
 
-    fn queue_command_vp(&mut self, _cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
+    fn queue_command_vp(&mut self, _cmd: VpExecToken<HvTestCtx>) -> TmkResult<()> {
         unimplemented!();
     }
 
-    fn start_on_vp(&mut self, _cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
+    fn start_on_vp(&mut self, _cmd: VpExecToken<HvTestCtx>) -> TmkResult<()> {
         unimplemented!();
     }
  
@@ -47,7 +47,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     /// context.
     fn start_running_vp_with_default_context(
         &mut self,
-        cmd: VpExecutor<HvTestCtx>,
+        cmd: VpExecToken<HvTestCtx>,
     ) -> TmkResult<()> {
         let (vp_index, vtl, _cmd) = cmd.get();
         let vp_ctx = self.get_default_context(vtl)?;

@@ -47,7 +47,7 @@ fn enable_uefi_vtl_protection() {
     .expect("Failed to get OsLoaderIndications");
 
     // SAFETY: its safe to exit boot services here
-    let _memory_map = unsafe { exit_boot_services(MemoryType::BOOT_SERVICES_DATA) };
+    let _memory_map = unsafe { exit_boot_services(Some(MemoryType::BOOT_SERVICES_DATA)) };
 }
 
 pub fn init() -> Result<(), Status> {

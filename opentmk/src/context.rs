@@ -70,15 +70,15 @@ where
     fn get_vp_count(&self) -> TmkResult<u32>;
 
     /// Queues `cmd` to run later on the VP described inside the
-    /// `VpExecutor`.
-    fn queue_command_vp(&mut self, cmd: VpExecutor<T>) -> TmkResult<()>;
+    /// `VpExecToken`.
+    fn queue_command_vp(&mut self, cmd: VpExecToken<T>) -> TmkResult<()>;
 
     /// Synchronously executes `cmd` on its target VP.
-    fn start_on_vp(&mut self, cmd: VpExecutor<T>) -> TmkResult<()>;
+    fn start_on_vp(&mut self, cmd: VpExecToken<T>) -> TmkResult<()>;
 
     /// Starts the target VP (if required) and executes `cmd` with a
     /// platform provided default VTL context.
-    fn start_running_vp_with_default_context(&mut self, cmd: VpExecutor<T>) -> TmkResult<()>;
+    fn start_running_vp_with_default_context(&mut self, cmd: VpExecToken<T>) -> TmkResult<()>;
 }
 
 pub trait VtlPlatformTrait {
@@ -112,16 +112,16 @@ pub trait VtlPlatformTrait {
     fn get_vp_register_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64>;
 }
 
-pub struct VpExecutor<T> {
+pub struct VpExecToken<T> {
     vp_index: u32,
     vtl: Vtl,
     cmd: Option<Box<dyn FnOnce(&mut T)>>,
 }
 
-impl<T> VpExecutor<T> {
+impl<T> VpExecToken<T> {
     /// Creates a new executor targeting `vp_index` running in `vtl`.
     pub fn new(vp_index: u32, vtl: Vtl) -> Self {
-        VpExecutor {
+        VpExecToken {
             vp_index,
             vtl,
             cmd: None,

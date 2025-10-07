@@ -6,7 +6,7 @@ use crate::arch::tpm::Tpm;
 use crate::context::InterruptPlatformTrait;
 use crate::context::SecureInterceptPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecutor;
+use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
 use crate::devices::tpm::TpmUtil;
 use crate::tmk_assert;
@@ -54,7 +54,7 @@ where
         end: tpm_gpa as u64 + 4096 * 2,
     };
 
-    let _r = ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
+    let _r = ctx.start_on_vp(VpExecToken::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
         let r = ctx.setup_secure_intercept(0x30);
         tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");

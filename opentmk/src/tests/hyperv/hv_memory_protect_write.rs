@@ -11,7 +11,7 @@ use spin::Mutex;
 use crate::context::InterruptPlatformTrait;
 use crate::context::SecureInterceptPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
-use crate::context::VpExecutor;
+use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
 use crate::create_function_with_restore;
 use crate::tmk_assert;
@@ -51,7 +51,7 @@ where
     let r = ctx.setup_partition_vtl(Vtl::Vtl1);
     tmk_assert!(r.is_ok(), "setup_partition_vtl should succeed");
 
-    let r = ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
+    let r = ctx.start_on_vp(VpExecToken::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
         let r = ctx.setup_secure_intercept(0x30);
         tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
@@ -97,7 +97,7 @@ where
 
     let (tx, rx) = Channel::new().split();
 
-    let r = ctx.start_on_vp(VpExecutor::new(0x2, Vtl::Vtl1).command(move |ctx: &mut T| {
+    let r = ctx.start_on_vp(VpExecToken::new(0x2, Vtl::Vtl1).command(move |ctx: &mut T| {
         let r = ctx.setup_interrupt_handler();
         tmk_assert!(r.is_ok(), "setup_interrupt_handler should succeed");
 
@@ -108,10 +108,10 @@ where
     }));
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
-    let r = ctx.start_on_vp(VpExecutor::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| {
+    let r = ctx.start_on_vp(VpExecToken::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL0 on vp2.");
 
-        let r = ctx.queue_command_vp(VpExecutor::new(2, Vtl::Vtl1).command(move |ctx: &mut T| {
+        let r = ctx.queue_command_vp(VpExecToken::new(2, Vtl::Vtl1).command(move |ctx: &mut T| {
             log::info!("after intercept successfully started running VTL1 on vp2.");
             ctx.switch_to_low_vtl();
         }));

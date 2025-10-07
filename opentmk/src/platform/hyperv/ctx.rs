@@ -16,11 +16,17 @@ use crate::tmkdefs::TmkResult;
 
 type CommandTable = BTreeMap<u32, LinkedList<(Box<dyn FnOnce(&mut HvTestCtx) + 'static>, Vtl)>>;
 static mut CMD: Mutex<CommandTable> = Mutex::new(BTreeMap::new());
+static VP_SET: Mutex<BTreeSet<u32>> = Mutex::new(BTreeSet::new());
 
 #[expect(static_mut_refs)]
 pub(crate) fn cmdt() -> &'static Mutex<CommandTable> {
     // SAFETY: CMD is only mutated through safe APIs and is protected by a Mutex.
     unsafe { &CMD }
+}
+
+pub(crate) fn get_vp_set() -> &'static Mutex<BTreeSet<u32>> {
+    // SAFETY: VP_SET is only mutated through safe APIs and is protected by a Mutex.
+    &VP_SET
 }
 
 fn register_command_queue(vp_index: u32) {
@@ -35,8 +41,6 @@ fn register_command_queue(vp_index: u32) {
 
 pub struct HvTestCtx {
     pub hvcall: HvCall,
-    // TODO: make this static, this could lead to bugs when init a VP from AP
-    pub vp_running: BTreeSet<u32>,
     pub my_vp_idx: u32,
     pub my_vtl: Vtl,
 }
@@ -69,7 +73,6 @@ impl HvTestCtx {
     pub const fn new() -> Self {
         HvTestCtx {
             hvcall: HvCall::new(),
-            vp_running: BTreeSet::new(),
             my_vp_idx: 0,
             my_vtl: Vtl::Vtl0,
         }
