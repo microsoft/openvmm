@@ -4,9 +4,13 @@
 #![expect(missing_docs)]
 
 mod storage_backend;
+#[cfg(feature = "test_helpers")]
+mod test;
 mod uefi_nvram;
 mod vmgs_json;
 
+#[cfg(feature = "test_helpers")]
+use crate::test::TestOperation;
 use anyhow::Result;
 use clap::Args;
 use clap::Parser;
@@ -254,6 +258,12 @@ enum Options {
         #[clap(subcommand)]
         operation: UefiNvramOperation,
     },
+    #[cfg(feature = "test_helpers")]
+    /// Create a test VMGS file
+    Test {
+        #[clap(subcommand)]
+        operation: TestOperation,
+    },
 }
 
 fn parse_file_id(file_id: &str) -> Result<FileId, std::num::ParseIntError> {
@@ -379,6 +389,7 @@ async fn do_main() -> Result<(), Error> {
                 encryption_alg_key,
             )
             .await
+            .map(|_| ())
         }
         Options::Dump {
             file_path,
@@ -447,6 +458,8 @@ async fn do_main() -> Result<(), Error> {
             vmgs_file_query_encryption(file_path.file_path).await
         }
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
+        #[cfg(feature = "test_helpers")]
+        Options::Test { operation } => test::do_command(operation).await,
     }
 }
 
@@ -486,7 +499,7 @@ async fn vmgs_file_create(
     file_size: Option<u64>,
     force_create: bool,
     encryption_alg_key: Option<(EncryptionAlgorithm, impl AsRef<Path>)>,
-) -> Result<(), Error> {
+) -> Result<Vmgs, Error> {
     let disk = vhdfiledisk_create(path, file_size, force_create)?;
 
     let encryption_key = encryption_alg_key
@@ -496,9 +509,9 @@ async fn vmgs_file_create(
     let encryption_alg_key =
         encryption_alg_key.map(|(alg, _)| (alg, encryption_key.as_deref().unwrap()));
 
-    let _ = vmgs_create(disk, encryption_alg_key).await?;
+    let vmgs = vmgs_create(disk, encryption_alg_key).await?;
 
-    Ok(())
+    Ok(vmgs)
 }
 
 fn vhdfiledisk_create(

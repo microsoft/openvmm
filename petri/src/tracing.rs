@@ -116,6 +116,31 @@ impl PetriLogSource {
             .write_attachment(path.file_name().unwrap().as_ref());
         println!("[[ATTACHMENT|{}]]", path.display());
     }
+
+    /// Traces and logs the result of a test run in the format expected by our tooling.
+    pub fn log_test_result(&self, name: &str, r: &anyhow::Result<()>) {
+        let result_path = match &r {
+            Ok(()) => {
+                tracing::info!("test passed");
+                "petri.passed"
+            }
+            Err(err) => {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "test failed"
+                );
+                "petri.failed"
+            }
+        };
+        // Write a file to the output directory to indicate whether the test
+        // passed, for easy scanning via tools.
+        fs_err::write(self.0.root_path.join(result_path), name).unwrap();
+    }
+
+    /// Returns the output directory for log files.
+    pub fn output_dir(&self) -> &Path {
+        &self.0.root_path
+    }
 }
 
 #[derive(Clone)]
