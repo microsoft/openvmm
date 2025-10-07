@@ -5,10 +5,6 @@
 
 use anyhow::Context;
 use futures::StreamExt;
-use memstat::TestVPCount;
-use memstat::WaitPeriodSec;
-use memstat::idle_test;
-use pal_async::DefaultDriver;
 use petri::MemoryConfig;
 use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
@@ -475,6 +471,9 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
     Ok(())
 }
 
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run these tests in debug builds.
+#[cfg(debug_assertions)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -485,17 +484,20 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 async fn memory_validation_small<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
-    driver: DefaultDriver,
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
-    idle_test(
+    memstat::idle_test(
         config,
-        TestVPCount::SmallVPCount,
-        WaitPeriodSec::ShortWait,
+        memstat::TestVPCount::SmallVPCount,
+        memstat::WaitPeriodSec::ShortWait,
         driver,
     )
     .await
 }
 
+// We can't get a VTL 2 pipette with release build CVM debugging restrictions,
+// so only run these tests in debug builds.
+#[cfg(debug_assertions)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -506,12 +508,12 @@ async fn memory_validation_small<T: PetriVmmBackend>(
 async fn memory_validation_large<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     _: (),
-    driver: DefaultDriver,
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
-    idle_test(
+    memstat::idle_test(
         config,
-        TestVPCount::LargeVPCount,
-        WaitPeriodSec::LongWait,
+        memstat::TestVPCount::LargeVPCount,
+        memstat::WaitPeriodSec::LongWait,
         driver,
     )
     .await
