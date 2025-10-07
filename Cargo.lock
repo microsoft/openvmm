@@ -2486,7 +2486,6 @@ dependencies = [
 name = "get_resources"
 version = "0.0.0"
 dependencies = [
- "guid",
  "inspect",
  "mesh",
  "thiserror 2.0.16",

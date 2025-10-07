@@ -7,6 +7,7 @@ use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeSet;
 
 #[derive(Serialize, Deserialize)]
@@ -68,7 +69,7 @@ impl SimpleFlowNode for Node {
             }));
         }
 
-        let mut features = BTreeSet::new();
+        let mut features: BTreeSet<String> = BTreeSet::new();
         if with_crypto {
             match target.as_triple().operating_system {
                 target_lexicon::OperatingSystem::Windows => {
@@ -87,7 +88,7 @@ impl SimpleFlowNode for Node {
             out_name: "vmgstool".into(),
             crate_type: CargoCrateType::Bin,
             profile: profile.into(),
-            features,
+            features: CargoFeatureSet::Specific(features.into_iter().collect()),
             target: target.as_triple(),
             no_split_dbg_info: false,
             extra_env: None,
