@@ -835,7 +835,7 @@ impl QueueHandler {
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
             send_aen: None,
             manages_aers: manages_aer.unwrap_or(false),
-            pending_aen: pending_aen.map(|bits| AsynchronousEventRequestDw0::from_bits(bits)), // Restore from u32
+            pending_aen: pending_aen.map(AsynchronousEventRequestDw0::from_bits), // Restore from u32
         })
     }
 }
