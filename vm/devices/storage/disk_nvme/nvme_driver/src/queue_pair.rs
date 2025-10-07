@@ -21,14 +21,10 @@ use inspect::Inspect;
 use inspect_counters::Counter;
 use mesh::Cancel;
 use mesh::CancelContext;
-use mesh::MeshPayload;
-use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use nvme_spec::AsynchronousEventRequestDw0;
-use nvme_spec::AsynchronousEventType;
-use nvme_spec::Completion;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
@@ -268,14 +264,11 @@ impl QueuePair {
         };
 
         let (send, recv) = mesh::channel();
-        let sender = send.clone(); // Required to move the cloned value in to the async block.
         let (mut ctx, cancel) = CancelContext::new().with_cancel();
         let task = spawner.spawn("nvme-queue", {
             async move {
                 ctx.until_cancelled(async {
-                    queue_handler
-                        .run(&registers, sender, recv, &mut interrupt)
-                        .await;
+                    queue_handler.run(&registers, recv, &mut interrupt).await;
                 })
                 .await
                 .ok();
@@ -686,7 +679,6 @@ impl QueueHandler {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
-        send: mesh::Sender<Req>,
         mut recv: mesh::Receiver<Req>,
         interrupt: &mut DeviceInterrupt,
     ) {
@@ -739,7 +731,7 @@ impl QueueHandler {
             match event {
                 Event::Request(req) => match req {
                     Req::Command(rpc) => {
-                        let (mut command, respond) = rpc.split();
+                        let (command, respond) = rpc.split();
                         self.handle_command(command, CompletionAction::Respond(respond));
                     }
                     Req::Inspect(deferred) => deferred.inspect(&self),
