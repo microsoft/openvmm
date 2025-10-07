@@ -276,6 +276,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             vm.wait_for_reset_core().await?;
         }
 
+        vm.wait_for_expected_boot_event().await?;
+
         let client = if with_agent {
             Some(vm.wait_for_agent().await?)
         } else {
@@ -288,8 +290,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
             }
         }
-
-        vm.wait_for_expected_boot_event().await?;
 
         Ok((vm, client))
     }
