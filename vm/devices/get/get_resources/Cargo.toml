@@ -10,6 +10,7 @@ rust-version.workspace = true
 vm_resource.workspace = true
 vmgs_resources.workspace = true
 
+guid.workspace = true
 mesh.workspace = true
 inspect.workspace = true
 

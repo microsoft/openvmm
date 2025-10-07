@@ -37,6 +37,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
+use vmgs_resources::GuestStateEncryptionPolicy;
 
 /// The set of artifacts and resources needed to instantiate a
 /// [`PetriVmBuilder`].
@@ -598,7 +599,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Specify the guest state encryption policy for the VM
-    pub fn with_guest_state_encryption(mut self, policy: PetriGuestStateEncryptionPolicy) -> Self {
+    pub fn with_guest_state_encryption(mut self, policy: GuestStateEncryptionPolicy) -> Self {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
@@ -681,12 +682,43 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 }
 
 impl<T: PetriVmmBackend> PetriVm<T> {
+    /// Immediately tear down the VM.
+    pub async fn teardown(self) -> anyhow::Result<()> {
+        tracing::info!("Tearing down VM...");
+        self.runtime.teardown().await
+    }
+
     /// Wait for the VM to halt, returning the reason for the halt.
     pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReason> {
         tracing::info!("Waiting for VM to halt...");
         let halt_reason = self.runtime.wait_for_halt(false).await?;
-        tracing::info!("VM halted: {halt_reason:?}");
+        tracing::info!("VM halted: {halt_reason:?}. Cancelling watchdogs...");
+        futures::future::join_all(self.watchdog_tasks.drain(..).map(|t| t.cancel())).await;
         Ok(halt_reason)
+    }
+
+    /// Wait for the VM to cleanly shutdown.
+    pub async fn wait_for_clean_shutdown(&mut self) -> anyhow::Result<()> {
+        let halt_reason = self.wait_for_halt().await?;
+        if halt_reason != PetriHaltReason::PowerOff {
+            anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
+        }
+        tracing::info!("VM was cleanly powered off and torn down.");
+        Ok(())
+    }
+
+    /// Wait for the VM to halt, returning the reason for the halt,
+    /// and tear down the VM.
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
+        let halt_reason = self.wait_for_halt().await?;
+        self.teardown().await?;
+        Ok(halt_reason)
+    }
+
+    /// Wait for the VM to cleanly shutdown and tear down the VM.
+    pub async fn wait_for_clean_teardown(mut self) -> anyhow::Result<()> {
+        self.wait_for_clean_shutdown().await?;
+        self.teardown().await
     }
 
     /// Wait for the VM to reset. Does not wait for pipette.
@@ -714,27 +746,6 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             anyhow::bail!("Expected reset, got {halt_reason:?}");
         }
         tracing::info!("VM reset.");
-        Ok(())
-    }
-
-    /// Wait for the VM to halt, returning the reason for the halt,
-    /// and cleanly tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
-        let halt_reason = self.wait_for_halt().await?;
-        tracing::info!("Cancelling watchdogs...");
-        futures::future::join_all(self.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
-        tracing::info!("Tearing down VM...");
-        self.runtime.teardown().await?;
-        Ok(halt_reason)
-    }
-
-    /// Wait for the VM to reset
-    pub async fn wait_for_clean_teardown(self) -> anyhow::Result<()> {
-        let halt_reason = self.wait_for_teardown().await?;
-        if halt_reason != PetriHaltReason::PowerOff {
-            anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
-        }
-        tracing::info!("VM was cleanly powered off and torn down.");
         Ok(())
     }
 
@@ -953,6 +964,11 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
         Ok(())
     }
+
+    /// Get the path to the VM's guest state file
+    pub async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
+        self.runtime.get_guest_state_file().await
+    }
 }
 
 /// A running VM that tests can interact with.
@@ -1009,6 +1025,10 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     }
     /// Issue a hard reset to the VM
     async fn reset(&mut self) -> anyhow::Result<()>;
+    /// Get the path to the VM's guest state file
+    async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
+        Ok(None)
+    }
 }
 
 /// Interface for getting information about the state of the VM
@@ -1615,10 +1635,9 @@ pub struct OpenHclServicingFlags {
 }
 
 /// Petri disk type
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub enum PetriDiskType {
     /// Memory backed
-    #[default]
     Memory,
     /// Memory differencing disk backed by a file
     Differencing(PathBuf),
@@ -1626,61 +1645,23 @@ pub enum PetriDiskType {
     Persistent(PathBuf),
 }
 
-/// Petri VM guest state encryption policy
-#[derive(Debug, Clone, Copy)]
-pub enum PetriGuestStateEncryptionPolicy {
-    /// Use the best encryption available, allowing fallback.
-    ///
-    /// VMs will be created as or migrated to the best encryption available,
-    /// attempting GspKey, then GspById, and finally leaving the data
-    /// unencrypted if neither are available.
-    Auto,
-    /// Prefer (or require, if strict) no encryption.
-    ///
-    /// Do not encrypt the guest state unless it is already encrypted and
-    /// strict encryption policy is disabled.
-    None(bool),
-    /// Prefer (or require, if strict) GspById.
-    ///
-    /// This prevents a VM from being created as or migrated to GspKey even
-    /// if it is available. Exisiting GspKey encryption will be used unless
-    /// strict encryption policy is enabled. Fails if the data cannot be
-    /// encrypted.
-    GspById(bool),
-    /// Require GspKey.
-    ///
-    /// VMs will be created as or migrated to GspKey. Fails if GspKey is
-    /// not available. Strict encryption policy has no effect here since
-    /// GspKey is currently the most secure policy.
-    GspKey(bool),
-}
-
-impl Default for PetriGuestStateEncryptionPolicy {
-    fn default() -> Self {
-        // TODO: make this strict once we can set it in OpenHCL
-        PetriGuestStateEncryptionPolicy::None(false)
-    }
-}
-
-impl PetriGuestStateEncryptionPolicy {
-    /// whether to use strict encryption policy
-    pub fn is_strict(&self) -> bool {
-        match self {
-            PetriGuestStateEncryptionPolicy::Auto => false,
-            PetriGuestStateEncryptionPolicy::None(strict)
-            | PetriGuestStateEncryptionPolicy::GspById(strict)
-            | PetriGuestStateEncryptionPolicy::GspKey(strict) => *strict,
-        }
-    }
-}
-
 /// Petri VMGS disk
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PetriVmgsDisk {
     /// Backing disk
     pub disk: PetriDiskType,
     /// Guest state encryption policy
-    pub encryption_policy: PetriGuestStateEncryptionPolicy,
+    pub encryption_policy: GuestStateEncryptionPolicy,
+}
+
+impl Default for PetriVmgsDisk {
+    fn default() -> Self {
+        PetriVmgsDisk {
+            disk: PetriDiskType::Memory,
+            // TODO: make this strict once we can set it in OpenHCL
+            encryption_policy: GuestStateEncryptionPolicy::None(false),
+        }
+    }
 }
 
 /// Petri VM guest state resource
@@ -1694,6 +1675,18 @@ pub enum PetriVmgsResource {
     Reprovision(PetriVmgsDisk),
     /// Store guest state in memory
     Ephemeral,
+}
+
+impl PetriVmgsResource {
+    /// get the inner vmgs disk if one exists
+    pub fn disk(&self) -> Option<&PetriVmgsDisk> {
+        match self {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => Some(vmgs),
+            PetriVmgsResource::Ephemeral => None,
+        }
+    }
 }
 
 /// Petri VM guest state lifetime

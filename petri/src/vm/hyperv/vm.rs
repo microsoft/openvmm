@@ -55,6 +55,7 @@ impl HyperVVM {
         generation: powershell::HyperVGeneration,
         guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
         memory: u64,
+        vmgs_path: Option<&Path>,
         log_file: PetriLogFile,
         driver: DefaultDriver,
     ) -> anyhow::Result<Self> {
@@ -106,6 +107,7 @@ impl HyperVVM {
             memory_startup_bytes: Some(memory),
             path: None,
             vhd_path: None,
+            source_guest_state_path: vmgs_path,
         })
         .await?;
 
@@ -509,9 +511,9 @@ impl HyperVVM {
         }
     }
 
-    /// Set the VM's guest state file
-    pub async fn set_guest_state_file(&self, vmgs_file: &Path) -> anyhow::Result<()> {
-        powershell::run_set_guest_state_file(&self.vmid, &self.ps_mod, vmgs_file).await
+    /// Get the VM's guest state file
+    pub async fn get_guest_state_file(&self) -> anyhow::Result<PathBuf> {
+        powershell::run_get_guest_state_file(&self.vmid, &self.ps_mod).await
     }
 }
 

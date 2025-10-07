@@ -95,6 +95,7 @@ use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
+use vmgs_resources::GuestStateEncryptionPolicy;
 use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
@@ -975,6 +976,11 @@ impl PetriVmConfigSetupCore<'_> {
             _ => anyhow::bail!("not a supported openhcl firmware config"),
         };
 
+        let test_gsp_by_id = self
+            .vmgs
+            .disk()
+            .is_some_and(|x| matches!(x.encryption_policy, GuestStateEncryptionPolicy::GspById(_)));
+
         // Save the GED handle to add later after configuration is complete.
         let ged = get_resources::ged::GuestEmulationDeviceHandle {
             firmware: get_resources::ged::GuestFirmwareConfig::Uefi {
@@ -1004,8 +1010,9 @@ impl PetriVmConfigSetupCore<'_> {
                 None => get_resources::ged::GuestSecureBootTemplateType::None,
             },
             enable_battery: false,
-            no_persistent_secrets: true,
+            no_persistent_secrets: !test_gsp_by_id,
             igvm_attest_test_config: None,
+            test_gsp_by_id,
         };
 
         Ok((ged, guest_request_send))

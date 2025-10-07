@@ -20,7 +20,6 @@ pub use runtime::PetriVmOpenVmm;
 use crate::BootDeviceType;
 use crate::Firmware;
 use crate::PetriDiskType;
-use crate::PetriGuestStateEncryptionPolicy;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
@@ -59,6 +58,7 @@ use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
 use vtl2_settings_proto::Vtl2Settings;
 
@@ -198,21 +198,18 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
 }
 
 fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
-    let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<Resource<DiskHandleKind>> {
-        if !matches!(
-            disk.encryption_policy,
-            PetriGuestStateEncryptionPolicy::None(_)
-        ) {
-            unreachable!("guest state encryption not supported on openvmm");
-        }
-        match &disk.disk {
-            PetriDiskType::Memory => Ok(LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-            })
-            .into_resource()),
-            PetriDiskType::Differencing(path) => memdiff_disk(path),
-            PetriDiskType::Persistent(path) => open_disk_type(path, false),
-        }
+    let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<VmgsDisk> {
+        Ok(VmgsDisk {
+            disk: match &disk.disk {
+                PetriDiskType::Memory => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                })
+                .into_resource(),
+                PetriDiskType::Differencing(path) => memdiff_disk(path)?,
+                PetriDiskType::Persistent(path) => open_disk_type(path, false)?,
+            },
+            encryption_policy: disk.encryption_policy,
+        })
     };
 
     Ok(match vmgs {
