@@ -1009,11 +1009,15 @@ impl IntoPipeline for CheckinGatesCli {
         ] {
             let test_label = format!("{label}-vmm-tests");
 
-            let (pub_vmm_tests_results, use_vmm_tests_results) =
+            let (pub_vmm_tests_results_full, _) =
                 pipeline.new_artifact(format!("{label}-vmm-tests-results"));
 
-            pipeline.force_publish_artifact(&pub_vmm_tests_results);
-            vmm_tests_results_artifacts.push((label.to_string(), use_vmm_tests_results));
+            let (pub_vmm_tests_results_light, use_vmm_tests_results_light) =
+                pipeline.new_artifact(format!("{label}-vmm-tests-results-junit-xml"));
+
+            pipeline.force_publish_artifact(&pub_vmm_tests_results_full);
+
+            vmm_tests_results_artifacts.push((label.to_string(), use_vmm_tests_results_light));
 
             let use_vmm_tests_archive = match target {
                 CommonTriple::X86_64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_x86,
@@ -1036,7 +1040,15 @@ impl IntoPipeline for CheckinGatesCli {
                         dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
                         test_artifacts,
                         fail_job_on_test_fail: true,
-                        artifact_dir: Some(ctx.publish_artifact(pub_vmm_tests_results)),
+                        artifact_dirs:
+                            flowey_lib_common::publish_test_results::VmmTestResultsArtifacts {
+                                test_results_light: Some(
+                                    ctx.publish_artifact(pub_vmm_tests_results_light),
+                                ),
+                                test_results_full: Some(
+                                    ctx.publish_artifact(pub_vmm_tests_results_full),
+                                ),
+                            },
                         needs_prep_run,
                         done: ctx.new_done_handle(),
                     }

@@ -14,6 +14,7 @@ use crate::build_vmgstool::VmgstoolOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
+use flowey_lib_common::publish_test_results::VmmTestResultsArtifacts;
 use std::collections::BTreeMap;
 use vmm_test_images::KnownTestArtifacts;
 
@@ -52,8 +53,8 @@ flowey_request! {
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
-        /// If provided, also publish junit.xml test results as an artifact.
-        pub artifact_dir: Option<ReadVar<PathBuf>>,
+        /// Artifacts corresponding to test results
+        pub artifact_dirs: VmmTestResultsArtifacts,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -87,7 +88,7 @@ impl SimpleFlowNode for Node {
             test_artifacts,
             fail_job_on_test_fail,
             needs_prep_run,
-            artifact_dir,
+            artifact_dirs,
             done,
         } = request;
 
@@ -228,7 +229,7 @@ impl SimpleFlowNode for Node {
                     ),
                 ),
             ]),
-            output_dir: artifact_dir,
+            output_dirs: Some(artifact_dirs),
             done: v,
         });
 
