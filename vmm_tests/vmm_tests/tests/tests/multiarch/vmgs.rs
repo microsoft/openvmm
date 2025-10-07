@@ -131,7 +131,7 @@ async fn vmgstool_create<T: PetriVmmBackend>(
     // path here.
     let vmgs_path = vm.get_guest_state_file().await?.unwrap_or(vmgs_path);
 
-    run_vmgstool_verification(&vmgstool_path, &vmgs_path, None, &temp_dir).await?;
+    run_vmgstool_verification(vmgstool_path, &vmgs_path, None, &temp_dir).await?;
 
     vm.teardown().await?;
 
@@ -198,7 +198,7 @@ async fn vmgstool_encryption<T: PetriVmmBackend>(
     let key_path = temp_dir.path().join("key.bin");
     let vmgstool_path = vmgstool.get();
 
-    std::fs::write(&key_path, &TEST_GSP_BY_ID)?;
+    std::fs::write(&key_path, TEST_GSP_BY_ID)?;
 
     let mut cmd = Command::new(vmgstool_path);
     cmd.arg("create")
@@ -220,7 +220,7 @@ async fn vmgstool_encryption<T: PetriVmmBackend>(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
-    run_vmgstool_verification(&vmgstool_path, &vmgs_path, Some(&key_path), &temp_dir).await?;
+    run_vmgstool_verification(vmgstool_path, &vmgs_path, Some(&key_path), &temp_dir).await?;
 
     Ok(())
 }
@@ -329,7 +329,7 @@ async fn vmgstool_update_key<T: PetriVmmBackend>(
     let key3_path = temp_dir.path().join("key3.bin");
     let vmgstool_path = vmgstool.get();
 
-    std::fs::write(&key3_path, &TEST_GSP_BY_ID)?;
+    std::fs::write(&key3_path, TEST_GSP_BY_ID)?;
 
     let mut cmd = Command::new(vmgstool_path);
     cmd.arg("test")
