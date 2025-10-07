@@ -3378,7 +3378,7 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-intel-tdx-vmm-tests-results" | flowey v 20 'artifact_use_from_x64-windows-intel-tdx-vmm-tests-results' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-intel-vmm-tests-results" | flowey v 20 'artifact_use_from_x64-windows-intel-vmm-tests-results' --is-raw-string update
       shell: bash
-    - name: collect test names from junit logs
+    - name: parse and analyze junit logs and nextest list output
       run: flowey e 20 flowey_lib_hvlite::_jobs::verify_all_tests_run 0
       shell: bash
   job21:
