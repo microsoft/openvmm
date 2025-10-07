@@ -512,7 +512,6 @@ async fn memory_validation_cvm_small<T: PetriVmmBackend>(
     .await
 }
 
-#[cfg(debug_assertions)]
 #[vmm_test(
     // hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
