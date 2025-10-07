@@ -143,6 +143,24 @@ impl fmt::Display for Node {
     }
 }
 
+#[expect(missing_docs)]
+#[derive(Error, Debug)]
+pub enum ChildValueError {
+    #[error("missing child `{0}`")]
+    Missing(String),
+    #[error("node is not a directory")]
+    NotADirectory,
+    #[error("child `{0}` is not a value")]
+    NotAValue(String),
+    #[error("cannot convert value of child `{0}`")]
+    ValueConversionError(
+        String,
+        #[source] std::boxed::Box<dyn std::error::Error + Send + Sync>,
+    ),
+    #[error("value `{0}` is of wrong type, got `{1:?}`")]
+    WrongType(String, ValueKind),
+}
+
 impl Node {
     fn merge_list(children: &mut Vec<Entry>) {
         // Sort the new list of children.
@@ -287,6 +305,69 @@ impl Node {
     /// Returns an object that implements [`Display`](core::fmt::Display) to output JSON.
     pub fn json(&self) -> impl '_ + fmt::Display {
         JsonDisplay(self)
+    }
+
+    /// Convenience method to get a child property of an inspect node. e.g. if you
+    /// have a node like: `{ "save_restore_supported": true }`, then you can call
+    /// `child("save_restore_supported", &node, |v| { ... })` to get the value
+    /// (which would be `true` in this case).
+    ///
+    /// If the given `node` has an entry with the given `value_name`, and
+    /// if that entry is a value, then call the closure `f` with the value kind contained
+    /// within.
+    ///
+    /// If any of those conditions fail, then return an error. Errors returned by `f` are
+    /// also propagated.
+    pub fn child_value<T>(
+        &self,
+        value_name: &str,
+        f: impl FnOnce(&ValueKind) -> Result<T, std::boxed::Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Result<T, ChildValueError> {
+        let Node::Dir(children) = self else {
+            Err(ChildValueError::NotADirectory)?
+        };
+
+        let child = children
+            .iter()
+            .find(|c| c.name == value_name)
+            .ok_or(ChildValueError::Missing(value_name.to_string()))?;
+
+        let Node::Value(value) = &child.node else {
+            Err(ChildValueError::NotAValue(value_name.to_string()))?
+        };
+
+        f(&value.kind).map_err(|e| ChildValueError::ValueConversionError(value_name.to_string(), e))
+    }
+
+    /// Convenience method to get a boolean child property of an inspect node.
+    /// e.g. if you have a node like: `{ "save_restore_supported": true }`, then
+    /// you can call `bool_child_value("save_restore_supported")` to get the value
+    /// (which would be `true` in this case).
+    ///
+    /// `name` is the name of the child property to get.
+    pub fn bool_child_value(&self, name: &str) -> Result<bool, ChildValueError> {
+        Self::child_value(self, name, |v| match v {
+            ValueKind::Bool(b) => Ok(*b),
+            _ => Err(std::boxed::Box::new(ChildValueError::WrongType(
+                name.to_string(),
+                v.clone(),
+            ))),
+        })
+    }
+
+    /// Convenience method to get a signed integer child property of an inspect node.
+    /// e.g. if you have a node like: `{ "some_signed": -42 }`, then you can call
+    /// `signed_child_value("some_signed")` to get the value (which would be `-42` in this case).
+    ///
+    /// `name` is the name of the child property to get.
+    pub fn unsigned_child_value(&self, name: &str) -> Result<u64, ChildValueError> {
+        Self::child_value(self, name, |v| match v {
+            ValueKind::Unsigned(u) => Ok(*u),
+            _ => Err(std::boxed::Box::new(ChildValueError::WrongType(
+                name.to_string(),
+                v.clone(),
+            ))),
+        })
     }
 }
 

@@ -729,9 +729,8 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     /// IMPORTANT: As mentioned in the Guide, inspect output is *not* guaranteed
     /// to be stable. Use this to test that components in OpenHCL are working as
     /// you would expect. But, if you are adding a test simply to verify that
-    /// the inspect output as some other tool depends on it, then you should be
-    /// making a change to `ohcldiag` instead (and write a test to make sure
-    /// that `ohcldiag` produces the stable output that you need).
+    /// the inspect output as some other tool depends on it, then that is
+    /// incorrect.
     ///
     /// - `timeout` is enforced on the client side
     /// - `path` and `depth` are passed to the [`Inspect`] machinery.

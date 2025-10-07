@@ -11,45 +11,6 @@ use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 
-/// Convenience method to get a child property of an inspect node. e.g. if you
-/// have a node like: `{ "save_restore_supported": true }`, then you can call
-/// `child("save_restore_supported", &node, ||(v) { ... })` to get the value
-/// (which would be `true` in this case).
-fn child<T>(
-    node: &inspect::Node,
-    name: &str,
-    f: impl FnOnce(&inspect::ValueKind) -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    let children = match node {
-        inspect::Node::Dir(children) => children,
-        _ => anyhow::bail!("Expected directory (looking for `{}`)", name),
-    };
-
-    let child = children
-        .iter()
-        .find(|c| c.name == name)
-        .with_context(|| format!("missing child `{}`", name))?;
-
-    match &child.node {
-        inspect::Node::Value(value) => f(&value.kind),
-        _ => anyhow::bail!("Expected `{}` to be a value", name),
-    }
-}
-
-fn bool_child(node: &inspect::Node, name: &str) -> anyhow::Result<bool> {
-    child(node, name, |v| match v {
-        inspect::ValueKind::Bool(b) => Ok(*b),
-        _ => anyhow::bail!("Expected `{}` to be a bool", name),
-    })
-}
-
-fn unsigned_child(node: &inspect::Node, name: &str) -> anyhow::Result<u64> {
-    child(node, name, |v| match v {
-        inspect::ValueKind::Unsigned(u) => Ok(*u),
-        _ => anyhow::bail!("Expected `{}` to be an unsigned integer", name),
-    })
-}
-
 struct ExpectedNvmeDeviceProperties {
     save_restore_supported: bool,
     qsize: u64,
@@ -83,19 +44,23 @@ async fn nvme_relay_test_core(
 
     let devices_node = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
     tracing::info!(devices = %devices_node.json(), "NVMe devices");
-    if let inspect::Node::Dir(devices) = devices_node {
-        // Inspect the NVMe devices
-        assert!(!devices.is_empty(), "Expected at least one NVMe device");
+    let inspect::Node::Dir(devices) = devices_node else {
+        anyhow::bail!("Not expected: `vm/nvme/devices` is not a directory");
+    };
+
+    // Inspect the NVMe devices
+    assert!(!devices.is_empty(), "Expected at least one NVMe device");
+
+    if let Some(props) = &props {
+        // Validate that we have the expected number of devices.
+        assert_eq!(devices.len(), 1, "Expected exactly one NVMe device");
+        assert_eq!(
+            props.save_restore_supported,
+            devices[0].node.bool_child_value("save_restore_supported")?
+        );
+
         // For now, assume that the first device is just the one we expect.
         // But, [`PARAVISOR_BOOT_NVME_INSTANCE`] contains the PCI instance.
-        let props = props.inspect(|p| {
-            assert_eq!(
-                p.save_restore_supported,
-                bool_child(&devices[0].node, "save_restore_supported")
-                    .expect("save_restore_supported")
-            )
-        });
-
         // Get the guts of the device...
         let device_details = vm
             .inspect_openhcl(
@@ -110,20 +75,13 @@ async fn nvme_relay_test_core(
                 None,
             )
             .await?;
-        let props = props.inspect(|p| {
-            assert_eq!(
-                p.qsize,
-                unsigned_child(&device_details, "qsize").expect("qsize")
-            )
-        });
-        props.inspect(|p| {
-            assert_eq!(
-                p.nvme_keepalive,
-                bool_child(&device_details, "nvme_keepalive").expect("nvme_keepalive")
-            )
-        });
-    } else {
-        anyhow::bail!("Not expected: `vm/nvme/devices` is not a directory");
+
+        assert_eq!(props.qsize, device_details.unsigned_child_value("qsize")?);
+
+        assert_eq!(
+            props.nvme_keepalive,
+            device_details.bool_child_value("nvme_keepalive")?
+        );
     }
 
     agent.power_off().await?;
