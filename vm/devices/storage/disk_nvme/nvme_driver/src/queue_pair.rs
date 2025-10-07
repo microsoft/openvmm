@@ -252,9 +252,9 @@ impl QueuePair {
                     commands: PendingCommands::new(qid),
                     stats: Default::default(),
                     drain_after_restore: false,
-                    next_aer: None,
-                    last_aen_seen: None,
-                    aer_processing_state: AerState::Uninstantiated,
+                    send_aen: None,
+                    pending_aen: None,
+                    manages_aers: false,
                 }
             }
         };
@@ -447,13 +447,9 @@ impl Issuer {
         }
     }
 
-    pub async fn issue_async(&self) -> Result<spec::Completion, RequestError> {
-        match self.send.call(Req::NextAer, ()).await {
-            // TODO: This common code with issue_raw can be factored out.
-            Ok(completion) if completion.status.status() == 0 => Ok(completion),
-            Ok(completion) => Err(RequestError::Nvme(NvmeError(spec::Status(
-                completion.status.status(),
-            )))),
+    pub async fn issue_get_aen(&self) -> Result<AsynchronousEventRequestDw0, RequestError> {
+        match self.send.call(Req::NextAen, ()).await {
+            Ok(aen_completion) => Ok(aen_completion),
             Err(err) => Err(RequestError::Gone(err)),
         }
     }
@@ -649,13 +645,7 @@ enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
-    NextAer(Rpc<(), spec::Completion>),
-}
-
-#[derive(Inspect, PartialEq, Clone, Debug, MeshPayload)]
-pub enum AerState {
-    Uninstantiated, // Loop has not been started yet.
-    Outstanding, // If AER processing has started, there should always be exactly one outstanding AER.
+    NextAen(Rpc<(), AsynchronousEventRequestDw0>),
 }
 
 #[derive(Inspect)]
@@ -666,13 +656,13 @@ struct QueueHandler {
     stats: QueueStats,
     drain_after_restore: bool,
     #[inspect(skip)]
-    next_aer: Option<Rpc<(), spec::Completion>>, // Outstanding AER to be sent back to the caller.
+    send_aen: Option<Rpc<(), AsynchronousEventRequestDw0>>, // Channel to return AENs on.
     #[inspect(skip)]
-    last_aen_seen: Option<spec::Completion>, // Store the last seen AEN until someone asks for it.
-    aer_processing_state: AerState, // Track AER processing state.
+    pending_aen: Option<AsynchronousEventRequestDw0>, // Store the last seen AEN until someone asks for it.
+    manages_aers: bool,
 }
 
-#[derive(Inspect, Default, Clone)]
+#[derive(Inspect, Default)]
 struct QueueStats {
     issued: Counter,
     completed: Counter,
@@ -747,29 +737,22 @@ impl QueueHandler {
                         // Do not allow any more processing after save completed.
                         break;
                     }
-                    Req::NextAer(rpc) => {
-                        if let AerState::Uninstantiated = self.aer_processing_state {
-                            // First time this comes in, it is the driver
-                            // indicating that this handler is handling the
-                            // admin queue.
-
-                            // Issue the first AER and throw away the receiver.
-                            // AERs should always be treated with "RPC::detached"
-                            // like functionality. AERs will be intercepted upon
-                            // completion.
+                    Req::NextAen(rpc) => {
+                        // If this is the first AER request, start the aer
+                        // processing loop.
+                        if !self.manages_aers {
                             let _ = Some(send.call(
                                 Req::Command,
                                 admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST),
                             ));
-                            self.aer_processing_state = AerState::Outstanding; // Also indicates this is the admin queue.
+                            self.manages_aers = true; // Also indicates this is the admin queue.
                         }
 
-                        if let Some(last_aen_seen) = self.last_aen_seen.take() {
-                            // If we have a saved AEN, remove it and return it immediately.
-                            rpc.complete(last_aen_seen);
+                        if let Some(aen) = self.pending_aen.take() {
+                            rpc.complete(aen);
                             continue;
                         } else {
-                            self.next_aer = Some(rpc); // Save driver request to be completed later.
+                            self.send_aen = Some(rpc); // Save driver request to be completed later.
                         }
                     }
                 },
@@ -784,24 +767,23 @@ impl QueueHandler {
 
                     // If this is the admin queue we need to check for AER
                     // completions.
-                    if self.aer_processing_state == AerState::Outstanding
+                    if self.manages_aers
                         && AsynchronousEventRequestDw0::from_bits(completion.dw0).event_type()
                             == AsynchronousEventType::NOTICE.0
                     {
-                        // First things first resend an AER to the device
+                        // No need to save the sender, AERs will be processed
+                        // here anywyas.
                         let _ = Some(send.call(
                             Req::Command,
                             admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST),
                         ));
+                        let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
 
-                        // If the driver had already requested the AER response,
-                        // respond to the driver and don't save this.
-                        if let Some(next_aer) = self.next_aer.take() {
-                            // If the driver is waiting for an AER, complete it now.
-                            next_aer.complete(completion);
+                        // Complete if we can, else pend it.
+                        if let Some(send_aen) = self.send_aen.take() {
+                            send_aen.complete(aen);
                         } else {
-                            // Otherwise save the AER until the driver asks for it.
-                            self.last_aen_seen = Some(completion);
+                            self.pending_aen = Some(aen);
                         }
                     } else {
                         // Normal completion, just respond to the caller.
@@ -821,8 +803,8 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds: self.commands.save(),
-            aer_processing_state: self.aer_processing_state.clone(),
-            last_aen_seen: self.last_aen_seen.clone(), // Processing stops after save
+            manages_aer: Some(self.manages_aers.clone()),
+            pending_aen: self.pending_aen.map(|aen| aen.into_bits()), // Save it as a u32 for clarity
         })
     }
 
@@ -836,8 +818,8 @@ impl QueueHandler {
             sq_state,
             cq_state,
             pending_cmds,
-            aer_processing_state,
-            last_aen_seen,
+            manages_aer,
+            pending_aen,
         } = saved_state;
 
         Ok(Self {
@@ -848,9 +830,9 @@ impl QueueHandler {
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
-            next_aer: None,
-            aer_processing_state: aer_processing_state.clone(),
-            last_aen_seen: last_aen_seen.clone(),
+            send_aen: None,
+            manages_aers: manages_aer.unwrap_or(false),
+            pending_aen: pending_aen.map(|bits| AsynchronousEventRequestDw0::from_bits(bits)), // Restore from u32
         })
     }
 }
