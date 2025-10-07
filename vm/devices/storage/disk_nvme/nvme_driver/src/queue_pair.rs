@@ -772,7 +772,7 @@ impl QueueHandler {
                             == AsynchronousEventType::NOTICE.0
                     {
                         // No need to save the sender, AERs will be processed
-                        // here anywyas.
+                        // here anyways.
                         let _ = Some(send.call(
                             Req::Command,
                             admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST),
@@ -803,7 +803,7 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds: self.commands.save(),
-            manages_aer: Some(self.manages_aers.clone()),
+            manages_aer: Some(self.manages_aers),
             pending_aen: self.pending_aen.map(|aen| aen.into_bits()), // Save it as a u32 for clarity
         })
     }
