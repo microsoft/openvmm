@@ -781,6 +781,8 @@ impl LoadedVm {
             None
         };
 
+        let units = self.save_units().await.context("state unit save failed")?;
+
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_flag
         {
@@ -789,7 +791,6 @@ impl LoadedVm {
             None
         };
 
-        let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
             Some((
                 vmgs_thin_client.save().await.context("vmgs save failed")?,

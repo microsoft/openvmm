@@ -1931,6 +1931,12 @@ enum InteractiveCommand {
         /// configured path.
         #[clap(long, conflicts_with("user_mode_only"))]
         igvm: Option<PathBuf>,
+        #[clap(long)]
+        /// Enable NVMe keepalive
+        nvme_keepalive: bool,
+        /// Enable MANA keepalive
+        #[clap(long)]
+        mana_keepalive: bool,
     },
 
     /// Read guest memory
@@ -2784,6 +2790,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             InteractiveCommand::ServiceVtl2 {
                 user_mode_only,
                 igvm,
+                mana_keepalive,
+                nvme_keepalive,
             } => {
                 let paravisor_diag = paravisor_diag.clone();
                 let vm_rpc = vm_rpc.clone();
@@ -2801,7 +2809,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         hvlite_helpers::underhill::save_underhill(
                             &vm_rpc,
                             ged_rpc.as_ref().context("no GED")?,
-                            GuestServicingFlags::default(),
+                            GuestServicingFlags {
+                                nvme_keepalive,
+                                mana_keepalive,
+                            },
                             file.into(),
                         )
                         .await?;
