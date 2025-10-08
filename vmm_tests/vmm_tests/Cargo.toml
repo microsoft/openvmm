@@ -37,7 +37,6 @@ virtio_resources.workspace = true
 vm_resource.workspace = true
 
 guid.workspace = true
-inspect.workspace = true
 kmsg.workspace = true
 mesh.workspace = true
 pal.workspace = true

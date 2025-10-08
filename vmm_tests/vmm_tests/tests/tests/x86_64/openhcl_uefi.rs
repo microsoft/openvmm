@@ -44,47 +44,98 @@ async fn nvme_relay_test_core(
         .run()
         .await?;
 
-    let devices_node = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
-    tracing::info!(devices = %devices_node.json(), "NVMe devices");
-    let inspect::Node::Dir(devices) = devices_node else {
-        anyhow::bail!("Not expected: `vm/nvme/devices` is not a directory");
-    };
+    let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    tracing::info!(devices = %devices.json(), "NVMe devices");
 
-    // Inspect the NVMe devices
-    assert!(!devices.is_empty(), "Expected at least one NVMe device");
+    let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
 
+    /*
+    {
+        "718b:00:00.0": {
+            "driver": {
+                "driver": {
+                    "admin": {
+                        ...
+                    },
+                    "bounce_buffer": false,
+                    "device": {
+                        "dma_client": {
+                            "backing": {
+                                "type": "locked_memory"
+                            },
+                            "params": {
+                                "allocation_visibility": "private",
+                                "device_name": "nvme_718b:00:00.0",
+                                "lower_vtl_policy": "any",
+                                "persistent_allocations": false
+                            }
+                        },
+                        "interrupts": {
+                            "0": {
+                                "target_cpu": 0
+                            }
+                        },
+                        "pci_id": "718b:00:00.0"
+                    },
+                    "device_id": "718b:00:00.0",
+                    "identify": {
+                        ...
+                    },
+                    "io": {
+                        ...
+                    },
+                    "io_issuers": {
+                        ...
+                    },
+                    "max_io_queues": 1,
+                    "nvme_keepalive": false,
+                    "qsize": 64,
+                    "registers": {
+                        ...
+                    }
+                },
+                "pci_id": "718b:00:00.0"
+            },
+            "pci_id": "718b:00:00.0",
+            "save_restore_supported": false,
+            "vp_count": 1
+        }
+    }
+    */
+
+    // If just one device is returned, then this will be a `Value::Object`, where the
+    // key is the single PCI ID of the device.
+    //
+    // TODO (future PR): Fix this up with support for multiple devices when this code is used
+    // in more complicated tests.
+    let found_device_id = devices
+        .as_object()
+        .expect("devices object")
+        .keys()
+        .next()
+        .expect("device id");
+
+    // The PCI id is generated from the VMBUS instance guid for vpci devices.
+    // See `PARAVISOR_BOOT_NVME_INSTANCE`.
+    assert_eq!(found_device_id, "718b:00:00.0");
     if let Some(props) = &props {
-        // Validate that we have the expected number of devices.
-        assert_eq!(devices.len(), 1, "Expected exactly one NVMe device");
         assert_eq!(
-            props.save_restore_supported,
-            devices[0]
-                .node
-                .child_value::<bool>("save_restore_supported")?
+            devices[found_device_id]["driver"]["driver"]["qsize"]
+                .as_u64()
+                .expect("qsize"),
+            props.qsize
         );
-
-        // For now, assume that the first device is just the one we expect.
-        // But, [`PARAVISOR_BOOT_NVME_INSTANCE`] contains the PCI instance.
-        // Get the guts of the device...
-        let device_details = vm
-            .inspect_openhcl(
-                [
-                    "vm/nvme/devices".to_owned(),
-                    devices[0].name.clone(),
-                    "driver/driver".to_owned(),
-                ]
-                .join("/")
-                .as_str(),
-                None,
-                None,
-            )
-            .await?;
-
-        assert_eq!(props.qsize, device_details.child_value::<u64>("qsize")?);
-
         assert_eq!(
-            props.nvme_keepalive,
-            device_details.child_value::<bool>("nvme_keepalive")?
+            devices[found_device_id]["driver"]["driver"]["nvme_keepalive"]
+                .as_bool()
+                .expect("nvme_keepalive"),
+            props.nvme_keepalive
+        );
+        assert_eq!(
+            devices[found_device_id]["save_restore_supported"]
+                .as_bool()
+                .expect("save_restore_supported"),
+            props.save_restore_supported
         );
     }
 
