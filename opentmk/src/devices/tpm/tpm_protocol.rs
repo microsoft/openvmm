@@ -6,6 +6,7 @@
 //! NOTE: once the `tpm-rs` project matures, this hand-rolled code should be *deleted* and
 //! replaced with types from that `tpm-rs` project.
 
+#![expect(missing_docs)]
 use alloc::vec::Vec;
 
 use bitfield_struct::bitfield;

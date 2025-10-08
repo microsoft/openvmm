@@ -11,15 +11,15 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::MutexGuard;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
+use spin::MutexGuard;
 use thiserror::Error;
 
 /// An unbounded channel implementation with priority send capability.
 /// This implementation works in no_std environments using spin-rs.
-/// It uses a VecDeque as the underlying buffer 
+/// It uses a VecDeque as the underlying buffer
 pub struct Channel<T> {
     inner: Arc<ChannelInner<T>>,
 }
@@ -55,10 +55,10 @@ pub enum RecvError {
     Disconnected,
     /// Channel is currently locked by another operation
     #[error("channel is locked by another operation")]
-    Unavailable
+    Unavailable,
 }
 
-/// Sender half of the channel 
+/// Sender half of the channel
 pub struct Sender<T> {
     inner: Arc<ChannelInner<T>>,
 }
@@ -191,7 +191,7 @@ impl<T> Receiver<T> {
             let mut buffer = self.inner.buffer.lock();
             buffer.pop_front()
         };
-         match result {
+        match result {
             Some(val) => Ok(val),
             None => {
                 // Check if there are any senders left

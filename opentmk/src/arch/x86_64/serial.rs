@@ -13,9 +13,13 @@ use super::io;
 /// These are the standard COM ports used in x86 systems.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SerialPort {
+    /// COM1 serial port
     COM1,
+    /// COM2 serial port
     COM2,
+    /// COM3 serial port
     COM3,
+    /// COM4 serial port
     COM4,
 }
 
@@ -78,6 +82,7 @@ impl<T: IoAccess> Serial<T> {
         }
     }
 
+    /// Initialize the serial port.
     pub fn init(&self) {
         // SAFETY: Initializing the serial port is safe.
         unsafe {

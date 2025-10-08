@@ -1,8 +1,12 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #[macro_export]
+/// Generates a function that calls the given symbol saving and restoring all registers around the call.
 macro_rules! create_function_with_restore {
     ($func_name:ident, $symbol:ident) => {
         #[inline(never)]
-        // avoiding inline for debuggability in release builds 
+        // avoiding inline for debuggability in release builds
         fn $func_name() {
             // SAFETY: we are calling a function pointer and restoring all registers.
             unsafe {
@@ -45,8 +49,8 @@ macro_rules! create_function_with_restore {
 }
 
 #[cfg(target_arch = "x86_64")]
-// Get the length of the first instruction at the given target address.
-// Prints each instruction read for debugging purposes till it can decode no more.
+/// Get the length of the first instruction at the given target address.
+/// Prints each instruction read for debugging purposes till it can decode no more.
 pub fn get_first_ip_len(target: u64) -> usize {
     // SAFETY:  if an invalid address is passed we dont return the len
     unsafe {

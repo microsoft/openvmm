@@ -1,5 +1,8 @@
-use hvdef::hypercall::InitialVpContextArm64;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use hvdef::Vtl;
+use hvdef::hypercall::InitialVpContextArm64;
 use zerocopy::IntoBytes;
 
 use crate::platform::hyperv::arch::hypercall::HvCall;
@@ -58,10 +61,12 @@ impl HvCall {
         }
     }
 
+    /// Placeholder for VTL call on aarch64.
     pub fn vtl_call() {
         unimplemented!();
     }
 
+    /// Placeholder for VTL return on aarch64.
     pub fn vtl_return() {
         unimplemented!();
     }

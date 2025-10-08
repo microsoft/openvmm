@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Hypercall interface for x86_64 architecture.
+
 #![expect(unsafe_code)]
 
 use core::ptr::addr_of;

@@ -1,3 +1,8 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! x86_64-specific implementation for reading from the RTC (Real-Time Clock) and CMOS.
+
 use super::io::inb;
 use super::io::outb;
 // CMOS/RTC I/O ports
@@ -16,6 +21,7 @@ const RTC_STATUS_B: u8 = 0x0B;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+/// Represents date and time read from the RTC.
 pub struct DateTime {
     seconds: u8,
     minutes: u8,
@@ -41,8 +47,9 @@ impl core::fmt::Display for DateTime {
     }
 }
 
-// convert datetime to Unix epoch
+/// convert datetime to Unix epoch
 impl DateTime {
+    /// Converts the DateTime to seconds since the Unix epoch (1970-01-01T00:00:00Z).
     pub fn unix_epoch_sec(&self) -> u64 {
         // Check if a year is a leap year
         let is_leap_year =
@@ -97,7 +104,7 @@ fn bcd_to_binary(bcd: u8) -> u8 {
     (bcd & 0x0F) + ((bcd >> 4) * 10)
 }
 
-// Read current date and time from RTC
+/// Read current date and time from RTC
 pub fn read_rtc() -> DateTime {
     // Wait for any update to complete
     while rtc_update_in_progress() {}
@@ -146,6 +153,7 @@ pub fn read_rtc() -> DateTime {
     datetime
 }
 
+/// Busy-wait delay for specified seconds using RTC
 pub fn delay_sec(seconds: u64) {
     let start = read_rtc().unix_epoch_sec();
     let end = start + seconds;

@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+
 #![no_std]
 #![expect(unsafe_code)]
 #![cfg_attr(feature = "nightly", feature(abi_x86_interrupt))]

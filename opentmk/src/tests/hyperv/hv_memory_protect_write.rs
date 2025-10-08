@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use alloc::alloc::alloc;
 use core::alloc::Layout;
 use core::arch::asm;
@@ -22,8 +25,8 @@ static FAULT_CALLED: Mutex<bool> = Mutex::new(false);
 // Without inline the compiler may optimize away the call and the VTL switch may
 // distort the architectural registers
 #[inline(never)]
-#[expect(warnings)]
-// writing to a static generates a warning. we safely handle HEAP_ALLOC_PTR so ignoring it here.
+// SAFETY: we safely handle HEAP_ALLOC_PTR so ignoring it here.
+#[expect(static_mut_refs)]
 fn violate_heap() {
     unsafe {
         let alloc_ptr = *HEAP_ALLOC_PTR.borrow();
@@ -32,6 +35,7 @@ fn violate_heap() {
 }
 create_function_with_restore!(f_violate_heap, violate_heap);
 
+/// Executes a series of tests to validate memory protection between VTLs.
 pub fn exec<T>(ctx: &mut T)
 where
     T: InterruptPlatformTrait
@@ -69,7 +73,7 @@ where
         let ptr = unsafe { alloc(layout) };
         log::info!("allocated some memory in the heap from vtl1");
 
-        #[expect(warnings)]
+        #[expect(static_mut_refs)]
         unsafe {
             let mut z = HEAP_ALLOC_PTR.borrow_mut();
             *z = ptr;
@@ -97,29 +101,34 @@ where
 
     let (tx, rx) = Channel::new().split();
 
-    let r = ctx.start_on_vp(VpExecToken::new(0x2, Vtl::Vtl1).command(move |ctx: &mut T| {
-        let r = ctx.setup_interrupt_handler();
-        tmk_assert!(r.is_ok(), "setup_interrupt_handler should succeed");
+    let r = ctx.start_on_vp(
+        VpExecToken::new(0x2, Vtl::Vtl1).command(move |ctx: &mut T| {
+            let r = ctx.setup_interrupt_handler();
+            tmk_assert!(r.is_ok(), "setup_interrupt_handler should succeed");
 
-        let r = ctx.setup_secure_intercept(0x30);
-        tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
+            let r = ctx.setup_secure_intercept(0x30);
+            tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
 
-        log::info!("successfully started running VTL1 on vp2.");
-    }));
+            log::info!("successfully started running VTL1 on vp2.");
+        }),
+    );
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
-    let r = ctx.start_on_vp(VpExecToken::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| {
-        log::info!("successfully started running VTL0 on vp2.");
+    let r = ctx.start_on_vp(
+        VpExecToken::new(0x2, Vtl::Vtl0).command(move |ctx: &mut T| {
+            log::info!("successfully started running VTL0 on vp2.");
 
-        let r = ctx.queue_command_vp(VpExecToken::new(2, Vtl::Vtl1).command(move |ctx: &mut T| {
-            log::info!("after intercept successfully started running VTL1 on vp2.");
-            ctx.switch_to_low_vtl();
-        }));
-        tmk_assert!(r.is_ok(), "queue_command_vp should succeed");
+            let r =
+                ctx.queue_command_vp(VpExecToken::new(2, Vtl::Vtl1).command(move |ctx: &mut T| {
+                    log::info!("after intercept successfully started running VTL1 on vp2.");
+                    ctx.switch_to_low_vtl();
+                }));
+            tmk_assert!(r.is_ok(), "queue_command_vp should succeed");
 
-        f_violate_heap();
-        _ = tx.send(());
-    }));
+            f_violate_heap();
+            _ = tx.send(());
+        }),
+    );
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
     _ = rx.recv();

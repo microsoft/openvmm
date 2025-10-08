@@ -1,18 +1,24 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Platform-specific context implementations for AArch64 Hyper-V.
+//!
+
 use core::ops::Range;
 
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::InitialVpContextArm64;
-use hvdef::AlignedU128;
-use hvdef::HvRegisterValue;
-use hvdef::Vtl;
-use memory_range::MemoryRange;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
-use crate::platform::hyperv::ctx::vtl_transform;
 use crate::platform::hyperv::ctx::HvTestCtx;
+use crate::platform::hyperv::ctx::vtl_transform;
 use crate::tmkdefs::TmkError;
 use crate::tmkdefs::TmkResult;
+use hvdef::AlignedU128;
+use hvdef::HvRegisterValue;
+use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::InitialVpContextArm64;
+use memory_range::MemoryRange;
 
 impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     /// Fetch the content of the specified architectural register from
@@ -42,7 +48,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
     fn start_on_vp(&mut self, _cmd: VpExecToken<HvTestCtx>) -> TmkResult<()> {
         unimplemented!();
     }
- 
+
     /// Start the given VP in the current VTL using a freshly captured
     /// context.
     fn start_running_vp_with_default_context(

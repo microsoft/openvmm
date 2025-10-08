@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #![expect(dead_code)]
 use spin::Mutex;
 use x86_64::structures::idt::InterruptDescriptorTable;

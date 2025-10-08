@@ -6,8 +6,8 @@ pub mod init;
 mod rt;
 
 use init::init;
-use uefi::entry;
 use uefi::Status;
+use uefi::entry;
 
 use crate::tmk_assert;
 

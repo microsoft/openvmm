@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use core::arch::asm;
 
 use spin::Mutex;
@@ -33,7 +36,7 @@ fn violate_reg_rule() {
 // Usage: create_function_with_restore!(wrapper_fn_name, target_fn_name);
 create_function_with_restore!(f_violate_reg_rule, violate_reg_rule);
 
-#[cfg(target_arch = "x86_64")]
+/// Executes a series of tests to validate secure register intercept functionality.
 pub fn exec<T>(ctx: &mut T)
 where
     T: InterruptPlatformTrait

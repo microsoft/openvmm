@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 pub mod hypercall;
 #[cfg(feature = "nightly")]
 pub mod interrupt;

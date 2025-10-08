@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use core::arch::asm;
 
 /// Write a byte to a port.

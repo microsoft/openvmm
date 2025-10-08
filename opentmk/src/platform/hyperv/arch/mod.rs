@@ -1,3 +1,8 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Hyper-V platform architecture-specific modules.
+
 pub mod hypercall;
 
 cfg_if::cfg_if!(

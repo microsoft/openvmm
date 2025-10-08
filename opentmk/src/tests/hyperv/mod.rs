@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 pub mod hv_error_vp_start;
 #[cfg(feature = "nightly")]
 pub mod hv_memory_protect_read;

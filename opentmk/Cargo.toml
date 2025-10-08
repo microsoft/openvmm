@@ -7,12 +7,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+default = ["nightly"]
 nightly = ["x86_64-nightly"]
 x86_64-nightly = ["x86_64/nightly"]
 
 [dependencies]
-arrayvec.workspace = true
 bitfield-struct.workspace = true
 cfg-if.workspace  = true
 hvdef = {workspace = true}
@@ -28,7 +27,6 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 thiserror.workspace = true
 uefi = { workspace = true, features = ["alloc"] }
 x86_64 = { workspace = true, features = ["instructions"] }
-x86defs.workspace = true
 zerocopy.workspace = true
 nostd_spin_channel.workspace = true
 
@@ -36,4 +34,3 @@ nostd_spin_channel.workspace = true
 workspace = true
 
 [build-dependencies]
-minimal_rt_build.workspace = true

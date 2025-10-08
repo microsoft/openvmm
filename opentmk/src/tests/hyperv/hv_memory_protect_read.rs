@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use alloc::alloc::alloc;
 use core::alloc::Layout;
 use core::arch::asm;
@@ -22,7 +25,7 @@ static mut RETURN_VALUE: u8 = 0;
 // Without inline the compiler may optimize away the call and the VTL switch may
 // distort the architectural registers
 #[inline(never)]
-#[expect(warnings)]
+#[expect(static_mut_refs)]
 // writing to a static generates a warning. we safely handle RETURN_VALUE so ignoring it here.
 fn violate_heap() {
     unsafe {
@@ -33,6 +36,7 @@ fn violate_heap() {
 }
 create_function_with_restore!(f_violate_heap, violate_heap);
 
+/// Executes a series of tests to validate memory protection between VTLs.
 pub fn exec<T>(ctx: &mut T)
 where
     T: InterruptPlatformTrait
@@ -68,7 +72,7 @@ where
         let ptr = unsafe { alloc(layout) };
         log::info!("allocated some memory in the heap from vtl1");
 
-        #[expect(warnings)]
+        #[expect(static_mut_refs)]
         // writing to a static generates a warning. we safely handle HEAP_ALLOC_PTR so ignoring it here.
         unsafe {
             let mut z = HEAP_ALLOC_PTR.borrow_mut();
@@ -97,15 +101,17 @@ where
 
     let (tx, rx) = Channel::new().split();
 
-    let r = ctx.start_on_vp(VpExecToken::new(0x2, Vtl::Vtl1).command(move |ctx: &mut T| {
-        let r = ctx.setup_interrupt_handler();
-        tmk_assert!(r.is_ok(), "setup_interrupt_handler should succeed");
+    let r = ctx.start_on_vp(
+        VpExecToken::new(0x2, Vtl::Vtl1).command(move |ctx: &mut T| {
+            let r = ctx.setup_interrupt_handler();
+            tmk_assert!(r.is_ok(), "setup_interrupt_handler should succeed");
 
-        let r = ctx.setup_secure_intercept(0x30);
-        tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
+            let r = ctx.setup_secure_intercept(0x30);
+            tmk_assert!(r.is_ok(), "setup_secure_intercept should succeed");
 
-        log::info!("successfully started running VTL1 on vp2.");
-    }));
+            log::info!("successfully started running VTL1 on vp2.");
+        }),
+    );
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
     let r = ctx.start_on_vp(
@@ -121,10 +127,10 @@ where
 
             f_violate_heap();
 
-            #[expect(warnings)]
-            // reading a reference to a shared static reference generates a warning. we safely handle RETURN_VALUE so ignoring it here.
+            #[expect(static_mut_refs)]
+            // reading a reference to a shared static reference generates a error. we safely handle RETURN_VALUE so ignoring it here.
             // SAFETY: we are reading a static variable that is written to only once.
-            unsafe{
+            unsafe {
                 log::info!(
                     "reading mutated heap memory from vtl0(it should not be 0xA2): 0x{:x}",
                     RETURN_VALUE

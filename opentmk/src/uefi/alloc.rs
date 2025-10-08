@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use core::alloc::GlobalAlloc;
 use core::cell::RefCell;
 
@@ -23,7 +26,6 @@ pub struct MemoryAllocator {
     locked_heap: LockedHeap,
     uefi_allocator: Allocator,
 }
-
 
 // SAFETY: The methods of GlobalAlloc are unsafe because the caller must ensure the safety
 unsafe impl GlobalAlloc for MemoryAllocator {

@@ -1,16 +1,20 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #![expect(unsafe_code)]
 
 use core::arch::asm;
 
-use hvdef::hypercall::InitialVpContextX64;
 use hvdef::Vtl;
+use hvdef::hypercall::InitialVpContextX64;
 use zerocopy::IntoBytes;
 
 use crate::platform::hyperv::arch::hypercall::HvCall;
 
 // avoiding inline for debuggability in release builds
 #[inline(never)]
-#[cfg(target_arch = "x86_64")]
+// The 
+#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
 pub unsafe fn invoke_hypercall_vtl(control: hvdef::hypercall::Control) {
     // SAFETY: the caller guarantees the safety of this operation.
     unsafe {
@@ -181,7 +185,7 @@ impl HvCall {
         Ok(context)
     }
 
-    // avoiding inline for debuggability in release builds 
+    // avoiding inline for debuggability in release builds
     #[inline(never)]
     /// Invokes the VtlCall hypercall.
     pub(crate) fn vtl_call() {
@@ -192,7 +196,7 @@ impl HvCall {
         unsafe { invoke_hypercall_vtl(control) };
     }
 
-    // avoiding inline for debuggability in release builds 
+    // avoiding inline for debuggability in release builds
     #[inline(never)]
     /// Invokes the VtlReturn hypercall.
     pub(crate) fn vtl_return() {

@@ -1,3 +1,10 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Logger implementation for OpenTMK.
+//! This module provides a logger that formats log messages as JSON and writes them to a specified output
+//! such as a serial port.
+
 use alloc::borrow::ToOwned;
 use alloc::fmt::format;
 use alloc::string::String;
@@ -38,6 +45,7 @@ impl LogEntry {
     }
 }
 
+/// Formats a log message into a JSON string.
 pub(crate) fn format_log_string_to_json(
     message: &str,
     line: &str,
@@ -52,20 +60,24 @@ pub(crate) fn format_log_string_to_json(
     out
 }
 
+/// A logger that writes log messages to a provided writer, such as a serial port.
 pub struct TmkLogger<T> {
-    pub writer: T,
+    writer: T,
 }
 
 impl<T> TmkLogger<Mutex<T>>
 where
     T: Write + Send,
 {
+    /// Creates a new `TmkLogger` instance with the provided writer.
     pub const fn new(provider: T) -> Self {
         TmkLogger {
             writer: Mutex::new(provider),
         }
     }
 
+    /// Returns a lock guard to the underlying writer.
+    /// This allows direct access to the writer for custom logging operations.
     pub fn get_writer(&self) -> MutexGuard<'_, T>
     where
         T: Write + Send,
@@ -99,12 +111,15 @@ where
 #[cfg(target_arch = "x86_64")]
 type SerialPortWriter = Serial<InstrIoAccess>;
 #[cfg(target_arch = "x86_64")]
+/// The global logger instance for x86_64 architecture, using COM2 serial port.
 pub static LOGGER: TmkLogger<Mutex<SerialPortWriter>> =
     TmkLogger::new(SerialPortWriter::new(SerialPort::COM2, InstrIoAccess));
 
 #[cfg(target_arch = "aarch64")]
+/// The global logger instance for aarch64 architecture, using the default serial implementation.
 pub static LOGGER: TmkLogger<Mutex<Serial>> = TmkLogger::new(Serial {});
 
+/// Initializes the global logger.
 pub fn init() -> Result<(), SetLoggerError> {
     log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Debug))
 }

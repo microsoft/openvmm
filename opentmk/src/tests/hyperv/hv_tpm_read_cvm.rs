@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use core::ops::Range;
 
 use hvdef::Vtl;
@@ -8,9 +11,10 @@ use crate::context::SecureInterceptPlatformTrait;
 use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
-use crate::devices::tpm::TpmUtil;
+use crate::devices::tpm::{TpmDevice, TpmUtil};
 use crate::tmk_assert;
 
+/// Executes a series of tests to validate TPM read violation in a Hyper-V environment.
 pub fn exec<T>(ctx: &mut T)
 where
     T: InterruptPlatformTrait
@@ -35,7 +39,7 @@ where
     _tpm.set_command_buffer(tpm_command);
     _tpm.set_response_buffer(tpm_response);
 
-    let result = _tpm.self_test();
+    let result = TpmUtil::exec_self_test(&mut _tpm);
 
     log::warn!("TPM self test result: {:?}", result);
     tmk_assert!(result.is_ok(), "TPM self test is successful");
@@ -85,6 +89,6 @@ where
     tmk_assert!(r.is_ok(), "start_on_vp should succeed");
 
     log::warn!("about to execute TPM self test command..");
-    Tpm::execute_command();
+    Tpm::execute_command_no_check();
     log::warn!("TPM self test command executed");
 }

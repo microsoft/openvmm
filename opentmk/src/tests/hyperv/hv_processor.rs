@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use hvdef::Vtl;
 use nostd_spin_channel::Channel;
 
@@ -6,6 +9,7 @@ use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
 use crate::tmk_assert;
 
+/// Executes a series of tests to validate VTL and VP functionalities.
 pub fn exec<T>(ctx: &mut T)
 where
     T: VtlPlatformTrait + VirtualProcessorPlatformTrait<T>,

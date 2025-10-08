@@ -1,11 +1,19 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Hyper-V test context implementation.
+
+// vp_set is only used in x86_64 for now, since aarch support is not complete
+#![cfg_attr(target_arch = "aarch64", expect(dead_code))]
+
 use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::collections::linked_list::LinkedList;
 use core::fmt::Display;
 
-use hvdef::hypercall::HvInputVtl;
 use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
 use spin::Mutex;
 
 use crate::context::VirtualProcessorPlatformTrait;
@@ -39,9 +47,14 @@ fn register_command_queue(vp_index: u32) {
     }
 }
 
+/// The execution context passed to the test functions.
 pub struct HvTestCtx {
+    /// The hypercall interface.
+    /// Exposed publicly for test code to make hypercalls in specialized cases.
     pub hvcall: HvCall,
+    /// The index of the VP on which this context is running.
     pub my_vp_idx: u32,
+    /// The VTL on which this context is running.
     pub my_vtl: Vtl,
 }
 
@@ -92,7 +105,7 @@ impl HvTestCtx {
         self.my_vp_idx = Self::get_vp_idx();
         Ok(())
     }
-    
+
     pub(crate) fn secure_exec_handler() {
         HvTestCtx::exec_handler(Vtl::Vtl1);
     }
@@ -140,8 +153,6 @@ impl HvTestCtx {
             }
         }
     }
-
-    
 }
 
 impl From<hvdef::HvError> for TmkError {

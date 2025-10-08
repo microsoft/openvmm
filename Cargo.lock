@@ -4629,7 +4629,7 @@ dependencies = [
 
 [[package]]
 name = "nostd_spin_channel"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "spin 0.10.0",
  "thiserror 2.0.16",
@@ -5088,7 +5088,6 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
- "arrayvec",
  "bitfield-struct 0.11.0",
  "cfg-if",
  "hvdef",
@@ -5098,7 +5097,6 @@ dependencies = [
  "log",
  "memory_range",
  "minimal_rt",
- "minimal_rt_build",
  "nostd_spin_channel",
  "serde",
  "serde_json",
@@ -5106,7 +5104,6 @@ dependencies = [
  "thiserror 2.0.16",
  "uefi",
  "x86_64",
- "x86defs",
  "zerocopy 0.8.25",
 ]
 

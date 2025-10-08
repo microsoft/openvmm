@@ -1,16 +1,21 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! x86_64-specific implementation of Hyper-V test context implementation
+
 use alloc::alloc::alloc;
 use alloc::boxed::Box;
-#[cfg(target_arch = "x86_64")]
-use hvdef::hypercall::InitialVpContextX64;
 use core::alloc::Layout;
 use core::arch::asm;
 use core::ops::Range;
+#[cfg(target_arch = "x86_64")]
+use hvdef::hypercall::InitialVpContextX64;
 
-use hvdef::hypercall::HvInputVtl;
 use hvdef::AlignedU128;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
@@ -24,10 +29,10 @@ use crate::context::VirtualProcessorPlatformTrait;
 use crate::context::VpExecToken;
 use crate::context::VtlPlatformTrait;
 use crate::platform::hyperv::arch::hypercall::HvCall;
+use crate::platform::hyperv::ctx::HvTestCtx;
 use crate::platform::hyperv::ctx::cmdt;
 use crate::platform::hyperv::ctx::get_vp_set;
 use crate::platform::hyperv::ctx::vtl_transform;
-use crate::platform::hyperv::ctx::HvTestCtx;
 use crate::tmkdefs::TmkError;
 use crate::tmkdefs::TmkResult;
 
@@ -196,9 +201,7 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
                 if let Ok(r) = rx {
                     r?;
                 }
-                get_vp_set()
-                .lock()
-                .insert(vp_index);
+                get_vp_set().lock().insert(vp_index);
             }
         }
         cmdt()
@@ -428,7 +431,10 @@ impl HvTestCtx {
 
     /// Helper to return an arbitrary function with a captured VP context
     /// that can later be used to start a new VP/VTL instance.
-    fn exec_fn_with_current_context(&mut self, func: fn()) -> Result<InitialVpContextX64, TmkError> {
+    fn exec_fn_with_current_context(
+        &mut self,
+        func: fn(),
+    ) -> Result<InitialVpContextX64, TmkError> {
         let mut vp_context: InitialVpContextX64 = self
             .hvcall
             .get_current_vtl_vp_context()

@@ -9,13 +9,13 @@ use core::mem::size_of;
 use core::sync::atomic::AtomicU16;
 use core::sync::atomic::Ordering;
 
-use hvdef::hypercall::EnablePartitionVtlFlags;
-use hvdef::hypercall::HvInputVtl;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::EnablePartitionVtlFlags;
+use hvdef::hypercall::HvInputVtl;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::FromBytes;
@@ -43,6 +43,7 @@ impl HvcallPage {
     }
 }
 
+/// Hypercall interface.
 pub struct HvCall {
     pub(crate) input_page: HvcallPage,
     pub(crate) output_page: HvcallPage,

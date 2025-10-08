@@ -1,3 +1,9 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! x86_64-specific interrupt handling implementation.
+//!
+
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::structures::idt::InterruptDescriptorTable;
@@ -27,6 +33,7 @@ fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
     }
 }
 
+/// Sets the handler for a specific interrupt number.
 pub fn set_handler(interrupt: u8, handler: fn()) {
     let _lock = MUTEX.lock();
     // SAFETY: handlers is protected by a mutex.
@@ -49,7 +56,7 @@ extern "x86-interrupt" fn handler_double_fault(
     }
 }
 
-// Initialize the IDT
+/// Initialize the IDT
 pub fn init() {
     IDT.load();
     set_common_handler(common_handler);

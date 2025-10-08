@@ -1,3 +1,13 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Platform abstraction traits for OpenTMK.
+//! This module defines traits that abstract platform-specific functionalities such as
+//! interrupt handling, MSR access, virtual processor management, and VTL management.
+//! These traits allow OpenTMK to support multiple platforms by providing
+//! platform-specific implementations.
+//!
+
 use alloc::boxed::Box;
 use core::ops::Range;
 
@@ -6,6 +16,7 @@ use hvdef::Vtl;
 use crate::tmkdefs::TmkResult;
 
 #[cfg(feature = "nightly")]
+/// Trait for platforms that support secure-world intercepts.
 pub trait SecureInterceptPlatformTrait {
     /// Installs a secure-world intercept for the given interrupt.
     ///
@@ -18,6 +29,7 @@ pub trait SecureInterceptPlatformTrait {
 }
 
 #[cfg(feature = "nightly")]
+/// Trait for platforms that support Interrupts.
 pub trait InterruptPlatformTrait {
     /// Associates an interrupt vector with a handler inside the
     /// non-secure world.
@@ -32,11 +44,12 @@ pub trait InterruptPlatformTrait {
     fn setup_interrupt_handler(&mut self) -> TmkResult<()>;
 }
 
+/// Trait for platforms that support reading and writing to Model Specific Registers (MSRs).
 pub trait MsrPlatformTrait {
     /// Reads the content of `msr`.
     ///
     /// Returns the 64-bit value currently stored in that MSR.
-    /// # Safety 
+    /// # Safety
     /// Caller must ensure that reading the specified MSR is a safe operation.
     unsafe fn read_msr(&mut self, msr: u32) -> TmkResult<u64>;
 
@@ -46,6 +59,7 @@ pub trait MsrPlatformTrait {
     unsafe fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()>;
 }
 
+/// Trait for platforms that support Virtual Processors (VPs) and VTL management.
 pub trait VirtualProcessorPlatformTrait<T>
 where
     T: VtlPlatformTrait,
@@ -81,6 +95,7 @@ where
     fn start_running_vp_with_default_context(&mut self, cmd: VpExecToken<T>) -> TmkResult<()>;
 }
 
+/// Trait for platforms that support Virtual Trust Levels (VTLs).
 pub trait VtlPlatformTrait {
     /// Applies VTL protection to the supplied physical address range.
     fn apply_vtl_protection_for_memory(&mut self, range: Range<u64>, vtl: Vtl) -> TmkResult<()>;
@@ -105,13 +120,18 @@ pub trait VtlPlatformTrait {
     fn switch_to_low_vtl(&mut self);
 
     /// Sets the state of a register on a VP in a specific VTL.
-    fn set_vp_register_with_vtl(&mut self, register_index: u32, value: u64, vtl: Vtl)
-        -> TmkResult<()>;
+    fn set_vp_register_with_vtl(
+        &mut self,
+        register_index: u32,
+        value: u64,
+        vtl: Vtl,
+    ) -> TmkResult<()>;
 
     /// Gets the state of a register on a VP in a specific VTL.
     fn get_vp_register_with_vtl(&mut self, register_index: u32, vtl: Vtl) -> TmkResult<u64>;
 }
 
+/// A token that describes a command to be executed on a specific VP and VTL.
 pub struct VpExecToken<T> {
     vp_index: u32,
     vtl: Vtl,

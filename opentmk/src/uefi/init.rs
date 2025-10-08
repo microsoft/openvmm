@@ -1,8 +1,11 @@
-use uefi::boot::exit_boot_services;
-use uefi::boot::MemoryType;
-use uefi::guid;
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use uefi::CStr16;
 use uefi::Status;
+use uefi::boot::MemoryType;
+use uefi::boot::exit_boot_services;
+use uefi::guid;
 
 use super::alloc::ALLOCATOR;
 

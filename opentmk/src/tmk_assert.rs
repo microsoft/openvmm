@@ -1,3 +1,10 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Assertion handling and logging in JSON format.
+//! This module provides a custom assertion macro `tmk_assert!` that logs assertion results in
+//! JSON format. It also includes utility functions for formatting and writing log messages.
+
 use alloc::string::String;
 use core::fmt::Write;
 
@@ -64,6 +71,8 @@ pub(crate) fn write_str(s: &str) {
 }
 
 #[macro_export]
+/// Asserts that a condition is true, logging the result in JSON format.
+/// If the condition is false, it panics with the provided message.
 macro_rules! tmk_assert {
     ($condition:expr, $message:expr) => {{
         let file = core::file!();

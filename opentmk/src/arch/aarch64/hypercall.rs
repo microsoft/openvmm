@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Hypercall interface for AArch64 architecture.
+
 /// Writes a synthehtic register to tell the hypervisor the OS ID.
 fn report_os_id(guest_os_id: u64) {
     // On ARM64, to be able to make hypercalls, one needs first to set the Guest OS ID
