@@ -188,9 +188,18 @@ impl<T: Client> Access<'_, T> {
         let send_buffer = icmp_packet.into_inner();
         let ip4_addr = Ipv4Addr::from(addresses.dst_addr);
         match conn.send_to(ip4_addr, send_buffer, hop_limit) {
-            Ok(_) => Ok(()),
-            Err(err) if err.kind() == ErrorKind::WouldBlock => Err(DropReason::SendBufferFull),
-            Err(err) => Err(err).map_err(DropReason::Io),
+            Ok(_) => {
+                conn.stats.tx_packets.increment();
+                Ok(())
+            }
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                conn.stats.tx_dropped.increment();
+                Err(DropReason::SendBufferFull)
+            }
+            Err(err) => {
+                conn.stats.tx_errors.increment();
+                Err(DropReason::Io(err))
+            }
         }
     }
 
