@@ -331,6 +331,7 @@ pub mod artifacts {
             const SIZE: u64 = 6477005312;
         }
 
+        // TODO: Rename and fix comments
         declare_artifacts! {
             /// Ubuntu 24.04 Server X64
             UBUNTU_2404_SERVER_X64
@@ -350,7 +351,7 @@ pub mod artifacts {
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_X64 {
-            const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-amd64-20251001.vhd";
+            const FILENAME: &'static str = "ubuntu-25.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 3758211584;
         }
 
