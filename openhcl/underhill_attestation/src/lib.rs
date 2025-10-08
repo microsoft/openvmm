@@ -887,10 +887,12 @@ async fn get_derived_keys(
                 .map_err(GetDerivedKeysError::GetDerivedKeyById)?;
 
         if no_kek && no_gsp {
-            if !matches!(
+            if matches!(
                 guest_state_encryption_policy,
                 GuestStateEncryptionPolicy::GspById | GuestStateEncryptionPolicy::Auto
             ) {
+                tracing::info!(CVM_ALLOWED, "Using GspById");
+            } else {
                 // Log a warning here to indicate that the VMGS state is out of
                 // sync with the VM's configuration.
                 //
@@ -901,9 +903,7 @@ async fn get_derived_keys(
                 // - The VM is configured to use GspKey, but GspKey is not
                 //   available and GspById is.
                 tracing::warn!(CVM_ALLOWED, "Allowing GspById");
-            } else {
-                tracing::info!(CVM_ALLOWED, "Using GspById");
-            }
+            };
 
             // Not required for Id protection
             key_protector_settings.should_write_kp = false;
@@ -1035,10 +1035,12 @@ async fn get_derived_keys(
         }
     }
 
-    if !matches!(
+    if matches!(
         guest_state_encryption_policy,
         GuestStateEncryptionPolicy::GspKey | GuestStateEncryptionPolicy::Auto
     ) {
+        tracing::info!(CVM_ALLOWED, "Using Gsp");
+    } else {
         // Log a warning here to indicate that the VMGS state is out of
         // sync with the VM's configuration.
         //
@@ -1046,8 +1048,6 @@ async fn get_derived_keys(
         // encryption or GspById encryption, but it already has GspKey
         // encryption and strict encryption policy is disabled.
         tracing::warn!(CVM_ALLOWED, "Allowing Gsp");
-    } else {
-        tracing::info!(CVM_ALLOWED, "Using Gsp");
     }
 
     Ok(DerivedKeyResult {
