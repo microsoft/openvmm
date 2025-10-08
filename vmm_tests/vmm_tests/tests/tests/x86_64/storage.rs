@@ -203,7 +203,7 @@ async fn test_storage_linux(
 /// vmbus relay. This should expose two disks to VTL0 via vmbus.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
@@ -321,7 +321,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 /// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn openhcl_linux_stripe_storvsp(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -414,7 +414,7 @@ async fn openhcl_linux_stripe_storvsp(
 /// drive, then add and remove media.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn openhcl_linux_storvsp_dvd(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -547,7 +547,7 @@ async fn openhcl_linux_storvsp_dvd(
 /// backing, and vmbus relay. This should expose a DVD to VTL0 via vmbus.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn openhcl_linux_storvsp_dvd_nvme(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

@@ -38,6 +38,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
+use vmgs_resources::GuestStateEncryptionPolicy;
 
 /// The set of artifacts and resources needed to instantiate a
 /// [`PetriVmBuilder`].
@@ -322,7 +323,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let mut tasks = Vec::new();
 
         {
-            const TIMEOUT_DURATION_MINUTES: u64 = 6;
+            const TIMEOUT_DURATION_MINUTES: u64 = 7;
             const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60);
             let log_source = resources.log_source.clone();
             let inspect_task =
@@ -580,7 +581,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             PetriVmgsResource::Disk(disk)
             | PetriVmgsResource::ReprovisionOnFailure(disk)
             | PetriVmgsResource::Reprovision(disk) => disk,
-            PetriVmgsResource::Ephemeral => PetriDiskType::Memory,
+            PetriVmgsResource::Ephemeral => PetriVmgsDisk::default(),
         };
         self.config.vmgs = match guest_state_lifetime {
             PetriGuestStateLifetime::Disk => PetriVmgsResource::Disk(disk),
@@ -589,12 +590,27 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }
             PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
             PetriGuestStateLifetime::Ephemeral => {
-                if !matches!(disk, PetriDiskType::Memory) {
+                if !matches!(disk.disk, PetriDiskType::Memory) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
                 }
                 PetriVmgsResource::Ephemeral
             }
         };
+        self
+    }
+
+    /// Specify the guest state encryption policy for the VM
+    pub fn with_guest_state_encryption(mut self, policy: GuestStateEncryptionPolicy) -> Self {
+        match &mut self.config.vmgs {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => {
+                vmgs.encryption_policy = policy;
+            }
+            PetriVmgsResource::Ephemeral => {
+                panic!("attempted to encrypt ephemeral guest state")
+            }
+        }
         self
     }
 
@@ -610,13 +626,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     fn with_backing_vmgs(mut self, disk: PetriDiskType) -> Self {
         match &mut self.config.vmgs {
-            PetriVmgsResource::Disk(installed_disk)
-            | PetriVmgsResource::ReprovisionOnFailure(installed_disk)
-            | PetriVmgsResource::Reprovision(installed_disk) => {
-                if !matches!(installed_disk, PetriDiskType::Memory) {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => {
+                if !matches!(vmgs.disk, PetriDiskType::Memory) {
                     panic!("already specified a backing vmgs file");
                 }
-                *installed_disk = disk;
+                vmgs.disk = disk;
             }
             PetriVmgsResource::Ephemeral => {
                 panic!("attempted to specify a backing vmgs with ephemeral guest state")
@@ -667,12 +683,43 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 }
 
 impl<T: PetriVmmBackend> PetriVm<T> {
+    /// Immediately tear down the VM.
+    pub async fn teardown(self) -> anyhow::Result<()> {
+        tracing::info!("Tearing down VM...");
+        self.runtime.teardown().await
+    }
+
     /// Wait for the VM to halt, returning the reason for the halt.
     pub async fn wait_for_halt(&mut self) -> anyhow::Result<PetriHaltReason> {
         tracing::info!("Waiting for VM to halt...");
         let halt_reason = self.runtime.wait_for_halt(false).await?;
-        tracing::info!("VM halted: {halt_reason:?}");
+        tracing::info!("VM halted: {halt_reason:?}. Cancelling watchdogs...");
+        futures::future::join_all(self.watchdog_tasks.drain(..).map(|t| t.cancel())).await;
         Ok(halt_reason)
+    }
+
+    /// Wait for the VM to cleanly shutdown.
+    pub async fn wait_for_clean_shutdown(&mut self) -> anyhow::Result<()> {
+        let halt_reason = self.wait_for_halt().await?;
+        if halt_reason != PetriHaltReason::PowerOff {
+            anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
+        }
+        tracing::info!("VM was cleanly powered off and torn down.");
+        Ok(())
+    }
+
+    /// Wait for the VM to halt, returning the reason for the halt,
+    /// and tear down the VM.
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
+        let halt_reason = self.wait_for_halt().await?;
+        self.teardown().await?;
+        Ok(halt_reason)
+    }
+
+    /// Wait for the VM to cleanly shutdown and tear down the VM.
+    pub async fn wait_for_clean_teardown(mut self) -> anyhow::Result<()> {
+        self.wait_for_clean_shutdown().await?;
+        self.teardown().await
     }
 
     /// Wait for the VM to reset. Does not wait for pipette.
@@ -700,27 +747,6 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             anyhow::bail!("Expected reset, got {halt_reason:?}");
         }
         tracing::info!("VM reset.");
-        Ok(())
-    }
-
-    /// Wait for the VM to halt, returning the reason for the halt,
-    /// and cleanly tear down the VM.
-    pub async fn wait_for_teardown(mut self) -> anyhow::Result<PetriHaltReason> {
-        let halt_reason = self.wait_for_halt().await?;
-        tracing::info!("Cancelling watchdogs...");
-        futures::future::join_all(self.watchdog_tasks.into_iter().map(|t| t.cancel())).await;
-        tracing::info!("Tearing down VM...");
-        self.runtime.teardown().await?;
-        Ok(halt_reason)
-    }
-
-    /// Wait for the VM to reset
-    pub async fn wait_for_clean_teardown(self) -> anyhow::Result<()> {
-        let halt_reason = self.wait_for_teardown().await?;
-        if halt_reason != PetriHaltReason::PowerOff {
-            anyhow::bail!("Expected PowerOff, got {halt_reason:?}");
-        }
-        tracing::info!("VM was cleanly powered off and torn down.");
         Ok(())
     }
 
@@ -953,6 +979,11 @@ impl<T: PetriVmmBackend> PetriVm<T> {
 
         Ok(())
     }
+
+    /// Get the path to the VM's guest state file
+    pub async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
+        self.runtime.get_guest_state_file().await
+    }
 }
 
 /// A running VM that tests can interact with.
@@ -1009,6 +1040,10 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     }
     /// Issue a hard reset to the VM
     async fn reset(&mut self) -> anyhow::Result<()>;
+    /// Get the path to the VM's guest state file
+    async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
+        Ok(None)
+    }
 }
 
 /// Interface for getting information about the state of the VM
@@ -1625,17 +1660,48 @@ pub enum PetriDiskType {
     Persistent(PathBuf),
 }
 
+/// Petri VMGS disk
+#[derive(Debug, Clone)]
+pub struct PetriVmgsDisk {
+    /// Backing disk
+    pub disk: PetriDiskType,
+    /// Guest state encryption policy
+    pub encryption_policy: GuestStateEncryptionPolicy,
+}
+
+impl Default for PetriVmgsDisk {
+    fn default() -> Self {
+        PetriVmgsDisk {
+            disk: PetriDiskType::Memory,
+            // TODO: make this strict once we can set it in OpenHCL on Hyper-V
+            encryption_policy: GuestStateEncryptionPolicy::None(false),
+        }
+    }
+}
+
 /// Petri VM guest state resource
 #[derive(Debug, Clone)]
 pub enum PetriVmgsResource {
     /// Use disk to store guest state
-    Disk(PetriDiskType),
+    Disk(PetriVmgsDisk),
     /// Use disk to store guest state, reformatting if corrupted.
-    ReprovisionOnFailure(PetriDiskType),
+    ReprovisionOnFailure(PetriVmgsDisk),
     /// Format and use disk to store guest state
-    Reprovision(PetriDiskType),
+    Reprovision(PetriVmgsDisk),
     /// Store guest state in memory
     Ephemeral,
+}
+
+impl PetriVmgsResource {
+    /// get the inner vmgs disk if one exists
+    pub fn disk(&self) -> Option<&PetriVmgsDisk> {
+        match self {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::Reprovision(vmgs) => Some(vmgs),
+            PetriVmgsResource::Ephemeral => None,
+        }
+    }
 }
 
 /// Petri VM guest state lifetime
@@ -1720,12 +1786,12 @@ pub enum PetriHaltReason {
     Other,
 }
 
-fn append_cmdline(cmd: &mut Option<String>, add_cmd: &str) {
+fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {
     if let Some(cmd) = cmd.as_mut() {
         cmd.push(' ');
-        cmd.push_str(add_cmd);
+        cmd.push_str(add_cmd.as_ref());
     } else {
-        *cmd = Some(add_cmd.to_string());
+        *cmd = Some(add_cmd.as_ref().to_string());
     }
 }
 

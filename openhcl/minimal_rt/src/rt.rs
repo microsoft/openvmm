@@ -20,8 +20,30 @@ mod instead_of_builtins {
         }
     }
 
-    unsafe extern "C" {
-        fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
+    /// Hand rolled implementation of memcpy.
+    // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
+    // there is no libc for this to conflict with.
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+        for i in 0..len {
+            // SAFETY: the caller guarantees the pointer and length are correct.
+            unsafe { core::ptr::write(dest.add(i), core::ptr::read(src.add(i))) };
+        }
+
+        dest
+    }
+
+    /// Hand rolled implementation of memset.
+    // SAFETY: The minimal_rt_build crate ensures that when this code is compiled
+    // there is no libc for this to conflict with.
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn memset(ptr: *mut u8, val: i32, len: usize) -> *mut u8 {
+        for i in 0..len {
+            // SAFETY: the caller guarantees the pointer and length are correct.
+            unsafe { core::ptr::write(ptr.add(i), val as u8) };
+        }
+
+        ptr
     }
 
     /// Implementation cribbed from compiler_builtins.
