@@ -95,21 +95,21 @@
             },
             "underhill_init": {
                 "Pss": {
-                    "base": 3819,
+                    "base": 4553,
                     "threshold": 512
                 },
                 "Pss_Anon": {
-                    "base": 2875,
+                    "base": 3767,
                     "threshold": 512
                 }
             },
             "openvmm_hcl": {
                 "Pss": {
-                    "base": 16001,
+                    "base": 16541,
                     "threshold": 512
                 },
                 "Pss_Anon": {
-                    "base": 3934,
+                    "base": 4824,
                     "threshold": 512
                 }
             },
@@ -119,7 +119,7 @@
                     "threshold": 1024
                 },
                 "Pss_Anon": {
-                    "base": 8044,
+                    "base": 8951,
                     "threshold": 1024
                 }
             }
