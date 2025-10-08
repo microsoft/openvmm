@@ -25,7 +25,6 @@ petri.workspace = true
 
 get_resources.workspace = true
 hvlite_defs.workspace = true
-vtl2_settings_proto.workspace = true
 disk_backend_resources.workspace = true
 hyperv_ic_resources.workspace = true
 net_backend_resources.workspace = true
@@ -43,18 +42,23 @@ mesh.workspace = true
 pal.workspace = true
 pal_async.workspace = true
 unix_socket.workspace = true
+vmgs_resources.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+static_assertions.workspace = true
 
 hvlite_ttrpc_vmservice.workspace = true
 
 mesh_rpc.workspace = true
 
 tempfile.workspace = true
+serde_json.workspace = true
+pipette_client.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

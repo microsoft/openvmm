@@ -5,6 +5,7 @@
 
 use mesh::Cell;
 use mesh::MeshPayload;
+use mesh::rpc::Rpc;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use std::time::Duration;
@@ -33,6 +34,13 @@ pub enum PciFaultBehavior {
     Default,
 }
 
+#[derive(MeshPayload)]
+/// A notification to the test confirming namespace change processing.
+pub enum NamespaceChange {
+    /// Input: Namespace ID to notify
+    ChangeNotification(Rpc<u32, ()>),
+}
+
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration for the controller management interface (cc.en(), csts.rdy(), ... )
 pub struct PciFaultConfig {
@@ -40,10 +48,19 @@ pub struct PciFaultConfig {
     pub controller_management_fault_enable: PciFaultBehavior,
 }
 
+#[derive(MeshPayload)]
+/// A fault config to allow sending namespace change notifications to the controller.
+pub struct NamespaceFaultConfig {
+    /// Receiver for changed namespace notifications
+    pub recv_changed_namespace: mesh::Receiver<NamespaceChange>,
+}
+
 #[derive(MeshPayload, Clone)]
 /// A buildable fault configuration
 pub struct AdminQueueFaultConfig {
-    /// A map of NVME opcodes to the submission fault behavior for each. (This would ideally be a `HashMap`, but `mesh` doesn't support that type. Given that this is not performance sensitive, the lookup is okay)
+    /// A map of NVME opcodes to the submission fault behavior for each. (This
+    /// would ideally be a `HashMap`, but `mesh` doesn't support that type.
+    /// Given that this is not performance sensitive, the lookup is okay)
     pub admin_submission_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Command>)>,
     /// A map of NVME opcodes to the completion fault behavior for each.
     pub admin_completion_queue_faults: Vec<(CommandMatch, QueueFaultBehavior<Completion>)>,
@@ -67,15 +84,21 @@ pub struct FaultConfiguration {
     pub admin_fault: AdminQueueFaultConfig,
     /// Fault to apply to management layer of the controller
     pub pci_fault: PciFaultConfig,
+    /// Fault for test triggered namespace change notifications
+    pub namespace_fault: NamespaceFaultConfig,
 }
 
 impl FaultConfiguration {
     /// Create a new empty fault configuration
     pub fn new(fault_active: Cell<bool>) -> Self {
+        // Ideally the faults should begin life as Option::None.
+        // For now, use a dummy mesh channel for namespace fault to avoid
+        // test setup complexity & special cases in the AdminHandler run loop.
         Self {
             fault_active,
             admin_fault: AdminQueueFaultConfig::new(),
             pci_fault: PciFaultConfig::new(),
+            namespace_fault: NamespaceFaultConfig::new(mesh::channel().1),
         }
     }
 
@@ -88,6 +111,12 @@ impl FaultConfiguration {
     /// Add an admin queue fault configuration to the fault configuration
     pub fn with_admin_queue_fault(mut self, admin_fault: AdminQueueFaultConfig) -> Self {
         self.admin_fault = admin_fault;
+        self
+    }
+
+    /// Add a namespace fault configuration to the fault configuration
+    pub fn with_namespace_fault(mut self, namespace_fault: NamespaceFaultConfig) -> Self {
+        self.namespace_fault = namespace_fault;
         self
     }
 }
@@ -164,5 +193,14 @@ impl AdminQueueFaultConfig {
         self.admin_completion_queue_faults
             .push((pattern, behaviour));
         self
+    }
+}
+
+impl NamespaceFaultConfig {
+    /// Creates a new NamespaceFaultConfig with a fresh channel.
+    pub fn new(recv_changed_namespace: mesh::Receiver<NamespaceChange>) -> Self {
+        Self {
+            recv_changed_namespace,
+        }
     }
 }
