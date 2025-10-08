@@ -9,7 +9,6 @@ use thiserror::Error;
 use ucs2::Ucs2LeSlice;
 use uefi_specs::uefi::boot;
 use zerocopy::FromBytes;
-use zerocopy_helpers::FromBytesExt;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -99,8 +98,8 @@ pub enum EfiDevicePathProtocol<'a> {
 
 impl<'a> EfiDevicePathProtocol<'a> {
     pub fn parse(data: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
-        let (header, path_data) = boot::EfiDevicePathProtocol::read_from_prefix_split(data)
-            .ok_or(Error::InvalidLength)?;
+        let (header, path_data) = boot::EfiDevicePathProtocol::read_from_prefix(data)
+            .map_err(|_| Error::InvalidLength)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let length = u16::from_le_bytes(header.length) as usize;
         // TODO: Switch to split_at_checked below once stable and remove this check
@@ -120,13 +119,13 @@ impl<'a> EfiDevicePathProtocol<'a> {
                     match boot::EfiHardwareDeviceSubType(header.sub_type) {
                         boot::EfiHardwareDeviceSubType::MEMORY_MAPPED => {
                             HardwareDevice::MemoryMapped(
-                                boot::EfiMemoryMappedDevice::read_from(path_data)
-                                    .ok_or(Error::InvalidLength)?,
+                                boot::EfiMemoryMappedDevice::read_from_bytes(path_data)
+                                    .map_err(|_| Error::InvalidLength)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                             )
                         }
                         boot::EfiHardwareDeviceSubType::VENDOR => {
-                            let (vendor_guid, path_data) = Guid::read_from_prefix_split(path_data)
-                                .ok_or(Error::InvalidLength)?;
+                            let (vendor_guid, path_data) = Guid::read_from_prefix(path_data)
+                                .map_err(|_| Error::InvalidLength)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                             HardwareDevice::Vendor {
                                 vendor_guid,
                                 data: path_data,
@@ -146,8 +145,7 @@ impl<'a> EfiDevicePathProtocol<'a> {
                                 return Err(Error::InvalidLength);
                             }
                             let (numeric, path_data) =
-                                boot::EfiExpandedAcpiDevice::read_from_prefix_split(path_data)
-                                    .unwrap();
+                                boot::EfiExpandedAcpiDevice::read_from_prefix(path_data).unwrap(); // TODO: zerocopy: unwrap (https://github.com/microsoft/openvmm/issues/759)
                             let hidstr = CStr::from_bytes_until_nul(path_data)
                                 .map_err(Error::NullTerminated)?;
                             let path_data = &path_data[hidstr.to_bytes_with_nul().len()..];
@@ -175,8 +173,8 @@ impl<'a> EfiDevicePathProtocol<'a> {
                 boot::EfiDeviceType::MESSAGING => EfiDevicePathProtocol::Messaging(
                     match boot::EfiMessagingDeviceSubType(header.sub_type) {
                         boot::EfiMessagingDeviceSubType::SCSI => MessagingDevice::Scsi(
-                            boot::EfiScsiDevice::read_from(path_data)
-                                .ok_or(Error::InvalidLength)?,
+                            boot::EfiScsiDevice::read_from_bytes(path_data)
+                                .map_err(|_| Error::InvalidLength)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                         ),
                         device_subtype => MessagingDevice::Unknown {
                             device_subtype,
@@ -187,8 +185,8 @@ impl<'a> EfiDevicePathProtocol<'a> {
                 boot::EfiDeviceType::MEDIA => EfiDevicePathProtocol::Media(
                     match boot::EfiMediaDeviceSubType(header.sub_type) {
                         boot::EfiMediaDeviceSubType::HARD_DRIVE => MediaDevice::HardDrive(
-                            boot::EfiHardDriveDevice::read_from(path_data)
-                                .ok_or(Error::InvalidLength)?,
+                            boot::EfiHardDriveDevice::read_from_bytes(path_data)
+                                .map_err(|_| Error::InvalidLength)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                         ),
                         boot::EfiMediaDeviceSubType::FILE => {
                             let file_name = Ucs2LeSlice::from_slice_with_nul(path_data)
@@ -200,12 +198,14 @@ impl<'a> EfiDevicePathProtocol<'a> {
                         }
                         boot::EfiMediaDeviceSubType::PIWG_FIRMWARE_FILE => {
                             MediaDevice::PiwgFirmwareFile(
-                                Guid::read_from(path_data).ok_or(Error::InvalidLength)?,
+                                Guid::read_from_bytes(path_data)
+                                    .map_err(|_| Error::InvalidLength)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                             )
                         }
                         boot::EfiMediaDeviceSubType::PIWG_FIRMWARE_VOLUME => {
                             MediaDevice::PiwgFirmwareVolume(
-                                Guid::read_from(path_data).ok_or(Error::InvalidLength)?,
+                                Guid::read_from_bytes(path_data)
+                                    .map_err(|_| Error::InvalidLength)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                             )
                         }
                         device_subtype => MediaDevice::Unknown {
@@ -246,7 +246,7 @@ pub struct EfiLoadOption<'a> {
 impl<'a> EfiLoadOption<'a> {
     pub fn parse(data: &'a [u8]) -> Result<Self, Error> {
         let (header, data) =
-            boot::EfiLoadOption::read_from_prefix_split(data).ok_or(Error::InvalidLength)?;
+            boot::EfiLoadOption::read_from_prefix(data).map_err(|_| Error::InvalidLength)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let description = Ucs2LeSlice::from_slice_with_nul(data).map_err(Error::InvalidUcs2)?;
         let mut data = &data[description.as_bytes().len()..];

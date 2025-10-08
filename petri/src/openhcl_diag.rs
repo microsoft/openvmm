@@ -4,19 +4,15 @@
 use anyhow::Context;
 use diag_client::DiagClient;
 use diag_client::ExitStatus;
+use diag_client::kmsg_stream::KmsgStream;
 use futures::io::AllowStdIo;
 use std::io::Read;
-use std::path::PathBuf;
 
-pub(crate) struct OpenHclDiagHandler {
-    pub(crate) vtl2_vsock_path: PathBuf,
-    pub(crate) client: DiagClient,
-}
+pub struct OpenHclDiagHandler(DiagClient);
 
 /// The result of running a VTL2 command.
 #[derive(Debug)]
-#[allow(dead_code)] // Fields output via Debug for debugging purposes.
-pub(crate) struct Vtl2CommandResult {
+pub struct Vtl2CommandResult {
     /// The stdout of the command.
     pub stdout: String,
     /// The stderr of the command.
@@ -30,8 +26,12 @@ pub(crate) struct Vtl2CommandResult {
 }
 
 impl OpenHclDiagHandler {
+    pub(crate) fn new(client: DiagClient) -> Self {
+        Self(client)
+    }
+
     pub(crate) async fn wait_for_vtl2(&self) -> anyhow::Result<()> {
-        self.client.wait_for_server().await
+        self.0.wait_for_server().await
     }
 
     pub(crate) async fn run_vtl2_command(
@@ -73,7 +73,7 @@ impl OpenHclDiagHandler {
         })
     }
 
-    pub(crate) async fn core_dump(&self, name: &str, path: &std::path::Path) -> anyhow::Result<()> {
+    pub async fn core_dump(&self, name: &str, path: &std::path::Path) -> anyhow::Result<()> {
         let client = self.diag_client().await?;
         let pid = client.get_pid(name).await?;
         client
@@ -86,22 +86,30 @@ impl OpenHclDiagHandler {
             .await
     }
 
-    pub(crate) async fn crash(&self, name: &str) -> anyhow::Result<()> {
+    pub async fn crash(&self, name: &str) -> anyhow::Result<()> {
         let client = self.diag_client().await?;
         let pid = client.get_pid(name).await?;
         client.crash(pid).await
     }
 
-    pub(crate) async fn test_inspect(&self) -> anyhow::Result<()> {
+    pub async fn inspect(
+        &self,
+        path: impl Into<String>,
+        depth: Option<usize>,
+        timeout: Option<std::time::Duration>,
+    ) -> anyhow::Result<inspect::Node> {
         self.diag_client()
             .await?
-            .inspect("", None, None)
+            .inspect(path, depth, timeout)
             .await
-            .map(|_| ())
+    }
+
+    pub async fn kmsg(&self) -> anyhow::Result<KmsgStream> {
+        self.diag_client().await?.kmsg(false).await
     }
 
     async fn diag_client(&self) -> anyhow::Result<&DiagClient> {
         self.wait_for_vtl2().await?;
-        Ok(&self.client)
+        Ok(&self.0)
     }
 }

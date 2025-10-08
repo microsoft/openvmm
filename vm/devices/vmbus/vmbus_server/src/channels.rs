@@ -1,25 +1,31 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-mod saved_state;
+pub mod saved_state;
+#[cfg(test)]
+mod tests;
 
+use crate::Guid;
+use crate::SINT;
+use crate::SynicMessage;
 use crate::monitor::AssignedMonitors;
 use crate::protocol::Version;
-use crate::Guid;
-use crate::SynicMessage;
-use crate::SINT;
-use guestmem::GuestMemoryError;
 use hvdef::Vtl;
 use inspect::Inspect;
 pub use saved_state::RestoreError;
 pub use saved_state::SavedState;
+pub use saved_state::SavedStateData;
 use slab::Slab;
 use std::cmp::min;
+use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::collections::hash_map::HashMap;
 use std::fmt::Display;
 use std::ops::Index;
 use std::ops::IndexMut;
+use std::task::Poll;
+use std::task::ready;
+use std::time::Duration;
 use thiserror::Error;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
@@ -27,6 +33,11 @@ use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::bus::RestoredGpadl;
+use vmbus_core::HvsockConnectRequest;
+use vmbus_core::HvsockConnectResult;
+use vmbus_core::MaxVersionInfo;
+use vmbus_core::OutgoingMessage;
+use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::ConnectionId;
@@ -35,16 +46,14 @@ use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::Message;
 use vmbus_core::protocol::OfferFlags;
 use vmbus_core::protocol::UserDefinedData;
-use vmbus_core::HvsockConnectRequest;
-use vmbus_core::HvsockConnectResult;
-use vmbus_core::MaxVersionInfo;
-use vmbus_core::MonitorPageGpas;
-use vmbus_core::OutgoingMessage;
-use vmbus_core::VersionInfo;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use vmcore::synic::MonitorInfo;
+use vmcore::synic::MonitorPageGpas;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// An error caused by a channel operation.
 #[derive(Debug, Error)]
@@ -81,6 +90,8 @@ pub enum ChannelError {
     ChannelNotReserved,
     #[error("received untrusted message for trusted connection")]
     UntrustedMessage,
+    #[error("received a non-resuming message while paused")]
+    Paused,
 }
 
 #[derive(Debug, Error)]
@@ -118,6 +129,14 @@ pub struct Server {
     child_connection_id: u32,
     max_version: Option<MaxVersionInfo>,
     delayed_max_version: Option<MaxVersionInfo>,
+    // This must be separate from the connection state because e.g. the UnloadComplete message,
+    // or messages for reserved channels, can be pending even when disconnected.
+    pending_messages: PendingMessages,
+    // If this is set, the server cannot utilize monitor pages provided by the guest. This is
+    // typically the case for OpenHCL in hardware-isolated VMs because the monitor pages must be in
+    // shared memory and we cannot set protections on shared memory.
+    require_server_allocated_mnf: bool,
+    use_absolute_channel_order: bool,
 }
 
 pub struct ServerWithNotifier<'a, T> {
@@ -151,24 +170,7 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
             }
         };
 
-        let mut trusted = false;
-        if let Some(info) = info {
-            resp.field(
-                "protocol",
-                format!(
-                    "{}.{}",
-                    info.version.version as u32 >> 16,
-                    info.version.version as u32 & 0xffff
-                ),
-            );
-
-            resp.binary("feature_flags", u32::from(info.version.feature_flags));
-            resp.field("interrupt_page", info.interrupt_page);
-            resp.field("modifying", info.modifying);
-            resp.field("client_id", info.client_id);
-            trusted = info.trusted;
-        }
-
+        resp.field("connection_info", info);
         let next_action = next_action.map(|a| match a {
             ConnectionAction::None => "disconnect",
             ConnectionAction::Reset => "reset",
@@ -177,7 +179,6 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
             ConnectionAction::SendFailedVersionResponse => "send_version_response",
         });
         resp.field("state", state)
-            .field("trusted", trusted)
             .field("next_action", next_action)
             .field(
                 "assigned_monitors_bitmap",
@@ -202,7 +203,32 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+/// Stores the monitor page GPAs along with their source.
+#[derive(Debug, Copy, Clone, Inspect)]
+struct MonitorPageGpaInfo {
+    gpas: MonitorPageGpas,
+    server_allocated: bool,
+}
+
+impl MonitorPageGpaInfo {
+    /// Creates a new MonitorPageGpaInfo from guest-provided GPAs.
+    fn from_guest_gpas(gpas: MonitorPageGpas) -> Self {
+        Self {
+            gpas,
+            server_allocated: false,
+        }
+    }
+
+    /// Creates a new MonitorPageGpaInfo from server-allocated GPAs.
+    fn from_server_gpas(gpas: MonitorPageGpas) -> Self {
+        Self {
+            gpas,
+            server_allocated: true,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Inspect)]
 struct ConnectionInfo {
     version: VersionInfo,
     // Indicates if the connection is trusted for the paravisor of a hardware-isolated VM. In other
@@ -210,10 +236,11 @@ struct ConnectionInfo {
     trusted: bool,
     offers_sent: bool,
     interrupt_page: Option<u64>,
-    monitor_page: Option<MonitorPageGpas>,
+    monitor_page: Option<MonitorPageGpaInfo>,
     target_message_vp: u32,
     modifying: bool,
     client_id: Guid,
+    paused: bool,
 }
 
 /// The state of the VMBus connection.
@@ -251,11 +278,28 @@ impl ConnectionState {
         }
     }
 
+    /// Gets the `ConnectionInfo` if currently connected.
+    fn get_connected_info(&self) -> Option<&ConnectionInfo> {
+        if let ConnectionState::Connected(info) = self {
+            Some(info)
+        } else {
+            None
+        }
+    }
+
     fn is_trusted(&self) -> bool {
         match self {
             ConnectionState::Connected(info) => info.trusted,
             ConnectionState::Connecting { info, .. } => info.trusted,
             _ => false,
+        }
+    }
+
+    fn is_paused(&self) -> bool {
+        if let ConnectionState::Connected(info) = self {
+            info.paused
+        } else {
+            false
         }
     }
 }
@@ -299,7 +343,7 @@ pub struct OpenRequest {
     pub downstream_ring_buffer_page_offset: u32,
     pub user_data: UserDefinedData,
     pub guest_specified_interrupt_info: Option<SignalInfo>,
-    pub flags: u16,
+    pub flags: protocol::OpenChannelFlags,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -320,11 +364,10 @@ impl<T: std::fmt::Debug + Copy + Clone> From<Option<T>> for Update<T> {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct ModifyConnectionRequest {
-    pub version: Option<u32>,
+    pub version: Option<VersionInfo>,
     pub monitor_page: Update<MonitorPageGpas>,
     pub interrupt_page: Update<u64>,
     pub target_message_vp: Option<u32>,
-    pub force: bool,
     pub notify_relay: bool,
 }
 
@@ -336,7 +379,6 @@ impl Default for ModifyConnectionRequest {
             monitor_page: Update::Unchanged,
             interrupt_page: Update::Unchanged,
             target_message_vp: None,
-            force: false,
             notify_relay: true,
         }
     }
@@ -363,14 +405,21 @@ impl From<protocol::ModifyConnection> for ModifyConnectionRequest {
 /// Response to a ModifyConnectionRequest.
 #[derive(Debug, Copy, Clone)]
 pub enum ModifyConnectionResponse {
-    /// No version change was was requested, or the requested version is supported. Includes all the
-    /// feature flags supported by the relay host, so that supported flags reported to the guest can
-    /// be limited to that. The FeatureFlags field is not relevant if no version change was
-    /// requested.
-    Supported(protocol::ConnectionState, FeatureFlags),
-    /// A version change was requested but the relay host doesn't support that version. This
-    /// response cannot be returned for a request with no version change set.
+    /// The requested version change is supported, and the relay completed the connection
+    /// modification with the specified status and supports the specified feature flags. All of the
+    /// feature flags supported by the relay host are included, regardless of what features were
+    /// requested. If the server allocated monitor pages that are to be used for this connection,
+    /// they will be included as well.
+    Supported(
+        protocol::ConnectionState,
+        FeatureFlags,
+        Option<MonitorPageGpas>,
+    ),
+    /// A version change was requested but the relay host doesn't support that version.
     Unsupported,
+    /// The connection modification completed with the specified status. This response type must be
+    /// sent if and only if no version change was requested.
+    Modified(protocol::ConnectionState),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -396,8 +445,8 @@ enum RestoreState {
     /// The channel has been offered newly this session.
     New,
     /// The channel was in the saved state and has been re-offered this session,
-    /// but restore_channel has not yet been called on it, and post_restore has
-    /// not yet been called.
+    /// but restore_channel has not yet been called on it, and revoke_unclaimed_channels
+    /// has not yet been called.
     Restoring,
     /// The channel was in the saved state but has not yet been re-offered this
     /// session.
@@ -543,6 +592,46 @@ impl Display for ChannelState {
     }
 }
 
+/// Indicates how a MNF (monitored interrupts) should be used for a channel.
+#[derive(Debug, Clone, Default, mesh::MeshPayload)]
+pub enum MnfUsage {
+    /// The channel does not use MNF.
+    #[default]
+    Disabled,
+    /// The channel uses MNF, handled by this server, with the specified interrupt latency.
+    Enabled { latency: Duration },
+    /// The channel uses MNF, handled by the relay host, with the monitor ID specified by the relay
+    /// host.
+    Relayed { monitor_id: u8 },
+}
+
+impl MnfUsage {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, Self::Enabled { .. })
+    }
+
+    pub fn is_relayed(&self) -> bool {
+        matches!(self, Self::Relayed { .. })
+    }
+
+    pub fn enabled_and_then<T>(&self, f: impl FnOnce(Duration) -> Option<T>) -> Option<T> {
+        if let Self::Enabled { latency } = self {
+            f(*latency)
+        } else {
+            None
+        }
+    }
+}
+
+impl From<Option<Duration>> for MnfUsage {
+    fn from(value: Option<Duration>) -> Self {
+        match value {
+            None => Self::Disabled,
+            Some(latency) => Self::Enabled { latency },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, mesh::MeshPayload)]
 pub struct OfferParamsInternal {
     /// An informational string describing the channel type.
@@ -552,11 +641,10 @@ pub struct OfferParamsInternal {
     pub mmio_megabytes: u16,
     pub mmio_megabytes_optional: u16,
     pub subchannel_index: u16,
-    pub use_mnf: bool,
-    pub offer_order: Option<u32>,
+    pub use_mnf: MnfUsage,
+    pub offer_order: Option<u64>,
     pub flags: OfferFlags,
     pub user_defined: UserDefinedData,
-    pub monitor_id: Option<u8>,
 }
 
 impl OfferParamsInternal {
@@ -625,11 +713,10 @@ impl From<OfferParams> for OfferParamsInternal {
             mmio_megabytes: value.mmio_megabytes,
             mmio_megabytes_optional: value.mmio_megabytes_optional,
             subchannel_index: value.subchannel_index,
-            use_mnf: value.use_mnf,
+            use_mnf: value.mnf_interrupt_latency.into(),
             offer_order: value.offer_order,
             user_defined,
             flags,
-            monitor_id: None,
         }
     }
 }
@@ -638,6 +725,23 @@ impl From<OfferParams> for OfferParamsInternal {
 pub struct ConnectionTarget {
     pub vp: u32,
     pub sint: u8,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum MessageTarget {
+    Default,
+    ReservedChannel(OfferId, ConnectionTarget),
+    Custom(ConnectionTarget),
+}
+
+impl MessageTarget {
+    pub fn for_offer(offer_id: OfferId, reserved_state: &Option<ReservedState>) -> Self {
+        if let Some(state) = reserved_state {
+            Self::ReservedChannel(offer_id, state.target)
+        } else {
+            Self::Default
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -722,21 +826,28 @@ impl Channel {
             .binary("offer_flags", self.offer.flags.into_bits());
     }
 
-    /// Returns the monitor ID only if it's being handled by this server.
+    /// Returns the monitor ID and latency only if it's being handled by this server.
     ///
-    /// The monitor ID can be set while use_mnf is false, which is the case if
+    /// The monitor ID can be set while use_mnf is Relayed, which is the case if
     /// the relay host is handling MNF.
     ///
     /// Also returns `None` for reserved channels, since monitored notifications
     /// are only usable for standard channels. Otherwise, we fail later when we
     /// try to change the MNF page as part of vmbus protocol renegotiation,
     /// since the page still appears to be in use by a device.
-    fn handled_monitor_id(&self) -> Option<MonitorId> {
-        if self.offer.use_mnf && !self.state.is_reserved() {
-            self.info.and_then(|info| info.monitor_id)
-        } else {
-            None
-        }
+    fn handled_monitor_info(&self) -> Option<MonitorInfo> {
+        self.offer.use_mnf.enabled_and_then(|latency| {
+            if self.state.is_reserved() {
+                None
+            } else {
+                self.info.and_then(|info| {
+                    info.monitor_id.map(|monitor_id| MonitorInfo {
+                        monitor_id,
+                        latency,
+                    })
+                })
+            }
+        })
     }
 
     /// Prepares a channel to be sent to the guest by allocating a channel ID if
@@ -760,17 +871,19 @@ impl Channel {
 
         // Allocate a monitor ID if the channel uses MNF.
         // N.B. If the synic doesn't support MNF or MNF is disabled by the server, use_mnf should
-        //      always be set to false. For the relay, that means the host is handling MNF so we
-        //      should use the monitor ID it provided if there is one.
-        let monitor_id = if self.offer.use_mnf {
-            let monitor_id = assigned_monitors.assign_monitor();
-            if monitor_id.is_none() {
-                tracelimit::warn_ratelimited!("Out of monitor IDs.");
-            }
+        //      always be set to Disabled, except if the relay host is handling MnF in which case
+        //      we should use the monitor ID it provided.
+        let monitor_id = match self.offer.use_mnf {
+            MnfUsage::Enabled { .. } => {
+                let monitor_id = assigned_monitors.assign_monitor();
+                if monitor_id.is_none() {
+                    tracelimit::warn_ratelimited!("Out of monitor IDs.");
+                }
 
-            monitor_id
-        } else {
-            self.offer.monitor_id.map(MonitorId)
+                monitor_id
+            }
+            MnfUsage::Relayed { monitor_id } => Some(MonitorId(monitor_id)),
+            MnfUsage::Disabled => None,
         };
 
         self.info = Some(OfferedInfo {
@@ -790,9 +903,9 @@ impl Channel {
         if let Some(info) = self.info.take() {
             assigned_channels.free(info.channel_id, offer_id);
 
-            // Only unassign the monitor ID if it was not explicitly provided by the offer.
+            // Only unassign the monitor ID if it was not a relayed ID provided by the offer.
             if let Some(monitor_id) = info.monitor_id {
-                if self.offer.use_mnf {
+                if self.offer.use_mnf.is_enabled() {
                     assigned_monitors.release_monitor(monitor_id);
                 }
             }
@@ -876,9 +989,11 @@ impl AssignmentEntry<'_> {
     }
 
     pub fn insert(self, offer_id: OfferId) {
-        assert!(self.list.assignments[self.index]
-            .replace(offer_id)
-            .is_none());
+        assert!(
+            self.list.assignments[self.index]
+                .replace(offer_id)
+                .is_none()
+        );
 
         if self.index < self.list.reserved_offset {
             self.list.count_in_reserved_range += 1;
@@ -918,9 +1033,11 @@ impl ChannelList {
                     // Merge in the inspection state from outside. Skip this if
                     // the channel is revoked (and not reoffered) since in that
                     // case the caller won't recognize the channel ID.
-                    if !matches!(channel.state, ChannelState::Revoked) {
-                        notifier.inspect(version, offer_id, resp.request());
-                    }
+                    resp.merge(inspect::adhoc(|req| {
+                        if !matches!(channel.state, ChannelState::Revoked) {
+                            notifier.inspect(version, offer_id, req);
+                        }
+                    }));
                 },
             );
         }
@@ -1098,7 +1215,7 @@ impl Gpadl {
             let data = &data[..len];
             let start = buf.len();
             buf.resize(buf.len() + data.len() / 8, 0);
-            buf[start..].as_bytes_mut().copy_from_slice(data);
+            buf[start..].as_mut_bytes().copy_from_slice(data);
             Ok(if buf.len() == buf.capacity() {
                 gparange::MultiPagedRangeBuf::<Vec<u64>>::validate(self.count as usize, buf)
                     .map_err(ChannelError::InvalidGpaRange)?;
@@ -1119,15 +1236,18 @@ pub struct OpenParams {
     pub open_data: OpenData,
     pub connection_id: u32,
     pub event_flag: u16,
-    pub monitor_id: Option<MonitorId>,
+    pub monitor_info: Option<MonitorInfo>,
     pub flags: protocol::OpenChannelFlags,
+    pub reserved_target: Option<ConnectionTarget>,
+    pub channel_id: ChannelId,
 }
 
 impl OpenParams {
     fn from_request(
         info: &OfferedInfo,
         request: &OpenRequest,
-        monitor_id: Option<MonitorId>,
+        monitor_info: Option<MonitorInfo>,
+        reserved_target: Option<ConnectionTarget>,
     ) -> Self {
         // Determine whether to use the alternate IDs.
         // N.B. If not specified, the regular IDs are stored as "alternate" in the OpenData.
@@ -1148,8 +1268,10 @@ impl OpenParams {
             },
             connection_id,
             event_flag,
-            monitor_id,
-            flags: protocol::OpenChannelFlags::from(request.flags).with_unused(0),
+            monitor_info,
+            flags: request.flags.with_unused(0),
+            reserved_target,
+            channel_id: info.channel_id,
         }
     }
 }
@@ -1184,16 +1306,15 @@ static SUPPORTED_VERSIONS: &[Version] = &[
     Version::Copper,
 ];
 
-/// An error that occurred while mapping the interrupt page.
-#[derive(Error, Debug)]
-pub enum InterruptPageError {
-    #[error("memory")]
-    MemoryError(#[from] GuestMemoryError),
-    #[error("synic")]
-    SynicError(#[from] vmcore::synic::Error),
-    #[error("gpa {0:#x} is not page aligned")]
-    NotPageAligned(u64),
-}
+// Feature flags that are always supported.
+// N.B. Confidential channels are conditionally supported if running in the paravisor.
+const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
+    .with_guest_specified_signal_parameters(true)
+    .with_channel_interrupt_redirection(true)
+    .with_modify_connection(true)
+    .with_client_id(true)
+    .with_pause_resume(true)
+    .with_server_specified_monitor_pages(true);
 
 /// Trait for sending requests to devices and the guest.
 pub trait Notifier: Send {
@@ -1216,18 +1337,28 @@ pub trait Notifier: Send {
     }
 
     /// Sends a synic message to the guest.
-    fn send_message(&mut self, message: OutgoingMessage, target: Option<ConnectionTarget>);
+    /// Returns true if the message was sent, and false if it must be retried.
+    #[must_use]
+    fn send_message(&mut self, message: &OutgoingMessage, target: MessageTarget) -> bool;
 
     /// Used to signal the hvsocket handler that there is a new connection request.
     fn notify_hvsock(&mut self, request: &HvsockConnectRequest);
 
     /// Notifies that a requested reset is complete.
     fn reset_complete(&mut self);
+
+    /// Notifies that a guest-requested unload is complete.
+    fn unload_complete(&mut self);
 }
 
 impl Server {
     /// Creates a new VMBus server.
-    pub fn new(vtl: Vtl, child_connection_id: u32, channel_id_offset: u16) -> Self {
+    pub fn new(
+        vtl: Vtl,
+        child_connection_id: u32,
+        channel_id_offset: u16,
+        use_absolute_channel_order: bool,
+    ) -> Self {
         Server {
             state: ConnectionState::Disconnected,
             channels: ChannelList::new(),
@@ -1238,6 +1369,9 @@ impl Server {
             child_connection_id,
             max_version: None,
             delayed_max_version: None,
+            pending_messages: PendingMessages(VecDeque::new()),
+            require_server_allocated_mnf: false,
+            use_absolute_channel_order,
         }
     }
 
@@ -1251,6 +1385,12 @@ impl Server {
             inner: self,
             notifier,
         }
+    }
+
+    /// Requires that the server allocates monitor pages. If this is enabled, the server will ignore
+    /// guest-specified monitor pages and act as if none of the channels use MNF.
+    pub fn set_require_server_allocated_mnf(&mut self, require: bool) {
+        self.require_server_allocated_mnf = require;
     }
 
     fn validate(&self) {
@@ -1300,6 +1440,80 @@ impl Server {
     pub fn get_version(&self) -> Option<VersionInfo> {
         self.state.get_version()
     }
+
+    pub fn get_restore_open_params(&self, offer_id: OfferId) -> Result<OpenParams, RestoreError> {
+        let channel = &self.channels[offer_id];
+
+        // Check this here to avoid doing unnecessary work.
+        match channel.restore_state {
+            RestoreState::New => {
+                // This channel was never offered, or was released by the guest during the save.
+                // This is a problem since if this was called the device expects the channel to be
+                // open.
+                return Err(RestoreError::MissingChannel(channel.offer.key()));
+            }
+            RestoreState::Restoring => {}
+            RestoreState::Unmatched => unreachable!(),
+            RestoreState::Restored => {
+                return Err(RestoreError::AlreadyRestored(channel.offer.key()));
+            }
+        }
+
+        let info = channel
+            .info
+            .ok_or_else(|| RestoreError::MissingChannel(channel.offer.key()))?;
+
+        let (request, reserved_state) = match channel.state {
+            ChannelState::Closed => {
+                return Err(RestoreError::MismatchedOpenState(channel.offer.key()));
+            }
+            ChannelState::Closing { params, .. } | ChannelState::ClosingReopen { params, .. } => {
+                (params, None)
+            }
+            ChannelState::Opening {
+                request,
+                reserved_state,
+            } => (request, reserved_state),
+            ChannelState::Open {
+                params,
+                reserved_state,
+                ..
+            } => (params, reserved_state),
+            ChannelState::ClientReleased | ChannelState::Reoffered => {
+                return Err(RestoreError::MissingChannel(channel.offer.key()));
+            }
+            ChannelState::Revoked
+            | ChannelState::ClosingClientRelease
+            | ChannelState::OpeningClientRelease => unreachable!(),
+        };
+
+        Ok(OpenParams::from_request(
+            &info,
+            &request,
+            channel.handled_monitor_info(),
+            reserved_state.map(|state| state.target),
+        ))
+    }
+
+    /// Check if there are any messages in the pending queue.
+    pub fn has_pending_messages(&self) -> bool {
+        !self.pending_messages.0.is_empty() && !self.state.is_paused()
+    }
+
+    /// Tries to resend pending messages using the provided `send`` function.
+    pub fn poll_flush_pending_messages(
+        &mut self,
+        mut send: impl FnMut(&OutgoingMessage) -> Poll<()>,
+    ) -> Poll<()> {
+        if !self.state.is_paused() {
+            while let Some(message) = self.pending_messages.0.front() {
+                ready!(send(message));
+                self.pending_messages.0.pop_front();
+            }
+        }
+
+        Poll::Ready(())
+    }
 }
 
 impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
@@ -1308,13 +1522,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// If this is not called for a channel but vmbus state is restored, then it
     /// is assumed that the offer is a fresh one, and the channel will be
     /// revoked and reoffered.
-    pub fn restore_channel(
-        &mut self,
-        offer_id: OfferId,
-        open: bool,
-    ) -> Result<Option<OpenParams>, RestoreError> {
+    pub fn restore_channel(&mut self, offer_id: OfferId, open: bool) -> Result<(), RestoreError> {
         let channel = &mut self.inner.channels[offer_id];
 
+        // We need to check this here as well, because get_restore_open_params may not have been
+        // called.
         match channel.restore_state {
             RestoreState::New => {
                 // This channel was never offered, or was released by the guest
@@ -1323,13 +1535,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 if open {
                     return Err(RestoreError::MissingChannel(channel.offer.key()));
                 } else {
-                    return Ok(None);
+                    return Ok(());
                 }
             }
             RestoreState::Restoring => {}
             RestoreState::Unmatched => unreachable!(),
             RestoreState::Restored => {
-                return Err(RestoreError::AlreadyRestored(channel.offer.key()))
+                return Err(RestoreError::AlreadyRestored(channel.offer.key()));
             }
         }
 
@@ -1337,41 +1549,44 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .info
             .ok_or_else(|| RestoreError::MissingChannel(channel.offer.key()))?;
 
-        if let Some(monitor_id) = channel.handled_monitor_id() {
-            if !self.inner.assigned_monitors.claim_monitor(monitor_id) {
-                return Err(RestoreError::DuplicateMonitorId(monitor_id.0));
+        if let Some(monitor_info) = channel.handled_monitor_info() {
+            if !self
+                .inner
+                .assigned_monitors
+                .claim_monitor(monitor_info.monitor_id)
+            {
+                return Err(RestoreError::DuplicateMonitorId(monitor_info.monitor_id.0));
             }
         }
 
-        let open_params = if open {
-            let request = match channel.state {
+        if open {
+            match channel.state {
                 ChannelState::Closed => {
                     return Err(RestoreError::MismatchedOpenState(channel.offer.key()));
                 }
-                ChannelState::Closing { params, .. }
-                | ChannelState::ClosingReopen { params, .. } => {
+                ChannelState::Closing { .. } | ChannelState::ClosingReopen { .. } => {
                     self.notifier.notify(offer_id, Action::Close);
-                    params
                 }
                 ChannelState::Opening {
                     request,
                     reserved_state,
                 } => {
-                    send_open_result(
-                        self.notifier,
-                        info.channel_id,
-                        &request,
-                        protocol::STATUS_SUCCESS,
-                        reserved_state.map(|state| state.target),
-                    );
+                    self.inner
+                        .pending_messages
+                        .sender(self.notifier, self.inner.state.is_paused())
+                        .send_open_result(
+                            info.channel_id,
+                            &request,
+                            protocol::STATUS_SUCCESS,
+                            MessageTarget::for_offer(offer_id, &reserved_state),
+                        );
                     channel.state = ChannelState::Open {
                         params: request,
                         modify_state: ModifyState::NotModifying,
                         reserved_state,
                     };
-                    request
                 }
-                ChannelState::Open { params, .. } => params,
+                ChannelState::Open { .. } => {}
                 ChannelState::ClientReleased | ChannelState::Reoffered => {
                     return Err(RestoreError::MissingChannel(channel.offer.key()));
                 }
@@ -1379,12 +1594,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 | ChannelState::ClosingClientRelease
                 | ChannelState::OpeningClientRelease => unreachable!(),
             };
-
-            Some(OpenParams::from_request(
-                &info,
-                &request,
-                channel.handled_monitor_id(),
-            ))
         } else {
             match channel.state {
                 ChannelState::Closed => {}
@@ -1400,7 +1609,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     self.notifier.notify(
                         offer_id,
                         Action::Open(
-                            OpenParams::from_request(&info, &request, channel.handled_monitor_id()),
+                            OpenParams::from_request(
+                                &info,
+                                &request,
+                                channel.handled_monitor_info(),
+                                None,
+                            ),
                             self.inner.state.get_version().expect("must be connected"),
                         ),
                     );
@@ -1409,11 +1623,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         reserved_state: None,
                     };
                 }
-                ChannelState::Opening { request, .. } => {
+                ChannelState::Opening {
+                    request,
+                    reserved_state,
+                } => {
                     self.notifier.notify(
                         offer_id,
                         Action::Open(
-                            OpenParams::from_request(&info, &request, channel.handled_monitor_id()),
+                            OpenParams::from_request(
+                                &info,
+                                &request,
+                                channel.handled_monitor_info(),
+                                reserved_state.map(|state| state.target),
+                            ),
                             self.inner.state.get_version().expect("must be connected"),
                         ),
                     );
@@ -1428,34 +1650,38 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 | ChannelState::ClosingClientRelease
                 | ChannelState::OpeningClientRelease => unreachable!(),
             }
-
-            None
-        };
+        }
 
         channel.restore_state = RestoreState::Restored;
-        Ok(open_params)
+        Ok(())
     }
 
-    pub fn post_restore(&mut self) -> Result<(), RestoreError> {
+    /// Revoke and reoffer channels to the guest, depending on their `RestoreState.`
+    /// This function should be called after [`ServerWithNotifier::restore`].
+    pub fn revoke_unclaimed_channels(&mut self) {
         for (offer_id, channel) in self.inner.channels.iter_mut() {
             match channel.restore_state {
                 RestoreState::Restored => {
                     // The channel is fully restored. Nothing more to do.
                 }
                 RestoreState::New => {
-                    // This is a fresh channel offer, not in the saved state.
-                    // Send the offer to the guest if it has not already been
-                    // sent (which could have happened if the channel was
-                    // offered after restore() but before post_restore()).
+                    // This is a fresh channel offer, not in the saved state. Send the offer to the
+                    // guest if it has not already been sent (which could have happened if the
+                    // channel was offered after restore() but before revoke_unclaimed_channels()).
+                    // Offers should only be sent if the guest has already sent RequestOffers.
                     if let ConnectionState::Connected(info) = &self.inner.state {
-                        if matches!(channel.state, ChannelState::ClientReleased) {
+                        if info.offers_sent && matches!(channel.state, ChannelState::ClientReleased)
+                        {
                             channel.prepare_channel(
                                 offer_id,
                                 &mut self.inner.assigned_channels,
                                 &mut self.inner.assigned_monitors,
                             );
                             channel.state = ChannelState::Closed;
-                            send_offer(self.notifier, channel, info.version);
+                            self.inner
+                                .pending_messages
+                                .sender(self.notifier, self.inner.state.is_paused())
+                                .send_offer(channel, info);
                         }
                     }
                 }
@@ -1463,14 +1689,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     // restore_channel was never called for this, but it was in
                     // the saved state. This indicates the offer is meant to be
                     // fresh, so revoke and reoffer it.
-                    let retain = revoke(offer_id, channel, &mut self.inner.gpadls, self.notifier);
+                    let retain = revoke(
+                        self.inner
+                            .pending_messages
+                            .sender(self.notifier, self.inner.state.is_paused()),
+                        offer_id,
+                        channel,
+                        &mut self.inner.gpadls,
+                    );
                     assert!(retain, "channel has not been released");
                     channel.state = ChannelState::Reoffered;
                 }
                 RestoreState::Unmatched => {
                     // offer_channel was never called for this, but it was in
                     // the saved state. Revoke it.
-                    let retain = revoke(offer_id, channel, &mut self.inner.gpadls, self.notifier);
+                    let retain = revoke(
+                        self.inner
+                            .pending_messages
+                            .sender(self.notifier, self.inner.state.is_paused()),
+                        offer_id,
+                        channel,
+                        &mut self.inner.gpadls,
+                    );
                     assert!(retain, "channel has not been released");
                 }
             }
@@ -1499,42 +1739,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
         }
 
-        // Restore server state, and resend server notifications if needed. If these notifications
-        // were processed before the save, it's harmless as the values will be the same.
-        let request = match self.inner.state {
-            ConnectionState::Connecting {
-                info,
-                next_action: _,
-            } => Some(ModifyConnectionRequest {
-                version: Some(info.version.version as u32),
-                interrupt_page: info.interrupt_page.into(),
-                monitor_page: info.monitor_page.into(),
-                target_message_vp: Some(info.target_message_vp),
-                force: true,
-                notify_relay: true,
-            }),
-            ConnectionState::Connected(info) => Some(ModifyConnectionRequest {
-                version: None,
-                monitor_page: info.monitor_page.into(),
-                interrupt_page: info.interrupt_page.into(),
-                target_message_vp: Some(info.target_message_vp),
-                force: true,
-                // If the save didn't happen while modifying, the relay doesn't need to be notified
-                // of this info as it doesn't constitute a change, we're just restoring existing
-                // connection state.
-                notify_relay: info.modifying,
-            }),
-            // No action needed for these states; if disconnecting, check_disconnected will resend
-            // the reset request if needed.
-            ConnectionState::Disconnected | ConnectionState::Disconnecting { .. } => None,
-        };
-
-        if let Some(request) = request {
-            self.notifier.modify_connection(request)?;
-        }
-
         self.check_disconnected();
-        Ok(())
     }
 
     /// Initiates a state reset and a closing of all channels.
@@ -1553,10 +1758,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         for (_, channel) in self.inner.channels.iter_mut() {
             channel.restore_state = RestoreState::New;
         }
+        self.inner.pending_messages.0.clear();
         self.notifier.reset_complete();
     }
 
-    /// Creates a new channel, returning its channel ID.
+    /// Creates a new channel, returning its offer ID.
     pub fn offer_channel(&mut self, offer: OfferParamsInternal) -> Result<OfferId, OfferError> {
         // Ensure no channel with this interface and instance ID exists.
         if let Some((offer_id, channel)) = self.inner.channels.get_by_key_mut(&offer.key()) {
@@ -1580,12 +1786,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 assert!(!matches!(channel.state, ChannelState::Revoked));
                 // This channel was previously offered to the guest in the saved
                 // state. Match this back up to handle future calls to
-                // restore_channel and post_restore.
+                // restore_channel and revoke_unclaimed_channels.
                 channel.restore_state = RestoreState::Restoring;
 
                 // The relay can specify a host-determined monitor ID, which needs to match what's
                 // in the saved state.
-                if let Some(monitor_id) = offer.monitor_id {
+                if let MnfUsage::Relayed { monitor_id } = offer.use_mnf {
                     if info.monitor_id != Some(MonitorId(monitor_id)) {
                         return Err(OfferError::MismatchedMonitorId(
                             info.monitor_id,
@@ -1605,20 +1811,17 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return Ok(offer_id);
         }
 
-        let mut connected_version = None;
-        let state = match self.inner.state {
-            ConnectionState::Connected(ConnectionInfo {
-                offers_sent: true,
-                version,
-                ..
-            }) => {
-                connected_version = Some(version);
-                ChannelState::Closed
+        let mut connected_info = None;
+        let state = match &self.inner.state {
+            ConnectionState::Connected(info) => {
+                if info.offers_sent {
+                    connected_info = Some(info);
+                    ChannelState::Closed
+                } else {
+                    ChannelState::ClientReleased
+                }
             }
-            ConnectionState::Connected(ConnectionInfo {
-                offers_sent: false, ..
-            })
-            | ConnectionState::Connecting { .. }
+            ConnectionState::Connecting { .. }
             | ConnectionState::Disconnecting { .. }
             | ConnectionState::Disconnected => ChannelState::ClientReleased,
         };
@@ -1639,7 +1842,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         let offer_id = self.inner.channels.offer(channel);
-        if let Some(version) = connected_version {
+        if let Some(info) = connected_info {
             let channel = &mut self.inner.channels[offer_id];
             channel.prepare_channel(
                 offer_id,
@@ -1647,7 +1850,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 &mut self.inner.assigned_monitors,
             );
 
-            send_offer(self.notifier, channel, version);
+            self.inner
+                .pending_messages
+                .sender(self.notifier, self.inner.state.is_paused())
+                .send_offer(channel, info);
         }
 
         tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
@@ -1658,10 +1864,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     pub fn revoke_channel(&mut self, offer_id: OfferId) {
         let channel = &mut self.inner.channels[offer_id];
         let retain = revoke(
+            self.inner
+                .pending_messages
+                .sender(self.notifier, self.inner.state.is_paused()),
             offer_id,
             channel,
             &mut self.inner.gpadls,
-            &mut *self.notifier,
         );
         if !retain {
             self.inner.channels.remove(offer_id);
@@ -1681,20 +1889,32 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 reserved_state,
             } => {
                 let channel_id = channel.info.expect("assigned").channel_id;
-                tracing::info!(
-                    offer_id = offer_id.0,
-                    channel_id = channel_id.0,
-                    result,
-                    "opened channel"
-                );
+                if result >= 0 {
+                    tracelimit::info_ratelimited!(
+                        offer_id = offer_id.0,
+                        channel_id = channel_id.0,
+                        result,
+                        "opened channel"
+                    );
+                } else {
+                    // Log channel open failures at error level for visibility.
+                    tracelimit::error_ratelimited!(
+                        offer_id = offer_id.0,
+                        channel_id = channel_id.0,
+                        result,
+                        "failed to open channel"
+                    );
+                }
 
-                send_open_result(
-                    self.notifier,
-                    channel_id,
-                    &request,
-                    result,
-                    reserved_state.map(|info| info.target),
-                );
+                self.inner
+                    .pending_messages
+                    .sender(self.notifier, self.inner.state.is_paused())
+                    .send_open_result(
+                        channel_id,
+                        &request,
+                        result,
+                        MessageTarget::for_offer(offer_id, &reserved_state),
+                    );
                 channel.state = if result >= 0 {
                     ChannelState::Open {
                         params: request,
@@ -1755,19 +1975,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 modify_sent: false,
             } => {
                 if self.are_channels_reset(matches!(next_action, ConnectionAction::Reset)) {
-                    self.inner.state = ConnectionState::Disconnecting {
-                        next_action,
-                        modify_sent: true,
-                    };
-
-                    // Reset server state and disconnect the relay if there is one.
-                    self.notifier
-                        .modify_connection(ModifyConnectionRequest {
-                            monitor_page: Update::Reset,
-                            interrupt_page: Update::Reset,
-                            ..Default::default()
-                        })
-                        .expect("resetting state should not fail");
+                    self.notify_disconnect(next_action);
                 }
             }
             ConnectionState::Disconnecting {
@@ -1777,6 +1985,25 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ConnectionState::Connected { .. }
             | ConnectionState::Connecting { .. } => (),
         }
+    }
+
+    /// Informs the notifier to reset the connection state when disconnecting.
+    fn notify_disconnect(&mut self, next_action: ConnectionAction) {
+        // Assert this on debug only because it is an expensive check if there are many channels.
+        debug_assert!(self.are_channels_reset(matches!(next_action, ConnectionAction::Reset)));
+        self.inner.state = ConnectionState::Disconnecting {
+            next_action,
+            modify_sent: true,
+        };
+
+        // Reset server state and disconnect the relay if there is one.
+        self.notifier
+            .modify_connection(ModifyConnectionRequest {
+                monitor_page: Update::Reset,
+                interrupt_page: Update::Reset,
+                ..Default::default()
+            })
+            .expect("resetting state should not fail");
     }
 
     /// If true, the server is mid-reset and cannot take certain actions such
@@ -1800,18 +2027,24 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         tracing::info!(offer_id = offer_id.0, "closed channel");
         match channel.state {
             ChannelState::Closing {
-                reserved_state: Some(ReservedState { target, .. }),
+                reserved_state: Some(reserved_state),
                 ..
             } => {
                 channel.state = ChannelState::Closed;
                 if matches!(self.inner.state, ConnectionState::Connected { .. }) {
                     let channel_id = channel.info.expect("assigned").channel_id;
-                    self.send_close_reserved_channel_response(channel_id, target);
+                    self.send_close_reserved_channel_response(
+                        channel_id,
+                        offer_id,
+                        reserved_state.target,
+                    );
                 } else {
                     // Handle closing reserved channels while disconnected/ing. Since we weren't waiting
                     // on the channel, no need to call check_disconnected, but we do need to release it.
                     if Self::client_release_channel(
-                        self.notifier,
+                        self.inner
+                            .pending_messages
+                            .sender(self.notifier, self.inner.state.is_paused()),
                         offer_id,
                         channel,
                         &mut self.inner.gpadls,
@@ -1850,12 +2083,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     fn send_close_reserved_channel_response(
         &mut self,
         channel_id: ChannelId,
+        offer_id: OfferId,
         target: ConnectionTarget,
     ) {
-        send_message_with_target(
-            self.notifier,
+        self.sender().send_message_with_target(
             &protocol::CloseReservedChannelResponse { channel_id },
-            Some(target),
+            MessageTarget::ReservedChannel(offer_id, target),
         );
     }
 
@@ -1868,12 +2101,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         includes_client_id: bool,
     ) -> Result<(), ChannelError> {
         let target_info =
-            protocol::TargetInfo::from_u64(&input.initiate_contact.interrupt_page_or_target_info);
+            protocol::TargetInfo::from(input.initiate_contact.interrupt_page_or_target_info);
 
         let target_sint = if message.multiclient
             && input.initiate_contact.version_requested >= Version::Win10Rs3_1 as u32
         {
-            target_info.sint
+            target_info.sint()
         } else {
             SINT
         };
@@ -1881,13 +2114,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let target_vtl = if message.multiclient
             && input.initiate_contact.version_requested >= Version::Win10Rs4 as u32
         {
-            target_info.vtl
+            target_info.vtl()
         } else {
             0
         };
 
         let feature_flags = if input.initiate_contact.version_requested >= Version::Copper as u32 {
-            target_info.feature_flags
+            target_info.feature_flags()
         } else {
             0
         };
@@ -1980,7 +2213,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             // Send an unsupported response to the requested SINT.
             self.send_version_response_with_target(
                 None,
-                Some(ConnectionTarget {
+                MessageTarget::Custom(ConnectionTarget {
                     vp: request.target_message_vp,
                     sint: request.target_sint,
                 }),
@@ -2019,11 +2252,23 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Make sure we can receive incoming interrupts on the monitor page. The parent to child
         // page is not used as this server doesn't send monitored interrupts.
         let monitor_page = match request.monitor_page {
-            MonitorPageRequest::Some(mp) => Some(mp),
+            MonitorPageRequest::Some(mp) => {
+                if self.inner.require_server_allocated_mnf {
+                    if !version.feature_flags.server_specified_monitor_pages() {
+                        tracelimit::warn_ratelimited!(
+                            "guest-supplied monitor pages not supported; MNF will be disabled"
+                        );
+                    }
+
+                    None
+                } else {
+                    Some(mp)
+                }
+            }
             MonitorPageRequest::None => None,
             MonitorPageRequest::Invalid => {
                 // Do not notify the relay in this case.
-                self.send_version_response(Some((
+                self.send_version_response(Some(VersionResponseData::new(
                     version,
                     protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
                 )));
@@ -2037,11 +2282,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 version,
                 trusted: request.trusted,
                 interrupt_page: request.interrupt_page,
-                monitor_page,
+                monitor_page: monitor_page.map(MonitorPageGpaInfo::from_guest_gpas),
                 target_message_vp: request.target_message_vp,
                 modifying: false,
                 offers_sent: false,
                 client_id: request.client_id,
+                paused: false,
             },
             next_action: ConnectionAction::None,
         };
@@ -2049,16 +2295,15 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Update server state and notify the relay, if any. When complete,
         // complete_initiate_contact will be invoked.
         if let Err(err) = self.notifier.modify_connection(ModifyConnectionRequest {
-            version: Some(request.version_requested),
+            version: Some(version),
             monitor_page: monitor_page.into(),
             interrupt_page: request.interrupt_page.into(),
             target_message_vp: Some(request.target_message_vp),
-            force: false,
             notify_relay: true,
         }) {
             tracelimit::error_ratelimited!(?err, "server failed to change state");
             self.inner.state = ConnectionState::Disconnected;
-            self.send_version_response(Some((
+            self.send_version_response(Some(VersionResponseData::new(
                 version,
                 protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
             )));
@@ -2075,19 +2320,26 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         // Some features are handled locally without needing relay support.
+        // N.B. Server-specified monitor pages are also handled locally but are only conditionally
+        //      supported.
         const LOCAL_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
             .with_client_id(true)
             .with_confidential_channels(true);
 
-        let relay_feature_flags = match response {
+        let (relay_feature_flags, server_specified_monitor_page) = match response {
             // There is no relay, or it successfully processed our request.
             ModifyConnectionResponse::Supported(
                 protocol::ConnectionState::SUCCESSFUL,
                 feature_flags,
-            ) => feature_flags,
+                server_specified_monitor_page,
+            ) => (feature_flags, server_specified_monitor_page),
             // The relay supports the requested version, but encountered an error, so pass it
             // along to the guest.
-            ModifyConnectionResponse::Supported(connection_state, feature_flags) => {
+            ModifyConnectionResponse::Supported(
+                connection_state,
+                feature_flags,
+                server_specified_monitor_page,
+            ) => {
                 tracelimit::error_ratelimited!(
                     ?connection_state,
                     "initiate contact failed because relay request failed"
@@ -2095,9 +2347,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
                 // We still report the supported feature flags with an error, so make sure those
                 // are correct.
-                info.version.feature_flags &= feature_flags | LOCAL_FEATURE_FLAGS;
+                info.version.feature_flags &= (feature_flags | LOCAL_FEATURE_FLAGS)
+                    .with_server_specified_monitor_pages(server_specified_monitor_page.is_some());
 
-                self.send_version_response(Some((info.version, connection_state)));
+                self.send_version_response(Some(VersionResponseData::new(
+                    info.version,
+                    connection_state,
+                )));
                 self.inner.state = ConnectionState::Disconnected;
                 return;
             }
@@ -2108,14 +2364,42 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 self.inner.state = ConnectionState::Disconnected;
                 return;
             }
+            ModifyConnectionResponse::Modified(_) => {
+                panic!("Invalid response for completing InitiateContact.");
+            }
         };
+
+        // The server may not provide its own monitor pages if the guest didn't request them.
+        assert!(
+            info.version.feature_flags.server_specified_monitor_pages()
+                || server_specified_monitor_page.is_none()
+        );
 
         // The relay responds with all the feature flags it supports, so limit the flags reported to
         // the guest to include only those handled by the relay or locally.
         info.version.feature_flags &= relay_feature_flags | LOCAL_FEATURE_FLAGS;
+
+        // If the server allocated a monitor page, also report that feature is supported, and store
+        // the server pages. The feature bit must be re-enabled because the relay may not report
+        // support for it.
+        if let Some(gpas) = server_specified_monitor_page {
+            info.monitor_page = Some(MonitorPageGpaInfo::from_server_gpas(gpas));
+            info.version
+                .feature_flags
+                .set_server_specified_monitor_pages(true);
+        } else {
+            info.version
+                .feature_flags
+                .set_server_specified_monitor_pages(false);
+        }
+
+        let version = info.version;
         self.inner.state = ConnectionState::Connected(info);
 
-        self.send_version_response(Some((info.version, protocol::ConnectionState::SUCCESSFUL)));
+        self.send_version_response(Some(
+            VersionResponseData::new(version, protocol::ConnectionState::SUCCESSFUL)
+                .with_monitor_pages(server_specified_monitor_page),
+        ));
         if !matches!(next_action, ConnectionAction::None) && self.request_disconnect(next_action) {
             self.do_next_action(next_action);
         }
@@ -2128,20 +2412,23 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .find(|v| request.version_requested == **v as u32)
             .copied()?;
 
-        let supported_flags = if version >= Version::Copper {
-            // The max version and features may be limited in order to test older protocol versions.
-            //
-            // N.B. Confidential channels should only be enabled if the connection is trusted.
-            if let Some(max_version) = self.inner.max_version {
-                if version as u32 > max_version.version {
-                    return None;
-                }
+        // The max version may be limited in order to test older protocol versions.
+        if let Some(max_version) = self.inner.max_version {
+            if version as u32 > max_version.version {
+                return None;
+            }
+        }
 
-                max_version.feature_flags.with_confidential_channels(
-                    max_version.feature_flags.confidential_channels() && request.trusted,
-                )
+        let supported_flags = if version >= Version::Copper {
+            // Confidential channels should only be enabled if the connection is trusted.
+            let max_supported_flags =
+                SUPPORTED_FEATURE_FLAGS.with_confidential_channels(request.trusted);
+
+            // The max features may be limited in order to test older protocol versions.
+            if let Some(max_version) = self.inner.max_version {
+                max_supported_flags & max_version.feature_flags
             } else {
-                FeatureFlags::all().with_confidential_channels(request.trusted)
+                max_supported_flags
             }
         } else {
             FeatureFlags::new()
@@ -2164,42 +2451,66 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         })
     }
 
-    fn send_version_response(&mut self, data: Option<(VersionInfo, protocol::ConnectionState)>) {
-        self.send_version_response_with_target(data, None);
+    fn send_version_response(&mut self, data: Option<VersionResponseData>) {
+        self.send_version_response_with_target(data, MessageTarget::Default);
     }
 
     fn send_version_response_with_target(
         &mut self,
-        data: Option<(VersionInfo, protocol::ConnectionState)>,
-        target: Option<ConnectionTarget>,
+        data: Option<VersionResponseData>,
+        target: MessageTarget,
     ) {
-        let mut response2 = protocol::VersionResponse2::new_zeroed();
-        let response = &mut response2.version_response;
-        let mut send_response2 = false;
-        if let Some((version, state)) = data {
+        enum VersionResponseType {
+            PreCopper,
+            Copper,
+            CopperWithServerMnf,
+        }
+
+        let mut response_copper_with_mnf = protocol::VersionResponse3::new_zeroed();
+        let response_copper = &mut response_copper_with_mnf.version_response2;
+        let response = &mut response_copper.version_response;
+        let mut response_type = VersionResponseType::PreCopper;
+        if let Some(data) = data {
             // Pre-Win8, there is no way to report failures to the guest, so those should be treated
             // as unsupported.
-            if state == protocol::ConnectionState::SUCCESSFUL || version.version >= Version::Win8 {
+            if data.state == protocol::ConnectionState::SUCCESSFUL
+                || data.version.version >= Version::Win8
+            {
                 response.version_supported = 1;
-                response.connection_state = state;
+                response.connection_state = data.state;
                 response.selected_version_or_connection_id =
-                    if version.version >= Version::Win10Rs3_1 {
+                    if data.version.version >= Version::Win10Rs3_1 {
                         self.inner.child_connection_id
                     } else {
-                        version.version as u32
+                        data.version.version as u32
                     };
 
-                if version.version >= Version::Copper {
-                    response2.supported_features = version.feature_flags.into();
-                    send_response2 = true;
+                if data.version.version >= Version::Copper {
+                    response_copper.supported_features = data.version.feature_flags.into();
+                    response_type = VersionResponseType::Copper;
+                    if let Some(monitor_page) = data.monitor_pages {
+                        assert!(data.version.feature_flags.server_specified_monitor_pages());
+                        response_copper_with_mnf.child_to_parent_monitor_page_gpa =
+                            monitor_page.child_to_parent;
+                        response_copper_with_mnf.parent_to_child_monitor_page_gpa =
+                            monitor_page.parent_to_child;
+                        response_type = VersionResponseType::CopperWithServerMnf;
+                    }
                 }
             }
         }
 
-        if send_response2 {
-            send_message_with_target(self.notifier, &response2, target);
-        } else {
-            send_message_with_target(self.notifier, response, target);
+        // Send the correct type of response based on the negotiated version and flags.
+        match response_type {
+            VersionResponseType::PreCopper => {
+                self.sender().send_message_with_target(response, target)
+            }
+            VersionResponseType::Copper => self
+                .sender()
+                .send_message_with_target(response_copper, target),
+            VersionResponseType::CopperWithServerMnf => self
+                .sender()
+                .send_message_with_target(&response_copper_with_mnf, target),
         }
     }
 
@@ -2210,13 +2521,14 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         // Release all channels.
         let gpadls = &mut self.inner.gpadls;
-        let notifier = &mut self.notifier;
         let vm_reset = matches!(new_action, ConnectionAction::Reset);
         self.inner.channels.retain(|offer_id, channel| {
             // Release reserved channels only if the VM is resetting
             (!vm_reset && channel.state.is_reserved())
                 || !Self::client_release_channel(
-                    notifier,
+                    self.inner
+                        .pending_messages
+                        .sender(self.notifier, self.inner.state.is_paused()),
                     offer_id,
                     channel,
                     gpadls,
@@ -2246,7 +2558,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
             ConnectionState::Connected { .. } => {
                 if self.are_channels_reset(vm_reset) {
-                    self.inner.state = ConnectionState::Disconnected;
+                    self.notify_disconnect(new_action);
                 } else {
                     self.inner.state = ConnectionState::Disconnecting {
                         next_action: new_action,
@@ -2316,11 +2628,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     fn complete_unload(&mut self) {
+        self.notifier.unload_complete();
         if let Some(version) = self.inner.delayed_max_version.take() {
             self.inner.set_compatibility_version(version, false);
         }
 
-        send_message(self.notifier, &protocol::UnloadComplete {});
+        self.sender().send_message(&protocol::UnloadComplete {});
         tracelimit::info_ratelimited!("Vmbus disconnected");
     }
 
@@ -2339,8 +2652,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         info.offers_sent = true;
 
-        // The guest expects channel IDs to stay consistent across hibernation and
-        // resume, so sort the current offers before assigning channel IDs.
+        // Some guests expects channel IDs to stay consistent across hibernation and resume, so sort
+        // the current offers before assigning channel IDs.
         let mut sorted_channels: Vec<_> = self
             .inner
             .channels
@@ -2348,17 +2661,26 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .filter(|(_, channel)| !channel.state.is_reserved())
             .collect();
 
-        sorted_channels.sort_unstable_by_key(|(_, channel)| {
-            (
-                channel.offer.interface_id,
-                channel.offer.offer_order.unwrap_or(u32::MAX),
-                channel.offer.instance_id,
-            )
-        });
+        if self.inner.use_absolute_channel_order {
+            sorted_channels.sort_unstable_by_key(|(_, channel)| {
+                (
+                    channel.offer.offer_order.unwrap_or(u64::MAX),
+                    channel.offer.interface_id,
+                    channel.offer.instance_id,
+                )
+            });
+        } else {
+            sorted_channels.sort_unstable_by_key(|(_, channel)| {
+                (
+                    channel.offer.interface_id,
+                    channel.offer.offer_order.unwrap_or(u64::MAX),
+                    channel.offer.instance_id,
+                )
+            });
+        }
 
         for (offer_id, channel) in sorted_channels {
             assert!(matches!(channel.state, ChannelState::ClientReleased));
-            assert!(channel.info.is_none());
 
             channel.prepare_channel(
                 offer_id,
@@ -2367,9 +2689,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
 
             channel.state = ChannelState::Closed;
-            send_offer(self.notifier, channel, info.version);
+            self.inner
+                .pending_messages
+                .sender(self.notifier, info.paused)
+                .send_offer(channel, info);
         }
-        send_message(self.notifier, &protocol::AllOffersDelivered {});
+        self.sender().send_message(&protocol::AllOffersDelivered {});
 
         Ok(())
     }
@@ -2378,7 +2703,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// GPADL should be removed because the channel is already revoked.
     #[must_use]
     fn gpadl_updated(
-        notifier: &mut N,
+        mut sender: MessageSender<'_, N>,
         offer_id: OfferId,
         channel: &Channel,
         gpadl_id: GpadlId,
@@ -2386,16 +2711,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     ) -> bool {
         if channel.state.is_revoked() {
             let channel_id = channel.info.as_ref().expect("assigned").channel_id;
-            send_gpadl_created(
-                notifier,
-                channel_id,
-                gpadl_id,
-                protocol::STATUS_UNSUCCESSFUL,
-            );
+            sender.send_gpadl_created(channel_id, gpadl_id, protocol::STATUS_UNSUCCESSFUL);
             false
         } else {
             // Notify the channel if the GPADL is done.
-            notifier.notify(
+            sender.notifier.notify(
                 offer_id,
                 Action::Gpadl(gpadl_id, gpadl.count, gpadl.buf.clone()),
             );
@@ -2404,7 +2724,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     /// Handles MessageType::GPADL_HEADER, which creates a new GPADL.
-    fn handle_gpadl_header(
+    fn handle_gpadl_header_core(
         &mut self,
         input: &protocol::GpadlHeader,
         range: &[u8],
@@ -2442,20 +2762,54 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             unreachable!("gpadl ID validated above");
         }
 
-        if done && !Self::gpadl_updated(self.notifier, offer_id, channel, input.gpadl_id, gpadl) {
+        if done
+            && !Self::gpadl_updated(
+                self.inner
+                    .pending_messages
+                    .sender(self.notifier, self.inner.state.is_paused()),
+                offer_id,
+                channel,
+                input.gpadl_id,
+                gpadl,
+            )
+        {
             self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
         }
         Ok(())
     }
 
+    /// Handles MessageType::GPADL_HEADER, which creates a new GPADL.
+    fn handle_gpadl_header(&mut self, input: &protocol::GpadlHeader, range: &[u8]) {
+        if let Err(err) = self.handle_gpadl_header_core(input, range) {
+            tracelimit::warn_ratelimited!(
+                err = &err as &dyn std::error::Error,
+                channel_id = ?input.channel_id,
+                gpadl_id = ?input.gpadl_id,
+                "error handling gpadl header"
+            );
+
+            // Inform the guest of any error during the header message.
+            self.sender().send_gpadl_created(
+                input.channel_id,
+                input.gpadl_id,
+                protocol::STATUS_UNSUCCESSFUL,
+            );
+        }
+    }
+
     /// Handles MessageType::GPADL_BODY, which adds more to an in-progress
     /// GPADL.
+    ///
+    /// N.B. This function only returns an error if the error was not handled locally by sending an
+    ///      error response to the guest.
     fn handle_gpadl_body(
         &mut self,
         input: &protocol::GpadlBody,
         range: &[u8],
     ) -> Result<(), ChannelError> {
         // Find and update the GPADL.
+        // N.B. No error response can be sent to the guest if the gpadl ID is invalid, because the
+        //      channel ID is not known in that case.
         let &offer_id = self
             .inner
             .incomplete_gpadls
@@ -2468,10 +2822,38 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .ok_or(ChannelError::UnknownGpadlId)?;
         let channel = &mut self.inner.channels[offer_id];
 
-        if gpadl.append(range)? {
-            self.inner.incomplete_gpadls.remove(&input.gpadl_id);
-            if !Self::gpadl_updated(self.notifier, offer_id, channel, input.gpadl_id, gpadl) {
+        match gpadl.append(range) {
+            Ok(done) => {
+                if done {
+                    self.inner.incomplete_gpadls.remove(&input.gpadl_id);
+                    if !Self::gpadl_updated(
+                        self.inner
+                            .pending_messages
+                            .sender(self.notifier, self.inner.state.is_paused()),
+                        offer_id,
+                        channel,
+                        input.gpadl_id,
+                        gpadl,
+                    ) {
+                        self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
+                    }
+                }
+            }
+            Err(err) => {
+                self.inner.incomplete_gpadls.remove(&input.gpadl_id);
                 self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
+                let channel_id = channel.info.as_ref().expect("assigned").channel_id;
+                tracelimit::warn_ratelimited!(
+                    err = &err as &dyn std::error::Error,
+                    channel_id = channel_id.0,
+                    gpadl_id = input.gpadl_id.0,
+                    "error handling gpadl body"
+                );
+                self.sender().send_gpadl_created(
+                    channel_id,
+                    input.gpadl_id,
+                    protocol::STATUS_UNSUCCESSFUL,
+                );
             }
         }
 
@@ -2527,7 +2909,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     );
 
                     self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
-                    send_gpadl_torndown(self.notifier, input.gpadl_id);
+                    self.sender().send_gpadl_torndown(input.gpadl_id);
                 } else {
                     gpadl.state = GpadlState::TearingDown;
                     self.notifier.notify(
@@ -2565,7 +2947,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         self.notifier.notify(
             offer_id,
             Action::Open(
-                OpenParams::from_request(info, input, channel.handled_monitor_id()),
+                OpenParams::from_request(
+                    info,
+                    input,
+                    channel.handled_monitor_info(),
+                    reserved_state.map(|state| state.target),
+                ),
                 self.inner.state.get_version().expect("must be connected"),
             ),
         );
@@ -2594,7 +2981,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         {
             input.flags
         } else {
-            0
+            Default::default()
         };
 
         let request = OpenRequest {
@@ -2704,7 +3091,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             open_id: 0,
             user_data: UserDefinedData::new_zeroed(),
             guest_specified_interrupt_info: None,
-            flags: 0,
+            flags: Default::default(),
         };
 
         match channel.state {
@@ -2712,11 +3099,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             ChannelState::Revoked | ChannelState::Reoffered => {}
 
             ChannelState::Open { .. } | ChannelState::Opening { .. } => {
-                return Err(ChannelError::ChannelAlreadyOpen)
+                return Err(ChannelError::ChannelAlreadyOpen);
             }
 
             ChannelState::Closing { .. } | ChannelState::ClosingReopen { .. } => {
-                return Err(ChannelError::InvalidChannelState)
+                return Err(ChannelError::InvalidChannelState);
             }
 
             ChannelState::ClientReleased
@@ -2745,7 +3132,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             } => {
                 resvd.target.vp = input.target_vp;
                 resvd.target.sint = input.target_sint as u8;
-
                 channel.state = ChannelState::Closing {
                     params,
                     reserved_state: Some(resvd),
@@ -2778,13 +3164,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// deleted.
     #[must_use]
     fn client_release_channel(
-        notifier: &mut N,
+        mut sender: MessageSender<'_, N>,
         offer_id: OfferId,
         channel: &mut Channel,
         gpadls: &mut GpadlMap,
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
-        version: Option<VersionInfo>,
+        info: Option<&ConnectionInfo>,
     ) -> bool {
         // Release any GPADLs that remain for this channel.
         gpadls.retain(|&(gpadl_id, gpadl_offer_id), gpadl| {
@@ -2803,7 +3189,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         false
                     } else {
                         gpadl.state = GpadlState::TearingDown;
-                        notifier.notify(
+                        sender.notifier.notify(
                             offer_id,
                             Action::TeardownGpadl {
                                 gpadl_id,
@@ -2823,10 +3209,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 false
             }
             ChannelState::Reoffered => {
-                if let Some(version) = version {
+                if let Some(info) = info {
                     channel.state = ChannelState::Closed;
                     channel.restore_state = RestoreState::New;
-                    send_offer(notifier, channel, version);
+                    sender.send_offer(channel, info);
                     // Do not release the channel ID.
                     return false;
                 }
@@ -2843,7 +3229,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
             ChannelState::Open { .. } => {
                 channel.state = ChannelState::ClosingClientRelease;
-                notifier.notify(offer_id, Action::Close);
+                sender.notifier.notify(offer_id, Action::Close);
                 false
             }
             ChannelState::Closing { .. } | ChannelState::ClosingReopen { .. } => {
@@ -2879,13 +3265,15 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Closing { .. }
             | ChannelState::Reoffered => {
                 if Self::client_release_channel(
-                    self.notifier,
+                    self.inner
+                        .pending_messages
+                        .sender(self.notifier, self.inner.state.is_paused()),
                     offer_id,
                     channel,
                     &mut self.inner.gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
-                    self.inner.state.get_version(),
+                    self.inner.state.get_connected_info(),
                 ) {
                     self.inner.channels.remove(offer_id);
                 }
@@ -2907,7 +3295,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// Handles MessageType::TL_CONNECT_REQUEST, which requests for an hvsocket
     /// connection.
     fn handle_tl_connect_request(&mut self, request: protocol::TlConnectRequest2) {
-        self.notifier.notify_hvsock(&request.into());
+        let version = self
+            .inner
+            .state
+            .get_version()
+            .expect("must be connected")
+            .version;
+
+        let hosted_silo_unaware = version < Version::Win10Rs5;
+        self.notifier
+            .notify_hvsock(&HvsockConnectRequest::from_message(
+                request,
+                hosted_silo_unaware,
+            ));
     }
 
     /// Sends a message to the guest if an hvsocket connect request failed.
@@ -2919,14 +3319,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             // Windows guests care about the error code used here; using STATUS_CONNECTION_REFUSED
             // ensures a sensible error gets returned to the user that tried to connect to the
             // socket.
-            send_message(
-                self.notifier,
-                &protocol::TlConnectResult {
-                    service_id: result.service_id,
-                    endpoint_id: result.endpoint_id,
-                    status: protocol::STATUS_CONNECTION_REFUSED,
-                },
-            )
+            self.sender().send_message(&protocol::TlConnectResult {
+                service_id: result.service_id,
+                endpoint_id: result.endpoint_id,
+                status: protocol::STATUS_CONNECTION_REFUSED,
+            })
         }
     }
 
@@ -3031,19 +3428,16 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     fn send_modify_channel_response(&mut self, channel_id: ChannelId, status: i32) {
         if self.inner.state.check_version(Version::Iron) {
-            send_message(
-                self.notifier,
-                &protocol::ModifyChannelResponse { channel_id, status },
-            );
+            self.sender()
+                .send_message(&protocol::ModifyChannelResponse { channel_id, status });
         }
     }
 
     fn handle_modify_connection(&mut self, request: protocol::ModifyConnection) {
         if let Err(err) = self.modify_connection(request) {
             tracelimit::error_ratelimited!(?err, "modifying connection failed");
-            self.complete_modify_connection(ModifyConnectionResponse::Supported(
+            self.complete_modify_connection(ModifyConnectionResponse::Modified(
                 protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-                FeatureFlags::new(),
             ));
         }
     }
@@ -3063,17 +3457,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
         }
 
+        if matches!(
+            info.monitor_page,
+            Some(MonitorPageGpaInfo {
+                server_allocated: true,
+                ..
+            })
+        ) {
+            anyhow::bail!("Cannot modify server-allocated monitor pages");
+        }
+
         if (request.child_to_parent_monitor_page_gpa == 0)
             != (request.parent_to_child_monitor_page_gpa == 0)
         {
             anyhow::bail!("Guest must specify either both or no monitor pages, {request:?}");
         }
 
-        let monitor_page =
-            (request.child_to_parent_monitor_page_gpa != 0).then_some(MonitorPageGpas {
+        let monitor_page = (request.child_to_parent_monitor_page_gpa != 0).then_some(
+            MonitorPageGpaInfo::from_guest_gpas(MonitorPageGpas {
                 child_to_parent: request.child_to_parent_monitor_page_gpa,
                 parent_to_child: request.parent_to_child_monitor_page_gpa,
-            });
+            }),
+        );
 
         info.modifying = true;
         info.monitor_page = monitor_page;
@@ -3093,7 +3498,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             ConnectionState::Connecting { .. } => self.complete_initiate_contact(response),
             ConnectionState::Disconnecting { .. } => self.complete_disconnect(),
             ConnectionState::Connected(info) => {
-                let ModifyConnectionResponse::Supported(connection_state, ..) = response else {
+                let ModifyConnectionResponse::Modified(connection_state) = response else {
                     panic!(
                         "Relay should not return {:?} for a modify request with no version.",
                         response
@@ -3108,16 +3513,26 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 }
 
                 info.modifying = false;
-                send_message(
-                    self.notifier,
-                    &protocol::ModifyConnectionResponse { connection_state },
-                );
+                self.sender()
+                    .send_message(&protocol::ModifyConnectionResponse { connection_state });
             }
             _ => panic!(
                 "Invalid state for ModifyConnection response: {:?}",
                 self.inner.state
             ),
         }
+    }
+
+    fn handle_pause(&mut self) {
+        tracelimit::info_ratelimited!("pausing sending messages");
+        self.sender().send_message(&protocol::PauseResponse {});
+        let ConnectionState::Connected(info) = &mut self.inner.state else {
+            unreachable!(
+                "in unexpected state {:?}, should be prevented by Message::parse()",
+                self.inner.state
+            );
+        };
+        info.paused = true;
     }
 
     /// Processes an incoming message from the guest.
@@ -3132,8 +3547,27 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         //
         // TODO: Don't allow trusted messages if an untrusted connection was ever used.
         if self.inner.state.is_trusted() && !message.trusted {
-            tracing::warn!(?msg, "Received untrusted message");
+            tracelimit::warn_ratelimited!(?msg, "Received untrusted message");
             return Err(ChannelError::UntrustedMessage);
+        }
+
+        // Unpause channel responses if they are paused.
+        match &mut self.inner.state {
+            ConnectionState::Connected(info) if info.paused => {
+                if !matches!(
+                    msg,
+                    Message::Resume(..)
+                        | Message::Unload(..)
+                        | Message::InitiateContact { .. }
+                        | Message::InitiateContact2 { .. }
+                ) {
+                    tracelimit::warn_ratelimited!(?msg, "Received message while paused");
+                    return Err(ChannelError::Paused);
+                }
+                tracelimit::info_ratelimited!("resuming sending messages");
+                info.paused = false;
+            }
+            _ => {}
         }
 
         match msg {
@@ -3145,7 +3579,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
             Message::Unload(..) => self.handle_unload(),
             Message::RequestOffers(..) => self.handle_request_offers()?,
-            Message::GpadlHeader(input, range) => self.handle_gpadl_header(&input, range)?,
+            Message::GpadlHeader(input, range) => self.handle_gpadl_header(&input, range),
             Message::GpadlBody(input, range) => self.handle_gpadl_body(&input, range)?,
             Message::GpadlTeardown(input, ..) => self.handle_gpadl_teardown(&input)?,
             Message::OpenChannel(input, ..) => self.handle_open_channel(&input.into())?,
@@ -3163,6 +3597,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             Message::CloseReservedChannel(input, ..) => {
                 self.handle_close_reserved_channel(&input)?
             }
+            Message::Pause(protocol::Pause, ..) => self.handle_pause(),
+            Message::Resume(protocol::Resume, ..) => {}
             // Messages that should only be received by a vmbus client.
             Message::OfferChannel(..)
             | Message::RescindChannelOffer(..)
@@ -3172,11 +3608,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | Message::GpadlTorndown(..)
             | Message::VersionResponse(..)
             | Message::VersionResponse2(..)
+            | Message::VersionResponse3(..)
             | Message::UnloadComplete(..)
             | Message::CloseReservedChannelResponse(..)
             | Message::TlConnectResult(..)
             | Message::ModifyChannelResponse(..)
-            | Message::ModifyConnectionResponse(..) => {
+            | Message::ModifyConnectionResponse(..)
+            | Message::PauseResponse(..) => {
                 unreachable!("Server received client message {:?}", msg);
             }
         }
@@ -3214,7 +3652,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     .as_ref()
                     .expect("assigned")
                     .channel_id;
-                send_gpadl_created(self.notifier, channel_id, gpadl_id, status);
+                self.inner
+                    .pending_messages
+                    .sender(self.notifier, self.inner.state.is_paused())
+                    .send_gpadl_created(channel_id, gpadl_id, status);
                 if status >= 0 {
                     gpadl.state = GpadlState::Accepted;
                     true
@@ -3273,7 +3714,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
             GpadlState::TearingDown => {
                 if !channel.state.is_released() {
-                    send_gpadl_torndown(self.notifier, gpadl_id);
+                    self.sender().send_gpadl_torndown(gpadl_id);
                 }
                 self.inner
                     .gpadls
@@ -3284,13 +3725,23 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
         }
     }
+
+    /// Creates a sender, in a convenient way for callers that are able to borrow all of `self`.
+    ///
+    /// If you cannot borrow all of `self`, you will need to use the `PendingMessages::sender`
+    /// method instead.
+    fn sender(&mut self) -> MessageSender<'_, N> {
+        self.inner
+            .pending_messages
+            .sender(self.notifier, self.inner.state.is_paused())
+    }
 }
 
 fn revoke<N: Notifier>(
+    mut sender: MessageSender<'_, N>,
     offer_id: OfferId,
     channel: &mut Channel,
     gpadls: &mut GpadlMap,
-    notifier: &mut N,
 ) -> bool {
     let info = match channel.state {
         ChannelState::Closed
@@ -3323,8 +3774,7 @@ fn revoke<N: Notifier>(
             GpadlState::InProgress => true,
             GpadlState::Offered => {
                 if let Some(info) = info {
-                    send_gpadl_created(
-                        notifier,
+                    sender.send_gpadl_created(
                         info.channel_id,
                         gpadl_id,
                         protocol::STATUS_UNSUCCESSFUL,
@@ -3336,14 +3786,14 @@ fn revoke<N: Notifier>(
             GpadlState::Accepted => true,
             GpadlState::TearingDown => {
                 if info.is_some() {
-                    send_gpadl_torndown(notifier, gpadl_id);
+                    sender.send_gpadl_torndown(gpadl_id);
                 }
                 false
             }
         }
     });
     if let Some(info) = info {
-        send_rescind(notifier, info);
+        sender.send_rescind(info);
     }
     // Revoking a channel effectively completes the restore operation for it.
     if channel.restore_state != RestoreState::New {
@@ -3352,2003 +3802,182 @@ fn revoke<N: Notifier>(
     retain
 }
 
-/// Sends a VMBus channel message to the guest.
-fn send_message<N: Notifier, T: AsBytes + protocol::VmbusMessage + std::fmt::Debug>(
-    notifier: &mut N,
-    msg: &T,
-) {
-    send_message_with_target(notifier, msg, None);
+struct PendingMessages(VecDeque<OutgoingMessage>);
+
+impl PendingMessages {
+    /// Creates a sender for the specified notifier.
+    fn sender<'a, N: Notifier>(
+        &'a mut self,
+        notifier: &'a mut N,
+        is_paused: bool,
+    ) -> MessageSender<'a, N> {
+        MessageSender {
+            notifier,
+            pending_messages: self,
+            is_paused,
+        }
+    }
 }
 
-/// Sends a VMBus channel message to the guest via an alternate port.
-fn send_message_with_target<N: Notifier, T: AsBytes + protocol::VmbusMessage + std::fmt::Debug>(
-    notifier: &mut N,
-    msg: &T,
-    target: Option<ConnectionTarget>,
-) {
-    tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
-    notifier.send_message(OutgoingMessage::new(msg), target);
+/// Wraps the state needed to send messages to the guest through the notifier, and queue them if
+/// they are not immediately sent.
+struct MessageSender<'a, N> {
+    notifier: &'a mut N,
+    pending_messages: &'a mut PendingMessages,
+    is_paused: bool,
 }
 
-/// Sends a channel offer message to the guest.
-fn send_offer<N: Notifier>(notifier: &mut N, channel: &mut Channel, version: VersionInfo) {
-    let info = channel.info.as_ref().expect("assigned");
-    let mut flags = channel.offer.flags;
-    if !version.feature_flags.confidential_channels() {
-        flags.set_confidential_ring_buffer(false);
-        flags.set_confidential_external_memory(false);
+impl<N: Notifier> MessageSender<'_, N> {
+    /// Sends a VMBus channel message to the guest.
+    fn send_message<
+        T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
+    >(
+        &mut self,
+        msg: &T,
+    ) {
+        let message = OutgoingMessage::new(msg);
+
+        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
+        // Don't try to send the message if there are already pending messages.
+        if !self.pending_messages.0.is_empty()
+            || self.is_paused
+            || !self.notifier.send_message(&message, MessageTarget::Default)
+        {
+            tracing::trace!("message queued");
+            // Queue the message for retry later.
+            self.pending_messages.0.push_back(message);
+        }
     }
 
-    let msg = protocol::OfferChannel {
-        interface_id: channel.offer.interface_id,
-        instance_id: channel.offer.instance_id,
-        rsvd: [0; 4],
-        flags,
-        mmio_megabytes: channel.offer.mmio_megabytes,
-        user_defined: channel.offer.user_defined,
-        subchannel_index: channel.offer.subchannel_index,
-        mmio_megabytes_optional: channel.offer.mmio_megabytes_optional,
-        channel_id: info.channel_id,
-        monitor_id: info.monitor_id.unwrap_or(MonitorId::INVALID).0,
-        monitor_allocated: info.monitor_id.is_some() as u8,
-        // All channels are dedicated with Win8+ hosts.
-        // These fields are sent to V1 guests as well, which will ignore them.
-        is_dedicated: 1,
-        connection_id: info.connection_id,
-    };
-    tracing::info!(
-        channel_id = msg.channel_id.0,
-        connection_id = msg.connection_id,
-        key = %channel.offer.key(),
-        "sending offer to guest"
-    );
+    /// Sends a VMBus channel message to the guest via an alternate port.
+    fn send_message_with_target<
+        T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
+    >(
+        &mut self,
+        msg: &T,
+        target: MessageTarget,
+    ) {
+        if target == MessageTarget::Default {
+            self.send_message(msg);
+        } else {
+            tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
+            // Messages for other targets are not queued, nor are they affected
+            // by the paused state.
+            let message = OutgoingMessage::new(msg);
+            if !self.notifier.send_message(&message, target) {
+                tracelimit::warn_ratelimited!(?target, "failed to send message");
+            }
+        }
+    }
 
-    send_message(notifier, &msg);
-}
+    /// Sends a channel offer message to the guest.
+    fn send_offer(&mut self, channel: &mut Channel, connection_info: &ConnectionInfo) {
+        let info = channel.info.as_ref().expect("assigned");
+        let mut flags = channel.offer.flags;
+        if !connection_info
+            .version
+            .feature_flags
+            .confidential_channels()
+        {
+            flags.set_confidential_ring_buffer(false);
+            flags.set_confidential_external_memory(false);
+        }
 
-fn send_open_result<N: Notifier>(
-    notifier: &mut N,
-    channel_id: ChannelId,
-    open_request: &OpenRequest,
-    result: i32,
-    target: Option<ConnectionTarget>,
-) {
-    send_message_with_target(
-        notifier,
-        &protocol::OpenResult {
-            channel_id,
-            open_id: open_request.open_id,
-            status: result as u32,
-        },
-        target,
-    );
-}
+        // Send the monitor ID only if the guest supports MNF. MNF may also be disabled if the guest
+        // provided monitor pages but this server can only use server-allocated monitor pages
+        // (typically the case for OpenHCL on a hardware-isolated VM), but the guest didn't support
+        // that. Since we cannot tell the guest to stop using MNF completely, sending the channel
+        // without a monitor ID will prevent the guest from trying to use MNF to send interrupts for
+        // it.
+        let monitor_id = connection_info.monitor_page.and(info.monitor_id);
+        let msg = protocol::OfferChannel {
+            interface_id: channel.offer.interface_id,
+            instance_id: channel.offer.instance_id,
+            rsvd: [0; 4],
+            flags,
+            mmio_megabytes: channel.offer.mmio_megabytes,
+            user_defined: channel.offer.user_defined,
+            subchannel_index: channel.offer.subchannel_index,
+            mmio_megabytes_optional: channel.offer.mmio_megabytes_optional,
+            channel_id: info.channel_id,
+            monitor_id: monitor_id.unwrap_or(MonitorId::INVALID).0,
+            monitor_allocated: monitor_id.is_some().into(),
+            // All channels are dedicated with Win8+ hosts.
+            // These fields are sent to V1 guests as well, which will ignore them.
+            is_dedicated: 1,
+            connection_id: info.connection_id,
+        };
+        tracing::info!(
+            channel_id = msg.channel_id.0,
+            connection_id = msg.connection_id,
+            key = %channel.offer.key(),
+            "sending offer to guest"
+        );
 
-fn send_gpadl_created<N: Notifier>(
-    notifier: &mut N,
-    channel_id: ChannelId,
-    gpadl_id: GpadlId,
-    status: i32,
-) {
-    send_message(
-        notifier,
-        &protocol::GpadlCreated {
+        self.send_message(&msg);
+    }
+
+    fn send_open_result(
+        &mut self,
+        channel_id: ChannelId,
+        open_request: &OpenRequest,
+        result: i32,
+        target: MessageTarget,
+    ) {
+        self.send_message_with_target(
+            &protocol::OpenResult {
+                channel_id,
+                open_id: open_request.open_id,
+                status: result as u32,
+            },
+            target,
+        );
+    }
+
+    fn send_gpadl_created(&mut self, channel_id: ChannelId, gpadl_id: GpadlId, status: i32) {
+        self.send_message(&protocol::GpadlCreated {
             channel_id,
             gpadl_id,
             status,
-        },
-    );
-}
+        });
+    }
 
-fn send_gpadl_torndown<N: Notifier>(notifier: &mut N, gpadl_id: GpadlId) {
-    send_message(notifier, &protocol::GpadlTorndown { gpadl_id });
-}
+    fn send_gpadl_torndown(&mut self, gpadl_id: GpadlId) {
+        self.send_message(&protocol::GpadlTorndown { gpadl_id });
+    }
 
-fn send_rescind<N: Notifier>(notifier: &mut N, info: &OfferedInfo) {
-    tracing::info!(
-        channel_id = info.channel_id.0,
-        "rescinding channel from guest"
-    );
+    fn send_rescind(&mut self, info: &OfferedInfo) {
+        tracing::info!(
+            channel_id = info.channel_id.0,
+            "rescinding channel from guest"
+        );
 
-    send_message(
-        notifier,
-        &protocol::RescindChannelOffer {
+        self.send_message(&protocol::RescindChannelOffer {
             channel_id: info.channel_id,
-        },
-    );
+        });
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::MESSAGE_CONNECTION_ID;
+/// Provides information needed to send a VersionResponse message for a supported version.
+struct VersionResponseData {
+    version: VersionInfo,
+    state: protocol::ConnectionState,
+    monitor_pages: Option<MonitorPageGpas>,
+}
 
-    use super::*;
-    use guid::Guid;
-    use protocol::VmbusMessage;
-    use std::collections::VecDeque;
-    use std::sync::mpsc;
-    use test_with_tracing::test;
-    use vmbus_core::protocol::TargetInfo;
-
-    fn in_msg<T: AsBytes>(message_type: protocol::MessageType, t: T) -> SynicMessage {
-        in_msg_ex(message_type, t, false, false)
-    }
-
-    fn in_msg_ex<T: AsBytes>(
-        message_type: protocol::MessageType,
-        t: T,
-        multiclient: bool,
-        trusted: bool,
-    ) -> SynicMessage {
-        let mut data = Vec::new();
-        data.extend_from_slice(&message_type.0.to_ne_bytes());
-        data.extend_from_slice(&0u32.to_ne_bytes());
-        data.extend_from_slice(t.as_bytes());
-        SynicMessage {
-            data,
-            multiclient,
-            trusted,
+impl VersionResponseData {
+    /// Creates a new `VersionResponseData` with the negotiated version and connection state.
+    fn new(version: VersionInfo, state: protocol::ConnectionState) -> Self {
+        VersionResponseData {
+            version,
+            state,
+            monitor_pages: None,
         }
     }
 
-    #[test]
-    fn test_version_negotiation_not_supported() {
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-
-        test_initiate_contact(&mut server, &mut notifier, 0xffffffff, 0, false, 0);
-    }
-
-    #[test]
-    fn test_version_negotiation_success() {
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Win10 as u32,
-            0,
-            true,
-            0,
-        );
-    }
-
-    #[test]
-    fn test_version_negotiation_multiclient_sint() {
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-
-        let target_info = TargetInfo::new(3, 0, FeatureFlags::new());
-
-        server
-            .with_notifier(&mut notifier)
-            .handle_synic_message(in_msg_ex(
-                protocol::MessageType::INITIATE_CONTACT,
-                protocol::InitiateContact {
-                    version_requested: Version::Win10Rs3_1 as u32,
-                    target_message_vp: 0,
-                    interrupt_page_or_target_info: *target_info.as_u64(),
-                    parent_to_child_monitor_page_gpa: 0,
-                    child_to_parent_monitor_page_gpa: 0,
-                },
-                true,
-                false,
-            ))
-            .unwrap();
-
-        // No action is taken when a different SINT is requested, since it's not supported. An
-        // unsupported message is sent to the requested SINT.
-        assert!(notifier.modify_requests.is_empty());
-        assert!(matches!(server.state, ConnectionState::Disconnected));
-        notifier.check_message_with_target(
-            OutgoingMessage::new(&protocol::VersionResponse {
-                version_supported: 0,
-                connection_state: protocol::ConnectionState::SUCCESSFUL,
-                padding: 0,
-                selected_version_or_connection_id: 0,
-            }),
-            Some(ConnectionTarget { vp: 0, sint: 3 }),
-        );
-
-        // SINT is ignored if the multiclient port is not used.
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Win10Rs3_1 as u32,
-            *target_info.as_u64(),
-            true,
-            0,
-        );
-    }
-
-    #[test]
-    fn test_version_negotiation_multiclient_vtl() {
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-
-        let target_info = TargetInfo::new(SINT, 2, FeatureFlags::new());
-
-        server
-            .with_notifier(&mut notifier)
-            .handle_synic_message(in_msg_ex(
-                protocol::MessageType::INITIATE_CONTACT,
-                protocol::InitiateContact {
-                    version_requested: Version::Win10Rs4 as u32,
-                    target_message_vp: 0,
-                    interrupt_page_or_target_info: *target_info.as_u64(),
-                    parent_to_child_monitor_page_gpa: 0,
-                    child_to_parent_monitor_page_gpa: 0,
-                },
-                true,
-                false,
-            ))
-            .unwrap();
-
-        let action = notifier.forward_request.take().unwrap();
-        assert!(matches!(action, InitiateContactRequest { .. }));
-
-        // The VTL contact message was forwarded but no action was taken by this server.
-        assert!(notifier.messages.is_empty());
-        assert!(matches!(server.state, ConnectionState::Disconnected));
-
-        // VTL is ignored if the multiclient port is not used.
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Win10Rs4 as u32,
-            *target_info.as_u64(),
-            true,
-            0,
-        );
-
-        assert!(notifier.forward_request.is_none());
-    }
-
-    #[test]
-    fn test_version_negotiation_feature_flags() {
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-
-        // Test with no feature flags.
-        let mut target_info = TargetInfo::new(SINT, 0, FeatureFlags::new());
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Copper as u32,
-            *target_info.as_u64(),
-            true,
-            0,
-        );
-
-        // Request supported feature flags.
-        target_info.feature_flags = FeatureFlags::new()
-            .with_guest_specified_signal_parameters(true)
-            .into();
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Copper as u32,
-            *target_info.as_u64(),
-            true,
-            FeatureFlags::new()
-                .with_guest_specified_signal_parameters(true)
-                .into(),
-        );
-
-        // Request unsupported feature flags. This will succeed and report back the supported ones.
-        target_info.feature_flags =
-            u32::from(FeatureFlags::new().with_guest_specified_signal_parameters(true))
-                | 0xf0000000;
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Copper as u32,
-            *target_info.as_u64(),
-            true,
-            FeatureFlags::new()
-                .with_guest_specified_signal_parameters(true)
-                .into(),
-        );
-
-        // Verify client ID feature flag.
-        target_info.feature_flags = FeatureFlags::new().with_client_id(true).into();
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Copper as u32,
-            *target_info.as_u64(),
-            true,
-            FeatureFlags::new().with_client_id(true).into(),
-        );
-    }
-
-    #[test]
-    fn test_version_negotiation_interrupt_page() {
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::V1 as u32,
-            1234,
-            true,
-            0,
-        );
-
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Win7 as u32,
-            1234,
-            true,
-            0,
-        );
-
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-        test_initiate_contact(
-            &mut server,
-            &mut notifier,
-            Version::Win8 as u32,
-            1234,
-            true,
-            0,
-        );
-    }
-
-    fn test_initiate_contact(
-        server: &mut Server,
-        notifier: &mut TestNotifier,
-        version: u32,
-        target_info: u64,
-        expect_supported: bool,
-        expected_features: u32,
-    ) {
-        server
-            .with_notifier(notifier)
-            .handle_synic_message(in_msg(
-                protocol::MessageType::INITIATE_CONTACT,
-                protocol::InitiateContact2 {
-                    initiate_contact: protocol::InitiateContact {
-                        version_requested: version,
-                        target_message_vp: 1,
-                        interrupt_page_or_target_info: target_info,
-                        parent_to_child_monitor_page_gpa: 0,
-                        child_to_parent_monitor_page_gpa: 0,
-                    },
-                    client_id: Guid::from_static_str("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6"),
-                },
-            ))
-            .unwrap();
-
-        let selected_version_or_connection_id = if expect_supported {
-            let request = notifier.next_action();
-            let interrupt_page = if version < Version::Win8 as u32 {
-                Update::Set(target_info)
-            } else {
-                Update::Reset
-            };
-
-            let target_message_vp = if version < Version::Win8_1 as u32 {
-                Some(0)
-            } else {
-                Some(1)
-            };
-
-            assert_eq!(
-                request,
-                ModifyConnectionRequest {
-                    version: Some(version),
-                    monitor_page: Update::Reset,
-                    interrupt_page,
-                    target_message_vp,
-                    ..Default::default()
-                }
-            );
-
-            server.with_notifier(notifier).complete_initiate_contact(
-                ModifyConnectionResponse::Supported(
-                    protocol::ConnectionState::SUCCESSFUL,
-                    FeatureFlags::all(),
-                ),
-            );
-
-            if version >= Version::Win10Rs3_1 as u32 {
-                1
-            } else {
-                version
-            }
-        } else {
-            0
-        };
-
-        let version_response = protocol::VersionResponse {
-            version_supported: if expect_supported { 1 } else { 0 },
-            connection_state: protocol::ConnectionState::SUCCESSFUL,
-            padding: 0,
-            selected_version_or_connection_id,
-        };
-
-        if version >= Version::Copper as u32 && expect_supported {
-            notifier.check_message(OutgoingMessage::new(&protocol::VersionResponse2 {
-                version_response,
-                supported_features: expected_features,
-            }));
-        } else {
-            notifier.check_message(OutgoingMessage::new(&version_response));
-            assert_eq!(expected_features, 0);
-        }
-
-        assert!(notifier.messages.is_empty());
-        if expect_supported {
-            assert!(matches!(server.state, ConnectionState::Connected { .. }));
-            if version < Version::Win8_1 as u32 {
-                assert_eq!(Some(0), notifier.target_message_vp);
-            } else {
-                assert_eq!(Some(1), notifier.target_message_vp);
-            }
-        } else {
-            assert!(matches!(server.state, ConnectionState::Disconnected));
-            assert!(notifier.target_message_vp.is_none());
-        }
-
-        if version < Version::Win8 as u32 {
-            assert_eq!(notifier.interrupt_page, Some(target_info));
-        } else {
-            assert!(notifier.interrupt_page.is_none());
-        }
-    }
-
-    struct TestNotifier {
-        send: mpsc::Sender<(OfferId, Action)>,
-        modify_requests: VecDeque<ModifyConnectionRequest>,
-        messages: VecDeque<(OutgoingMessage, Option<ConnectionTarget>)>,
-        hvsock_requests: Vec<HvsockConnectRequest>,
-        forward_request: Option<InitiateContactRequest>,
-        interrupt_page: Option<u64>,
-        reset: bool,
-        monitor_page: Option<MonitorPageGpas>,
-        target_message_vp: Option<u32>,
-    }
-
-    impl TestNotifier {
-        fn new() -> (Self, mpsc::Receiver<(OfferId, Action)>) {
-            let (send, recv) = mpsc::channel();
-            (
-                Self {
-                    send,
-                    modify_requests: VecDeque::new(),
-                    messages: VecDeque::new(),
-                    hvsock_requests: Vec::new(),
-                    forward_request: None,
-                    interrupt_page: None,
-                    reset: false,
-                    monitor_page: None,
-                    target_message_vp: None,
-                },
-                recv,
-            )
-        }
-
-        fn check_message(&mut self, message: OutgoingMessage) {
-            self.check_message_with_target(message, None);
-        }
-
-        fn check_message_with_target(
-            &mut self,
-            message: OutgoingMessage,
-            target: Option<ConnectionTarget>,
-        ) {
-            assert_eq!(self.messages.pop_front().unwrap(), (message, target));
-            assert!(self.messages.is_empty());
-        }
-
-        fn get_message<T: VmbusMessage + zerocopy::FromBytes>(&mut self) -> T {
-            use zerocopy_helpers::FromBytesExt;
-            let (message, _) = self.messages.pop_front().unwrap();
-            let (header, data) =
-                protocol::MessageHeader::read_from_prefix_split(message.data()).unwrap();
-
-            assert_eq!(header.message_type(), T::MESSAGE_TYPE);
-            T::read_from_prefix(data).unwrap()
-        }
-
-        fn check_messages(&mut self, messages: &[OutgoingMessage]) {
-            let messages: Vec<_> = messages.iter().map(|m| (m.clone(), None)).collect();
-            assert_eq!(self.messages, messages.as_slice());
-            self.messages.clear();
-        }
-
-        fn is_reset(&mut self) -> bool {
-            std::mem::replace(&mut self.reset, false)
-        }
-
-        fn check_reset(&mut self) {
-            assert!(self.is_reset());
-            assert!(self.monitor_page.is_none());
-            assert!(self.target_message_vp.is_none());
-        }
-
-        fn next_action(&mut self) -> ModifyConnectionRequest {
-            self.modify_requests.pop_front().unwrap()
-        }
-    }
-
-    impl Notifier for TestNotifier {
-        fn notify(&mut self, offer_id: OfferId, action: Action) {
-            tracing::debug!(?offer_id, ?action, "notify");
-            self.send.send((offer_id, action)).unwrap()
-        }
-
-        fn forward_unhandled(&mut self, request: InitiateContactRequest) {
-            assert!(self.forward_request.is_none());
-            self.forward_request = Some(request);
-        }
-
-        fn modify_connection(&mut self, request: ModifyConnectionRequest) -> anyhow::Result<()> {
-            match request.monitor_page {
-                Update::Unchanged => (),
-                Update::Reset => self.monitor_page = None,
-                Update::Set(value) => self.monitor_page = Some(value),
-            }
-
-            if let Some(vp) = request.target_message_vp {
-                self.target_message_vp = Some(vp);
-            }
-
-            match request.interrupt_page {
-                Update::Unchanged => (),
-                Update::Reset => self.interrupt_page = None,
-                Update::Set(value) => self.interrupt_page = Some(value),
-            }
-
-            self.modify_requests.push_back(request);
-            Ok(())
-        }
-
-        fn send_message(&mut self, message: OutgoingMessage, target: Option<ConnectionTarget>) {
-            self.messages.push_back((message, target));
-        }
-
-        fn notify_hvsock(&mut self, request: &HvsockConnectRequest) {
-            tracing::debug!(?request, "notify_hvsock");
-            // There is no hvsocket listener, so just drop everything.
-            // N.B. No HvsockConnectResult will be sent to indicate failure.
-            self.hvsock_requests.push(*request);
-        }
-
-        fn reset_complete(&mut self) {
-            self.monitor_page = None;
-            self.target_message_vp = None;
-            self.reset = true;
-        }
-    }
-
-    #[test]
-    fn test_channel_lifetime() {
-        test_channel_lifetime_helper(Version::Win10Rs5, FeatureFlags::new());
-    }
-
-    #[test]
-    fn test_channel_lifetime_iron() {
-        test_channel_lifetime_helper(Version::Iron, FeatureFlags::new());
-    }
-
-    #[test]
-    fn test_channel_lifetime_copper() {
-        test_channel_lifetime_helper(Version::Copper, FeatureFlags::new());
-    }
-
-    #[test]
-    fn test_channel_lifetime_copper_guest_signal() {
-        test_channel_lifetime_helper(
-            Version::Copper,
-            FeatureFlags::new().with_guest_specified_signal_parameters(true),
-        );
-    }
-
-    #[test]
-    fn test_channel_lifetime_copper_open_flags() {
-        test_channel_lifetime_helper(
-            Version::Copper,
-            FeatureFlags::new().with_channel_interrupt_redirection(true),
-        );
-    }
-
-    fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
-        let (mut notifier, recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-        let interface_id = Guid::new_random();
-        let instance_id = Guid::new_random();
-        let offer_id = server
-            .with_notifier(&mut notifier)
-            .offer_channel(OfferParamsInternal {
-                interface_name: "test".to_owned(),
-                instance_id,
-                interface_id,
-                ..Default::default()
-            })
-            .unwrap();
-
-        let mut target_info = TargetInfo::new(SINT, 0, FeatureFlags::new());
-        if version >= Version::Copper {
-            target_info.feature_flags = feature_flags.into();
-        }
-
-        server
-            .with_notifier(&mut notifier)
-            .handle_synic_message(in_msg(
-                protocol::MessageType::INITIATE_CONTACT,
-                protocol::InitiateContact {
-                    version_requested: version as u32,
-                    target_message_vp: 0,
-                    interrupt_page_or_target_info: *target_info.as_u64(),
-                    parent_to_child_monitor_page_gpa: 0,
-                    child_to_parent_monitor_page_gpa: 0,
-                },
-            ))
-            .unwrap();
-
-        let request = notifier.next_action();
-        assert_eq!(
-            request,
-            ModifyConnectionRequest {
-                version: Some(version as u32),
-                monitor_page: Update::Reset,
-                interrupt_page: Update::Reset,
-                target_message_vp: Some(0),
-                ..Default::default()
-            }
-        );
-
-        server
-            .with_notifier(&mut notifier)
-            .complete_initiate_contact(ModifyConnectionResponse::Supported(
-                protocol::ConnectionState::SUCCESSFUL,
-                FeatureFlags::all(),
-            ));
-
-        let version_response = protocol::VersionResponse {
-            version_supported: 1,
-            selected_version_or_connection_id: 1,
-            ..FromZeroes::new_zeroed()
-        };
-
-        if version >= Version::Copper {
-            notifier.check_message(OutgoingMessage::new(&protocol::VersionResponse2 {
-                version_response,
-                supported_features: feature_flags.into(),
-            }));
-        } else {
-            notifier.check_message(OutgoingMessage::new(&version_response));
-        }
-
-        server
-            .with_notifier(&mut notifier)
-            .handle_synic_message(in_msg(protocol::MessageType::REQUEST_OFFERS, ()))
-            .unwrap();
-
-        let channel_id = ChannelId(1);
-        notifier.check_messages(&[
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id,
-                instance_id,
-                channel_id,
-                connection_id: 0x2001,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::AllOffersDelivered {}),
-        ]);
-
-        let open_channel = protocol::OpenChannel {
-            channel_id,
-            open_id: 1,
-            ring_buffer_gpadl_id: GpadlId(1),
-            target_vp: 3,
-            downstream_ring_buffer_page_offset: 2,
-            user_data: UserDefinedData::new_zeroed(),
-        };
-
-        let mut event_flag = 1;
-        let mut connection_id = 0x2001;
-        let mut expected_flags = protocol::OpenChannelFlags::new();
-        if version >= Version::Copper
-            && (feature_flags.guest_specified_signal_parameters()
-                || feature_flags.channel_interrupt_redirection())
-        {
-            if feature_flags.channel_interrupt_redirection() {
-                expected_flags.set_redirect_interrupt(true);
-            }
-
-            if feature_flags.guest_specified_signal_parameters() {
-                event_flag = 2;
-                connection_id = 0x2002;
-            }
-
-            server
-                .with_notifier(&mut notifier)
-                .handle_synic_message(in_msg(
-                    protocol::MessageType::OPEN_CHANNEL,
-                    protocol::OpenChannel2 {
-                        open_channel,
-                        event_flag: 2,
-                        connection_id: 0x2002,
-                        flags: u16::from(
-                            protocol::OpenChannelFlags::new().with_redirect_interrupt(true),
-                        ) | 0xabc, // a real flag and some junk
-                    },
-                ))
-                .unwrap();
-        } else {
-            server
-                .with_notifier(&mut notifier)
-                .handle_synic_message(in_msg(protocol::MessageType::OPEN_CHANNEL, open_channel))
-                .unwrap();
-        }
-
-        let (id, action) = recv.recv().unwrap();
-        assert_eq!(id, offer_id);
-        let Action::Open(op, _) = action else {
-            panic!("unexpected action: {:?}", action);
-        };
-        assert_eq!(op.open_data.ring_gpadl_id, GpadlId(1));
-        assert_eq!(op.open_data.ring_offset, 2);
-        assert_eq!(op.open_data.target_vp, 3);
-        assert_eq!(op.open_data.event_flag, event_flag);
-        assert_eq!(op.open_data.connection_id, connection_id);
-        assert_eq!(op.connection_id, connection_id);
-        assert_eq!(op.event_flag, event_flag);
-        assert_eq!(op.monitor_id, None);
-        assert_eq!(op.flags, expected_flags);
-
-        server
-            .with_notifier(&mut notifier)
-            .open_complete(offer_id, 0);
-
-        notifier.check_message(OutgoingMessage::new(&protocol::OpenResult {
-            channel_id,
-            open_id: 1,
-            status: 0,
-        }));
-
-        server
-            .with_notifier(&mut notifier)
-            .handle_synic_message(in_msg(
-                protocol::MessageType::MODIFY_CHANNEL,
-                protocol::ModifyChannel {
-                    channel_id,
-                    target_vp: 4,
-                },
-            ))
-            .unwrap();
-
-        let (id, action) = recv.recv().unwrap();
-        assert_eq!(id, offer_id);
-        assert!(matches!(action, Action::Modify { target_vp: 4 }));
-
-        server
-            .with_notifier(&mut notifier)
-            .modify_channel_complete(id, 0);
-
-        if version >= Version::Iron {
-            notifier.check_message(OutgoingMessage::new(&protocol::ModifyChannelResponse {
-                channel_id,
-                status: 0,
-            }));
-        }
-
-        assert!(notifier.messages.is_empty());
-
-        server.with_notifier(&mut notifier).revoke_channel(offer_id);
-
-        server
-            .with_notifier(&mut notifier)
-            .handle_synic_message(in_msg(
-                protocol::MessageType::REL_ID_RELEASED,
-                protocol::RelIdReleased { channel_id },
-            ))
-            .unwrap();
-    }
-
-    #[test]
-    fn test_hvsock() {
-        test_hvsock_helper(Version::Win10, false);
-    }
-
-    #[test]
-    fn test_hvsock_rs3() {
-        test_hvsock_helper(Version::Win10Rs3_0, false);
-    }
-
-    #[test]
-    fn test_hvsock_rs5() {
-        test_hvsock_helper(Version::Win10Rs5, false);
-        test_hvsock_helper(Version::Win10Rs5, true);
-    }
-
-    fn test_hvsock_helper(version: Version, force_small_message: bool) {
-        let (mut notifier, _recv) = TestNotifier::new();
-        let mut server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-
-        server
-            .with_notifier(&mut notifier)
-            .handle_synic_message(in_msg(
-                protocol::MessageType::INITIATE_CONTACT,
-                protocol::InitiateContact {
-                    version_requested: version as u32,
-                    target_message_vp: 0,
-                    interrupt_page_or_target_info: 0,
-                    parent_to_child_monitor_page_gpa: 0,
-                    child_to_parent_monitor_page_gpa: 0,
-                },
-            ))
-            .unwrap();
-
-        let request = notifier.next_action();
-        assert_eq!(
-            request,
-            ModifyConnectionRequest {
-                version: Some(version as u32),
-                monitor_page: Update::Reset,
-                interrupt_page: Update::Reset,
-                target_message_vp: Some(0),
-                ..Default::default()
-            }
-        );
-
-        server
-            .with_notifier(&mut notifier)
-            .complete_initiate_contact(ModifyConnectionResponse::Supported(
-                protocol::ConnectionState::SUCCESSFUL,
-                FeatureFlags::all(),
-            ));
-
-        // Discard the version response message.
-        notifier.messages.pop_front();
-
-        let service_id = Guid::new_random();
-        let endpoint_id = Guid::new_random();
-        let request_msg = if version >= Version::Win10Rs5 && !force_small_message {
-            in_msg(
-                protocol::MessageType::TL_CONNECT_REQUEST,
-                protocol::TlConnectRequest2 {
-                    base: protocol::TlConnectRequest {
-                        service_id,
-                        endpoint_id,
-                    },
-                    silo_id: Guid::ZERO,
-                },
-            )
-        } else {
-            in_msg(
-                protocol::MessageType::TL_CONNECT_REQUEST,
-                protocol::TlConnectRequest {
-                    service_id,
-                    endpoint_id,
-                },
-            )
-        };
-
-        server
-            .with_notifier(&mut notifier)
-            .handle_synic_message(request_msg)
-            .unwrap();
-
-        let request = notifier.hvsock_requests.pop().unwrap();
-        assert_eq!(request.service_id, service_id);
-        assert_eq!(request.endpoint_id, endpoint_id);
-        assert!(notifier.hvsock_requests.is_empty());
-
-        // Notify the guest of connection failure.
-        server
-            .with_notifier(&mut notifier)
-            .send_tl_connect_result(HvsockConnectResult::from_request(&request, false));
-
-        if version >= Version::Win10Rs3_0 {
-            notifier.check_message(OutgoingMessage::new(&protocol::TlConnectResult {
-                service_id: request.service_id,
-                endpoint_id: request.endpoint_id,
-                status: protocol::STATUS_CONNECTION_REFUSED,
-            }));
-        }
-
-        assert!(notifier.messages.is_empty());
-    }
-
-    struct TestEnv {
-        server: Server,
-        notifier: TestNotifier,
-        version: Option<VersionInfo>,
-        _recv: mpsc::Receiver<(OfferId, Action)>,
-    }
-
-    impl TestEnv {
-        fn new() -> Self {
-            let (notifier, _recv) = TestNotifier::new();
-            let server = Server::new(Vtl::Vtl0, MESSAGE_CONNECTION_ID, 0);
-            Self {
-                server,
-                notifier,
-                version: None,
-                _recv,
-            }
-        }
-
-        fn c(&mut self) -> ServerWithNotifier<'_, TestNotifier> {
-            self.server.with_notifier(&mut self.notifier)
-        }
-
-        // Completes a reset operation if the server send a modify request as part of it. This
-        // shouldn't be called if the server was not connected or had no open channels or gpadls
-        // during the reset.
-        fn complete_reset(&mut self) {
-            let _ = self.next_action();
-            self.c()
-                .complete_modify_connection(ModifyConnectionResponse::Supported(
-                    protocol::ConnectionState::SUCCESSFUL,
-                    FeatureFlags::all(),
-                ));
-        }
-
-        fn offer(&mut self, id: u32) -> OfferId {
-            self.offer_inner(id, id, false, None, None, OfferFlags::new())
-        }
-
-        fn offer_with_mnf(&mut self, id: u32) -> OfferId {
-            self.offer_inner(id, id, true, None, None, OfferFlags::new())
-        }
-
-        fn offer_with_preset_mnf(&mut self, id: u32, monitor_id: u8) -> OfferId {
-            self.offer_inner(id, id, false, None, Some(monitor_id), OfferFlags::new())
-        }
-
-        fn offer_with_order(
-            &mut self,
-            interface_id: u32,
-            instance_id: u32,
-            order: Option<u32>,
-        ) -> OfferId {
-            self.offer_inner(
-                interface_id,
-                instance_id,
-                false,
-                order,
-                None,
-                OfferFlags::new(),
-            )
-        }
-
-        fn offer_with_flags(&mut self, id: u32, flags: OfferFlags) -> OfferId {
-            self.offer_inner(id, id, false, None, None, flags)
-        }
-
-        fn offer_inner(
-            &mut self,
-            interface_id: u32,
-            instance_id: u32,
-            use_mnf: bool,
-            offer_order: Option<u32>,
-            monitor_id: Option<u8>,
-            flags: OfferFlags,
-        ) -> OfferId {
-            self.c()
-                .offer_channel(OfferParamsInternal {
-                    instance_id: Guid {
-                        data1: instance_id,
-                        ..Guid::ZERO
-                    },
-                    interface_id: Guid {
-                        data1: interface_id,
-                        ..Guid::ZERO
-                    },
-                    use_mnf,
-                    offer_order,
-                    monitor_id,
-                    flags,
-                    ..Default::default()
-                })
-                .unwrap()
-        }
-
-        fn open(&mut self, id: u32) {
-            self.c()
-                .handle_open_channel(&protocol::OpenChannel2 {
-                    open_channel: protocol::OpenChannel {
-                        channel_id: ChannelId(id),
-                        ..FromZeroes::new_zeroed()
-                    },
-                    ..FromZeroes::new_zeroed()
-                })
-                .unwrap()
-        }
-
-        fn close(&mut self, id: u32) -> Result<(), ChannelError> {
-            self.c().handle_close_channel(&protocol::CloseChannel {
-                channel_id: ChannelId(id),
-            })
-        }
-
-        fn open_reserved(&mut self, id: u32, target_vp: u32, target_sint: u32) {
-            let version = self.server.state.get_version().expect("vmbus connected");
-
-            self.c()
-                .handle_open_reserved_channel(
-                    &protocol::OpenReservedChannel {
-                        channel_id: ChannelId(id),
-                        target_vp,
-                        target_sint,
-                        ring_buffer_gpadl: GpadlId(id),
-                        ..FromZeroes::new_zeroed()
-                    },
-                    version,
-                )
-                .unwrap()
-        }
-
-        fn close_reserved(&mut self, id: u32, target_vp: u32, target_sint: u32) {
-            self.c()
-                .handle_close_reserved_channel(&protocol::CloseReservedChannel {
-                    channel_id: ChannelId(id),
-                    target_vp,
-                    target_sint,
-                })
-                .unwrap()
-        }
-
-        fn gpadl(&mut self, channel_id: u32, gpadl_id: u32) {
-            self.c()
-                .handle_gpadl_header(
-                    &protocol::GpadlHeader {
-                        channel_id: ChannelId(channel_id),
-                        gpadl_id: GpadlId(gpadl_id),
-                        count: 1,
-                        len: 16,
-                    },
-                    [1u64, 0u64].as_bytes(),
-                )
-                .unwrap();
-        }
-
-        fn teardown_gpadl(&mut self, channel_id: u32, gpadl_id: u32) {
-            self.c()
-                .handle_gpadl_teardown(&protocol::GpadlTeardown {
-                    channel_id: ChannelId(channel_id),
-                    gpadl_id: GpadlId(gpadl_id),
-                })
-                .unwrap();
-        }
-
-        fn release(&mut self, id: u32) {
-            self.c()
-                .handle_rel_id_released(&protocol::RelIdReleased {
-                    channel_id: ChannelId(id),
-                })
-                .unwrap();
-        }
-
-        fn connect(&mut self, version: Version, feature_flags: FeatureFlags) {
-            self.start_connect(version, feature_flags, false);
-            self.complete_connect();
-        }
-
-        fn connect_trusted(&mut self, version: Version, feature_flags: FeatureFlags) {
-            self.start_connect(version, feature_flags, true);
-            self.complete_connect();
-        }
-
-        fn start_connect(&mut self, version: Version, feature_flags: FeatureFlags, trusted: bool) {
-            self.version = Some(VersionInfo {
-                version,
-                feature_flags,
-            });
-
-            let result = self.c().handle_synic_message(in_msg_ex(
-                protocol::MessageType::INITIATE_CONTACT,
-                protocol::InitiateContact2 {
-                    initiate_contact: protocol::InitiateContact {
-                        version_requested: version as u32,
-                        interrupt_page_or_target_info: *TargetInfo::new(SINT, 0, feature_flags)
-                            .as_u64(),
-                        child_to_parent_monitor_page_gpa: 0x123f000,
-                        parent_to_child_monitor_page_gpa: 0x321f000,
-                        ..FromZeroes::new_zeroed()
-                    },
-                    client_id: Guid::ZERO,
-                },
-                false,
-                trusted,
-            ));
-            assert!(result.is_ok());
-
-            let request = self.notifier.next_action();
-            assert_eq!(
-                request,
-                ModifyConnectionRequest {
-                    version: Some(version as u32),
-                    monitor_page: Update::Set(MonitorPageGpas {
-                        child_to_parent: 0x123f000,
-                        parent_to_child: 0x321f000,
-                    }),
-                    interrupt_page: Update::Reset,
-                    target_message_vp: Some(0),
-                    ..Default::default()
-                }
-            );
-        }
-
-        fn complete_connect(&mut self) {
-            self.c()
-                .complete_initiate_contact(ModifyConnectionResponse::Supported(
-                    protocol::ConnectionState::SUCCESSFUL,
-                    FeatureFlags::all(),
-                ));
-
-            let version = self.version.unwrap();
-            if version.version >= Version::Copper {
-                let response = self.notifier.get_message::<protocol::VersionResponse2>();
-                assert_eq!(response.version_response.version_supported, 1);
-                self.version = Some(VersionInfo {
-                    version: version.version,
-                    feature_flags: version.feature_flags & response.supported_features.into(),
-                })
-            } else {
-                let response = self.notifier.get_message::<protocol::VersionResponse>();
-                assert_eq!(response.version_supported, 1);
-            }
-        }
-
-        fn send_message(&mut self, message: SynicMessage) {
-            self.try_send_message(message).unwrap();
-        }
-
-        fn try_send_message(&mut self, message: SynicMessage) -> Result<(), ChannelError> {
-            self.c().handle_synic_message(message)
-        }
-
-        fn next_action(&mut self) -> ModifyConnectionRequest {
-            self.notifier.next_action()
-        }
-    }
-
-    /// Ensure that channels can be offered at each stage of connection.
-    #[test]
-    fn test_hot_add() {
-        let mut env = TestEnv::new();
-        let offer_id1 = env.offer(1);
-        let result = env.c().handle_initiate_contact(
-            &protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: Version::Win10 as u32,
-                    ..FromZeroes::new_zeroed()
-                },
-                ..FromZeroes::new_zeroed()
-            },
-            &SynicMessage::default(),
-            true,
-        );
-        assert!(result.is_ok());
-        let offer_id2 = env.offer(2);
-        env.c()
-            .complete_initiate_contact(ModifyConnectionResponse::Supported(
-                protocol::ConnectionState::SUCCESSFUL,
-                FeatureFlags::all(),
-            ));
-        let offer_id3 = env.offer(3);
-        env.c().handle_request_offers().unwrap();
-        let offer_id4 = env.offer(4);
-        env.open(1);
-        env.open(2);
-        env.open(3);
-        env.open(4);
-        env.c().open_complete(offer_id1, 0);
-        env.c().open_complete(offer_id2, 0);
-        env.c().open_complete(offer_id3, 0);
-        env.c().open_complete(offer_id4, 0);
-        env.c().reset();
-        env.c().close_complete(offer_id1);
-        env.c().close_complete(offer_id2);
-        env.c().close_complete(offer_id3);
-        env.c().close_complete(offer_id4);
-        env.complete_reset();
-        assert!(env.notifier.is_reset());
-    }
-
-    #[test]
-    fn test_save_restore_with_no_connection() {
-        let mut env = TestEnv::new();
-
-        let offer_id1 = env.offer(1);
-        let _offer_id2 = env.offer(2);
-
-        let state = env.server.save();
-        env.c().reset();
-        assert!(env.notifier.is_reset());
-        env.server.restore(state).unwrap();
-        env.c().restore_channel(offer_id1, false).unwrap();
-        env.c().post_restore().unwrap();
-    }
-
-    #[test]
-    fn test_save_restore_with_connection() {
-        let mut env = TestEnv::new();
-
-        let offer_id1 = env.offer_with_mnf(1);
-        let offer_id2 = env.offer(2);
-        let offer_id3 = env.offer_with_mnf(3);
-        let offer_id4 = env.offer(4);
-        let offer_id5 = env.offer_with_mnf(5);
-        let offer_id6 = env.offer(6);
-        let offer_id7 = env.offer(7);
-        let offer_id8 = env.offer(8);
-        let offer_id9 = env.offer(9);
-        let offer_id10 = env.offer(10);
-
-        let expected_monitor = MonitorPageGpas {
-            child_to_parent: 0x123f000,
-            parent_to_child: 0x321f000,
-        };
-
-        env.connect(Version::Win10, FeatureFlags::new());
-        assert_eq!(env.notifier.monitor_page, Some(expected_monitor));
-
-        env.c().handle_request_offers().unwrap();
-        assert_eq!(env.server.assigned_monitors.bitmap(), 7);
-
-        env.open(1);
-        env.open(2);
-        env.open(3);
-        env.open(5);
-
-        env.c().open_complete(offer_id1, 0);
-        env.c().open_complete(offer_id2, 0);
-        env.c().open_complete(offer_id5, 0);
-
-        env.gpadl(1, 10);
-        env.c().gpadl_create_complete(offer_id1, GpadlId(10), 0);
-        env.gpadl(1, 11);
-        env.gpadl(2, 20);
-        env.c().gpadl_create_complete(offer_id2, GpadlId(20), 0);
-        env.gpadl(2, 21);
-        env.gpadl(3, 30);
-        env.c().gpadl_create_complete(offer_id3, GpadlId(30), 0);
-        env.gpadl(3, 31);
-
-        // Test Opening, Open, and Closing save for reserved channels
-        env.open_reserved(7, 1, SINT.into());
-        env.open_reserved(8, 2, SINT.into());
-        env.open_reserved(9, 3, SINT.into());
-        env.c().open_complete(offer_id8, 0);
-        env.c().open_complete(offer_id9, 0);
-        env.close_reserved(9, 3, SINT.into());
-
-        // Revoke an offer but don't have the "guest" release it, so we can then mark it as
-        // reoffered.
-        env.c().revoke_channel(offer_id10);
-        let offer_id10 = env.offer(10);
-
-        let state = env.server.save();
-
-        env.c().reset();
-
-        env.c().close_complete(offer_id1);
-        env.c().close_complete(offer_id2);
-        env.c().open_complete(offer_id3, -1);
-        env.c().close_complete(offer_id5);
-        env.c().open_complete(offer_id7, -1);
-        env.c().close_complete(offer_id8);
-        env.c().close_complete(offer_id9);
-
-        env.c().gpadl_teardown_complete(offer_id1, GpadlId(10));
-        env.c().gpadl_create_complete(offer_id1, GpadlId(11), -1);
-        env.c().gpadl_teardown_complete(offer_id2, GpadlId(20));
-        env.c().gpadl_create_complete(offer_id2, GpadlId(21), -1);
-        env.c().gpadl_teardown_complete(offer_id3, GpadlId(30));
-        env.c().gpadl_create_complete(offer_id3, GpadlId(31), -1);
-
-        env.complete_reset();
-        env.notifier.check_reset();
-
-        env.c().revoke_channel(offer_id5);
-        env.c().revoke_channel(offer_id6);
-
-        env.server.restore(state.clone()).unwrap();
-
-        env.c().revoke_channel(offer_id1);
-        env.c().revoke_channel(offer_id4);
-        env.c().restore_channel(offer_id3, false).unwrap();
-        let offer_id5 = env.offer_with_mnf(5);
-        env.c().restore_channel(offer_id5, true).unwrap();
-        env.c().restore_channel(offer_id7, false).unwrap();
-        env.c().restore_channel(offer_id8, true).unwrap();
-        env.c().restore_channel(offer_id9, true).unwrap();
-        env.c().restore_channel(offer_id10, false).unwrap();
-        assert!(matches!(
-            env.server.channels[offer_id10].state,
-            ChannelState::Reoffered
-        ));
-
-        env.c().post_restore().unwrap();
-
-        assert_eq!(env.notifier.monitor_page, Some(expected_monitor));
-        assert_eq!(env.notifier.target_message_vp, Some(0));
-
-        assert_eq!(env.server.assigned_monitors.bitmap(), 6);
-        env.release(1);
-        env.release(2);
-        env.release(4);
-
-        // Check reserved channels have been restored to the same state
-        env.c().open_complete(offer_id7, 0);
-        env.close_reserved(8, 2, SINT.into());
-        env.c().close_complete(offer_id8);
-        env.c().close_complete(offer_id9);
-
-        env.c().reset();
-
-        env.c().open_complete(offer_id3, -1);
-        env.c().gpadl_teardown_complete(offer_id3, GpadlId(30));
-        env.c().gpadl_create_complete(offer_id3, GpadlId(31), -1);
-        env.c().close_complete(offer_id5);
-        env.c().close_complete(offer_id7);
-
-        env.complete_reset();
-        env.notifier.check_reset();
-
-        env.server.restore(state).unwrap();
-        env.c().restore_channel(offer_id3, false).unwrap();
-        env.c().post_restore().unwrap();
-        assert_eq!(env.notifier.monitor_page, Some(expected_monitor));
-        assert_eq!(env.notifier.target_message_vp, Some(0));
-    }
-
-    #[test]
-    fn test_save_restore_connecting() {
-        let mut env = TestEnv::new();
-
-        let offer_id1 = env.offer_with_mnf(1);
-        let _offer_id2 = env.offer(2);
-
-        env.start_connect(Version::Win10, FeatureFlags::new(), false);
-        assert_eq!(
-            env.notifier.monitor_page,
-            Some(MonitorPageGpas {
-                child_to_parent: 0x123f000,
-                parent_to_child: 0x321f000
-            })
-        );
-
-        let state = env.server.save();
-
-        env.c().reset();
-        // We have to "complete" the connection to let the reset go through.
-        env.complete_connect();
-        env.notifier.check_reset();
-
-        env.server.restore(state).unwrap();
-        env.c().restore_channel(offer_id1, false).unwrap();
-        env.c().post_restore().unwrap();
-        assert_eq!(
-            env.notifier.monitor_page,
-            Some(MonitorPageGpas {
-                child_to_parent: 0x123f000,
-                parent_to_child: 0x321f000
-            })
-        );
-
-        // Restore should resend the modify connection request.
-        let request = env.next_action();
-        assert_eq!(
-            request,
-            ModifyConnectionRequest {
-                version: Some(Version::Win10 as u32),
-                monitor_page: Update::Set(MonitorPageGpas {
-                    child_to_parent: 0x123f000,
-                    parent_to_child: 0x321f000,
-                }),
-                interrupt_page: Update::Reset,
-                target_message_vp: Some(0),
-                force: true,
-                ..Default::default()
-            }
-        );
-
-        assert_eq!(Some(0), env.notifier.target_message_vp);
-
-        // We can successfully complete connecting after restore.
-        env.complete_connect();
-    }
-
-    #[test]
-    fn test_save_restore_modifying() {
-        let mut env = TestEnv::new();
-        env.connect(
-            Version::Copper,
-            FeatureFlags::new().with_modify_connection(true),
-        );
-
-        let expected = MonitorPageGpas {
-            parent_to_child: 0x123f000,
-            child_to_parent: 0x321f000,
-        };
-
-        env.send_message(in_msg(
-            protocol::MessageType::MODIFY_CONNECTION,
-            protocol::ModifyConnection {
-                parent_to_child_monitor_page_gpa: expected.parent_to_child,
-                child_to_parent_monitor_page_gpa: expected.child_to_parent,
-            },
-        ));
-
-        // Discard ModifyConnectionRequest
-        env.next_action();
-
-        assert_eq!(env.notifier.monitor_page, Some(expected));
-
-        let state = env.server.save();
-        env.c().reset();
-        env.notifier.check_reset();
-        env.server.restore(state).unwrap();
-        env.c().post_restore().unwrap();
-
-        // Restore should have resent the request.
-        let request = env.next_action();
-        assert_eq!(
-            request,
-            ModifyConnectionRequest {
-                monitor_page: Update::Set(MonitorPageGpas {
-                    parent_to_child: 0x123f000,
-                    child_to_parent: 0x321f000,
-                }),
-                interrupt_page: Update::Reset,
-                target_message_vp: Some(0),
-                force: true,
-                ..Default::default()
-            }
-        );
-
-        assert_eq!(env.notifier.monitor_page, Some(expected));
-
-        // We can complete the modify request after restore.
-        env.c()
-            .complete_modify_connection(ModifyConnectionResponse::Supported(
-                protocol::ConnectionState::SUCCESSFUL,
-                FeatureFlags::all(),
-            ));
-
-        env.notifier
-            .check_message(OutgoingMessage::new(&protocol::ModifyConnectionResponse {
-                connection_state: protocol::ConnectionState::SUCCESSFUL,
-            }));
-    }
-
-    #[test]
-    fn test_modify_connection() {
-        let mut env = TestEnv::new();
-        env.connect(
-            Version::Copper,
-            FeatureFlags::new().with_modify_connection(true),
-        );
-
-        env.send_message(in_msg(
-            protocol::MessageType::MODIFY_CONNECTION,
-            protocol::ModifyConnection {
-                parent_to_child_monitor_page_gpa: 5,
-                child_to_parent_monitor_page_gpa: 6,
-            },
-        ));
-
-        assert_eq!(
-            env.notifier.monitor_page,
-            Some(MonitorPageGpas {
-                parent_to_child: 5,
-                child_to_parent: 6
-            })
-        );
-
-        let request = env.next_action();
-        assert_eq!(
-            request,
-            ModifyConnectionRequest {
-                monitor_page: Update::Set(MonitorPageGpas {
-                    child_to_parent: 6,
-                    parent_to_child: 5,
-                }),
-                ..Default::default()
-            }
-        );
-
-        env.c()
-            .complete_modify_connection(ModifyConnectionResponse::Supported(
-                protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-                FeatureFlags::all(),
-            ));
-
-        env.notifier
-            .check_message(OutgoingMessage::new(&protocol::ModifyConnectionResponse {
-                connection_state: protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
-            }));
-    }
-
-    #[test]
-    fn test_modify_connection_unsupported() {
-        let mut env = TestEnv::new();
-        env.connect(Version::Copper, FeatureFlags::new());
-
-        let err = env
-            .try_send_message(in_msg(
-                protocol::MessageType::MODIFY_CONNECTION,
-                protocol::ModifyConnection {
-                    parent_to_child_monitor_page_gpa: 5,
-                    child_to_parent_monitor_page_gpa: 6,
-                },
-            ))
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            ChannelError::ParseError(protocol::ParseError::InvalidMessageType(
-                protocol::MessageType::MODIFY_CONNECTION
-            ))
-        ));
-    }
-
-    #[test]
-    fn test_reserved_channels() {
-        let mut env = TestEnv::new();
-
-        let offer_id1 = env.offer(1);
-        let offer_id2 = env.offer(2);
-        let offer_id3 = env.offer(3);
-
-        env.connect(Version::Win10, FeatureFlags::new());
-        env.c().handle_request_offers().unwrap();
-
-        // Check gpadl doesn't prevent unload or get torndown on disconnect
-        env.gpadl(1, 10);
-        env.c().gpadl_create_complete(offer_id1, GpadlId(10), 0);
-
-        env.notifier.messages.clear();
-
-        // Open responses should be sent to the provided target
-        env.open_reserved(1, 1, SINT.into());
-        env.c().open_complete(offer_id1, 0);
-        env.notifier.check_message_with_target(
-            OutgoingMessage::new(&protocol::OpenResult {
-                channel_id: ChannelId(1),
-                ..FromZeroes::new_zeroed()
-            }),
-            Some(ConnectionTarget { vp: 1, sint: SINT }),
-        );
-        env.open_reserved(2, 2, SINT.into());
-        env.c().open_complete(offer_id2, 0);
-        env.open_reserved(3, 3, SINT.into());
-        env.c().open_complete(offer_id3, 0);
-
-        // This should fail
-        assert!(matches!(env.close(2), Err(ChannelError::ChannelReserved)));
-
-        // Reserved channels and gpadls should stay open across unloads
-        env.c().handle_unload();
-
-        // Closing while disconnected should work
-        env.close_reserved(2, 2, SINT.into());
-        env.c().close_complete(offer_id2);
-
-        env.notifier.messages.clear();
-        env.connect(Version::Copper, FeatureFlags::new());
-        env.c().handle_request_offers().unwrap();
-
-        // Check reserved gpadl gets torndown on reset
-        // Duplicate GPADL IDs across different channels should also work
-        env.gpadl(2, 10);
-        env.c().gpadl_create_complete(offer_id2, GpadlId(10), 0);
-
-        // Reopening the same offer should work
-        env.open_reserved(2, 3, SINT.into());
-        env.c().open_complete(offer_id2, 0);
-
-        env.notifier.messages.clear();
-
-        // The channel should still be open after disconnect/reconnect
-        // and close responses should be sent to the provided target
-        env.close_reserved(1, 4, SINT.into());
-        env.c().close_complete(offer_id1);
-        env.notifier.check_message_with_target(
-            OutgoingMessage::new(&protocol::CloseReservedChannelResponse {
-                channel_id: ChannelId(1),
-            }),
-            Some(ConnectionTarget { vp: 4, sint: SINT }),
-        );
-        env.teardown_gpadl(1, 10);
-        env.c().gpadl_teardown_complete(offer_id1, GpadlId(10));
-
-        // Reset should force reserved channels closed
-        env.c().reset();
-        env.c().close_complete(offer_id2);
-        env.c().gpadl_teardown_complete(offer_id2, GpadlId(10));
-        env.c().close_complete(offer_id3);
-
-        env.complete_reset();
-        assert!(env.notifier.is_reset());
-    }
-
-    #[test]
-    fn test_disconnected_reset() {
-        let mut env = TestEnv::new();
-
-        let offer_id1 = env.offer(1);
-
-        env.connect(Version::Win10, FeatureFlags::new());
-        env.c().handle_request_offers().unwrap();
-
-        env.gpadl(1, 10);
-        env.c().gpadl_create_complete(offer_id1, GpadlId(10), 0);
-        env.open_reserved(1, 1, SINT.into());
-        env.c().open_complete(offer_id1, 0);
-
-        env.c().handle_unload();
-
-        // Reset while disconnected should cleanup reserved channels
-        // and complete disconnect automatically
-        env.c().reset();
-        env.c().close_complete(offer_id1);
-        env.c().gpadl_teardown_complete(offer_id1, GpadlId(10));
-
-        env.complete_reset();
-        assert!(env.notifier.is_reset());
-
-        let offer_id2 = env.offer(2);
-
-        env.notifier.messages.clear();
-        env.connect(Version::Win10, FeatureFlags::new());
-        env.c().handle_request_offers().unwrap();
-
-        env.gpadl(2, 20);
-        env.c().gpadl_create_complete(offer_id2, GpadlId(20), 0);
-        env.open_reserved(2, 2, SINT.into());
-        env.c().open_complete(offer_id2, 0);
-
-        env.c().handle_unload();
-
-        env.close_reserved(2, 2, SINT.into());
-        env.c().close_complete(offer_id2);
-        env.c().gpadl_teardown_complete(offer_id2, GpadlId(20));
-
-        env.c().reset();
-        assert!(env.notifier.is_reset());
-    }
-
-    #[test]
-    fn test_mnf_channel() {
-        let mut env = TestEnv::new();
-
-        // This test combines server-handled and preset MNF IDs, which can't happen normally, but
-        // it simplifies the test.
-        let _offer_id1 = env.offer(1);
-        let _offer_id2 = env.offer_with_mnf(2);
-        let _offer_id3 = env.offer_with_preset_mnf(3, 5);
-
-        env.connect(Version::Copper, FeatureFlags::new());
-        env.c().handle_request_offers().unwrap();
-
-        // Preset monitor ID should not be in the bitmap.
-        assert_eq!(env.server.assigned_monitors.bitmap(), 1);
-
-        env.notifier.check_messages(&[
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 1,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 1,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(1),
-                connection_id: 0x2001,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 2,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 2,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(2),
-                connection_id: 0x2002,
-                is_dedicated: 1,
-                monitor_id: 0,
-                monitor_allocated: 1,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 3,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 3,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(3),
-                connection_id: 0x2003,
-                is_dedicated: 1,
-                monitor_id: 5,
-                monitor_allocated: 1,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::AllOffersDelivered {}),
-        ])
-    }
-
-    #[test]
-    fn test_channel_id_order() {
-        let mut env = TestEnv::new();
-
-        let _offer_id1 = env.offer(3);
-        let _offer_id2 = env.offer(10);
-        let _offer_id3 = env.offer(5);
-        let _offer_id4 = env.offer(17);
-        let _offer_id5 = env.offer_with_order(5, 6, Some(2));
-        let _offer_id6 = env.offer_with_order(5, 8, Some(1));
-        let _offer_id7 = env.offer_with_order(5, 1, None);
-
-        env.connect(Version::Win10, FeatureFlags::new());
-        env.c().handle_request_offers().unwrap();
-
-        env.notifier.check_messages(&[
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 3,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 3,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(1),
-                connection_id: 0x2001,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 5,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 8,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(2),
-                connection_id: 0x2002,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 5,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 6,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(3),
-                connection_id: 0x2003,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 5,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 1,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(4),
-                connection_id: 0x2004,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 5,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 5,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(5),
-                connection_id: 0x2005,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 10,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 10,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(6),
-                connection_id: 0x2006,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::OfferChannel {
-                interface_id: Guid {
-                    data1: 17,
-                    ..Guid::ZERO
-                },
-                instance_id: Guid {
-                    data1: 17,
-                    ..Guid::ZERO
-                },
-                channel_id: ChannelId(7),
-                connection_id: 0x2007,
-                is_dedicated: 1,
-                monitor_id: 0xff,
-                ..protocol::OfferChannel::new_zeroed()
-            }),
-            OutgoingMessage::new(&protocol::AllOffersDelivered {}),
-        ])
-    }
-
-    #[test]
-    fn test_confidential_connection() {
-        let mut env = TestEnv::new();
-        env.connect_trusted(
-            Version::Copper,
-            FeatureFlags::new().with_confidential_channels(true),
-        );
-
-        assert_eq!(
-            env.version.unwrap(),
-            VersionInfo {
-                version: Version::Copper,
-                feature_flags: FeatureFlags::new().with_confidential_channels(true)
-            }
-        );
-
-        env.offer(1); // non-confidential
-        env.offer_with_flags(2, OfferFlags::new().with_confidential_ring_buffer(true));
-        env.offer_with_flags(
-            3,
-            OfferFlags::new()
-                .with_confidential_ring_buffer(true)
-                .with_confidential_external_memory(true),
-        );
-
-        // Untrusted messages are rejected when the connection is trusted.
-        let error = env
-            .try_send_message(in_msg(
-                protocol::MessageType::REQUEST_OFFERS,
-                protocol::RequestOffers {},
-            ))
-            .unwrap_err();
-
-        assert!(matches!(error, ChannelError::UntrustedMessage));
-        assert!(env.notifier.messages.is_empty());
-
-        // Trusted messages are accepted.
-        env.send_message(in_msg_ex(
-            protocol::MessageType::REQUEST_OFFERS,
-            protocol::RequestOffers {},
-            false,
-            true,
-        ));
-
-        let offer = env.notifier.get_message::<protocol::OfferChannel>();
-        assert_eq!(offer.channel_id, ChannelId(1));
-        assert_eq!(offer.flags, OfferFlags::new());
-
-        let offer = env.notifier.get_message::<protocol::OfferChannel>();
-        assert_eq!(offer.channel_id, ChannelId(2));
-        assert_eq!(
-            offer.flags,
-            OfferFlags::new().with_confidential_ring_buffer(true)
-        );
-
-        let offer = env.notifier.get_message::<protocol::OfferChannel>();
-        assert_eq!(offer.channel_id, ChannelId(3));
-        assert_eq!(
-            offer.flags,
-            OfferFlags::new()
-                .with_confidential_ring_buffer(true)
-                .with_confidential_external_memory(true)
-        );
-
-        env.notifier
-            .check_message(OutgoingMessage::new(&protocol::AllOffersDelivered {}));
-    }
-
-    #[test]
-    fn test_confidential_channels_unsupported() {
-        let mut env = TestEnv::new();
-
-        // A trusted connection without confidential channels is weird, but it makes sure the server
-        // looks at the flag, not the trusted state.
-        env.connect_trusted(Version::Copper, FeatureFlags::new());
-
-        assert_eq!(
-            env.version.unwrap(),
-            VersionInfo {
-                version: Version::Copper,
-                feature_flags: FeatureFlags::new()
-            }
-        );
-
-        env.offer_with_flags(1, OfferFlags::new().with_enumerate_device_interface(true)); // non-confidential
-        env.offer_with_flags(
-            2,
-            OfferFlags::new()
-                .with_named_pipe_mode(true)
-                .with_confidential_ring_buffer(true)
-                .with_confidential_external_memory(true),
-        );
-
-        env.send_message(in_msg_ex(
-            protocol::MessageType::REQUEST_OFFERS,
-            protocol::RequestOffers {},
-            false,
-            true,
-        ));
-
-        let offer = env.notifier.get_message::<protocol::OfferChannel>();
-        assert_eq!(offer.channel_id, ChannelId(1));
-        assert_eq!(
-            offer.flags,
-            OfferFlags::new().with_enumerate_device_interface(true)
-        );
-
-        // The confidential channel flags are not sent without the feature flag.
-        let offer = env.notifier.get_message::<protocol::OfferChannel>();
-        assert_eq!(offer.channel_id, ChannelId(2));
-        assert_eq!(offer.flags, OfferFlags::new().with_named_pipe_mode(true));
-
-        env.notifier
-            .check_message(OutgoingMessage::new(&protocol::AllOffersDelivered {}));
-    }
-
-    #[test]
-    fn test_confidential_channels_untrusted() {
-        let mut env = TestEnv::new();
-
-        env.connect(
-            Version::Copper,
-            FeatureFlags::new().with_confidential_channels(true),
-        );
-
-        // The server should not offer confidential channel support to untrusted clients, even if
-        // requested.
-        assert_eq!(
-            env.version.unwrap(),
-            VersionInfo {
-                version: Version::Copper,
-                feature_flags: FeatureFlags::new()
-            }
-        );
+    /// Attaches server-allocated monitor pages to be sent with the response.
+    fn with_monitor_pages(mut self, monitor_pages: Option<MonitorPageGpas>) -> Self {
+        self.monitor_pages = monitor_pages;
+        self
     }
 }

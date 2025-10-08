@@ -84,7 +84,7 @@ macro_rules! p9_message_struct {
 // Generate the Plan9Message enum.
 macro_rules! p9_message_enum {
     ($( $num:literal $name:ident $($field_name:ident [$field_type:tt] )* ;)*) => {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Debug)]
         pub enum Plan9Message<'a> {
             $($name($name<'a>),)*

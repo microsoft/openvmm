@@ -6,8 +6,10 @@ mod macros;
 
 use crate::protocol::*;
 use std::io;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // Define an enum for all operations and their arguments.
 fuse_operations! {
@@ -180,9 +182,9 @@ pub trait RequestReader: io::Read {
     }
 
     /// Read a struct of type `T`.
-    fn read_type<T: AsBytes + FromBytes>(&mut self) -> lx::Result<T> {
+    fn read_type<T: IntoBytes + FromBytes + Immutable + KnownLayout>(&mut self) -> lx::Result<T> {
         let mut value: T = T::new_zeroed();
-        self.read_exact(value.as_bytes_mut())?;
+        self.read_exact(value.as_mut_bytes())?;
         Ok(value)
     }
 
@@ -195,7 +197,7 @@ pub trait RequestReader: io::Read {
     /// Read a NULL-terminated string and ensure it's a valid path name component.
     fn name(&mut self) -> lx::Result<lx::LxString> {
         let name = self.string()?;
-        if name.len() == 0 || name == "." || name == ".." || name.as_bytes().contains(&b'/') {
+        if name.is_empty() || name == "." || name == ".." || name.as_bytes().contains(&b'/') {
             return Err(lx::Error::EINVAL);
         }
 

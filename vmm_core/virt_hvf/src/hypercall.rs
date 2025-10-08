@@ -3,17 +3,17 @@
 
 //! Hypercall exit handling.
 
-use crate::abi;
 use crate::HvfProcessor;
 use hv1_hypercall::Arm64RegisterState;
 use hv1_hypercall::GetVpRegisters;
+use hv1_hypercall::HvRepResult;
 use hv1_hypercall::PostMessage;
 use hv1_hypercall::SetVpRegisters;
 use hv1_hypercall::SignalEvent;
-use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvError;
 use hvdef::Vtl;
+use hvdef::hypercall::HvRegisterAssoc;
 use std::sync::atomic::Ordering;
 use virt::io::CpuIo;
 
@@ -40,24 +40,21 @@ impl<'a, 'b, T: CpuIo> HvfHypercallHandler<'a, 'b, T> {
 
 impl<T: CpuIo> Arm64RegisterState for HvfHypercallHandler<'_, '_, T> {
     fn pc(&mut self) -> u64 {
-        self.vp.vcpu.reg(abi::HvReg::PC).expect("cannot fail")
+        self.vp.vcpu.pc()
     }
 
     fn set_pc(&mut self, pc: u64) {
         tracing::trace!(pc, "set pc");
-        self.vp
-            .vcpu
-            .set_reg(abi::HvReg::PC, pc)
-            .expect("cannot fail");
+        self.vp.vcpu.set_pc(pc)
     }
 
     fn x(&mut self, n: u8) -> u64 {
-        self.vp.vcpu.gp(n).expect("cannot fail")
+        self.vp.vcpu.gp(n)
     }
 
     fn set_x(&mut self, n: u8, v: u64) {
         tracing::trace!(n, v, "set x");
-        self.vp.vcpu.set_gp(n, v).expect("cannot fail")
+        self.vp.vcpu.set_gp(n, v)
     }
 }
 
@@ -69,7 +66,7 @@ impl<T> GetVpRegisters for HvfHypercallHandler<'_, '_, T> {
         _vtl: Option<Vtl>,
         registers: &[hvdef::HvRegisterName],
         output: &mut [hvdef::HvRegisterValue],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF || vp_index != hvdef::HV_VP_INDEX_SELF {
             return Err((HvError::InvalidParameter, 0));
         }
@@ -118,7 +115,7 @@ impl<T> SetVpRegisters for HvfHypercallHandler<'_, '_, T> {
         vp_index: u32,
         _vtl: Option<Vtl>,
         registers: &[HvRegisterAssoc],
-    ) -> hvdef::HvRepResult {
+    ) -> HvRepResult {
         if partition_id != hvdef::HV_PARTITION_ID_SELF || vp_index != hvdef::HV_VP_INDEX_SELF {
             return Err((HvError::InvalidParameter, 0));
         }
@@ -134,11 +131,19 @@ impl<T> SetVpRegisters for HvfHypercallHandler<'_, '_, T> {
                 HvArm64RegisterName::Sipp => self
                     .vp
                     .hv1
-                    .set_simp(&self.vp.partition.guest_memory, value.as_u64()),
+                    .set_simp(
+                        value.as_u64(),
+                        &mut HvfNoVtlProtections(&self.vp.partition.guest_memory),
+                    )
+                    .map_err(|_| (HvError::InvalidParameter, 1))?,
                 HvArm64RegisterName::Sifp => self
                     .vp
                     .hv1
-                    .set_siefp(&self.vp.partition.guest_memory, value.as_u64()),
+                    .set_siefp(
+                        value.as_u64(),
+                        &mut HvfNoVtlProtections(&self.vp.partition.guest_memory),
+                    )
+                    .map_err(|_| (HvError::InvalidParameter, 1))?,
                 HvArm64RegisterName::Scontrol => self.vp.hv1.set_scontrol(value.as_u64()),
                 HvArm64RegisterName::Eom => {}
                 r if (HvArm64RegisterName::Sint0..=HvArm64RegisterName::Sint15).contains(&r) => {
@@ -153,6 +158,22 @@ impl<T> SetVpRegisters for HvfHypercallHandler<'_, '_, T> {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+struct HvfNoVtlProtections<'a>(&'a guestmem::GuestMemory);
+impl<'a> hv1_emulator::VtlProtectAccess for HvfNoVtlProtections<'a> {
+    fn check_modify_and_lock_overlay_page(
+        &mut self,
+        gpn: u64,
+        _check_perms: hvdef::HvMapGpaFlags,
+        _new_perms: Option<hvdef::HvMapGpaFlags>,
+    ) -> Result<guestmem::LockedPages, HvError> {
+        Ok(self.0.lock_gpns(false, &[gpn]).unwrap())
+    }
+
+    fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), HvError> {
         Ok(())
     }
 }

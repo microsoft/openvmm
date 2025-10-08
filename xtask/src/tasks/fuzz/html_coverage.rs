@@ -64,11 +64,15 @@ pub(super) fn generate_html_coverage_report(
             }
         }
 
-        anyhow::bail!("failed to find `llvm-tools` directory. did you run `rustup +nightly component add llvm-tools`?")
+        anyhow::bail!(
+            "failed to find `llvm-tools` directory. did you run `rustup +nightly component add llvm-tools`?"
+        )
     };
 
     if which::which("lcov").is_err() {
-        anyhow::bail!("could not find `lcov` on your $PATH! make sure it's installed (e.g: `apt install lcov`)")
+        anyhow::bail!(
+            "could not find `lcov` on your $PATH! make sure it's installed (e.g: `apt install lcov`)"
+        )
     }
 
     let coverage_dir = coverage_bin.parent().unwrap();

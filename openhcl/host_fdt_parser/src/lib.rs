@@ -10,7 +10,6 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
@@ -222,8 +221,6 @@ pub struct ParsedDeviceTree<
     pub command_line: ArrayString<MAX_COMMAND_LINE_SIZE>,
     /// Is a com3 device present
     pub com3_serial: bool,
-    /// GIC information
-    pub gic: Option<GicInfo>,
     /// The vtl2 memory allocation mode OpenHCL should use for memory.
     pub memory_allocation_mode: MemoryAllocationMode,
     /// Entropy from the host to be used by the OpenHCL kernel
@@ -234,6 +231,15 @@ pub struct ParsedDeviceTree<
     /// This is used to allocate a persistent VTL2 pool on non-isolated guests,
     /// to allow devices to stay alive during a servicing operation.
     pub device_dma_page_count: Option<u64>,
+    /// Indicates that Host does support NVMe keep-alive.
+    pub nvme_keepalive: bool,
+    /// The physical address of the VTL0 alias mapping, if one is configured.
+    pub vtl0_alias_map: Option<u64>,
+
+    /// GIC information, on AArch64.
+    pub gic: Option<GicInfo>,
+    /// PMU GSIV, if available, on AArch64.
+    pub pmu_gsiv: Option<u32>,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -288,14 +294,13 @@ pub struct CpuEntry {
 }
 
 impl<
-        'a,
-        'b,
-        const MAX_MEMORY_ENTRIES: usize,
-        const MAX_CPU_ENTRIES: usize,
-        const MAX_COMMAND_LINE_SIZE: usize,
-        const MAX_ENTROPY_SIZE: usize,
-    >
-    ParsedDeviceTree<MAX_MEMORY_ENTRIES, MAX_CPU_ENTRIES, MAX_COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>
+    'a,
+    'b,
+    const MAX_MEMORY_ENTRIES: usize,
+    const MAX_CPU_ENTRIES: usize,
+    const MAX_COMMAND_LINE_SIZE: usize,
+    const MAX_ENTROPY_SIZE: usize,
+> ParsedDeviceTree<MAX_MEMORY_ENTRIES, MAX_CPU_ENTRIES, MAX_COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>
 {
     /// Create an empty parsed device tree structure. This is used to construct
     /// a valid instance to pass into [`Self::parse`].
@@ -310,9 +315,12 @@ impl<
             command_line: ArrayString::new_const(),
             com3_serial: false,
             gic: None,
+            pmu_gsiv: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             device_dma_page_count: None,
+            nvme_keepalive: false,
+            vtl0_alias_map: None,
         }
     }
 
@@ -334,7 +342,7 @@ impl<
                 return Err(ErrorKind::Node {
                     parent_name: "",
                     error: e,
-                })
+                });
             }
         };
 
@@ -350,7 +358,7 @@ impl<
                     return Err(ErrorKind::MemoryRegOverlap {
                         lower: memory[index],
                         upper: entry,
-                    })
+                    });
                 }
                 Err(index) => index,
             };
@@ -480,13 +488,19 @@ impl<
                         }
                     }
 
+                    storage.vtl0_alias_map = child
+                        .find_property("vtl0-alias-map")
+                        .map_err(ErrorKind::Prop)?
+                        .map(|p| p.read_u64(0))
+                        .transpose()
+                        .map_err(ErrorKind::Prop)?;
+
                     for openhcl_child in child.children() {
                         let openhcl_child = openhcl_child.map_err(|error| ErrorKind::Node {
                             parent_name: root.name,
                             error,
                         })?;
 
-                        #[allow(clippy::single_match)]
                         match openhcl_child.name {
                             "entropy" => {
                                 let host_entropy = openhcl_child
@@ -513,9 +527,18 @@ impl<
                                 storage.entropy = Some(entropy);
                             }
                             // These parameters may not be present so it is not an error if they are missing.
-                            "servicing" => {
+                            "keep-alive" => {
+                                storage.nvme_keepalive = openhcl_child
+                                    .find_property("device-types")
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|p| p.read_str().ok())
+                                    == Some("nvme");
+                            }
+                            "device-dma" => {
+                                // DMA reserved page count hint.
                                 storage.device_dma_page_count = openhcl_child
-                                    .find_property("dma-preserve-pages")
+                                    .find_property("total-pages")
                                     .ok()
                                     .flatten()
                                     .and_then(|p| p.read_u64(0).ok());
@@ -527,6 +550,7 @@ impl<
                         }
                     }
                 }
+
                 _ if child.name.starts_with("memory@") => {
                     let igvm_type = if let Some(igvm_type) = child
                         .find_property(igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY)
@@ -639,6 +663,7 @@ impl<
                         &child,
                         &mut storage.vmbus_vtl0,
                         &mut storage.vmbus_vtl2,
+                        &mut storage.pmu_gsiv,
                         &mut storage.com3_serial,
                     )?;
                 }
@@ -713,6 +738,9 @@ impl<
             memory_allocation_mode: _,
             entropy: _,
             device_dma_page_count: _,
+            nvme_keepalive: _,
+            vtl0_alias_map: _,
+            pmu_gsiv: _,
         } = storage;
 
         *device_tree_size = parser.total_size;
@@ -726,6 +754,7 @@ fn parse_compatible<'a>(
     node: &fdt::parser::Node<'a>,
     vmbus_vtl0: &mut Option<VmbusInfo>,
     vmbus_vtl2: &mut Option<VmbusInfo>,
+    pmu_gsiv: &mut Option<u32>,
     com3_serial: &mut bool,
 ) -> Result<(), ErrorKind<'a>> {
     let compatible = node
@@ -739,6 +768,8 @@ fn parse_compatible<'a>(
         parse_simple_bus(node, vmbus_vtl0, vmbus_vtl2)?;
     } else if compatible == "x86-pio-bus" {
         parse_io_bus(node, com3_serial)?;
+    } else if compatible == "arm,armv8-pmuv3" {
+        parse_pmu_gsiv(node, pmu_gsiv)?;
     } else {
         #[cfg(feature = "tracing")]
         tracing::warn!(?compatible, ?node.name,
@@ -931,7 +962,7 @@ fn parse_simple_bus<'a>(
                     return Err(ErrorKind::UnexpectedVmbusVtl {
                         node_name: child.name,
                         vtl,
-                    })
+                    });
                 }
             }
         }
@@ -990,6 +1021,56 @@ fn parse_io_bus<'a>(
             );
         }
     }
+
+    Ok(())
+}
+
+fn parse_pmu_gsiv<'a>(
+    node: &fdt::parser::Node<'a>,
+    pmu_gsiv: &mut Option<u32>,
+) -> Result<(), ErrorKind<'a>> {
+    let interrupts = node.find_property("interrupts").map_err(ErrorKind::Prop)?;
+    let interrupts = interrupts.ok_or(ErrorKind::PropMissing {
+        node_name: node.name,
+        prop_name: "interrupts",
+    })?;
+
+    if interrupts.data.len() < 3 * size_of::<u32>() {
+        return Err(ErrorKind::PropInvalidU32 {
+            node_name: node.name,
+            prop_name: "interrupts size",
+            expected: 3 * size_of::<u32>() as u32,
+            actual: interrupts.data.len() as u32,
+        });
+    }
+
+    // This parser expects the PMU GSIV to be a PPI, as all platforms that
+    // support OpenHCL should be using PPIs.
+    const GIC_PPI: u32 = 1;
+    let interrupt_type = interrupts.read_u32(0).map_err(ErrorKind::Prop)?;
+    if interrupt_type != GIC_PPI {
+        return Err(ErrorKind::PropInvalidU32 {
+            node_name: node.name,
+            prop_name: "interrupts",
+            expected: GIC_PPI,
+            actual: interrupt_type,
+        });
+    }
+    let interrupt_id = interrupts.read_u32(1).map_err(ErrorKind::Prop)?;
+
+    // Interrupt id describes the index from the PPI start of 16. It must be
+    // smaller than 16, as PPIs only exist from 16 to 31.
+    if interrupt_id >= 16 {
+        return Err(ErrorKind::PropInvalidU32 {
+            node_name: node.name,
+            prop_name: "interrupts",
+            expected: 16,
+            actual: interrupt_id,
+        });
+    }
+
+    const PPI_BASE: u32 = 16;
+    *pmu_gsiv = Some(PPI_BASE + interrupt_id);
 
     Ok(())
 }
@@ -1055,11 +1136,11 @@ mod inspect_helpers {
         // TODO: inspect::AsDebug would work here once
         // https://github.com/kupiakos/open-enum/pull/13 is merged.
         inspect::adhoc(|req| match *typ {
-            MemoryMapEntryType::MEMORY => req.value("MEMORY".into()),
-            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT".into()),
-            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED".into()),
-            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE".into()),
-            _ => req.value(typ.0.into()),
+            MemoryMapEntryType::MEMORY => req.value("MEMORY"),
+            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT"),
+            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED"),
+            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE"),
+            _ => req.value(typ.0),
         })
     }
 
@@ -1277,6 +1358,22 @@ mod tests {
                 .unwrap();
         }
 
+        // PMU
+        if let Some(pmu_gsiv) = context.pmu_gsiv {
+            assert!((16..32).contains(&pmu_gsiv));
+            const GIC_PPI: u32 = 1;
+            const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
+            root = root
+                .start_node("pmu")
+                .unwrap()
+                .add_str(p_compatible, "arm,armv8-pmuv3")
+                .unwrap()
+                .add_u32_array(p_interrupts, &[GIC_PPI, pmu_gsiv - 16, IRQ_TYPE_LEVEL_HIGH])
+                .unwrap()
+                .end_node()
+                .unwrap();
+        }
+
         // Linux requires vmbus to be under a simple-bus node.
         let mut simple_bus = root
             .start_node("bus")
@@ -1358,7 +1455,7 @@ mod tests {
         let p_memory_allocation_mode = root.add_string("memory-allocation-mode").unwrap();
         let p_memory_allocation_size = root.add_string("memory-size").unwrap();
         let p_mmio_allocation_size = root.add_string("mmio-size").unwrap();
-        let p_device_dma_page_count = root.add_string("dma-preserve-pages").unwrap();
+        let p_device_dma_page_count = root.add_string("total-pages").unwrap();
         let mut openhcl = root.start_node("openhcl").unwrap();
 
         let memory_alloc_str = match context.memory_allocation_mode {
@@ -1387,7 +1484,7 @@ mod tests {
         // add device_dma_page_count
         if let Some(device_dma_page_count) = context.device_dma_page_count {
             openhcl = openhcl
-                .start_node("servicing")
+                .start_node("device-dma")
                 .unwrap()
                 .add_u64(p_device_dma_page_count, device_dma_page_count)
                 .unwrap()
@@ -1418,6 +1515,7 @@ mod tests {
         command_line: &str,
         com3_serial: bool,
         gic: Option<GicInfo>,
+        pmu_gsiv: Option<u32>,
         memory_allocation_mode: MemoryAllocationMode,
         device_dma_page_count: Option<u64>,
     ) -> TestParsedDeviceTree {
@@ -1433,13 +1531,14 @@ mod tests {
         context.gic = gic;
         context.memory_allocation_mode = memory_allocation_mode;
         context.device_dma_page_count = device_dma_page_count;
+        context.pmu_gsiv = pmu_gsiv;
         context
     }
 
     #[test]
     fn test_basic_dt() {
         let orig = create_parsed(
-            2608,
+            2672,
             &[
                 MemoryEntry {
                     range: MemoryRange::try_new(0..(1024 * HV_PAGE_SIZE)).unwrap(),
@@ -1489,6 +1588,7 @@ mod tests {
                 gic_redistributors_size: 0x60000,
                 gic_redistributor_stride: 0x20000,
             }),
+            Some(0x17),
             MemoryAllocationMode::Host,
             Some(1234),
         );
@@ -1552,6 +1652,7 @@ mod tests {
             "",
             false,
             None,
+            None,
             MemoryAllocationMode::Vtl2 {
                 memory_size: Some(1000 * 1024 * 1024), // 1000 MB
                 mmio_size: Some(128 * 1024 * 1024),    // 128 MB
@@ -1602,6 +1703,7 @@ mod tests {
             "THIS_IS_A_BOOT_ARG=1",
             false,
             None,
+            None,
             MemoryAllocationMode::Host,
             None,
         );
@@ -1639,6 +1741,7 @@ mod tests {
             None,
             "THIS_IS_A_BOOT_ARG=1",
             false,
+            None,
             None,
             MemoryAllocationMode::Host,
             None,
@@ -1683,6 +1786,7 @@ mod tests {
             "THIS_IS_A_BOOT_ARG=1",
             false,
             None,
+            None,
             MemoryAllocationMode::Host,
             None,
         );
@@ -1725,6 +1829,7 @@ mod tests {
             }),
             "THIS_IS_A_BOOT_ARG=1",
             false,
+            None,
             None,
             MemoryAllocationMode::Host,
             None,
@@ -1785,6 +1890,7 @@ mod tests {
             }),
             "THIS_IS_A_BOOT_ARG=1",
             true,
+            None,
             None,
             MemoryAllocationMode::Host,
             None,

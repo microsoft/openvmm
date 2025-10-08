@@ -4,7 +4,6 @@
 //! RAM-backed disk layer implementation.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod resolver;
 
@@ -24,8 +23,8 @@ use guestmem::MemoryWrite;
 use inspect::Inspect;
 use parking_lot::RwLock;
 use scsi_buffers::RequestBuffers;
-use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt;
 use std::fmt::Debug;
 use std::sync::atomic::AtomicU64;
@@ -34,7 +33,6 @@ use thiserror::Error;
 
 /// A disk layer backed by RAM, which lazily infers its topology from the layer
 /// it is being stacked on-top of
-#[derive(Inspect)]
 #[non_exhaustive]
 pub struct LazyRamDiskLayer {}
 
@@ -115,7 +113,7 @@ impl RamDiskLayer {
             if size == 0 {
                 return Err(Error::EmptyDisk);
             }
-            if size % SECTOR_SIZE as u64 != 0 {
+            if !size.is_multiple_of(SECTOR_SIZE as u64) {
                 return Err(Error::NotSectorMultiple {
                     disk_size: size,
                     sector_size: SECTOR_SIZE,
@@ -215,7 +213,7 @@ impl LayerIo for RamDiskLayer {
         SECTOR_SIZE
     }
 
-    fn is_read_only(&self) -> bool {
+    fn is_logically_read_only(&self) -> bool {
         false
     }
 
@@ -399,14 +397,14 @@ mod tests {
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
     use test_with_tracing::test;
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     const SECTOR_U64: u64 = SECTOR_SIZE as u64;
     const SECTOR_USIZE: usize = SECTOR_SIZE as usize;
 
     fn check(mem: &GuestMemory, sector: u64, start: usize, count: usize, high: u8) {
         let mut buf = vec![0u32; count * SECTOR_USIZE / 4];
-        mem.read_at(start as u64 * SECTOR_U64, buf.as_bytes_mut())
+        mem.read_at(start as u64 * SECTOR_U64, buf.as_mut_bytes())
             .unwrap();
         for (i, &b) in buf.iter().enumerate() {
             let offset = sector * SECTOR_U64 + i as u64 * 4;

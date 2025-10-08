@@ -40,7 +40,7 @@ impl LineSets {
                 .add(format!("lines/{}", id.name()))
                 .spawn(driver.simple(), {
                     let set = set.clone();
-                    |mut recv| async move {
+                    async move |mut recv| {
                         while let Ok(req) = recv.recv().await {
                             req.apply(&mut LineSetUnit(&set)).await;
                         }

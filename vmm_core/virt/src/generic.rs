@@ -6,14 +6,14 @@ mod partition_memory_map;
 pub use partition_memory_map::PartitionMemoryMap;
 pub use vm_topology::processor::VpIndex;
 
+use crate::CpuidLeaf;
+use crate::PartitionCapabilities;
 use crate::io::CpuIo;
 use crate::irqcon::ControlGic;
 use crate::irqcon::IoApicRouting;
 use crate::irqcon::MsiRequest;
 use crate::x86::DebugState;
 use crate::x86::HardwareBreakpoint;
-use crate::CpuidLeaf;
-use crate::PartitionCapabilities;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
@@ -24,25 +24,24 @@ use pci_core::msi::MsiInterruptTarget;
 use std::cell::Cell;
 use std::convert::Infallible;
 use std::fmt::Debug;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::pin;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
 use vmcore::monitor::MonitorId;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeSource;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
-
-pub type Error = anyhow::Error;
 
 pub trait Hypervisor: 'static {
     /// The prototype partition type.
@@ -92,7 +91,7 @@ impl IsolationType {
 pub struct UnexpectedIsolationType;
 
 impl IsolationType {
-    pub fn from_hv(
+    pub const fn from_hv(
         value: hvdef::HvPartitionIsolationType,
     ) -> Result<Self, UnexpectedIsolationType> {
         match value {
@@ -104,7 +103,7 @@ impl IsolationType {
         }
     }
 
-    pub fn to_hv(self) -> hvdef::HvPartitionIsolationType {
+    pub const fn to_hv(self) -> hvdef::HvPartitionIsolationType {
         match self {
             IsolationType::None => hvdef::HvPartitionIsolationType::NONE,
             IsolationType::Vbs => hvdef::HvPartitionIsolationType::VBS,
@@ -145,6 +144,9 @@ pub struct PartitionConfig<'a> {
     pub guest_memory: &'a GuestMemory,
     /// Cpuid leaves to add to the default CPUID results.
     pub cpuid: &'a [CpuidLeaf],
+    /// The offset of the VTL0 alias map. This maps VTL0's view of memory into
+    /// VTL2 at the specified offset (which must be a power of 2).
+    pub vtl0_alias_map: Option<u64>,
 }
 
 /// Trait for a prototype partition, one that is partially created but still
@@ -164,7 +166,12 @@ pub trait ProtoPartition {
     #[cfg(guest_arch = "x86_64")]
     fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4];
 
-    /// The number of bits of a physical address.
+    /// The maximum physical address width that processors and devices for this
+    /// partition can access.
+    ///
+    /// This may be smaller than what is reported to the guest via architectural
+    /// interfaces by default, and it may be larger or smaller than what the VMM
+    /// ultimately chooses to report to the guest.
     fn max_physical_address_size(&self) -> u8;
 
     /// Constructs the full partition.
@@ -221,9 +228,6 @@ pub struct LateMapVtl0MemoryConfig {
 /// VTL2 configuration.
 #[derive(Debug)]
 pub struct Vtl2Config {
-    /// Enable the VTL0 alias map. This maps VTL0's view of memory in VTL2 at
-    /// the highest legal physical address bit.
-    pub vtl0_alias_map: bool,
     /// If set, map VTL0 memory late after VTL2 has started. The current
     /// heuristic is to defer mapping VTL0 memory until the first
     /// [`hvdef::HypercallCode::HvCallModifyVtlProtectionMask`] hypercall is
@@ -231,8 +235,6 @@ pub struct Vtl2Config {
     ///
     /// Accesses before memory is mapped is determined by the specified config.
     pub late_map_vtl0_memory: Option<LateMapVtl0MemoryConfig>,
-    /// Defer VTL0 APIC emulation to VTL2.
-    pub vtl2_emulates_apic: bool,
 }
 
 /// Hypervisor configuration.
@@ -389,8 +391,6 @@ pub trait VtlMemoryProtection {
 }
 
 pub trait Processor: InspectMut {
-    type Error: std::error::Error + Send + Sync + 'static;
-    type RunVpError: std::error::Error + Send + Sync + 'static;
     type StateAccess<'a>: crate::vp::AccessVpState
     where
         Self: 'a;
@@ -400,7 +400,11 @@ pub trait Processor: InspectMut {
     /// breakpoints.
     ///
     /// TODO: generalize for non-x86 architectures.
-    fn set_debug_state(&mut self, vtl: Vtl, state: Option<&DebugState>) -> Result<(), Self::Error>;
+    fn set_debug_state(
+        &mut self,
+        vtl: Vtl,
+        state: Option<&DebugState>,
+    ) -> Result<(), <Self::StateAccess<'_> as crate::vp::AccessVpState>::Error>;
 
     /// Runs the VP.
     ///
@@ -410,17 +414,17 @@ pub trait Processor: InspectMut {
     ///
     /// Returns when an error occurs, the VP halts, or the VP is requested to
     /// stop via `stop`.
-    #[allow(async_fn_in_trait)] // don't or want Send bound
+    #[expect(async_fn_in_trait)] // don't need or want Send bound
     async fn run_vp(
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<Self::RunVpError>>;
+    ) -> Result<Infallible, VpHaltReason>;
 
     /// Without running the VP, flushes any asynchronous requests from other
     /// processors or objects that might affect this state, so that the object
     /// can be saved/restored correctly.
-    fn flush_async_requests(&mut self) -> Result<(), Self::RunVpError>;
+    fn flush_async_requests(&mut self);
 
     /// Returns whether the specified VTL can be inspected on this processor.
     ///
@@ -544,7 +548,7 @@ impl NeedsYield {
 
 /// The reason that [`Processor::run_vp`] returned.
 #[derive(Debug)]
-pub enum VpHaltReason<E = anyhow::Error> {
+pub enum VpHaltReason {
     /// The processor was requested to stop.
     Stop(VpStopped),
     /// The processor task should be restarted, possibly on a different thread.
@@ -553,25 +557,21 @@ pub enum VpHaltReason<E = anyhow::Error> {
     PowerOff,
     /// The processor initiated a reboot.
     Reset,
+    /// The processor initiated a hibernation.
+    Hibernate,
     /// The processor triple faulted.
     TripleFault {
         /// The faulting VTL.
         // FUTURE: move VTL state into `AccessVpState``.
         vtl: Vtl,
     },
-    /// The VM's state (e.g. registers, memory) is invalid.
-    InvalidVmState(E),
-    /// Emulation failed.
-    EmulationFailure(Box<dyn std::error::Error + Send + Sync>),
-    /// The underlying hypervisor failed.
-    Hypervisor(E),
     /// Debugger single step.
     SingleStep,
     /// Debugger hardware breakpoint.
     HwBreak(HardwareBreakpoint),
 }
 
-impl<E> From<VpStopped> for VpHaltReason<E> {
+impl From<VpStopped> for VpHaltReason {
     fn from(stop: VpStopped) -> Self {
         Self::Stop(stop)
     }
@@ -584,7 +584,9 @@ pub trait PartitionMemoryMapper {
 
 pub trait Hv1 {
     type Error: std::error::Error + Send + Sync + 'static;
-    type Device: VpciInterruptMapper + MsiInterruptTarget;
+    type Device: MapVpciInterrupt + MsiInterruptTarget;
+
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
     fn new_virtual_device(
         &self,
@@ -597,8 +599,8 @@ pub trait DeviceBuilder: Hv1 {
 
 pub enum UnimplementedDevice {}
 
-impl VpciInterruptMapper for UnimplementedDevice {
-    fn register_interrupt(
+impl MapVpciInterrupt for UnimplementedDevice {
+    async fn register_interrupt(
         &self,
         _vector_count: u32,
         _params: &VpciInterruptParameters<'_>,
@@ -606,7 +608,7 @@ impl VpciInterruptMapper for UnimplementedDevice {
         match *self {}
     }
 
-    fn unregister_interrupt(&self, _address: u64, _data: u32) {
+    async fn unregister_interrupt(&self, _address: u64, _data: u32) {
         match *self {}
     }
 }
@@ -636,7 +638,13 @@ pub trait Synic: Send + Sync {
     fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]);
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort>;
+    fn new_guest_event_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort>;
 
     /// Returns whether callers should pass an OS event when creating event
     /// ports, as opposed to passing a function to call.
@@ -660,8 +668,31 @@ pub trait SynicMonitor: Synic {
     /// # Panics
     ///
     /// Panics if monitor_id is already in use.
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send>;
+    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send>;
 
     /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()>;
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()>;
+
+    /// Allocates a monitor page and sets it as the monitor page currently in use. If allocating
+    /// monitor pages is not supported, returns `Ok(None)`.
+    ///
+    /// The page will be deallocated if the monitor page is subsequently changed or cleared using
+    /// [`SynicMonitor::set_monitor_page`].
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<u64>> {
+        let _ = vtl;
+        Ok(None)
+    }
+}
+
+/// MNF support routines for the emulator
+pub trait EmulatorMonitorSupport {
+    /// Check if the specified write is inside the monitor page, and signal the associated
+    /// connection ID if it is.
+    #[must_use]
+    fn check_write(&self, gpa: u64, bytes: &[u8]) -> bool;
+
+    /// Check if the specified read is inside the monitor page, and fill the provided buffer
+    /// if it is.
+    #[must_use]
+    fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool;
 }

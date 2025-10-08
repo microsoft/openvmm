@@ -7,11 +7,12 @@ use async_trait::async_trait;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
-use mesh::MeshPayload;
 use std::fmt::Display;
+use std::time::Duration;
 use vmbus_core::protocol;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::UserDefinedData;
@@ -82,6 +83,10 @@ pub enum ChannelRequest {
     /// Open the channel.
     Open(Rpc<OpenRequest, bool>),
     /// Close the channel.
+    ///
+    /// Although there is no response from the host, this is still modeled as an
+    /// RPC so that the caller can know that the vmbus client's state has been
+    /// updated.
     Close(Rpc<(), ()>),
     /// Create a new GPADL.
     Gpadl(Rpc<GpadlRequest, bool>),
@@ -117,7 +122,7 @@ pub enum ModifyRequest {
 pub enum ChannelServerRequest {
     /// A request to restore the channel.
     ///
-    /// The input parameter is whether the channel was saved open.
+    /// The input parameter indicates if the channel was saved open.
     Restore(FailableRpc<bool, RestoreResult>),
     /// A request to revoke the channel.
     ///
@@ -267,11 +272,12 @@ pub struct OfferParams {
     pub channel_type: ChannelType,
     /// The subchannel index. Index 0 indicates a primary (normal channel).
     pub subchannel_index: u16,
-    /// Indicates whether the channel's interrupts should use monitor pages.
-    pub use_mnf: bool,
+    /// Indicates whether the channel's interrupts should use monitor pages,
+    /// and the interrupt latency if it's enabled.
+    pub mnf_interrupt_latency: Option<Duration>,
     /// The order in which channels with the same interface will be offered to
     /// the guest (optional).
-    pub offer_order: Option<u32>,
+    pub offer_order: Option<u64>,
     /// Indicates whether the channel supports using encrypted memory for any
     /// external GPADLs and GPA direct ranges. This is only used when hardware
     /// isolation is in use.

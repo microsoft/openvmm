@@ -3,6 +3,7 @@
 
 //! Glue to invoke external `cargo-fuzz` commands
 
+use anyhow::Context;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -51,53 +52,60 @@ impl CargoFuzzCommand {
         toolchain: Option<&str>,
         extra: &[String],
     ) -> anyhow::Result<()> {
-        let sh = xshell::Shell::new()?;
+        if which::which("cargo-fuzz").is_err() {
+            anyhow::bail!("could not find cargo-fuzz! did you run `cargo install cargo-fuzz`?");
+        }
 
+        let sh = xshell::Shell::new()?;
         if matches!(&self, CargoFuzzCommand::Run { artifact: Some(_) }) {
             sh.set_var("XTASK_FUZZ_REPRO", "1");
         }
 
-        let toolchain = toolchain.unwrap_or("nightly");
-        let cmd_args = self.to_args(target_name);
-
-        let mut trailing_args = Vec::new();
-
-        if !extra.is_empty() {
-            trailing_args.extend_from_slice(extra);
+        let mut toolchain_check_cmd = xshell::cmd!(sh, "rustc");
+        if let Some(toolchain_override) = toolchain {
+            toolchain_check_cmd = toolchain_check_cmd.arg(format!("+{}", toolchain_override));
         }
+        let result = toolchain_check_cmd
+            .arg("-V")
+            .output()
+            .context("could not detect toolchain! did you run `rustup toolchain install`?")?;
+        let output = std::str::from_utf8(&result.stdout)?.to_ascii_lowercase();
+        let is_nightly = output.contains("-nightly") || output.contains("-dev");
 
-        if self.supports_target_options() && !target_options.is_empty() {
-            if trailing_args.is_empty() {
-                trailing_args.push("--".into());
-            }
-            trailing_args.extend_from_slice(target_options);
+        let mut cmd = xshell::cmd!(sh, "cargo");
+        if let Some(toolchain_override) = toolchain {
+            cmd = cmd.arg(format!("+{}", toolchain_override));
         }
+        cmd = cmd.arg("fuzz");
+        cmd = cmd.args(self.to_args(target_name));
+        cmd = cmd.arg("--fuzz-dir").arg(fuzz_dir);
 
-        let cmd = if toolchain != "default" {
-            let toolchain_arg = format!("+{}", toolchain);
-
-            if xshell::cmd!(sh, "cargo {toolchain_arg}")
-                .quiet()
-                .ignore_stderr()
-                .ignore_stdout()
-                .run()
-                .is_err()
-            {
-                anyhow::bail!("could not detect {toolchain} toolchain! did you run `rustup toolchain install {toolchain}`?");
-            }
-            xshell::cmd!(
-                sh,
-                "cargo {toolchain_arg} fuzz {cmd_args...} --fuzz-dir {fuzz_dir} {trailing_args...}"
-            )
+        if is_nightly {
+            // Sanitizers can be enabled, leave defaults alone
+        } else if std::env::var_os("CARGO").is_some() {
+            // We are running in a stable toolchain `cargo xtask` invocation.
+            // Cargo prevents us from setting RUSTC_BOOTSTRAP for a nested
+            // invocation, so we can't enable sanitizers.
+            log::warn!(
+                "Running on a stable toolchain in a `cargo xtask` invocation, disabling sanitizers"
+            );
+            log::warn!(
+                "To enable sanitizers, run {} directly, or switch to a nightly toolchain",
+                std::env::current_exe()?.display()
+            );
+            cmd = cmd.args(["-s", "none"]);
         } else {
-            xshell::cmd!(
-                sh,
-                "cargo fuzz {cmd_args...} --fuzz-dir {fuzz_dir} {trailing_args...}"
-            )
-        };
+            // Non-cargo invocation, sanitizers can be enabled via RUSTC_BOOTSTRAP
+            log::warn!("Running on a stable toolchain, enabling sanitizers via RUSTC_BOOTSTRAP");
+            cmd = cmd.env("RUSTC_BOOTSTRAP", "1");
+        }
 
-        if which::which("cargo-fuzz").is_err() {
-            anyhow::bail!("could not find cargo-fuzz! did you run `cargo install cargo-fuzz`?");
+        cmd = cmd.args(extra);
+        if self.supports_target_options() && !target_options.is_empty() {
+            if !extra.iter().any(|x| x == "--") {
+                cmd = cmd.arg("--");
+            }
+            cmd = cmd.args(target_options);
         }
 
         cmd.run()?;

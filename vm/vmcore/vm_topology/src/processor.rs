@@ -119,9 +119,9 @@ impl<T: ArchTopology> TopologyBuilder<T> {
 }
 
 impl<
-        #[cfg(feature = "inspect")] T: ArchTopology + inspect::Inspect,
-        #[cfg(not(feature = "inspect"))] T: ArchTopology,
-    > ProcessorTopology<T>
+    #[cfg(feature = "inspect")] T: ArchTopology + inspect::Inspect,
+    #[cfg(not(feature = "inspect"))] T: ArchTopology,
+> ProcessorTopology<T>
 {
     /// Returns the number of VPs.
     pub fn vp_count(&self) -> u32 {

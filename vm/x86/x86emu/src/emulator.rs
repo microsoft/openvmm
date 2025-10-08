@@ -3,9 +3,13 @@
 
 //! Implements an x86 instruction emulator.
 
-use crate::registers::Bitness;
 use crate::Cpu;
-use crate::CpuState;
+use crate::registers::Bitness;
+use crate::registers::Gp;
+use crate::registers::GpSize;
+use crate::registers::RegisterIndex;
+use crate::registers::Segment;
+use crate::registers::bitness;
 use iced_x86::Code;
 use iced_x86::Decoder;
 use iced_x86::DecoderError;
@@ -64,25 +68,79 @@ impl EmulatorRegister for u128 {
     }
 }
 
+impl From<Register> for RegisterIndex {
+    fn from(val: Register) -> Self {
+        let size = match val.size() {
+            1 => {
+                if val >= Register::SPL || val < Register::AH {
+                    GpSize::BYTE(0)
+                } else {
+                    GpSize::BYTE(8)
+                }
+            }
+            2 => GpSize::WORD,
+            4 => GpSize::DWORD,
+            8 => GpSize::QWORD,
+            _ => panic!("invalid gp register size"),
+        };
+        let extended_index = match val.full_register() {
+            Register::RAX => Gp::RAX,
+            Register::RCX => Gp::RCX,
+            Register::RDX => Gp::RDX,
+            Register::RBX => Gp::RBX,
+            Register::RSP => Gp::RSP,
+            Register::RBP => Gp::RBP,
+            Register::RSI => Gp::RSI,
+            Register::RDI => Gp::RDI,
+            Register::R8 => Gp::R8,
+            Register::R9 => Gp::R9,
+            Register::R10 => Gp::R10,
+            Register::R11 => Gp::R11,
+            Register::R12 => Gp::R12,
+            Register::R13 => Gp::R13,
+            Register::R14 => Gp::R14,
+            Register::R15 => Gp::R15,
+            _ => panic!("invalid gp register index"),
+        };
+        RegisterIndex {
+            extended_index,
+            size,
+        }
+    }
+}
+
+impl From<Register> for Segment {
+    fn from(val: Register) -> Self {
+        match val {
+            Register::ES => Segment::ES,
+            Register::CS => Segment::CS,
+            Register::SS => Segment::SS,
+            Register::DS => Segment::DS,
+            Register::FS => Segment::FS,
+            Register::GS => Segment::GS,
+            _ => panic!("invalid segment register index"),
+        }
+    }
+}
+
 /// An instruction emulator.
 #[derive(Debug)]
 pub struct Emulator<'a, T> {
     cpu: T,
-    state: &'a mut CpuState,
     decoder_options: u32,
     bytes: &'a [u8],
 }
 
 #[derive(Debug, Error)]
 pub enum Error<E> {
+    #[error("asked to emulate an instruction that doesn't touch memory or PIO")]
+    NonMemoryOrPortInstruction(Vec<u8>),
     #[error("unsupported instruction")]
     UnsupportedInstruction(Vec<u8>),
     #[error("memory access error - {1:?} @ {0:#x}")]
     MemoryAccess(u64, OperationKind, #[source] E),
     #[error("io port access error - {1:?} @ {0:#x}")]
     IoPort(u16, OperationKind, #[source] E),
-    #[error("XMM register access error - {1:?} @ {0:#x}")]
-    XmmRegister(usize, OperationKind, #[source] E),
     #[error("executing instruction caused exception due to {2:?} - {0:?}({1:?})")]
     InstructionException(Exception, Option<u32>, ExceptionCause),
     #[error("decode failure")]
@@ -124,7 +182,7 @@ pub enum OperationKind {
 }
 
 #[derive(Copy, Clone)]
-enum AlignmentMode {
+pub enum AlignmentMode {
     /// Always check that memory accesses are aligned to the given size. Generates a #GP exception if
     /// the check fails.
     Aligned(u64),
@@ -137,19 +195,13 @@ enum AlignmentMode {
 
 impl<'a, T: Cpu> Emulator<'a, T> {
     /// Creates new emulator with the given CPU and initial state.
-    pub fn new(
-        cpu: T,
-        state: &'a mut CpuState,
-        vendor: x86defs::cpuid::Vendor,
-        bytes: &'a [u8],
-    ) -> Self {
+    pub fn new(cpu: T, vendor: x86defs::cpuid::Vendor, bytes: &'a [u8]) -> Self {
         let mut decoder_options = 0;
         if vendor.is_amd_compatible() {
             decoder_options |= DecoderOptions::AMD;
         }
         Emulator {
             cpu,
-            state,
             decoder_options,
             bytes,
         }
@@ -158,65 +210,70 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// Gets the linear IP of the CPU, taking into account the code segment.
     ///
     /// Returns None if IP/EIP does not fit into the code segment.
-    pub fn linear_ip(&self, offset: u64) -> Option<u64> {
-        let rip = self.state.rip.wrapping_add(offset);
+    pub fn linear_ip(&mut self, offset: u64) -> Option<u64> {
+        let rip = self.cpu.rip().wrapping_add(offset);
+        let cr0 = self.cpu.cr0();
+        let efer = self.cpu.efer();
+        let cs = self.cpu.segment(Segment::CS);
 
-        match self.state.bitness() {
+        match bitness(cr0, efer, cs) {
             Bitness::Bit64 => Some(rip),
             Bitness::Bit32 | Bitness::Bit16 => {
                 self.verify_segment_access(
-                    Register::CS,
+                    Segment::CS,
                     OperationKind::AddressComputation,
                     offset,
                     1,
                 )
                 .ok()?;
-                let cs = &self.state.segs[CpuState::CS];
                 Some(cs.base.wrapping_add(rip))
             }
         }
     }
 
     /// Gets the current privilege level
-    fn current_privilege_level(&self) -> u8 {
-        self.state.segs[CpuState::SS]
+    fn current_privilege_level(&mut self) -> u8 {
+        self.cpu
+            .segment(Segment::SS)
             .attributes
             .descriptor_privilege_level()
     }
 
     /// Gets whether the CPU was running in user mode before the emulator was invoked
-    pub fn is_user_mode(&self) -> bool {
+    pub fn is_user_mode(&mut self) -> bool {
         self.current_privilege_level() == x86defs::USER_MODE_DPL
     }
 
     /// Gets the offset (relative to the segment) for a memory operand.
-    fn memory_op_offset(&self, instr: &Instruction, operand: u32) -> u64 {
-        instruction::memory_op_offset(self.state, instr, operand)
+    fn memory_op_offset(&mut self, instr: &Instruction, operand: u32) -> u64 {
+        instruction::memory_op_offset(&mut self.cpu, instr, operand)
     }
 
     /// Computes the linear GVA from the segment:offset. Also validates that the
     /// access within the segment is allowed.
     fn compute_and_validate_gva(
-        &self,
-        segment: Register,
+        &mut self,
+        segment: Segment,
         offset: u64,
         len: usize,
         op: OperationKind,
         alignment: AlignmentMode,
-    ) -> Result<u64, InternalError<T::Error>> {
-        assert!(segment.is_segment_register());
+    ) -> Result<u64, Error<T::Error>> {
+        let cr0 = self.cpu.cr0();
+        let efer = self.cpu.efer();
+        let cs = self.cpu.segment(Segment::CS);
 
-        let base = match self.state.bitness() {
+        let base = match bitness(cr0, efer, cs) {
             Bitness::Bit64 => {
-                if segment == Register::FS || segment == Register::GS {
-                    self.state.segs[segment.number()].base
+                if matches!(segment, Segment::FS | Segment::GS) {
+                    self.cpu.segment(segment).base
                 } else {
                     0
                 }
             }
             Bitness::Bit32 | Bitness::Bit16 => {
                 self.verify_segment_access(segment, op, offset, len)?;
-                self.state.segs[segment.number()].base
+                self.cpu.segment(segment).base
             }
         };
 
@@ -230,17 +287,20 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// exception if it is not. This method should not be called when operating in long mode, as all of its
     /// checks are ignored in this case.
     fn verify_segment_access(
-        &self,
-        segment: Register,
+        &mut self,
+        segment: Segment,
         op: OperationKind,
         offset: u64,
         len: usize,
-    ) -> Result<(), InternalError<T::Error>> {
+    ) -> Result<(), Error<T::Error>> {
         // All of these conditions are ignored for 64-bit mode, this method should not be called.
-        assert_ne!(self.state.bitness(), Bitness::Bit64);
+        let cr0 = self.cpu.cr0();
+        let efer = self.cpu.efer();
+        let cs = self.cpu.segment(Segment::CS);
+        let bitness = bitness(cr0, efer, cs);
+        assert_ne!(bitness, Bitness::Bit64);
 
-        let segment_index = segment.number();
-        let segment = self.state.segs[segment_index];
+        let segment_value = self.cpu.segment(segment);
 
         // Since we're not in long mode, offset can be at most u32::MAX, and same goes for len. So this
         // can't overflow.
@@ -253,30 +313,30 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         );
         let gpindex = Error::InstructionException(
             Exception::GENERAL_PROTECTION_FAULT,
-            Some(segment_index as u32),
+            Some(segment_value.selector.into()),
             ExceptionCause::SegmentValidity,
         );
 
         // CS is treated differently from data segments. The segment type is treated as a code segment, and
         // writes are forbidden in protected mode. It also can't be expand-down and will always be present.
-        if segment_index == CpuState::CS {
+        if matches!(segment, Segment::CS) {
             // Forbid writes in protected mode
-            if self.state.bitness() == Bitness::Bit32 && op == OperationKind::Write {
-                return Err(gp0.into());
+            if bitness == Bitness::Bit32 && op == OperationKind::Write {
+                return Err(gp0);
             }
 
             // If we're reading, check for the segment not being readable
-            if op == OperationKind::Read && segment.attributes.segment_type() & 0b0010 == 0 {
-                return Err(gp0.into());
+            if op == OperationKind::Read && segment_value.attributes.segment_type() & 0b0010 == 0 {
+                return Err(gp0);
             }
 
             // Check that the offset and length are not outside the segment limits
-            if offset_end > segment.limit as u64 {
-                return Err(gp0.into());
+            if offset_end > segment_value.limit as u64 {
+                return Err(gp0);
             }
         } else {
             // Check for the segment not being present
-            if !segment.attributes.present() {
+            if !segment_value.attributes.present() {
                 Err(Error::InstructionException(
                     Exception::SEGMENT_NOT_PRESENT,
                     None,
@@ -285,49 +345,49 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
 
             // Check for a null selector, ignoring the RPL
-            if self.state.bitness() == Bitness::Bit32 && segment.selector & !0x3 == 0 {
-                return Err(gp0.into());
+            if bitness == Bitness::Bit32 && segment_value.selector & !0x3 == 0 {
+                return Err(gp0);
             }
 
             // Check the RPL (if 32-bit) and CPL against the DPL
-            let rpl = if matches!(self.state.bitness(), Bitness::Bit32) {
-                (segment.selector & 0x3) as u8
+            let rpl = if matches!(bitness, Bitness::Bit32) {
+                (segment_value.selector & 0x3) as u8
             } else {
                 0
             };
             let cpl = self.current_privilege_level();
-            let dpl = segment.attributes.descriptor_privilege_level();
+            let dpl = segment_value.attributes.descriptor_privilege_level();
             if rpl > dpl || cpl > dpl {
-                return Err(gpindex.into());
+                return Err(gpindex);
             }
 
             // Check for the segment not being a data segment
-            if !(segment.attributes.non_system_segment()
-                && segment.attributes.segment_type() & 0b1000 == 0)
+            if !(segment_value.attributes.non_system_segment()
+                && segment_value.attributes.segment_type() & 0b1000 == 0)
             {
-                return Err(gpindex.into());
+                return Err(gpindex);
             }
 
             // If we're writing, check for the segment not being writable
-            if op == OperationKind::Write && segment.attributes.segment_type() & 0b0010 == 0 {
-                return Err(gp0.into());
+            if op == OperationKind::Write && segment_value.attributes.segment_type() & 0b0010 == 0 {
+                return Err(gp0);
             }
 
             // Check that the offset and length are not outside the segment limits
-            if segment.attributes.segment_type() & 0b0100 == 0 {
+            if segment_value.attributes.segment_type() & 0b0100 == 0 {
                 // Segment is not expand-down
-                if offset_end > segment.limit as u64 {
-                    return Err(gp0.into());
+                if offset_end > segment_value.limit as u64 {
+                    return Err(gp0);
                 }
             } else {
                 // Segment is expand-down
-                let max = if segment.attributes.default() {
+                let max = if segment_value.attributes.default() {
                     u32::MAX as u64
                 } else {
                     u16::MAX as u64
                 };
-                if offset <= segment.limit as u64 || offset_end > max {
-                    return Err(gp0.into());
+                if offset <= segment_value.limit as u64 || offset_end > max {
+                    return Err(gp0);
                 }
             };
         }
@@ -338,14 +398,14 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// Validates that the provided gva is valid for the provided alignment mode. Returns the appropriate
     /// exception if it is not.
     fn verify_gva_alignment(
-        &self,
+        &mut self,
         gva: u64,
         len: usize,
         alignment: AlignmentMode,
-    ) -> Result<(), InternalError<T::Error>> {
+    ) -> Result<(), Error<T::Error>> {
         match alignment {
             AlignmentMode::Aligned(a) => {
-                if gva % a != 0 {
+                if !gva.is_multiple_of(a) {
                     Err(Error::InstructionException(
                         Exception::GENERAL_PROTECTION_FAULT,
                         Some(0),
@@ -356,10 +416,10 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             AlignmentMode::Unaligned => {}
             AlignmentMode::Standard => {
                 if self.is_user_mode()
-                    && self.state.rflags.alignment_check()
-                    && self.state.cr0 & x86defs::X64_CR0_AM != 0
+                    && self.cpu.rflags().alignment_check()
+                    && self.cpu.cr0() & x86defs::X64_CR0_AM != 0
                 {
-                    if gva % len as u64 != 0 {
+                    if !gva.is_multiple_of(len as u64) {
                         Err(Error::InstructionException(
                             Exception::ALIGNMENT_CHECK,
                             None,
@@ -373,13 +433,13 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     }
 
     /// Reads memory from the given segment:offset.
-    async fn read_memory(
+    pub async fn read_memory(
         &mut self,
-        segment: Register,
+        segment: Segment,
         offset: u64,
         alignment: AlignmentMode,
         data: &mut [u8],
-    ) -> Result<(), InternalError<T::Error>> {
+    ) -> Result<(), Error<T::Error>> {
         let gva = self.compute_and_validate_gva(
             segment,
             offset,
@@ -387,8 +447,9 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             OperationKind::Read,
             alignment,
         )?;
+        let user_mode = self.is_user_mode();
         self.cpu
-            .read_memory(gva, data, self.is_user_mode())
+            .read_memory(gva, data, user_mode)
             .await
             .map_err(|err| Error::MemoryAccess(gva, OperationKind::Read, err))?;
 
@@ -396,13 +457,13 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     }
 
     /// Writes memory to the given segment:offset.
-    async fn write_memory(
+    pub async fn write_memory(
         &mut self,
-        segment: Register,
+        segment: Segment,
         offset: u64,
         alignment: AlignmentMode,
         data: &[u8],
-    ) -> Result<(), InternalError<T::Error>> {
+    ) -> Result<(), Error<T::Error>> {
         let gva = self.compute_and_validate_gva(
             segment,
             offset,
@@ -410,8 +471,9 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             OperationKind::Write,
             alignment,
         )?;
+        let cpl = self.is_user_mode();
         self.cpu
-            .write_memory(gva, data, self.is_user_mode())
+            .write_memory(gva, data, cpl)
             .await
             .map_err(|err| Error::MemoryAccess(gva, OperationKind::Write, err))?;
 
@@ -425,13 +487,14 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// mismatch.
     async fn compare_and_write_memory(
         &mut self,
-        segment: Register,
+        segment: Segment,
         offset: u64,
         alignment: AlignmentMode,
         current: &[u8],
         new: &[u8],
     ) -> Result<bool, InternalError<T::Error>> {
         assert_eq!(current.len(), new.len());
+        let user_mode = self.is_user_mode();
         let gva = self.compute_and_validate_gva(
             segment,
             offset,
@@ -441,7 +504,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         )?;
         let success = self
             .cpu
-            .compare_and_write_memory(gva, current, new, self.is_user_mode())
+            .compare_and_write_memory(gva, current, new, user_mode)
             .await
             .map_err(|err| Error::MemoryAccess(gva, OperationKind::Write, err))?;
 
@@ -458,7 +521,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let offset = self.memory_op_offset(instr, operand);
         let mut data = R::empty_bytes();
         self.read_memory(
-            instr.memory_segment(),
+            instr.memory_segment().into(),
             offset,
             alignment,
             &mut data[..instr.memory_size().size()],
@@ -477,12 +540,13 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     ) -> Result<(), InternalError<T::Error>> {
         let offset = self.memory_op_offset(instr, operand);
         self.write_memory(
-            instr.memory_segment(),
+            instr.memory_segment().into(),
             offset,
             alignment,
             &data.to_le_bytes()[..instr.memory_size().size()],
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Write a value to a memory operand, validating that the current value in
@@ -505,7 +569,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         if instr.has_lock_prefix() || instr.mnemonic() == iced_x86::Mnemonic::Xchg {
             if !self
                 .compare_and_write_memory(
-                    instr.memory_segment(),
+                    instr.memory_segment().into(),
                     offset,
                     alignment,
                     &current.to_le_bytes()[..instr.memory_size().size()],
@@ -517,7 +581,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
         } else {
             self.write_memory(
-                instr.memory_segment(),
+                instr.memory_segment().into(),
                 offset,
                 alignment,
                 &new.to_le_bytes()[..instr.memory_size().size()],
@@ -529,8 +593,8 @@ impl<'a, T: Cpu> Emulator<'a, T> {
 
     /// Checks that the current privilege level has access to port I/O.
     /// We do not currently support TSS-based I/O privileges.
-    fn check_io_privilege_level(&self) -> Result<(), InternalError<T::Error>> {
-        if self.current_privilege_level() > self.state.rflags.io_privilege_level() {
+    fn check_io_privilege_level(&mut self) -> Result<(), InternalError<T::Error>> {
+        if self.current_privilege_level() > self.cpu.rflags().io_privilege_level() {
             Err(Error::InstructionException(
                 Exception::GENERAL_PROTECTION_FAULT,
                 Some(0),
@@ -573,7 +637,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 self.read_memory_op(instr, operand, AlignmentMode::Standard)
                     .await?
             }
-            OpKind::Register => self.state.get_gp(instr.op_register(operand)),
+            OpKind::Register => self.cpu.gp(instr.op_register(operand).into()),
             OpKind::Immediate8
             | OpKind::Immediate16
             | OpKind::Immediate32
@@ -610,7 +674,9 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 self.write_memory_op(instr, 0, AlignmentMode::Standard, value)
                     .await?
             }
-            OpKind::Register => self.state.set_gp(instr.op0_register(), value),
+            OpKind::Register => {
+                self.cpu.set_gp(instr.op0_register().into(), value);
+            }
             _ => Err(self.unsupported_instruction(instr))?,
         };
         Ok(())
@@ -641,7 +707,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                 .await?
             }
             OpKind::Register => {
-                self.state.set_gp(instr.op0_register(), new);
+                self.cpu.set_gp(instr.op0_register().into(), new);
             }
             _ => Err(self.unsupported_instruction(instr))?,
         };
@@ -653,12 +719,12 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     //          us from copying a larger value into the future on every success for a codesize win.
     /// Emulates a single instruction.
     pub async fn run(&mut self) -> Result<(), Box<Error<T::Error>>> {
-        let mut decoder = Decoder::new(
-            self.state.bitness().into(),
-            self.bytes,
-            self.decoder_options,
-        );
-        decoder.set_ip(self.state.rip);
+        let cr0 = self.cpu.cr0();
+        let efer = self.cpu.efer();
+        let cs = self.cpu.segment(Segment::CS);
+        let bitness = bitness(cr0, efer, cs);
+        let mut decoder = Decoder::new(bitness.into(), self.bytes, self.decoder_options);
+        decoder.set_ip(self.cpu.rip());
         let instr = decoder.decode();
         if instr.code() == Code::INVALID {
             match decoder.last_error() {
@@ -676,9 +742,9 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         }
         tracing::trace!(
             bytes = ?self.bytes[..instr.len()],
-            cs = ?self.state.segs[CpuState::CS],
-            rip = self.state.rip,
-            bitness = ?self.state.bitness(),
+            cs = ?self.cpu.segment(Segment::CS),
+            rip = self.cpu.rip(),
+            ?bitness,
             "Emulating instruction",
         );
         match self.emulate(&instr).await {
@@ -700,10 +766,11 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         // We should not be emulating instructions that don't touch MMIO or PIO, even though we are capable of doing so.
         // If we are asked to do so it is usually indicative of some other problem, so abort so we can track that down.
         if !instr.op_kinds().any(|x| x == OpKind::Memory) && !instr.is_string_instruction() {
-            Err(self.unsupported_instruction(instr))?;
+            Err(Error::NonMemoryOrPortInstruction(
+                self.bytes[..instr.len()].into(),
+            ))?;
         }
 
-        #[allow(clippy::wildcard_in_or_patterns)]
         match instr.code() {
             // mov r/m, r
             // mov r, r/m
@@ -1288,9 +1355,11 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         }?;
 
         // The instruction is complete. Update the RIP and check for traps.
-        self.state.rip = instr.next_ip();
-        if self.state.rflags.trap() {
-            self.state.rflags.set_trap(false);
+        self.cpu.set_rip(instr.next_ip());
+        let mut rflags = self.cpu.rflags();
+        if rflags.trap() {
+            rflags.set_trap(false);
+            self.cpu.set_rflags(rflags);
             return Err(Error::InstructionException(
                 Exception::DEBUG,
                 None,

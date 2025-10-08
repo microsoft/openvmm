@@ -18,7 +18,7 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use video_core::FramebufferFormat;
 use vmcore::vm_task::VmTaskDriver;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 const VRAM_RENDER_OFFSET: usize = 0x400000;
 
@@ -224,7 +224,7 @@ impl RendererCore {
             self.vram
                 .read_at(
                     (row * state.line_offset_pixels as usize * 2) as u64,
-                    line.as_bytes_mut(),
+                    line.as_mut_bytes(),
                 )
                 .unwrap();
             for (s, d) in line.iter().zip(&mut wide_line) {

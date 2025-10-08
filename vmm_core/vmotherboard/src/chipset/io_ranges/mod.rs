@@ -7,9 +7,8 @@
 //! - e.g: `IoRanges<u64>` can be used to model 64-bit MMIO.
 //! - e.g: `IoRanges<u16>` can be used to model 16-bit x86 port IO.
 
-mod address_filter;
-
-use self::address_filter::RangeKey;
+use address_filter::AddressFilter;
+use address_filter::RangeKey;
 use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use inspect::Inspect;
@@ -23,8 +22,8 @@ use std::sync::Weak;
 
 struct IoRangesInner<T> {
     map: RangeMap<T, RangeEntry>,
-    trace_on: address_filter::AddressFilter<T>,
-    break_on: address_filter::AddressFilter<T>,
+    trace_on: AddressFilter<T>,
+    break_on: AddressFilter<T>,
     // Starts off a `Some(Vec::new())`, and then set to `None` as part of
     // Chipset finalization
     static_registration_conflicts: Option<Vec<IoRangeConflict<T>>>,
@@ -79,8 +78,8 @@ impl<T: RangeKey> IoRanges<T> {
         Self {
             inner: Arc::new(RwLock::new(IoRangesInner {
                 map: RangeMap::new(),
-                trace_on: address_filter::AddressFilter::new(trace_on_unknown),
-                break_on: address_filter::AddressFilter::new(false),
+                trace_on: AddressFilter::new(trace_on_unknown),
+                break_on: AddressFilter::new(false),
                 static_registration_conflicts: Some(Vec::new()),
                 fallback_device,
             })),

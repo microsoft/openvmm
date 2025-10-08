@@ -3,7 +3,7 @@
 
 [package]
 name = "flowey_cli"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -19,7 +19,7 @@ log.workspace = true
 parking_lot.workspace = true
 petgraph.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 serde_yaml.workspace = true
 toml_edit = { workspace = true, features = ["serde"] }
 xshell.workspace = true

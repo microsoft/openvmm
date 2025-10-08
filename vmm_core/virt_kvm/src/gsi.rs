@@ -7,10 +7,10 @@ use crate::KvmPartitionInner;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::os::unix::prelude::*;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 const NUM_GSIS: usize = 2048;
 
@@ -189,8 +189,7 @@ impl GsiRoute {
                 // the type of the interrupt: SPI or PPI handled by the in-kernel vGIC,
                 // or the user mode GIC emulator (where have to specify the target VP, too).
 
-                // xtask-fmt allow-target-arch oneoff-guest-arch-impl
-                assert!(cfg!(target_arch = "x86_64"));
+                assert!(cfg!(guest_arch = "x86_64"));
                 partition
                     .kvm
                     .irq_line(self.gsi, true)

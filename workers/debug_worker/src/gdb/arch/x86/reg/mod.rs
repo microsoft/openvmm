@@ -6,7 +6,7 @@
 use gdbstub::arch::Registers;
 
 /// `RegId` definitions for x86 architectures.
-#[allow(dead_code)]
+#[expect(dead_code)]
 pub mod id;
 
 mod core32;

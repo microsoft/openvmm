@@ -3,14 +3,14 @@
 
 [package]
 name = "whp"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
 unstable_whp = []
 
-[target.'cfg(windows)'.dependencies]
-zerocopy.workspace = true
+[dependencies]
+pal.workspace = true
 
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true
@@ -25,9 +25,6 @@ features = [
 
 [target.'cfg(windows)'.dev-dependencies]
 criterion = { workspace = true, features = ["rayon", "cargo_bench_support"] }
-
-[build-dependencies]
-win_import_lib.workspace = true
 
 [[bench]]
 name = "primitives"

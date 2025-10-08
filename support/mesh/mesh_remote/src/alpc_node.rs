@@ -9,11 +9,11 @@
 
 use crate::common::InvitationAddress;
 use crate::protocol;
-use futures::channel::mpsc;
-use futures::future::abortable;
-use futures::future::AbortHandle;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
+use futures::future::AbortHandle;
+use futures::future::abortable;
 use mesh_node::common::Address;
 use mesh_node::common::NodeId;
 use mesh_node::common::PortId;
@@ -26,17 +26,17 @@ use mesh_node::local_node::RemoteNodeHandle;
 use mesh_node::local_node::SendEvent;
 use mesh_node::resource::OsResource;
 use mesh_node::resource::Resource;
-use mesh_protobuf::buffer::Buffer;
 use mesh_protobuf::Protobuf;
+use mesh_protobuf::buffer::Buffer;
 use ntapi::ntobapi::DIRECTORY_ALL_ACCESS;
-use pal::windows::alpc;
-use pal::windows::alpc::PortSection;
-use pal::windows::alpc::SendMessage;
-use pal::windows::create_object_directory;
 use pal::windows::BorrowedHandleExt;
 use pal::windows::ObjectAttributes;
 use pal::windows::OwnedSocketExt;
 use pal::windows::UnicodeString;
+use pal::windows::alpc;
+use pal::windows::alpc::PortSection;
+use pal::windows::alpc::SendMessage;
+use pal::windows::create_object_directory;
 use pal_async::driver::Driver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -54,9 +54,9 @@ use std::task::Context;
 use std::task::Poll;
 use tracing_helpers::ErrorValueExt;
 use unicycle::FuturesUnordered;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 type InvitationMap =
     Arc<Mutex<HashMap<NodeId, (RemoteNodeHandle, mesh_channel::OneshotSender<()>)>>>;
@@ -179,7 +179,7 @@ impl AlpcNode {
         let port = PolledWait::new(&driver, port)?;
 
         let invitations = Default::default();
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (connect_send, connect_recv) = mpsc::unbounded();
         let local_node = Arc::new(LocalNode::with_id(
             local_id,
@@ -557,7 +557,8 @@ impl AlpcNode {
                         .expect("port must exist");
 
                     match protocol::PacketHeader::read_from_prefix(buf) {
-                        Some(header) => match header.packet_type {
+                        Ok((header, _)) => match header.packet_type {
+                            // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                             protocol::PacketType::EVENT => {
                                 local_node.event(
                                     connection.handle.id(),
@@ -576,7 +577,8 @@ impl AlpcNode {
                                 tracing::error!(node = ?local_id, ?packet_type, "unknown packet type");
                             }
                         },
-                        None => {
+                        Err(_) => {
+                            // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                             tracing::error!(node = ?local_id, "invalid message");
                         }
                     }
@@ -700,7 +702,7 @@ impl Connection {
             message = SendMessage::from(
                 protocol::PacketHeader {
                     packet_type: protocol::PacketType::LARGE_EVENT,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 }
                 .as_bytes(),
             );
@@ -715,7 +717,7 @@ impl Connection {
             message.extend(
                 protocol::PacketHeader {
                     packet_type: protocol::PacketType::EVENT,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 }
                 .as_bytes(),
             );
@@ -739,6 +741,7 @@ impl Connection {
 
 impl SendEvent for Connection {
     fn event(&self, event: OutgoingEvent<'_>) {
+        let len = event.len();
         match self.send_event(event) {
             Ok(_) => (),
             Err(err) => {
@@ -746,6 +749,7 @@ impl SendEvent for Connection {
                     node = ?self.local_id,
                     remote_node = ?self.remote_id,
                     error = err.as_error(),
+                    len,
                     "error sending packet"
                 );
                 // Notify the connection task of the failure.
@@ -778,10 +782,10 @@ impl Deref for AlpcPort {
 #[cfg(test)]
 mod tests {
     use super::AlpcNode;
-    use mesh_channel::channel;
     use mesh_channel::RecvError;
-    use pal_async::async_test;
+    use mesh_channel::channel;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use pal_event::Event;
     use std::io::Read;
     use std::io::Write;
@@ -821,6 +825,18 @@ mod tests {
         drop(recv2);
         node1.shutdown().await;
         node2.shutdown().await;
+    }
+
+    #[async_test]
+    async fn test_message_sizes(driver: DefaultDriver) {
+        let (p1, p2) = mesh_node::local_node::Port::new_pair();
+        let (p3, p4) = mesh_node::local_node::Port::new_pair();
+        let node1 = AlpcNode::new(driver.clone()).unwrap();
+        let (invitation, _handle) = node1.invite(p2).unwrap();
+        let _node2 = AlpcNode::join(driver.clone(), invitation, p3).unwrap();
+
+        crate::test_common::test_message_sizes(p1, p4, 0..=super::MAX_SMALL_EVENT_SIZE + 0x1000)
+            .await;
     }
 
     #[async_test]

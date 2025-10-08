@@ -9,10 +9,10 @@ use crate::services::ChipsetServices;
 use crate::services::ChipsetServicesMeta;
 use crate::services::MmioInterceptServices;
 use crate::services::Unimplemented;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
-use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use parking_lot::RwLock;
 use range_map_vec::RangeMap;
@@ -85,7 +85,6 @@ impl ControlMmioIntercept for TestDeviceRange {
     fn offset_of(&self, addr: u64) -> Option<u64> {
         let base = self.addr?;
 
-        #[allow(clippy::unnecessary_lazy_evaluations)] // prevents underflow error
         (base..(base + self.len))
             .contains(&addr)
             .then(|| addr - base)

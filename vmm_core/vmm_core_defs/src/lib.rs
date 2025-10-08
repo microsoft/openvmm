@@ -3,6 +3,7 @@
 
 //! Client definitions for functionality in the `vmm_core` crate.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod debug_rpc;
@@ -28,14 +29,6 @@ pub enum HaltReason {
         #[inspect(skip)]
         // Arc'ed for size and cheap clones.
         registers: Option<Arc<virt::vp::Registers>>,
-    },
-    InvalidVmState {
-        #[inspect(rename = "failing_vp")]
-        vp: u32,
-    },
-    VpError {
-        #[inspect(rename = "failing_vp")]
-        vp: u32,
     },
     SingleStep {
         #[inspect(rename = "failing_vp")]

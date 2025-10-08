@@ -4,11 +4,11 @@
 use crate::VmmChipsetDevice;
 use async_trait::async_trait;
 use closeable_mutex::CloseableMutex;
-use futures::task::waker_ref;
-use futures::task::ArcWake;
-use futures::task::WakerRef;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::task::ArcWake;
+use futures::task::WakerRef;
+use futures::task::waker_ref;
 use inspect::InspectMut;
 use state_unit::StateRequest;
 use state_unit::StateUnit;

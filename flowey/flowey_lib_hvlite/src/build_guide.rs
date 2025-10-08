@@ -7,9 +7,17 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        pub built_guide: WriteVar<PathBuf>,
+        pub built_guide: WriteVar<GuideOutput>,
     }
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct GuideOutput {
+    #[serde(rename = "Guide")]
+    pub guide: PathBuf,
+}
+
+impl Artifact for GuideOutput {}
 
 new_flow_node!(struct Node);
 
@@ -38,7 +46,7 @@ impl FlowNode for Node {
         let rust_is_installed = ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled);
 
         for Request { built_guide } in requests {
-            ctx.emit_rust_step("build HvLite guide (mdbook)", |ctx| {
+            ctx.emit_rust_step("build OpenVMM guide (mdbook)", |ctx| {
                 // rust must be installed to build the `mdbook-openvmm-shim`
                 rust_is_installed.clone().claim(ctx);
                 let mdbook_bin = mdbook_bin.clone().claim(ctx);
@@ -66,7 +74,7 @@ impl FlowNode for Node {
                     .env("SHIM_MDBOOK_MERMAID", mdbook_mermaid_bin)
                     .run()?;
 
-                    rt.write(built_guide, &out_path);
+                    rt.write(built_guide, &GuideOutput { guide: out_path });
 
                     Ok(())
                 }

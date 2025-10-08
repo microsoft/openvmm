@@ -15,11 +15,12 @@ use crate::protofile::MessageDescription;
 use crate::protofile::SequenceType;
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use heck::ToUpperCamelCase;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -44,8 +45,6 @@ impl<'a> DescriptorWriter<'a> {
 
         // Sort the descriptors to get a consistent order from run to run and build to build.
         descriptors.sort_by_key(|desc| (desc.package, desc.message.name));
-        // Deduplicate by package and name. TODO: ensure duplicates match.
-        descriptors.dedup_by_key(|desc| (desc.package, desc.message.name));
 
         Self {
             descriptors,
@@ -188,34 +187,39 @@ impl Write for PackageWriter<'_, '_> {
 fn referenced_descriptors<'a>(
     descriptors: impl IntoIterator<Item = &'a MessageDescription<'a>>,
 ) -> Vec<&'a TopLevelDescriptor<'a>> {
+    // Deduplicate by package and name. TODO: ensure duplicates match.
     let mut descriptors =
-        Vec::from_iter(descriptors.into_iter().copied().filter_map(|d| match d {
-            MessageDescription::Internal(tld) => Some(tld),
+        HashMap::from_iter(descriptors.into_iter().copied().filter_map(|d| match d {
+            MessageDescription::Internal(tld) => Some(((tld.package, tld.message.name), tld)),
             MessageDescription::External { .. } => None,
         }));
-    let mut inserted = HashSet::from_iter(descriptors.iter().copied());
+
+    let mut queue = VecDeque::from_iter(descriptors.values().copied());
 
     fn process_field_type<'a>(
         field_type: &FieldType<'a>,
-        descriptors: &mut Vec<&'a TopLevelDescriptor<'a>>,
-        inserted: &mut HashSet<&'a TopLevelDescriptor<'a>>,
+        descriptors: &mut HashMap<(&'a str, &'a str), &'a TopLevelDescriptor<'a>>,
+        queue: &mut VecDeque<&'a TopLevelDescriptor<'a>>,
     ) {
         match field_type.kind {
             FieldKind::Message(tld) => {
                 if let MessageDescription::Internal(tld) = tld() {
-                    if inserted.insert(tld) {
-                        descriptors.push(tld);
+                    if descriptors
+                        .insert((tld.package, tld.message.name), tld)
+                        .is_none()
+                    {
+                        queue.push_back(tld);
                     }
                 }
             }
             FieldKind::Tuple(tys) => {
                 for ty in tys {
-                    process_field_type(ty, descriptors, inserted);
+                    process_field_type(ty, descriptors, queue);
                 }
             }
             FieldKind::KeyValue(tys) => {
                 for ty in tys {
-                    process_field_type(ty, descriptors, inserted);
+                    process_field_type(ty, descriptors, queue);
                 }
             }
             FieldKind::Builtin(_) | FieldKind::Local(_) | FieldKind::External { .. } => {}
@@ -224,28 +228,26 @@ fn referenced_descriptors<'a>(
 
     fn process_message<'a>(
         message: &MessageDescriptor<'a>,
-        descriptors: &mut Vec<&'a TopLevelDescriptor<'a>>,
-        inserted: &mut HashSet<&'a TopLevelDescriptor<'a>>,
+        descriptors: &mut HashMap<(&'a str, &'a str), &'a TopLevelDescriptor<'a>>,
+        queue: &mut VecDeque<&'a TopLevelDescriptor<'a>>,
     ) {
         for field in message
             .fields
             .iter()
             .chain(message.oneofs.iter().flat_map(|oneof| oneof.variants))
         {
-            process_field_type(&field.field_type, descriptors, inserted);
+            process_field_type(&field.field_type, descriptors, queue);
         }
         for inner in message.messages {
-            process_message(inner, descriptors, inserted);
+            process_message(inner, descriptors, queue);
         }
     }
 
-    let mut i = 0;
-    while let Some(&tld) = descriptors.get(i) {
-        process_message(tld.message, &mut descriptors, &mut inserted);
-        i += 1;
+    while let Some(tld) = queue.pop_front() {
+        process_message(tld.message, &mut descriptors, &mut queue);
     }
 
-    descriptors
+    descriptors.values().copied().collect()
 }
 
 fn package_proto_file(package: &str) -> String {
@@ -474,14 +476,14 @@ impl OneofDescriptor<'_> {
 #[cfg(test)]
 mod tests {
     use super::DescriptorWriter;
-    use crate::protofile::message_description;
     use crate::Protobuf;
+    use crate::protofile::message_description;
     use alloc::string::String;
     use alloc::vec::Vec;
     use core::cell::RefCell;
+    use expect_test::expect;
     use std::collections::HashMap;
     use std::io::Write;
-    use std::println;
 
     /// Comment on this guy.
     #[derive(Protobuf)]
@@ -563,93 +565,85 @@ mod tests {
             .write(|_name| Ok(&writer))
             .unwrap();
         let s = String::from_utf8(writer.0.into_inner()).unwrap();
-        let expected = r#"// Autogenerated, do not edit.
+        let expected = expect!([r#"
+            // Autogenerated, do not edit.
 
-syntax = "proto3";
-package test;
+            syntax = "proto3";
+            package test;
 
-import "google/protobuf/empty.proto";
-import "google/protobuf/wrappers.proto";
+            import "google/protobuf/empty.proto";
+            import "google/protobuf/wrappers.proto";
 
-message Bar {
-  message Other {
-    bool hi = 1;
-    uint32 hello = 2;
-  }
+            message Bar {
+              message Other {
+                bool hi = 1;
+                uint32 hello = 2;
+              }
 
-  message Repeat {
-    repeated uint32 field1 = 1;
-  }
+              message Repeat {
+                repeated uint32 field1 = 1;
+              }
 
-  message DoubleRepeat {
-    message Field1 {
-      repeated uint32 field1 = 1;
-    }
-
-    repeated Field1 field1 = 1;
-  }
-
-  oneof variant {
-    .google.protobuf.Empty this = 1;
-    .google.protobuf.Empty this2 = 2;
-    uint32 that = 3;
-    Other other = 4;
-    Repeat repeat = 5;
-    DoubleRepeat double_repeat = 6;
-  }
-}
-
-// Comment on this guy.
-message Foo {
-  message Bar {
-    uint32 field1 = 1;
-    .google.protobuf.Empty field2 = 2;
-  }
-
-  message NestedRepeat {
-    repeated uint32 field1 = 1;
-  }
-
-  message VecMap {
-    uint32 key = 1;
-    repeated uint32 value = 2;
-  }
-
-  message WrappedArray {
-    repeated string field1 = 1;
-  }
-
-  // Doc comment
-  uint32 x = 1;
-  .google.protobuf.UInt32Value t = 2;
-  .google.protobuf.Empty t2 = 3;
-  Bar bar = 4;
-  // Another doc comment
-  // (multi-line)
-  repeated uint32 y = 5;
-  //
-  //        multi
-  //        line
-  //
-  .google.protobuf.Empty b = 6;
-  repeated .test.Foo repeated_self = 7;
-  .test.Bar e = 8;
-  repeated NestedRepeat nested_repeat = 9;
-  map<string, .google.protobuf.UInt32Value> proto_map = 10;
-  repeated VecMap vec_map = 11;
-  repeated uint32 bad_array = 12; // packed repr only
-  WrappedArray wrapped_array = 13;
-}
-"#;
-        if s != expected {
-            for diff in diff::lines(expected, &s) {
-                match diff {
-                    diff::Result::Left(l) => println!("-{}", l),
-                    diff::Result::Both(l, _) => println!(" {}", l),
-                    diff::Result::Right(r) => println!("+{}", r),
+              message DoubleRepeat {
+                message Field1 {
+                  repeated uint32 field1 = 1;
                 }
+
+                repeated Field1 field1 = 1;
+              }
+
+              oneof variant {
+                .google.protobuf.Empty this = 1;
+                .google.protobuf.Empty this2 = 2;
+                uint32 that = 3;
+                Other other = 4;
+                Repeat repeat = 5;
+                DoubleRepeat double_repeat = 6;
+              }
             }
-            panic!();
-        }
+
+            // Comment on this guy.
+            message Foo {
+              message Bar {
+                uint32 field1 = 1;
+                .google.protobuf.Empty field2 = 2;
+              }
+
+              message NestedRepeat {
+                repeated uint32 field1 = 1;
+              }
+
+              message VecMap {
+                uint32 key = 1;
+                repeated uint32 value = 2;
+              }
+
+              message WrappedArray {
+                repeated string field1 = 1;
+              }
+
+              // Doc comment
+              uint32 x = 1;
+              .google.protobuf.UInt32Value t = 2;
+              .google.protobuf.Empty t2 = 3;
+              Bar bar = 4;
+              // Another doc comment
+              // (multi-line)
+              repeated uint32 y = 5;
+              //
+              //        multi
+              //        line
+              //
+              .google.protobuf.Empty b = 6;
+              repeated .test.Foo repeated_self = 7;
+              .test.Bar e = 8;
+              repeated NestedRepeat nested_repeat = 9;
+              map<string, .google.protobuf.UInt32Value> proto_map = 10;
+              repeated VecMap vec_map = 11;
+              repeated uint32 bad_array = 12; // packed repr only
+              WrappedArray wrapped_array = 13;
+            }
+        "#]);
+        expected.assert_eq(&s);
     }
 }

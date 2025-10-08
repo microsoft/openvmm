@@ -3,25 +3,27 @@
 
 [package]
 name = "uefi_nvram_storage"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
 default = []
 
 inspect = ["dep:inspect", "uefi_specs/inspect"]
+save_restore = ["inspect", "dep:mesh_protobuf", "dep:vmcore"]
 
 [dependencies]
 guid.workspace = true
 inspect = { workspace = true, optional = true }
+mesh_protobuf = { workspace = true, optional = true }
 ucs2.workspace = true
 uefi_specs.workspace = true
+vmcore = { workspace = true, optional = true }
 
 async-trait.workspace = true
 thiserror.workspace = true
 wchar.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 pal_async.workspace = true
 

@@ -6,10 +6,10 @@
 use super::SerialIo;
 use mesh::MeshPayload;
 use pal_async::driver::Driver;
-use vm_resource::kind::SerialBackendHandle;
 use vm_resource::CanResolveTo;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::SerialBackendHandle;
 
 impl CanResolveTo<ResolvedSerialBackend> for SerialBackendHandle {
     type Input<'a> = ResolveSerialBackendParams<'a>;

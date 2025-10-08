@@ -3,7 +3,7 @@
 
 [package]
 name = "virtio_net"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -31,6 +31,5 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

@@ -3,7 +3,7 @@
 
 [package]
 name = "virt_hvf"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
@@ -26,6 +26,9 @@ anyhow.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true

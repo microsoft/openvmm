@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod buffers;
 pub mod resolver;
 
@@ -42,13 +45,14 @@ use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // These correspond to VIRTIO_NET_F_ flags.
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct NetworkFeatures {
     pub csum: bool,
     pub guest_csum: bool,
@@ -91,7 +95,7 @@ struct NetworkFeatures {
 
 // These correspond to VIRTIO_NET_S_ flags.
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct NetStatus {
     pub link_up: bool,
     pub announce: bool,
@@ -101,7 +105,7 @@ struct NetStatus {
 
 const DEFAULT_MTU: u16 = 1514;
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 const VIRTIO_NET_MAX_QUEUES: u16 = 0x8000;
 
 #[repr(C)]
@@ -119,7 +123,7 @@ struct NetConfig {
 
 // These correspond to VIRTIO_NET_HDR_F_ flags.
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct VirtioNetHeaderFlags {
     pub needs_csum: bool,
     pub data_valid: bool,
@@ -129,7 +133,7 @@ struct VirtioNetHeaderFlags {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct VirtioNetHeaderGso {
     #[bits(3)]
     pub protocol: VirtioNetHeaderGsoProtocol,
@@ -140,7 +144,7 @@ struct VirtioNetHeaderGso {
 
 // These correspond to VIRTIO_NET_HDR_GSO_ values.
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     enum VirtioNetHeaderGsoProtocol: u8 {
         NONE = 0,
         TCPV4 = 1,
@@ -160,7 +164,7 @@ impl VirtioNetHeaderGsoProtocol {
     }
 }
 
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(C)]
 struct VirtioNetHeader {
     pub flags: u8,
@@ -923,7 +927,7 @@ impl Worker {
         // Drain completed transmits.
         let n = epqueue
             .tx_poll(&mut self.active_state.data.tx_done)
-            .map_err(WorkerError::Endpoint)?;
+            .map_err(|tx_error| WorkerError::Endpoint(tx_error.into()))?;
         if n == 0 {
             return Ok(false);
         }

@@ -26,7 +26,7 @@ pub fn start_service() -> anyhow::Result<()> {
 }
 
 fn service_main(_args: Vec<OsString>) {
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         if let Err(e) = service_main_inner(driver).await {
             eprintln!("service_main failed: {:#}", e);
         }

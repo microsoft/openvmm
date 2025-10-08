@@ -21,19 +21,19 @@
 //! in the same OS (but not across machines, virtual or physical). See the
 //! comments on [`VmTimeSourceBuilder`] for more information.
 
-#![warn(missing_docs)]
+pub use saved_state::SavedState;
 
-use futures::future::join_all;
 use futures::StreamExt;
+use futures::future::join_all;
 use futures_concurrency::future::Race;
 use futures_concurrency::stream::Merge;
-use inspect::adhoc;
 use inspect::Inspect;
 use inspect::InspectMut;
+use inspect::adhoc;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
 use pal_async::driver::Driver;
 use pal_async::driver::PollImpl;
 use pal_async::driver::SpawnDriver;
@@ -104,20 +104,12 @@ impl VmTime {
 
     /// Returns `self` or `t`, whichever is earlier.
     pub fn min(self, t: Self) -> Self {
-        if self.is_before(t) {
-            self
-        } else {
-            t
-        }
+        if self.is_before(t) { self } else { t }
     }
 
     /// Returns `self` or `t`, whichever is later.
     pub fn max(self, t: Self) -> Self {
-        if self.is_before(t) {
-            t
-        } else {
-            self
-        }
+        if self.is_before(t) { t } else { self }
     }
 }
 
@@ -241,7 +233,7 @@ impl TimerState {
         }
         if self
             .next
-            .map_or(true, |current_next| next.is_before(current_next))
+            .is_none_or(|current_next| next.is_before(current_next))
         {
             let deadline = self.timestamp(next).unwrap().os_time();
             tracing::trace!(?deadline, "updating deadline");
@@ -257,7 +249,7 @@ impl TimerState {
         for (_, state) in &mut self.waiters {
             if let Some(this_next) = state.next {
                 if this_next.is_after(now.vmtime) {
-                    if next.map_or(true, |next| this_next.is_before(next)) {
+                    if next.is_none_or(|next| this_next.is_before(next)) {
                         next = Some(this_next);
                     }
                 } else if let Some(waker) = state.waker.take() {
@@ -353,18 +345,24 @@ pub struct VmTimeKeeper {
     time: TimeState,
 }
 
-/// Saved state for [`VmTimeKeeper`].
-#[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "vmtime")]
-pub struct SavedState {
-    #[mesh(1)]
-    vmtime: VmTime,
-}
+// UNSAFETY: Needed to derive SavedStateRoot in the same crate it is declared
+#[expect(unsafe_code)]
+mod saved_state {
+    use super::*;
 
-impl SavedState {
-    /// Create a new instance of `SavedState` from an existing `VmTime`.
-    pub fn from_vmtime(vmtime: VmTime) -> Self {
-        SavedState { vmtime }
+    /// Saved state for [`VmTimeKeeper`].
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "vmtime")]
+    pub struct SavedState {
+        #[mesh(1)]
+        pub(super) vmtime: VmTime,
+    }
+
+    impl SavedState {
+        /// Create a new instance of `SavedState` from an existing `VmTime`.
+        pub fn from_vmtime(vmtime: VmTime) -> Self {
+            SavedState { vmtime }
+        }
     }
 }
 
@@ -536,7 +534,7 @@ impl VmTimeKeeper {
 /// in sync with each other.
 #[derive(MeshPayload, Clone, Debug)]
 pub struct VmTimeSourceBuilder {
-    new_send: mesh::MpscSender<NewKeeperRequest>,
+    new_send: mesh::Sender<NewKeeperRequest>,
 }
 
 /// Error returned by [`VmTimeSourceBuilder::build`] when the time keeper has
@@ -590,7 +588,7 @@ struct PrimaryKeeper {
     #[inspect(skip)]
     req_recv: mesh::Receiver<KeeperRequest>,
     #[inspect(skip)]
-    new_recv: mesh::MpscReceiver<NewKeeperRequest>,
+    new_recv: mesh::Receiver<NewKeeperRequest>,
     #[inspect(skip)]
     keepers: Vec<(u64, mesh::Sender<KeeperRequest>)>,
     #[inspect(skip)]
@@ -648,21 +646,18 @@ impl PrimaryKeeper {
                 Event::Request(req) => {
                     match req {
                         KeeperRequest::Start(rpc) => {
-                            rpc.handle(|start_time| {
-                                let this = &mut *self;
-                                async move {
-                                    assert!(!this.time.is_started());
-                                    this.time = TimeState::Started(start_time);
-                                    join_all(this.keepers.iter().map(|(_, sender)| {
-                                        sender.call(KeeperRequest::Start, start_time)
-                                    }))
-                                    .await;
-                                }
+                            rpc.handle(async |start_time| {
+                                assert!(!self.time.is_started());
+                                self.time = TimeState::Started(start_time);
+                                join_all(self.keepers.iter().map(|(_, sender)| {
+                                    sender.call(KeeperRequest::Start, start_time)
+                                }))
+                                .await;
                             })
                             .await
                         }
                         KeeperRequest::Stop(rpc) => {
-                            rpc.handle(|()| async {
+                            rpc.handle(async |()| {
                                 let results = join_all(
                                     self.keepers
                                         .iter()
@@ -697,16 +692,15 @@ impl PrimaryKeeper {
                             .await
                         }
                         KeeperRequest::Reset(rpc) => {
-                            rpc.handle(|time| {
-                                let this = &mut *self;
-                                async move {
-                                    assert!(!this.time.is_started(), "should not be running");
-                                    this.time = TimeState::Stopped(time);
-                                    join_all(this.keepers.iter().map(|(_, sender)| {
-                                        sender.call(KeeperRequest::Reset, time)
-                                    }))
-                                    .await;
-                                }
+                            rpc.handle(async |time| {
+                                assert!(!self.time.is_started(), "should not be running");
+                                self.time = TimeState::Stopped(time);
+                                join_all(
+                                    self.keepers
+                                        .iter()
+                                        .map(|(_, sender)| sender.call(KeeperRequest::Reset, time)),
+                                )
+                                .await;
                             })
                             .await
                         }
@@ -851,7 +845,7 @@ impl VmTimeAccess {
     /// Sets the timeout for [`poll_timeout`](Self::poll_timeout) will return ready,
     /// but only if `time` is earlier than the current timeout.
     pub fn set_timeout_if_before(&mut self, time: VmTime) {
-        if self.timeout.map_or(true, |timeout| time.is_before(timeout)) {
+        if self.timeout.is_none_or(|timeout| time.is_before(timeout)) {
             self.set_timeout(time);
         }
     }
@@ -901,7 +895,6 @@ enum VmTimerPeriodicInner {
     Stopped,
     Running {
         last_timeout: VmTime,
-        #[inspect(debug)]
         period: Duration,
     },
 }
@@ -986,9 +979,9 @@ mod tests {
     use super::VmTime;
     use super::VmTimeKeeper;
     use futures::FutureExt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use std::future::poll_fn;
     use std::time::Duration;
 
@@ -1021,9 +1014,11 @@ mod tests {
             }
         }
         // Timeout should be cleared by the successful poll.
-        assert!(poll_fn(|cx| access.poll_timeout(cx))
-            .now_or_never()
-            .is_none());
+        assert!(
+            poll_fn(|cx| access.poll_timeout(cx))
+                .now_or_never()
+                .is_none()
+        );
 
         // Test changing timeout.
         let now = access.now();

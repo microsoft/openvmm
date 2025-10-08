@@ -3,7 +3,7 @@
 
 [package]
 name = "debug_ptr"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

@@ -12,7 +12,7 @@ use rustyline::Validator;
 
 #[derive(Helper, Highlighter, Hinter, Validator)]
 pub(crate) struct OpenvmmRustylineEditor {
-    pub(crate) req: std::sync::Arc<mesh::Sender<super::Request>>,
+    pub(crate) req: mesh::Sender<super::Request>,
 }
 
 impl rustyline::completion::Completer for OpenvmmRustylineEditor {
@@ -69,7 +69,7 @@ impl clap_dyn_complete::CustomCompleterFactory for &OpenvmmRustylineEditor {
 }
 
 pub struct OpenvmmComplete {
-    req: std::sync::Arc<mesh::Sender<super::Request>>,
+    req: mesh::Sender<super::Request>,
 }
 
 impl clap_dyn_complete::CustomCompleter for OpenvmmComplete {

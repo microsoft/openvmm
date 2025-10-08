@@ -10,18 +10,18 @@
 use anyhow::Context;
 use base64::Engine;
 use debug_ptr::DebugPtr;
-use futures::executor::block_on;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::executor::block_on;
 use futures_concurrency::future::Race;
 use inspect::Inspect;
 use inspect::SensitivityLevel;
+use mesh::MeshPayload;
+use mesh::OneshotReceiver;
 use mesh::message::MeshField;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
-use mesh::OneshotReceiver;
 use mesh_remote::InvitationAddress;
 #[cfg(unix)]
 use pal::unix::process::Builder as ProcessBuilder;
@@ -29,22 +29,21 @@ use pal::unix::process::Builder as ProcessBuilder;
 use pal::windows::process;
 #[cfg(windows)]
 use pal::windows::process::Builder as ProcessBuilder;
+use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::DefaultPool;
 use slab::Slab;
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::File;
-use std::future::Future;
 #[cfg(unix)]
 use std::os::unix::prelude::*;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 use std::path::PathBuf;
 use std::thread;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use unicycle::FuturesUnordered;
 
 #[cfg(windows)]
@@ -82,11 +81,10 @@ static PROCESS_NAME: DebugPtr<String> = DebugPtr::new();
 /// If a mesh invitation is available, this function joins the mesh and runs the
 /// future returned by `f` until `f` returns or the parent process shuts down
 /// the mesh.
-pub fn try_run_mesh_host<U, Fut, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
+pub fn try_run_mesh_host<U, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
 where
     U: 'static + MeshPayload + Send,
-    F: FnOnce(U) -> Fut,
-    Fut: Future<Output = anyhow::Result<T>>,
+    F: AsyncFnOnce(U) -> anyhow::Result<T>,
 {
     block_on(async {
         if let Some(r) = node_from_environment().await? {
@@ -155,13 +153,17 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
     // Clear the string to avoid leaking the invitation information into child
     // processes.
     //
-    // TODO: this function will become unsafe in a future Rust edition because
+    // TODO: this function is unsafe because
     // it can cause UB if non-Rust code is concurrently accessing the
-    // environment in another thread. To be completely sound (even in the
-    // current edition), either this function and its callers need to become
+    // environment in another thread. To be completely sound,
+    // either this function and its callers need to become
     // `unsafe`, or we need to avoid using the environment to propagate the
     // invitation so that we can avoid this call.
-    std::env::remove_var(INVITATION_ENV_NAME);
+    //
+    // SAFETY: Seems to work so far.
+    unsafe {
+        std::env::remove_var(INVITATION_ENV_NAME);
+    }
 
     let invitation: Invitation = mesh::payload::decode(
         &base64::engine::general_purpose::STANDARD
@@ -207,13 +209,7 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
         };
 
         // FUTURE: use pool provided by the caller.
-        let pool = DefaultPool::new();
-        let driver = pool.driver();
-        thread::Builder::new()
-            .name("mesh-worker-pool".to_owned())
-            .spawn(|| pool.run())
-            .unwrap();
-
+        let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
         node = mesh_remote::unix::UnixNode::join(driver, invitation, left)
             .await
             .context("failed to join mesh")?;
@@ -400,13 +396,7 @@ impl Mesh {
         #[cfg(unix)]
         let node = {
             // FUTURE: use pool provided by the caller.
-            let pool = DefaultPool::new();
-            let driver = pool.driver();
-            thread::Builder::new()
-                .name("mesh-worker-pool".to_owned())
-                .spawn(|| pool.run())
-                .unwrap();
-
+            let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
             mesh_remote::unix::UnixNode::new(driver)
         };
 
@@ -423,15 +413,11 @@ impl Mesh {
 
         // Spawn a separate thread for launching mesh processes to avoid bad
         // interactions with any other pools.
-        let pool = DefaultPool::new();
-        let task = pool.driver().spawn(
+        let (_, driver) = DefaultPool::spawn_on_thread("mesh");
+        let task = driver.spawn(
             format!("mesh-{}", &mesh_name),
             async move { inner.run().await },
         );
-        thread::Builder::new()
-            .name("mesh".to_owned())
-            .spawn(|| pool.run())
-            .unwrap();
 
         Ok(Self {
             request,
@@ -540,7 +526,8 @@ impl MeshInner {
             match event {
                 Event::Request(request) => match request {
                     MeshRequest::NewHost(rpc) => {
-                        rpc.handle(|params| self.spawn_process(params)).await
+                        rpc.handle(async |params| self.spawn_process(params).await)
+                            .await
                     }
                     MeshRequest::Inspect(deferred) => {
                         deferred.respond(|resp| {
@@ -551,17 +538,19 @@ impl MeshInner {
                                         &host.pid.to_string(),
                                         SensitivityLevel::Safe,
                                         &mut inspect::adhoc(|req| {
-                                            let mut resp = req.respond();
-                                            resp.merge(&HostInspect {
-                                                name: &host.name,
-                                                node_id: host.node_id,
-                                                #[cfg(target_os = "linux")]
-                                                rlimit: inspect_rlimit::InspectRlimit::for_pid(
-                                                    host.pid,
-                                                ),
-                                            });
-                                            host.send
-                                                .send(HostRequest::Inspect(resp.request().defer()));
+                                            req.respond()
+                                                .merge(&HostInspect {
+                                                    name: &host.name,
+                                                    node_id: host.node_id,
+                                                    #[cfg(target_os = "linux")]
+                                                    rlimit: inspect_rlimit::InspectRlimit::for_pid(
+                                                        host.pid,
+                                                    ),
+                                                })
+                                                .merge(inspect::adhoc(|req| {
+                                                    host.send
+                                                        .send(HostRequest::Inspect(req.defer()));
+                                                }));
                                         }),
                                     );
                                 }

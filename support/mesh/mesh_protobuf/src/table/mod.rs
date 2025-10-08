@@ -54,20 +54,23 @@ pub unsafe trait StructMetadata {
 }
 
 #[cfg(test)]
-#[allow(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::undocumented_unsafe_blocks)]
 mod tests {
+    use super::StructMetadata;
+    use super::TableEncoder;
     use super::decode::ErasedDecoderEntry;
     use super::decode::StructDecodeMetadata;
     use super::encode::ErasedEncoderEntry;
     use super::encode::StructEncodeMetadata;
-    use super::StructMetadata;
-    use super::TableEncoder;
-    use crate::encoding::StringField;
-    use crate::encoding::VarintField;
     use crate::FieldDecode;
     use crate::FieldEncode;
+    use crate::encoding::StringField;
+    use crate::encoding::VarintField;
+    use crate::tests::as_expect_str;
     use core::mem::offset_of;
+    use expect_test::expect;
 
+    #[derive(PartialEq, Eq, Debug)]
     struct Foo<'a> {
         a: u32,
         b: u64,
@@ -107,6 +110,12 @@ mod tests {
             b: 2,
             x: "hi",
         });
+        let expected = expect!([r#"
+            1: varint 1
+            2: varint 2
+            3: string "hi"
+            raw: 080110021a026869"#]);
+        expected.assert_eq(&as_expect_str(&data));
         let foo = crate::decode::<Foo<'_>>(&data).unwrap();
         assert_eq!(foo.a, 1);
         assert_eq!(foo.b, 2);

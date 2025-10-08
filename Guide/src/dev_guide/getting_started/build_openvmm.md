@@ -7,7 +7,7 @@
   - [Getting started on Linux / WSL2](./linux.md).
 
 ```admonish tip
-It is strongly suggested that you use WSL2, and [cross compile](./suggested_dev_env.md#wsl2-cross-compiling-from-wsl2-to-windows)
+It is strongly suggested that you use WSL2, and [cross compile](./cross_compile.md)
 for Windows when necessary.
 ```
 
@@ -91,4 +91,4 @@ error: could not compile `flowey` (lib) due to previous error
 
 **Solution:**
 
-Install Rust using the official instructions for [Linux](https://openvmm.dev/dev_guide/getting_started/linux.html#installing-rust) or [Windows](https://openvmm.dev/dev_guide/getting_started/windows.html#installing-rust).
+Install Rust using the official instructions for [Linux](https://openvmm.dev/guide/dev_guide/getting_started/linux.html#installing-rust) or [Windows](https://openvmm.dev/guide/dev_guide/getting_started/windows.html#installing-rust).

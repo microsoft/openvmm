@@ -3,7 +3,7 @@
 
 [package]
 name = "hyperv_ic_resources"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

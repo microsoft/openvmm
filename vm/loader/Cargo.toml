@@ -3,7 +3,7 @@
 
 [package]
 name = "loader"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -25,7 +25,7 @@ object = { workspace = true, features = ["elf", "std", "read_core"] }
 open_enum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-zerocopy = { workspace = true, features = ["alloc"] }
+zerocopy.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

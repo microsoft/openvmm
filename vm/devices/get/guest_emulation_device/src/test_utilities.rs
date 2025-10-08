@@ -6,12 +6,15 @@ use crate::GedChannel;
 use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
-use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
+use crate::IgvmAgentTestPlan;
+use crate::IgvmAgentTestSetting;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::UefiConsoleMode;
+use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
 use get_resources::ged::GuestEmulationRequest;
+use get_resources::ged::GuestServicingFlags;
 use guestmem::GuestMemory;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
@@ -28,9 +31,9 @@ use vmbus_async::pipe::MessagePipe;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_ring::FlatRingMem;
 use vmbus_ring::RingMem;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -94,11 +97,11 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
         while !version_accepted {
             let mut version_request = get_protocol::VersionRequest::new_zeroed();
             self.channel
-                .recv_exact(version_request.as_bytes_mut())
+                .recv_exact(version_request.as_mut_bytes())
                 .await
                 .map_err(Error::Vmbus)?;
 
-            if version_request.message_header.message_id != HostRequests::VERSION {
+            if version_request.message_header.message_id() != HostRequests::VERSION {
                 return Err(Error::InvalidSequence);
             }
 
@@ -125,7 +128,8 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
             }
 
             let header = get_protocol::HeaderRaw::read_from_prefix(&message_buf[..4])
-                .ok_or(Error::MessageTooSmall)?;
+                .map_err(|_| Error::MessageTooSmall)?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             if header.message_version != get_protocol::MessageVersions::HEADER_VERSION_1 {
                 return Err(Error::HeaderVersion(header.message_version));
@@ -134,13 +138,13 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
             if header.message_type == get_protocol::MessageTypes::HOST_NOTIFICATION {
                 let header: get_protocol::HeaderHostNotification =
                     header.try_into().expect("valid host request");
-                match header.message_id {
+                match header.message_id() {
                     HostNotifications::EVENT_LOG => {
                         let notification = get_protocol::EventLogNotification::read_from_prefix(
                             &message_buf[..size_of::<get_protocol::EventLogNotification>()],
                         )
-                        .unwrap();
-
+                        .unwrap()
+                        .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         self.vmgs[0] = notification.event_log_id.0 as u8;
                     }
                     HostNotifications::POWER_OFF => {
@@ -157,16 +161,18 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                 match response {
                     Event::Response(response) => {
                         use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
-                        let response_header =
-                            get_protocol::HeaderRaw::read_from_prefix(&response[..4]).unwrap();
-
+                        // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         // Check if response needs special handling. Otherwise, send
                         // response directly back to the guest.
+                        let response_header =
+                            get_protocol::HeaderRaw::read_from_prefix(&response[..4])
+                                .unwrap()
+                                .0;
                         match response_header.message_type {
                             get_protocol::MessageTypes::HOST_RESPONSE => {
                                 let header: get_protocol::HeaderHostRequest =
                                     header.try_into().expect("valid host request");
-                                match header.message_id {
+                                match header.message_id() {
                                     HostRequests::VMGS_READ => {
                                         let request_size =
                                             size_of::<get_protocol::VmgsReadRequest>();
@@ -174,7 +180,9 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             get_protocol::VmgsReadRequest::read_from_prefix(
                                                 &message_buf[..request_size],
                                             )
-                                            .unwrap();
+                                            .unwrap()
+                                            .0;
+                                        // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                                         let offset = request.sector_offset as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
                                         let length = request.sector_count as usize
@@ -188,7 +196,9 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             get_protocol::VmgsWriteRequest::read_from_prefix(
                                                 &message_buf[..request_size],
                                             )
-                                            .unwrap();
+                                            .unwrap()
+                                            .0;
+                                        // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                                         let buf = &message_buf[request_size..];
                                         let offset = request.sector_offset as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
@@ -227,6 +237,8 @@ pub fn create_host_channel(
     host_vmbus: MessagePipe<FlatRingMem>,
     ged_responses: Option<Vec<TestGetResponses>>,
     version: get_protocol::ProtocolVersion,
+    guest_memory: Option<GuestMemory>,
+    igvm_agent_plan: Option<IgvmAgentTestPlan>,
 ) -> TestGedClient {
     let guest_config = GuestConfig {
         firmware: GuestFirmwareConfig::Uefi {
@@ -234,6 +246,7 @@ pub fn create_host_channel(
             enable_vpci_boot: false,
             disable_frontpage: false,
             console_mode: UefiConsoleMode::DEFAULT,
+            default_boot_always_attempt: false,
         },
         com1: true,
         com2: true,
@@ -243,6 +256,10 @@ pub fn create_host_channel(
         secure_boot_enabled: false,
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,
         enable_battery: false,
+        no_persistent_secrets: true,
+        guest_state_lifetime: Default::default(),
+        guest_state_encryption_policy: Default::default(),
+        management_vtl_features: Default::default(),
     };
 
     let halt_reason = Arc::new(Mutex::new(None));
@@ -265,6 +282,8 @@ pub fn create_host_channel(
         recv,
         None,
         Some(disklayer_ram::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
+        igvm_agent_plan.map(IgvmAgentTestSetting::TestPlan),
+        false,
     );
 
     if let Some(ged_responses) = ged_responses {
@@ -280,10 +299,13 @@ pub fn create_host_channel(
         }
     } else {
         let mut task = TaskControl::new(ged_state);
+        // Optionally provide a guest memory backing so handlers like IGVM_ATTEST can write
+        // response payloads into the shared buffer GPAs provided by GET.
+        let gm = guest_memory.unwrap_or_else(GuestMemory::empty);
         task.insert(
             spawn,
             "automated GED host channel",
-            GedChannel::new(host_vmbus, GuestMemory::empty()),
+            GedChannel::new(host_vmbus, gm),
         );
         task.start();
 
@@ -325,7 +347,7 @@ pub struct TestGedClient {
     sender: mesh::Sender<GuestEmulationRequest>,
 }
 
-#[allow(dead_code)] // Tasks are spawned and just need to be held.
+#[expect(dead_code)] // Tasks are spawned and just need to be held.
 enum TestTask {
     Test(Task<Result<(), Error>>),
     Prod(TaskControl<GuestEmulationDevice, GedChannel<FlatRingMem>>),
@@ -334,7 +356,10 @@ enum TestTask {
 impl TestGedClient {
     pub async fn test_save_guest_vtl2_state(&mut self) {
         self.sender
-            .call_failable(GuestEmulationRequest::SaveGuestVtl2State, ())
+            .call_failable(
+                GuestEmulationRequest::SaveGuestVtl2State,
+                GuestServicingFlags::default(),
+            )
             .await
             .expect("no failure");
     }

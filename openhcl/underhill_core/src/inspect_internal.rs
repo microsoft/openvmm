@@ -38,13 +38,12 @@ use inspect::Request;
 use inspect::Response;
 use inspect::SensitivityLevel;
 use mesh::Sender;
-use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
-use std::sync::Arc;
+use pal_async::task::Spawn;
 
 pub(crate) fn inspect_internal_diagnostics(
     req: Request<'_>,
-    reinspect: Arc<Sender<Deferred>>,
+    reinspect: Sender<Deferred>,
     driver: DefaultDriver,
 ) {
     req.respond()
@@ -54,7 +53,7 @@ pub(crate) fn inspect_internal_diagnostics(
         });
 }
 
-fn net(req: Request<'_>, reinspect: Arc<Sender<Deferred>>, driver: DefaultDriver) {
+fn net(req: Request<'_>, reinspect: Sender<Deferred>, driver: DefaultDriver) {
     let defer = req.defer();
     let driver2 = driver.clone();
     driver
@@ -69,7 +68,7 @@ fn net(req: Request<'_>, reinspect: Arc<Sender<Deferred>>, driver: DefaultDriver
             vm_inspection.resolve().await;
 
             let Node::Dir(nodes) = vm_inspection.results() else {
-                return defer.value("Error: No VM node.".into());
+                return defer.value("Error: No VM node.");
             };
 
             defer.respond(|resp| {
@@ -94,12 +93,7 @@ fn net(req: Request<'_>, reinspect: Arc<Sender<Deferred>>, driver: DefaultDriver
 
 // net/mac_address
 // Format for mac address is no separators, lowercase letters, e.g. 00155d121212.
-fn net_nic(
-    req: Request<'_>,
-    name: String,
-    reinspect: Arc<Sender<Deferred>>,
-    driver: DefaultDriver,
-) {
+fn net_nic(req: Request<'_>, name: String, reinspect: Sender<Deferred>, driver: DefaultDriver) {
     let defer = req.defer();
     driver
         .spawn("inspect-diagnostics-net-nic", async move {
@@ -152,7 +146,7 @@ fn net_nic(
                     }
                 })
             } else {
-                defer.value(format!("Unexpected node when looking for NIC {name}.").into());
+                defer.value(format!("Unexpected node when looking for NIC {name}."));
             }
         })
         .detach();

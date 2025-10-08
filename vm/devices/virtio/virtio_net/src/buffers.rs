@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::header_size;
 use crate::VirtioNetHeader;
+use crate::header_size;
 use guestmem::GuestMemory;
 use net_backend::BufferAccess;
 use net_backend::RxBufferSegment;
@@ -11,8 +11,8 @@ use net_backend::RxMetadata;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use virtio::VirtioQueueCallbackWork;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 #[derive(Default)]
 struct RxPacket {
@@ -121,7 +121,7 @@ impl BufferAccess for VirtioWorkPool {
 
         let virtio_net_header = VirtioNetHeader {
             num_buffers: 1,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         let locked_packet = self.rx_packets[id.0 as usize].lock();
         let work = locked_packet.work.as_ref().expect("invalid buffer index");

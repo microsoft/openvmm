@@ -4,13 +4,12 @@
 //! Resource definitions for the GET family of devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Guest Emulation Log device resources.
 pub mod gel {
     use mesh::MeshPayload;
-    use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VmbusDeviceHandleKind;
 
     /// Handle to a guest emulation log device.
     #[derive(MeshPayload)]
@@ -23,11 +22,11 @@ pub mod gel {
 
 /// Guest crash device resources.
 pub mod crash {
-    use mesh::rpc::FailableRpc;
     use mesh::MeshPayload;
+    use mesh::rpc::FailableRpc;
     use std::fs::File;
-    use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VmbusDeviceHandleKind;
 
     /// Handle to a guest crash dump device.
     #[derive(MeshPayload)]
@@ -45,16 +44,17 @@ pub mod crash {
 
 /// Guest Emulation Device resources.
 pub mod ged {
+    use inspect::Inspect;
+    use mesh::MeshPayload;
     use mesh::error::RemoteError;
     use mesh::payload::Protobuf;
     use mesh::rpc::Rpc;
-    use mesh::MeshPayload;
     use thiserror::Error;
-    use vm_resource::kind::DiskHandleKind;
-    use vm_resource::kind::FramebufferHandleKind;
-    use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::Resource;
     use vm_resource::ResourceId;
+    use vm_resource::kind::FramebufferHandleKind;
+    use vm_resource::kind::VmbusDeviceHandleKind;
+    use vmgs_resources::VmgsResource;
 
     /// A resource handle for a guest emulation device.
     #[derive(MeshPayload)]
@@ -72,21 +72,25 @@ pub mod ged {
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
         /// The disk to back the GET's VMGS interface.
-        ///
-        /// If `None`, then VMGS services will not be provided to the guest.
-        pub vmgs_disk: Option<Resource<DiskHandleKind>>,
+        pub vmgs: VmgsResource,
         /// Framebuffer device control.
         pub framebuffer: Option<Resource<FramebufferHandleKind>>,
         /// Access to VTL2 functionality.
         pub guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         /// Notification of firmware events.
-        pub firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
+        pub firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
         /// Enable secure boot.
         pub secure_boot_enabled: bool,
         /// The secure boot template type.
         pub secure_boot_template: GuestSecureBootTemplateType,
         /// Enable battery.
         pub enable_battery: bool,
+        /// Suppress attestation and disable TPM state persistence.
+        pub no_persistent_secrets: bool,
+        /// Test configuration for IGVM Attest message.
+        pub igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+        /// Send the test seed for GspById requests
+        pub test_gsp_by_id: bool,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -102,6 +106,8 @@ pub mod ged {
             disable_frontpage: bool,
             /// Where to send UEFI console output
             console_mode: UefiConsoleMode,
+            /// Perform a default boot even if boot entries exist and fail
+            default_boot_always_attempt: bool,
         },
         /// Boot from PC/AT BIOS with Hyper-V generation 1 devices.
         Pcat {
@@ -131,7 +137,7 @@ pub mod ged {
         /// The microsoft windows template.
         MicrosoftWindows,
         /// The Microsoft UEFI certificate authority template.
-        MicrosoftUefiCertificateAuthoritiy,
+        MicrosoftUefiCertificateAuthority,
     }
 
     /// The boot devices for a PC/AT BIOS.
@@ -151,6 +157,13 @@ pub mod ged {
         const ID: &'static str = "ged";
     }
 
+    /// Define servicing behavior.
+    #[derive(MeshPayload, Default)]
+    pub struct GuestServicingFlags {
+        /// Retain memory for DMA-attached devices.
+        pub nvme_keepalive: bool,
+    }
+
     /// Actions a client can request that the Guest Emulation
     /// Device perform.
     #[derive(MeshPayload)]
@@ -160,7 +173,7 @@ pub mod ged {
         /// Wait for VTL2 to start VTL0.
         WaitForVtl0Start(Rpc<(), Result<(), Vtl0StartError>>),
         /// Save VTL2 state.
-        SaveGuestVtl2State(Rpc<(), Result<(), SaveRestoreError>>),
+        SaveGuestVtl2State(Rpc<GuestServicingFlags, Result<(), SaveRestoreError>>),
         /// Update the VTL2 settings.
         ModifyVtl2Settings(Rpc<Vec<u8>, Result<(), ModifyVtl2SettingsError>>),
     }
@@ -173,7 +186,7 @@ pub mod ged {
     /// The various errors that can occur during a save or restore
     /// operation for guest VTL2 state.
     #[derive(Debug, Error, MeshPayload)]
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub enum SaveRestoreError {
         #[error("an operation is in progress")]
         OperationInProgress,
@@ -185,7 +198,7 @@ pub mod ged {
 
     /// An error that can occur during a VTL2 settings update.
     #[derive(Debug, Error, MeshPayload)]
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub enum ModifyVtl2SettingsError {
         #[error("large settings not supported")]
         LargeSettingsNotSupported,
@@ -209,5 +222,15 @@ pub mod ged {
         NoBootDevice,
         /// A boot attempt was made.
         BootAttempt,
+    }
+
+    /// Configuration to the GED's IGVM Attest request handler
+    /// for test scenarios.
+    #[derive(Debug, MeshPayload, Copy, Clone, Inspect)]
+    pub enum IgvmAttestTestConfig {
+        /// Config for testing AK cert retry after failure.
+        AkCertRequestFailureAndRetry,
+        /// Config for testing AK cert persistency across boots.
+        AkCertPersistentAcrossBoot,
     }
 }

@@ -4,30 +4,31 @@
 //! PCI transport for virtio devices
 
 use self::capabilities::*;
-use crate::queue::QueueParams;
-use crate::spec::pci::*;
-use crate::spec::*;
+use crate::QUEUE_MAX_SIZE;
 use crate::QueueResources;
 use crate::Resources;
 use crate::VirtioDevice;
 use crate::VirtioDoorbells;
-use crate::QUEUE_MAX_SIZE;
+use crate::queue::QueueParams;
+use crate::spec::pci::*;
+use crate::spec::*;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use chipset_device::ChipsetDevice;
+use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use device_emulators::ReadWriteRequestType;
 use guestmem::DoorbellRegistration;
 use guestmem::MappedMemoryRegion;
 use guestmem::MemoryMapper;
 use inspect::InspectMut;
 use parking_lot::Mutex;
-use pci_core::capabilities::msix::MsixEmulator;
+use pci_core::PciInterruptPin;
 use pci_core::capabilities::PciCapability;
 use pci_core::capabilities::ReadOnlyCapability;
+use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
@@ -37,7 +38,6 @@ use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
-use pci_core::PciInterruptPin;
 use std::io;
 use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
@@ -300,7 +300,7 @@ impl VirtioPciDevice {
                 } else {
                     0
                 };
-                #[allow(clippy::if_same_then_else)] // fix when TODO is resolved
+                #[expect(clippy::if_same_then_else)] // fix when TODO is resolved
                 let notify_offset = if queue_select < self.queues.len() {
                     0 // TODO: when should this be non-zero? ever?
                 } else {
@@ -653,10 +653,12 @@ pub(crate) mod capabilities {
     use crate::spec::pci::VIRTIO_PCI_CAP_NOTIFY_CFG;
     use pci_core::spec::caps::CapabilityId;
 
-    use zerocopy::AsBytes;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     #[repr(C)]
-    #[derive(Debug, AsBytes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout)]
     pub struct VirtioCapabilityCommon {
         cap_id: u8,
         cap_next: u8,
@@ -686,7 +688,7 @@ pub(crate) mod capabilities {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout)]
     pub struct VirtioCapability {
         common: VirtioCapabilityCommon,
     }
@@ -707,7 +709,7 @@ pub(crate) mod capabilities {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout)]
     pub struct VirtioCapability64 {
         common: VirtioCapabilityCommon,
         offset_hi: u32,
@@ -732,7 +734,7 @@ pub(crate) mod capabilities {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout)]
     pub struct VirtioNotifyCapability {
         common: VirtioCapabilityCommon,
         offset_multiplier: u32,

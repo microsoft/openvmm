@@ -4,19 +4,19 @@
 //! Defines a fixed-size string format that's used by SCSI and NVMe
 //! specifications.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::str::FromStr;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// A fixed-size string that is padded out with ASCII spaces.
-#[derive(Copy, Clone, Protobuf, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Protobuf, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(transparent)]
 #[mesh(transparent)]
 pub struct AsciiString<const N: usize>([u8; N]);
@@ -34,9 +34,9 @@ impl<const N: usize> std::fmt::Debug for AsciiString<N> {
 impl<const N: usize> Inspect for AsciiString<N> {
     fn inspect(&self, req: inspect::Request<'_>) {
         if let Some(s) = self.as_str() {
-            req.value(s.into())
+            req.value(s)
         } else {
-            req.value(self.as_bytes().to_vec().into())
+            req.value(self.as_bytes().to_vec())
         }
     }
 }

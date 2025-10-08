@@ -83,8 +83,7 @@ enum FuzzCommand {
         /// targets.
         targets: Vec<String>,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -100,8 +99,7 @@ enum FuzzCommand {
         /// Path to specific repro case
         artifact: Option<PathBuf>,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -135,8 +133,7 @@ enum FuzzCommand {
         /// Path to input file.
         input: PathBuf,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -149,8 +146,7 @@ enum FuzzCommand {
         /// Fuzzing target to minify the corpus of.
         target: String,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -166,8 +162,7 @@ enum FuzzCommand {
         /// Path to test case file.
         test_case: PathBuf,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -188,8 +183,7 @@ enum FuzzCommand {
         #[clap(long, requires = "with_html_report")]
         only_report: bool,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
 
@@ -209,8 +203,7 @@ enum FuzzCommand {
         /// targets.
         target: Vec<String>,
 
-        /// The Rust toolchain to use. Defaults to 'nightly'. Specify 'default'
-        /// to use the environment's default toolchain.
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
         #[clap(long)]
         toolchain: Option<String>,
     },
@@ -307,7 +300,9 @@ impl Xtask for Fuzz {
                 );
 
                 if let Err(e) = res {
-                    log::warn!("Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!");
+                    log::warn!(
+                        "Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!"
+                    );
                     return Err(e);
                 }
             }
@@ -358,7 +353,9 @@ impl Xtask for Fuzz {
                 );
 
                 if let Err(e) = res {
-                    log::warn!("Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!");
+                    log::warn!(
+                        "Reminder: Make sure you swap `cargo fuzz` with `cargo xtask fuzz` when repro-ing / minimizing failures in the HvLite repo!"
+                    );
                     return Err(e);
                 }
             }
@@ -431,7 +428,9 @@ impl Xtask for Fuzz {
                         let Ok(path) = path.strip_prefix(&ctx.root) else {
                             // Ok to throw away `std::path::StripPrefixError`,
                             // it doesn't contain any additional context
-                            anyhow::bail!("allowlist for '{name}' references file(s) outside of the HvLite directory")
+                            anyhow::bail!(
+                                "allowlist for '{name}' references file(s) outside of the HvLite directory"
+                            )
                         };
                         // add in "*/" to appease the OneFuzz allowlist syntax
                         writeln!(allowlist_file, "*/{}", path.display())?;

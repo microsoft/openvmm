@@ -3,26 +3,26 @@
 
 [package]
 name = "storvsp"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
 ioperf = ["dep:disklayer_ram"]
 
 # Enable generating arbitrary values of types useful for fuzzing.
-arbitrary = ["dep:arbitrary"]
+arbitrary = [ "scsi_defs/arbitrary"]
 
 # Expose some implementation details publicly, used for fuzzing.
-fuzz_helpers = []
+test = []
 
 [dependencies]
-arbitrary = { workspace = true, optional = true, features = ["derive"] }
 
 disklayer_ram = { workspace = true, optional = true } # For `ioperf` modules
 scsi_buffers.workspace = true
 scsi_core.workspace = true
 scsi_defs.workspace = true
 scsidisk.workspace = true
+storvsp_protocol.workspace = true
 storvsp_resources.workspace = true
 
 vmbus_async.workspace = true
@@ -48,7 +48,6 @@ anyhow.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
 futures.workspace = true
-open_enum.workspace = true
 parking_lot.workspace = true
 slab.workspace = true
 thiserror.workspace = true
@@ -56,7 +55,6 @@ tracelimit.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 criterion = { workspace = true, features = ["async"] }
 disklayer_ram.workspace = true

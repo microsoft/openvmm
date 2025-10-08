@@ -9,19 +9,19 @@
 use self::packed_nums::*;
 use bitfield_struct::bitfield;
 use thiserror::Error;
-use zerocopy::AsBytes;
-use zerocopy::ByteOrder;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u16_be = zerocopy::U16<zerocopy::BigEndian>;
     pub type u32_be = zerocopy::U32<zerocopy::BigEndian>;
     pub type u64_be = zerocopy::U64<zerocopy::BigEndian>;
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum InvalidInput {
     #[error("input data size too large for buffer - input size > upper bound: {0} > {1}")]
@@ -32,7 +32,6 @@ pub enum InvalidInput {
     NvPublicPayloadTooLarge(usize, usize),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum TpmProtoError {
     #[error("input user_auth to TpmsSensitiveCreate is invalid")]
@@ -61,18 +60,21 @@ pub enum TpmProtoError {
     ImportData(#[source] InvalidInput),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum ResponseValidationError {
     #[error("response size is too small to fit into the buffer")]
     ResponseSizeTooSmall,
-    #[error("size {size} specified in the response header does not meet the minimal size of command type {expected_size}, command succeeded: {command_succeeded}")]
+    #[error(
+        "size {size} specified in the response header does not meet the minimal size of command type {expected_size}, command succeeded: {command_succeeded}"
+    )]
     HeaderResponseSizeMismatch {
         size: u32,
         expected_size: usize,
         command_succeeded: bool,
     },
-    #[error("unexpected session tag {response_session_tag} specified in the response header, expected: {expected_session_tag}, command succeeded: {command_succeeded}")]
+    #[error(
+        "unexpected session tag {response_session_tag} specified in the response header, expected: {expected_session_tag}, command succeeded: {command_succeeded}"
+    )]
     HeaderSessionTagMismatch {
         response_session_tag: u16,
         expected_session_tag: u16,
@@ -81,7 +83,7 @@ pub enum ResponseValidationError {
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct ReservedHandle(pub u32_be);
 
 impl PartialEq<ReservedHandle> for u32 {
@@ -117,7 +119,7 @@ pub const NV_INDEX_RANGE_BASE_TCG_ASSIGNED: u32 = (TPM20_HT_NV_INDEX as u32) << 
 pub const MAX_DIGEST_BUFFER_SIZE: usize = 1024;
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SessionTag(pub u16_be);
 
 impl PartialEq<SessionTag> for u16 {
@@ -202,7 +204,7 @@ impl SessionTagEnum {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct CommandCode(pub u32_be);
 
 impl PartialEq<CommandCode> for u32 {
@@ -221,7 +223,7 @@ impl CommandCode {
     }
 }
 
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[expect(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u32)]
 pub enum CommandCodeEnum {
@@ -584,7 +586,7 @@ impl ResponseCode {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct AlgId(pub u16_be);
 
 impl PartialEq<AlgId> for u16 {
@@ -599,7 +601,7 @@ impl AlgId {
     }
 }
 
-#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+#[expect(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 #[repr(u16)]
 pub enum AlgIdEnum {
@@ -638,7 +640,7 @@ impl AlgIdEnum {
 
 /// `TPMA_OBJECT`
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct TpmaObject(pub u32_be);
 
 impl TpmaObject {
@@ -685,7 +687,7 @@ pub struct TpmaObjectBits {
 
 /// `TPMA_NV`
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct TpmaNv(pub u32_be);
 
 impl TpmaNv {
@@ -770,7 +772,7 @@ pub mod protocol {
         use super::*;
 
         #[repr(C)]
-        #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct CmdHeader {
             pub session_tag: SessionTag,
             pub size: u32_be,
@@ -792,7 +794,7 @@ pub mod protocol {
         }
 
         #[repr(C)]
-        #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct ReplyHeader {
             pub session_tag: u16_be,
             pub size: u32_be,
@@ -853,7 +855,7 @@ pub mod protocol {
         }
 
         #[repr(C)]
-        #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct CmdAuth {
             handle: ReservedHandle,
             nonce_2b: u16_be,
@@ -873,7 +875,7 @@ pub mod protocol {
         }
 
         #[repr(C)]
-        #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct ReplyAuth {
             pub nonce_2b: u16_be,
             pub session: u8,
@@ -885,7 +887,7 @@ pub mod protocol {
     use common::ReplyHeader;
 
     /// Marker trait for a struct that corresponds to a TPM Command
-    pub trait TpmCommand: AsBytes + FromBytes + Sized {
+    pub trait TpmCommand: IntoBytes + FromBytes + Sized + Immutable + KnownLayout {
         type Reply: TpmReply;
 
         fn base_validate_reply(
@@ -901,7 +903,7 @@ pub mod protocol {
     }
 
     /// Marker trait for a struct that corresponds to a TPM Reply
-    pub trait TpmReply: AsBytes + FromBytes + Sized {
+    pub trait TpmReply: IntoBytes + FromBytes + Sized + Immutable + KnownLayout {
         type Command: TpmCommand;
 
         fn base_validation(
@@ -909,8 +911,9 @@ pub mod protocol {
             session_tag: SessionTag,
         ) -> Result<bool, ResponseValidationError> {
             // `Reply::deserialize` guarantees this should not fail
-            let header =
-                ReplyHeader::ref_from_prefix(self.as_bytes()).expect("unexpected response size");
+            let header = ReplyHeader::ref_from_prefix(self.as_bytes())
+                .expect("unexpected response size")
+                .0; // TODO: zerocopy: error (https://github.com/microsoft/openvmm/issues/759)
             header.base_validation(session_tag, self.payload_size() as u32)
         }
         fn deserialize(bytes: &[u8]) -> Option<Self>;
@@ -919,7 +922,7 @@ pub mod protocol {
 
     /// General type for TPM 2.0 sized buffers.
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct Tpm2bBuffer {
         pub size: u16_be,
         // Use value that is large enough as the buffer size so that we
@@ -963,7 +966,7 @@ pub mod protocol {
                 return None;
             }
 
-            let size = zerocopy::BigEndian::read_u16(&bytes[start..end]);
+            let size: u16 = u16_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
             if size as usize > MAX_DIGEST_BUFFER_SIZE {
                 return None;
             }
@@ -994,7 +997,7 @@ pub mod protocol {
 
     /// `TPML_PCR_SELECTION`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmlPcrSelection {
         pub count: u32_be,
         pub pcr_selections: [PcrSelection; 5],
@@ -1035,7 +1038,7 @@ pub mod protocol {
                 return None;
             }
 
-            let count = zerocopy::BigEndian::read_u32(&bytes[start..end]);
+            let count: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
             if count > 5 {
                 return None;
             }
@@ -1068,7 +1071,7 @@ pub mod protocol {
 
     /// `TPMS_SENSITIVE_CREATE`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmsSensitiveCreate {
         user_auth: Tpm2bBuffer,
         data: Tpm2bBuffer,
@@ -1103,7 +1106,7 @@ pub mod protocol {
 
     /// `TPM2B_SENSITIVE_CREATE`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct Tpm2bSensitiveCreate {
         size: u16_be,
         sensitive: TpmsSensitiveCreate,
@@ -1140,7 +1143,7 @@ pub mod protocol {
 
     /// `TPMT_RSA_SCHEME`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes, PartialEq)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmtRsaScheme {
         scheme: AlgId,
         hash_alg: AlgId,
@@ -1175,12 +1178,12 @@ pub mod protocol {
                 return None;
             }
 
-            let scheme = AlgId::read_from_prefix(&bytes[start..end])?;
+            let scheme = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             let hash_alg = if scheme != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<AlgId>();
-                AlgId::read_from_prefix(&bytes[start..end])?
+                AlgId::read_from_prefix(&bytes[start..end]).ok()?.0 // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
             } else {
                 AlgId::new(0)
             };
@@ -1203,7 +1206,7 @@ pub mod protocol {
 
     /// `TPMT_SYM_DEF_OBJECT`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes, PartialEq)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmtSymDefObject {
         algorithm: AlgId,
         key_bits: u16_be,
@@ -1244,18 +1247,18 @@ pub mod protocol {
                 return None;
             }
 
-            let algorithm = AlgId::read_from_prefix(&bytes[start..end])?;
+            let algorithm = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             let (key_bits, mode) = if algorithm != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<u16_be>();
-                let key_bits = zerocopy::BigEndian::read_u16(&bytes[start..end]);
+                let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
                 start = end;
                 end += size_of::<AlgId>();
-                let mode = AlgId::read_from_prefix(&bytes[start..end])?;
+                let mode = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
-                (key_bits.into(), mode)
+                (key_bits, mode)
             } else {
                 (new_u16_be(0), AlgId::new(0))
             };
@@ -1283,7 +1286,7 @@ pub mod protocol {
 
     /// `TPMS_RSA_PARMS`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes, PartialEq)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmsRsaParams {
         symmetric: TpmtSymDefObject,
         scheme: TpmtRsaScheme,
@@ -1328,25 +1331,29 @@ pub mod protocol {
             let scheme = TpmtRsaScheme::deserialize(&bytes[start..])?;
             end += scheme.payload_size();
 
+            // TODO: zerocopy: as of zerocopy 0.8 this can be simplified with `read_from_bytes`....ok()?, to avoid (https://github.com/microsoft/openvmm/issues/759)
+            // manual size checks. Leaving this code as-is to reduce risk of the 0.7 -> 0.8 move.
             start = end;
             end += size_of::<u16_be>();
             if bytes.len() < end {
                 return None;
             }
-            let key_bits = zerocopy::BigEndian::read_u16(&bytes[start..end]);
+            let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?;
 
+            // TODO: zerocopy: as of zerocopy 0.8 this can be simplified with `read_from_bytes`....ok()?, to avoid (https://github.com/microsoft/openvmm/issues/759)
+            // manual size checks. Leaving this code as-is to reduce risk of the 0.7 -> 0.8 move.
             start = end;
             end += size_of::<u32_be>();
             if bytes.len() < end {
                 return None;
             }
-            let exponent = zerocopy::BigEndian::read_u32(&bytes[start..end]);
+            let exponent = u32_be::read_from_bytes(&bytes[start..end]).ok()?;
 
             Some(Self {
                 symmetric,
                 scheme,
-                key_bits: key_bits.into(),
-                exponent: exponent.into(),
+                key_bits,
+                exponent,
             })
         }
 
@@ -1364,11 +1371,11 @@ pub mod protocol {
 
     /// `TPMT_PUBLIC`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmtPublic {
-        r#type: AlgId,
+        my_type: AlgId,
         name_alg: AlgId,
-        object_attributes: TpmaObject,
+        pub object_attributes: TpmaObject,
         auth_policy: Tpm2bBuffer,
         // `TPMS_RSA_PARAMS`
         pub parameters: TpmsRsaParams,
@@ -1378,7 +1385,7 @@ pub mod protocol {
 
     impl TpmtPublic {
         pub fn new(
-            r#type: AlgId,
+            my_type: AlgId,
             name_alg: AlgId,
             object_attributes: TpmaObjectBits,
             auth_policy: &[u8],
@@ -1389,7 +1396,7 @@ pub mod protocol {
                 Tpm2bBuffer::new(auth_policy).map_err(TpmProtoError::TpmtPublicAuthPolicy)?;
             let unique = Tpm2bBuffer::new(unique).map_err(TpmProtoError::TpmtPublicUnique)?;
             Ok(Self {
-                r#type,
+                my_type,
                 name_alg,
                 object_attributes: object_attributes.into(),
                 auth_policy,
@@ -1401,7 +1408,7 @@ pub mod protocol {
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
-            buffer.extend_from_slice(self.r#type.as_bytes());
+            buffer.extend_from_slice(self.my_type.as_bytes());
             buffer.extend_from_slice(self.name_alg.as_bytes());
             buffer.extend_from_slice(self.object_attributes.as_bytes());
             buffer.extend_from_slice(&self.auth_policy.serialize());
@@ -1417,21 +1424,21 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let r#type = AlgId::read_from_prefix(&bytes[start..end])?;
+            let r#type = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<AlgId>();
             if bytes.len() < end {
                 return None;
             }
-            let name_alg = AlgId::read_from_prefix(&bytes[start..end])?;
+            let name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<TpmaObject>();
             if bytes.len() < end {
                 return None;
             }
-            let object_attributes = zerocopy::BigEndian::read_u32(&bytes[start..end]);
+            let object_attributes: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let auth_policy = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -1448,7 +1455,7 @@ pub mod protocol {
             let unique = Tpm2bBuffer::deserialize(&bytes[start..])?;
 
             Some(Self {
-                r#type,
+                my_type: r#type,
                 name_alg,
                 object_attributes: object_attributes.into(),
                 auth_policy,
@@ -1460,7 +1467,7 @@ pub mod protocol {
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
-            payload_size += size_of_val(&self.r#type);
+            payload_size += size_of_val(&self.my_type);
             payload_size += size_of_val(&self.name_alg);
             payload_size += size_of_val(&self.object_attributes);
             payload_size += self.auth_policy.payload_size();
@@ -1473,7 +1480,7 @@ pub mod protocol {
 
     /// `TPM2B_PUBLIC`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct Tpm2bPublic {
         pub size: u16_be,
         pub public_area: TpmtPublic,
@@ -1505,15 +1512,12 @@ pub mod protocol {
                 return None;
             }
 
-            let size = zerocopy::BigEndian::read_u16(&bytes[start..end]);
+            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let public_area = TpmtPublic::deserialize(&bytes[start..])?;
 
-            Some(Self {
-                size: size.into(),
-                public_area,
-            })
+            Some(Self { size, public_area })
         }
 
         pub fn payload_size(&self) -> usize {
@@ -1528,7 +1532,7 @@ pub mod protocol {
 
     /// `TPMS_CREATION_DATA`
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmsCreationData {
         pcr_select: TpmlPcrSelection,
         pcr_digest: Tpm2bBuffer,
@@ -1563,7 +1567,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let parent_name_alg = AlgId::read_from_prefix(&bytes[start..end])?;
+            let parent_name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let parent_name = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -1603,7 +1607,7 @@ pub mod protocol {
     }
 
     /// `TPM2B_CREATION_DATA`
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     #[repr(C)]
     pub struct Tpm2bCreationData {
         size: u16_be,
@@ -1619,13 +1623,13 @@ pub mod protocol {
                 return None;
             }
 
-            let size = zerocopy::BigEndian::read_u16(&bytes[start..end]);
+            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let creation_data = TpmsCreationData::deserialize(&bytes[start..])?;
 
             Some(Self {
-                size: size.into(),
+                size,
                 creation_data,
             })
         }
@@ -1642,7 +1646,7 @@ pub mod protocol {
 
     /// `TPMT_TK_CREATION`
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmtTkCreation {
         tag: SessionTag,
         hierarchy: ReservedHandle,
@@ -1656,14 +1660,14 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let tag = SessionTag::read_from_prefix(&bytes[start..end])?;
+            let tag = SessionTag::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<ReservedHandle>();
             if bytes.len() < end {
                 return None;
             }
-            let hierarchy = ReservedHandle::read_from_prefix(&bytes[start..end])?;
+            let hierarchy = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let digest = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -1688,7 +1692,7 @@ pub mod protocol {
 
     /// `TPMS_NV_PUBLIC`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmsNvPublic {
         nv_index: u32_be,
         name_alg: AlgId,
@@ -1735,21 +1739,21 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let nv_index = zerocopy::BigEndian::read_u32(&bytes[start..end]);
+            let nv_index: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<AlgId>();
             if bytes.len() < end {
                 return None;
             }
-            let name_alg = AlgId::read_from_prefix(&bytes[start..end])?;
+            let name_alg = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<TpmaNv>();
             if bytes.len() < end {
                 return None;
             }
-            let attributes = zerocopy::BigEndian::read_u32(&bytes[start..end]);
+            let attributes: u32 = u32_be::read_from_bytes(&bytes[start..end]).ok()?.into(); // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let auth_policy = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -1760,14 +1764,14 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let data_size = zerocopy::BigEndian::read_u16(&bytes[start..end]);
+            let data_size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             Some(Self {
                 nv_index: nv_index.into(),
                 name_alg,
                 attributes: attributes.into(),
                 auth_policy,
-                data_size: data_size.into(),
+                data_size,
             })
         }
 
@@ -1786,7 +1790,7 @@ pub mod protocol {
 
     /// `TPM2B_NV_PUBLIC`
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct Tpm2bNvPublic {
         size: u16_be,
         pub nv_public: TpmsNvPublic,
@@ -1822,15 +1826,12 @@ pub mod protocol {
                 return None;
             }
 
-            let size = zerocopy::BigEndian::read_u16(&bytes[start..end]);
+            let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let nv_public = TpmsNvPublic::deserialize(&bytes[start..])?;
 
-            Some(Self {
-                size: size.into(),
-                nv_public,
-            })
+            Some(Self { size, nv_public })
         }
 
         pub fn payload_size(&self) -> usize {
@@ -1846,7 +1847,7 @@ pub mod protocol {
     // === ClearControl === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ClearControlCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -1873,7 +1874,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ClearControlReply {
         pub header: ReplyHeader,
         pub param_size: u32_be,
@@ -1888,7 +1889,7 @@ pub mod protocol {
         type Command = ClearControlCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -1899,7 +1900,7 @@ pub mod protocol {
     // === Clear === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ClearCmd {
         header: CmdHeader,
 
@@ -1924,7 +1925,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ClearReply {
         pub header: ReplyHeader,
         pub param_size: u32_be,
@@ -1939,7 +1940,7 @@ pub mod protocol {
         type Command = ClearCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -1949,14 +1950,14 @@ pub mod protocol {
 
     // === Startup === //
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub enum StartupType {
         Clear,
         State,
     }
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct StartupCmd {
         header: CmdHeader,
         startup_type: u16_be,
@@ -1976,7 +1977,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct StartupReply {
         pub header: ReplyHeader,
     }
@@ -1989,7 +1990,7 @@ pub mod protocol {
         type Command = StartupCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2000,7 +2001,7 @@ pub mod protocol {
     // === Self Test === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SelfTestCmd {
         header: CmdHeader,
         full_test: u8,
@@ -2016,7 +2017,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SelfTestReply {
         pub header: ReplyHeader,
     }
@@ -2029,7 +2030,7 @@ pub mod protocol {
         type Command = SelfTestCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2040,7 +2041,7 @@ pub mod protocol {
     // === Hierarchy Control === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HierarchyControlCmd {
         header: CmdHeader,
 
@@ -2072,7 +2073,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HierarchyControlReply {
         pub header: ReplyHeader,
         pub param_size: u32_be,
@@ -2087,7 +2088,7 @@ pub mod protocol {
         type Command = HierarchyControlCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2098,7 +2099,7 @@ pub mod protocol {
     // === Pcr Allocate === //
 
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PcrSelection {
         pub hash: AlgId,
         pub size_of_select: u8,
@@ -2122,7 +2123,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let hash = AlgId::read_from_prefix(&bytes[start..end])?;
+            let hash = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u8>();
@@ -2161,7 +2162,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PcrAllocateCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -2232,7 +2233,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PcrAllocateReply {
         pub header: ReplyHeader,
         pub auth_size: u32_be,
@@ -2252,7 +2253,7 @@ pub mod protocol {
         type Command = PcrAllocateCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2263,7 +2264,7 @@ pub mod protocol {
     // === ChangeSeed === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ChangeSeedCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -2288,7 +2289,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ChangeSeedReply {
         pub header: ReplyHeader,
         pub param_size: u32_be,
@@ -2304,7 +2305,7 @@ pub mod protocol {
         type Command = ChangeSeedCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: option-to-error (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2315,7 +2316,7 @@ pub mod protocol {
     // === CreatePrimary === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct CreatePrimaryCmd {
         pub header: CmdHeader,
         primary_handle: ReservedHandle,
@@ -2397,7 +2398,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct CreatePrimaryReply {
         pub header: ReplyHeader,
         pub object_handle: ReservedHandle,
@@ -2423,7 +2424,7 @@ pub mod protocol {
         fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end])?;
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -2434,11 +2435,11 @@ pub mod protocol {
 
             start = end;
             end += size_of::<ReservedHandle>();
-            let object_handle = ReservedHandle::read_from_prefix(&bytes[start..end])?;
+            let object_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u32_be>();
-            let param_size = zerocopy::BigEndian::read_u32(&bytes[start..end]);
+            let param_size = u32_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let out_public = Tpm2bPublic::deserialize(&bytes[start..])?;
@@ -2462,7 +2463,9 @@ pub mod protocol {
 
             start = end;
             end += size_of::<common::ReplyAuth>();
-            let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])?;
+            let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])
+                .ok()?
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.size.get() as usize != end {
                 return None;
@@ -2471,7 +2474,7 @@ pub mod protocol {
             Some(Self {
                 header,
                 object_handle,
-                param_size: param_size.into(),
+                param_size,
                 out_public,
                 creation_data,
                 creation_hash,
@@ -2501,7 +2504,7 @@ pub mod protocol {
     // === FlushContext === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct FlushContextCmd {
         pub header: CmdHeader,
         // Parameter
@@ -2521,7 +2524,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct FlushContextReply {
         pub header: ReplyHeader,
     }
@@ -2534,7 +2537,7 @@ pub mod protocol {
         type Command = FlushContextCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2545,7 +2548,7 @@ pub mod protocol {
     // === EvictControl === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EvictControlCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -2577,7 +2580,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct EvictControlReply {
         pub header: ReplyHeader,
     }
@@ -2590,7 +2593,7 @@ pub mod protocol {
         type Command = EvictControlCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: error-to-option (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2601,7 +2604,7 @@ pub mod protocol {
     // === ReadPublic === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ReadPublicCmd {
         header: CmdHeader,
         object_handle: ReservedHandle,
@@ -2617,7 +2620,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct ReadPublicReply {
         pub header: ReplyHeader,
         pub out_public: Tpm2bPublic,
@@ -2636,7 +2639,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end])?;
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -2687,7 +2690,7 @@ pub mod protocol {
     // === Nv DefineSpace === //
 
     #[repr(C)]
-    #[derive(FromBytes, FromZeroes, AsBytes)]
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvDefineSpaceCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -2755,7 +2758,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvDefineSpaceReply {
         pub header: ReplyHeader,
     }
@@ -2768,7 +2771,7 @@ pub mod protocol {
         type Command = NvDefineSpaceCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2779,7 +2782,7 @@ pub mod protocol {
     // === Nv UndefineSpace === //
 
     #[repr(C)]
-    #[derive(FromBytes, FromZeroes, AsBytes)]
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvUndefineSpaceCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -2807,7 +2810,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvUndefineSpaceReply {
         pub header: ReplyHeader,
     }
@@ -2820,7 +2823,7 @@ pub mod protocol {
         type Command = NvUndefineSpaceCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -2831,7 +2834,7 @@ pub mod protocol {
     // === Nv ReadPublic === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct NvReadPublicCmd {
         header: CmdHeader,
         nv_index: u32_be,
@@ -2847,7 +2850,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvReadPublicReply {
         pub header: ReplyHeader,
         // Parameters
@@ -2866,7 +2869,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end])?;
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -2910,7 +2913,7 @@ pub mod protocol {
     // === Nv Write === //
 
     #[repr(C)]
-    #[derive(FromBytes, FromZeroes, AsBytes)]
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvWriteCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -3004,7 +3007,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvWriteReply {
         pub header: ReplyHeader,
     }
@@ -3017,7 +3020,7 @@ pub mod protocol {
         type Command = NvWriteCmd;
 
         fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Self::read_from_prefix(bytes)
+            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
         }
 
         fn payload_size(&self) -> usize {
@@ -3028,7 +3031,7 @@ pub mod protocol {
     // === Nv Read === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct NvReadCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -3072,7 +3075,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let header = CmdHeader::read_from_prefix(&bytes[start..end])?;
+            let header = CmdHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.command_code != CommandCodeEnum::NV_Read.into() {
                 return None;
@@ -3083,21 +3086,21 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let auth_handle = ReservedHandle::read_from_prefix(&bytes[start..end])?;
+            let auth_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u32_be>();
             if bytes.len() < end {
                 return None;
             }
-            let nv_index = u32_be::read_from_prefix(&bytes[start..end])?;
+            let nv_index = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u32_be>();
             if bytes.len() < end {
                 return None;
             }
-            let auth_size = u32_be::read_from_prefix(&bytes[start..end])?;
+            let auth_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Skip authorization area
             end += auth_size.get() as usize;
@@ -3107,14 +3110,14 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let size = u16_be::read_from_prefix(&bytes[start..end])?;
+            let size = u16_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u16_be>();
             if bytes.len() < end {
                 return None;
             }
-            let offset = u16_be::read_from_prefix(&bytes[start..end])?;
+            let offset = u16_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             Some(Self {
                 header,
@@ -3129,7 +3132,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvReadReply {
         pub header: ReplyHeader,
         pub parameter_size: u32_be,
@@ -3150,7 +3153,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end])?;
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -3167,7 +3170,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let parameter_size = u32_be::read_from_prefix(&bytes[start..end])?;
+            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             let data = Tpm2bBuffer::deserialize(&bytes[start..])?;
@@ -3178,7 +3181,9 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])?;
+            let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])
+                .ok()?
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.size.get() as usize != end {
                 return None;
@@ -3205,7 +3210,7 @@ pub mod protocol {
     // === Import === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ImportCmd {
         pub header: CmdHeader,
         pub auth_handle: ReservedHandle,
@@ -3327,7 +3332,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct ImportReply {
         pub header: ReplyHeader,
         pub parameter_size: u32_be,
@@ -3349,7 +3354,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end])?;
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -3366,7 +3371,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let parameter_size = u32_be::read_from_prefix(&bytes[start..end])?;
+            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
             let expected_auth_start = end + parameter_size.get() as usize;
 
             start = end;
@@ -3381,7 +3386,9 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])?;
+            let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])
+                .ok()?
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.size.get() as usize != end {
                 return None;
@@ -3408,7 +3415,7 @@ pub mod protocol {
     // === Load === //
 
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct LoadCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
@@ -3472,7 +3479,7 @@ pub mod protocol {
     }
 
     #[repr(C)]
-    #[derive(Debug, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct LoadReply {
         pub header: ReplyHeader,
         pub object_handle: ReservedHandle,
@@ -3495,7 +3502,7 @@ pub mod protocol {
             let mut start = 0;
             let mut end = size_of::<ReplyHeader>();
 
-            let header = ReplyHeader::read_from_prefix(&bytes[start..end])?;
+            let header = ReplyHeader::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             // Handle the command failure.
             if header.size.get() as usize == end {
@@ -3513,14 +3520,14 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let object_handle = ReservedHandle::read_from_prefix(&bytes[start..end])?;
+            let object_handle = ReservedHandle::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
             end += size_of::<u32_be>();
             if bytes.len() < end {
                 return None;
             }
-            let parameter_size = u32_be::read_from_prefix(&bytes[start..end])?;
+            let parameter_size = u32_be::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
             let expected_auth_start = end + parameter_size.get() as usize;
 
             start = end;
@@ -3535,7 +3542,9 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
-            let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])?;
+            let auth = common::ReplyAuth::read_from_prefix(&bytes[start..end])
+                .ok()?
+                .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
             if header.size.get() as usize != end {
                 return None;

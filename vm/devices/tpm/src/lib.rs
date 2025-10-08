@@ -9,8 +9,12 @@
 //! configuring MMIO request/response regions.
 
 #![cfg(feature = "tpm")]
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod ak_cert;
+pub mod logger;
+mod recover;
 pub mod resolver;
 mod tpm20proto;
 mod tpm_helper;
@@ -18,15 +22,21 @@ mod tpm_helper;
 use self::io_port_interface::PpiOperation;
 use self::io_port_interface::TpmIoCommand;
 use crate::ak_cert::TpmAkCertType;
+use crate::tpm20proto::TpmaObject;
+use crate::tpm20proto::TpmaObjectBits;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
+use logger::TpmLogEvent;
+use logger::TpmLogger;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
 use std::future::Future;
@@ -36,22 +46,22 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
-use tpm20proto::CommandCodeEnum;
-use tpm20proto::ReservedHandle;
-use tpm20proto::NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER;
-use tpm20proto::NV_INDEX_RANGE_BASE_TCG_ASSIGNED;
-use tpm20proto::TPM20_HT_PERSISTENT;
-use tpm20proto::TPM20_RH_PLATFORM;
 use tpm_helper::CommandDebugInfo;
 use tpm_helper::TpmCommandError;
 use tpm_helper::TpmEngineHelper;
 use tpm_helper::TpmHelperError;
 use tpm_resources::TpmRegisterLayout;
+use tpm20proto::CommandCodeEnum;
+use tpm20proto::NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER;
+use tpm20proto::NV_INDEX_RANGE_BASE_TCG_ASSIGNED;
+use tpm20proto::ReservedHandle;
+use tpm20proto::TPM20_HT_PERSISTENT;
+use tpm20proto::TPM20_RH_PLATFORM;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 pub const TPM_DEVICE_MMIO_REGION_BASE_ADDRESS: u64 = 0xfed40000;
 pub const TPM_DEVICE_MMIO_REGION_SIZE: u64 = 0x70;
@@ -82,6 +92,7 @@ const TPM_GUEST_SECRET_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PER
 
 // Reserved handles for Microsoft (Component OEM) ranges from 0x01c101c0 to 0x01c101ff
 const TPM_NV_INDEX_AIK_CERT: u32 = NV_INDEX_RANGE_BASE_TCG_ASSIGNED + 0x000101d0;
+const TPM_NV_INDEX_MITIGATED: u32 = NV_INDEX_RANGE_BASE_TCG_ASSIGNED + 0x000101d2;
 const TPM_NV_INDEX_ATTESTATION_REPORT: u32 = NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER + 0x1;
 const TPM_NV_INDEX_GUEST_ATTESTATION_INPUT: u32 = NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER + 0x2;
 
@@ -93,6 +104,9 @@ const ATTESTATION_REPORT_DATA_SIZE: usize = 0x40;
 const AK_CERT_RENEW_PERIOD: std::time::Duration = std::time::Duration::new(24 * 60 * 60, 0);
 // 2 seconds
 const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
+
+// 16kB: vtpmservice provisions a 16kB blob for the vTPM; HCL/OpenHCL provisions a 32k blob
+const LEGACY_VTPM_SIZE: usize = 16384;
 
 #[derive(Debug, Copy, Clone, Inspect)]
 #[repr(C)]
@@ -142,7 +156,7 @@ struct ControlArea {
 }
 
 // TODO: switch this over to open_enum!
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl ControlArea {
     const OFFSET_OF_LOC_STATE: usize = 0x00;
     const OFFSET_OF_LOC_CTRL: usize = 0x08;
@@ -212,11 +226,14 @@ pub struct Tpm {
     io_region: Option<(&'static str, RangeInclusive<u16>)>, // Valid only on HypervX64
     #[inspect(skip)]
     mmio_region: Vec<(&'static str, RangeInclusive<u64>)>,
+    allow_ak_cert_renewal: bool,
 
     // Runtime glue
     rt: TpmRuntime,
     #[inspect(skip)]
     ak_cert_type: TpmAkCertType,
+    #[inspect(skip)]
+    logger: Option<Arc<dyn TpmLogger>>,
 
     // Sub-emulators
     #[inspect(skip)]
@@ -250,12 +267,6 @@ pub struct Tpm {
 #[error(transparent)]
 pub struct TpmError(#[from] TpmErrorKind);
 
-impl From<ms_tpm_20_ref::Error> for TpmError {
-    fn from(e: ms_tpm_20_ref::Error) -> Self {
-        Self(TpmErrorKind::TpmPlatform(e))
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum TpmErrorKind {
     #[error("failed to read Ppi state")]
@@ -268,8 +279,12 @@ pub enum TpmErrorKind {
     PersistNvramState(#[source] NonVolatileStoreError),
     #[error("failed to deserialized Ppi state")]
     InvalidPpiState,
-    #[error("TPM platform error")]
-    TpmPlatform(#[from] ms_tpm_20_ref::Error),
+    #[error("failed to instantiate TPM")]
+    InstantiateTpm(#[source] ms_tpm_20_ref::Error),
+    #[error("failed to reset TPM without Nvram state")]
+    ResetTpmWithoutState(#[source] ms_tpm_20_ref::Error),
+    #[error("failed to reset TPM with Nvram state")]
+    ResetTpmWithState(#[source] ms_tpm_20_ref::Error),
     #[error("failed to initialize TPM engine")]
     InitializeTpmEngine(#[source] TpmHelperError),
     #[error("failed to clear TPM platform context")]
@@ -286,8 +301,12 @@ pub enum TpmErrorKind {
     ReadFromNvIndex(#[source] TpmHelperError),
     #[error("failed to write to nv index")]
     WriteToNvIndex(#[source] TpmHelperError),
-    #[error("failed to get an attestation report")]
-    GetAttestationReport(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("failed to create ak cert request (is attestation report: {is_attestation_report})")]
+    CreateAkCertRequest {
+        is_attestation_report: bool,
+        #[source]
+        error: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[error("failed to clear platform hierarchy")]
     ClearPlatformHierarchy(#[source] TpmHelperError),
     #[error("failed to set pcr banks")]
@@ -306,7 +325,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 
     fn get_crypt_random(&mut self, buf: &mut [u8]) -> ms_tpm_20_ref::DynResult<usize> {
-        getrandom::getrandom(buf).expect("rng failure");
+        getrandom::fill(buf).expect("rng failure");
         Ok(buf.len())
     }
 
@@ -330,6 +349,8 @@ impl Tpm {
         is_restoring: bool,
         ak_cert_type: TpmAkCertType,
         guest_secret_key: Option<Vec<u8>>,
+        logger: Option<Arc<dyn TpmLogger>>,
+        is_confidential_vm: bool,
     ) -> Result<Self, TpmError> {
         tracing::info!("initializing TPM");
 
@@ -343,7 +364,8 @@ impl Tpm {
                         monotonic_timer,
                     }),
                     ms_tpm_20_ref::InitKind::ColdInit,
-                )?
+                )
+                .map_err(TpmErrorKind::InstantiateTpm)?
             },
             reply_buffer: [0u8; TPM_PAGE_SIZE],
         };
@@ -382,6 +404,7 @@ impl Tpm {
             refresh_tpm_seeds,
             io_region,
             mmio_region,
+            allow_ak_cert_renewal: false,
 
             rt: TpmRuntime {
                 mem,
@@ -389,13 +412,14 @@ impl Tpm {
                 nvram_store,
             },
             ak_cert_type,
-            async_ak_cert_request: None,
-            waker: None,
+            logger,
 
             tpm_engine_helper,
 
             command_buffer: [0; TPM_PAGE_SIZE],
             pending_nvram,
+            async_ak_cert_request: None,
+            waker: None,
             ak_cert_renew_time: None,
             attestation_report_renew_time: None,
 
@@ -408,7 +432,8 @@ impl Tpm {
         };
 
         if !is_restoring {
-            tpm.on_first_boot(guest_secret_key).await?;
+            tpm.on_first_boot(guest_secret_key, is_confidential_vm)
+                .await?;
         }
 
         tracing::info!("TPM initialized");
@@ -429,7 +454,15 @@ impl Tpm {
         Ok(())
     }
 
-    async fn on_first_boot(&mut self, guest_secret_key: Option<Vec<u8>>) -> Result<(), TpmError> {
+    async fn on_first_boot(
+        &mut self,
+        guest_secret_key: Option<Vec<u8>>,
+        is_confidential_vm: bool,
+    ) -> Result<(), TpmError> {
+        use ms_tpm_20_ref::NvError;
+        let mut force_ak_regen = false;
+        let fixup_16k_ak_cert;
+
         // Check whether or not we need to pave-over the blank TPM with our
         // existing nvmem state.
         {
@@ -438,8 +471,34 @@ impl Tpm {
                 .await
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
-            if let Some(blob) = existing_nvmem_blob {
-                self.tpm_engine_helper.tpm_engine.reset(Some(&blob))?;
+            if let Some(mut blob) = existing_nvmem_blob {
+                // Previous versions before this code had a bug where sizes
+                // smaller than 32K would be reported as 32K. Fixup the blob so
+                // that the TPM nvram is consistent - this code can be removed
+                // once the fix for reporting the NVRAM size correctly is
+                // everywhere.
+                recover::recover_blob(&mut blob);
+                if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
+                    if let ms_tpm_20_ref::Error::NvMem(NvError::MismatchedBlobSize) = e {
+                        self.logger
+                            .log_event_and_flush(TpmLogEvent::InvalidState)
+                            .await;
+                    }
+
+                    return Err(TpmErrorKind::ResetTpmWithState(e).into());
+                }
+
+                // If this is a confidential VM or has a vTPM blob size that indicates that it was
+                // HCL-provisioned, regenerate the AK from TPM seeds. This prevents an attack where
+                // the VTL0 admin can replace the AK and get an AKCert for it.
+                force_ak_regen =
+                    self.refresh_tpm_seeds || blob.len() != LEGACY_VTPM_SIZE || is_confidential_vm;
+
+                // If this is a small vTPM blob, potentially fixup the AK cert.
+                fixup_16k_ak_cert = blob.len() == LEGACY_VTPM_SIZE;
+            } else {
+                // No fixup is required, because there is no existing NVRAM blob.
+                fixup_16k_ak_cert = false;
             }
         }
 
@@ -450,9 +509,13 @@ impl Tpm {
         // If necessary, recreate EPS & PPS.
         // The host indicates this when VM identity changes.
         if self.refresh_tpm_seeds {
-            self.tpm_engine_helper
-                .refresh_tpm_seeds()
-                .map_err(TpmErrorKind::RefreshTpmSeeds)?;
+            if let Err(e) = self.tpm_engine_helper.refresh_tpm_seeds() {
+                self.logger
+                    .log_event_and_flush(TpmLogEvent::IdentityChangeFailed)
+                    .await;
+
+                return Err(TpmErrorKind::RefreshTpmSeeds(e).into());
+            }
 
             tracing::info!("TPM seeds have been refreshed");
         }
@@ -465,8 +528,16 @@ impl Tpm {
                 .map_err(TpmErrorKind::ReadPpiState)?;
 
             if let Some(buf) = raw_ppi_state {
-                let ppi_state = persist_restore::deserialize_ppi_state(buf)
-                    .ok_or(TpmErrorKind::InvalidPpiState)?;
+                let ppi_state = match persist_restore::deserialize_ppi_state(buf) {
+                    Some(state) => state,
+                    None => {
+                        self.logger
+                            .log_event_and_flush(TpmLogEvent::InvalidState)
+                            .await;
+
+                        return Err(TpmErrorKind::InvalidPpiState.into());
+                    }
+                };
 
                 self.ppi_state = ppi_state;
                 if self.ppi_state.pending_ppi_operation != PpiOperation::NO_OP {
@@ -480,28 +551,31 @@ impl Tpm {
             }
         }
 
-        if matches!(
-            self.ak_cert_type,
-            TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_)
-        ) {
+        if !matches!(self.ak_cert_type, TpmAkCertType::None) {
             // Create auth value for NV index password authorization.
             // The value needs to be preserved across live servicing.
             let mut auth_value = 0;
-            getrandom::getrandom(auth_value.as_bytes_mut()).expect("rng failure");
+            getrandom::fill(auth_value.as_mut_bytes()).expect("rng failure");
             self.auth_value = Some(auth_value);
 
             // Initialize `TpmKeys`.
             // The procedure also generates randomized AK based on the TPM seed
             // and writes the AK into `TPM_AZURE_AIK_HANDLE` NV store.
-            let ak_pub = self
+            let (ak_pub, can_renew_ak) = self
                 .tpm_engine_helper
-                .create_ak_pub(self.refresh_tpm_seeds)
+                .create_ak_pub(force_ak_regen)
                 .map_err(TpmErrorKind::CreateAkPublic)?;
             let ek_pub = self
                 .tpm_engine_helper
                 .create_ek_pub()
                 .map_err(TpmErrorKind::CreateEkPublic)?;
             self.keys = Some(TpmKeys { ak_pub, ek_pub });
+            tracing::info!(
+                CVM_ALLOWED,
+                can_renew_ak,
+                "loaded existing AK from VMGS vTPM state"
+            );
+            self.allow_ak_cert_renewal = can_renew_ak;
 
             // Conditionally define nv indexes for ak cert and attestation report.
             // The Nvram size can only be defined with platform hierarchy. Otherwise
@@ -511,13 +585,22 @@ impl Tpm {
             self.tpm_engine_helper
                 .allocate_guest_attestation_nv_indices(
                     auth_value,
-                    self.refresh_tpm_seeds,
-                    matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)),
+                    !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
+                    self.ak_cert_type.attested(),
+                    fixup_16k_ak_cert,
                 )
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
 
-            // Initialize `TPM_NV_INDEX_AIK_CERT` and `TPM_NV_INDEX_ATTESTATION_REPORT`
-            self.renew_ak_cert()?;
+            // Initialize `TPM_NV_INDEX_AIK_CERT` if `ak_cert_type` requires AK cert and the cert is not pre-provisioned.
+            if !matches!(self.ak_cert_type, TpmAkCertType::TrustedPreProvisionedOnly) {
+                self.renew_ak_cert()?;
+            }
+
+            // Initialize `TPM_NV_INDEX_ATTESTATION_REPORT` if `ak_cert_type` supports attestation
+            // report.
+            if self.ak_cert_type.attested() {
+                self.renew_attestation_report()?;
+            }
         }
 
         // If guest secret key is passed in, import the key into TPM.
@@ -529,7 +612,9 @@ impl Tpm {
                 .initialize_guest_secret_key(&guest_secret_key)
             {
                 // Failures are non-fatal as the feature is not necessary for booting.
+                tracing::error!(CVM_ALLOWED, "Failed to initialize guest secret key");
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     error = &e as &dyn std::error::Error,
                     "Failed to initialize guest secret key"
                 );
@@ -561,7 +646,10 @@ impl Tpm {
             let io_command = match self.current_io_command {
                 Some(cmd) => cmd,
                 None => {
-                    tracelimit::warn_ratelimited!("Invalid tpm IO data port read (no command set)");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        "Invalid tpm IO data port read (no command set)"
+                    );
                     return IoResult::Ok;
                 }
             };
@@ -577,7 +665,11 @@ impl Tpm {
                     io_port_interface::TcgProtocol::Tcg2 as u32
                 }
                 _ => {
-                    tracelimit::warn_ratelimited!(?io_command, "Invalid tpm IO data read");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        ?io_command,
+                        "Invalid tpm IO data read"
+                    );
                     return IoResult::Ok;
                 }
             }
@@ -612,6 +704,7 @@ impl Tpm {
                 Some(cmd) => cmd,
                 None => {
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         "Invalid tpm IO data port write (no command set)"
                     );
                     return IoResult::Ok;
@@ -641,18 +734,27 @@ impl Tpm {
                     self.ppi_state.tpm_capability_hash_alg_bitmap = val;
                 }
                 other => {
-                    tracelimit::warn_ratelimited!(?other, "unimplemented TpmIoCommand");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        ?other,
+                        "unimplemented TpmIoCommand"
+                    );
                     update_ppi = false;
                 }
             };
 
             if update_ppi {
-                let res = pal_async::local::block_with_io(|_| {
+                let res = pal_async::local::block_on(
                     (self.rt.ppi_store)
-                        .persist(persist_restore::serialize_ppi_state(self.ppi_state))
-                });
+                        .persist(persist_restore::serialize_ppi_state(self.ppi_state)),
+                );
                 if let Err(e) = res {
                     tracing::warn!(
+                        CVM_ALLOWED,
+                        "could not persist ppi state to non-volatile store"
+                    );
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
                         error = &e as &dyn std::error::Error,
                         "could not persist ppi state to non-volatile store"
                     );
@@ -683,7 +785,7 @@ impl Tpm {
                 self.ppi_state.ppi_set_operation_arg3_integer2,
             )?,
             other => {
-                tracelimit::warn_ratelimited!(?other, "unknown pending PPI operation");
+                tracelimit::warn_ratelimited!(CVM_ALLOWED, ?other, "unknown pending PPI operation");
                 0
             }
         };
@@ -705,6 +807,7 @@ impl Tpm {
             Err(error) => {
                 if let TpmCommandError::TpmCommandFailed { response_code } = error {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         err = &error as &dyn std::error::Error,
                         "tpm PcrAllocateCmd failed"
                     );
@@ -733,33 +836,51 @@ impl Tpm {
         //
         // Below is the 2nd reboot of TPM device so that the new active PCRs take into effect.
         if response_code == tpm20proto::ResponseCode::Success as u32 {
-            self.tpm_engine_helper.tpm_engine.reset(None)?;
+            self.tpm_engine_helper
+                .tpm_engine
+                .reset(None)
+                .map_err(TpmErrorKind::ResetTpmWithoutState)?;
             self.tpm_engine_helper
                 .initialize_tpm_engine()
                 .map_err(TpmErrorKind::InitializeTpmEngine)?;
-            tracelimit::info_ratelimited!("tpm reset after sending PcrAllocateCmd");
+            tracelimit::info_ratelimited!(CVM_ALLOWED, "tpm reset after sending PcrAllocateCmd");
         }
 
         Ok(response_code)
     }
 
-    /// Create a new request needed by AK cert request callout.
+    /// Create a new request needed by AK cert request callout or an attestation report exposed to the guest.
     ///
-    /// This function can only be called when `ak_cert_type` is `Trusted` or `HwAttested`.
-    fn create_ak_cert_request(&mut self) -> Result<Vec<u8>, TpmError> {
+    /// This function can only be called when `ak_cert_type` is `Trusted`, `HwAttested`, or `SwAttested`.
+    fn create_ak_cert_request_or_attestation_report(
+        &mut self,
+        is_attestation_report: bool,
+    ) -> Result<Vec<u8>, TpmError> {
         let mut guest_attestation_input = [0u8; ATTESTATION_REPORT_DATA_SIZE];
-        self.tpm_engine_helper
-            .read_from_nv_index(
-                TPM_NV_INDEX_GUEST_ATTESTATION_INPUT,
-                &mut guest_attestation_input,
-            )
-            .map_err(TpmErrorKind::ReadFromNvIndex)?;
+
+        // Read the guest attestation input from `TPM_NV_INDEX_GUEST_ATTESTATION_INPUT` nv index
+        // if `is_attestation_report` is true.
+        if is_attestation_report {
+            // No need to check the result as long as it's Ok(..) because the output data will
+            // remain unchanged (all 0's) if the NV index is unallocated or uninitialized.
+            self.tpm_engine_helper
+                .read_from_nv_index(
+                    TPM_NV_INDEX_GUEST_ATTESTATION_INPUT,
+                    &mut guest_attestation_input,
+                )
+                .map_err(TpmErrorKind::ReadFromNvIndex)?;
+        }
 
         let keys = self.keys.as_ref().expect("Tpm keys uninitialized");
         let request_ak_cert_helper = self
             .ak_cert_type
             .get_ak_cert_helper()
             .expect("`ak_cert_type` should not be `None`");
+
+        // DEVNOTE: When `is_attestation_report` is true, the returned data represents a stable structure used by the guest OS
+        // as an attestation report. When `is_attestation_report` is false, the returned data serves as a payload for an AK
+        // certificate request, and its structure may evolve over time. The design ensures that updates to the AK cert request
+        // format do not compromise the stability of the attestation report structure.
         let ak_cert_request = request_ak_cert_helper
             .create_ak_cert_request(
                 &keys.ak_pub.modulus,
@@ -767,28 +888,45 @@ impl Tpm {
                 &keys.ek_pub.modulus,
                 &keys.ek_pub.exponent,
                 &guest_attestation_input,
+                is_attestation_report,
             )
-            .map_err(TpmErrorKind::GetAttestationReport)?;
+            .map_err(|error| TpmErrorKind::CreateAkCertRequest {
+                is_attestation_report,
+                error,
+            })?;
 
         Ok(ak_cert_request)
     }
 
-    /// Renew the nv index `TPM_NV_INDEX_ATTESTATION_REPORT` with the input data.
+    /// Renew the nv index `TPM_NV_INDEX_ATTESTATION_REPORT`.
     ///
-    /// This function is expected to only be called when `ak_cert_type` is `HwAttested`.
-    fn renew_attestation_report(&mut self, data: &[u8]) -> Result<(), TpmError> {
+    /// This function is expected to only be called when `ak_cert_type` is `HwAttested` or `SwAttested`.
+    fn renew_attestation_report(&mut self) -> Result<(), TpmError> {
         let auth_value = self.auth_value.expect("auth value is uninitialized");
-        self.attestation_report_renew_time = Some(std::time::SystemTime::now());
+        let attestation_report = self.create_ak_cert_request_or_attestation_report(true)?;
+
         self.tpm_engine_helper
-            .write_to_nv_index(auth_value, TPM_NV_INDEX_ATTESTATION_REPORT, data)
+            .write_to_nv_index(
+                auth_value,
+                TPM_NV_INDEX_ATTESTATION_REPORT,
+                &attestation_report,
+            )
             .map_err(TpmErrorKind::WriteToNvIndex)?;
+
+        self.attestation_report_renew_time = Some(std::time::SystemTime::now());
 
         Ok(())
     }
 
     /// This routine calls (via GET) external server to issue AK cert.
-    /// This function can only be called when `ak_cert_type` is `Trusted` or `HwAttested`.
+    /// This function can only be called when `ak_cert_type` is `Trusted`, `HwAttested`, or `SwAttested`.
     fn renew_ak_cert(&mut self) -> Result<(), TpmError> {
+        // Silently do nothing if renewal is not allowed.
+        if !self.allow_ak_cert_renewal {
+            tracing::info!(CVM_ALLOWED, "AK cert renewal is not allowed");
+            return Ok(());
+        }
+
         // Return if the request is pending
         if self.async_ak_cert_request.is_some() {
             return Ok(());
@@ -796,12 +934,7 @@ impl Tpm {
 
         tracing::trace!("Request AK cert renewal");
 
-        let ak_cert_request = self.create_ak_cert_request()?;
-        // Store the ak cert request that includes the attestation report if `ak_cert_type` is `HwAttested`.
-        if matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)) {
-            self.renew_attestation_report(&ak_cert_request)?;
-        }
-
+        let ak_cert_request = self.create_ak_cert_request_or_attestation_report(false)?;
         let request_ak_cert_helper = self
             .ak_cert_type
             .get_ak_cert_helper()
@@ -831,34 +964,48 @@ impl Tpm {
             if let Poll::Ready(result) = async_ak_cert_request.as_mut().poll(cx) {
                 // Once the received the response, update the renew time using `SystemTime::now`.
                 // DEVNOTE: The system time may not reflect the real time when suspension and resumption occur.
-                // See more details in `refresh_ak_cert_on_nv_read`.
+                // See more details in `refresh_device_attestation_data_on_nv_read`.
                 let now = std::time::SystemTime::now();
-
-                // Set the renew time regardless whether AK cert is successfully updated or not, avoiding
-                // retrying on each nv read in the case of host agent being unavailable.
-                // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
-                // `refresh_ak_cert_on_nv_read` is triggered.
-                self.ak_cert_renew_time = Some(now);
 
                 // Clear `async_ak_cert_request` to allow the next renewal request.
                 self.async_ak_cert_request = None;
 
-                // Parse the response. Empty response or errors indicate that the host agent is unavailable.
+                // Parse the response. Empty response indicates that the host agent is unavailable.
                 let response = match result {
-                    Ok(data) if !data.is_empty() => data,
+                    Ok(data) if !data.is_empty() => {
+                        // Set the renew time if successfully receiving the data.
+                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
+                        // `refresh_device_attestation_data_on_nv_read` is triggered.
+                        self.ak_cert_renew_time = Some(now);
+
+                        data
+                    }
                     Ok(_data) => {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             "The requested TPM AK cert is empty - now: {:?}",
                             now.duration_since(std::time::UNIX_EPOCH),
                         );
+
+                        // Set the renew time if the ak cert is empty, avoiding retrying on each nv read
+                        // in the case of host agent being unavailable.
+                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
+                        // `refresh_device_attestation_data_on_nv_read` is triggered.
+                        self.ak_cert_renew_time = Some(now);
+
                         return;
                     }
                     Err(error) => {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             error,
                             "Failed to request new TPM AK cert - now: {:?}",
                             now.duration_since(std::time::UNIX_EPOCH),
                         );
+
+                        // Use the non-async version of function to log the event (without flushing).
+                        self.logger.log_event(TpmLogEvent::AkCertRenewalFailed);
+
                         return;
                     }
                 };
@@ -870,6 +1017,7 @@ impl Tpm {
                     &response,
                 ) {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         error = &e as &dyn std::error::Error,
                         "Failed write new TPM AK cert to NV index"
                     );
@@ -888,6 +1036,12 @@ impl Tpm {
 
     /// Renew device attestation data (i.e., attestation report and AK cert) on NV_Read if needed
     fn refresh_device_attestation_data_on_nv_read(&mut self) {
+        // Silently do nothing if renewal is not allowed.
+        if !self.allow_ak_cert_renewal {
+            tracing::info!(CVM_ALLOWED, "AK cert renewal is not allowed");
+            return;
+        }
+
         let Some(nv_read) = tpm20proto::protocol::NvReadCmd::deserialize(&self.command_buffer)
         else {
             return;
@@ -923,27 +1077,18 @@ impl Tpm {
         // On start of read of attestation report index, refresh report when
         // attestation report is supported.
         if u32::from(nv_read.nv_index) == TPM_NV_INDEX_ATTESTATION_REPORT
-            && matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_))
+            && self.ak_cert_type.attested()
         {
             if attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
                 || self.attestation_report_renew_time.is_none()
             {
-                // Renew tha attestation report as part of the request creation call.
-                match self.create_ak_cert_request() {
-                    Ok(ak_cert_request) => {
-                        if let Err(e) = self.renew_attestation_report(&ak_cert_request) {
-                            tracelimit::error_ratelimited!(
-                                error = &e as &dyn std::error::Error,
-                                "Error while renewing the attestation report on NvRead"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracelimit::error_ratelimited!(
-                            error = &e as &dyn std::error::Error,
-                            "Error while creating ak cert request for renewing the attestation report"
-                        );
-                    }
+                // Renew the attestation report.
+                if let Err(e) = self.renew_attestation_report() {
+                    tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
+                        error = &e as &dyn std::error::Error,
+                        "Error renewing the attestation report"
+                    );
                 }
             } else {
                 tracing::warn!("Hardware attestation report generation was rate limited");
@@ -953,11 +1098,15 @@ impl Tpm {
             // and past hardware renewal period.
             let renew_cert_needed = (self.ak_cert_renew_time.is_none()
                 || ak_cert_renew_elapsed > AK_CERT_RENEW_PERIOD)
-                && attestation_report_renew_elapsed > REPORT_TIMER_PERIOD;
+                && (attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
+                    || self.attestation_report_renew_time.is_none());
+
+            tracing::debug!(renew_cert_needed, ak_cert_renew_time =? self.ak_cert_renew_time, "tpm: cert renew check");
 
             if renew_cert_needed {
                 if let Err(e) = self.renew_ak_cert() {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         error = &e as &dyn std::error::Error,
                         "Error while renewing AK cert on NvRead"
                     );
@@ -984,7 +1133,7 @@ impl ChangeDeviceState for Tpm {
         self.tpm_engine_helper
             .initialize_tpm_engine()
             .expect("failed to send TPM startup commands");
-        pal_async::local::block_with_io(|_| self.flush_pending_nvram())
+        pal_async::local::block_on(self.flush_pending_nvram())
             .expect("failed to flush nvram on reset");
     }
 }
@@ -1127,7 +1276,7 @@ impl MmioIntercept for Tpm {
         };
 
         let mut val: u32 = 0;
-        val.as_bytes_mut()[..data.len()].copy_from_slice(data);
+        val.as_mut_bytes()[..data.len()].copy_from_slice(data);
         match (address - TPM_DEVICE_MMIO_REGION_BASE_ADDRESS) as usize {
             ControlArea::OFFSET_OF_LOC_STATE => {}
             ControlArea::OFFSET_OF_LOC_CTRL => self.requested_locality = val & 0x2 != 0x2,
@@ -1151,6 +1300,7 @@ impl MmioIntercept for Tpm {
 
                     if let Err(e) = res {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Failed to read TPM command from guest memory"
                         );
@@ -1160,7 +1310,8 @@ impl MmioIntercept for Tpm {
                     let cmd_header = tpm20proto::protocol::common::CmdHeader::ref_from_prefix(
                         &self.command_buffer,
                     )
-                    .and_then(|cmd_header| cmd_header.command_code.into_enum());
+                    .ok() // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+                    .and_then(|(cmd_header, _)| cmd_header.command_code.into_enum());
 
                     tracing::debug!(
                         cmd = ?cmd_header,
@@ -1169,7 +1320,9 @@ impl MmioIntercept for Tpm {
 
                     if matches!(
                         self.ak_cert_type,
-                        TpmAkCertType::Trusted(_) | TpmAkCertType::HwAttested(_)
+                        TpmAkCertType::Trusted(_)
+                            | TpmAkCertType::HwAttested(_)
+                            | TpmAkCertType::SwAttested(_)
                     ) {
                         if let Some(CommandCodeEnum::NV_Read) = cmd_header {
                             self.refresh_device_attestation_data_on_nv_read()
@@ -1181,6 +1334,7 @@ impl MmioIntercept for Tpm {
                         &mut self.tpm_engine_helper.reply_buffer,
                     ) {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Error while executing TPM command"
                         );
@@ -1191,7 +1345,7 @@ impl MmioIntercept for Tpm {
                         response_code = ?tpm20proto::protocol::common::ReplyHeader::ref_from_prefix(
                         &self.tpm_engine_helper.reply_buffer,
                         )
-                        .map(|reply| reply.response_code),
+                        .map(|(reply, _)| reply.response_code), // TODO: zerocopy: manual: review carefully! (https://github.com/microsoft/openvmm/issues/759)
                         "response code from guest tpm cmd",
                     );
 
@@ -1202,6 +1356,7 @@ impl MmioIntercept for Tpm {
 
                     if let Err(e) = res {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Failed to write TPM reply into guest memory"
                         );
@@ -1214,9 +1369,11 @@ impl MmioIntercept for Tpm {
             _ => return IoResult::Err(IoError::InvalidRegister),
         }
 
-        let res = pal_async::local::block_with_io(|_| self.flush_pending_nvram());
+        let res = pal_async::local::block_on(self.flush_pending_nvram());
         if let Err(e) = res {
+            tracing::warn!(CVM_ALLOWED, "could not commit nvram to non-volatile store");
             tracing::warn!(
+                CVM_CONFIDENTIAL,
                 error = &e as &dyn std::error::Error,
                 "could not commit nvram to non-volatile store"
             );
@@ -1230,16 +1387,31 @@ impl MmioIntercept for Tpm {
     }
 }
 
+/// Expected attributes for a correctly-provisioned AK.
+pub fn expected_ak_attributes() -> TpmaObject {
+    TpmaObjectBits::new()
+        .with_fixed_tpm(true)
+        .with_fixed_parent(true)
+        .with_sensitive_data_origin(true)
+        .with_user_with_auth(true)
+        .with_no_da(true)
+        .with_restricted(true)
+        .with_sign_encrypt(true)
+        .into()
+}
+
 /// The IO port interface bespoke to the Hyper-V implementation of the vTPM.
 mod io_port_interface {
     use inspect::Inspect;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
+
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     open_enum::open_enum! {
         /// I/O port command definitions
-        #[derive(Inspect, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes)]
         #[inspect(debug)]
         pub enum TpmIoCommand: u32 {
             /// It can be used for engine vs. guest version negotiation. Not used.
@@ -1267,7 +1439,7 @@ mod io_port_interface {
         }
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     #[repr(u32)]
     #[derive(Debug, Copy, Clone)]
     pub enum TcgProtocol {
@@ -1279,7 +1451,7 @@ mod io_port_interface {
         /// Table 2: Physical Presence Interface Operation Summary for TPM 2.0
         ///
         /// Part of the Physical Presence Interface Specification - TCG PC Client Platform
-        #[derive(Inspect, AsBytes, FromBytes, FromZeroes)]
+        #[derive(Inspect, IntoBytes, Immutable, KnownLayout, FromBytes)]
         #[inspect(debug)]
         pub enum PpiOperation: u32 {
             NO_OP = 0,
@@ -1308,11 +1480,13 @@ mod persist_restore {
     use super::*;
 
     mod state {
-        use zerocopy::AsBytes;
         use zerocopy::FromBytes;
-        use zerocopy::FromZeroes;
 
-        #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
         #[repr(C)]
         pub struct PersistedPpiState {
             pub pending_ppi_operation: u32,
@@ -1326,7 +1500,7 @@ mod persist_restore {
     }
 
     pub(crate) fn deserialize_ppi_state(buf: Vec<u8>) -> Option<PpiState> {
-        let saved = state::PersistedPpiState::read_from(buf.as_bytes())?;
+        let saved = state::PersistedPpiState::read_from_bytes(buf.as_bytes()).ok()?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let state::PersistedPpiState {
             pending_ppi_operation,
             in_query_ppi_operation,
@@ -1458,6 +1632,8 @@ mod save_restore {
             pub auth_value: Option<u64>,
             #[mesh(61)]
             pub keys: Option<SavedTpmKeys>,
+            #[mesh(62)]
+            pub allow_ak_cert_renewal: Option<bool>,
         }
     }
 
@@ -1555,6 +1731,7 @@ mod save_restore {
                 tpm_state_blob: self.tpm_engine_helper.tpm_engine.save_state(),
                 auth_value: self.auth_value,
                 keys,
+                allow_ak_cert_renewal: Some(self.allow_ak_cert_renewal),
             };
 
             Ok(saved_state)
@@ -1569,6 +1746,7 @@ mod save_restore {
                 tpm_state_blob,
                 auth_value,
                 keys,
+                allow_ak_cert_renewal,
             } = state;
 
             self.control_area = {
@@ -1634,6 +1812,18 @@ mod save_restore {
                     exponent: keys.ek_pub_exponent,
                 },
             });
+
+            if allow_ak_cert_renewal.is_none() {
+                // Whether AKCert renewal is allowed depends on the attributes of the AK
+                // saved in the vTPM. It may not be safe to read it here (which requires
+                // executing a readpublic command) because the vTPM may be in the middle
+                // of executing another command.
+                tracing::info!(
+                    CVM_ALLOWED,
+                    "vTPM servicing state does not include allow_ak_cert_renewal; denying renewal until reboot"
+                );
+            }
+            self.allow_ak_cert_renewal = allow_ak_cert_renewal.unwrap_or(false);
 
             Ok(())
         }

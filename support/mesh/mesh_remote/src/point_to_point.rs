@@ -3,8 +3,6 @@
 
 //! Point-to-point mesh implementation.
 
-use futures::future::try_join;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
@@ -12,6 +10,8 @@ use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
+use futures::future::try_join;
+use futures::io::BufReader;
 use futures_concurrency::future::Race;
 use mesh_channel::cancel::Cancel;
 use mesh_channel::cancel::CancelContext;
@@ -31,9 +31,11 @@ use std::io;
 use std::pin::pin;
 use thiserror::Error;
 use tracing::Instrument;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// A mesh that consists of exactly two nodes, communicating over an arbitrary
 /// bidirectional byte stream.
@@ -58,7 +60,7 @@ impl PointToPointMesh {
     /// # use mesh_channel::channel;
     /// # use unix_socket::UnixStream;
     /// # use pal_async::socket::PolledSocket;
-    /// # pal_async::DefaultPool::run_with(|driver| async move {
+    /// # pal_async::DefaultPool::run_with(async |driver| {
     /// let (left, right) = UnixStream::pair().unwrap();
     /// let (a, ax) = channel::<u32>();
     /// let (bx, mut b) = channel::<u32>();
@@ -170,7 +172,7 @@ async fn exchange_addresses(
     read: &mut (impl AsyncRead + Unpin),
 ) -> io::Result<Address> {
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     struct Message {
         magic: [u8; 4],
         node: [u8; 16],
@@ -187,7 +189,7 @@ async fn exchange_addresses(
     let mut remote_msg = Message::new_zeroed();
     try_join(
         write.write_all(local_msg.as_bytes()),
-        read.read_exact(remote_msg.as_bytes_mut()),
+        read.read_exact(remote_msg.as_mut_bytes()),
     )
     .await?;
 
@@ -282,9 +284,9 @@ struct NoMesh;
 mod tests {
     use super::PointToPointMesh;
     use mesh_channel::channel;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::socket::PolledSocket;
-    use pal_async::DefaultDriver;
     use test_with_tracing::test;
     use unix_socket::UnixStream;
 

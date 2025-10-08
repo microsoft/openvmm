@@ -5,7 +5,6 @@
 
 use super::threadpool::Io;
 use super::threadpool::IoInitiator;
-use futures::task::noop_waker_ref;
 use futures::FutureExt;
 use io_uring::opcode;
 use io_uring::types::TimeoutFlags;
@@ -18,15 +17,16 @@ use pal_async::interest::SLOT_COUNT;
 use pal_async::timer::Instant;
 use pal_async::timer::PollTimer;
 use pal_async::timer::TimerDriver;
+use pal_async::wait::MAXIMUM_WAIT_READ_SIZE;
 use pal_async::wait::PollWait;
 use pal_async::wait::WaitDriver;
-use pal_async::wait::MAXIMUM_WAIT_READ_SIZE;
 use std::fmt::Debug;
 use std::io;
 use std::os::unix::prelude::*;
 use std::sync::OnceLock;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 /// An object that can be used to initiate an IO, by returning a reference to an
 /// [`IoInitiator`].
@@ -292,7 +292,7 @@ impl<T: Initiate> PollWait for FdWaitViaRead<T> {
 
 impl<T: Initiate> Drop for FdWaitViaRead<T> {
     fn drop(&mut self) {
-        let _ = self.poll_cancel_wait(&mut Context::from_waker(noop_waker_ref()));
+        let _ = self.poll_cancel_wait(&mut Context::from_waker(Waker::noop()));
     }
 }
 

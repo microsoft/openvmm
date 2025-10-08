@@ -6,15 +6,15 @@ use crate::KvmError;
 use crate::KvmPartitionInner;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
+use virt::VpIndex;
 use virt::state::HvRegisterState;
-use virt::x86::vp;
-use virt::x86::vp::AccessVpState;
 use virt::x86::SegmentRegister;
 use virt::x86::TableRegister;
-use virt::VpIndex;
+use virt::x86::vp;
+use virt::x86::vp::AccessVpState;
 use vm_topology::processor::x86::X86VpInfo;
 use x86defs::SegmentAttributes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 pub struct KvmVpStateAccess<'a> {
     partition: &'a KvmPartitionInner,
@@ -285,7 +285,7 @@ impl AccessVpState for KvmVpStateAccess<'_> {
             vp::MpState::WaitForSipi => kvm::KVM_MP_STATE_INIT_RECEIVED,
             vp::MpState::Halted => kvm::KVM_MP_STATE_HALTED,
             vp::MpState::Idle => {
-                return Err(KvmError::InvalidState("Hyper-V idle state not supported"))
+                return Err(KvmError::InvalidState("Hyper-V idle state not supported"));
             }
         };
         self.kvm().set_mp_state(state)?;
@@ -377,7 +377,7 @@ impl AccessVpState for KvmVpStateAccess<'_> {
         self.kvm()
             .get_msrs(&[x86defs::X86X_MSR_APIC_BASE], &mut apic_base)?;
 
-        let mut state = FromZeroes::new_zeroed();
+        let mut state = FromZeros::new_zeroed();
         self.kvm().get_lapic(&mut state)?;
 
         Ok(vp::Apic::from_page(apic_base[0], &state))

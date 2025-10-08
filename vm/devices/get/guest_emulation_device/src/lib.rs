@@ -8,6 +8,7 @@
 //! better integration testing within the OpenVMM CI, and is not at
 //! feature-parity with the implementation in Hyper-V.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;
@@ -15,28 +16,43 @@ pub mod resolver;
 #[cfg(feature = "test_utilities")]
 pub mod test_utilities;
 
+#[cfg(feature = "test_igvm_agent")]
+mod test_igvm_agent;
+
+#[cfg(feature = "test_igvm_agent")]
+mod test_crypto;
+
+#[cfg(feature = "test_igvm_agent")]
+use crate::test_igvm_agent::TestIgvmAgent;
+
 use async_trait::async_trait;
 use core::mem::size_of;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
-use get_protocol::dps_json::HclSecureBootTemplateId;
-use get_protocol::dps_json::PcatBootDevice;
 use get_protocol::BatteryStatusFlags;
 use get_protocol::BatteryStatusNotification;
+use get_protocol::GspCleartextContent;
+use get_protocol::GspExtendedStatusFlags;
 use get_protocol::HeaderGeneric;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
-use get_protocol::IgvmAttestRequest;
+use get_protocol::MAX_PAYLOAD_SIZE;
 use get_protocol::RegisterState;
 use get_protocol::SaveGuestVtl2StateFlags;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
 use get_protocol::VmgsIoStatus;
-use get_protocol::MAX_PAYLOAD_SIZE;
+use get_protocol::dps_json::GuestStateEncryptionPolicy;
+use get_protocol::dps_json::GuestStateLifetime;
+use get_protocol::dps_json::HclSecureBootTemplateId;
+use get_protocol::dps_json::ManagementVtlFeatures;
+use get_protocol::dps_json::PcatBootDevice;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
+use get_resources::ged::GuestServicingFlags;
+use get_resources::ged::IgvmAttestTestConfig;
 use get_resources::ged::ModifyVtl2SettingsError;
 use get_resources::ged::SaveRestoreError;
 use get_resources::ged::Vtl0StartError;
@@ -44,33 +60,35 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use jiff::Zoned;
+use jiff::civil::DateTime;
+use jiff::civil::date;
+use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
-use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io::IoSlice;
 use task_control::StopTask;
 use thiserror::Error;
 use video_core::FramebufferControl;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateNotSupported;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Host GET errors
 #[derive(Debug, Error)]
@@ -99,8 +117,9 @@ enum Error {
     LargeDpsV2Unimplemented,
     #[error("invalid IGVM_ATTEST request")]
     InvalidIgvmAttestRequest,
-    #[error("unsupported igvm attest request type: {0:?}")]
-    UnsupportedIgvmAttestRequestType(u32),
+    #[cfg(feature = "test_igvm_agent")]
+    #[error("test IGVM agent error")]
+    TestIgvmAgent(#[source] test_igvm_agent::Error),
     #[error("failed to write to shared memory")]
     SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
 }
@@ -134,6 +153,17 @@ pub struct GuestConfig {
     pub secure_boot_template: SecureBootTemplateType,
     /// Enable battery.
     pub enable_battery: bool,
+    /// Suppress attestation.
+    pub no_persistent_secrets: bool,
+    /// Guest state lifetime
+    #[inspect(debug)]
+    pub guest_state_lifetime: GuestStateLifetime,
+    /// Guest state encryption policy
+    #[inspect(debug)]
+    pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
+    /// Management VTL feature flags
+    #[inspect(debug)]
+    pub management_vtl_features: ManagementVtlFeatures,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -149,6 +179,8 @@ pub enum GuestFirmwareConfig {
         /// Where to send UEFI console output
         #[inspect(debug)]
         console_mode: UefiConsoleMode,
+        /// Perform a default boot even if boot entries exist and fail
+        default_boot_always_attempt: bool,
     },
     Pcat {
         #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDebug)")]
@@ -175,6 +207,43 @@ pub enum GuestEvent {
     BootAttempt,
 }
 
+/// Possible actions for the IGVM agent to take in response to a request.
+#[derive(Debug, Clone)]
+pub enum IgvmAgentAction {
+    RespondSuccess,
+    RespondFailure,
+    NoResponse,
+}
+
+/// IGVM Agent test plan that specifies the list of action for a given request type.
+pub type IgvmAgentTestPlan = HashMap<IgvmAttestRequestType, VecDeque<IgvmAgentAction>>;
+
+/// IGVM Agent test setting. Custom Inspect impl avoids requiring HashMap to implement Inspect.
+#[derive(Debug)]
+pub enum IgvmAgentTestSetting {
+    /// Use test config that will be mapped to a plan. Used when creating GED via `GuestEmulationDeviceHandle`
+    /// (VMM tests).
+    TestConfig(IgvmAttestTestConfig),
+    /// Use test plan. Used when creating GED via test_utilities (unit tests).
+    TestPlan(IgvmAgentTestPlan),
+}
+
+impl Inspect for IgvmAgentTestSetting {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        let mut resp = req.respond();
+        match self {
+            Self::TestConfig(cfg) => {
+                resp.field("TestConfig", cfg);
+            }
+            Self::TestPlan(plan) => {
+                // Only expose summary to avoid needing Inspect on HashMap.
+                let len = plan.len();
+                resp.field("TestPlan len", len);
+            }
+        }
+    }
+}
+
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
 #[derive(InspectMut)]
 pub struct GuestEmulationDevice {
@@ -183,7 +252,7 @@ pub struct GuestEmulationDevice {
     #[inspect(skip)]
     power_client: PowerRequestClient,
     #[inspect(skip)]
-    firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
+    firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
     #[inspect(skip)]
     framebuffer_control: Option<Box<dyn FramebufferControl>>,
     #[inspect(skip)]
@@ -196,6 +265,15 @@ pub struct GuestEmulationDevice {
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
+
+    igvm_agent_setting: Option<IgvmAgentTestSetting>,
+
+    #[cfg(feature = "test_igvm_agent")]
+    /// Test agent implementation for `handle_igvm_attest`
+    #[inspect(skip)]
+    igvm_agent: TestIgvmAgent,
+
+    test_gsp_by_id: bool,
 }
 
 #[derive(Inspect)]
@@ -204,9 +282,6 @@ struct VmgsState {
     disk: Disk,
     /// Memory for the disk to DMA to/from.
     mem: GuestMemory,
-    /// Memory to buffer data for sending to the guest.
-    #[inspect(skip)]
-    buf: Vec<u8>,
 }
 
 impl GuestEmulationDevice {
@@ -214,10 +289,12 @@ impl GuestEmulationDevice {
     pub fn new(
         config: GuestConfig,
         power_client: PowerRequestClient,
-        firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
+        firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
+        igvm_agent_setting: Option<IgvmAgentTestSetting>,
+        test_gsp_by_id: bool,
     ) -> Self {
         Self {
             config,
@@ -228,11 +305,14 @@ impl GuestEmulationDevice {
             vmgs: vmgs_disk.map(|disk| VmgsState {
                 disk,
                 mem: GuestMemory::allocate(MAX_PAYLOAD_SIZE),
-                buf: vec![0; MAX_PAYLOAD_SIZE],
             }),
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
+            igvm_agent_setting,
+            #[cfg(feature = "test_igvm_agent")]
+            igvm_agent: TestIgvmAgent::new(),
+            test_gsp_by_id,
         }
     }
 
@@ -312,15 +392,12 @@ pub struct GedChannel<T: RingMem = GpadlRingMem> {
     vtl0_start_report: Option<Result<(), Vtl0StartError>>,
     #[inspect(with = "Option::is_some")]
     modify: Option<Rpc<(), Result<(), ModifyVtl2SettingsError>>>,
-    // TODO: allow unused temporarily as a follow up change will use it to
-    // implement AK cert renewal.
     #[inspect(skip)]
-    #[allow(dead_code)]
     gm: GuestMemory,
 }
 
 struct InProgressSave {
-    rpc: Rpc<(), Result<(), SaveRestoreError>>,
+    rpc: Rpc<GuestServicingFlags, Result<(), SaveRestoreError>>,
     buffer: Vec<u8>,
 }
 
@@ -362,11 +439,11 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 GedState::Init => {
                     // Negotiate the version
                     let mut version_request = get_protocol::VersionRequest::new_zeroed();
-                    stop.until_stopped(self.channel.recv_exact(version_request.as_bytes_mut()))
+                    stop.until_stopped(self.channel.recv_exact(version_request.as_mut_bytes()))
                         .await?
                         .map_err(Error::Vmbus)?;
 
-                    if version_request.message_header.message_id != HostRequests::VERSION {
+                    if version_request.message_header.message_id() != HostRequests::VERSION {
                         return Err(Error::InvalidSequence);
                     }
 
@@ -456,8 +533,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        let header =
-            get_protocol::HeaderRaw::read_from_prefix(message_buf).ok_or(Error::MessageTooSmall)?;
+        let header = get_protocol::HeaderRaw::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         if header.message_version != get_protocol::MessageVersions::HEADER_VERSION_1 {
             return Err(Error::HeaderVersion(header.message_version));
@@ -539,7 +617,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                             get_protocol::GuestNotifications::SAVE_GUEST_VTL2_STATE,
                         ),
                         correlation_id: Guid::ZERO,
-                        capabilities_flags: SaveGuestVtl2StateFlags::new(),
+                        capabilities_flags: SaveGuestVtl2StateFlags::new()
+                            .with_enable_nvme_keepalive(rpc.input().nvme_keepalive),
                         timeout_hint_secs: 60,
                     };
 
@@ -569,7 +648,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        match header.message_id {
+        match header.message_id() {
             HostRequests::TIME => self.handle_time()?,
             HostRequests::BIOS_BOOT_FINALIZE => self.handle_bios_boot_finalize(message_buf)?,
             HostRequests::VMGS_GET_DEVICE_INFO => self.handle_vmgs_get_device_info(state)?,
@@ -580,9 +659,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 self.handle_guest_state_protection(message_buf)?
             }
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
-                self.handle_guest_state_protection_by_id()?;
+                self.handle_guest_state_protection_by_id(state.test_gsp_by_id)?;
             }
-            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf)?,
+            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf, state)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 self.handle_device_platform_settings_v2(state)?
             }
@@ -597,7 +676,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::CREATE_RAM_GPA_RANGE => self.handle_create_ram_gpa_range(message_buf)?,
             HostRequests::RESET_RAM_GPA_RANGE => self.handle_reset_ram_gpa_range(message_buf)?,
             _ => {
-                tracing::error!(message_id = ?header.message_id, "unexpected message");
+                tracing::error!(message_id = ?header.message_id(), "unexpected message");
                 return Err(Error::InvalidSequence);
             }
         };
@@ -606,7 +685,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     fn handle_bios_boot_finalize(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let msg = get_protocol::BiosBootFinalizeRequest::read_from_prefix(message_buf)
-            .ok_or(Error::MessageTooSmall)?;
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!(?msg, "Bios Boot Finalize request");
 
@@ -618,20 +698,23 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     }
 
     fn handle_time(&mut self) -> Result<(), Error> {
-        const WINDOWS_EPOCH: time::OffsetDateTime = time::macros::datetime!(1601-01-01 0:00 UTC);
+        const WINDOWS_EPOCH: DateTime = date(1601, 1, 1).at(0, 0, 0, 0);
+
+        let now = Zoned::now();
 
         // utc in TimeResponse is in units of 100ns since the windows epoch
-        let now_utc = time::OffsetDateTime::now_utc();
-        let since_win_epoch = now_utc - WINDOWS_EPOCH;
-        let since_win_epoch: i64 = (since_win_epoch.whole_nanoseconds() / 100)
-            .try_into()
-            .unwrap();
+        let since_win_epoch = (WINDOWS_EPOCH
+            .to_zoned(TimeZone::UTC)
+            .expect("windows epoch value to be valid")
+            .timestamp()
+            .duration_until(now.timestamp())
+            .as_nanos()
+            / 100) as i64;
 
-        // time_zone is in minutes between UTC and local time (as stored
+        // tz_offset is in minutes between UTC and local time (as stored
         // in a windows TIME_ZONE_INFORMATION struct)
-        let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-        let time_zone = local_offset.whole_minutes();
-        let response = get_protocol::TimeResponse::new(0, since_win_epoch, time_zone, false);
+        let tz_offset = (now.offset().seconds() / 60) as i16;
+        let response = get_protocol::TimeResponse::new(0, since_win_epoch, tz_offset, false);
 
         self.channel
             .try_send(response.as_bytes())
@@ -649,7 +732,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 vmgs.disk.sector_count(),
                 vmgs.disk.sector_size().try_into().unwrap(),
                 vmgs.disk.physical_sector_size().try_into().unwrap(),
-                vmgs.buf.len().try_into().unwrap(),
+                MAX_PAYLOAD_SIZE as u32,
             )
         } else {
             get_protocol::VmgsGetDeviceInfoResponse::new(VmgsIoStatus::DEVICE_ERROR, 0, 0, 0, 0)
@@ -666,7 +749,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
     ) -> Result<(), Error> {
         let message = get_protocol::VmgsReadRequest::read_from_prefix(message_buf)
-            .ok_or(Error::MessageTooSmall)?;
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let (status, payload) = if let Some(vmgs) = &mut state.vmgs {
             let len = message.sector_count as u64 * vmgs.disk.sector_size() as u64;
@@ -685,11 +769,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 )
                 .await
             {
-                Ok(()) => {
-                    let payload = &mut vmgs.buf[..len as usize];
-                    vmgs.mem.read_at(0, payload).unwrap();
-                    (VmgsIoStatus::SUCCESS, &*payload)
-                }
+                Ok(()) => (
+                    VmgsIoStatus::SUCCESS,
+                    &vmgs
+                        .mem
+                        .inner_buf_mut()
+                        .expect("memory should not be aliased")[..len as usize],
+                ),
                 Err(err) => {
                     tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,
@@ -714,8 +800,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         state: &mut GuestEmulationDevice,
         message_buf: &[u8],
     ) -> Result<(), Error> {
-        let (message, rest) = get_protocol::VmgsWriteRequest::read_from_prefix_split(message_buf)
-            .ok_or(Error::MessageTooSmall)?;
+        let (message, rest) = get_protocol::VmgsWriteRequest::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let status = if let Some(vmgs) = &mut state.vmgs {
             let len = message.sector_count as u64 * vmgs.disk.sector_size() as u64;
@@ -789,7 +875,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let _message = get_protocol::GuestStateProtectionRequest::read_from_prefix(
             &message_buf.as_bytes()[..size_of::<get_protocol::GuestStateProtectionRequest>()],
         )
-        .ok_or(Error::MessageTooSmall)?;
+        .map_err(|_| Error::MessageTooSmall)?
+        .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
 
         let mut response = get_protocol::GuestStateProtectionResponse::new_zeroed();
         response.message_header = HeaderGeneric::new(HostRequests::GUEST_STATE_PROTECTION);
@@ -800,11 +887,25 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_guest_state_protection_by_id(&mut self) -> Result<(), Error> {
-        let response = get_protocol::GuestStateProtectionByIdResponse {
+    fn handle_guest_state_protection_by_id(&mut self, test_gsp_by_id: bool) -> Result<(), Error> {
+        let mut response = get_protocol::GuestStateProtectionByIdResponse {
             message_header: HeaderGeneric::new(HostRequests::GUEST_STATE_PROTECTION_BY_ID),
-            ..get_protocol::GuestStateProtectionByIdResponse::new_zeroed()
+            seed: GspCleartextContent::new_zeroed(),
+            extended_status_flags: GspExtendedStatusFlags::new()
+                .with_no_registry_file(!test_gsp_by_id),
         };
+
+        if test_gsp_by_id {
+            const TEST_GSP_SEED_LEN: usize = 32;
+            const TEST_GSP_SEED: [u8; TEST_GSP_SEED_LEN] = [
+                0x94, 0xBD, 0x3A, 0xA5, 0xF4, 0x51, 0x97, 0x9F, 0x1A, 0x8B, 0x29, 0x41, 0x91, 0x90,
+                0x73, 0x1B, 0x30, 0xB0, 0x76, 0xEA, 0x6E, 0xDC, 0x1F, 0x8F, 0x22, 0xC7, 0x07, 0x57,
+                0x67, 0xCD, 0x87, 0x5B,
+            ];
+            response.seed.length = TEST_GSP_SEED_LEN as u32;
+            response.seed.buffer[..TEST_GSP_SEED_LEN].copy_from_slice(&TEST_GSP_SEED);
+        }
+
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
@@ -813,9 +914,16 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     /// Stub implementation that simulates the behavior of GED and the host agent.
     /// Used only for test scenarios such as VMM tests.
-    fn handle_igvm_attest(&mut self, message_buf: &[u8]) -> Result<(), Error> {
-        let request =
-            IgvmAttestRequest::read_from_prefix(message_buf).ok_or(Error::MessageTooSmall)?;
+    fn handle_igvm_attest(
+        &mut self,
+        message_buf: &[u8],
+        state: &mut GuestEmulationDevice,
+    ) -> Result<(), Error> {
+        tracing::info!(test_setting = ?state.igvm_agent_setting, "Handle IGVM Attest request");
+
+        let request = get_protocol::IgvmAttestRequest::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         // Request sanitization (match GED behavior)
         if request.agent_data_length as usize > request.agent_data.len()
@@ -825,28 +933,33 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             Err(Error::InvalidIgvmAttestRequest)?
         }
 
-        let request_payload = IgvmAttestRequestHeader::read_from_prefix(&request.report)
-            .ok_or(Error::MessageTooSmall)?;
-
-        let response = match request_payload.request_type {
-            IgvmAttestRequestType::AK_CERT_REQUEST => {
-                let data = vec![0xab; 2500];
-                let header = IgvmAttestAkCertResponseHeader {
-                    data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
-                    version: AK_CERT_RESPONSE_HEADER_VERSION,
-                };
-                let payload = [header.as_bytes(), &data].concat();
-
-                self.gm
-                    .write_at(request.shared_gpa[0], &payload)
-                    .map_err(Error::SharedMemoryWriteFailed)?;
-
-                get_protocol::IgvmAttestResponse {
-                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-                    length: payload.len() as u32,
+        let (response_payload, length) = {
+            #[cfg(feature = "test_igvm_agent")]
+            {
+                if let Some(setting) = &state.igvm_agent_setting {
+                    state.igvm_agent.install_plan_from_setting(setting);
                 }
+
+                state
+                    .igvm_agent
+                    .handle_request(&request.report[..request.report_length as usize])
+                    .map_err(Error::TestIgvmAgent)?
             }
-            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+            #[cfg(not(feature = "test_igvm_agent"))]
+            {
+                tracing::warn!("Test IGVM agent feature not enabled, returning empty response");
+                (&[][..], 0)
+            }
+        };
+
+        // Write the response payload to the guest's shared memory
+        self.gm
+            .write_at(request.shared_gpa[0], &response_payload)
+            .map_err(Error::SharedMemoryWriteFailed)?;
+
+        let response = get_protocol::IgvmAttestResponse {
+            message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+            length,
         };
 
         self.channel
@@ -868,8 +981,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
         let save = self.save.as_mut().ok_or(Error::InvalidSequence)?;
         let (request_header, remaining) =
-            get_protocol::SaveGuestVtl2StateRequest::read_from_prefix_split(message_buf)
-                .ok_or(Error::MessageTooSmall)?;
+            get_protocol::SaveGuestVtl2StateRequest::read_from_prefix(message_buf)
+                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let r = match request_header.save_status {
             get_protocol::GuestVtl2SaveRestoreStatus::MORE_DATA => {
                 save.buffer.extend_from_slice(remaining);
@@ -921,13 +1034,16 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let response = get_protocol::MapFramebufferResponse::new(
             if let Some(framebuffer_control) = state.framebuffer_control.as_mut() {
                 let message = get_protocol::MapFramebufferRequest::read_from_prefix(message_buf)
-                    .ok_or(Error::MessageTooSmall)?;
+                    .map_err(|_| Error::MessageTooSmall)?
+                    .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 let gpa = message.gpa;
                 tracing::debug!("Received map framebuffer request from guest {:#x}", gpa);
                 framebuffer_control.map(gpa).await;
                 get_protocol::MapFramebufferStatus::SUCCESS
             } else {
-                tracing::warn!("Guest requested framebuffer mapping but no framebuffer control was provided to the GET");
+                tracing::warn!(
+                    "Guest requested framebuffer mapping but no framebuffer control was provided to the GET"
+                );
                 get_protocol::MapFramebufferStatus::FAILURE
             },
         );
@@ -947,7 +1063,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 framebuffer_control.unmap().await;
                 get_protocol::UnmapFramebufferStatus::SUCCESS
             } else {
-                tracing::warn!("Guest requested framebuffer mapping but no framebuffer control was provided to the GET");
+                tracing::warn!(
+                    "Guest requested framebuffer mapping but no framebuffer control was provided to the GET"
+                );
                 get_protocol::UnmapFramebufferStatus::FAILURE
             },
         );
@@ -959,7 +1077,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     fn handle_create_ram_gpa_range(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let request = get_protocol::CreateRamGpaRangeRequest::read_from_prefix(message_buf)
-            .ok_or(Error::MessageTooSmall)?;
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::info!(?request, "create ram gpa range request");
 
@@ -974,7 +1093,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     fn handle_reset_ram_gpa_range(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let _request = get_protocol::ResetRamGpaRangeRequest::read_from_prefix(message_buf)
-            .ok_or(Error::MessageTooSmall)?;
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let response = get_protocol::ResetRamGpaRangeResponse::new();
         self.channel
             .try_send(response.as_bytes())
@@ -988,7 +1108,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        match header.message_id {
+        match header.message_id() {
             HostNotifications::POWER_OFF => {
                 self.handle_power_off(state);
             }
@@ -1034,7 +1154,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
     ) -> Result<(), Error> {
         let msg = get_protocol::EventLogNotification::read_from_prefix(message_buf)
-            .ok_or(Error::MessageTooSmall)?;
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         tracing::trace!("[Event Log] {:?}", msg);
         let event = match msg.event_log_id {
             get_protocol::EventLogId::BOOT_SUCCESS => GuestEvent::BootSuccess,
@@ -1083,7 +1204,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     ) -> Result<(), Error> {
         let message =
             get_protocol::RestoreGuestVtl2StateHostNotification::read_from_prefix(message_buf)
-                .ok_or(Error::MessageTooSmall)?;
+                .map_err(|_| Error::MessageTooSmall)?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let success = match message.status {
             get_protocol::GuestVtl2SaveRestoreStatus::SUCCESS => true,
             get_protocol::GuestVtl2SaveRestoreStatus::FAILURE => false,
@@ -1099,8 +1221,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
     ) -> Result<(), Error> {
         let (message, remaining) =
-            get_protocol::StartVtl0CompleteNotification::read_from_prefix_split(message_buf)
-                .ok_or(Error::MessageTooSmall)?;
+            get_protocol::StartVtl0CompleteNotification::read_from_prefix(message_buf)
+                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let expected_len = message.result_document_size as usize;
         if remaining.len() != expected_len {
             return Err(Error::InvalidFieldValue);
@@ -1130,7 +1252,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     fn handle_vtl_crash(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let msg = get_protocol::VtlCrashNotification::read_from_prefix(message_buf)
-            .ok_or(Error::MessageTooSmall)?;
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         tracing::info!("Guest has reported a system crash {msg:x?}");
         Ok(())
     }
@@ -1140,14 +1263,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         state: &mut GuestEmulationDevice,
         message_buf: &[u8],
     ) -> Result<(), Error> {
-        let (msg, remaining) =
-            get_protocol::TripleFaultNotification::read_from_prefix_split(message_buf)
-                .ok_or(Error::MessageTooSmall)?;
+        let (msg, remaining) = get_protocol::TripleFaultNotification::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let expected_len = msg.register_count as usize * size_of::<RegisterState>();
         if remaining.len() != expected_len {
             return Err(Error::InvalidFieldValue);
         }
-        let registers = RegisterState::slice_from(remaining).unwrap();
+        let registers = <[RegisterState]>::ref_from_bytes(remaining).unwrap();
         tracing::info!("Guest has reported a triple fault {msg:x?} {registers:?}");
         // TODO report and translate registers
         state
@@ -1158,10 +1280,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     fn handle_modify_vtl2_settings_completed(&mut self, message_buf: &[u8]) -> Result<(), Error> {
         let (msg, remaining) =
-            get_protocol::ModifyVtl2SettingsCompleteNotification::read_from_prefix_split(
-                message_buf,
-            )
-            .ok_or(Error::MessageTooSmall)?;
+            get_protocol::ModifyVtl2SettingsCompleteNotification::read_from_prefix(message_buf)
+                .map_err(|_| Error::MessageTooSmall)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let modify = self.modify.take().ok_or(Error::InvalidSequence)?;
         let r = match msg.modify_status {
@@ -1192,12 +1312,14 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let firmware_mode_is_pcat;
         let pcat_boot_device_order;
         let uefi_console_mode;
+        let default_boot_always_attempt;
         match state.config.firmware {
             GuestFirmwareConfig::Uefi {
                 enable_vpci_boot,
                 firmware_debug,
                 disable_frontpage: v_disable_frontpage,
                 console_mode,
+                default_boot_always_attempt: v_default_boot_always_attempt,
             } => {
                 vpci_boot_enabled = enable_vpci_boot;
                 enable_firmware_debugging = firmware_debug;
@@ -1205,6 +1327,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 firmware_mode_is_pcat = false;
                 pcat_boot_device_order = None;
                 uefi_console_mode = Some(console_mode);
+                default_boot_always_attempt = v_default_boot_always_attempt;
             }
             GuestFirmwareConfig::Pcat { boot_order } => {
                 vpci_boot_enabled = false;
@@ -1213,6 +1336,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 firmware_mode_is_pcat = true;
                 pcat_boot_device_order = Some(boot_order);
                 uefi_console_mode = None;
+                default_boot_always_attempt = false;
             }
         }
 
@@ -1243,6 +1367,11 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 },
                 enable_battery: state.config.enable_battery,
                 console_mode: uefi_console_mode.unwrap_or(UefiConsoleMode::DEFAULT).0,
+                bios_guid: if state.test_gsp_by_id {
+                    guid::guid!("2b701019-2816-4a85-9692-3981f1af4423")
+                } else {
+                    Default::default()
+                },
                 ..Default::default()
             },
             v2: get_protocol::dps_json::HclDevicePlatformSettingsV2 {
@@ -1251,8 +1380,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     vmbus_redirection_enabled: state.config.vmbus_redirection,
                     vtl2_settings: state.config.vtl2_settings.clone(),
                     firmware_mode_is_pcat,
-                    // no_persist_secrets must be set to True in order to skip attestation.
-                    no_persistent_secrets: true,
+                    no_persistent_secrets: state.config.no_persistent_secrets,
                     legacy_memory_map: false,
                     pause_after_boot_failure: false,
                     pxe_ip_v6: false,
@@ -1260,6 +1388,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     disable_sha384_pcr: false,
                     media_present_enabled_by_default: false,
                     memory_protection_mode: 0,
+                    default_boot_always_attempt,
                     vpci_boot_enabled,
                     vpci_instance_filter: None,
                     num_lock_enabled: false,
@@ -1268,6 +1397,10 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     watchdog_enabled: false,
                     always_relay_host_mmio: false,
                     imc_enabled: false,
+                    cxl_memory_enabled: false,
+                    guest_state_lifetime: state.config.guest_state_lifetime,
+                    guest_state_encryption_policy: state.config.guest_state_encryption_policy,
+                    management_vtl_features: state.config.management_vtl_features,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),

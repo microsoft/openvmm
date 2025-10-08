@@ -19,7 +19,6 @@
 //!     <https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/tlfs>
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod aarch64;
 mod imp;
@@ -33,6 +32,7 @@ pub use self::aarch64::Arm64RegisterState;
 pub use self::imp::*;
 pub use self::support::AsHandler;
 pub use self::support::Dispatcher;
+pub use self::support::HvRepResult;
 pub use self::support::HypercallDefinition;
 pub use self::support::HypercallHandler;
 pub use self::support::HypercallIo;

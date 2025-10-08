@@ -15,15 +15,15 @@ use crate::gpadl::GpadlMap;
 use crate::gpadl::GpadlMapView;
 use anyhow::Context;
 use async_trait::async_trait;
-use futures::stream::select;
-use futures::stream::SelectAll;
 use futures::StreamExt;
+use futures::stream::SelectAll;
+use futures::stream::select;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::RecvError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::RecvError;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_event::Event;
@@ -34,8 +34,8 @@ use std::pin::pin;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::instrument;
-use vmbus_core::protocol::GpadlId;
 use vmbus_core::TaggedStream;
+use vmbus_core::protocol::GpadlId;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::notify::Notify;
 use vmcore::save_restore::RestoreError;
@@ -48,7 +48,7 @@ pub type ChannelOpenError = anyhow::Error;
 
 /// Trait implemented by VMBus devices.
 #[async_trait]
-pub trait VmbusDevice: Send + IntoAny + InspectMut {
+pub trait VmbusDevice: Send + Any + InspectMut {
     /// The offer parameters.
     fn offer(&self) -> OfferParams;
 
@@ -103,18 +103,6 @@ pub trait SaveRestoreVmbusDevice: VmbusDevice {
     ) -> Result<(), RestoreError>;
 }
 
-/// Trait for converting into a `Box<dyn Any>`.
-pub trait IntoAny {
-    /// Converts into a `Box<dyn Any>`.
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
-}
-
-impl<T: Any> IntoAny for T {
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-}
-
 /// Resources used by the device to communicate with the guest.
 #[derive(Debug, Default)]
 pub struct DeviceResources {
@@ -138,7 +126,7 @@ pub struct ChannelResources {
 /// Control object for enabling subchannels.
 #[derive(Debug, Default, Clone)]
 pub struct ChannelControl {
-    send: Option<Arc<mesh::Sender<u16>>>,
+    send: Option<mesh::Sender<u16>>,
     max: u16,
 }
 
@@ -276,12 +264,9 @@ impl<T: ?Sized> std::fmt::Debug for ChannelHandle<T> {
 impl<T: 'static + VmbusDevice> ChannelHandle<T> {
     /// Revokes the channel, returning it if the VMBus server is still running.
     pub async fn revoke(self) -> Option<T> {
+        let device = self.0.revoke().await? as Box<dyn Any>;
         Some(
-            *self
-                .0
-                .revoke()
-                .await?
-                .into_any()
+            *device
                 .downcast()
                 .expect("type must match the one used to create it"),
         )
@@ -335,20 +320,20 @@ async fn offer_generic(
     let (state_req_send, state_req_recv) = mesh::channel();
 
     let use_event = bus.use_event();
-    let new_event = || {
-        if use_event {
-            Notify::from_event(Event::new())
-        } else {
-            Notify::from_slim_event(Arc::new(SlimEvent::new()))
-        }
-    };
 
-    let event = new_event();
-    let subchannel_events: Vec<_> = (0..max_subchannels).map(|_| new_event()).collect();
+    let events: Vec<_> = (0..max_subchannels + 1)
+        .map(|_| {
+            if use_event {
+                Notify::from_event(Event::new())
+            } else {
+                Notify::from_slim_event(Arc::new(SlimEvent::new()))
+            }
+        })
+        .collect();
 
     let request = OfferInput {
         params: offer,
-        event: event.clone().interrupt(),
+        event: events[0].clone().interrupt(),
         request_send,
         server_request_recv,
     };
@@ -357,12 +342,12 @@ async fn offer_generic(
 
     let offer_result = bus.add_child(request).await?;
 
-    let mut resources = vec![ChannelResources { event }];
-    for idx in 0..max_subchannels {
-        resources.push(ChannelResources {
-            event: subchannel_events[idx as usize].clone(),
-        });
-    }
+    let resources = events
+        .iter()
+        .map(|event| ChannelResources {
+            event: event.clone(),
+        })
+        .collect();
 
     let (subchannel_enable_send, subchannel_enable_recv) = mesh::channel();
     channel.install(DeviceResources {
@@ -370,7 +355,7 @@ async fn offer_generic(
         gpadl_map: gpadl_map.clone().view(),
         channels: resources,
         channel_control: ChannelControl {
-            send: Some(Arc::new(subchannel_enable_send)),
+            send: Some(subchannel_enable_send),
             max: max_subchannels,
         },
     });
@@ -380,7 +365,7 @@ async fn offer_generic(
         let device = Device::new(
             request_recv,
             server_request_send,
-            subchannel_events,
+            events,
             gpadl_map,
             subchannel_enable_recv,
         );
@@ -441,12 +426,21 @@ impl From<ChannelRestoreError> for RestoreError {
     }
 }
 
+enum DeviceState {
+    Running,
+    // Track updates while the channel is stopped. If it is restarted, need to
+    // process outstanding requests. If the channel goes through save/restore,
+    // vmbus_server will resend the requests.
+    Stopped(Vec<(usize, ChannelRequest)>),
+}
+
 struct Device {
+    state: DeviceState,
     server_requests: Vec<mesh::Sender<ChannelServerRequest>>,
     open: Vec<bool>,
     subchannel_gpadls: Vec<BTreeSet<GpadlId>>,
     requests: SelectAll<TaggedStream<usize, mesh::Receiver<ChannelRequest>>>,
-    subchannel_events: Vec<Notify>,
+    events: Vec<Notify>,
     gpadl_map: Arc<GpadlMap>,
     subchannel_enable_recv: mesh::Receiver<u16>,
 }
@@ -455,7 +449,7 @@ impl Device {
     fn new(
         request_recv: mesh::Receiver<ChannelRequest>,
         server_request_send: mesh::Sender<ChannelServerRequest>,
-        subchannel_events: Vec<Notify>,
+        events: Vec<Notify>,
         gpadl_map: Arc<GpadlMap>,
         subchannel_enable_recv: mesh::Receiver<u16>,
     ) -> Self {
@@ -465,11 +459,12 @@ impl Device {
             SelectAll::new();
         requests.push(TaggedStream::new(0, request_recv));
         Self {
+            state: DeviceState::Running,
             server_requests: vec![server_request_send],
             open,
             subchannel_gpadls,
             requests,
-            subchannel_events,
+            events,
             gpadl_map,
             subchannel_enable_recv,
         }
@@ -488,7 +483,7 @@ impl Device {
             StateRequest(Result<StateRequest, RecvError>),
         }
 
-        let mut state_req_recv = pin!(futures::stream::unfold(state_req_recv, |mut recv| async {
+        let mut state_req_recv = pin!(futures::stream::unfold(state_req_recv, async |mut recv| {
             Some((recv.recv().await, recv))
         }));
 
@@ -550,15 +545,27 @@ impl Device {
         request: ChannelRequest,
         channel: &mut dyn VmbusDevice,
     ) {
+        // When the device is stopped, the wrapped channel should not receive
+        // any new vmbus requests. The 'close' callback is special-cased to
+        // handle vmbus_server reset, and the GPADL requests are handled without a
+        // callback. This leaves 'open' and 'modify' which will be pended until
+        // restart.
+        if matches!(request, ChannelRequest::Open(_) | ChannelRequest::Modify(_)) {
+            if let DeviceState::Stopped(pending_messages) = &mut self.state {
+                pending_messages.push((channel_idx, request));
+                return;
+            }
+        }
+
         match request {
             ChannelRequest::Open(rpc) => {
-                rpc.handle(|open_request| async {
+                rpc.handle(async |open_request| {
                     self.handle_open(channel, channel_idx, open_request).await
                 })
                 .await
             }
             ChannelRequest::Close(rpc) => {
-                rpc.handle(|()| async {
+                rpc.handle(async |()| {
                     self.handle_close(channel_idx, channel).await;
                 })
                 .await
@@ -571,7 +578,7 @@ impl Device {
                 self.handle_teardown_gpadl(rpc, channel_idx);
             }
             ChannelRequest::Modify(rpc) => {
-                rpc.handle(|req| async {
+                rpc.handle(async |req| {
                     self.handle_modify(channel, channel_idx, req).await;
                     0
                 })
@@ -589,15 +596,16 @@ impl Device {
         assert!(!self.open[channel_idx]);
         // N.B. Any asynchronous GPADL requests will block while in
         //      open(). This should be fine for all known devices.
-        let opened = if let Err(error) = channel.open(channel_idx as u16, &open_request).await {
-            tracelimit::error_ratelimited!(
-                error = error.as_ref() as &dyn std::error::Error,
-                "failed to open channel"
-            );
-            false
-        } else {
-            true
-        };
+        let opened = channel
+            .open(channel_idx as u16, &open_request)
+            .await
+            .inspect_err(|error| {
+                tracelimit::error_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to open channel"
+                );
+            })
+            .is_ok();
         self.open[channel_idx] = opened;
         opened
     }
@@ -679,18 +687,34 @@ impl Device {
         match request {
             StateRequest::Start => {
                 channel.start();
+                if let DeviceState::Stopped(pending_messages) =
+                    std::mem::replace(&mut self.state, DeviceState::Running)
+                {
+                    for (channel_idx, request) in pending_messages.into_iter() {
+                        self.handle_channel_request(channel_idx, request, channel)
+                            .await;
+                    }
+                }
             }
             StateRequest::Stop(rpc) => {
-                rpc.handle(|()| async {
-                    channel.stop().await;
-                })
-                .await;
+                if matches!(self.state, DeviceState::Running) {
+                    self.state = DeviceState::Stopped(Vec::new());
+                    rpc.handle(async |()| {
+                        channel.stop().await;
+                    })
+                    .await;
+                } else {
+                    rpc.complete(());
+                }
             }
             StateRequest::Reset(rpc) => {
+                if let DeviceState::Stopped(pending_messages) = &mut self.state {
+                    pending_messages.clear();
+                }
                 rpc.complete(());
             }
             StateRequest::Save(rpc) => {
-                rpc.handle_failable(|()| async {
+                rpc.handle_failable(async |()| {
                     if let Some(channel) = channel.supports_save_restore() {
                         channel.save().await.map(Some)
                     } else {
@@ -700,7 +724,7 @@ impl Device {
                 .await;
             }
             StateRequest::Restore(rpc) => {
-                rpc.handle_failable(|buffer| async {
+                rpc.handle_failable(async |buffer| {
                     let channel = channel
                         .supports_save_restore()
                         .context("saved state not supported")?;
@@ -739,9 +763,7 @@ impl Device {
                     subchannel_index: subchannel_idx as u16,
                     ..offer.clone()
                 },
-                event: self.subchannel_events[subchannel_idx - 1]
-                    .clone()
-                    .interrupt(),
+                event: self.events[subchannel_idx].clone().interrupt(),
                 request_send,
                 server_request_recv,
             };

@@ -11,19 +11,19 @@
 //! * The VMBus device needs to spawn an asynchronous task to handle a channel
 //!   when the channel is opened.
 
+use crate::RawAsyncChannel;
 use crate::bus::OfferParams;
 use crate::bus::OpenRequest;
 use crate::bus::ParentBus;
-use crate::channel::offer_channel;
 use crate::channel::ChannelHandle;
 use crate::channel::ChannelOpenError;
 use crate::channel::DeviceResources;
 use crate::channel::RestoreControl;
 use crate::channel::SaveRestoreVmbusDevice;
 use crate::channel::VmbusDevice;
-use crate::gpadl_ring::gpadl_channel;
+use crate::channel::offer_channel;
 use crate::gpadl_ring::GpadlRingMem;
-use crate::RawAsyncChannel;
+use crate::gpadl_ring::gpadl_channel;
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -34,6 +34,7 @@ use task_control::Cancelled;
 use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
+use vmbus_ring::RingMem;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -43,7 +44,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 
 /// A trait implemented by a simple vmbus device with no subchannels.
 #[async_trait]
-pub trait SimpleVmbusDevice: 'static + Send {
+pub trait SimpleVmbusDevice<M: RingMem = GpadlRingMem>: 'static + Send {
     /// The saved state type.
     type SavedState: SavedStateRoot + Send;
 
@@ -61,7 +62,7 @@ pub trait SimpleVmbusDevice: 'static + Send {
     /// When the channel is closed, the runner will be dropped.
     fn open(
         &mut self,
-        channel: RawAsyncChannel<GpadlRingMem>,
+        channel: RawAsyncChannel<M>,
         guest_memory: GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError>;
 
@@ -88,7 +89,7 @@ pub trait SimpleVmbusDevice: 'static + Send {
 /// Trait implemented by simple vmbus devices that support save/restore.
 ///
 /// If you implement this, make sure to return `Some(self)` from [`SimpleVmbusDevice::supports_save_restore`].
-pub trait SaveRestoreSimpleVmbusDevice: SimpleVmbusDevice {
+pub trait SaveRestoreSimpleVmbusDevice<M: RingMem = GpadlRingMem>: SimpleVmbusDevice {
     /// Saves the channel.
     ///
     /// Will only be called if the channel is open. If there is state to save on
@@ -102,7 +103,7 @@ pub trait SaveRestoreSimpleVmbusDevice: SimpleVmbusDevice {
     fn restore_open(
         &mut self,
         state: Self::SavedState,
-        channel: RawAsyncChannel<GpadlRingMem>,
+        channel: RawAsyncChannel<M>,
     ) -> Result<Self::Runner, ChannelOpenError>;
 }
 

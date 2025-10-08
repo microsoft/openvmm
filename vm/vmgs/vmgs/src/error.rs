@@ -24,7 +24,7 @@ pub enum Error {
     FileInfo,
     /// No allocated bytes for file id being read.
     #[error("no allocated bytes for file id being read")]
-    FileInfoAllocated,
+    FileInfoNotAllocated,
     /// Cannot allocate 0 blocks.
     #[error("cannot allocate 0 blocks")]
     AllocateZero,
@@ -61,6 +61,12 @@ pub enum Error {
     /// Cannot read encrypted file - VMGS is locked.
     #[error("cannot read encrypted file - VMGS is locked")]
     ReadEncrypted,
+    /// Tried to add a new encryption key, but there are already two keys.
+    #[error("no space to add new encryption key")]
+    DatastoreKeysFull,
+    /// Datastore keys full, but there is no active key.
+    #[error("unable to determine inactive key for removal")]
+    NoActiveDatastoreKey,
 
     /// OpenSSL errors.
     #[cfg(feature = "encryption_ossl")]

@@ -3,6 +3,9 @@
 
 //! Time types for mesh protobuf encoding.
 
+use crate::DecodeError;
+use crate::MessageDecode;
+use crate::MessageEncode;
 use crate::inplace::InplaceOption;
 use crate::inplace_some;
 use crate::protobuf::MessageReader;
@@ -13,9 +16,6 @@ use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
 use crate::table::DescribeTable;
 use crate::table::TableEncoder;
-use crate::DecodeError;
-use crate::MessageDecode;
-use crate::MessageEncode;
 use core::time::Duration;
 use mesh_protobuf::Protobuf;
 use thiserror::Error;

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
+#![expect(missing_docs)]
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
@@ -13,7 +14,7 @@ use inspect::Node;
 use inspect::Request;
 use inspect::Response;
 use inspect::SensitivityLevel;
-use inspect::Value;
+use inspect::ValueKind;
 use xtask_fuzz::fuzz_eprintln;
 use xtask_fuzz::fuzz_target;
 
@@ -40,7 +41,7 @@ impl InspectNode<'_, '_> {
         match self.u.int_in_range(0..=5)? {
             0 => {
                 fuzz_eprintln!("value");
-                req.value(self.u.arbitrary()?)
+                req.value(self.u.arbitrary::<ValueKind>()?)
             }
             1 => {
                 fuzz_eprintln!("ignore");
@@ -56,7 +57,7 @@ impl InspectNode<'_, '_> {
                 match self.u.int_in_range(0..=6)? {
                     0 => {
                         fuzz_eprintln!("value");
-                        defer.value(self.u.arbitrary()?)
+                        defer.value(self.u.arbitrary::<ValueKind>()?)
                     }
                     1 => {
                         fuzz_eprintln!("ignore");
@@ -105,7 +106,7 @@ impl InspectNode<'_, '_> {
                         match parse_attempt {
                             Ok(new_val) => {
                                 fuzz_eprintln!("succeed");
-                                upd.succeed(new_val.into());
+                                upd.succeed(new_val);
                             }
                             Err(e) => {
                                 fuzz_eprintln!("fail");
@@ -133,23 +134,23 @@ impl InspectNode<'_, '_> {
                 }
                 1 => {
                     fuzz_eprintln!("hex");
-                    resp.hex(self.u.arbitrary()?, Value::arbitrary(self.u)?)
+                    resp.hex(self.u.arbitrary()?, ValueKind::arbitrary(self.u)?)
                 }
                 2 => {
                     fuzz_eprintln!("counter");
-                    resp.counter(self.u.arbitrary()?, Value::arbitrary(self.u)?)
+                    resp.counter(self.u.arbitrary()?, ValueKind::arbitrary(self.u)?)
                 }
                 3 => {
                     fuzz_eprintln!("sensitivity_counter");
                     resp.sensitivity_counter(
                         self.u.arbitrary()?,
                         self.u.arbitrary()?,
-                        Value::arbitrary(self.u)?,
+                        ValueKind::arbitrary(self.u)?,
                     )
                 }
                 4 => {
                     fuzz_eprintln!("binary");
-                    resp.binary(self.u.arbitrary()?, Value::arbitrary(self.u)?)
+                    resp.binary(self.u.arbitrary()?, ValueKind::arbitrary(self.u)?)
                 }
                 5 => {
                     fuzz_eprintln!("display");
@@ -225,7 +226,7 @@ fn do_defer_update(upd: DeferredUpdate) {
     match parse_attempt {
         Ok(new_val) => {
             fuzz_eprintln!("succeed");
-            upd.succeed(new_val.into());
+            upd.succeed(new_val);
         }
         Err(e) => {
             fuzz_eprintln!("fail");

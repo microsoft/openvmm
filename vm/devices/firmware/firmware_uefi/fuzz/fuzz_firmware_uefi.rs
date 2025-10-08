@@ -2,12 +2,13 @@
 // Licensed under the MIT License.
 
 #![no_main]
+#![expect(missing_docs)]
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 
 use arbitrary::Arbitrary;
 use firmware_uefi::platform::nvram::EFI_TIME;
-use firmware_uefi::service::nvram::spec_services::auth_var_crypto;
 use firmware_uefi::service::nvram::spec_services::ParsedAuthVar;
+use firmware_uefi::service::nvram::spec_services::auth_var_crypto;
 use guid::Guid;
 use openssl::asn1::Asn1Time;
 use openssl::hash::MessageDigest;
@@ -18,10 +19,10 @@ use openssl::pkey::PKeyRef;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use openssl::stack::Stack;
+use openssl::x509::X509;
 use openssl::x509::X509Builder;
 use openssl::x509::X509NameBuilder;
 use openssl::x509::X509Ref;
-use openssl::x509::X509;
 use std::borrow::Cow;
 use ucs2::Ucs2LeVec;
 use uefi_nvram_specvars::signature_list::SignatureData;
@@ -101,9 +102,9 @@ fn do_fuzz(input: FuzzInput) {
 
     let var = ParsedAuthVar {
         name: &Ucs2LeVec::from(name),
-        vendor: Guid::read_from(&vendor).unwrap(),
+        vendor: Guid::read_from_bytes(&vendor).unwrap(),
         attr,
-        timestamp: EFI_TIME::read_from(&timestamp).unwrap(),
+        timestamp: EFI_TIME::read_from_bytes(&timestamp).unwrap(),
         pkcs7_data: &pkcs7_data,
         var_data: &var_data,
     };
@@ -157,7 +158,7 @@ fn test_signature_lists() -> Vec<u8> {
     buf
 }
 
-const VALID_OWNER: Guid = Guid::from_static_str("77fa9abd-0359-4d32-bd60-28f4e78f784b");
+const VALID_OWNER: Guid = guid::guid!("77fa9abd-0359-4d32-bd60-28f4e78f784b");
 
 fn test_valid_signature_lists() -> Vec<u8> {
     let lists = vec![

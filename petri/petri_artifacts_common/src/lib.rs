@@ -5,7 +5,6 @@
 //! what VMM backend is being used.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Artifact declarations
 pub mod artifacts {
@@ -32,7 +31,7 @@ pub mod tags {
     /// A coarse-grained label used to differentiate between different OS
     /// environments.
     #[derive(Debug, Clone, Copy)]
-    #[allow(missing_docs)] // Self-describing names.
+    #[expect(missing_docs)] // Self-describing names.
     pub enum OsFlavor {
         Windows,
         Linux,
@@ -42,18 +41,68 @@ pub mod tags {
 
     /// The machine architecture supported by the artifact or VM.
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    #[allow(missing_docs)] // Self describing names
+    #[expect(missing_docs)] // Self describing names
     pub enum MachineArch {
         X86_64,
         Aarch64,
     }
 
+    impl MachineArch {
+        /// Returns the host's architecture.
+        pub fn host() -> Self {
+            // xtask-fmt allow-target-arch oneoff-petri-host-arch
+            if cfg!(target_arch = "x86_64") {
+                Self::X86_64
+            }
+            // xtask-fmt allow-target-arch oneoff-petri-host-arch
+            else if cfg!(target_arch = "aarch64") {
+                Self::Aarch64
+            } else {
+                panic!("unsupported host architecture")
+            }
+        }
+    }
+
     /// Quirks needed to boot a guest.
-    #[derive(Default, Copy, Clone, Debug)]
-    pub struct GuestQuirks {
+    #[derive(Default, Clone, Debug)]
+    pub struct GuestQuirksInner {
         /// How long to wait after the shutdown IC reports ready before sending
         /// the shutdown command.
+        ///
+        /// This is necessary because some guests will ignore shutdown requests
+        /// that arrive too early in the boot process.
         pub hyperv_shutdown_ic_sleep: Option<std::time::Duration>,
+        /// Some guests reboot automatically soon after first boot.
+        pub initial_reboot: Option<InitialRebootCondition>,
+    }
+
+    /// Some guests may automatically reboot only in certain configurations
+    #[derive(Clone, Copy, Debug)]
+    pub enum InitialRebootCondition {
+        /// This guest always reboots on this VMM.
+        Always,
+        /// This guest only reboot when using OpenHCL and UEFI on this VMM.
+        WithOpenHclUefi,
+        // TODO: add WithTpm here once with_tpm() is backend-agnostic.
+    }
+
+    /// Quirks needed to boot a guest, allowing for differences based on backend
+    #[derive(Default, Clone, Debug)]
+    pub struct GuestQuirks {
+        /// Quirks when running in OpenVMM
+        pub openvmm: GuestQuirksInner,
+        /// Quirks when running in Hyper-V
+        pub hyperv: GuestQuirksInner,
+    }
+
+    impl GuestQuirks {
+        /// Use the same quirks for all backends
+        pub fn for_all_backends(quirks: GuestQuirksInner) -> GuestQuirks {
+            GuestQuirks {
+                openvmm: quirks.clone(),
+                hyperv: quirks,
+            }
+        }
     }
 
     /// Artifact is a OpenHCL IGVM file
@@ -92,4 +141,10 @@ pub mod tags {
         /// What [`MachineArch`] this artifact supports.
         const ARCH: MachineArch;
     }
+
+    /// Artifact is a test VMGS file
+    pub trait IsTestVmgs: ArtifactId {}
+
+    /// Artifact is a VmgsTool binary
+    pub trait IsVmgsTool: ArtifactId {}
 }

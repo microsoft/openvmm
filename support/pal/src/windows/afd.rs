@@ -2,13 +2,12 @@
 // Licensed under the MIT License.
 
 #![cfg(windows)]
-#![allow(dead_code)]
 
 //! Code to interact with the Windows AFD (socket) driver.
 
-use super::chk_status;
 use super::SendSyncRawHandle;
 use super::UnicodeString;
+use super::chk_status;
 use ioapiset::DeviceIoControl;
 use minwinbase::OVERLAPPED;
 use ntapi::ntioapi::NtOpenFile;
@@ -33,7 +32,7 @@ pub struct PollInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct PollHandleInfo {
     pub handle: SendSyncRawHandle,
     pub events: u32,
@@ -93,7 +92,7 @@ pub fn open_afd() -> std::io::Result<File> {
 /// `len` bytes.
 pub unsafe fn poll(
     handle: RawHandle,
-    poll_info: &mut PollInfo,
+    poll_info: *mut PollInfo,
     len: usize,
     overlapped: *mut OVERLAPPED,
 ) -> bool {
@@ -102,9 +101,9 @@ pub unsafe fn poll(
         DeviceIoControl(
             handle,
             IOCTL_AFD_POLL,
-            std::ptr::from_mut::<PollInfo>(poll_info).cast::<std::ffi::c_void>(),
+            poll_info.cast::<std::ffi::c_void>(),
             len as u32,
-            std::ptr::from_mut::<PollInfo>(poll_info).cast::<std::ffi::c_void>(),
+            poll_info.cast::<std::ffi::c_void>(),
             len as u32,
             &mut returned,
             overlapped,

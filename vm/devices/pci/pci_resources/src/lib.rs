@@ -3,7 +3,6 @@
 
 //! Resource definitions for PCI devices.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use chipset_device::mmio::RegisterMmioIntercept;
@@ -14,8 +13,8 @@ use guestmem::GuestMemory;
 use guestmem::MemoryMapper;
 use pci_core::msi::RegisterMsi;
 use std::sync::Arc;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::PciDeviceHandleKind;
 use vmcore::vm_task::VmTaskDriverSource;
 
 impl CanResolveTo<ResolvedPciDevice> for PciDeviceHandleKind {

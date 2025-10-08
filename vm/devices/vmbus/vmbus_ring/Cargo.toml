@@ -3,7 +3,7 @@
 
 [package]
 name = "vmbus_ring"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -15,7 +15,6 @@ safeatomic.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 criterion = { workspace = true, features = ["rayon", "cargo_bench_support"] }
 

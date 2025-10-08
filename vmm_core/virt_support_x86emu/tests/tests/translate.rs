@@ -8,9 +8,11 @@ use iced_x86::code_asm::*;
 use pal_async::async_test;
 use virt_support_x86emu::emulate::*;
 use vm_topology::processor::VpIndex;
+use x86defs::RFlags;
 use x86defs::cpuid::Vendor;
-use x86emu::CpuState;
-use zerocopy::AsBytes;
+use x86emu::Gp;
+use x86emu::Segment;
+use zerocopy::IntoBytes;
 
 const INITIAL_GVA: u64 = 0x2000;
 const INITIAL_GPA: u64 = 0x1000;
@@ -67,7 +69,7 @@ enum MockAccess {
 }
 
 impl MockSupport {
-    const WORKING_REGISTER: usize = CpuState::RSI;
+    const WORKING_REGISTER: Gp = Gp::RSI;
     const ASM_WORKING_REGISTER: AsmRegister64 = rsi;
 
     fn new(
@@ -87,12 +89,12 @@ impl MockSupport {
 
         match access_info {
             MockAccess::Read => {
-                state.gps[CpuState::RAX] = gva;
+                state.gps[Gp::RAX as usize] = gva;
                 asm.mov(Self::ASM_WORKING_REGISTER, dword_ptr(rax)).unwrap();
             }
             MockAccess::Write(write_value) => {
-                state.gps[CpuState::RAX] = gva;
-                state.gps[Self::WORKING_REGISTER] = write_value;
+                state.gps[Gp::RAX as usize] = gva;
+                state.gps[Self::WORKING_REGISTER as usize] = write_value;
                 asm.mov(dword_ptr(rax), Self::ASM_WORKING_REGISTER).unwrap();
             }
             MockAccess::Execute(mov_value) => {
@@ -103,7 +105,7 @@ impl MockSupport {
                 gm.write_at(VALUE_GPA, mov_value.as_bytes()).unwrap();
 
                 state.rip = gva;
-                state.gps[CpuState::RAX] = VALUE_GPA;
+                state.gps[Gp::RAX as usize] = VALUE_GPA;
 
                 asm.mov(Self::ASM_WORKING_REGISTER, dword_ptr(rax)).unwrap();
             }
@@ -152,13 +154,11 @@ impl MockSupport {
             panic!("nothing to be read")
         }
 
-        self.state.gps[Self::WORKING_REGISTER]
+        self.state.gps[Self::WORKING_REGISTER as usize]
     }
 }
 
 impl EmulatorSupport for MockSupport {
-    type Error = std::convert::Infallible;
-
     fn vp_index(&self) -> VpIndex {
         VpIndex::BSP
     }
@@ -167,13 +167,42 @@ impl EmulatorSupport for MockSupport {
         Vendor::INTEL
     }
 
-    fn state(&mut self) -> Result<CpuState, Self::Error> {
-        Ok(self.state.clone())
+    fn flush(&mut self) {}
+
+    fn gp(&mut self, reg: Gp) -> u64 {
+        self.state.gps[reg as usize]
+    }
+    fn set_gp(&mut self, reg: Gp, v: u64) {
+        self.state.gps[reg as usize] = v;
+    }
+    fn rip(&mut self) -> u64 {
+        self.state.rip
+    }
+    fn set_rip(&mut self, v: u64) {
+        self.state.rip = v;
     }
 
-    fn set_state(&mut self, state: CpuState) -> Result<(), Self::Error> {
-        self.state = state;
-        Ok(())
+    fn segment(&mut self, reg: Segment) -> x86defs::SegmentRegister {
+        self.state.segs[reg as usize]
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.state.efer
+    }
+    fn cr0(&mut self) -> u64 {
+        self.state.cr0
+    }
+    fn rflags(&mut self) -> RFlags {
+        self.state.rflags
+    }
+    fn set_rflags(&mut self, v: RFlags) {
+        self.state.rflags = v;
+    }
+    fn xmm(&mut self, _reg: usize) -> u128 {
+        todo!()
+    }
+    fn set_xmm(&mut self, _reg: usize, _v: u128) {
+        todo!()
     }
 
     fn instruction_bytes(&self) -> &[u8] {
@@ -184,7 +213,7 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         _gpa: u64,
         _mode: TranslateMode,
-    ) -> Result<(), EmuCheckVtlAccessError<Self::Error>> {
+    ) -> Result<(), EmuCheckVtlAccessError> {
         Ok(())
     }
 
@@ -192,7 +221,7 @@ impl EmulatorSupport for MockSupport {
         &mut self,
         gva: u64,
         mode: TranslateMode,
-    ) -> Result<Result<EmuTranslateResult, EmuTranslateError>, Self::Error> {
+    ) -> Result<EmuTranslateResult, EmuTranslateError> {
         println!("translating for {:?} access", mode);
 
         if mode == TranslateMode::Execute {
@@ -201,10 +230,10 @@ impl EmulatorSupport for MockSupport {
 
         match self.mode {
             MockSupportMode::Code(c) => match c {
-                TranslateGvaResultCode::INTERCEPT => Ok(Err(EmuTranslateError {
+                TranslateGvaResultCode::INTERCEPT => Err(EmuTranslateError {
                     code: c,
                     event_info: Some(Self::intercept_event()),
-                })),
+                }),
                 TranslateGvaResultCode::SUCCESS => {
                     let MockSupportTranslation {
                         access_gva: test_gva,
@@ -220,25 +249,28 @@ impl EmulatorSupport for MockSupport {
                         // located at a previously translated gva. Just return the gva.
                         gva
                     } else {
-                        panic!("accessing {:x}, not the expected gva {:x}; was the instruction stream created incorrectly?", gva, test_gva)
+                        panic!(
+                            "accessing {:x}, not the expected gva {:x}; was the instruction stream created incorrectly?",
+                            gva, test_gva
+                        )
                     };
 
                     println!("translated gva {:x} to {:x}", gva, gpa);
 
-                    Ok(Ok(EmuTranslateResult {
+                    Ok(EmuTranslateResult {
                         gpa,
                         overlay_page: Some(false),
-                    }))
+                    })
                 }
-                _ => Ok(Err(EmuTranslateError {
+                _ => Err(EmuTranslateError {
                     code: c,
                     event_info: None,
-                })),
+                }),
             },
-            MockSupportMode::TestOverlay => Ok(Ok(EmuTranslateResult {
+            MockSupportMode::TestOverlay => Ok(EmuTranslateResult {
                 gpa: gva,
                 overlay_page: Some(true),
-            })),
+            }),
         }
     }
 
@@ -247,7 +279,7 @@ impl EmulatorSupport for MockSupport {
     }
 
     /// The gva translation included in the intercept message header, if valid.
-    fn initial_gva_translation(&self) -> Option<InitialTranslation> {
+    fn initial_gva_translation(&mut self) -> Option<InitialTranslation> {
         Some(InitialTranslation {
             gva: INITIAL_GVA,
             gpa: INITIAL_GPA,
@@ -274,14 +306,6 @@ impl EmulatorSupport for MockSupport {
         );
     }
 
-    fn get_xmm(&mut self, _reg: usize) -> Result<u128, Self::Error> {
-        todo!()
-    }
-
-    fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
-        todo!()
-    }
-
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
         true
     }
@@ -302,6 +326,11 @@ impl EmulatorSupport for MockSupport {
 #[async_test]
 async fn basic_translate_gva() {
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
 
     const GVA: u64 = 0xbadc0ffee0ddf00d;
     const GPA: u64 = 0xFF;
@@ -319,7 +348,7 @@ async fn basic_translate_gva() {
         &gm,
     );
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     assert_eq!(support.accessed_value(), TEST_VALUE);
     assert!(
@@ -331,6 +360,11 @@ async fn basic_translate_gva() {
 #[async_test]
 async fn translate_gva_page_faults() {
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
 
     let codes = [
         (
@@ -375,7 +409,7 @@ async fn translate_gva_page_faults() {
         );
 
         assert!(
-            emulate(&mut support, &gm, &MockCpu).await.is_ok(),
+            emulate(&mut support, &emu_mem, &MockCpu).await.is_ok(),
             "emulation failed for error code {:?}",
             c
         );
@@ -429,6 +463,11 @@ async fn translate_gva_page_faults() {
 #[async_test]
 async fn translate_gva_protection_faults() {
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
 
     let codes = [
         TranslateGvaResultCode::GPA_NO_READ_ACCESS,
@@ -454,7 +493,7 @@ async fn translate_gva_protection_faults() {
         );
 
         assert!(
-            emulate(&mut support, &gm, &MockCpu).await.is_ok(),
+            emulate(&mut support, &emu_mem, &MockCpu).await.is_ok(),
             "emulation failed for error code {:?}",
             c
         );
@@ -472,6 +511,11 @@ async fn translate_gva_protection_faults() {
 #[async_test]
 async fn translate_gva_intercept() {
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
 
     const GVA: u64 = 0xbadc0ffee0ddf00d;
     const GPA: u64 = 0xFF;
@@ -487,7 +531,7 @@ async fn translate_gva_intercept() {
         &gm,
     );
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
 
     let injected_event = support.injected_event().unwrap();
 
@@ -500,6 +544,11 @@ async fn translate_gva_intercept() {
 #[async_test]
 async fn initial_gva_translation() {
     let gm = GuestMemory::allocate(2 * 4096);
+    let emu_mem = EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
 
     const INITIAL_GPA_VALUE: u64 = 0x1234;
     const DECOY_VALUE: u64 = 0xabcd;
@@ -520,7 +569,7 @@ async fn initial_gva_translation() {
         &gm,
     );
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
     assert_eq!(support.accessed_value(), INITIAL_GPA_VALUE);
     assert!(
         support.injected_event().is_none(),
@@ -544,7 +593,7 @@ async fn initial_gva_translation() {
     gm.write_at(INITIAL_GPA + OFFSET, OFFSET_VALUE.as_bytes())
         .unwrap();
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
     assert_eq!(support.accessed_value(), OFFSET_VALUE);
     assert!(
         support.injected_event().is_none(),
@@ -555,6 +604,11 @@ async fn initial_gva_translation() {
 #[async_test]
 async fn initial_gva_translation_misses() {
     let gm = GuestMemory::allocate(2 * 4096);
+    let emu_mem = EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
 
     const DECOY_VALUE: u64 = 0xabcd;
     const CORRECT_VALUE: u64 = 0x1234;
@@ -579,7 +633,7 @@ async fn initial_gva_translation_misses() {
         &gm,
     );
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
     assert!(support.injected_event().is_none());
 
     let mut mem_val = [0; 8];
@@ -604,12 +658,12 @@ async fn initial_gva_translation_misses() {
     );
 
     let mut asm = CodeAssembler::new(64).unwrap();
-    support.state.gps[CpuState::R9] = DECOY_VALUE;
+    support.set_gp(Gp::R9, DECOY_VALUE);
     asm.mov(rsi, r9).unwrap();
     let instruction_bytes = asm.assemble(support.state.rip).unwrap();
     gm.write_at(INITIAL_GPA, &instruction_bytes).unwrap();
 
-    emulate(&mut support, &gm, &MockCpu).await.unwrap();
+    emulate(&mut support, &emu_mem, &MockCpu).await.unwrap();
     assert!(support.injected_event().is_none());
     assert_eq!(support.accessed_value(), CORRECT_VALUE);
 }
@@ -617,6 +671,11 @@ async fn initial_gva_translation_misses() {
 #[async_test]
 async fn translate_gva_overlay_page() {
     let gm = GuestMemory::allocate(4096);
+    let emu_mem = EmulatorMemoryAccess {
+        gm: &gm,
+        kx_gm: &gm,
+        ux_gm: &gm,
+    };
 
     const GVA: u64 = 0xbadc0ffee0ddf00d;
     const GPA: u64 = 0xFF;
@@ -633,7 +692,7 @@ async fn translate_gva_overlay_page() {
         &gm,
     );
 
-    assert!(emulate(&mut support, &gm, &MockCpu).await.is_ok());
+    assert!(emulate(&mut support, &emu_mem, &MockCpu).await.is_ok());
 
     assert!(
         support.injected_event().is_some(),

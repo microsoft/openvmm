@@ -10,8 +10,8 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use mesh::payload::Protobuf;
 use mesh::Receiver;
+use mesh::payload::Protobuf;
 
 /// Events signaled on a Virtual PCI bus.
 #[derive(Debug, Protobuf)]

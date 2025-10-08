@@ -3,8 +3,8 @@
 
 //! PCI configuration space access
 
-use crate::io::IoResult;
 use crate::ChipsetDevice;
+use crate::io::IoResult;
 
 /// Implemented by devices which have a PCI config space.
 pub trait PciConfigSpace: ChipsetDevice {

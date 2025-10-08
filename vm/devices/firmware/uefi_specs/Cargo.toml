@@ -3,7 +3,7 @@
 
 [package]
 name = "uefi_specs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -21,7 +21,6 @@ bitfield-struct.workspace = true
 static_assertions.workspace = true
 wchar.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 
 [lints]

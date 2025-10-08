@@ -3,7 +3,7 @@
 
 [package]
 name = "test_with_tracing_macro"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [lib]

@@ -3,30 +3,31 @@
 
 //! VM command handling.
 
-use super::hyperv::hvc_output;
-use super::hyperv::powershell_script;
-use super::hyperv::run_hcsdiag;
-use super::hyperv::run_hvc;
-use super::rustyline_printer::Printer;
 use super::InspectArgs;
 use super::InspectTarget;
 use super::LogMode;
 use super::ParavisorCommand;
 use super::SerialMode;
 use super::VmCommand;
+use super::hyperv::hvc_output;
+use super::hyperv::powershell_script;
+use super::hyperv::run_hcsdiag;
+use super::hyperv::run_hvc;
+use super::rustyline_printer::Printer;
 use anyhow::Context as _;
+use console_relay::ConsoleLaunchOptions;
 use diag_client::DiagClient;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::io::BufReader;
 use futures_concurrency::future::Race;
 use guid::Guid;
+use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::DefaultDriver;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -179,11 +180,20 @@ impl Vm {
                     }
                     SerialMode::Log => Some(IoTarget::Printer),
                     SerialMode::Term => Some(IoTarget::Console(
-                        console_relay::Console::new(self.inner.driver.clone(), None)
-                            .context("failed to launch console")?,
+                        console_relay::Console::new(
+                            self.inner.driver.clone(),
+                            None,
+                            Some(ConsoleLaunchOptions {
+                                window_title: Some(format!("COM{} [Hypestv]", port)),
+                            }),
+                        )
+                        .context("failed to launch console")?,
                     )),
                 };
                 if let Some(target) = target {
+                    if task.as_ref().is_some_and(|task| task.task.is_finished()) {
+                        *task = None;
+                    }
                     if let Some(task) = task {
                         task.mode = mode;
                         task.req.send(IoRequest::NewTarget(target));
@@ -192,7 +202,7 @@ impl Vm {
                         let inner = self.inner.clone();
                         let t = self.inner.driver.spawn("serial", async move {
                             if let Err(err) = inner.handle_serial(recv, target, port).await {
-                                writeln!(inner.printer.out(), "COM{port} failed: {:#}", err).ok();
+                                writeln!(inner.printer.out(), "com{port} failed: {:#}", err).ok();
                             }
                         });
                         *task = Some(SerialTask { task: t, mode, req });
@@ -200,6 +210,17 @@ impl Vm {
                 }
             }
             VmCommand::Paravisor(cmd) => self.handle_paravisor_command(cmd).await?,
+            VmCommand::Nmi { vtl } => {
+                powershell_script(
+                    r#"
+                    param([string]$id, [int]$vtl)
+                    $ErrorActionPreference = "Stop"
+                    $vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where Name = '$id'"
+                    $vm | Invoke-CimMethod -Name "InjectNonMaskableInterruptEx" -Arguments @{"Vtl" = $vtl}
+                    "#,
+                    &[&self.inner.id.to_string(), &vtl.to_string()],
+                )?;
+            }
         }
         Ok(())
     }
@@ -229,11 +250,24 @@ impl Vm {
                     }
                     LogMode::Log => Some(IoTarget::Printer),
                     LogMode::Term => Some(IoTarget::Console(
-                        console_relay::Console::new(self.inner.driver.clone(), None)
-                            .context("failed to launch console")?,
+                        console_relay::Console::new(
+                            self.inner.driver.clone(),
+                            None,
+                            Some(ConsoleLaunchOptions {
+                                window_title: Some("KMSG [Hypestv]".to_owned()),
+                            }),
+                        )
+                        .context("failed to launch console")?,
                     )),
                 };
                 if let Some(target) = target {
+                    if self
+                        .pv_kmsg
+                        .as_ref()
+                        .is_some_and(|task| task.task.is_finished())
+                    {
+                        self.pv_kmsg = None;
+                    }
                     if let Some(task) = &mut self.pv_kmsg {
                         task.mode = mode;
                         task.req.send(IoRequest::NewTarget(target));
@@ -312,6 +346,27 @@ impl Vm {
                 .context("failed to update vssd")?;
                 println!("{}", output.trim());
             }
+            ParavisorCommand::Reload => {
+                let output = powershell_script(
+                    r#"
+                    param([string]$id)
+                    $ErrorActionPreference = "Stop"
+                    $guestManagementService = Get-CimInstance -namespace "root\virtualization\v2" -ClassName "Msvm_VirtualSystemGuestManagementService"
+                    $options = 1; # Override version checks
+                    $TimeoutHintSecs = 15; # Ends up as the deadline in GuestSaveRequest (see the handling of SaveGuestVtl2StateNotification in guest_emulation_transport). Keep O(15 seconds).
+                    $result = $guestManagementService | Invoke-CimMethod -name "ReloadManagementVtl" -Arguments @{
+                        "VmId"            = $id
+                        "Options"         = $options
+                        "TimeoutHintSecs" = $TimeoutHintSecs
+                    }
+                    "#,
+                    &[&self.inner.id.to_string()],
+                )
+                .context("failed to reload paravisor")?;
+                // TODO: the result here is a Msvm_ConcreteJob, which this code should inspect to wait for completion and check for success.
+                // For now, we just print the output.
+                println!("{}", output.trim());
+            }
         }
         Ok(())
     }
@@ -361,8 +416,7 @@ impl VmInner {
                 } else {
                     let new_serial = diag_client::hyperv::open_serial_port(
                         &self.driver,
-                        &self.name,
-                        diag_client::hyperv::ComPortAccessInfo::PortNumber(port),
+                        diag_client::hyperv::ComPortAccessInfo::NameAndPortNumber(&self.name, port),
                     )
                     .await
                     .context("failed to open serial port")?;
@@ -392,7 +446,6 @@ impl VmInner {
                 }
 
                 writeln!(self.printer.out(), "com{port} disconnected").ok();
-                current_serial = None;
                 Ok(())
             };
 
@@ -400,7 +453,10 @@ impl VmInner {
                 .race()
                 .await;
             match event {
-                Event::TaskDone(r) => r?,
+                Event::TaskDone(r) => {
+                    r?;
+                    current_serial = None;
+                }
                 Event::Request(Some(y)) => match y {
                     IoRequest::NewTarget(new_target) => {
                         target = new_target;
@@ -451,9 +507,8 @@ impl VmInner {
 
                 while let Some(data) = kmsg.next().await {
                     match data {
-                        Ok(data) => {
-                            let message = kmsg::KmsgParsedEntry::new(&data)?;
-                            match &mut target {
+                        Ok(data) => match kmsg::KmsgParsedEntry::new(&data) {
+                            Ok(message) => match &mut target {
                                 IoTarget::Printer => {
                                     writeln!(
                                         self.printer.out(),
@@ -466,17 +521,34 @@ impl VmInner {
                                     let line = format!("{}\r\n", message.display(true));
                                     console.write_all(line.as_bytes()).await?;
                                 }
-                            }
+                            },
+                            Err(e) => match &mut target {
+                                IoTarget::Printer => {
+                                    writeln!(self.printer.out(), "[kmsg]: invalid entry: {:?}", e)
+                                        .ok();
+                                }
+                                IoTarget::Console(console) => {
+                                    let line = format!("invalid kmsg entry: {:?}\r\n", e);
+                                    console.write_all(line.as_bytes()).await?;
+                                }
+                            },
+                        },
+                        Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => {
+                            break;
                         }
                         Err(err) => {
-                            eprintln!("kmsg failure: {:#}", anyhow::Error::from(err));
+                            writeln!(
+                                self.printer.out(),
+                                "kmsg failure: {:#}",
+                                anyhow::Error::from(err)
+                            )
+                            .ok();
                             return Ok(());
                         }
                     }
                 }
 
                 writeln!(self.printer.out(), "kmsg disconnected").ok();
-                current = None;
                 Ok(())
             };
 
@@ -484,7 +556,10 @@ impl VmInner {
                 .race()
                 .await;
             match event {
-                Event::TaskDone(r) => r?,
+                Event::TaskDone(r) => {
+                    current = None;
+                    r?;
+                }
                 Event::Request(Some(y)) => match y {
                     IoRequest::NewTarget(new_target) => {
                         target = new_target;

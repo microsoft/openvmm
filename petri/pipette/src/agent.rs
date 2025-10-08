@@ -6,17 +6,19 @@
 #![cfg(any(target_os = "linux", target_os = "windows"))]
 
 use anyhow::Context;
-use futures::FutureExt;
+use futures::future::FutureExt;
+use futures_concurrency::future::RaceOk;
 use mesh_remote::PointToPointMesh;
+use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultDriver;
 use pipette_protocol::DiagnosticFile;
 use pipette_protocol::PipetteBootstrap;
 use pipette_protocol::PipetteRequest;
-use std::sync::Arc;
+use socket2::Socket;
 use std::time::Duration;
+use std::time::SystemTime;
 use unicycle::FuturesUnordered;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
@@ -29,24 +31,22 @@ pub struct Agent {
     watch_send: mesh::OneshotSender<()>,
 }
 
-#[allow(dead_code)] // Not used on all platforms yet
 #[derive(Clone)]
-pub struct DiagnosticSender(Arc<mesh::Sender<DiagnosticFile>>);
+pub struct DiagnosticSender(mesh::Sender<DiagnosticFile>);
 
 impl Agent {
     pub async fn new(driver: DefaultDriver) -> anyhow::Result<Self> {
-        let socket = VmSocket::new()?;
-        // Extend the default timeout of 2 seconds, as tests are often run in
-        // parallel on a host, causing very heavy load on the overall system.
-        socket
-            .set_connect_timeout(Duration::from_secs(5))
-            .context("failed to set socket timeout")?;
-
-        let socket = socket
-            .connect(VmAddress::vsock_host(pipette_protocol::PIPETTE_VSOCK_PORT))
-            .context("failed to connect to vsock")?;
-        let socket =
-            PolledSocket::new(&driver, socket).context("failed to create polled socket")?;
+        let socket = (connect_client(&driver), connect_server(&driver))
+            .race_ok()
+            .await
+            .map_err(|e| {
+                let [e0, e1] = &*e;
+                anyhow::anyhow!(
+                    "failed to connect. client error: {:#} server error: {:#}",
+                    e0,
+                    e1
+                )
+            })?;
 
         let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
         let mesh = PointToPointMesh::new(&driver, socket, bootstrap_recv.into());
@@ -67,7 +67,7 @@ impl Agent {
             driver,
             mesh,
             request_recv,
-            diag_file_send: DiagnosticSender(Arc::new(diag_file_send)),
+            diag_file_send: DiagnosticSender(diag_file_send),
             watch_send,
         })
     }
@@ -96,10 +96,40 @@ impl Agent {
     }
 }
 
+async fn connect_server(driver: &DefaultDriver) -> anyhow::Result<PolledSocket<Socket>> {
+    let mut socket = VmSocket::new()?;
+    socket.bind(VmAddress::vsock_any(pipette_protocol::PIPETTE_VSOCK_PORT))?;
+    let mut socket =
+        PolledSocket::new(driver, socket.into()).context("failed to create polled socket")?;
+    socket.listen(1)?;
+    let socket = socket
+        .accept()
+        .await
+        .context("failed to accept connection")?
+        .0;
+    PolledSocket::new(driver, socket).context("failed to create polled socket")
+}
+
+async fn connect_client(driver: &DefaultDriver) -> anyhow::Result<PolledSocket<Socket>> {
+    let socket = VmSocket::new()?;
+    // Extend the default timeout of 2 seconds, as tests are often run in
+    // parallel on a host, causing very heavy load on the overall system.
+    socket
+        .set_connect_timeout(Duration::from_secs(5))
+        .context("failed to set socket timeout")?;
+    let mut socket = PolledSocket::new(driver, socket)
+        .context("failed to create polled socket")?
+        .convert();
+    socket
+        .connect(&VmAddress::vsock_host(pipette_protocol::PIPETTE_VSOCK_PORT).into())
+        .await?;
+    Ok(socket)
+}
+
 async fn handle_request(
     driver: &DefaultDriver,
     req: PipetteRequest,
-    _diag_file_send: DiagnosticSender, // Not used on all platforms yet
+    _diag_file_send: DiagnosticSender,
 ) {
     match req {
         PipetteRequest::Ping(rpc) => rpc.handle_sync(|()| {
@@ -143,31 +173,32 @@ async fn handle_request(
         }
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
+        PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
     }
 }
 
-async fn read_file(mut request: pipette_protocol::ReadFileRequest) -> anyhow::Result<()> {
+async fn read_file(mut request: pipette_protocol::ReadFileRequest) -> anyhow::Result<u64> {
     tracing::debug!(path = request.path, "Beginning file read request");
     let file = fs_err::File::open(request.path)?;
-    futures::io::copy(&mut futures::io::AllowStdIo::new(file), &mut request.sender).await?;
+    let n = futures::io::copy(&mut futures::io::AllowStdIo::new(file), &mut request.sender).await?;
     tracing::debug!("file read request complete");
-    Ok(())
+    Ok(n)
 }
 
-async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::Result<()> {
+async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::Result<u64> {
     tracing::debug!(path = request.path, "Beginning file write request");
     let file = fs_err::File::create(request.path)?;
-    futures::io::copy(
+    let n = futures::io::copy(
         &mut request.receiver,
         &mut futures::io::AllowStdIo::new(file),
     )
     .await?;
     tracing::debug!("file write request complete");
-    Ok(())
+    Ok(n)
 }
 
 impl DiagnosticSender {
-    #[allow(dead_code)] // Not used on all platforms yet
+    #[cfg_attr(not(windows), expect(dead_code))]
     pub async fn send(&self, filename: &str) -> anyhow::Result<()> {
         tracing::debug!(filename, "Beginning diagnostic file request");
         let file = fs_err::File::open(filename)?;

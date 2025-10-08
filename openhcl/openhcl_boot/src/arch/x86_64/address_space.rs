@@ -14,14 +14,17 @@ use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
 use core::marker::PhantomData;
-use core::sync::atomic::compiler_fence;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
+use core::sync::atomic::compiler_fence;
+use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use x86defs::X64_LARGE_PAGE_SIZE;
-use zerocopy::AsBytes;
+use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const X64_PTE_PRESENT: u64 = 1;
 const X64_PTE_READ_WRITE: u64 = 1 << 1;
@@ -35,7 +38,7 @@ const PAGE_TABLE_ENTRY_COUNT: usize = 512;
 const X64_PAGE_SHIFT: u64 = 12;
 const X64_PTE_BITS: u64 = 9;
 
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(transparent)]
 struct PageTableEntry {
     entry: u64,
@@ -100,10 +103,30 @@ impl PageTableEntry {
     pub fn clear(&mut self) {
         self.write_pte(0);
     }
+
+    /// Check the TDX shared bit on a page table entry
+    pub fn tdx_is_shared(&mut self) -> bool {
+        let val = self.read_pte();
+        val & TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT == TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT
+    }
+
+    /// Set the TDX shared bit on a page table entry
+    pub fn tdx_set_shared(&mut self) {
+        let mut val = self.read_pte();
+        val |= TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
+        self.write_pte(val);
+    }
+
+    /// Unset the TDX shared bit on a page table entry
+    pub fn tdx_set_private(&mut self) {
+        let mut val = self.read_pte();
+        val &= !TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
+        self.write_pte(val);
+    }
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct PageTable {
     entries: [PageTableEntry; PAGE_TABLE_ENTRY_COUNT],
 }
@@ -204,6 +227,7 @@ unsafe fn page_table_at_address(address: u64) -> &'static mut PageTable {
 /// Returns a reference to the PDE corresponding to a virtual address.
 ///
 /// # Safety
+///
 /// This routine requires the caller to ensure that the VA is a valid one for which the paging
 /// hierarchy was configured by the file loader (the page directory must exist). If this is not
 /// true this routine will panic rather than corrupt the address space.
@@ -220,8 +244,7 @@ unsafe fn get_pde_for_va(va: u64) -> &'static mut PageTableEntry {
         let entry = pdpt.entry(va, 2);
         assert!(entry.is_present());
         let pd = page_table_at_address(entry.get_addr());
-        let entry = pd.entry(va, 1);
-        entry
+        pd.entry(va, 1)
     }
 }
 
@@ -231,7 +254,7 @@ static LOCAL_MAP_INITIALIZED: SingleThreaded<Cell<bool>> = SingleThreaded(Cell::
 /// It returns a LocalMap structure with a static lifetime.
 /// `va` is the virtual address of the local map region. It must be 2MB aligned.
 pub fn init_local_map(va: u64) -> LocalMap<'static> {
-    assert!(va % X64_LARGE_PAGE_SIZE == 0);
+    assert!(va.is_multiple_of(X64_LARGE_PAGE_SIZE));
 
     // SAFETY: The va for the local map is part of the measured build. This routine will only be
     // called once. The boot shim is a single threaded environment, the contained assertion is
@@ -251,4 +274,65 @@ pub fn init_local_map(va: u64) -> LocalMap<'static> {
 
     unmap_page_helper(&local_map);
     local_map
+}
+
+/// A page used for TDX hypercalls
+/// This wrapper assures that the page is a large page, present in the
+/// paging hierarchy, aligned to 2MB, and shared with the hypervisor
+pub struct TdxHypercallPage(u64);
+
+impl TdxHypercallPage {
+    /// Validate that a virtual address is present in the paging hierarchy,
+    /// and that it is a large page
+    ///
+    /// # Safety
+    /// The caller ensures that the input is a virtual address with a valid page table
+    pub unsafe fn new(va: u64) -> Self {
+        // SAFETY: Caller has guaranteed the va is a valid pagetable mapping
+        unsafe {
+            let entry = get_pde_for_va(va);
+            assert!(entry.is_present() & entry.is_large_page());
+            assert!(va.is_multiple_of(X64_LARGE_PAGE_SIZE));
+            assert!(entry.tdx_is_shared());
+            TdxHypercallPage(va)
+        }
+    }
+
+    /// Returns the VA of the large page containing the I/O buffers
+    pub fn base(&self) -> u64 {
+        self.0
+    }
+
+    /// Returns the VA of the hypercall input buffer
+    pub fn input(&self) -> u64 {
+        self.0
+    }
+
+    /// Returns the VA of the hypercall output buffer
+    pub fn output(&self) -> u64 {
+        self.0 + HV_PAGE_SIZE
+    }
+}
+
+/// Set the shared bit in the PDE of a large page in the local map for a given VA.
+///
+/// # Safety
+/// The va passed in is guaranteed by the type to be a present large page,
+/// the caller must ensure it is safe to share with the hypervisor
+pub unsafe fn tdx_share_large_page(va: u64) {
+    // SAFETY: See above
+    unsafe {
+        let entry = get_pde_for_va(va);
+        entry.tdx_set_shared();
+    }
+}
+
+/// Clear the shared bit in the PDE of the local map for a given VA.
+pub fn tdx_unshare_large_page(va: TdxHypercallPage) {
+    // SAFETY: The va passed in is guaranteed by the type to be a present large page,
+    // which is shared with the hypervisor
+    unsafe {
+        let entry = get_pde_for_va(va.base());
+        entry.tdx_set_private();
+    }
 }

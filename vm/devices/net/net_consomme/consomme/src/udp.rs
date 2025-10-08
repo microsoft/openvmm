@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::dhcp::DHCP_SERVER;
 use super::Access;
 use super::Client;
-use super::ConsommeState;
 use super::DropReason;
 use super::SocketAddress;
+use super::dhcp::DHCP_SERVER;
 use crate::ChecksumState;
+use crate::ConsommeState;
 use crate::Ipv4Addresses;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -16,20 +16,20 @@ use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PolledSocket;
 use smoltcp::phy::ChecksumCapabilities;
+use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
+use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv4Repr;
+use smoltcp::wire::UDP_HEADER_LEN;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
-use smoltcp::wire::ETHERNET_HEADER_LEN;
-use smoltcp::wire::IPV4_HEADER_LEN;
-use smoltcp::wire::UDP_HEADER_LEN;
-use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
@@ -116,7 +116,7 @@ impl UdpConnection {
                         unreachable!()
                     };
                     eth.set_ethertype(EthernetProtocol::Ipv4);
-                    eth.set_src_addr(state.gateway_mac);
+                    eth.set_src_addr(state.params.gateway_mac);
                     eth.set_dst_addr(self.guest_mac);
                     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
                     Ipv4Repr {
@@ -187,7 +187,9 @@ impl<T: Client> Access<'_, T> {
             &checksum.caps(),
         )?;
 
-        if addresses.dst_addr == self.inner.state.gateway_ip || addresses.dst_addr.is_broadcast() {
+        if addresses.dst_addr == self.inner.state.params.gateway_ip
+            || addresses.dst_addr.is_broadcast()
+        {
             if self.handle_gateway_udp(&udp_packet)? {
                 return Ok(());
             }
@@ -234,7 +236,7 @@ impl<T: Client> Access<'_, T> {
                     PolledSocket::new(self.client.driver(), socket).map_err(DropReason::Io)?;
                 let conn = UdpConnection {
                     socket: Some(socket),
-                    guest_mac: guest_mac.unwrap_or(self.inner.state.client_mac),
+                    guest_mac: guest_mac.unwrap_or(self.inner.state.params.client_mac),
                     stats: Default::default(),
                     recycle: false,
                 };
@@ -254,7 +256,9 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
-    pub(crate) fn bind_udp_port(
+    /// Binds to the specified host IP and port for forwarding inbound UDP
+    /// packets to the guest.
+    pub fn bind_udp_port(
         &mut self,
         ip_addr: Option<Ipv4Addr>,
         port: u16,
@@ -267,7 +271,8 @@ impl<T: Client> Access<'_, T> {
         Ok(())
     }
 
-    pub(crate) fn unbind_udp_port(&mut self, port: u16) -> Result<(), DropReason> {
+    /// Unbinds from the specified host port.
+    pub fn unbind_udp_port(&mut self, port: u16) -> Result<(), DropReason> {
         let guest_addr = SocketAddress {
             ip: Ipv4Addr::UNSPECIFIED.into(),
             port,

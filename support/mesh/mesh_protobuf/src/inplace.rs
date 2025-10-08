@@ -245,7 +245,6 @@ macro_rules! inplace {
 macro_rules! inplace_some {
     ($v:ident) => {
         let mut $v = core::mem::MaybeUninit::new($v);
-        #[allow(unused_mut)]
         // SAFETY: We just initialized the value.
         let mut $v = unsafe { $crate::inplace::InplaceOption::new_init_unchecked(&mut $v) };
     };
@@ -256,12 +255,10 @@ macro_rules! inplace_some {
 macro_rules! inplace_none {
     ($v:ident) => {
         let mut $v = core::mem::MaybeUninit::uninit();
-        #[allow(unused_mut)]
         let mut $v = $crate::inplace::InplaceOption::uninit(&mut $v);
     };
     ($v:ident : $t:ty) => {
         let mut $v = core::mem::MaybeUninit::<$t>::uninit();
-        #[allow(unused_mut)]
         let mut $v = $crate::inplace::InplaceOption::uninit(&mut $v);
     };
 }

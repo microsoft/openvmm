@@ -3,7 +3,7 @@
 
 [package]
 name = "lxutil"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -21,11 +21,13 @@ tracing.workspace = true
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+bitfield-struct.workspace = true
+headervec.workspace = true
 ntapi.workspace = true
 parking_lot.workspace = true
+static_assertions.workspace = true
 widestring.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true
 features = [
@@ -42,6 +44,24 @@ features = [
     "winnls",
     "winnt",
     "winsock2",
+]
+
+[target.'cfg(windows)'.dependencies.windows]
+workspace = true
+features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_SystemServices",
+    "Wdk_System_Threading",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
 ]
 
 [dev-dependencies]

@@ -3,14 +3,15 @@
 
 [package]
 name = "pal_async"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
 # Enable executor_tests module for out-of-crate executor testing.
-tests = ["dep:tempfile_helpers"]
+tests = ["dep:tempfile"]
 
 [dependencies]
+loan_cell.workspace = true
 pal.workspace = true
 unix_socket.workspace = true
 pal_event.workspace = true
@@ -26,14 +27,14 @@ parking_lot.workspace = true
 slab.workspace = true
 smallbox.workspace = true
 socket2 = { workspace = true, features = ["all"] }
-tempfile_helpers = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, features = ["extra_traits"] }
 
 [target.'cfg(windows)'.dependencies]
+headervec.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_WindowsProgramming"] }
 
 # TODO: move all these uses to windows-sys.
@@ -65,7 +66,6 @@ features = [
 
 [dev-dependencies]
 tempfile.workspace = true
-tempfile_helpers.workspace = true
 
 [lints]
 workspace = true

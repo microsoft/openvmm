@@ -13,11 +13,11 @@ use nvme_resources::NvmeControllerHandle;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::PciDeviceHandleKind;
 
 /// Resource resolver for [`NvmeControllerHandle`].
 pub struct NvmeControllerResolver;
@@ -29,7 +29,7 @@ declare_static_async_resolver! {
 
 /// Error returned by [`NvmeControllerResolver`].
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum Error {
     #[error("failed to resolve namespace {nsid}")]
     NamespaceResolve {
@@ -74,7 +74,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
                     disk,
                     ResolveDiskParameters {
                         read_only,
-                        _async_trait_workaround: &(),
+                        driver_source: input.driver_source,
                     },
                 )
                 .await

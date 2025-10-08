@@ -4,7 +4,8 @@
 use crate::tests::common::run_test;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 const RFLAGS_MUL_MASK: RFlags = RFlags::new().with_carry(true).with_overflow(true);
 
@@ -14,21 +15,21 @@ fn multiply_regvalue_to_memory(
     ptr_op: fn(AsmMemoryOperand) -> AsmMemoryOperand,
 ) {
     for &(left, right, low, high, rflags) in variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_MUL_MASK,
             |asm| mul_op(asm, ptr_op(rax + 0x10)),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = left;
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), left);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
 
-        assert_eq!(state.gps[CpuState::RAX], low);
+        assert_eq!(cpu.gp(Gp::RAX.into()), low);
         if let Some(high_bits) = high {
-            assert_eq!(state.gps[CpuState::RDX], high_bits);
+            assert_eq!(cpu.gp(Gp::RDX.into()), high_bits);
         }
-        assert_eq!(state.rflags & RFLAGS_MUL_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_MUL_MASK, rflags.into());
     }
 }
 

@@ -3,10 +3,13 @@
 
 [package]
 name = "watchdog_core"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cvm_tracing.workspace = true
+watchdog_vmgs_format.workspace = true
+
 vmcore.workspace = true
 
 inspect.workspace = true

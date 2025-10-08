@@ -5,20 +5,20 @@
 
 use super::I8042Device;
 use async_trait::async_trait;
+use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
-use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::i8042::I8042DeviceHandle;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestHandleKind;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// A resolver for i8042 devices.
 pub struct I8042Resolver;
@@ -30,7 +30,7 @@ declare_static_async_resolver! {
 
 /// Errors that can occur when resolving an i8042 device.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum ResolveI8042Error {
     #[error("failed to resolve keyboard input")]
     ResolveKeyboardInput(#[source] ResolveError),

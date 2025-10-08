@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 use super::client::GuestEmulationTransportClient;
-use super::process_loop::msg::Msg;
 use super::process_loop::ProcessLoop;
-use crate::process_loop::FatalError;
+use super::process_loop::msg::Msg;
 use crate::FatalGetError;
+use crate::process_loop::FatalError;
 use pal_async::task::Spawn;
 use tracing_helpers::ErrorValueExt;
 use vmbus_async::pipe::MessagePipe;

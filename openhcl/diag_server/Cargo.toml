@@ -3,13 +3,14 @@
 
 [package]
 name = "diag_server"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 diag_proto.workspace = true
 
 azure_profiler_proto.workspace = true
+cvm_tracing.workspace = true
 inspect_proto.workspace = true
 inspect = { workspace = true, features = ["defer"] }
 mesh = { workspace = true, features = ["socket2"] }

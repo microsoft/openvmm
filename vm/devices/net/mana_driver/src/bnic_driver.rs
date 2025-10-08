@@ -6,6 +6,13 @@
 use crate::gdma_driver::GdmaDriver;
 use crate::mana::ResourceArena;
 use crate::resources::Resource;
+use gdma_defs::GdmaDevId;
+use gdma_defs::GdmaQueueType;
+use gdma_defs::GdmaReqHdr;
+use gdma_defs::bnic::MANA_VTL2_ASSIGN_SERIAL_NUMBER_REQUEST_V1;
+use gdma_defs::bnic::MANA_VTL2_ASSIGN_SERIAL_NUMBER_RESPONSE_V1;
+use gdma_defs::bnic::MANA_VTL2_MOVE_FILTER_REQUEST_V2;
+use gdma_defs::bnic::MANA_VTL2_MOVE_FILTER_RESPONSE_V1;
 use gdma_defs::bnic::ManaCfgRxSteerReq;
 use gdma_defs::bnic::ManaCommandCode;
 use gdma_defs::bnic::ManaConfigVportReq;
@@ -23,17 +30,12 @@ use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaQueryVportCfgReq;
 use gdma_defs::bnic::ManaQueryVportCfgResp;
 use gdma_defs::bnic::ManaSetVportSerialNo;
-use gdma_defs::bnic::MANA_VTL2_ASSIGN_SERIAL_NUMBER_REQUEST_V1;
-use gdma_defs::bnic::MANA_VTL2_ASSIGN_SERIAL_NUMBER_RESPONSE_V1;
-use gdma_defs::bnic::MANA_VTL2_MOVE_FILTER_REQUEST_V2;
-use gdma_defs::bnic::MANA_VTL2_MOVE_FILTER_RESPONSE_V1;
-use gdma_defs::GdmaDevId;
-use gdma_defs::GdmaQueueType;
-use gdma_defs::GdmaReqHdr;
 use user_driver::DeviceBacking;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub struct BnicDriver<'a, T: DeviceBacking> {
     gdma: &'a mut GdmaDriver<T>,
@@ -154,7 +156,7 @@ impl<'a, T: DeviceBacking> BnicDriver<'a, T> {
         config: &RxConfig<'_>,
     ) -> anyhow::Result<()> {
         #[repr(C)]
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         struct Req {
             req: ManaCfgRxSteerReq,
             table: [u64; 128],
@@ -174,7 +176,7 @@ impl<'a, T: DeviceBacking> BnicDriver<'a, T> {
                 default_rxobj: config.default_rxobj.unwrap_or(0),
                 hashkey: *config.hash_key.unwrap_or(&[0; 40]),
             },
-            table: FromZeroes::new_zeroed(),
+            table: FromZeros::new_zeroed(),
         };
         if let Some(table) = config.indirection_table {
             req.table[..table.len()].copy_from_slice(table);

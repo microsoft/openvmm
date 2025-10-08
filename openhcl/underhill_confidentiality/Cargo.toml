@@ -3,7 +3,7 @@
 
 [package]
 name = "underhill_confidentiality"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]

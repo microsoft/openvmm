@@ -6,7 +6,7 @@ use futures::FutureExt;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
 use x86emu::Cpu;
-use x86emu::CpuState;
+use x86emu::Gp;
 
 #[test]
 fn movs() {
@@ -20,14 +20,16 @@ fn movs() {
 
     for (instruction, value, size) in variations.into_iter() {
         for direction in [false, true] {
-            let (state, cpu) = run_wide_test(
+            let mut cpu = run_wide_test(
                 RFlags::new(),
                 true,
                 |asm| instruction(asm),
-                |state, cpu| {
-                    state.rflags.set_direction(direction);
-                    state.gps[CpuState::RSI] = START_GVA;
-                    state.gps[CpuState::RDI] = START_GVA + size;
+                |cpu| {
+                    let mut rflags = cpu.rflags();
+                    rflags.set_direction(direction);
+                    cpu.set_rflags(rflags);
+                    cpu.set_gp(Gp::RSI.into(), START_GVA);
+                    cpu.set_gp(Gp::RDI.into(), START_GVA + size);
                     cpu.valid_gva = START_GVA;
                     cpu.write_memory(START_GVA, &value, false)
                         .now_or_never()
@@ -39,11 +41,11 @@ fn movs() {
             // Most of the behavior being tested here is verified by how the fake cpu handles memory.
             assert_eq!(cpu.mem_val, value);
             assert_eq!(
-                state.gps[CpuState::RSI],
+                cpu.gp(Gp::RSI.into()),
                 START_GVA.wrapping_add(if direction { size.wrapping_neg() } else { size })
             );
             assert_eq!(
-                state.gps[CpuState::RDI],
+                cpu.gp(Gp::RDI.into()),
                 (START_GVA + size).wrapping_add(if direction { size.wrapping_neg() } else { size })
             );
         }

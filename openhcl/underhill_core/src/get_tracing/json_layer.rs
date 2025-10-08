@@ -8,25 +8,25 @@ use super::json_common::Message;
 use super::json_common::SpanMessage;
 use guid::Guid;
 use mesh_tracing::TraceWriter;
-use serde::ser::SerializeMap;
-use serde::ser::SerializeSeq;
 use serde::Serialize;
 use serde::Serializer;
+use serde::ser::SerializeMap;
+use serde::ser::SerializeSeq;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::num::NonZeroU64;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
+use tracing::Id;
+use tracing::Subscriber;
 use tracing::field::Field;
 use tracing::field::Visit;
 use tracing::span::Attributes;
-use tracing::Id;
-use tracing::Subscriber;
-use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use tracing_subscriber::registry::LookupSpan;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// A JSON layer wrapping a [`TraceWriter`].
 pub struct JsonMeshLayer {
@@ -206,9 +206,9 @@ fn generate_tracing_luid(time: pal_async::timer::Instant, span_id: u64) -> Guid 
 
     let process_id = std::process::id() as u16;
 
-    guid.as_bytes_mut()[..6].copy_from_slice(&time.as_nanos().to_le_bytes()[..6]);
-    guid.as_bytes_mut()[6..8].copy_from_slice(&process_id.to_ne_bytes());
-    guid.as_bytes_mut()[8..].copy_from_slice(&span_id.to_ne_bytes());
+    guid.as_mut_bytes()[..6].copy_from_slice(&time.as_nanos().to_le_bytes()[..6]);
+    guid.as_mut_bytes()[6..8].copy_from_slice(&process_id.to_ne_bytes());
+    guid.as_mut_bytes()[8..].copy_from_slice(&span_id.to_ne_bytes());
 
     guid
 }
@@ -438,7 +438,7 @@ where
             // bigger than the current time.
             let time = pal_async::timer::Instant::now();
             if let Some(enter) = span_data.enter_time.take() {
-                span_data.active_time += time - enter;
+                span_data.active_time += time.saturating_sub(enter);
             }
         }
     }

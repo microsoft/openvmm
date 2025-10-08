@@ -3,7 +3,7 @@
 
 [package]
 name = "disk_blob"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -28,7 +28,6 @@ hyper-util = { workspace = true, features = ["client", "client-legacy", "http1",
 once_cell.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
-
 # tokio use is allowed in this crate only.
 # FUTURE: replace this with our own executor
 tokio = { version = "1", features = ["rt-multi-thread"] }

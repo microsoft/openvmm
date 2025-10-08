@@ -3,7 +3,7 @@
 
 [package]
 name = "disk_vhd1"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -20,7 +20,6 @@ inspect.workspace = true
 pal_async.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 tempfile.workspace = true
 

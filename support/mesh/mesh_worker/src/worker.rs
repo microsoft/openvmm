@@ -4,16 +4,16 @@
 //! Infrastructure for workers that can run on mesh nodes.
 
 use anyhow::Context;
-use futures::executor::block_on;
-use futures::stream::FusedStream;
 use futures::Stream;
 use futures::StreamExt;
+use futures::executor::block_on;
+use futures::stream::FusedStream;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
+use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
 use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -106,7 +106,7 @@ enum LaunchType {
 ///
 /// This may be sent across processes via mesh.
 #[derive(Debug, MeshPayload)]
-pub struct WorkerHostRunner(mesh::MpscReceiver<WorkerHostLaunchRequest>);
+pub struct WorkerHostRunner(mesh::Receiver<WorkerHostLaunchRequest>);
 
 impl WorkerHostRunner {
     /// Runs the worker host until all corresponding [`WorkerHost`] instances
@@ -244,7 +244,7 @@ impl WorkerHandle {
 ///
 /// This may be sent across processes via mesh.
 #[derive(Debug, MeshPayload, Clone)]
-pub struct WorkerHost(mesh::MpscSender<WorkerHostLaunchRequest>);
+pub struct WorkerHost(mesh::Sender<WorkerHostLaunchRequest>);
 
 /// Returns a new [`WorkerHost`], [`WorkerHostRunner`] pair.
 ///
@@ -726,12 +726,12 @@ mod tests {
     use super::WorkerRpc;
     use crate::launch_local_worker;
     use crate::worker::WorkerEvent;
-    use futures::executor::block_on;
     use futures::StreamExt;
+    use futures::executor::block_on;
     use mesh::MeshPayload;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
     use test_with_tracing::test;
 
     struct TestWorker {

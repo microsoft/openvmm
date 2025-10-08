@@ -1,17 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Types for supporting hypervisor monitor pages.
+
+#![forbid(unsafe_code)]
+
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvMonitorPage;
 use hvdef::HvMonitorPageSmall;
-use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use std::mem::offset_of;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 // Four groups of 32 bits.
 const MAX_MONITORS: usize = 128;
@@ -96,7 +100,7 @@ impl MonitorPage {
 
     /// Sets the GPA of the monitor page currently in use.
     pub fn set_gpa(&self, gpa: Option<u64>) -> Option<u64> {
-        assert!(gpa.is_none() || gpa.unwrap() % HV_PAGE_SIZE == 0);
+        assert!(gpa.is_none_or(|gpa| gpa % HV_PAGE_SIZE == 0));
         let old = self
             .gpa
             .swap(gpa.unwrap_or(INVALID_MONITOR_GPA), Ordering::Relaxed);
@@ -116,7 +120,11 @@ impl MonitorPage {
     /// # Panics
     ///
     /// Panics if monitor_id is already in use.
-    pub fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    pub fn register_monitor(
+        &self,
+        monitor_id: MonitorId,
+        connection_id: u32,
+    ) -> Box<dyn Sync + Send> {
         self.monitors.set(monitor_id, Some(connection_id));
 
         tracing::trace!(monitor_id = monitor_id.0, "registered monitor");
@@ -161,7 +169,7 @@ impl MonitorPage {
 
         let mut page = HvMonitorPageSmall::new_zeroed();
         let offset = (gpa - page_gpa) as usize;
-        page.as_bytes_mut()[offset..offset + bytes.len()].copy_from_slice(bytes);
+        page.as_mut_bytes()[offset..offset + bytes.len()].copy_from_slice(bytes);
         for (group_index, group) in page.trigger_group.iter().enumerate() {
             let mut value = group.pending;
             while value != 0 {
@@ -176,6 +184,22 @@ impl MonitorPage {
             }
         }
 
+        true
+    }
+
+    /// Checks if a read if inside the monitor page, and fills the buffer if it is.
+    /// N.B. This is used to handle cases where the instruction emulator needs to read the monitor
+    ///      page. The guest should have read access to the page so doesn't need to go through this
+    ///      path.
+    pub fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool {
+        let page_gpa = self.gpa.load(Ordering::Relaxed);
+        if page_gpa != gpa & !(HV_PAGE_SIZE - 1) {
+            return false;
+        }
+
+        // Since this implementation does not use the distinct armed and pending states, always
+        // returning a zero-filled buffer is sufficient.
+        bytes.fill(0);
         true
     }
 }

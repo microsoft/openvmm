@@ -3,32 +3,40 @@
 
 //! Integration tests for Generation 2 UEFI x86_64 guests with OpenHCL.
 
-use petri::PetriVmConfig;
-use vmm_core_defs::HaltReason;
-use vmm_test_macros::vmm_test;
+use anyhow::Context;
+use futures::StreamExt;
+use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
+use petri::ProcessorTopology;
+use petri::openvmm::OpenVmmPetriBackend;
+use vmm_test_macros::openvmm_test;
+use vmm_test_macros::openvmm_test_no_agent;
+use vmm_test_macros::vmm_test_no_agent;
 
 async fn nvme_relay_test_core(
-    config: PetriVmConfig,
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
     openhcl_cmdline: &str,
 ) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config
+    let (vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
-        .with_vmbus_redirect()
-        .with_single_processor()
+        .with_vmbus_redirect(true)
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 1,
+            ..Default::default()
+        })
         .run()
         .await?;
 
-    vm.wait_for_successful_boot_event().await?;
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
-#[vmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
-async fn nvme_relay(config: PetriVmConfig) -> Result<(), anyhow::Error> {
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2404_server_x64)))]
+async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(config, "").await
 }
 
@@ -36,24 +44,84 @@ async fn nvme_relay(config: PetriVmConfig) -> Result<(), anyhow::Error> {
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 ///
 /// Use the shared pool override to test the shared pool dma path.
-#[vmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
-async fn nvme_relay_shared_pool(config: PetriVmConfig) -> Result<(), anyhow::Error> {
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2404_server_x64)))]
+async fn nvme_relay_shared_pool(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(config, "OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1").await
+}
+
+/// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
+/// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
+///
+/// Use the private pool override to test the private pool dma path.
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2404_server_x64)))]
+async fn nvme_relay_private_pool(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    // Number of pages to reserve as a private pool.
+    nvme_relay_test_core(config, "OPENHCL_ENABLE_VTL2_GPA_POOL=512").await
 }
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
 /// hvlite.
-#[vmm_test(openhcl_uefi_x64(none))]
-async fn auto_vtl2_range(config: PetriVmConfig) -> Result<(), anyhow::Error> {
-    let mut vm = config
-        .with_vtl2_relocation_mode(hvlite_defs::config::Vtl2BaseAddressType::MemoryLayout {
-            size: None,
+#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
+    let vm = config
+        .modify_backend(|b| {
+            b.with_vtl2_relocation_mode(hvlite_defs::config::Vtl2BaseAddressType::MemoryLayout {
+                size: None,
+            })
         })
         .run_without_agent()
         .await?;
 
-    vm.wait_for_successful_boot_event().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Boot OpenHCL, and validate that we did not see any numa errors from the
+/// kernel parsing the bootloader provided device tree.
+///
+/// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
+/// should also validate that the kernel gets two different numa nodes.
+#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none))]
+async fn no_numa_errors<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    let vm = config
+        .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
+        .with_expect_no_boot_event()
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 2,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        })
+        .run_without_agent()
+        .await?;
+
+    const BAD_PROP: &str = "OF: NUMA: bad property in memory node";
+    const NO_NUMA: &str = "NUMA: No NUMA configuration found";
+    const FAKING_NODE: &str = "Faking a node at";
+
+    let mut kmsg = vm.kmsg().await?;
+
+    // Search kmsg and make sure we didn't see any errors from the kernel
+    while let Some(data) = kmsg.next().await {
+        let data = data.context("reading kmsg")?;
+        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+        let raw = msg.message.as_raw();
+        if raw.contains(BAD_PROP) {
+            anyhow::bail!("found bad prop in kmsg");
+        }
+        if raw.contains(NO_NUMA) {
+            anyhow::bail!("found no numa configuration in kmsg");
+        }
+        if raw.contains(FAKING_NODE) {
+            anyhow::bail!("found faking a node in kmsg");
+        }
+    }
 
     Ok(())
 }

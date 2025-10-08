@@ -3,6 +3,8 @@
 
 //! Core virtio device infrastructure
 
+#![expect(missing_docs)]
+
 mod common;
 pub mod queue;
 pub mod resolve;

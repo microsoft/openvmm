@@ -1,25 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// TODO: Allow nonstandard definitions to match htcpuid.h for now.
-#![allow(non_upper_case_globals)]
-
 use bitfield_struct::bitfield;
 use core::fmt::Display;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
-// TODO: Taken from htcpuid.h
-// TODO: Are all these values public not under NDA?
 open_enum! {
-    #[derive(FromBytes, FromZeroes)]
+    #[derive(FromBytes, Immutable, KnownLayout)]
     pub enum CpuidFunction : u32 {
+        #![expect(non_upper_case_globals, reason = "TODO: rename to SHOUTING_CASE")]
         BasicMinimum = 0x00000000,
         VendorAndMaxFunction = 0x00000000,
         VersionAndFeatures = 0x00000001,
         CacheAndTlbInformation = 0x00000002,
-        SerialNumber = 0x00000003,
         CacheParameters = 0x00000004,
         MonitorMwait = 0x00000005,
         PowerManagement = 0x00000006,
@@ -284,11 +280,8 @@ pub struct ExtendedVersionAndFeaturesEcx {
     _reserved1: bool,
     pub lwp: bool,
     pub fma4: bool,
-    #[bits(2)]
+    #[bits(5)]
     _reserved2: u32,
-    pub node_id: bool,
-    #[bits(2)]
-    _reserved3: u32,
     pub topology_extensions: bool,
     pub perf_ctr_ext_core: bool,
     pub perf_ctr_ext_df: bool,
@@ -431,13 +424,13 @@ pub struct ExtendedAddressSpaceSizesEbx {
     pub x_save_er_ptr: bool,
     pub invlpgb: bool,
     pub rdpru: bool,
-    pub rsvd1: bool,
+    _rsvd1: bool,
     pub mbe: bool,
     #[bits(2)]
-    pub rsvd2: u8,
+    _rsvd2: u8,
     pub wbnoinvd: bool,
     #[bits(2)]
-    pub rsvd3: u8,
+    _rsvd3: u8,
     pub ibpb: bool,
     pub int_wbinvd: bool,
     pub ibrs: bool,
@@ -445,19 +438,19 @@ pub struct ExtendedAddressSpaceSizesEbx {
     pub rsvd4: bool,
     pub stibp_always_on: bool,
     #[bits(2)]
-    pub rsvd5: u8,
+    _rsvd5: u8,
     pub efer_lmsle_unsupported: bool,
     pub nested_invlpgb: bool,
-    pub rsvd6: bool,
-    pub ppin: bool,
-    pub mdd: bool,
-    pub virt_spec_ctrl: bool,
-    pub ssb_no: bool,
+    #[bits(2)]
+    _rsvd6: u8,
+    pub ssbd: bool,
+    pub ssbd_virt_spec_ctrl: bool,
+    pub ssbd_not_required: bool,
     pub cppc: bool,
     pub psfd: bool,
-    pub btc_no: bool, // AMD branch confusion no
-    pub ibpb_rsb_flush: bool,
-    pub rsvd7: bool,
+    pub btc_no: bool,
+    pub ibpb_ret: bool,
+    _rsvd7: bool,
 }
 
 #[bitfield(u32)]
@@ -593,7 +586,7 @@ pub struct ExtendedFeatureSubleaf0Ecx {
     pub avx512_bitalg: bool,
     pub tme: bool,
     pub avx512_vpopcntdq: bool,
-    reserved2: bool,
+    _reserved2: bool,
     pub la57: bool,
     #[bits(5)]
     _reserved3: u32,
@@ -638,7 +631,7 @@ pub struct ExtendedFeatureSubleaf0Edx {
     pub l1d_cache_flush: bool,
     pub arch_capabilities: bool,
     _reserved6: bool,
-    pub mdd: bool,
+    pub ssbd: bool,
 }
 
 #[bitfield(u32)]

@@ -3,17 +3,16 @@
 
 //! Implementation of the key retrieval logic for the [`KeyProtector`].
 
-use crate::crypto;
 use crate::Keys;
+use crate::crypto;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
-use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
+use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use thiserror::Error;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum GetKeysFromKeyProtectorError {
     #[error(
@@ -25,7 +24,9 @@ pub(crate) enum GetKeysFromKeyProtectorError {
         key_size: usize,
         expected_size: usize,
     },
-    #[error("Wrapped DiskEncryptionSettings key size {key_size} was smaller than expected {expected_size}")]
+    #[error(
+        "Wrapped DiskEncryptionSettings key size {key_size} was smaller than expected {expected_size}"
+    )]
     InvalidWrappedDesKeySize {
         key_size: usize,
         expected_size: usize,
@@ -93,7 +94,7 @@ impl KeyProtectorExt for KeyProtector {
         let found_ingress_dek = !self.dek[ingress_idx].dek_buffer.iter().all(|&x| x == 0);
         let found_egress_dek = !self.dek[egress_idx].dek_buffer.iter().all(|&x| x == 0);
         let mut ingress_key = [0u8; AES_GCM_KEY_LENGTH];
-        let mut egress_key = [0u8; AES_GCM_KEY_LENGTH];
+        let mut encrypt_egress_key = [0u8; AES_GCM_KEY_LENGTH];
         let use_des_key = wrapped_des_key.is_some(); // whether the wrapped key from DiskEncryptionSettings payload is used
         let modulus_size = ingress_kek.size() as usize;
 
@@ -103,10 +104,10 @@ impl KeyProtectorExt for KeyProtector {
         // decrypted `wrapped_key` (using `ingress_kek`). Otherwise, VMGS structure should be old (2-blob)
         // where the `dek` is an RSA-wrapped key. The RSA-wrapped key can be unwrapped by the `ingress_kek`.
         let des_key = if found_ingress_dek || use_des_key {
-            if found_ingress_dek && !use_des_key {
-                // Validate the DEK format, which is expected to hold an RSA-wrapped key instead of an AES-wrapped key
-                // when `wrapped_des_key` is `None`.
-                if self.dek[ingress_idx].dek_buffer[AES_WRAPPED_AES_KEY_LENGTH..]
+            if found_ingress_dek && use_des_key {
+                // Validate the DEK format, which is expected to hold an AES-wrapped key
+                // when `wrapped_des_key` is `Some`.
+                if !self.dek[ingress_idx].dek_buffer[AES_WRAPPED_AES_KEY_LENGTH..]
                     .iter()
                     .all(|&x| x == 0)
                 {
@@ -200,15 +201,17 @@ impl KeyProtectorExt for KeyProtector {
             None
         };
 
-        if found_egress_dek {
+        let decrypt_egress_key = if found_egress_dek {
             tracing::info!(CVM_ALLOWED, "found egress dek");
 
-            // Key rolling did not complete successfully last time (normally egress should be empty)
+            // Key rolling did not complete successfully last time (normally egress should be empty).
+            // Any existing egress key can be used to decrypt the VMGS but must not be used to
+            // re-encrypt the VMGS, as its value can be controlled by the host.
             let dek_buffer = self.dek[egress_idx].dek_buffer;
-            let new_egress_key = if let Some(unwrapping_key) = des_key {
+            let old_egress_key = if let Some(unwrapping_key) = &des_key {
                 // The DEK buffer should contain an AES-wrapped key.
                 crypto::aes_key_unwrap_with_padding(
-                    &unwrapping_key,
+                    unwrapping_key,
                     &dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
                 )
                 .map_err(GetKeysFromKeyProtectorError::EgressDekAesUnwrap)?
@@ -221,48 +224,53 @@ impl KeyProtectorExt for KeyProtector {
                 )
                 .map_err(GetKeysFromKeyProtectorError::EgressDekRsaUnwrap)?
             };
-            egress_key[..new_egress_key.len()].copy_from_slice(&new_egress_key);
+            let mut key = [0u8; AES_GCM_KEY_LENGTH];
+            key[..old_egress_key.len()].copy_from_slice(&old_egress_key);
+            Some(key)
         } else {
             tracing::info!(CVM_ALLOWED, "there is no egress dek");
+            None
+        };
 
-            // There is no egress DEK, so create a new key value and encrypt it.
-            getrandom::getrandom(&mut egress_key).expect("rng failure");
+        // Always generate a new "encrypt egress key". This is generated randomly by
+        // OpenHCL, and so cannot be controlled by the host, and is safe to use to
+        // encrypt the VMGS.
+        getrandom::fill(&mut encrypt_egress_key).expect("rng failure");
 
-            let new_egress_key = if let Some(wrapping_key) = des_key {
-                // Create an AES wrapped key
-                crypto::aes_key_wrap_with_padding(&wrapping_key, &egress_key)
-                    .map_err(GetKeysFromKeyProtectorError::EgressKeyAesWrap)?
-            } else {
-                // Create an RSA wrapped key
-                crypto::rsa_oaep_encrypt(
-                    ingress_kek,
-                    &egress_key,
-                    crypto::RsaOaepHashAlgorithm::Sha256,
-                )
-                .map_err(GetKeysFromKeyProtectorError::EgressKeyRsaWrap)?
-            };
+        let new_egress_key = if let Some(wrapping_key) = des_key {
+            // Create an AES wrapped key
+            crypto::aes_key_wrap_with_padding(&wrapping_key, &encrypt_egress_key)
+                .map_err(GetKeysFromKeyProtectorError::EgressKeyAesWrap)?
+        } else {
+            // Create an RSA wrapped key
+            crypto::rsa_oaep_encrypt(
+                ingress_kek,
+                &encrypt_egress_key,
+                crypto::RsaOaepHashAlgorithm::Sha256,
+            )
+            .map_err(GetKeysFromKeyProtectorError::EgressKeyRsaWrap)?
+        };
 
-            if new_egress_key.len() > DEK_BUFFER_SIZE {
-                Err(GetKeysFromKeyProtectorError::InvalidWrappedEgressKeySize {
-                    key_size: new_egress_key.len(),
-                    expected_size: DEK_BUFFER_SIZE,
-                })?
-            }
-
-            self.dek[egress_idx].dek_buffer[..new_egress_key.len()]
-                .copy_from_slice(&new_egress_key);
-
-            tracing::info!(
-                CVM_CONFIDENTIAL,
-                egress_idx = egress_idx,
-                egress_key_len = new_egress_key.len(),
-                "store new egress key to dek"
-            );
+        if new_egress_key.len() > DEK_BUFFER_SIZE {
+            Err(GetKeysFromKeyProtectorError::InvalidWrappedEgressKeySize {
+                key_size: new_egress_key.len(),
+                expected_size: DEK_BUFFER_SIZE,
+            })?
         }
+
+        self.dek[egress_idx].dek_buffer[..new_egress_key.len()].copy_from_slice(&new_egress_key);
+
+        tracing::info!(
+            CVM_CONFIDENTIAL,
+            egress_idx = egress_idx,
+            egress_key_len = new_egress_key.len(),
+            "store new egress key to dek"
+        );
 
         Ok(Keys {
             ingress: ingress_key,
-            egress: egress_key,
+            decrypt_egress: decrypt_egress_key,
+            encrypt_egress: encrypt_egress_key,
         })
     }
 }
@@ -311,8 +319,8 @@ mod tests {
         data[..rsa_wrapped_dek.len()].copy_from_slice(&rsa_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
-        assert!(result.is_some());
-        let mut key_protector = result.unwrap();
+        assert!(result.is_ok());
+        let mut key_protector = result.unwrap().0;
         assert_eq!(
             key_protector.dek[ingress_index]
                 .dek_buffer
@@ -354,8 +362,8 @@ mod tests {
         );
         assert!(result.is_ok());
         let plaintext = result.unwrap();
-        assert_eq!(plaintext, keys.egress);
-        let key_egress_first_boot = keys.egress;
+        assert_eq!(plaintext, keys.encrypt_egress);
+        let key_egress_first_boot = keys.encrypt_egress;
 
         // Test key rotation for reboot
 
@@ -388,13 +396,138 @@ mod tests {
         );
         assert!(result.is_ok());
         let plaintext = result.unwrap();
-        assert_eq!(plaintext, keys.egress);
+        assert_eq!(plaintext, keys.encrypt_egress);
     }
 
     #[test]
     fn key_protector_with_wrapped_key() {
-        const DEK_EXTENDED_DATA_SIZE: usize = 384;
+        // Test KEK (RSA-2K)
+        let kek = generate_rsa_2k();
 
+        // Test DEK (AES-256)
+        let dek = generate_aes_256();
+
+        // Test DEK wrapped by the test DES key (AES-256)
+        let des = generate_aes_256();
+        let result = crypto::aes_key_wrap_with_padding(&des, &dek);
+        assert!(result.is_ok());
+        let aes_wrapped_dek = result.unwrap();
+
+        // Test DES key wrapped by the test RSA KEK
+        let result = crypto::rsa_oaep_encrypt(&kek, &des, crypto::RsaOaepHashAlgorithm::Sha256);
+        assert!(result.is_ok());
+        let rsa_wrapped_des = result.unwrap();
+
+        // Test key rotation for first boot
+
+        let ingress_index = 0;
+        let egress_index = 1;
+
+        let mut data = [0u8; openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE];
+
+        data[..aes_wrapped_dek.len()].copy_from_slice(&aes_wrapped_dek);
+
+        let result = KeyProtector::read_from_prefix(&data);
+        assert!(result.is_ok());
+        let mut key_protector = result.unwrap().0;
+        assert_eq!(
+            key_protector.dek[ingress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+        assert_eq!(
+            key_protector.dek[egress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            true
+        );
+
+        let result = key_protector.unwrap_and_rotate_keys(
+            &kek,
+            Some(rsa_wrapped_des.as_ref()),
+            ingress_index,
+            egress_index,
+        );
+        assert!(result.is_ok());
+        let keys = result.unwrap();
+        assert_eq!(keys.ingress, dek);
+        assert_eq!(
+            key_protector.dek[ingress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+        assert_eq!(
+            key_protector.dek[egress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+
+        let result =
+            crypto::rsa_oaep_decrypt(&kek, &rsa_wrapped_des, crypto::RsaOaepHashAlgorithm::Sha256);
+        assert!(result.is_ok());
+        let des_key = result.unwrap();
+
+        let result = crypto::aes_key_unwrap_with_padding(
+            &des_key,
+            &key_protector.dek[egress_index].dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
+        );
+        assert!(result.is_ok());
+        let unwrapped_key = result.unwrap();
+        assert_eq!(unwrapped_key, keys.encrypt_egress);
+        let key_egress_first_boot = keys.encrypt_egress;
+
+        // Test key rotation for reboot
+
+        let ingress_index = 1;
+        let egress_index = 0;
+
+        let result = key_protector.unwrap_and_rotate_keys(
+            &kek,
+            Some(rsa_wrapped_des.as_ref()),
+            ingress_index,
+            egress_index,
+        );
+        assert!(result.is_ok());
+        let keys = result.unwrap();
+        assert_eq!(keys.ingress, key_egress_first_boot);
+        assert_eq!(
+            key_protector.dek[ingress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+        assert_eq!(
+            key_protector.dek[egress_index]
+                .dek_buffer
+                .iter()
+                .all(|&x| x == 0),
+            false
+        );
+
+        let result =
+            crypto::rsa_oaep_decrypt(&kek, &rsa_wrapped_des, crypto::RsaOaepHashAlgorithm::Sha256);
+        assert!(result.is_ok());
+        let des_key = result.unwrap();
+
+        let result = crypto::aes_key_unwrap_with_padding(
+            &des_key,
+            &key_protector.dek[egress_index].dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
+        );
+        assert!(result.is_ok());
+        let unwrapped_key = result.unwrap();
+        assert_eq!(unwrapped_key, keys.encrypt_egress);
+    }
+
+    #[test]
+    fn key_protector_with_wrapped_key_invalid_format() {
         // Test KEK (RSA-2K)
         let kek = generate_rsa_2k();
 
@@ -412,114 +545,20 @@ mod tests {
         assert!(result.is_ok());
         let rsa_wrapped_des = result.unwrap();
 
-        // Test key rotation for first boot
-
-        let ingress_index = 0;
-        let egress_index = 1;
-
         let mut data = [0u8; openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE];
 
-        // Test the scenario where DEK is larger than AES-wrapped key size.
-        aes_wrapped_dek.resize(DEK_EXTENDED_DATA_SIZE, 1);
+        // Test the invalid DEK format whose size is larger than AES-wrapped key size.
+        aes_wrapped_dek.resize(AES_WRAPPED_AES_KEY_LENGTH + 1, 1);
 
         data[..aes_wrapped_dek.len()].copy_from_slice(&aes_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
-        assert!(result.is_some());
-        let mut key_protector = result.unwrap();
-        assert_eq!(
-            key_protector.dek[ingress_index]
-                .dek_buffer
-                .iter()
-                .all(|&x| x == 0),
-            false
-        );
-        assert_eq!(
-            key_protector.dek[egress_index]
-                .dek_buffer
-                .iter()
-                .all(|&x| x == 0),
-            true
-        );
-
-        let result = key_protector.unwrap_and_rotate_keys(
-            &kek,
-            Some(rsa_wrapped_des.as_ref()),
-            ingress_index,
-            egress_index,
-        );
         assert!(result.is_ok());
-        let keys = result.unwrap();
-        assert_eq!(keys.ingress, dek);
-        assert_eq!(
-            key_protector.dek[ingress_index]
-                .dek_buffer
-                .iter()
-                .all(|&x| x == 0),
-            false
-        );
-        assert_eq!(
-            key_protector.dek[egress_index]
-                .dek_buffer
-                .iter()
-                .all(|&x| x == 0),
-            false
-        );
+        let mut key_protector = result.unwrap().0;
 
         let result =
-            crypto::rsa_oaep_decrypt(&kek, &rsa_wrapped_des, crypto::RsaOaepHashAlgorithm::Sha256);
-        assert!(result.is_ok());
-        let des_key = result.unwrap();
-
-        let result = crypto::aes_key_unwrap_with_padding(
-            &des_key,
-            &key_protector.dek[egress_index].dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
-        );
-        assert!(result.is_ok());
-        let unwrapped_key = result.unwrap();
-        assert_eq!(unwrapped_key, keys.egress);
-        let key_egress_first_boot = keys.egress;
-
-        // Test key rotation for reboot
-
-        let ingress_index = 1;
-        let egress_index = 0;
-
-        let result = key_protector.unwrap_and_rotate_keys(
-            &kek,
-            Some(rsa_wrapped_des.as_ref()),
-            ingress_index,
-            egress_index,
-        );
-        assert!(result.is_ok());
-        let keys = result.unwrap();
-        assert_eq!(keys.ingress, key_egress_first_boot);
-        assert_eq!(
-            key_protector.dek[ingress_index]
-                .dek_buffer
-                .iter()
-                .all(|&x| x == 0),
-            false
-        );
-        assert_eq!(
-            key_protector.dek[egress_index]
-                .dek_buffer
-                .iter()
-                .all(|&x| x == 0),
-            false
-        );
-
-        let result =
-            crypto::rsa_oaep_decrypt(&kek, &rsa_wrapped_des, crypto::RsaOaepHashAlgorithm::Sha256);
-        assert!(result.is_ok());
-        let des_key = result.unwrap();
-
-        let result = crypto::aes_key_unwrap_with_padding(
-            &des_key,
-            &key_protector.dek[egress_index].dek_buffer[..AES_WRAPPED_AES_KEY_LENGTH],
-        );
-        assert!(result.is_ok());
-        let unwrapped_key = result.unwrap();
-        assert_eq!(unwrapped_key, keys.egress);
+            key_protector.unwrap_and_rotate_keys(&kek, Some(rsa_wrapped_des.as_ref()), 0, 1);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "The DEK format expects to hold an RSA-WRAPPED AES key, but found an AES-WRAPPED AES key".to_string())
     }
 }

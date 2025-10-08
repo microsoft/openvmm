@@ -144,9 +144,9 @@ struct DeviceMemoryControl(Arc<DeviceMemoryRegion>);
 
 impl MappableGuestMemory for DeviceMemoryControl {
     fn map_to_guest(&mut self, gpa: u64, writable: bool) -> io::Result<()> {
-        let mut state = self.0.state.lock();
-        #[allow(clippy::await_holding_lock)] // Treat all this as sync for now.
+        #[expect(clippy::await_holding_lock)] // Treat all this as sync for now.
         block_on(async {
+            let mut state = self.0.state.lock();
             if let Some(handle) = state.handle.take() {
                 handle.teardown().await;
             }
@@ -160,7 +160,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                     DEVICE_PRIORITY,
                 )
                 .await
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                .map_err(io::Error::other)?;
 
             for mapping in &state.mappings {
                 handle

@@ -4,17 +4,18 @@
 //! Tests common to every executor.
 
 // Uses futures channels, but is only test code.
-#![allow(clippy::disallowed_methods)]
+#![expect(clippy::disallowed_methods)]
 
 use crate::driver::Driver;
 use crate::socket::PolledSocket;
 use crate::task::Spawn;
+use crate::task::with_current_task_metadata;
 use crate::timer::Instant;
-use futures::channel::oneshot;
-use futures::executor::block_on;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
+use futures::channel::oneshot;
+use futures::executor::block_on;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::future::poll_fn;
@@ -44,6 +45,16 @@ where
     S: Spawn,
     F: 'static + FnOnce() + Send,
 {
+    // Validate that there is no current task after the thread is done.
+    let mut f = move || {
+        let (spawn, run) = f();
+        let run = move || {
+            run();
+            with_current_task_metadata(|metadata| assert!(metadata.is_none()));
+        };
+        (spawn, run)
+    };
+
     // no tasks
     {
         let (_, run) = f();
@@ -169,10 +180,13 @@ pub async fn socket_tests(driver: impl Driver) {
 
     // accept/connect
     {
-        let (listener, path) =
-            tempfile_helpers::with_temp_path(|path| UnixListener::bind(path)).unwrap();
-        let mut l = PolledSocket::new(&driver, listener).unwrap();
-        let _c = PolledSocket::connect_unix(&driver, &path).await.unwrap();
+        let listener = tempfile::Builder::new()
+            .make(|path| UnixListener::bind(path))
+            .unwrap();
+        let mut l = PolledSocket::new(&driver, listener.as_file()).unwrap();
+        let _c = PolledSocket::connect_unix(&driver, listener.path())
+            .await
+            .unwrap();
         let _s = l.accept().await.unwrap();
     }
 
@@ -224,7 +238,7 @@ pub mod windows {
         // named pipe
         {
             let mut path = [0; 16];
-            getrandom::getrandom(&mut path).unwrap();
+            getrandom::fill(&mut path).unwrap();
             let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(path));
             let server = NamedPipeServer::create(&path).unwrap();
             let accept = server.accept(&driver).unwrap();

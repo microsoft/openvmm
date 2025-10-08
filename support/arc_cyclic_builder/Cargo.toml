@@ -3,7 +3,7 @@
 
 [package]
 name = "arc_cyclic_builder"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dev-dependencies]

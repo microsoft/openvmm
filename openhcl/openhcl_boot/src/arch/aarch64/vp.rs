@@ -3,8 +3,8 @@
 
 //! Setting up VTL2 VPs
 
-use crate::hypercall::hvcall;
 use crate::PartitionInfo;
+use crate::hypercall::hvcall;
 
 pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
     // VTL2 kernel boot processor will try to remote read the GICR before AP's are

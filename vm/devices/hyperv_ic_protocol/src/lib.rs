@@ -3,27 +3,41 @@
 
 //! IC protocol definitions.
 
-#![allow(dead_code)]
+#![forbid(unsafe_code)]
+
+pub mod heartbeat;
+pub mod kvp;
+pub mod shutdown;
+pub mod timesync;
+pub mod vss;
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use std::fmt::Display;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Maximum message size between guest and host for IC devices.
 pub const MAX_MESSAGE_SIZE: usize = 13312;
 
 /// Protocol version.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(
+    Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub struct Version {
     /// Major version.
     pub major: u16,
     /// Minor version.
     pub minor: u16,
 }
+
+/// Framework version 1.0.
+pub const FRAMEWORK_VERSION_1: Version = Version::new(1, 0);
+/// Framework version 3.0.
+pub const FRAMEWORK_VERSION_3: Version = Version::new(3, 0);
 
 impl Version {
     /// Create a new IC version instance.
@@ -40,7 +54,7 @@ impl Display for Version {
 
 open_enum! {
     /// Type of message
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum MessageType: u16 {
         /// Initial version negotiation between host and guest.
         VERSION_NEGOTIATION = 0,
@@ -65,7 +79,7 @@ open_enum! {
 
 /// Common message header for IC messages.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes, Debug)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
 pub struct Header {
     /// Version of the IC framework.
     pub framework_version: Version,
@@ -76,7 +90,7 @@ pub struct Header {
     /// Size in bytes of the message.
     pub message_size: u16,
     /// Status code used for message response.
-    pub status: u32,
+    pub status: Status,
     /// Transaction ID; should be matched by response message.
     pub transaction_id: u8,
     /// Message flags.
@@ -85,9 +99,26 @@ pub struct Header {
     pub reserved: [u8; 2],
 }
 
+open_enum! {
+    /// Status code for a message response.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum Status: u32 {
+        /// Message was processed successfully.
+        SUCCESS = 0,
+        /// There are no more items to process.
+        NO_MORE_ITEMS = 0x80070103,
+        /// Generic failure.
+        FAIL = 0x80004005,
+        /// The operation is not supported.
+        NOT_SUPPORTED = 0x80070032,
+        /// Not found.
+        NOT_FOUND = 0x80041002,
+    }
+}
+
 /// Flags for IC messages.
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HeaderFlags {
     /// Message expects a response.
     pub transaction: bool,
@@ -102,7 +133,7 @@ pub struct HeaderFlags {
 
 /// Version negotiation message.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NegotiateMessage {
     /// The number of supported framework versions, located directly after
     /// this structure.
@@ -112,98 +143,4 @@ pub struct NegotiateMessage {
     pub message_version_count: u16,
     /// Reserved -- must be zero.
     pub reserved: u32,
-}
-
-/// Heartbeat component protocol.
-pub mod heartbeat {
-    use open_enum::open_enum;
-    use zerocopy::AsBytes;
-    use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
-
-    /// Heartbeat message from guest to host.
-    #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
-    pub struct HeartbeatMessage {
-        /// Incrementing sequence counter.
-        pub sequence_number: u64,
-        /// Current state of the guest.
-        pub application_state: ApplicationState,
-        /// Reserved.
-        pub reserved: [u8; 4],
-    }
-
-    open_enum! {
-        #[derive(AsBytes, FromBytes, FromZeroes)]
-        /// Current state of guest.
-        pub enum ApplicationState: u32 {
-            /// Guest is in an unknown state.
-            UNKNOWN = 0,
-            /// Guest is healthy.
-            HEALTHY = 1,
-            /// Guest encountered a critical error.
-            CRITICAL = 2,
-            /// Guest is no longer running.
-            STOPPED = 3,
-        }
-    }
-}
-
-/// Protocol for shutdown IC.
-pub mod shutdown {
-    use crate::Version;
-    use bitfield_struct::bitfield;
-    use guid::Guid;
-    use zerocopy::AsBytes;
-    use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
-
-    /// The unique vmbus interface ID of the shutdown IC.
-    pub const INTERFACE_ID: Guid = Guid::from_static_str("0e0b6031-5213-4934-818b-38d90ced39db");
-    /// The unique vmbus instance ID of the shutdown IC.
-    pub const INSTANCE_ID: Guid = Guid::from_static_str("b6650ff7-33bc-4840-8048-e0676786f393");
-
-    /// Supported framework versions.
-    pub const FRAMEWORK_VERSIONS: &[Version] = &[Version::new(1, 0), Version::new(3, 0)];
-
-    /// Supported message versions.
-    pub const SHUTDOWN_VERSIONS: &[Version] = &[
-        Version::new(1, 0),
-        Version::new(3, 0),
-        Version::new(3, 1),
-        Version::new(3, 2),
-    ];
-
-    /// The message for shutdown initiated from the host.
-    #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
-    pub struct ShutdownMessage {
-        /// The shutdown reason.
-        pub reason_code: u32,
-        /// The maximum amount of time allotted to the guest to perform the
-        /// shutdown.
-        pub timeout_secs: u32,
-        /// Flags for the shutdown request.
-        pub flags: ShutdownFlags,
-        /// Friendly text string for the shutdown request.
-        pub message: [u8; 2048],
-    }
-
-    /// Flags for shutdown.
-    #[bitfield(u32)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
-    pub struct ShutdownFlags {
-        /// Whether the shutdown operation is being forced.
-        pub force: bool,
-        /// Flag indicating the shutdown behavior is guest restart.
-        pub restart: bool,
-        /// Flag indicating the shutdown behavior is guest hibernate.
-        pub hibernate: bool,
-        /// Reserved -- must be zero.
-        #[bits(29)]
-        _reserved: u32,
-    }
-
-    /// Reason code for '[ShutdownMessage]', from Windows SDK.
-    pub const SHTDN_REASON_FLAG_PLANNED: u32 = 0x80000000;
 }

@@ -3,13 +3,13 @@
 
 //! Lower-level async io-uring support, not tied to an executor model.
 
-use ::smallbox::space::S4;
 use ::smallbox::SmallBox;
-use io_uring::squeue;
+use ::smallbox::space::S4;
 use io_uring::IoUring;
+use io_uring::squeue;
+use pal::unix::SyscallResult;
 use pal::unix::affinity::CpuSet;
 use pal::unix::while_eintr;
-use pal::unix::SyscallResult;
 use parking_lot::Mutex;
 use slab::Slab;
 use smallbox::smallbox;
@@ -18,9 +18,9 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io;
 use std::os::unix::prelude::*;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -159,9 +159,9 @@ impl IoRing {
     /// # Arguments
     ///
     /// * `size` - The maximum number of entries in the submission queue. The completion queue is
-    ///            twice the size of the submission queue. Note that this is not strictly a limit on the maximum
-    ///            number of outstanding I/Os, rather it's the maximum number of I/Os that the IoRing client
-    ///            can allow to batch (either in the submission or completion paths).
+    ///   twice the size of the submission queue. Note that this is not strictly a limit on the maximum
+    ///   number of outstanding I/Os, rather it's the maximum number of I/Os that the IoRing client
+    ///   can allow to batch (either in the submission or completion paths).
     pub fn new(size: u32) -> Result<(IoRing, IoCompletionRing), io::Error> {
         let inner = Arc::new(RingInner {
             ring: IoUring::builder().build(size)?,

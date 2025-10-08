@@ -9,21 +9,21 @@ use super::test_helpers::check_execute_scsi_pass_with_tx;
 use super::test_helpers::check_guest_memory;
 use super::test_helpers::make_guest_memory;
 use super::test_helpers::new_scsi_disk;
-use crate::scsi;
 use crate::SimpleScsiDisk;
+use crate::scsi;
 use disk_backend::pr;
 use guestmem::GuestMemory;
 use pal_async::async_test;
-use scsi::srb::SrbStatus;
 use scsi::AdditionalSenseCode;
 use scsi::ScsiStatus;
 use scsi::SenseData;
 use scsi::SenseKey;
+use scsi::srb::SrbStatus;
 use scsi_buffers::OwnedRequestBuffers;
 use scsi_core::Request;
 use scsi_core::ScsiResult;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const EXPECT_PARAMETER_LIST_LENGTH: usize = size_of::<scsi::ProParameterList>();
 
@@ -239,7 +239,7 @@ fn make_read_reservations_response(
         des = scsi::PriReservationDescriptor {
             type_scope: scsi::PersistentReserveTypeScope::new().with_reserve_type(ty),
             reservation_key: key.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         temp_data.extend(des.as_bytes());
     }
@@ -288,7 +288,7 @@ fn make_read_full_status_response(
             },
             relative_target_port_identifier: 0_u16.into(),
             additional_descriptor_length: 8_u32.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         temp_data.extend(header.as_bytes());
         temp_data.extend(0_u64.as_bytes());

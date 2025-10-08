@@ -759,7 +759,7 @@ mod tests {
                 vnode: 0,
             },
         ];
-        let layout = MemoryLayout::new_from_ranges(42, ram, mmio).unwrap();
+        let layout = MemoryLayout::new_from_ranges(ram, mmio).unwrap();
 
         const CMOS_DEFAULT: [u8; 256] = [
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

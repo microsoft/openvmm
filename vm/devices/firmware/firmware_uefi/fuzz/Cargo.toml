@@ -4,7 +4,7 @@
 [package]
 name = "fuzz_firmware_uefi"
 publish = false
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -14,7 +14,6 @@ xtask_fuzz.workspace = true
 guid.workspace = true
 ucs2.workspace = true
 zerocopy.workspace = true
-
 arbitrary = { workspace = true, features = ["derive"] }
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]

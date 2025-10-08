@@ -3,16 +3,13 @@
 
 [package]
 name = "lower_vtl_permissions_guard"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
-
-[features]
-vfio = ["dep:user_driver"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 hvdef.workspace = true
 inspect.workspace = true
-user_driver = { workspace = true, optional = true }
+user_driver.workspace = true
 virt.workspace = true
 
 anyhow.workspace = true

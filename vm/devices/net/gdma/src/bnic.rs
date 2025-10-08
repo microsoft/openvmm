@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use self::bnic_defs::CQE_TX_OKAY;
+use self::bnic_defs::MANA_CQE_COMPLETION;
 use self::bnic_defs::ManaCommandCode;
 use self::bnic_defs::ManaCqeHeader;
 use self::bnic_defs::ManaQueryVportCfgReq;
@@ -9,8 +11,8 @@ use self::bnic_defs::ManaRxcompOobFlags;
 use self::bnic_defs::ManaSetVportSerialNo;
 use self::bnic_defs::ManaTxCompOob;
 use self::bnic_defs::ManaTxCompOobOffsets;
-use self::bnic_defs::CQE_TX_OKAY;
-use self::bnic_defs::MANA_CQE_COMPLETION;
+use crate::VportConfig;
+use crate::bnic::bnic_defs::CQE_RX_OKAY;
 use crate::bnic::bnic_defs::ManaCfgRxSteerReq;
 use crate::bnic::bnic_defs::ManaConfigVportReq;
 use crate::bnic::bnic_defs::ManaConfigVportResp;
@@ -20,19 +22,18 @@ use crate::bnic::bnic_defs::ManaQueryDeviceCfgReq;
 use crate::bnic::bnic_defs::ManaQueryDeviceCfgResp;
 use crate::bnic::bnic_defs::ManaQueryVportCfgResp;
 use crate::bnic::bnic_defs::ManaTxOob;
-use crate::bnic::bnic_defs::CQE_RX_OKAY;
 use crate::hwc::HwState;
 use crate::queues::Queues;
-use crate::VportConfig;
 use anyhow::Context;
+use anyhow::anyhow;
+use gdma_defs::GdmaQueueType;
+use gdma_defs::GdmaReqHdr;
+use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
 use gdma_defs::bnic::ManaDestroyWqobjReq;
 use gdma_defs::bnic::ManaTxShortOob;
 use gdma_defs::bnic::Tristate;
-use gdma_defs::GdmaQueueType;
-use gdma_defs::GdmaReqHdr;
-use gdma_defs::Wqe;
 use guestmem::GuestMemory;
 use guestmem::Limit;
 use guestmem::MemoryRead;
@@ -61,9 +62,9 @@ use task_control::AsyncRun;
 use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 pub struct GuestBuffers {
     gm: GuestMemory,
@@ -146,7 +147,7 @@ impl BufferAccess for GuestBuffers {
                 .with_client_type(MANA_CQE_COMPLETION),
             rx_wqe_offset: packet.wqe_offset,
             flags,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         packet.oob.ppi[0].pkt_len = metadata.len as u16;
     }
@@ -517,11 +518,14 @@ impl TxRxTask {
         tracing::trace!("tx wqe");
         let oob = sqe.oob();
         let oob = if oob.len() >= size_of::<ManaTxOob>() {
-            ManaTxOob::read_from_prefix(oob).unwrap()
+            ManaTxOob::read_from_prefix(oob).unwrap().0
         } else {
             ManaTxOob {
-                s_oob: ManaTxShortOob::read_from_prefix(oob).context("oob too small")?,
-                ..FromZeroes::new_zeroed()
+                // TODO: zerocopy: use details from SizeError in the returned context (https://github.com/microsoft/openvmm/issues/759)
+                s_oob: ManaTxShortOob::read_from_prefix(oob)
+                    .map_err(|_| anyhow!("oob too small"))?
+                    .0,
+                ..FromZeros::new_zeroed()
             }
         };
 
@@ -607,7 +611,7 @@ impl TxRxTask {
             segments,
             len,
             wqe_offset,
-            oob: FromZeroes::new_zeroed(),
+            oob: FromZeros::new_zeroed(),
         };
         let id = RxId(self.rx_packets.lock().insert(packet) as u32);
         self.epqueue.rx_avail(&[id]);

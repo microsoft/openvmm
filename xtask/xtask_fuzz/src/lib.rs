@@ -6,6 +6,8 @@
 //! Might end up getting deprecated, if/when
 //! <https://github.com/rust-fuzz/cargo-fuzz/issues/346> is resolved
 
+#![forbid(unsafe_code)]
+
 use std::sync::OnceLock;
 
 static IS_REPRO: OnceLock<bool> = OnceLock::new();
@@ -63,6 +65,7 @@ macro_rules! fuzz_eprintln {
 pub use libfuzzer_sys::fuzz_target;
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+/// Fake version of `libfuzzer_sys::fuzz_target` for non-linux-gnu targets.
 #[macro_export]
 macro_rules! fuzz_target {
     ($($tt:tt)*) => {

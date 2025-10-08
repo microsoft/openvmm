@@ -8,17 +8,19 @@ use open_enum::open_enum;
 use size_of_val;
 use static_assertions::const_assert_eq;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy::Unaligned;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::LE;
 use zerocopy::U16;
 use zerocopy::U32;
 use zerocopy::U64;
+use zerocopy::Unaligned;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct Madt {
     pub apic_addr: u32,
     pub flags: u32,
@@ -31,11 +33,12 @@ impl Table for Madt {
 pub const MADT_PCAT_COMPAT: u32 = 1 << 0;
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes, Unaligned)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
     pub enum MadtType: u8 {
         APIC = 0x0,
         IO_APIC = 0x1,
         INTERRUPT_SOURCE_OVERRIDE = 0x2,
+        LOCAL_NMI_SOURCE = 0x4,
         X2APIC = 0x9,
         GICC = 0xb,
         GICD = 0xc,
@@ -43,14 +46,14 @@ open_enum! {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MadtEntryHeader {
     pub typ: MadtType,
     pub length: u8,
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MadtApic {
     pub typ: MadtType,
     pub length: u8,
@@ -77,7 +80,7 @@ pub const MADT_APIC_ENABLED: u32 = 1 << 0;
 pub const MADT_APIC_ONLINE_CAPABLE: u32 = 1 << 1;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MadtX2Apic {
     pub typ: MadtType,
     pub length: u8,
@@ -103,7 +106,7 @@ impl MadtX2Apic {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MadtIoApic {
     pub typ: MadtType,
     pub length: u8,
@@ -129,7 +132,7 @@ impl MadtIoApic {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MadtInterruptSourceOverride {
     pub typ: MadtType,
     pub length: u8,
@@ -177,8 +180,33 @@ impl MadtInterruptSourceOverride {
     }
 }
 
+// EFI_ACPI_6_2_LOCAL_APIC_NMI_STRUCTURE
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct MadtLocalNmiSource {
+    pub typ: MadtType,
+    pub length: u8,
+    pub acpi_processor_uid: u8,
+    pub flags: u16,
+    pub local_apic_lint: u8,
+}
+
+const_assert_eq!(size_of::<MadtLocalNmiSource>(), 6);
+
+impl MadtLocalNmiSource {
+    pub fn new() -> Self {
+        Self {
+            typ: MadtType::LOCAL_NMI_SOURCE,
+            length: size_of::<Self>() as u8,
+            acpi_processor_uid: 1, // 0xFF indicates all processors. UID 1 is the BSP
+            flags: 0,
+            local_apic_lint: 1,
+        }
+    }
+}
+
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MadtGicd {
     pub typ: MadtType,
     pub length: u8,
@@ -210,7 +238,7 @@ impl MadtGicd {
 // TODO: use LE types everywhere, as here, to avoid #[repr(packed)] and to be
 // specific about endianness (which the ACPI spec dictates is always LE).
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct MadtGicc {
     pub typ: MadtType,
     pub length: u8,
@@ -235,7 +263,12 @@ pub struct MadtGicc {
 const_assert_eq!(size_of::<MadtGicc>(), 80);
 
 impl MadtGicc {
-    pub fn new(acpi_processor_uid: u32, mpidr: u64, gicr: u64) -> Self {
+    pub fn new(
+        acpi_processor_uid: u32,
+        mpidr: u64,
+        gicr: u64,
+        performance_monitoring_gsiv: u32,
+    ) -> Self {
         Self {
             typ: MadtType::GICC,
             length: size_of::<Self>() as u8,
@@ -243,6 +276,7 @@ impl MadtGicc {
             acpi_processor_uid: acpi_processor_uid.into(),
             mpidr: mpidr.into(),
             gicr_base_address: gicr.into(),
+            performance_monitoring_gsiv: performance_monitoring_gsiv.into(),
             ..Self::new_zeroed()
         }
     }
@@ -261,7 +295,9 @@ pub struct MadtParser<'a>(&'a [u8]);
 impl<'a> MadtParser<'a> {
     /// Partially an MADT table.
     pub fn new(table: &'a [u8]) -> Result<Self, ParserError> {
-        let header = crate::Header::read_from_prefix(table).ok_or(ParserError)?;
+        let header = crate::Header::read_from_prefix(table)
+            .map_err(|_| ParserError)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         if (header.length.get() as usize) < size_of::<Madt>() {
             return Err(ParserError);
         }
@@ -351,7 +387,9 @@ pub struct MadtIter<'a> {
 
 impl MadtIter<'_> {
     fn parse(&mut self) -> Result<Option<MadtEntry>, ParserError> {
-        while let Some(header) = MadtEntryHeader::read_from_prefix(self.entries) {
+        // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        while let Ok((header, _)) = MadtEntryHeader::read_from_prefix(self.entries) {
+            // TODO: zerocopy: ok (https://github.com/microsoft/openvmm/issues/759)
             if self.entries.len() < header.length as usize {
                 return Err(ParserError);
             }
@@ -359,10 +397,12 @@ impl MadtIter<'_> {
             self.entries = rest;
             let entry = match header.typ {
                 MadtType::APIC => {
-                    MadtEntry::Apic(FromBytes::read_from_prefix(buf).ok_or(ParserError)?)
+                    MadtEntry::Apic(FromBytes::read_from_prefix(buf).map_err(|_| ParserError)?.0)
+                    // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 }
                 MadtType::X2APIC => {
-                    MadtEntry::X2Apic(FromBytes::read_from_prefix(buf).ok_or(ParserError)?)
+                    MadtEntry::X2Apic(FromBytes::read_from_prefix(buf).map_err(|_| ParserError)?.0)
+                    // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 }
                 _ => continue,
             };

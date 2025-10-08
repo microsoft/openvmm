@@ -5,11 +5,11 @@
 
 use parking_lot::Mutex;
 use std::future::poll_fn;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::Ordering::Release;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -80,7 +80,7 @@ impl DeviceInterruptSlot {
                 self.signaled.store(false, Release);
                 return Poll::Ready(());
             }
-            if waker.as_ref().map_or(true, |w| !w.will_wake(cx.waker())) {
+            if waker.as_ref().is_none_or(|w| !w.will_wake(cx.waker())) {
                 _old_waker = waker.replace(cx.waker().clone());
             }
             Poll::Pending
@@ -163,9 +163,9 @@ impl DeviceInterruptSource {
 #[cfg(test)]
 mod tests {
     use super::DeviceInterruptSource;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
 
     #[async_test]
     async fn test_interrupt(driver: DefaultDriver) {

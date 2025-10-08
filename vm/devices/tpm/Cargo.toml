@@ -3,7 +3,7 @@
 
 [package]
 name = "tpm"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -17,6 +17,7 @@ tpm_resources.workspace = true
 
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
+cvm_tracing.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
@@ -34,6 +35,5 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

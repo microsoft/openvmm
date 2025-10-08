@@ -1,62 +1,116 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Tools for building a disk image for a VM.
+
 use anyhow::Context;
 use fatfs::FormatVolumeOptions;
 use fatfs::FsOptions;
 use petri_artifacts_common::artifacts as common_artifacts;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_core::AsArtifactHandle;
-use petri_artifacts_core::TestArtifacts;
+use petri_artifacts_core::ArtifactResolver;
+use petri_artifacts_core::ResolvedArtifact;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
 use std::ops::Range;
 use std::path::Path;
 
-/// Builds a disk image containing pipette and any files needed for the guest VM
-/// to run pipette.
-pub fn build_agent_image(
-    arch: MachineArch,
+/// The description and artifacts needed to build a pipette disk image for a VM.
+pub struct AgentImage {
     os_flavor: OsFlavor,
-    resolver: &TestArtifacts,
-) -> anyhow::Result<std::fs::File> {
-    match os_flavor {
-        OsFlavor::Windows => {
-            // Windows doesn't use cloud-init, so we only need pipette
-            // (which is configured via the IMC hive).
-            build_disk_image(
-                b"pipette    ",
-                &[(
-                    "pipette.exe",
-                    PathOrBinary::Path(&resolver.resolve(match arch {
-                        MachineArch::X86_64 => common_artifacts::PIPETTE_WINDOWS_X64.erase(),
-                        MachineArch::Aarch64 => common_artifacts::PIPETTE_WINDOWS_AARCH64.erase(),
-                    })),
-                )],
-            )
+    pipette: Option<ResolvedArtifact>,
+    extras: Vec<(String, ResolvedArtifact)>,
+}
+
+impl AgentImage {
+    /// Resolves the artifacts needed to build a disk image for a VM.
+    pub fn new(os_flavor: OsFlavor) -> Self {
+        Self {
+            os_flavor,
+            pipette: None,
+            extras: Vec::new(),
         }
-        OsFlavor::Linux => {
-            // Linux uses cloud-init, so we need to include the cloud-init
-            // configuration files as well.
-            build_disk_image(
-                b"cidata     ", // cloud-init looks for a volume label of "cidata",
-                &[
-                    (
-                        "pipette",
-                        PathOrBinary::Path(&resolver.resolve(match arch {
-                            MachineArch::X86_64 => common_artifacts::PIPETTE_LINUX_X64.erase(),
-                            MachineArch::Aarch64 => common_artifacts::PIPETTE_LINUX_AARCH64.erase(),
-                        })),
-                    ),
+    }
+
+    /// Adds the appropriate pipette binary to the image
+    pub fn with_pipette(mut self, resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
+        self.pipette = match (self.os_flavor, arch) {
+            (OsFlavor::Windows, MachineArch::X86_64) => Some(
+                resolver
+                    .require(common_artifacts::PIPETTE_WINDOWS_X64)
+                    .erase(),
+            ),
+            (OsFlavor::Linux, MachineArch::X86_64) => Some(
+                resolver
+                    .require(common_artifacts::PIPETTE_LINUX_X64)
+                    .erase(),
+            ),
+            (OsFlavor::Windows, MachineArch::Aarch64) => Some(
+                resolver
+                    .require(common_artifacts::PIPETTE_WINDOWS_AARCH64)
+                    .erase(),
+            ),
+            (OsFlavor::Linux, MachineArch::Aarch64) => Some(
+                resolver
+                    .require(common_artifacts::PIPETTE_LINUX_AARCH64)
+                    .erase(),
+            ),
+            (OsFlavor::FreeBsd | OsFlavor::Uefi, _) => {
+                todo!("No pipette binary yet for os");
+            }
+        };
+        self
+    }
+
+    /// Check if the image contains pipette
+    pub fn contains_pipette(&self) -> bool {
+        self.pipette.is_some()
+    }
+
+    /// Adds an extra file to the disk image.
+    pub fn add_file(&mut self, name: &str, artifact: ResolvedArtifact) {
+        self.extras.push((name.to_string(), artifact));
+    }
+
+    /// Builds a disk image containing pipette and any files needed for the guest VM
+    /// to run pipette.
+    pub fn build(&self) -> anyhow::Result<Option<tempfile::NamedTempFile>> {
+        let mut files = self
+            .extras
+            .iter()
+            .map(|(name, artifact)| (name.as_str(), PathOrBinary::Path(artifact.as_ref())))
+            .collect::<Vec<_>>();
+        let volume_label = match self.os_flavor {
+            OsFlavor::Windows => {
+                // Windows doesn't use cloud-init, so we only need pipette
+                // (which is configured via the IMC hive).
+                if let Some(pipette) = self.pipette.as_ref() {
+                    files.push(("pipette.exe", PathOrBinary::Path(pipette.as_ref())));
+                }
+                b"pipette    "
+            }
+            OsFlavor::Linux => {
+                if let Some(pipette) = self.pipette.as_ref() {
+                    files.push(("pipette", PathOrBinary::Path(pipette.as_ref())));
+                }
+                // Linux uses cloud-init, so we need to include the cloud-init
+                // configuration files as well.
+                files.extend([
                     (
                         "meta-data",
                         PathOrBinary::Binary(include_bytes!("../guest-bootstrap/meta-data")),
                     ),
                     (
                         "user-data",
-                        PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data")),
+                        if self.pipette.is_some() {
+                            PathOrBinary::Binary(include_bytes!("../guest-bootstrap/user-data"))
+                        } else {
+                            PathOrBinary::Binary(include_bytes!(
+                                "../guest-bootstrap/user-data-no-agent"
+                            ))
+                        },
                     ),
                     // Specify a non-present NIC to work around https://github.com/canonical/cloud-init/issues/5511
                     // TODO: support dynamically configuring the network based on vm configuration
@@ -64,12 +118,17 @@ pub fn build_agent_image(
                         "network-config",
                         PathOrBinary::Binary(include_bytes!("../guest-bootstrap/network-config")),
                     ),
-                ],
-            )
-        }
-        OsFlavor::FreeBsd | OsFlavor::Uefi => {
-            // No pipette binary yet.
-            todo!()
+                ]);
+                b"cidata     " // cloud-init looks for a volume label of "cidata",
+            }
+            // Nothing OS-specific yet for other flavors
+            _ => b"cidata     ",
+        };
+
+        if files.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(build_disk_image(volume_label, &files)?))
         }
     }
 }
@@ -82,9 +141,10 @@ enum PathOrBinary<'a> {
 fn build_disk_image(
     volume_label: &[u8; 11],
     files: &[(&str, PathOrBinary<'_>)],
-) -> anyhow::Result<std::fs::File> {
-    let mut file = tempfile::tempfile().context("failed to make temp file")?;
-    file.set_len(64 * 1024 * 1024)
+) -> anyhow::Result<tempfile::NamedTempFile> {
+    let mut file = tempfile::NamedTempFile::new()?;
+    file.as_file()
+        .set_len(64 * 1024 * 1024)
         .context("failed to set file size")?;
 
     let partition_range =

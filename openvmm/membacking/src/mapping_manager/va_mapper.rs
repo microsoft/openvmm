@@ -31,6 +31,7 @@ use crate::RemoteProcess;
 use futures::executor::block_on;
 use guestmem::GuestMemoryAccess;
 use guestmem::PageFaultAction;
+use guestmem::PageFaultError;
 use memory_range::MemoryRange;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -60,7 +61,7 @@ impl std::fmt::Debug for VaMapper {
 struct MapperInner {
     mapping: SparseMapping,
     waiters: Mutex<Option<Vec<MapWaiter>>>,
-    req_send: mesh::MpscSender<MappingRequest>,
+    req_send: mesh::Sender<MappingRequest>,
     id: MapperId,
 }
 
@@ -191,7 +192,7 @@ impl MapperInner {
 
 impl VaMapper {
     pub(crate) async fn new(
-        req_send: mesh::MpscSender<MappingRequest>,
+        req_send: mesh::Sender<MappingRequest>,
         len: u64,
         remote_process: Option<RemoteProcess>,
     ) -> Result<Self, VaMapperError> {
@@ -295,7 +296,10 @@ unsafe impl GuestMemoryAccess for VaMapper {
             self.inner
                 .request_mapping(MemoryRange::bounding(address..address + len as u64), write),
         ) {
-            return PageFaultAction::Fail(err.into());
+            return PageFaultAction::Fail(PageFaultError::new(
+                guestmem::GuestMemoryErrorKind::OutOfRange,
+                err,
+            ));
         }
         PageFaultAction::Retry
     }

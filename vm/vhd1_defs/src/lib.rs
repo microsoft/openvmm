@@ -5,22 +5,26 @@
 //!
 //! Currently incomplete (missing defs for non-fixed disks).
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 use self::packed_nums::*;
 use guid::Guid;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 mod packed_nums {
     pub type u32_be = zerocopy::U32<zerocopy::BigEndian>;
     pub type u64_be = zerocopy::U64<zerocopy::BigEndian>;
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VhdFooter {
     pub cookie: u64_be,
     pub features: u32_be,
@@ -61,7 +65,7 @@ impl VhdFooter {
             original_size: size.into(),
             current_size: size.into(),
             disk_type: Self::DISK_TYPE_FIXED.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         footer.unique_id = guid;

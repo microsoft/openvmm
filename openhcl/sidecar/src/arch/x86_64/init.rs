@@ -4,14 +4,14 @@
 //! Sidecar initialization code. This code runs once, on the BSP, before the
 //! main kernel boots.
 
-use super::addr_space;
-use super::temporary_map;
-use super::CommandErrorWriter;
-use super::VpGlobals;
 use super::AFTER_INIT;
+use super::CommandErrorWriter;
 use super::ENABLE_LOG;
 use super::VSM_CAPABILITIES;
 use super::VTL_RETURN_OFFSET;
+use super::VpGlobals;
+use super::addr_space;
+use super::temporary_map;
 use crate::arch::x86_64::get_hv_vp_register;
 use crate::arch::x86_64::hypercall;
 use crate::arch::x86_64::log;
@@ -26,34 +26,34 @@ use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::Ordering::Release;
-use hvdef::hypercall::EnableVpVtlX64;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::StartVirtualProcessorX64;
 use hvdef::HvError;
 use hvdef::HvRegisterVsmCodePageOffsets;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64SegmentRegister;
 use hvdef::HypercallCode;
+use hvdef::hypercall::EnableVpVtlX64;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::StartVirtualProcessorX64;
 use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::HYPERCALL_PAGE;
 use minimal_rt::enlightened_panic;
-use sidecar_defs::required_memory;
 use sidecar_defs::ControlPage;
 use sidecar_defs::CpuStatus;
+use sidecar_defs::PAGE_SIZE;
+use sidecar_defs::PER_VP_PAGES;
+use sidecar_defs::PER_VP_SHMEM_PAGES;
 use sidecar_defs::SidecarNodeOutput;
 use sidecar_defs::SidecarNodeParams;
 use sidecar_defs::SidecarOutput;
 use sidecar_defs::SidecarParams;
-use sidecar_defs::PAGE_SIZE;
-use sidecar_defs::PER_VP_PAGES;
-use sidecar_defs::PER_VP_SHMEM_PAGES;
+use sidecar_defs::required_memory;
 use x86defs::Exception;
 use x86defs::GdtEntry;
 use x86defs::IdtAttributes;
 use x86defs::IdtEntry64;
 use x86defs::Pte;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 unsafe extern "C" {
     static IMAGE_PDE: Pte;
@@ -148,7 +148,7 @@ impl Display for InitVpError {
 
 /// BSP entry point from entry.S. Called with BSS, stack, and page tables
 /// initialized, and relocations applied.
-#[cfg_attr(not(minimal_rt), allow(dead_code))]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 pub extern "C" fn start(params: u64, output: u64) -> bool {
     enlightened_panic::enable_enlightened_panic();
 
@@ -307,7 +307,7 @@ fn init(
                 response_cpu,
                 response_vector,
                 needs_attention,
-                reserved: _,
+                reserved,
                 cpu_status,
             } = &mut *control;
             *index = (node_index as u32).into();
@@ -317,6 +317,7 @@ fn init(
             *response_cpu = 0.into();
             *response_vector = 0.into();
             *needs_attention = 0.into();
+            reserved.fill(0);
             cpu_status[0] = CpuStatus::REMOVED.0.into();
             cpu_status[1..vp_count as usize].fill_with(|| CpuStatus::RUN.0.into());
             cpu_status[vp_count as usize..].fill_with(|| CpuStatus::REMOVED.0.into());
@@ -471,6 +472,7 @@ impl NodeDefinition {
                 pt_pa,
                 self.control_page_pa,
                 command_page_pa,
+                reg_page_pa,
                 &mut memory,
             )
         };
@@ -481,7 +483,6 @@ impl NodeDefinition {
             globals.write(VpGlobals {
                 hv_vp_index,
                 node_cpu_index,
-                reg_page_pa,
                 overlays_mapped: false,
                 register_page_mapped: false,
             });
@@ -513,7 +514,7 @@ impl NodeDefinition {
         let context = hvdef::hypercall::InitialVpContextX64 {
             rip: ap_init as usize as u64,
             rsp: addr_space::stack().end() - 8, // start unaligned to match calling convention
-            rflags: x86defs::RFlags::default().into(),
+            rflags: x86defs::RFlags::at_reset().into(),
             cs,
             ds,
             es: ds,
@@ -526,7 +527,7 @@ impl NodeDefinition {
                 selector: 0,
                 attributes: x86defs::X64_BUSY_TSS_SEGMENT_ATTRIBUTES.into(),
             },
-            ldtr: FromZeroes::new_zeroed(),
+            ldtr: FromZeros::new_zeroed(),
             idtr,
             gdtr,
             efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME | x86defs::X64_EFER_NXE,

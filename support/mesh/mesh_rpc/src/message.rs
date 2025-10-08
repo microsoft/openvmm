@@ -12,15 +12,17 @@ use futures::AsyncWriteExt;
 use mesh::payload::Protobuf;
 use std::io::ErrorKind;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::BigEndian;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::U32;
 
 /// The wire format header for a message.
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct MessageHeader {
     length: U32<BigEndian>,
     stream_id: U32<BigEndian>,
@@ -64,7 +66,7 @@ pub async fn read_message(
     reader: &mut (impl AsyncRead + Unpin),
 ) -> std::io::Result<Option<ReadResult>> {
     let mut header = MessageHeader::new_zeroed();
-    match reader.read_exact(header.as_bytes_mut()).await {
+    match reader.read_exact(header.as_mut_bytes()).await {
         Ok(_) => (),
         Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
             return Ok(None);

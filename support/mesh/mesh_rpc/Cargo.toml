@@ -3,7 +3,7 @@
 
 [package]
 name = "mesh_rpc"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -25,7 +25,6 @@ thiserror.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-
 # gRPC dependencies
 base64 = { workspace = true, optional = true }
 h2 = { workspace = true, optional = true, features = ["stream"] }

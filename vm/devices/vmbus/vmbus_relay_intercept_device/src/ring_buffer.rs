@@ -8,9 +8,9 @@
 use safeatomic::AtomicSliceOps;
 use std::sync::atomic::AtomicU32;
 use user_driver::memory::MemoryBlock;
-use vmbus_ring::RingMem;
 use vmbus_ring::CONTROL_WORD_COUNT;
 use vmbus_ring::PAGE_SIZE;
+use vmbus_ring::RingMem;
 
 pub struct MemoryBlockRingBuffer(MemoryBlock);
 

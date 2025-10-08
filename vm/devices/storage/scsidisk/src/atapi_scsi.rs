@@ -5,31 +5,31 @@
 //! [`AsyncScsiDisk`].
 //!
 
-use crate::illegal_request_sense;
 use crate::SenseDataSlot;
+use crate::illegal_request_sense;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
-use scsi::srb::SrbStatus;
 use scsi::AdditionalSenseCode;
 use scsi::ScsiOp;
 use scsi::ScsiStatus;
 use scsi::SenseKey;
+use scsi::srb::SrbStatus;
 use scsi_buffers::RequestBuffers;
-use scsi_core::save_restore::SavedSenseData;
-use scsi_core::save_restore::ScsiDvdSavedState;
-use scsi_core::save_restore::ScsiSavedState;
+use scsi_core::ASYNC_SCSI_DISK_STACK_SIZE;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
 use scsi_core::ScsiResult;
 use scsi_core::ScsiSaveRestore;
-use scsi_core::ASYNC_SCSI_DISK_STACK_SIZE;
+use scsi_core::save_restore::SavedSenseData;
+use scsi_core::save_restore::ScsiDvdSavedState;
+use scsi_core::save_restore::ScsiSavedState;
 use scsi_defs as scsi;
 use stackfuture::StackFuture;
 use std::sync::Arc;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// A wrapper to filter and redirect ATAPI SCSI commands from an IDE ISO to inner [`AsyncScsiDisk`].
 #[derive(Inspect)]
@@ -138,7 +138,9 @@ impl AtapiScsiDisk {
         external_data: &RequestBuffers<'_>,
         request: &Request,
     ) -> ScsiResult {
-        let cdb = scsi::CdbInquiry::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::CdbInquiry::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.allocation_length.get() as usize;
 
         let min = size_of::<scsi::SenseDataHeader>();
@@ -191,7 +193,9 @@ impl AtapiScsiDisk {
         external_data: &RequestBuffers<'_>,
         request: &Request,
     ) -> ScsiResult {
-        let cdb = scsi::ReportLuns::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::ReportLuns::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let allocation_length = cdb.allocation_length.get() as usize;
         if allocation_length == 0 {
             return ScsiResult {
@@ -225,8 +229,8 @@ impl AtapiScsiDisk {
             length: 8.into(),
             reserved: [0; 4],
         };
-        data.as_bytes_mut()[..HEADER_SIZE].copy_from_slice(header.as_bytes());
-        data[1].as_bytes_mut()[..2].copy_from_slice(&0_u16.to_be_bytes());
+        data.as_mut_bytes()[..HEADER_SIZE].copy_from_slice(header.as_bytes());
+        data[1].as_mut_bytes()[..2].copy_from_slice(&0_u16.to_be_bytes());
 
         let result = external_data.writer().write(&data.as_bytes()[..tx]);
 

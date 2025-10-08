@@ -12,9 +12,8 @@ use openhcl_attestation_protocol::vmgs;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum HardwareDerivedKeysError {
     #[error("failed to initialize hardware secret")]
@@ -23,7 +22,6 @@ pub(crate) enum HardwareDerivedKeysError {
     KdfWithHardwareSecret(#[source] openssl_kdf::kdf::KdfError),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum HardwareKeySealingError {
     #[error("failed to encrypt the egress key")]
@@ -115,7 +113,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         );
 
         let mut iv = [0u8; vmgs::AES_CBC_IV_LENGTH];
-        getrandom::getrandom(&mut iv).expect("rng failure");
+        getrandom::fill(&mut iv).expect("rng failure");
 
         let mut encrypted_egress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
         let output = crypto::aes_256_cbc_encrypt(&hardware_derived_keys.aes_key, egress_key, &iv)
@@ -183,41 +181,8 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::MockTeeCall;
     use zerocopy::FromBytes;
-
-    struct MockTeeCall;
-
-    impl tee_call::TeeCall for MockTeeCall {
-        fn get_attestation_report(
-            &self,
-            _report_data: &[u8; 64],
-        ) -> Result<tee_call::GetAttestationReportResult, tee_call::Error> {
-            Ok(tee_call::GetAttestationReportResult {
-                report: vec![],
-                tcb_version: None,
-            })
-        }
-
-        fn supports_get_derived_key(&self) -> Option<&dyn tee_call::TeeCallGetDerivedKey> {
-            Some(self)
-        }
-
-        fn tee_type(&self) -> tee_call::TeeType {
-            tee_call::TeeType::Snp
-        }
-    }
-
-    impl tee_call::TeeCallGetDerivedKey for MockTeeCall {
-        fn get_derived_key(&self, _tcb_version: u64) -> Result<[u8; 32], tee_call::Error> {
-            const TEST_HW_DERIVED_KEY: [u8; tee_call::HW_DERIVED_KEY_LENGTH] = [
-                0xe0, 0xd8, 0x29, 0x04, 0xd6, 0x19, 0xd8, 0xdb, 0xd5, 0xd3, 0xba, 0x1c, 0x3c, 0x07,
-                0x2f, 0xaa, 0x56, 0x90, 0xa8, 0x95, 0x3e, 0x66, 0x69, 0x2e, 0xb9, 0xe7, 0xb4, 0xca,
-                0xaa, 0x3a, 0x92, 0x47,
-            ];
-
-            Ok(TEST_HW_DERIVED_KEY)
-        }
-    }
 
     #[test]
     fn hardware_derived_keys() {
@@ -234,9 +199,10 @@ mod tests {
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
+            filtered_vpci_devices_allowed: true,
             vm_unique_id: "".to_string(),
         };
-        let mock_call = Box::new(MockTeeCall {}) as Box<dyn tee_call::TeeCall>;
+        let mock_call = Box::new(MockTeeCall::new(0x1234)) as Box<dyn tee_call::TeeCall>;
         let mock_get_derived_key_call = mock_call.supports_get_derived_key().unwrap();
         let result = HardwareDerivedKeys::derive_key(
             mock_get_derived_key_call,
@@ -251,8 +217,8 @@ mod tests {
         let output = result.unwrap();
 
         let result = HardwareKeyProtector::read_from_prefix(output.as_bytes());
-        assert!(result.is_some());
-        let hardware_key_protector = result.unwrap();
+        assert!(result.is_ok());
+        let hardware_key_protector = result.unwrap().0;
 
         let result = hardware_key_protector.unseal_key(&hardware_derived_keys);
         assert!(result.is_ok());

@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 //! UEFI specific loader definitions and implementation.
-#![allow(non_camel_case_types)]
-#![allow(clippy::upper_case_acronyms)]
 
 pub mod config;
 
@@ -12,15 +10,16 @@ use aarch64 as arch;
 #[cfg(guest_arch = "x86_64")]
 use x86_64 as arch;
 
-pub use arch::load;
 pub use arch::CONFIG_BLOB_GPA_BASE;
 pub use arch::IMAGE_SIZE;
+pub use arch::load;
 
 use guid::Guid;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // Constant defining the offset within the image where the SEC volume starts.
 // TODO: Revisit this when we reorganize the firmware layout. One option
@@ -47,7 +46,7 @@ const TE_IMAGE_HEADER_SIGNATURE: u16 = signature_16(b"VZ");
 const EFI_FVH_SIGNATURE: u32 = signature_32(b"_FVH");
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct ImageDosHeader {
     e_magic: u16,      // Magic number
     e_cblp: u16,       // Bytes on last page of file
@@ -71,7 +70,7 @@ struct ImageDosHeader {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct TeImageHeader {
     signature: u16,
     machine: u16,
@@ -85,7 +84,7 @@ struct TeImageHeader {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct ImageNtHeaders32 {
     signature: u32,
     file_header: ImageFileHeader,
@@ -93,7 +92,7 @@ struct ImageNtHeaders32 {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct ImageFileHeader {
     machine: u16,
     number_of_sections: u16,
@@ -105,7 +104,7 @@ struct ImageFileHeader {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct ImageOptionalHeader32 {
     magic: u16,
     major_linker_version: u8,
@@ -141,14 +140,14 @@ struct ImageOptionalHeader32 {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct ImageDataDirectory {
     virtual_address: u32,
     size: u32,
 }
 
 fn pe_get_entry_point_offset(pe32_data: &[u8]) -> Option<u32> {
-    let dos_header = ImageDosHeader::read_from_prefix(pe32_data)?;
+    let dos_header = ImageDosHeader::read_from_prefix(pe32_data).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
     let nt_headers_offset = if dos_header.e_magic == IMAGE_DOS_SIGNATURE {
         // DOS image header is present, so read the PE header after the DOS image header.
         dos_header.e_lfanew as usize
@@ -157,15 +156,21 @@ fn pe_get_entry_point_offset(pe32_data: &[u8]) -> Option<u32> {
         0
     };
 
-    let signature = u32::read_from_prefix(&pe32_data[nt_headers_offset..])?;
+    let signature = u32::read_from_prefix(&pe32_data[nt_headers_offset..])
+        .ok()?
+        .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
     // Calculate the entry point relative to the start of the image.
     // AddressOfEntryPoint is common for PE32 & PE32+
     if signature as u16 == TE_IMAGE_HEADER_SIGNATURE {
-        let te = TeImageHeader::read_from_prefix(&pe32_data[nt_headers_offset..])?;
+        let te = TeImageHeader::read_from_prefix(&pe32_data[nt_headers_offset..])
+            .ok()?
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         Some(te.address_of_entry_point + size_of_val(&te) as u32 - te.stripped_size as u32)
     } else if signature == IMAGE_NT_SIGNATURE {
-        let pe = ImageNtHeaders32::read_from_prefix(&pe32_data[nt_headers_offset..])?;
+        let pe = ImageNtHeaders32::read_from_prefix(&pe32_data[nt_headers_offset..])
+            .ok()?
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         Some(pe.optional_header.address_of_entry_point)
     } else {
         None
@@ -173,7 +178,7 @@ fn pe_get_entry_point_offset(pe32_data: &[u8]) -> Option<u32> {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct EFI_FIRMWARE_VOLUME_HEADER {
     zero_vector: [u8; 16],
     file_system_guid: Guid,
@@ -188,7 +193,7 @@ struct EFI_FIRMWARE_VOLUME_HEADER {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct EFI_FFS_FILE_HEADER {
     name: Guid,
     integrity_check: u16,
@@ -201,7 +206,7 @@ struct EFI_FFS_FILE_HEADER {
 const EFI_FV_FILETYPE_SECURITY_CORE: u8 = 3;
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct EFI_COMMON_SECTION_HEADER {
     size: [u8; 3],
     typ: u8,
@@ -215,7 +220,9 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
     let mut image_offset = SEC_FIRMWARE_VOLUME_OFFSET;
 
     // Expect a firmware volume header for SEC volume.
-    let fvh = EFI_FIRMWARE_VOLUME_HEADER::read_from_prefix(&image[image_offset as usize..])?;
+    let fvh = EFI_FIRMWARE_VOLUME_HEADER::read_from_prefix(&image[image_offset as usize..])
+        .ok()?
+        .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
     if fvh.signature != EFI_FVH_SIGNATURE {
         return None;
     }
@@ -232,7 +239,9 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
             image_offset += new_volume_offset - volume_offset;
             volume_offset = new_volume_offset;
         }
-        let fh = EFI_FFS_FILE_HEADER::read_from_prefix(&image[image_offset as usize..])?;
+        let fh = EFI_FFS_FILE_HEADER::read_from_prefix(&image[image_offset as usize..])
+            .ok()?
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         if fh.typ == EFI_FV_FILETYPE_SECURITY_CORE {
             sec_core_file_header = Some(fh);
             break;
@@ -263,7 +272,9 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
             file_offset += new_file_offset - file_offset;
         }
 
-        let sh = EFI_COMMON_SECTION_HEADER::read_from_prefix(&image[image_offset as usize..])?;
+        let sh = EFI_COMMON_SECTION_HEADER::read_from_prefix(&image[image_offset as usize..])
+            .ok()?
+            .0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
         if sh.typ == EFI_SECTION_PE32 {
             let pe_offset = pe_get_entry_point_offset(
                 &image[image_offset as usize + size_of::<EFI_COMMON_SECTION_HEADER>()..],
@@ -281,13 +292,15 @@ fn get_sec_entry_point_offset(image: &[u8]) -> Option<u64> {
 
 /// Definitions shared by UEFI and the loader when loaded with parameters passed in IGVM format.
 mod igvm {
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
+
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     /// The structure used to tell UEFI where the IGVM loaded parameters are.
     #[repr(C)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct UEFI_IGVM_PARAMETER_INFO {
         pub parameter_page_count: u32,
         pub cpuid_pages_offset: u32,
@@ -345,8 +358,8 @@ pub mod x86_64 {
     use super::ConfigType;
     use super::Error;
     use super::LoadInfo;
-    use crate::common::import_default_gdt;
     use crate::common::DEFAULT_GDT_SIZE;
+    use crate::common::import_default_gdt;
     use crate::cpuid::HV_PSP_CPUID_PAGE;
     use crate::importer::BootPageAcceptance;
     use crate::importer::IgvmParameterType;
@@ -354,14 +367,14 @@ pub mod x86_64 {
     use crate::importer::IsolationType;
     use crate::importer::StartupMemoryType;
     use crate::importer::X86Register;
-    use crate::uefi::get_sec_entry_point_offset;
     use crate::uefi::SEC_FIRMWARE_VOLUME_OFFSET;
+    use crate::uefi::get_sec_entry_point_offset;
     use hvdef::HV_PAGE_SIZE;
+    use page_table::IdentityMapSize;
     use page_table::x64::align_up_to_page_size;
     use page_table::x64::build_page_tables_64;
-    use page_table::IdentityMapSize;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     pub const IMAGE_SIZE: u64 = 0x00600000; // 6 MB. See MsvmPkg\MsvmPkgX64.fdf
     const IMAGE_GPA_BASE: u64 = 0x100000; // 1MB
@@ -485,12 +498,9 @@ pub mod x86_64 {
                     importer,
                     CONFIG_BLOB_GPA_BASE / HV_PAGE_SIZE,
                     match isolation.isolation_type {
-                        IsolationType::Snp => {
-                            let table = shared_vis_page_tables
-                                .as_ref()
-                                .expect("should be shared vis page tables");
-                            table
-                        }
+                        IsolationType::Snp => shared_vis_page_tables
+                            .as_ref()
+                            .expect("should be shared vis page tables"),
                         _ => &[],
                     },
                 )?
@@ -841,7 +851,8 @@ pub mod aarch64 {
     use crate::importer::ImageLoad;
     use aarch64defs::Cpsr64;
     use hvdef::HV_PAGE_SIZE;
-    use zerocopy::AsBytes;
+
+    use zerocopy::IntoBytes;
 
     pub const IMAGE_SIZE: u64 = 0x800000;
     pub const CONFIG_BLOB_GPA_BASE: u64 = 0x824000;
@@ -917,7 +928,7 @@ pub mod aarch64 {
             }
             ConfigType::None => 0,
             ConfigType::Igvm => {
-                return Err(Error::InvalidConfigType("igvm not supported".to_owned()))
+                return Err(Error::InvalidConfigType("igvm not supported".to_owned()));
             }
         };
 

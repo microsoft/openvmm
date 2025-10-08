@@ -5,16 +5,16 @@
 //! related kernel functionality.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 // UNSAFETY: Calling ioctls.
 #![expect(unsafe_code)]
 
-use hvdef::hypercall::HvInputVtl;
 use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
 use inspect::Inspect;
 use thiserror::Error;
 
 pub mod ioctl;
+mod mapped_page;
 pub mod protocol;
 pub mod stats;
 pub mod vmbus;

@@ -3,7 +3,7 @@
 
 [package]
 name = "petri_artifacts_vmm_test"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

@@ -19,32 +19,33 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use mesh::RecvError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::TryRpcSend;
-use mesh::RecvError;
 use parking_lot::Mutex;
 use std::cmp::min;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::future::pending;
 use std::future::Future;
+use std::future::pending;
 use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_config::Vtl2SettingsErrorInfoVec;
 use unicycle::FuturesUnordered;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
 use vmbus_ring::RingMem;
 use vpci::bus_control::VpciBusEvent;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Error type for GET errors
 #[derive(Debug, Error)]
@@ -80,8 +81,6 @@ pub(crate) enum FatalError {
     VersionNegotiationFailed,
     #[error("control receive failed")]
     VersionNegotiationTryRecvFailed(#[source] RecvError),
-    #[error("received response with no pending request")]
-    NoPendingRequest,
     #[error("failed to serialize VTL2 settings error info")]
     Vtl2SettingsErrorInfoJson(#[source] serde_json::error::Error),
     #[error("received too many guest notifications of kind {0:?} prior to downstream worker init")]
@@ -92,14 +91,17 @@ pub(crate) enum FatalError {
     GpaMemoryAllocationError(#[source] anyhow::Error),
     #[error("failed to deserialize the asynchronous `IGVM_ATTEST` response")]
     DeserializeIgvmAttestResponse,
-    #[error("malformed `IGVM_ATTEST` response - reported size {response_size} was larger than maximum size {maximum_size}")]
+    #[error(
+        "malformed `IGVM_ATTEST` response - reported size {response_size} was larger than maximum size {maximum_size}"
+    )]
     InvalidIgvmAttestResponseSize {
         response_size: usize,
         maximum_size: usize,
     },
-    #[error("received an `IGVM_ATTEST` response with no pending `IGVM_ATTEST` request")]
-    NoPendingIgvmAttestRequest,
 }
+
+type HostRequestQueue = VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>;
+type ExclusiveHostRequestResponseReceiverAccess = Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>;
 
 /// Validates the response packet received from the host. This function is only
 /// called on HOST_REQUEST/HOST_RESPONSE messages.
@@ -118,26 +120,37 @@ fn validate_response(header: get_protocol::HeaderHostResponse) -> Result<(), Fat
 }
 
 /// Parse the HostResponse message sent from the host in `buf`.
-fn read_host_response_validated<T: FromBytes>(buf: &[u8]) -> Result<T, FatalError> {
-    let response = T::read_from(buf).ok_or_else(|| FatalError::MessageSizeHostResponse {
+fn read_host_response_validated<T: FromBytes + Immutable + KnownLayout>(
+    buf: &[u8],
+) -> Result<T, FatalError> {
+    let response = T::read_from_bytes(buf).map_err(|_| FatalError::MessageSizeHostResponse {
         len: buf.len(),
-        response: get_protocol::HeaderHostResponse::read_from(buf)
+        response: get_protocol::HeaderHostResponse::read_from_bytes(buf)
             .unwrap()
-            .message_id,
+            .message_id(),
     })?;
 
     Ok(response)
 }
 
 /// Parse the GuestNotification message sent from the host in `buf`.
-fn read_guest_notification<T: FromBytes>(
+fn read_guest_notification<T: FromBytes + Immutable + KnownLayout>(
     notification: get_protocol::GuestNotifications,
     buf: &[u8],
 ) -> Result<T, FatalError> {
-    T::read_from(buf).ok_or(FatalError::MessageSizeGuestNotification {
+    T::read_from_bytes(buf).map_err(|_| FatalError::MessageSizeGuestNotification {
         len: buf.len(),
         notification,
     })
+}
+
+/// Defines which host requests should be sent through the secondary host
+/// request queue, meaning that their handling on the host may reasonably
+/// require interleaving with host requests in the primary queue, or might
+/// just be generally slow and shouldn't disrupt the primary queue making
+/// forward progress.
+fn is_secondary_host_request(request: HostRequests) -> bool {
+    request == HostRequests::IGVM_ATTEST || request == HostRequests::VPCI_DEVICE_CONTROL
 }
 
 pub(crate) mod msg {
@@ -147,7 +160,7 @@ pub(crate) mod msg {
     use guid::Guid;
     use mesh::rpc::Rpc;
     use std::sync::Arc;
-    use user_driver::vfio::VfioDmaBuffer;
+    use user_driver::DmaClient;
     use vpci::bus_control::VpciBusEvent;
 
     #[derive(Debug)]
@@ -177,7 +190,7 @@ pub(crate) mod msg {
         /// Inspect the state of the process loop.
         Inspect(inspect::Deferred),
         /// Store the gpa allocator to be used for attestation.
-        SetGpaAllocator(Arc<dyn VfioDmaBuffer>),
+        SetGpaAllocator(Arc<dyn DmaClient>),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -468,7 +481,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     vtl2_settings_buf: Option<Vec<u8>>,
     #[inspect(skip)]
-    host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    primary_host_requests: HostRequestQueue,
     #[inspect(skip)]
     pipe_channels: PipeChannels,
     #[inspect(skip)]
@@ -476,11 +489,10 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     write_recv: mesh::Receiver<WriteRequest>,
     #[inspect(skip)]
-    igvm_attest_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    secondary_host_requests: HostRequestQueue,
     #[inspect(skip)]
-    igvm_attest_read_send: mesh::Sender<Vec<u8>>,
-    #[inspect(skip)]
-    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    secondary_host_requests_read_send: mesh::Sender<Vec<u8>>,
+    gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -544,9 +556,9 @@ mod inspect_helpers {
 }
 
 struct HostRequestPipeAccess {
-    response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    response_message_recv_mutex: ExclusiveHostRequestResponseReceiverAccess,
     response_message_recv: Option<mesh::Receiver<Vec<u8>>>,
-    request_message_send: Arc<mesh::Sender<WriteRequest>>,
+    request_message_send: mesh::Sender<WriteRequest>,
 }
 
 impl Drop for HostRequestPipeAccess {
@@ -556,11 +568,13 @@ impl Drop for HostRequestPipeAccess {
 }
 
 struct PipeChannels {
-    // This is None when a `HostRequestPipeAccess` has ownership for non-IgvmAttest requests.
-    response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-    // This is None when a `HostRequestPipeAccess` has ownership for an IgvmAttest request.
-    igvm_attest_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-    message_send: Arc<mesh::Sender<WriteRequest>>,
+    // This is None when a `HostRequestPipeAccess` has ownership for a host
+    // request in the primary queue.
+    primary_host_request_response_message_recv: ExclusiveHostRequestResponseReceiverAccess,
+    // This is None when a `HostRequestPipeAccess` has ownership for a host
+    // request in the secondary queue.
+    secondary_host_request_response_message_recv: ExclusiveHostRequestResponseReceiverAccess,
+    message_send: mesh::Sender<WriteRequest>,
 }
 
 enum WriteRequest {
@@ -571,7 +585,7 @@ enum WriteRequest {
 impl HostRequestPipeAccess {
     fn new(
         response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-        request_message_send: Arc<mesh::Sender<WriteRequest>>,
+        request_message_send: mesh::Sender<WriteRequest>,
     ) -> Self {
         let response_message_recv = response_message_recv_mutex.lock().take().unwrap();
         Self {
@@ -602,15 +616,19 @@ impl HostRequestPipeAccess {
     /// Waits for a known, fixed-size response message from the host.
     ///
     /// The caller is responsible for validating the message ID.
-    async fn recv_response_fixed_size<T: AsBytes + FromBytes>(
+    async fn recv_response_fixed_size<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &mut self,
         id: HostRequests,
     ) -> Result<T, FatalError> {
         let response = self.recv_response().await;
-        let header =
-            get_protocol::HeaderHostRequest::read_from_prefix(response.as_bytes()).unwrap();
-        if id != header.message_id {
-            return Err(FatalError::ResponseHeaderMismatchId(header.message_id, id));
+        let header = get_protocol::HeaderHostRequest::read_from_prefix(response.as_bytes())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        if id != header.message_id() {
+            return Err(FatalError::ResponseHeaderMismatchId(
+                header.message_id(),
+                id,
+            ));
         }
         read_host_response_validated(&response)
     }
@@ -619,21 +637,42 @@ impl HostRequestPipeAccess {
     ///
     /// Fails if the response's message ID does not match the request's message
     /// ID.
-    async fn send_request_fixed_size<T: AsBytes + ?Sized, U: AsBytes + FromBytes>(
+    async fn send_request_fixed_size<
+        T: IntoBytes + ?Sized + Immutable + KnownLayout,
+        U: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         data: &T,
     ) -> Result<U, FatalError> {
         self.send_message(data.as_bytes().to_vec());
-        let req_header =
-            get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes()).unwrap();
-        self.recv_response_fixed_size(req_header.message_id).await
+        let req_header = get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        self.recv_response_fixed_size(req_header.message_id()).await
+    }
+
+    /// Sends a fail notification to the host.
+    ///
+    /// This function does not wait for a response from the host.
+    /// It is specifically designed for scenarios where the host does not send any response.
+    /// One of such scenario is the save failure, where host does not send any response.
+    ///
+    /// In the future, GED notifications for failures need to be added.
+    /// This will require updates to both the host and openHCL.
+    async fn send_failed_save_state<T: IntoBytes + ?Sized + Immutable + KnownLayout>(
+        &mut self,
+        data: &T,
+    ) -> Result<(), FatalError> {
+        self.send_message(data.as_bytes().to_vec());
+        Ok(())
     }
 }
 
 impl<T: RingMem> ProcessLoop<T> {
     pub(crate) fn new(pipe: MessagePipe<T>) -> Self {
         let (read_send, read_recv) = mesh::channel();
-        let (igvm_attest_read_send, igvm_attest_read_recv) = mesh::channel();
+        let (secondary_host_requests_read_send, secondary_host_requests_read_recv) =
+            mesh::channel();
         let (write_send, write_recv) = mesh::channel();
 
         Self {
@@ -641,18 +680,18 @@ impl<T: RingMem> ProcessLoop<T> {
             stats: Default::default(),
             guest_notification_responses: Default::default(),
             vtl2_settings_buf: None,
-            host_requests: Default::default(),
-            igvm_attest_requests: Default::default(),
+            primary_host_requests: Default::default(),
+            secondary_host_requests: Default::default(),
             pipe_channels: PipeChannels {
-                response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
-                igvm_attest_response_message_recv: Arc::new(Mutex::new(Some(
-                    igvm_attest_read_recv,
+                primary_host_request_response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
+                secondary_host_request_response_message_recv: Arc::new(Mutex::new(Some(
+                    secondary_host_requests_read_recv,
                 ))),
-                message_send: Arc::new(write_send),
+                message_send: write_send,
             },
             read_send,
             write_recv,
-            igvm_attest_read_send,
+            secondary_host_requests_read_send,
             guest_notification_listeners: GuestNotificationListeners {
                 generation_id: GuestNotificationSender::new(),
                 vtl2_settings: GuestNotificationSender::new(),
@@ -695,7 +734,7 @@ impl<T: RingMem> ProcessLoop<T> {
 
             // The next message must be the version response.
             let mut response = get_protocol::VersionResponse::new_zeroed();
-            let len = self.read_pipe(response.as_bytes_mut()).await?;
+            let len = self.read_pipe(response.as_mut_bytes()).await?;
 
             validate_response(response.message_header)?;
 
@@ -706,10 +745,10 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
 
-            if response.message_header.message_id != version_request.message_header.message_id {
+            if response.message_header.message_id() != version_request.message_header.message_id() {
                 return Err(FatalError::ResponseHeaderMismatchId(
-                    response.message_header.message_id,
-                    version_request.message_header.message_id,
+                    response.message_header.message_id(),
+                    version_request.message_header.message_id(),
                 ));
             }
 
@@ -719,7 +758,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 .map_err(|_| FatalError::InvalidResponse)?;
 
             if version_accepted {
-                tracing::info!("[GET] version negotiated: {:?}", protocol);
+                tracing::info!(?protocol, "[GET] version negotiated");
 
                 return Ok(protocol);
             }
@@ -763,8 +802,9 @@ impl<T: RingMem> ProcessLoop<T> {
                             // way to get these kinds of per-message stats is to
                             // quickly re-parse the header before sending the
                             // message down the wire.
-                            if let Some(header) =
+                            if let Ok((header, _)) =
                                 get_protocol::HeaderRaw::read_from_prefix(outgoing.as_ref())
+                            // TODO: zerocopy: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                             {
                                 match header.message_type {
                                     get_protocol::MessageTypes::HOST_REQUEST => {
@@ -798,61 +838,48 @@ impl<T: RingMem> ProcessLoop<T> {
                 }
                 .map(Event::Failure);
 
-                // Run the next host request.
-                let run_next = async {
-                    while let Some(request) = self.host_requests.front_mut() {
-                        if let Err(e) = request.as_mut().await {
-                            return e;
-                        }
+                // Closure to share code between the primary and secondary host request queue.
+                let run_host_request_queue =
+                    async |request_queue: &mut HostRequestQueue, response_recv: &ExclusiveHostRequestResponseReceiverAccess| {
+                        while let Some(request) = request_queue.front_mut() {
+                            if let Err(e) = request.as_mut().await {
+                                return e;
+                            }
 
-                        self.host_requests.pop_front();
+                            request_queue.pop_front();
 
-                        // Ensure there are no extra response messages that this request failed to pick up.
-                        if self
-                            .pipe_channels
-                            .response_message_recv
-                            .lock()
-                            .as_mut()
-                            .unwrap()
-                            .try_recv()
-                            .is_ok()
-                        {
-                            return FatalError::NoPendingRequest;
+                            // Ensure there are no extra response messages that this request failed to pick up.
+                            if let Ok(resp) = response_recv.lock().as_mut().unwrap().try_recv() {
+                                let id = get_protocol::HeaderRaw::read_from_prefix(&resp)
+                                    .map(|head| HostRequests(head.0.message_id))
+                                    .unwrap_or(HostRequests::INVALID);
+                                tracing::warn!(?id, "received extra response after processing request");
+                            }
                         }
-                    }
-                    pending().await
-                }
+                        pending().await
+                    };
+
+                // Run the next host request in the primary queue. These host
+                // requests are expected to be generally fast and independent
+                // of one another.
+                let run_next_primary_host_request = run_host_request_queue(
+                    &mut self.primary_host_requests,
+                    &self
+                        .pipe_channels
+                        .primary_host_request_response_message_recv,
+                )
                 .map(Event::Failure);
 
-                // Run the next IgvmAttest request.
-                //
-                // DEVNOTE: IgvmAttest requests are always sent asynchronously by the host and only one
-                // request can be outstanding at a time. Therefore, we use a dedicated queue to handle
-                // the IgvmAttest requests without blocking or being blocked by other request types
-                // handled by the `host_requests` queue.
-                let run_next_igvm_attest = async {
-                    while let Some(request) = self.igvm_attest_requests.front_mut() {
-                        if let Err(e) = request.as_mut().await {
-                            return e;
-                        }
-
-                        self.igvm_attest_requests.pop_front();
-
-                        // Ensure there are no extra response messages that this request failed to pick up.
-                        if self
-                            .pipe_channels
-                            .igvm_attest_response_message_recv
-                            .lock()
-                            .as_mut()
-                            .unwrap()
-                            .try_recv()
-                            .is_ok()
-                        {
-                            return FatalError::NoPendingRequest;
-                        }
-                    }
-                    pending().await
-                }
+                // Run the next host request in the secondary queue. These
+                // host requests may need to interleave with requests in the
+                // primary queue, or may be generally slow and shouldn't
+                // disrupt forward progress in the primary queue.
+                let run_next_secondary_host_request = run_host_request_queue(
+                    &mut self.secondary_host_requests,
+                    &self
+                        .pipe_channels
+                        .secondary_host_request_response_message_recv,
+                )
                 .map(Event::Failure);
 
                 let recv_response = async {
@@ -869,8 +896,8 @@ impl<T: RingMem> ProcessLoop<T> {
                     read_fd,
                     recv_msg,
                     send_next,
-                    run_next,
-                    run_next_igvm_attest,
+                    run_next_primary_host_request,
+                    run_next_secondary_host_request,
                     recv_response,
                 )
                     .race()
@@ -890,7 +917,8 @@ impl<T: RingMem> ProcessLoop<T> {
                     let len = len?;
                     let buf = &buf[..len];
                     let header = get_protocol::HeaderRaw::read_from_prefix(buf)
-                        .ok_or(FatalError::MessageSizeHeader(len))?;
+                        .map_err(|_| FatalError::MessageSizeHeader(len))?
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                     match header.message_type {
                         get_protocol::MessageTypes::HOST_RESPONSE => {
@@ -927,55 +955,60 @@ impl<T: RingMem> ProcessLoop<T> {
         }
     }
 
-    /// Spawn a host request.
+    /// Spawn a host request in the primary queue.
     ///
     /// `f` will receive a [`PipeAccess`] to send messages to the host and
     /// receive host responses.
     ///
     /// The result of `f().await` will be sent as a response to the RPC in `req`.
-    fn push_host_request_handler<F, Fut>(&mut self, f: F)
+    fn push_primary_host_request_handler<F, Fut>(&mut self, f: F)
     where
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
     {
-        let message_recv_mutex = self.pipe_channels.response_message_recv.clone();
+        let message_recv_mutex = self
+            .pipe_channels
+            .primary_host_request_response_message_recv
+            .clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
-        self.host_requests.push_back(Box::pin(fut));
+        self.primary_host_requests.push_back(Box::pin(fut));
     }
 
-    /// Spawn an IgvmAttest host request.
+    /// Spawn host request on the secondary queue.
     ///
     /// `f` will receive a [`PipeAccess`] to send messages to the host and
     /// receive host responses.
     ///
     /// The result of `f().await` will be sent as a response to the RPC in `req`.
-    fn push_igvm_attest_request_handler<F, Fut>(&mut self, f: F)
+    fn push_secondary_host_request_handler<F, Fut>(&mut self, f: F)
     where
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
     {
-        let message_recv_mutex = self.pipe_channels.igvm_attest_response_message_recv.clone();
+        let message_recv_mutex = self
+            .pipe_channels
+            .secondary_host_request_response_message_recv
+            .clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
-        self.igvm_attest_requests.push_back(Box::pin(fut));
+        self.secondary_host_requests.push_back(Box::pin(fut));
     }
 
-    /// Pushes a host request handler that sends a single host request and waits
-    /// for its response.
+    /// Pushes a host request handler that sends a single host request on the
+    /// primary queue and waits for its response.
     fn push_basic_host_request_handler<Req, I, Resp>(
         &mut self,
         req: Rpc<I, Resp>,
         f: impl 'static + Send + FnOnce(I) -> Req,
     ) where
-        Req: AsBytes + 'static + Send + Sync,
+        Req: IntoBytes + 'static + Send + Sync + Immutable + KnownLayout,
         I: 'static + Send,
-        Resp: 'static + AsBytes + FromBytes + Send,
+        Resp: 'static + IntoBytes + FromBytes + Send + Immutable + KnownLayout,
     {
-        self.push_host_request_handler(|mut access| {
-            req.handle_must_succeed(move |input| async move {
-                access.send_request_fixed_size(&f(input)).await
-            })
+        self.push_primary_host_request_handler(async move |mut access| {
+            req.handle_must_succeed(async |input| access.send_request_fixed_size(&f(input)).await)
+                .await
         });
     }
 
@@ -1045,8 +1078,10 @@ impl<T: RingMem> ProcessLoop<T> {
 
             // Host Requests
             Msg::DevicePlatformSettingsV2(req) => {
-                self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|()| request_device_platform_settings_v2(access))
+                self.push_primary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |()| {
+                        request_device_platform_settings_v2(access).await
+                    })
                 });
             }
             Msg::VmgsFlush(req) => {
@@ -1059,9 +1094,11 @@ impl<T: RingMem> ProcessLoop<T> {
                     get_protocol::VmgsGetDeviceInfoRequest::new()
                 });
             }
-            Msg::GetVtl2SavedStateFromHost(req) => self.push_host_request_handler(|access| {
-                req.handle_must_succeed(|()| request_saved_state(access))
-            }),
+            Msg::GetVtl2SavedStateFromHost(req) => {
+                self.push_primary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |()| request_saved_state(access).await)
+                })
+            }
             Msg::GuestStateProtection(req) => {
                 self.push_basic_host_request_handler(req, |request| *request);
             }
@@ -1076,25 +1113,27 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::IgvmAttest(req) => {
                 let shared_pool_allocator = self.gpa_allocator.clone();
 
-                self.push_igvm_attest_request_handler(|access| {
-                    req.handle_must_succeed(|request| {
-                        request_igvm_attest(access, *request, shared_pool_allocator)
+                self.push_secondary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |request| {
+                        request_igvm_attest(access, *request, shared_pool_allocator).await
                     })
                 });
             }
             Msg::VmgsRead(req) => {
-                self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vmgs_read(access, input))
+                self.push_primary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |input| request_vmgs_read(access, input).await)
                 });
             }
             Msg::VmgsWrite(req) => {
-                self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vmgs_write(access, input))
+                self.push_primary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |input| request_vmgs_write(access, input).await)
                 });
             }
             Msg::VpciDeviceControl(req) => {
-                self.push_basic_host_request_handler(req, |input| {
-                    get_protocol::VpciDeviceControlRequest::new(input.code, input.bus_instance_id)
+                self.push_secondary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |input| {
+                        request_vpci_device_control(access, input).await
+                    })
                 });
             }
             Msg::VpciDeviceBindingChange(req) => {
@@ -1141,8 +1180,10 @@ impl<T: RingMem> ProcessLoop<T> {
                     get_protocol::ResetRamGpaRangeRequest::new(input)
                 });
             }
-            Msg::SendServicingState(req) => self.push_host_request_handler(move |access| {
-                req.handle_must_succeed(|data| request_send_servicing_state(access, data))
+            Msg::SendServicingState(req) => self.push_primary_host_request_handler(move |access| {
+                req.handle_must_succeed(async |data| {
+                    request_send_servicing_state(access, data).await
+                })
             }),
             Msg::CompleteStartVtl0(rpc) => {
                 let (input, res) = rpc.split();
@@ -1154,7 +1195,7 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::PowerState(state) => {
                 // Queue behind any pending requests to avoid terminating while
                 // something important is in flight.
-                self.push_host_request_handler(move |mut access| async move {
+                self.push_primary_host_request_handler(async move |mut access| {
                     let message = match state {
                         msg::PowerState::PowerOff => get_protocol::PowerOffNotification::new(false)
                             .as_bytes()
@@ -1215,7 +1256,7 @@ impl<T: RingMem> ProcessLoop<T> {
             ));
         }
 
-        let id = header.message_id;
+        let id = header.message_id();
         match id {
             GuestNotifications::UPDATE_GENERATION_ID => {
                 self.handle_update_generation_id(read_guest_notification(id, buf)?)?;
@@ -1248,8 +1289,8 @@ impl<T: RingMem> ProcessLoop<T> {
             }
             invalid_notification => {
                 tracing::error!(
-                    "[HOST GET] ignoring invalid guest notification: {:?}",
-                    invalid_notification
+                    ?invalid_notification,
+                    "[HOST GET] ignoring invalid guest notification",
                 );
             }
         }
@@ -1266,20 +1307,22 @@ impl<T: RingMem> ProcessLoop<T> {
         header: get_protocol::HeaderHostResponse,
         buf: &[u8],
     ) -> Result<(), FatalError> {
-        if self.host_requests.is_empty() && self.igvm_attest_requests.is_empty() {
-            return Err(FatalError::NoPendingRequest);
-        }
         validate_response(header)?;
 
-        if header.message_id == HostRequests::IGVM_ATTEST {
-            if !self.igvm_attest_requests.is_empty() {
-                self.igvm_attest_read_send.send(buf.to_vec());
+        if is_secondary_host_request(header.message_id()) {
+            if self.secondary_host_requests.is_empty() {
+                tracing::warn!(id = ?header.message_id(), "received secondary host response with no pending request");
                 return Ok(());
             }
-            return Err(FatalError::NoPendingIgvmAttestRequest);
+            self.secondary_host_requests_read_send.send(buf.to_vec());
+        } else {
+            if self.primary_host_requests.is_empty() {
+                tracing::warn!(id = ?header.message_id(), "received primary host response with no pending request");
+                return Ok(());
+            }
+            self.read_send.send(buf.to_vec());
         }
 
-        self.read_send.send(buf.to_vec());
         Ok(())
     }
 
@@ -1318,12 +1361,12 @@ impl<T: RingMem> ProcessLoop<T> {
 
     fn handle_modify_vtl2_settings_notification(&mut self, buf: &[u8]) -> Result<(), FatalError> {
         let (request, remaining) =
-            get_protocol::ModifyVtl2SettingsNotification::read_from_prefix_split(buf).ok_or(
+            get_protocol::ModifyVtl2SettingsNotification::read_from_prefix(buf).map_err(|_| {
                 FatalError::MessageSizeGuestNotification {
                     len: buf.len(),
                     notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS,
-                },
-            )?;
+                }
+            })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_len = request.size as usize;
         if remaining.len() != expected_len {
@@ -1344,12 +1387,12 @@ impl<T: RingMem> ProcessLoop<T> {
         buf: &[u8],
     ) -> Result<(), FatalError> {
         let (request, remaining) =
-            get_protocol::ModifyVtl2SettingsRev1Notification::read_from_prefix_split(buf).ok_or(
-                FatalError::MessageSizeGuestNotification {
+            get_protocol::ModifyVtl2SettingsRev1Notification::read_from_prefix(buf).map_err(
+                |_| FatalError::MessageSizeGuestNotification {
                     len: buf.len(),
                     notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS_REV1,
                 },
-            )?;
+            )?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_len = request.size as usize;
         if remaining.len() != expected_len {
@@ -1533,7 +1576,9 @@ async fn request_device_platform_settings_v2(
     let mut result = Vec::new();
     loop {
         let buf = access.recv_response().await;
-        let header = get_protocol::HeaderHostResponse::read_from_prefix(buf.as_slice()).unwrap();
+        let header = get_protocol::HeaderHostResponse::read_from_prefix(buf.as_slice())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // Protocol wart: request is sent as a
         // `HostRequests::DEVICE_PLATFORM_SETTINGS_V2`, but the host will send
@@ -1547,16 +1592,16 @@ async fn request_device_platform_settings_v2(
         // capable of handling small payloads itself! We should've just "fixed"
         // `DEVICE_PLATFORM_SETTINGS_V2` before shipping... but we didn't, and
         // now we're stuck with this behavior.
-        match header.message_id {
+        match header.message_id() {
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 let (response, remaining) =
-                    get_protocol::DevicePlatformSettingsResponseV2::read_from_prefix_split(
+                    get_protocol::DevicePlatformSettingsResponseV2::read_from_prefix(
                         buf.as_slice(),
                     )
-                    .ok_or(FatalError::MessageSizeHostResponse {
+                    .map_err(|_| FatalError::MessageSizeHostResponse {
                         len: buf.len(),
                         response: HostRequests::DEVICE_PLATFORM_SETTINGS_V2,
-                    })?;
+                    })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                 if response.size as usize != remaining.len() {
                     return Err(FatalError::DevicePlatformSettingsV2Payload {
@@ -1570,13 +1615,13 @@ async fn request_device_platform_settings_v2(
             }
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2_REV1 => {
                 let (response, remaining) =
-                    get_protocol::DevicePlatformSettingsResponseV2Rev1::read_from_prefix_split(
+                    get_protocol::DevicePlatformSettingsResponseV2Rev1::read_from_prefix(
                         buf.as_slice(),
                     )
-                    .ok_or(FatalError::MessageSizeGuestNotification {
+                    .map_err(|_| FatalError::MessageSizeGuestNotification {
                         len: buf.len(),
                         notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS_REV1,
-                    })?;
+                    })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                 if remaining.len() != (response.size as usize) {
                     return Err(FatalError::DevicePlatformSettingsV2Payload {
@@ -1592,9 +1637,9 @@ async fn request_device_platform_settings_v2(
             }
             _ => {
                 return Err(FatalError::ResponseHeaderMismatchId(
-                    header.message_id,
+                    header.message_id(),
                     HostRequests::DEVICE_PLATFORM_SETTINGS_V2,
-                ))
+                ));
             }
         }
     }
@@ -1623,17 +1668,15 @@ async fn request_vmgs_read(
     let buf = access.recv_response().await;
 
     let vmgs_buf_len = (sector_count * sector_size) as usize;
-    let (response, remaining) = get_protocol::VmgsReadResponse::read_from_prefix_split(
-        buf.as_slice(),
-    )
-    .ok_or(FatalError::MessageSizeHostResponse {
-        len: buf.len(),
-        response: HostRequests::VMGS_READ,
-    })?;
+    let (response, remaining) = get_protocol::VmgsReadResponse::read_from_prefix(buf.as_slice())
+        .map_err(|_| FatalError::MessageSizeHostResponse {
+            len: buf.len(),
+            response: HostRequests::VMGS_READ,
+        })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
-    if response.message_header.message_id != HostRequests::VMGS_READ {
+    if response.message_header.message_id() != HostRequests::VMGS_READ {
         return Err(FatalError::ResponseHeaderMismatchId(
-            response.message_header.message_id,
+            response.message_header.message_id(),
             HostRequests::VMGS_READ,
         ));
     }
@@ -1678,9 +1721,9 @@ async fn request_send_servicing_state(
     let saved_state_buf = match result {
         Ok(saved_state_buf) => saved_state_buf,
         Err(_err) => {
-            // TODO: send error to host.
+            // Sends a failure notification to host.
             return access
-                .send_request_fixed_size(&get_protocol::SaveGuestVtl2StateRequest::new(
+                .send_failed_save_state(&get_protocol::SaveGuestVtl2StateRequest::new(
                     get_protocol::GuestVtl2SaveRestoreStatus::FAILURE,
                 ))
                 .await
@@ -1755,15 +1798,13 @@ async fn request_saved_state(
         let message_buf = access.recv_response().await;
 
         let (response_header, remaining) =
-            get_protocol::RestoreGuestVtl2StateResponse::read_from_prefix_split(
-                message_buf.as_slice(),
-            )
-            .ok_or(FatalError::MessageSizeHostResponse {
+            get_protocol::RestoreGuestVtl2StateResponse::read_from_prefix(message_buf.as_slice())
+                .map_err(|_| FatalError::MessageSizeHostResponse {
                 len: message_buf.len(),
                 response: HostRequests::RESTORE_GUEST_VTL2_STATE,
-            })?;
+            })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
-        let message_id = response_header.message_header.message_id;
+        let message_id = response_header.message_header.message_id();
         if message_id != HostRequests::RESTORE_GUEST_VTL2_STATE {
             return Err(FatalError::ResponseHeaderMismatchId(
                 message_id,
@@ -1793,6 +1834,21 @@ async fn request_saved_state(
     Ok(Ok(saved_state_buf))
 }
 
+/// Send a VPCI device control request to the host and wait for the result asynchronously.
+async fn request_vpci_device_control(
+    mut access: HostRequestPipeAccess,
+    input: msg::VpciDeviceControlInput,
+) -> Result<get_protocol::VpciDeviceControlResponse, FatalError> {
+    let response: get_protocol::VpciDeviceControlResponse = access
+        .send_request_fixed_size(&get_protocol::VpciDeviceControlRequest::new(
+            input.code,
+            input.bus_instance_id,
+        ))
+        .await?;
+
+    Ok(response)
+}
+
 /// Send the attestation request to the IGVm agent on the host and wait for the result asynchronously.
 ///
 /// Because the response size can be too large to fit vmbus,
@@ -1807,12 +1863,12 @@ async fn request_saved_state(
 async fn request_igvm_attest(
     mut access: HostRequestPipeAccess,
     request: msg::IgvmAttestRequestData,
-    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    gpa_allocator: Option<Arc<dyn DmaClient>>,
 ) -> Result<Result<Vec<u8>, IgvmAttestError>, FatalError> {
     let allocator = gpa_allocator.ok_or(FatalError::GpaAllocatorUnavailable)?;
     let dma_size = request.response_buffer_len;
     let mem = allocator
-        .create_dma_buffer(dma_size)
+        .allocate_dma_buffer(dma_size)
         .map_err(FatalError::GpaMemoryAllocationError)?;
 
     // Host expects the vTOM bit to be stripped
@@ -1837,7 +1893,8 @@ async fn request_igvm_attest(
     let response = access.recv_response().await;
 
     // Validate the response and returns the validated data.
-    let Some(response) = get_protocol::IgvmAttestResponse::read_from_prefix(&response) else {
+    // TODO: zerocopy: use error here, use rest of range (https://github.com/microsoft/openvmm/issues/759)
+    let Ok((response, _)) = get_protocol::IgvmAttestResponse::read_from_prefix(&response) else {
         Err(FatalError::DeserializeIgvmAttestResponse)?
     };
 

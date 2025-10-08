@@ -3,13 +3,14 @@
 
 [package]
 name = "hyperv_ic_protocol"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 guid.workspace = true
 
 bitfield-struct.workspace = true
+jiff.workspace = true
 open_enum.workspace = true
 zerocopy.workspace = true
 

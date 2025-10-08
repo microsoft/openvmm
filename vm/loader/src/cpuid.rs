@@ -4,13 +4,15 @@
 //! Provides common CPUID values and functions.
 
 use x86defs::cpuid::CpuidFunction;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// CPUID information used to build the CPUID page for SNP.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SNP_REQUIRED_CPUID_LEAF {
     pub eax: u32,
     pub ecx: u32,
@@ -91,7 +93,7 @@ pub const SNP_REQUIRED_CPUID_LEAF_LIST_PARAVISOR: [SNP_REQUIRED_CPUID_LEAF; 35] 
 ];
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes, Clone, Copy)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Clone, Copy)]
 pub struct HV_PSP_CPUID_LEAF {
     pub eax_in: u32,
     pub ecx_in: u32,
@@ -107,7 +109,7 @@ pub struct HV_PSP_CPUID_LEAF {
 pub const HV_PSP_CPUID_LEAF_COUNT_MAX: usize = 64;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HV_PSP_CPUID_PAGE {
     pub count: u32,
     pub reserved_z1: u32,

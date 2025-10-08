@@ -4,6 +4,8 @@
 //! Module used to parse the host parameters used to setup Underhill. These are
 //! provided via a device tree IGVM parameter.
 
+use crate::cmdline::BootCommandLineOptions;
+use crate::host_params::shim_params::IsolationType;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use host_fdt_parser::CpuEntry;
@@ -11,9 +13,6 @@ use host_fdt_parser::GicInfo;
 use host_fdt_parser::MemoryAllocationMode;
 use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::VmbusInfo;
-use memory_range::subtract_ranges;
-use memory_range::MemoryRange;
-use shim_params::IsolationType;
 
 mod dt;
 mod mmio;
@@ -32,7 +31,7 @@ pub const COMMAND_LINE_SIZE: usize = 0x2000;
 ///
 /// Today, Hyper-V has a max limit of 64 NUMA nodes, so we should only ever see
 /// 64 ram ranges.
-const MAX_VTL2_RAM_RANGES: usize = 64;
+pub const MAX_VTL2_RAM_RANGES: usize = 64;
 
 /// The maximum number of ram ranges that can be read from the host.
 const MAX_PARTITION_RAM_RANGES: usize = 1024;
@@ -40,34 +39,15 @@ const MAX_PARTITION_RAM_RANGES: usize = 1024;
 /// Maximum size of the host-provided entropy
 pub const MAX_ENTROPY_SIZE: usize = 256;
 
-/// Maximum number of supported VTL2 used ranges.
-pub const MAX_VTL2_USED_RANGES: usize = 16;
-
 /// Information about the guest partition.
 #[derive(Debug)]
 pub struct PartitionInfo {
     /// Ram assigned to VTL2. This is either parsed from the host via IGVM
-    /// parameters, or the fixed at build value.
+    /// parameters, allocated dynamically, or the fixed at build value.
     ///
     /// This vec is guaranteed to be sorted, and non-overlapping.
     pub vtl2_ram: ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>,
-    /// The parameter region.
-    pub vtl2_full_config_region: MemoryRange,
-    /// Additional ram that can be reclaimed from the parameter region. Today,
-    /// this is the whole device tree provided by the host.
-    pub vtl2_config_region_reclaim: MemoryRange,
-    /// The vtl2 reserved region, that is reserved to both the kernel and
-    /// usermode.
-    pub vtl2_reserved_region: MemoryRange,
-    /// Memory used for the VTL2 private pool.
-    pub vtl2_pool_memory: MemoryRange,
-    /// Memory ranges that are in use by the bootshim, and any other persisted
-    /// ranges, such as the VTL2 private pool.
-    ///
-    /// TODO: Refactor these different ranges and consolidate address space
-    /// management.
-    pub vtl2_used_ranges: ArrayVec<MemoryRange, MAX_VTL2_USED_RANGES>,
-    ///  The full memory map provided by the host.
+    /// The full memory map provided by the host.
     pub partition_ram: ArrayVec<MemoryEntry, MAX_PARTITION_RAM_RANGES>,
     /// The partiton's isolation type.
     pub isolation: IsolationType,
@@ -84,14 +64,21 @@ pub struct PartitionInfo {
     pub cmdline: ArrayString<COMMAND_LINE_SIZE>,
     /// Com3 serial device is available
     pub com3_serial_available: bool,
-    /// GIC information
-    pub gic: Option<GicInfo>,
     /// Memory allocation mode that was performed.
     pub memory_allocation_mode: MemoryAllocationMode,
     /// Entropy from the host to be used by the OpenHCL kernel
     pub entropy: Option<ArrayVec<u8, MAX_ENTROPY_SIZE>>,
     /// The VTL0 alias map physical address.
     pub vtl0_alias_map: Option<u64>,
+    /// Host is compatible with DMA preservation / NVMe keep-alive.
+    pub nvme_keepalive: bool,
+    /// Parsed boot command line options.
+    pub boot_options: BootCommandLineOptions,
+
+    /// GIC information on AArch64.
+    pub gic: Option<GicInfo>,
+    /// PMU GSIV on AArch64.
+    pub pmu_gsiv: Option<u32>,
 }
 
 impl PartitionInfo {
@@ -99,11 +86,6 @@ impl PartitionInfo {
     pub const fn new() -> Self {
         PartitionInfo {
             vtl2_ram: ArrayVec::new_const(),
-            vtl2_full_config_region: MemoryRange::EMPTY,
-            vtl2_config_region_reclaim: MemoryRange::EMPTY,
-            vtl2_reserved_region: MemoryRange::EMPTY,
-            vtl2_pool_memory: MemoryRange::EMPTY,
-            vtl2_used_ranges: ArrayVec::new_const(),
             partition_ram: ArrayVec::new_const(),
             isolation: IsolationType::None,
             bsp_reg: 0,
@@ -118,18 +100,13 @@ impl PartitionInfo {
             },
             cmdline: ArrayString::new_const(),
             com3_serial_available: false,
-            gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
+            nvme_keepalive: false,
+            boot_options: BootCommandLineOptions::new(),
+            gic: None,
+            pmu_gsiv: None,
         }
-    }
-
-    /// Returns the parameter regions that are not being reclaimed.
-    pub fn vtl2_config_regions(&self) -> impl Iterator<Item = MemoryRange> {
-        subtract_ranges(
-            [self.vtl2_full_config_region],
-            [self.vtl2_config_region_reclaim],
-        )
     }
 }

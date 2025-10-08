@@ -14,9 +14,9 @@ use scsi::AdditionalSenseCode;
 use scsi_buffers::RequestBuffers;
 use scsi_core::Request;
 use scsi_defs as scsi;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Result of a get LBA status request.
 #[derive(Debug, Default, Copy, Clone)]
@@ -28,7 +28,7 @@ struct DeviceBlockIndexInfo {
     /// The number of blocks.
     block_count: u32,
     /// The size of the last partial block.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     last_partial_block_size: u32,
     /// The number of LBAs per block.
     lba_per_block: u64,
@@ -40,10 +40,10 @@ enum LbaStatus {
     /// The block is mapped.
     Mapped,
     /// The block is deallocated.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     Deallocated,
     /// The block is anchored.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     Anchored,
 }
 
@@ -91,7 +91,9 @@ impl SimpleScsiDisk {
         request: &Request,
         sector_count: u64,
     ) -> Result<usize, ScsiError> {
-        let cdb = scsi::GetLbaStatus::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::GetLbaStatus::read_from_prefix(&request.cdb[..])
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // Validate the request parameters.
         let start_lba = cdb.start_lba.get();

@@ -3,8 +3,8 @@
 
 //! PS/2 keyboard.
 
-use self::spec::Ps2KeyboardCommand;
 use self::spec::ACKNOWLEDGE_COMMAND;
+use self::spec::Ps2KeyboardCommand;
 use futures::Stream;
 use input_core::InputSource;
 use input_core::KeyboardData;

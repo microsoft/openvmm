@@ -3,7 +3,7 @@
 
 [package]
 name = "loader_defs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -18,6 +18,5 @@ inspect = { workspace = true, optional = true }
 bitfield-struct.workspace = true
 static_assertions.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

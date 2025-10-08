@@ -1,20 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(target_os = "linux")]
-
 //! The client interface to the sidecar kernel driver.
 
+#![cfg(target_os = "linux")]
 // UNSAFETY: Manually mapping memory for the sidecar kernel and calling ioctls.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 use fs_err::os::unix::fs::OpenOptionsExt;
+use hvdef::HvError;
+use hvdef::HvMessage;
+use hvdef::HvStatus;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::hypercall::TranslateVirtualAddressExOutputX64;
-use hvdef::HvError;
-use hvdef::HvMessage;
 use pal_async::driver::PollImpl;
 use pal_async::driver::SpawnDriver;
 use pal_async::fd::PollFdReady;
@@ -25,11 +24,11 @@ use parking_lot::Mutex;
 use sidecar_defs::CommandPage;
 use sidecar_defs::CpuContextX64;
 use sidecar_defs::GetSetVpRegisterRequest;
+use sidecar_defs::PAGE_SIZE;
 use sidecar_defs::RunVpResponse;
 use sidecar_defs::SidecarCommand;
 use sidecar_defs::TranslateGvaRequest;
 use sidecar_defs::TranslateGvaResponse;
-use sidecar_defs::PAGE_SIZE;
 use std::fs::File;
 use std::future::poll_fn;
 use std::io::Read;
@@ -37,18 +36,20 @@ use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::os::fd::AsRawFd;
 use std::os::raw::c_void;
+use std::ptr::NonNull;
 use std::ptr::addr_of;
 use std::ptr::addr_of_mut;
-use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::Ordering::Release;
-use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 mod ioctl {
     const BASE: u8 = 0xb8;
@@ -186,7 +187,7 @@ impl SidecarNode {
                 return Err(NewSidecarClientError::Io {
                     operation: "open",
                     err,
-                })
+                });
             }
         };
 
@@ -299,7 +300,7 @@ async fn sidecar_wait_loop(
     let err = loop {
         poll_fn(|cx| fd_ready.poll_fd_ready(cx, InterestSlot::Read, PollEvents::IN)).await;
         let mut cpu = 0u32;
-        let n = match (&state.file).read(cpu.as_bytes_mut()) {
+        let n = match (&state.file).read(cpu.as_mut_bytes()) {
             Ok(n) => n,
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 fd_ready.clear_fd_ready(InterestSlot::Read);
@@ -349,7 +350,7 @@ struct VpSharedPages {
     register_page: hvdef::HvX64RegisterPage,
 }
 
-const _: () = assert!(size_of::<VpSharedPages>() % PAGE_SIZE == 0);
+const _: () = assert!(size_of::<VpSharedPages>().is_multiple_of(PAGE_SIZE));
 
 impl Drop for SidecarVp<'_> {
     fn drop(&mut self) {
@@ -434,7 +435,7 @@ impl<'a> SidecarVp<'a> {
                     count: regs.len() as u16,
                     target_vtl,
                     rsvd: 0,
-                    result: HvError(0),
+                    status: HvStatus::SUCCESS,
                     rsvd2: [0; 10],
                     regs: [],
                 },
@@ -442,11 +443,9 @@ impl<'a> SidecarVp<'a> {
             );
             buf.copy_from_slice(regs);
             self.run_sync()?;
-            let (&GetSetVpRegisterRequest { result, .. }, buf) =
+            let (&GetSetVpRegisterRequest { status, .. }, buf) =
                 self.command_result::<_, HvRegisterAssoc>(regs.len())?;
-            if result != HvError(0) {
-                return Err(SidecarError::Hypervisor(result));
-            }
+            status.result().map_err(SidecarError::Hypervisor)?;
             regs.copy_from_slice(buf);
         }
         Ok(())
@@ -466,7 +465,7 @@ impl<'a> SidecarVp<'a> {
                     count: regs.len() as u16,
                     target_vtl,
                     rsvd: 0,
-                    result: HvError(0),
+                    status: HvStatus::SUCCESS,
                     rsvd2: [0; 10],
                     regs: [],
                 },
@@ -474,10 +473,8 @@ impl<'a> SidecarVp<'a> {
             );
             buf.copy_from_slice(regs);
             self.run_sync()?;
-            let &GetSetVpRegisterRequest { result, .. } = self.command_result::<_, u8>(0)?.0;
-            if result != HvError(0) {
-                return Err(SidecarError::Hypervisor(result));
-            }
+            let &GetSetVpRegisterRequest { status, .. } = self.command_result::<_, u8>(0)?.0;
+            status.result().map_err(SidecarError::Hypervisor)?;
         }
         Ok(())
     }
@@ -491,20 +488,21 @@ impl<'a> SidecarVp<'a> {
     ) -> Result<TranslateVirtualAddressExOutputX64, SidecarError> {
         tracing::trace!("translate gva");
         let &TranslateGvaResponse {
-            result,
+            status,
             rsvd: _,
             output,
         } = self.dispatch_sync(
             SidecarCommand::TRANSLATE_GVA,
             TranslateGvaRequest { gvn, control_flags },
         )?;
-        if result != HvError(0) {
-            return Err(SidecarError::Hypervisor(result));
-        }
+        status.result().map_err(SidecarError::Hypervisor)?;
         Ok(output)
     }
 
-    fn set_command<T: AsBytes, S: AsBytes + FromBytes>(
+    fn set_command<
+        T: IntoBytes + Immutable + KnownLayout,
+        S: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         command: SidecarCommand,
         input: T,
@@ -515,20 +513,20 @@ impl<'a> SidecarVp<'a> {
         let shmem = unsafe { self.shmem.as_mut() };
         shmem.command_page.command = command;
         input
-            .write_to_prefix(shmem.command_page.request_data.as_bytes_mut())
+            .write_to_prefix(shmem.command_page.request_data.as_mut_bytes())
             .unwrap();
-        S::mut_slice_from_prefix(
-            &mut shmem.command_page.request_data.as_bytes_mut()[input.as_bytes().len()..],
+        <[S]>::mut_from_prefix_with_elems(
+            &mut shmem.command_page.request_data.as_mut_bytes()[input.as_bytes().len()..],
             n,
         )
         .unwrap()
         .0
     }
 
-    fn dispatch_sync<O: FromBytes>(
+    fn dispatch_sync<O: FromBytes + Immutable + KnownLayout>(
         &mut self,
         command: SidecarCommand,
-        input: impl AsBytes,
+        input: impl IntoBytes + Immutable + KnownLayout,
     ) -> Result<&O, SidecarError> {
         self.set_command::<_, u8>(command, input, 0);
         self.run_sync()?;
@@ -586,7 +584,10 @@ impl<'a> SidecarVp<'a> {
         .await
     }
 
-    fn command_result<O: FromBytes, S: FromBytes>(
+    fn command_result<
+        O: FromBytes + Immutable + KnownLayout,
+        S: FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         n: usize,
     ) -> Result<(&O, &[S]), SidecarError> {
@@ -604,8 +605,8 @@ impl<'a> SidecarVp<'a> {
             .request_data
             .as_bytes()
             .split_at(size_of::<O>());
-        let output = O::ref_from(output).unwrap();
-        let (slice, _) = S::slice_from_prefix(slice, n).unwrap();
+        let output = O::ref_from_bytes(output).unwrap();
+        let (slice, _) = <[S]>::ref_from_prefix_with_elems(slice, n).unwrap();
         Ok((output, slice))
     }
 }

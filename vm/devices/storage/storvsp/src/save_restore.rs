@@ -5,7 +5,6 @@
 
 use self::state::Drive;
 use self::state::DriveSavedState;
-use crate::protocol;
 use crate::Range;
 use crate::ScsiPath;
 use crate::ScsiRequestAndRange;
@@ -23,8 +22,8 @@ use vmbus_ring::gparange::GpnList;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 mod state {
     use mesh::payload::Protobuf;
@@ -217,9 +216,9 @@ impl state::ScsiRequestSavedState {
             request,
         } = self;
 
-        let mut protocol_request = protocol::ScsiRequest::new_zeroed();
+        let mut protocol_request = storvsp_protocol::ScsiRequest::new_zeroed();
         protocol_request
-            .as_bytes_mut()
+            .as_mut_bytes()
             .get_mut(..request.len())
             .ok_or(StorvspRestoreError::RequestTooLarge)?
             .copy_from_slice(request);

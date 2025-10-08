@@ -32,14 +32,14 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_cargo_common_flags::Node>();
-        ctx.import::<crate::download_cargo_nextest::Node>();
+        ctx.import::<crate::install_cargo_nextest::Node>();
         ctx.import::<crate::install_rust::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let cargo_flags = ctx.reqv(crate::cfg_cargo_common_flags::Request::GetFlags);
 
-        let nextest_installed = ctx.reqv(crate::download_cargo_nextest::Request::InstallWithCargo);
+        let nextest_installed = ctx.reqv(crate::install_cargo_nextest::Request);
 
         let rust_toolchain = ctx.reqv(crate::install_rust::Request::GetRustupToolchain);
 
@@ -84,7 +84,7 @@ impl FlowNode for Node {
 
                         let rust_toolchain = rust_toolchain.map(|s| format!("+{s}"));
                         let (build_args, build_env) =
-                            crate::run_cargo_nextest_run::cargo_nextest_build_args_and_env(
+                            crate::gen_cargo_nextest_run_cmd::cargo_nextest_build_args_and_env(
                                 cargo_flags,
                                 profile,
                                 target,

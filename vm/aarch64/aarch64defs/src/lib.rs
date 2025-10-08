@@ -3,16 +3,19 @@
 
 //! ARM64 type and constant definitions.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 pub mod gic;
-pub mod psci;
+pub mod smccc;
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Aarch64 SPSR_EL2 register when in 64-bit mode. Usually called CPSR by
 /// hypervisors.
@@ -54,7 +57,7 @@ pub struct Cpsr64 {
 
 /// ESR_EL2, exception syndrome register.
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EsrEl2 {
     #[bits(25)]
     pub iss: u32,
@@ -792,7 +795,7 @@ pub struct TranslationBaseEl1 {
 }
 
 #[bitfield(u64)]
-#[derive(PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Pte {
     pub valid: bool,
     pub not_large_page: bool,
@@ -835,3 +838,16 @@ pub const GIC_DISTRIBUTOR_SIZE: u64 = 0x1_0000;
 pub const GIC_REDISTRIBUTOR_FRAME_SIZE: u64 = 0x1_0000;
 pub const GIC_SGI_FRAME_SIZE: u64 = 0x1_0000;
 pub const GIC_REDISTRIBUTOR_SIZE: u64 = GIC_REDISTRIBUTOR_FRAME_SIZE + GIC_SGI_FRAME_SIZE;
+
+open_enum! {
+    pub enum SystemReset2Code: u32 {
+        WARM_RESET = 0,
+    }
+}
+
+open_enum! {
+    pub enum SystemOff2Code: u32 {
+        DEFAULT = 0,
+        HIBERNATE_OFF = 1,
+    }
+}

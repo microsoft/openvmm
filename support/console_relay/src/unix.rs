@@ -11,8 +11,8 @@ use pal_async::driver::Driver;
 use pal_async::socket::PolledSocket;
 use std::path::Path;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
+use std::task::ready;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 

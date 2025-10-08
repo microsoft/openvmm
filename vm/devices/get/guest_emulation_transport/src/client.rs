@@ -3,8 +3,8 @@
 
 use super::process_loop::msg;
 use super::process_loop::msg::IgvmAttestRequestData;
-use crate::api::platform_settings;
 use crate::api::GuestSaveRequest;
+use crate::api::platform_settings;
 use chipset_resources::battery::HostBatteryUpdate;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
@@ -13,9 +13,9 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use std::sync::Arc;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use vpci::bus_control::VpciBusEvent;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Guest-side client for the GET.
 ///
@@ -267,7 +267,7 @@ impl GuestEmulationTransportClient {
                         o => {
                             return Err(
                                 crate::error::DevicePlatformSettingsError::InvalidConsoleMode(o),
-                            )
+                            );
                         }
                     }
                 },
@@ -315,6 +315,7 @@ impl GuestEmulationTransportClient {
                         ),
                     }
                 },
+                default_boot_always_attempt: json.v2.r#static.default_boot_always_attempt,
                 nvdimm_count: json.v2.dynamic.nvdimm_count,
                 psp_enabled: json.v2.dynamic.enable_psp,
                 vmbus_redirection_enabled: json.v2.r#static.vmbus_redirection_enabled,
@@ -334,6 +335,10 @@ impl GuestEmulationTransportClient {
                 is_servicing_scenario: json.v2.dynamic.is_servicing_scenario,
                 firmware_mode_is_pcat: json.v2.r#static.firmware_mode_is_pcat,
                 imc_enabled: json.v2.r#static.imc_enabled,
+                cxl_memory_enabled: json.v2.r#static.cxl_memory_enabled,
+                guest_state_lifetime: json.v2.r#static.guest_state_lifetime,
+                guest_state_encryption_policy: json.v2.r#static.guest_state_encryption_policy,
+                management_vtl_features: json.v2.r#static.management_vtl_features,
             },
             acpi_tables: json.v2.dynamic.acpi_tables,
         })
@@ -346,7 +351,7 @@ impl GuestEmulationTransportClient {
         gsp_extended_status: crate::api::GspExtendedStatusFlags,
     ) -> crate::api::GuestStateProtection {
         let mut buffer = [0; get_protocol::GSP_CLEARTEXT_MAX as usize * 2];
-        getrandom::getrandom(&mut buffer).expect("rng failure");
+        getrandom::fill(&mut buffer).expect("rng failure");
 
         let gsp_request = get_protocol::GuestStateProtectionRequest::new(
             buffer,
@@ -372,7 +377,7 @@ impl GuestEmulationTransportClient {
     /// TODO: This isn't a VfioDevice, but the VfioDmaBuffer is a convienent
     /// trait to use for wrapping the PFN allocations. Refactor this in the
     /// future once a central DMA API is made.
-    pub fn set_gpa_allocator(&mut self, gpa_allocator: Arc<dyn VfioDmaBuffer>) {
+    pub fn set_gpa_allocator(&mut self, gpa_allocator: Arc<dyn DmaClient>) {
         self.control
             .notify(msg::Msg::SetGpaAllocator(gpa_allocator));
     }
@@ -511,7 +516,9 @@ impl GuestEmulationTransportClient {
                     .until_cancelled(std::future::pending::<()>())
                     .await
                     .unwrap_or_else(|_| {
-                        panic!("should have been terminated after reporting start failure: {error_msg}")
+                        panic!(
+                            "should have been terminated after reporting start failure: {error_msg}"
+                        )
                     });
             }
         }

@@ -5,8 +5,8 @@
 
 use crate::Endpoint;
 use net_backend_resources::mac_address::MacAddress;
-use vm_resource::kind::NetEndpointHandleKind;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::NetEndpointHandleKind;
 
 pub struct ResolveEndpointParams {
     pub mac_address: MacAddress,

@@ -5,13 +5,15 @@
 
 use anyhow::Context;
 use get_resources::ged::GuestEmulationRequest;
+use get_resources::ged::GuestServicingFlags;
 use hvlite_defs::rpc::VmRpc;
 use mesh::rpc::RpcSend;
 
-/// Replace the running version of Underhill.
-pub async fn service_underhill(
+/// Save the running state of Underhill and stage the new version.
+pub async fn save_underhill(
     vm_send: &mesh::Sender<VmRpc>,
     send: &mesh::Sender<GuestEmulationRequest>,
+    flags: GuestServicingFlags,
     file: std::fs::File,
 ) -> anyhow::Result<()> {
     // Stage the IGVM file in the VM worker.
@@ -27,7 +29,7 @@ pub async fn service_underhill(
     // blocked while waiting for the guest.
     tracing::debug!("waiting for guest to send saved state");
     let r = send
-        .call_failable(GuestEmulationRequest::SaveGuestVtl2State, ())
+        .call_failable(GuestEmulationRequest::SaveGuestVtl2State, flags)
         .await
         .context("failed to save VTL2 state");
 
@@ -35,9 +37,16 @@ pub async fn service_underhill(
         // Clear the staged IGVM file.
         tracing::debug!(?r, "save state failed, clearing staged IGVM file");
         let _ = vm_send.call(VmRpc::CompleteReloadIgvm, false).await;
-        return r;
     }
 
+    r
+}
+
+/// Restore Underhill from a previously saved state. This should always be called after save_underhill.
+pub async fn restore_underhill(
+    vm_send: &mesh::Sender<VmRpc>,
+    send: &mesh::Sender<GuestEmulationRequest>,
+) -> anyhow::Result<()> {
     // Reload the IGVM file and reset VTL2 state.
     tracing::debug!("reloading IGVM file");
     vm_send

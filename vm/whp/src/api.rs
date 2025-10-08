@@ -4,76 +4,19 @@
 use super::abi::*;
 use std::ffi::c_void;
 use winapi::shared::guiddef::GUID;
-use winapi::shared::winerror::ERROR_PROC_NOT_FOUND;
 use winapi::shared::winerror::HRESULT;
-use winapi::shared::winerror::HRESULT_FROM_WIN32;
-use winapi::um::libloaderapi::GetModuleHandleA;
-use winapi::um::libloaderapi::GetProcAddress;
 use winapi::um::winnt::DEVICE_POWER_STATE;
 use winapi::um::winnt::HANDLE;
-
-unsafe fn get_proc(name: &[u8]) -> usize {
-    unsafe {
-        GetProcAddress(
-            GetModuleHandleA(c"winhvplatform.dll".as_ptr().cast()),
-            name.as_ptr().cast(),
-        ) as usize
-    }
-}
-
-macro_rules! delayload {
-    {$(
-        $(#[$a:meta])*
-        pub fn $name:ident($($params:ident : $types:ty),* $(,)?) -> HRESULT;
-    )*} => {
-        mod funcs {
-            #![allow(non_snake_case)]
-            $(
-                $(#[$a])*
-                pub fn $name() -> usize {
-                    use std::sync::atomic::{AtomicUsize, Ordering};
-                    static FNCELL: AtomicUsize = AtomicUsize::new(1);
-                    let mut fnval = FNCELL.load(Ordering::Relaxed);
-                    if fnval == 1 {
-                        fnval = unsafe { super::get_proc(concat!(stringify!($name), "\0").as_bytes()) };
-                        FNCELL.store(fnval, Ordering::Relaxed);
-                    }
-                    fnval
-                }
-            )*
-        }
-        pub mod is_supported {
-            #![allow(dead_code, non_snake_case)]
-            $(
-                $(#[$a])*
-                pub fn $name() -> bool {
-                    super::funcs::$name() != 0
-                }
-            )*
-        }
-        $(
-            $(#[$a])*
-            #[allow(non_snake_case)]
-            pub unsafe fn $name($($params: $types,)*) -> HRESULT {
-                let fnval = funcs::$name();
-                if fnval == 0 {
-                    return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
-                }
-                type FnType = unsafe extern "stdcall" fn($($params: $types,)*) -> HRESULT;
-                unsafe {
-                    let fnptr: FnType =  std::mem::transmute(fnval);
-                    fnptr($($params,)*)
-                }
-            }
-        )*
-    }
-}
 
 pub const WHV_E_UNKNOWN_CAPABILITY: HRESULT = 0x80370300u32 as HRESULT;
 pub const WHV_E_INSUFFICIENT_BUFFER: HRESULT = 0x80370301u32 as HRESULT;
 
-#[link(name = "WinHvPlatform")]
-unsafe extern "stdcall" {
+#[link(
+    name = "WinHvPlatform.dll",
+    kind = "raw-dylib",
+    modifiers = "+verbatim"
+)]
+unsafe extern "system" {
     pub fn WHvGetCapability(
         CapabilityCode: WHV_CAPABILITY_CODE,
         CapabilityBuffer: *mut u8,
@@ -158,7 +101,7 @@ unsafe extern "stdcall" {
 }
 
 // These APIs were added after the first release and so may not be present.
-delayload! {
+pal::delayload!("WinHvPlatform.dll" {
     pub fn WHvResetPartition(partition: WHV_PARTITION_HANDLE) -> HRESULT;
 
     pub fn WHvRegisterPartitionDoorbellEvent(
@@ -442,4 +385,4 @@ delayload! {
     pub fn WHvResumePartitionTime(
         Partition: WHV_PARTITION_HANDLE,
     ) -> HRESULT;
-}
+});

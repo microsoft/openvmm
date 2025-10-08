@@ -49,6 +49,12 @@ impl Instant {
                 .saturating_add(duration.as_nanos().try_into().unwrap_or(u64::MAX)),
         )
     }
+
+    /// Calculate the duration between this instant and another instant,
+    /// saturating at zero if the other instant is later than this one.
+    pub fn saturating_sub(self, rhs: Instant) -> Duration {
+        Duration::from_nanos(self.0.saturating_sub(rhs.0))
+    }
 }
 
 impl std::ops::Sub for Instant {
@@ -126,6 +132,12 @@ impl PolledTimer {
             timer: self,
             deadline,
         }
+    }
+
+    /// Returns `Pending` until the current time is later than `deadline`. Then
+    /// returns `Ready` with the current time.
+    pub fn poll_until(&mut self, cx: &mut Context<'_>, deadline: Instant) -> Poll<Instant> {
+        self.0.poll_timer(cx, Some(deadline))
     }
 }
 

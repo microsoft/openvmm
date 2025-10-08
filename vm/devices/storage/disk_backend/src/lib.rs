@@ -10,7 +10,6 @@
 //! backends should be in their own crates.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod pr;
 pub mod resolve;
@@ -21,8 +20,8 @@ use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
 use stackfuture::StackFuture;
 use std::fmt::Debug;
-use std::future::ready;
 use std::future::Future;
+use std::future::ready;
 use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;

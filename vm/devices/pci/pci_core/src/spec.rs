@@ -8,7 +8,7 @@
 pub mod hwid {
     //! Hardware ID types and constants
 
-    #![allow(missing_docs)] // constants/fields are self-explanatory
+    #![expect(missing_docs)] // constants/fields are self-explanatory
 
     use core::fmt;
     use inspect::Inspect;
@@ -127,6 +127,7 @@ pub mod hwid {
             // Other values: 0x02 - 0x0A
             BRIDGE_HOST = 0x00,
             BRIDGE_ISA = 0x01,
+            BRIDGE_PCI_TO_PCI = 0x04,
             BRIDGE_OTHER = 0x80,
 
             // Base System Peripheral (Class code: 0x08)
@@ -184,13 +185,14 @@ pub mod hwid {
 /// Configuration Space
 ///
 /// Sources: PCI 2.3 Spec - Chapter 6
-#[allow(missing_docs)] // primarily enums/structs with self-explanatory variants
+#[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
 pub mod cfg_space {
     use bitfield_struct::bitfield;
     use inspect::Inspect;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     open_enum::open_enum! {
         /// Offsets into the type 00h configuration space header.
@@ -237,6 +239,51 @@ pub mod cfg_space {
 
     pub const HEADER_TYPE_00_SIZE: u16 = 0x40;
 
+    open_enum::open_enum! {
+        /// Offsets into the type 01h configuration space header.
+        ///
+        /// Table pulled from <https://wiki.osdev.org/PCI>
+        ///
+        /// | Offset | Bits 31-24                       | Bits 23-16             | Bits 15-8                | Bits 7-0             |
+        /// |--------|----------------------------------|------------------------|--------------------------|--------------------- |
+        /// | 0x0    | Device ID                        |                        | Vendor ID                |                      |
+        /// | 0x4    | Status                           |                        | Command                  |                      |
+        /// | 0x8    | Class code                       |                        |                          | Revision ID          |
+        /// | 0xC    | BIST                             | Header Type            | Latency Timer            | Cache Line Size      |
+        /// | 0x10   | Base address #0 (BAR0)           |                        |                          |                      |
+        /// | 0x14   | Base address #1 (BAR1)           |                        |                          |                      |
+        /// | 0x18   | Secondary Latency Timer          | Subordinate Bus Number | Secondary Bus Number     | Primary Bus Number   |
+        /// | 0x1C   | Secondary Status                 |                        | I/O Limit                | I/O Base             |
+        /// | 0x20   | Memory Limit                     |                        | Memory Base              |                      |
+        /// | 0x24   | Prefetchable Memory Limit        |                        | Prefetchable Memory Base |                      |
+        /// | 0x28   | Prefetchable Base Upper 32 Bits  |                        |                          |                      |
+        /// | 0x2C   | Prefetchable Limit Upper 32 Bits |                        |                          |                      |
+        /// | 0x30   | I/O Limit Upper 16 Bits          |                        | I/O Base Upper 16 Bits   |                      |
+        /// | 0x34   | Reserved                         |                        |                          | Capabilities Pointer |
+        /// | 0x38   | Expansion ROM Base Address       |                        |                          |                      |
+        /// | 0x3C   | Bridge Control                   |                        | Interrupt PIN            | Interrupt Line       |
+        pub enum HeaderType01: u16 {
+            DEVICE_VENDOR         = 0x00,
+            STATUS_COMMAND        = 0x04,
+            CLASS_REVISION        = 0x08,
+            BIST_HEADER           = 0x0C,
+            BAR0                  = 0x10,
+            BAR1                  = 0x14,
+            LATENCY_BUS_NUMBERS   = 0x18,
+            SEC_STATUS_IO_RANGE   = 0x1C,
+            MEMORY_RANGE          = 0x20,
+            PREFETCH_RANGE        = 0x24,
+            PREFETCH_BASE_UPPER   = 0x28,
+            PREFETCH_LIMIT_UPPER  = 0x2C,
+            IO_RANGE_UPPER        = 0x30,
+            RESERVED_CAP_PTR      = 0x34,
+            EXPANSION_ROM_BASE    = 0x38,
+            BRDIGE_CTRL_INTERRUPT = 0x3C,
+        }
+    }
+
+    pub const HEADER_TYPE_01_SIZE: u16 = 0x40;
+
     /// BAR in-band encoding bits.
     ///
     /// The low bits of the BAR are not actually part of the address.
@@ -261,7 +308,7 @@ pub mod cfg_space {
     /// Command Register
     #[derive(Inspect)]
     #[bitfield(u16)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct Command {
         pub pio_enabled: bool,
         pub mmio_enabled: bool,
@@ -282,7 +329,7 @@ pub mod cfg_space {
 
     /// Status Register
     #[bitfield(u16)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct Status {
         #[bits(3)]
         _reserved: u16,
@@ -337,14 +384,15 @@ pub mod caps {
         /// NOTE: this is a non-exhaustive list, so don't be afraid to add new
         /// variants on an as-needed basis!
         pub enum CapabilityId: u8 {
-            #![allow(missing_docs)] // self explanatory variants
+            #![expect(missing_docs)] // self explanatory variants
             VENDOR_SPECIFIC = 0x09,
+            PCI_EXPRESS     = 0x10,
             MSIX            = 0x11,
         }
     }
 
     /// MSI-X
-    #[allow(missing_docs)] // primarily enums/structs with self-explanatory variants
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
     pub mod msix {
         open_enum::open_enum! {
             /// Offsets into the MSI-X Capability Header
@@ -371,6 +419,132 @@ pub mod caps {
                 MSG_DATA    = 0x08,
                 VECTOR_CTL  = 0x0C,
             }
+        }
+    }
+
+    /// PCI Express
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod pci_express {
+        use bitfield_struct::bitfield;
+        use inspect::Inspect;
+        use zerocopy::FromBytes;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+
+        open_enum::open_enum! {
+            /// Offsets into the PCI Express Capability Header
+            ///
+            /// Table pulled from PCI Express Base Specification Rev. 3.0
+            ///
+            /// | Offset    | Bits 31-24       | Bits 23-16       | Bits 15-8        | Bits 7-0             |
+            /// |-----------|------------------|----------------- |------------------|----------------------|
+            /// | Cap + 0x0 | PCI Express Capabilities Register   | Next Pointer     | Capability ID (0x10) |
+            /// | Cap + 0x4 | Device Capabilities Register                                                  |
+            /// | Cap + 0x8 | Device Status    | Device Control                                             |
+            pub enum PciExpressCapabilityHeader: u16 {
+                PCIE_CAPS       = 0x00,
+                DEVICE_CAPS     = 0x04,
+                DEVICE_CTL_STS  = 0x08,
+            }
+        }
+
+        /// PCI Express Capabilities Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct PciExpressCapabilities {
+            #[bits(4)]
+            pub capability_version: u16,
+            #[bits(4)]
+            pub device_port_type: DevicePortType,
+            pub slot_implemented: bool,
+            #[bits(5)]
+            pub interrupt_message_number: u16,
+            pub _undefined: bool,
+            pub flit_mode_supported: bool,
+        }
+
+        #[derive(Debug)]
+        #[repr(u16)]
+        pub enum DevicePortType {
+            Endpoint = 0b0000,
+            RootPort = 0b0100,
+        }
+
+        impl DevicePortType {
+            const fn from_bits(bits: u16) -> Self {
+                match bits {
+                    0b0000 => DevicePortType::Endpoint,
+                    0b0100 => DevicePortType::RootPort,
+                    _ => unreachable!(),
+                }
+            }
+
+            const fn into_bits(self) -> u16 {
+                self as u16
+            }
+        }
+
+        /// Device Capabilities Register (From the 6.4 spec)
+        #[bitfield(u32)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceCapabilities {
+            #[bits(3)]
+            pub max_payload_size: u32,
+            #[bits(2)]
+            pub phantom_functions: u32,
+            pub ext_tag_field: bool,
+            #[bits(3)]
+            pub endpoint_l0s_latency: u32,
+            #[bits(3)]
+            pub endpoint_l1_latency: u32,
+            #[bits(3)]
+            _reserved1: u32,
+            pub role_based_error: bool,
+            pub err_cor_subclass_capable: bool,
+            pub rx_mps_fixed: bool,
+            #[bits(8)]
+            pub captured_slot_power_limit: u32,
+            #[bits(2)]
+            pub captured_slot_power_scale: u32,
+            pub function_level_reset: bool,
+            pub mixed_mps_supported: bool,
+            pub tee_io_supported: bool,
+            _reserved3: bool,
+        }
+
+        /// Device Control Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceControl {
+            pub correctable_error_reporting_enable: bool,
+            pub non_fatal_error_reporting_enable: bool,
+            pub fatal_error_reporting_enable: bool,
+            pub unsupported_request_reporting_enable: bool,
+            pub enable_relaxed_ordering: bool,
+            #[bits(3)]
+            pub max_payload_size: u16,
+            pub extended_tag_enable: bool,
+            pub phantom_functions_enable: bool,
+            pub aux_power_pm_enable: bool,
+            pub enable_no_snoop: bool,
+            #[bits(3)]
+            pub max_read_request_size: u16,
+            pub initiate_function_level_reset: bool,
+        }
+
+        /// Device Status Register
+        #[bitfield(u16)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+        pub struct DeviceStatus {
+            pub correctable_error_detected: bool,
+            pub non_fatal_error_detected: bool,
+            pub fatal_error_detected: bool,
+            pub unsupported_request_detected: bool,
+            pub aux_power_detected: bool,
+            pub transactions_pending: bool,
+            #[bits(10)]
+            _reserved: u16,
         }
     }
 }

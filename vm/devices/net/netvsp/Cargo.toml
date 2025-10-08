@@ -3,7 +3,7 @@
 
 [package]
 name = "netvsp"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -45,6 +45,9 @@ hvdef.workspace = true
 [dev-dependencies]
 event-listener.workspace = true
 test_with_tracing.workspace = true
+
+getrandom.workspace = true
+
 
 [lints]
 workspace = true

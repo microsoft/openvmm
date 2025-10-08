@@ -37,7 +37,7 @@ impl SimpleFlowNode for Node {
         }
 
         ctx.req(flowey_lib_common::git_checkout::Request::RegisterRepo {
-            repo_id: "hvlite".into(),
+            repo_id: "openvmm".into(),
             repo_src: hvlite_repo_source,
             allow_persist_credentials: false,
             depth: Some(1),           // shallow fetch
@@ -45,7 +45,7 @@ impl SimpleFlowNode for Node {
         });
 
         ctx.req(crate::git_checkout_openvmm_repo::req::SetRepoId(
-            ReadVar::from_static("hvlite".into()),
+            ReadVar::from_static("openvmm".into()),
         ));
 
         Ok(())

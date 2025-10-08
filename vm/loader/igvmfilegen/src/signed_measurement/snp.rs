@@ -16,7 +16,7 @@ use thiserror::Error;
 use x86defs::snp::SnpPageInfo;
 use x86defs::snp::SnpPageType;
 use x86defs::snp::SnpPspIdBlock;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {

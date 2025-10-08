@@ -3,7 +3,7 @@
 
 [package]
 name = "ucs2"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

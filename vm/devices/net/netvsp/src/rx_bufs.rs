@@ -156,9 +156,10 @@ mod tests {
         assert!(bufs.free(9).is_none());
         assert!(bufs.free(12).is_none());
         assert!(bufs.free(6).unwrap().eq([6, 9, 5]));
-        assert!(bufs
-            .allocated()
-            .map(Vec::from_iter)
-            .eq([[0, 1, 2], [3, 10, 12]]));
+        assert!(
+            bufs.allocated()
+                .map(Vec::from_iter)
+                .eq([[0, 1, 2], [3, 10, 12]])
+        );
     }
 }

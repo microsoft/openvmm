@@ -3,7 +3,7 @@
 
 [package]
 name = "membacking"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -19,6 +19,7 @@ mesh.workspace = true
 pal_async.workspace = true
 sparse_mmap.workspace = true
 
+anyhow.workspace = true
 futures.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true

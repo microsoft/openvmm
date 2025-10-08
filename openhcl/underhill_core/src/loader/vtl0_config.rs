@@ -5,12 +5,12 @@
 //! configuration information that is deposited into the guest address space that
 //! is measured as part of the partition's launch.
 
-use super::memory_range_from_page_region;
 use super::LoadKind;
-use super::VpContext;
 use super::PV_CONFIG_BASE_PAGE;
-use guestmem::ranges::PagedRange;
+use super::VpContext;
+use super::memory_range_from_page_region;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use hvdef::HV_PAGE_SIZE;
 use igvm::registers::UnsupportedRegister;
 use loader_defs::paravisor::ParavisorMeasuredVtl0Config;
@@ -19,8 +19,8 @@ use std::ffi::CString;
 use std::io::Read;
 use thiserror::Error;
 use tracing::instrument;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Errors returned when reading measured config.
 #[derive(Debug, Error)]
@@ -68,7 +68,7 @@ pub struct MeasuredVtl0Info {
 
 impl MeasuredVtl0Info {
     /// Read measured VTL0 load information from guest memory.
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(CVM_ALLOWED))]
     pub fn read_from_memory(gm: &GuestMemory) -> Result<Self, Error> {
         // Read the measured config, noting which pages the config was stored
         // in. These pages will need to be zeroed out afterwards (the memory
@@ -212,13 +212,13 @@ fn parse_vtl0_vp_context(raw: Vec<u8>) -> Result<VpContext, Error> {
     let mut reader = std::io::Cursor::new(raw);
     let mut registers = Vec::new();
     reader
-        .read_exact(header.as_bytes_mut())
+        .read_exact(header.as_mut_bytes())
         .map_err(|_| Error::InvalidVtl0VpContext)?;
 
     for _ in 0..header.register_count {
         let mut reg = igvm_defs::VbsVpContextRegister::new_zeroed();
         reader
-            .read_exact(reg.as_bytes_mut())
+            .read_exact(reg.as_mut_bytes())
             .map_err(|_| Error::InvalidVtl0VpContext)?;
 
         #[cfg(guest_arch = "x86_64")]

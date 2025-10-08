@@ -6,12 +6,12 @@
 
 use alloc::vec::Vec;
 use core::num::NonZeroU8;
+use uefi::Result;
 use uefi::boot;
 use uefi::proto::console::gop::BltOp;
 use uefi::proto::console::gop::BltPixel;
 use uefi::proto::console::gop::BltRegion;
 use uefi::proto::console::gop::GraphicsOutput;
-use uefi::Result;
 
 struct Buffer {
     width: usize,

@@ -12,8 +12,8 @@ use super::test_helpers::make_repeat_data_buffer;
 use super::test_helpers::new_atapi_disk;
 use super::test_helpers::new_scsi_disk;
 use super::test_helpers::new_scsi_dvd;
-use crate::scsi;
 use crate::SimpleScsiDisk;
+use crate::scsi;
 use guestmem::GuestMemory;
 use pal_async::async_test;
 use scsi::AdditionalSenseCode;
@@ -21,15 +21,15 @@ use scsi::ScsiOp;
 use scsi::ScsiStatus;
 use scsi::SenseKey;
 use scsi_buffers::OwnedRequestBuffers;
-use scsi_core::save_restore::SavedSenseData;
-use scsi_core::save_restore::ScsiDiskSavedState;
-use scsi_core::save_restore::ScsiSavedState;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
 use scsi_core::ScsiSaveRestore;
-use std::sync::atomic::Ordering;
+use scsi_core::save_restore::SavedSenseData;
+use scsi_core::save_restore::ScsiDiskSavedState;
+use scsi_core::save_restore::ScsiSavedState;
 use std::sync::Arc;
-use zerocopy::AsBytes;
+use std::sync::atomic::Ordering;
+use zerocopy::IntoBytes;
 
 fn save_scsi_disk(scsi_disk: &SimpleScsiDisk) -> ScsiDiskSavedState {
     let saved_state = if let Some(ScsiSavedState::ScsiDisk(saved_state)) = scsi_disk.save().unwrap()

@@ -60,7 +60,7 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        ctx.emit_rust_step("report common cargo flags", |ctx| {
+        ctx.emit_minor_rust_step("report common cargo flags", |ctx| {
             let get_flags = get_flags.claim(ctx);
             let set_verbose = set_verbose.claim(ctx);
 
@@ -75,7 +75,6 @@ impl FlowNode for Node {
                         },
                     );
                 }
-                Ok(())
             }
         });
 

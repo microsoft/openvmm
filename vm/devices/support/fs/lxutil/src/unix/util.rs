@@ -121,7 +121,7 @@ pub fn check_lx_ptr<T>(result: *mut T) -> lx::Result<ptr::NonNull<T>> {
 }
 
 /// Change the value of errno.
-/// # Safety:
+/// # Safety
 ///
 /// Errno is thread-local, the caller must be sure they are not attempting to observe their set value on a different thread.
 pub unsafe fn set_errno(error: i32) {

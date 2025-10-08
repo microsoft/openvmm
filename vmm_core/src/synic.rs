@@ -4,17 +4,23 @@
 use hvdef::HvError;
 use hvdef::HvResult;
 use hvdef::Vtl;
+use inspect::Inspect;
 use parking_lot::Mutex;
-use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::task::Context;
+use std::task::Poll;
 use virt::Synic;
 use virt::VpIndex;
-use vmcore::monitor::MonitorId;
 use vmcore::synic::EventPort;
+use vmcore::synic::GuestEventPort;
+use vmcore::synic::GuestMessagePort;
 use vmcore::synic::MessagePort;
+use vmcore::synic::MonitorInfo;
+use vmcore::synic::MonitorPageGpas;
 use vmcore::synic::SynicMonitorAccess;
 use vmcore::synic::SynicPortAccess;
 
@@ -48,7 +54,12 @@ impl SynicPorts {
         {
             if vtl < minimum_vtl {
                 Err(HvError::OperationDenied)
-            } else if port.handle_message(message, secure) {
+            } else if port.poll_handle_message(
+                &mut Context::from_waker(std::task::Waker::noop()),
+                message,
+                secure,
+            ) == Poll::Ready(())
+            {
                 Ok(())
             } else {
                 // TODO: VMBus sometimes (in Azure?) returns HV_STATUS_TIMEOUT
@@ -89,7 +100,7 @@ impl SynicPortAccess for SynicPorts {
     ) -> Result<Box<dyn Sync + Send>, vmcore::synic::Error> {
         match self.ports.lock().entry(connection_id) {
             hash_map::Entry::Occupied(_) => {
-                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id))
+                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id));
             }
             hash_map::Entry::Vacant(e) => {
                 e.insert(Port {
@@ -102,6 +113,7 @@ impl SynicPortAccess for SynicPorts {
             ports: Arc::downgrade(&self.ports),
             connection_id,
             _inner_handle: None,
+            _monitor: None,
         }))
     }
 
@@ -110,6 +122,7 @@ impl SynicPortAccess for SynicPorts {
         connection_id: u32,
         minimum_vtl: Vtl,
         port: Arc<dyn EventPort>,
+        monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<dyn Sync + Send>, vmcore::synic::Error> {
         // Create a direct port mapping in the hypervisor if an event was provided.
         let inner_handle = if let Some(event) = port.os_event() {
@@ -121,7 +134,7 @@ impl SynicPortAccess for SynicPorts {
 
         match self.ports.lock().entry(connection_id) {
             hash_map::Entry::Occupied(_) => {
-                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id))
+                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id));
             }
             hash_map::Entry::Vacant(e) => {
                 e.insert(Port {
@@ -131,20 +144,44 @@ impl SynicPortAccess for SynicPorts {
             }
         }
 
+        let monitor = monitor_info.as_ref().and_then(|info| {
+            self.partition
+                .monitor_support()
+                .map(|monitor| monitor.register_monitor(info.monitor_id, connection_id))
+        });
+
         Ok(Box::new(PortHandle {
             ports: Arc::downgrade(&self.ports),
             connection_id,
             _inner_handle: inner_handle,
+            _monitor: monitor,
         }))
     }
 
-    fn post_message(&self, vtl: Vtl, vp: u32, sint: u8, typ: u32, payload: &[u8]) {
-        self.partition
-            .post_message(vtl, VpIndex::new(vp), sint, typ, payload)
+    fn new_guest_message_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+    ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::HypervisorError> {
+        Ok(Box::new(DirectGuestMessagePort {
+            partition: Arc::clone(&self.partition),
+            vtl,
+            vp: VpIndex::new(vp),
+            sint,
+        }))
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn vmcore::synic::GuestEventPort> {
-        self.partition.new_guest_event_port()
+    fn new_guest_event_port(
+        &self,
+        _port_id: u32,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+        _monitor_info: Option<MonitorInfo>,
+    ) -> Result<Box<dyn GuestEventPort>, vmcore::synic::HypervisorError> {
+        Ok(self.partition.new_guest_event_port(vtl, vp, sint, flag))
     }
 
     fn prefer_os_events(&self) -> bool {
@@ -157,18 +194,24 @@ impl SynicPortAccess for SynicPorts {
 }
 
 impl SynicMonitorAccess for SynicPorts {
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()> {
         self.partition
             .monitor_support()
             .unwrap()
-            .register_monitor(monitor_id, connection_id)
+            .set_monitor_page(vtl, gpa.map(|mp| mp.child_to_parent))
     }
 
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<MonitorPageGpas>> {
         self.partition
             .monitor_support()
             .unwrap()
-            .set_monitor_page(gpa)
+            .allocate_monitor_page(vtl)
+            .map(|gpa| {
+                gpa.map(|child_to_parent| MonitorPageGpas {
+                    parent_to_child: 0,
+                    child_to_parent,
+                })
+            })
     }
 }
 
@@ -176,6 +219,7 @@ struct PortHandle {
     ports: Weak<PortMap>,
     connection_id: u32,
     _inner_handle: Option<Box<dyn Sync + Send>>,
+    _monitor: Option<Box<dyn Sync + Send>>,
 }
 
 impl Drop for PortHandle {
@@ -205,5 +249,32 @@ impl Debug for PortType {
             Self::Message(_) => "Port::Message",
             Self::Event(_) => "Port::Event",
         })
+    }
+}
+
+struct DirectGuestMessagePort {
+    partition: Arc<dyn Synic>,
+    vtl: Vtl,
+    vp: VpIndex,
+    sint: u8,
+}
+
+impl GuestMessagePort for DirectGuestMessagePort {
+    fn poll_post_message(&mut self, _cx: &mut Context<'_>, typ: u32, payload: &[u8]) -> Poll<()> {
+        self.partition
+            .post_message(self.vtl, self.vp, self.sint, typ, payload);
+
+        Poll::Ready(())
+    }
+
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.vp = VpIndex::new(vp);
+        Ok(())
+    }
+}
+
+impl Inspect for DirectGuestMessagePort {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.respond().field("message_port_vp", self.vp.index());
     }
 }

@@ -7,14 +7,18 @@ use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
-use flowey_lib_common::run_cargo_nextest_run::build_params::FeatureSet;
-use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
+use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
 use std::collections::BTreeMap;
 
 /// Type-safe wrapper around a built nextest archive containing VMM tests
 #[derive(Serialize, Deserialize)]
-pub struct NextestVmmTestsArchive(pub PathBuf);
+pub struct NextestVmmTestsArchive {
+    #[serde(rename = "vmm_tests.tar.zst")]
+    pub archive_file: PathBuf,
+}
+
+impl Artifact for NextestVmmTestsArchive {}
 
 /// Build mode to use when building the nextest VMM tests
 #[derive(Serialize, Deserialize)]
@@ -114,7 +118,7 @@ impl FlowNode for Node {
                     packages: ReadVar::from_static(TestPackages::Crates {
                         crates: vec!["vmm_tests".into()],
                     }),
-                    features: FeatureSet::Specific(Vec::new()),
+                    features: Default::default(),
                     no_default_features: false,
                     unstable_panic_abort_tests: None, // don't run VMM tests on musl hvlite
                     target: target.clone(),
@@ -143,6 +147,8 @@ impl FlowNode for Node {
                             ),
                         nextest_profile,
                         nextest_filter_expr,
+                        nextest_working_dir: None,
+                        nextest_config_file: None,
                         run_ignored: false,
                         extra_env: Some(extra_env),
                         pre_run_deps: ambient_deps,
@@ -162,13 +168,12 @@ impl FlowNode for Node {
                             archive_file: v,
                         });
 
-                    ctx.emit_rust_step("report built vmm_tests", |ctx| {
+                    ctx.emit_minor_rust_step("report built vmm_tests", |ctx| {
                         let archive_file = archive_file.claim(ctx);
                         let unit_tests = unit_tests_archive.claim(ctx);
                         |rt| {
                             let archive_file = rt.read(archive_file);
-                            rt.write(unit_tests, &NextestVmmTestsArchive(archive_file));
-                            Ok(())
+                            rt.write(unit_tests, &NextestVmmTestsArchive { archive_file });
                         }
                     });
                 }

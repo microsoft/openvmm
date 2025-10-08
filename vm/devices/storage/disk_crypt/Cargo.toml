@@ -3,7 +3,7 @@
 
 [package]
 name = "disk_crypt"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -18,6 +18,10 @@ vm_resource.workspace = true
 
 async-trait.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+disklayer_ram.workspace = true
+pal_async.workspace = true
 
 [lints]
 workspace = true

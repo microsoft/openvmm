@@ -3,7 +3,7 @@
 
 [package]
 name = "vga_proxy"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

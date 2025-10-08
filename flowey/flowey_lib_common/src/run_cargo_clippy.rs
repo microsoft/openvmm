@@ -4,6 +4,7 @@
 //! Clippy
 
 use crate::run_cargo_build::CargoBuildProfile;
+use crate::run_cargo_build::CargoFeatureSet;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -17,12 +18,11 @@ flowey_request! {
         pub in_folder: ReadVar<PathBuf>,
         pub package: CargoPackage,
         pub profile: CargoBuildProfile,
-        pub features: Option<Vec<String>>,
+        pub features: CargoFeatureSet,
         pub target: target_lexicon::Triple,
         pub extra_env: Option<Vec<(String, String)>>,
         pub exclude: ReadVar<Option<Vec<String>>>,
         pub keep_going: bool,
-        pub tests: bool,
         pub all_targets: bool,
         /// Wait for specified side-effects to resolve before running cargo-run.
         ///
@@ -56,7 +56,6 @@ impl FlowNode for Node {
             extra_env,
             exclude,
             keep_going,
-            tests,
             all_targets,
             pre_build_deps,
             done,
@@ -82,7 +81,6 @@ impl FlowNode for Node {
                     let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
 
                     let target = target.to_string();
-                    let features = features.map(|x| x.join(","));
 
                     let cargo_profile = match &profile {
                         CargoBuildProfile::Debug => "dev",
@@ -102,9 +100,6 @@ impl FlowNode for Node {
                     if keep_going {
                         args.push("--keep-going");
                     }
-                    if tests {
-                        args.push("--tests");
-                    }
                     if all_targets {
                         args.push("--all-targets");
                     }
@@ -115,10 +110,8 @@ impl FlowNode for Node {
                             args.push(crate_name);
                         }
                     }
-                    if let Some(features) = &features {
-                        args.push("--features");
-                        args.push(features);
-                    }
+                    let feature_strings = features.to_cargo_arg_strings();
+                    args.extend(feature_strings.iter().map(|s| s.as_str()));
                     args.push("--target");
                     args.push(&target);
                     args.push("--profile");

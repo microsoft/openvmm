@@ -26,7 +26,7 @@ impl FlowNode for Node {
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        ctx.emit_rust_step("report openvmm magicpath dir", |ctx| {
+        ctx.emit_minor_rust_step("report openvmm magicpath dir", |ctx| {
             let repo_path = repo_path.claim(ctx);
             let requests = requests
                 .into_iter()
@@ -35,7 +35,6 @@ impl FlowNode for Node {
             |rt| {
                 let path = rt.read(repo_path).join(".packages");
                 rt.write_all(requests, &path);
-                Ok(())
             }
         });
 

@@ -7,12 +7,14 @@ use crate::download_lxutil::LxutilArch;
 use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum OpenvmmFeature {
     Gdb,
     Tpm,
+    UnstableWhp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -23,10 +25,23 @@ pub struct OpenvmmBuildParams {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum OpenvmmOutput {
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
+    WindowsBin {
+        #[serde(rename = "openvmm.exe")]
+        exe: PathBuf,
+        #[serde(rename = "openvmm.pdb")]
+        pdb: PathBuf,
+    },
+    LinuxBin {
+        #[serde(rename = "openvmm")]
+        bin: PathBuf,
+        #[serde(rename = "openvmm.dbg")]
+        dbg: PathBuf,
+    },
 }
+
+impl Artifact for OpenvmmOutput {}
 
 flowey_request! {
     pub struct Request {
@@ -92,6 +107,7 @@ impl FlowNode for Node {
                             done: v,
                         }
                     })),
+                    OpenvmmFeature::UnstableWhp => {}
                 }
             }
 
@@ -100,16 +116,19 @@ impl FlowNode for Node {
                 out_name: "openvmm".into(),
                 crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
                 profile: profile.into(),
-                features: features
-                    .into_iter()
-                    .map(|f| {
-                        match f {
-                            OpenvmmFeature::Gdb => "gdb",
-                            OpenvmmFeature::Tpm => "tpm",
-                        }
-                        .into()
-                    })
-                    .collect(),
+                features: CargoFeatureSet::Specific(
+                    features
+                        .into_iter()
+                        .map(|f| {
+                            match f {
+                                OpenvmmFeature::Gdb => "gdb",
+                                OpenvmmFeature::Tpm => "tpm",
+                                OpenvmmFeature::UnstableWhp => "unstable_whp",
+                            }
+                            .into()
+                        })
+                        .collect(),
+                ),
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,
@@ -117,7 +136,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built openvmm", |ctx| {
+            ctx.emit_minor_rust_step("report built openvmm", |ctx| {
                 let openvmm_bin = openvmm_bin.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -135,8 +154,6 @@ impl FlowNode for Node {
                     };
 
                     rt.write(openvmm_bin, &output);
-
-                    Ok(())
                 }
             });
         }

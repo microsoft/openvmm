@@ -4,13 +4,14 @@
 //! Definitions related to UEFI boot entries
 
 use guid::Guid;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 open_enum::open_enum! {
     /// From UEFI spec 7.2.1
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiMemoryType: u32 {
         EFI_RESERVED_MEMORY_TYPE = 0,
         EFI_LOADER_CODE = 1,
@@ -34,7 +35,7 @@ open_enum::open_enum! {
 
 /// From UEFI spec 10.2
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct EfiDevicePathProtocol {
     pub device_type: EfiDeviceType,
     pub sub_type: u8,
@@ -43,14 +44,14 @@ pub struct EfiDevicePathProtocol {
 
 /// From UEFI spec 3.1.3
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct EfiLoadOption {
     pub attributes: u32,
     pub file_path_list_length: u16,
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiDeviceType: u8 {
         HARDWARE = 0x01,
         ACPI = 0x02,
@@ -62,7 +63,7 @@ open_enum::open_enum! {
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiEndDeviceSubType: u8 {
         INSTANCE = 0x01,
         ENTIRE = 0xFF,
@@ -70,7 +71,7 @@ open_enum::open_enum! {
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiHardwareDeviceSubType: u8 {
         PCI = 1,
         PCCARD = 2,
@@ -82,7 +83,7 @@ open_enum::open_enum! {
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiAcpiDeviceSubType: u8 {
         ACPI = 1,
         EXPANDED_ACPI = 2,
@@ -92,7 +93,7 @@ open_enum::open_enum! {
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiMessagingDeviceSubType: u8 {
         ATAPI = 1,
         SCSI = 2,
@@ -130,7 +131,7 @@ open_enum::open_enum! {
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiMediaDeviceSubType: u8 {
         HARD_DRIVE = 0x01,
         CD_ROM = 0x02,
@@ -145,7 +146,7 @@ open_enum::open_enum! {
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiPartitionFormat: u8 {
         MBR = 0x01,
         GUID = 0x02,
@@ -153,7 +154,7 @@ open_enum::open_enum! {
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum EfiSignatureType: u8 {
         NONE = 0x00,
         MBR = 0x01,
@@ -162,7 +163,7 @@ open_enum::open_enum! {
 }
 
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes, Debug, PartialEq)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Debug, PartialEq)]
 pub struct EfiHardDriveDevice {
     pub partition_number: u32,
     pub partition_start: u64,
@@ -173,14 +174,14 @@ pub struct EfiHardDriveDevice {
 }
 
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes, Debug, PartialEq)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Debug, PartialEq)]
 pub struct EfiScsiDevice {
     pub target_id: u16,
     pub logical_unit_num: u16,
 }
 
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes, Debug, PartialEq)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Debug, PartialEq)]
 pub struct EfiMemoryMappedDevice {
     pub memory_type: EfiMemoryType,
     pub start_address: u64,
@@ -188,7 +189,7 @@ pub struct EfiMemoryMappedDevice {
 }
 
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes, Debug, PartialEq)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Debug, PartialEq)]
 pub struct EfiExpandedAcpiDevice {
     pub hid: u32,
     pub cid: u32,

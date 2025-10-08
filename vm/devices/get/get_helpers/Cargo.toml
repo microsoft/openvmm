@@ -3,13 +3,12 @@
 
 [package]
 name = "get_helpers"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 get_protocol.workspace = true
 guid.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

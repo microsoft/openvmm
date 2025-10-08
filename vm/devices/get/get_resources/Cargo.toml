@@ -3,13 +3,14 @@
 
 [package]
 name = "get_resources"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 vm_resource.workspace = true
-
+vmgs_resources.workspace = true
 mesh.workspace = true
+inspect.workspace = true
 
 thiserror.workspace = true
 

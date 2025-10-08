@@ -3,12 +3,13 @@
 
 //! Coordinator between queues and hot add/remove of namespaces.
 
+use super::IoQueueEntrySizes;
 use super::admin::AdminConfig;
 use super::admin::AdminHandler;
 use super::admin::AdminState;
 use super::admin::NsidConflict;
-use super::IoQueueEntrySizes;
-use crate::queue::DoorbellRegister;
+use crate::queue::DoorbellMemory;
+use crate::queue::InvalidDoorbell;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -23,6 +24,7 @@ use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::future::pending;
 use std::sync::Arc;
 use task_control::TaskControl;
@@ -32,8 +34,8 @@ use vmcore::vm_task::VmTaskDriverSource;
 
 pub struct NvmeWorkers {
     _task: Task<()>,
-    send: mesh::MpscSender<CoordinatorRequest>,
-    doorbells: Vec<Arc<DoorbellRegister>>,
+    send: mesh::Sender<CoordinatorRequest>,
+    doorbells: Arc<RwLock<DoorbellMemory>>,
     state: EnableState,
 }
 
@@ -62,10 +64,7 @@ impl NvmeWorkers {
         subsystem_id: Guid,
     ) -> Self {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
-        let doorbells: Vec<_> = (0..num_qids)
-            .map(|_| Arc::new(DoorbellRegister::new()))
-            .collect();
-
+        let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(num_qids)));
         let driver = driver_source.simple();
         let handler: AdminHandler = AdminHandler::new(
             driver.clone(),
@@ -101,11 +100,9 @@ impl NvmeWorkers {
         }
     }
 
-    pub fn doorbell(&self, index: u16, value: u32) {
-        if let Some(doorbell) = self.doorbells.get(index as usize) {
-            doorbell.write(value);
-        } else {
-            tracelimit::warn_ratelimited!(index, value, "unknown doorbell");
+    pub fn doorbell(&self, db_id: u16, value: u32) {
+        if let Err(InvalidDoorbell) = self.doorbells.read().try_write(db_id, value) {
+            tracelimit::error_ratelimited!(db_id, "write to invalid doorbell index");
         }
     }
 
@@ -184,7 +181,7 @@ impl NvmeWorkers {
 /// Client for modifying the NVMe controller state at runtime.
 #[derive(Debug)]
 pub struct NvmeControllerClient {
-    send: mesh::MpscSender<CoordinatorRequest>,
+    send: mesh::Sender<CoordinatorRequest>,
 }
 
 impl NvmeControllerClient {
@@ -230,7 +227,7 @@ struct EnableAdminParams {
 }
 
 impl Coordinator {
-    async fn run(mut self, mut recv: mesh::MpscReceiver<CoordinatorRequest>) {
+    async fn run(mut self, mut recv: mesh::Receiver<CoordinatorRequest>) {
         loop {
             enum Event {
                 Request(Option<CoordinatorRequest>),
@@ -276,32 +273,26 @@ impl Coordinator {
                         },
                     ),
                     CoordinatorRequest::AddNamespace(rpc) => {
-                        rpc.handle(|(nsid, disk)| {
-                            let this = &mut self;
-                            async move {
-                                let running = this.admin.stop().await;
-                                let (admin, state) = this.admin.get_mut();
-                                let r = admin.add_namespace(state, nsid, disk).await;
-                                if running {
-                                    this.admin.start();
-                                }
-                                r
+                        rpc.handle(async |(nsid, disk)| {
+                            let running = self.admin.stop().await;
+                            let (admin, state) = self.admin.get_mut();
+                            let r = admin.add_namespace(state, nsid, disk).await;
+                            if running {
+                                self.admin.start();
                             }
+                            r
                         })
                         .await
                     }
                     CoordinatorRequest::RemoveNamespace(rpc) => {
-                        rpc.handle(|nsid| {
-                            let this = &mut self;
-                            async move {
-                                let running = this.admin.stop().await;
-                                let (admin, state) = this.admin.get_mut();
-                                let r = admin.remove_namespace(state, nsid).await;
-                                if running {
-                                    this.admin.start();
-                                }
-                                r
+                        rpc.handle(async |nsid| {
+                            let running = self.admin.stop().await;
+                            let (admin, state) = self.admin.get_mut();
+                            let r = admin.remove_namespace(state, nsid).await;
+                            if running {
+                                self.admin.start();
                             }
+                            r
                         })
                         .await
                     }

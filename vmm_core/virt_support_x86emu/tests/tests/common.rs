@@ -1,12 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use virt::io::CpuIo;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use x86defs::RFlags;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;
-use x86emu::CpuState;
+
+pub struct CpuState {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    pub gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    pub segs: [SegmentRegister; 6],
+    pub rip: u64,
+    pub rflags: RFlags,
+
+    pub cr0: u64,
+    pub efer: u64,
+}
 
 /// Return [`CpuState`] that has long mode and protected mode enabled
 ///
@@ -28,7 +39,7 @@ pub fn long_protected_mode(user_mode: bool) -> CpuState {
         gps: [0xbadc0ffee0ddf00d; 16],
         segs: [seg; 6],
         rip: 0,
-        rflags: RFlags::default(),
+        rflags: RFlags::at_reset(),
         cr0: x86defs::X64_CR0_PE,
         efer: x86defs::X64_EFER_LMA | x86defs::X64_EFER_LME,
     }
@@ -88,6 +99,10 @@ impl CpuIo for MockCpu {
     }
 
     async fn write_io(&self, _vp: VpIndex, _port: u16, _data: &[u8]) {
+        todo!()
+    }
+
+    fn fatal_error(&self, _error: Box<dyn std::error::Error + Send + Sync>) -> virt::VpHaltReason {
         todo!()
     }
 }

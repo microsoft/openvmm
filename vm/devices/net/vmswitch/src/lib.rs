@@ -5,9 +5,10 @@
 //! capabilities, including the vmswitch and the HCN/HNS service.
 
 #![cfg(windows)]
+#![expect(missing_docs)]
 // UNSAFETY: Calling Win32 VMS and HCN APIs.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub mod dio;
 pub mod hcn;

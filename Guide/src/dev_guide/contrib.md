@@ -5,4 +5,4 @@ submitting changes to the OpenVMM project.
 
 This includes both code-level [coding conventions](./contrib/code.md), as well
 as instructions on properly [submitting changes](./contrib/pr.md) to the OpenVMM
-GitHub repo.
+GitHub repo, and expectations around [code reviews](./contrib/code_review.md).

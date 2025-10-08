@@ -3,7 +3,7 @@
 
 [package]
 name = "x86defs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -11,7 +11,7 @@ open_enum.workspace = true
 
 arbitrary = { workspace = true, optional = true }
 bitfield-struct.workspace = true
+static_assertions.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

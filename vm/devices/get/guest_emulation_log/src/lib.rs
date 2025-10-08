@@ -7,6 +7,7 @@
 //! send logs from the guest to the host. This is an implementation to support
 //! better integration testing within the HvLite CI.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;
@@ -19,17 +20,17 @@ use task_control::StopTask;
 use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::NoSavedState;
-use zerocopy::AsBytes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 enum Error {
@@ -172,7 +173,7 @@ impl<T: RingMem + Unpin> GelChannel<T> {
         loop {
             let n = self
                 .channel
-                .recv(buffer.as_bytes_mut())
+                .recv(buffer.as_mut_bytes())
                 .await
                 .map_err(Error::PipeFailure)?;
 
@@ -183,8 +184,8 @@ impl<T: RingMem + Unpin> GelChannel<T> {
             let buffer = &buffer[..n];
 
             let (header, buffer) =
-                get_protocol::TraceLoggingNotificationHeader::read_from_prefix_split(buffer)
-                    .ok_or(Error::InvalidPayloadSize(n))?;
+                get_protocol::TraceLoggingNotificationHeader::read_from_prefix(buffer)
+                    .map_err(|_| Error::InvalidPayloadSize(n))?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             let message = buffer
                 .get(

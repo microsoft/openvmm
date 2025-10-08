@@ -4,7 +4,6 @@
 //! Download a copy of `azcopy`
 
 use crate::cache::CacheHit;
-use crate::cache::CacheResult;
 use flowey::node::prelude::*;
 
 flowey_request! {
@@ -60,7 +59,7 @@ impl FlowNode for Node {
             dir: cache_dir.clone(),
             key: cache_key,
             restore_keys: None,
-            hitvar: CacheResult::HitVar(hitvar),
+            hitvar,
         });
 
         // in case we need to unzip the thing we downloaded
@@ -70,6 +69,7 @@ impl FlowNode for Node {
                 FlowPlatform::Linux(linux_distribution) => match linux_distribution {
                     FlowPlatformLinuxDistro::Fedora => vec!["bsdtar".into()],
                     FlowPlatformLinuxDistro::Ubuntu => vec!["libarchive-tools".into()],
+                    FlowPlatformLinuxDistro::Arch => vec!["libarchive".into()],
                     FlowPlatformLinuxDistro::Unknown => vec![],
                 },
                 _ => {
@@ -107,7 +107,7 @@ impl FlowNode for Node {
                     };
                     match rt.platform().kind() {
                         FlowPlatformKind::Windows => {
-                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_windows_{arch}_{version_without_date}.zip -o azcopy.zip").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext-awgzd8g7aagqhzhe.b02.azurefd.net/releases/release-{version_with_date}/azcopy_windows_{arch}_{version_without_date}.zip -o azcopy.zip").run()?;
 
                             let bsdtar = crate::_util::bsdtar_name(rt);
                             xshell::cmd!(sh, "{bsdtar} -xf azcopy.zip --strip-components=1").run()?;
@@ -118,7 +118,7 @@ impl FlowNode for Node {
                                 FlowPlatform::MacOs => "darwin",
                                 platform => anyhow::bail!("unhandled platform {platform}"),
                             };
-                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext.azureedge.net/releases/release-{version_with_date}/azcopy_{os}_{arch}_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
+                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext-awgzd8g7aagqhzhe.b02.azurefd.net/releases/release-{version_with_date}/azcopy_{os}_{arch}_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
                             xshell::cmd!(sh, "tar -xf azcopy.tar.gz --strip-components=1").run()?;
                         }
                     };

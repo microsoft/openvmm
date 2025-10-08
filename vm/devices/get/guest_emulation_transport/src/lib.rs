@@ -1,16 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(target_os = "linux")]
-
 //! Guest Emulation Transport - GET
 //!
 //! The GET is the guest side of a communication channel that uses VMBUS to communicate between Guest and Host.
 //! The Guest sends messages through the GET to get information on the time, VMGS file, attestation,
 //! platform settings, bios boot settings, and guest state protection.
 
+#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod api;
 pub mod error;
@@ -52,12 +50,13 @@ pub async fn spawn_get_worker(
 }
 
 #[cfg(any(feature = "test_utilities", test))]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod test_utilities {
     use super::*;
     use crate::worker::GuestEmulationTransportWorker;
     use client::GuestEmulationTransportClient;
     use get_protocol::ProtocolVersion;
+    use guest_emulation_device::IgvmAgentTestPlan;
     use guest_emulation_device::test_utilities::TestGedClient;
     use guest_emulation_device::test_utilities::TestGetResponses;
     use mesh::Receiver;
@@ -66,7 +65,7 @@ pub mod test_utilities {
 
     pub const DEFAULT_SIZE: usize = 4194816; // 4 MB
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), expect(dead_code))]
     pub struct TestGet {
         pub client: GuestEmulationTransportClient,
         pub(crate) gen_id: Receiver<[u8; 16]>,
@@ -83,6 +82,8 @@ pub mod test_utilities {
         spawn: impl Spawn,
         ged_responses: Option<Vec<TestGetResponses>>,
         version: ProtocolVersion,
+        guest_memory: Option<guestmem::GuestMemory>,
+        igvm_agent_script: Option<IgvmAgentTestPlan>,
     ) -> TestGet {
         let (host_vmbus, guest_vmbus) = vmbus_async::pipe::connected_message_pipes(
             get_protocol::MAX_MESSAGE_SIZE + vmbus_ring::PAGE_SIZE,
@@ -93,6 +94,8 @@ pub mod test_utilities {
             host_vmbus,
             ged_responses,
             version,
+            guest_memory,
+            igvm_agent_script,
         );
 
         // Create the GET
@@ -117,19 +120,19 @@ mod tests {
     use super::test_utilities::*;
     use super::worker::GuestEmulationTransportWorker;
     use crate::process_loop::FatalError;
-    use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
     use get_protocol::ProtocolVersion;
     use get_protocol::VmgsIoStatus;
+    use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
     use guest_emulation_device::test_utilities::Event;
     use guest_emulation_device::test_utilities::TestGetResponses;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
     use test_with_tracing::test;
     use vmbus_async::async_dgram::AsyncRecvExt;
     use vmbus_async::async_dgram::AsyncSendExt;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     #[async_test]
     async fn test_version_negotiation_failed(driver: DefaultDriver) {
@@ -143,13 +146,13 @@ mod tests {
                 assert_eq!(
                     len,
                     host_vmbus
-                        .recv(version_request.as_bytes_mut())
+                        .recv(version_request.as_mut_bytes())
                         .await
                         .unwrap()
                 );
 
                 assert_eq!(
-                    version_request.message_header.message_id,
+                    version_request.message_header.message_id(),
                     get_protocol::HostRequests::VERSION
                 );
                 assert_eq!(version_request.version, protocol);
@@ -243,8 +246,14 @@ mod tests {
             igvm_attest,
         ];
 
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
 
         let result = get.client.host_time().await;
 
@@ -302,8 +311,14 @@ mod tests {
         ));
         let ged_responses = vec![vmgs_write_response, vmgs_read_response];
 
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
         let buf = (0..512).map(|x| x as u8).collect::<Vec<u8>>();
         get.client
             .vmgs_write(0, buf.clone(), TEST_VMGS_SECTOR_SIZE)
@@ -360,8 +375,14 @@ mod tests {
 
         let ged_responses = vec![device_platform_settings];
 
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
 
         let dps = get.client.device_platform_settings().await.unwrap();
         assert_eq!(dps.general.tpm_enabled, false);
@@ -386,8 +407,14 @@ mod tests {
         ));
         let ged_responses = vec![TestGetResponses::default(), vmgs_read_response];
 
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
 
         get.client
             .event_log(get_protocol::EventLogId::NO_BOOT_DEVICE);
@@ -416,8 +443,14 @@ mod tests {
 
         let ged_responses = vec![time_response];
 
-        let mut get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+        let mut get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
 
         let result = get.client.host_time().await;
 
@@ -444,17 +477,115 @@ mod tests {
 
         let ged_responses = vec![time_response];
 
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
 
         let result = get.client.host_time().await;
 
         assert_eq!(result.utc, 1);
         assert_eq!(result.time_zone, 2);
 
-        let _host_result = get.guest_task.await;
+        // The GET can tolerate extraneous responses, ensure it doesn't crash
+        assert!(futures::poll!(get.guest_task).is_pending());
+    }
 
-        assert!(matches!(FatalError::NoPendingRequest, _host_result));
+    #[async_test]
+    async fn host_send_mismatched_multiple_response(driver: DefaultDriver) {
+        let responses = TestGetResponses::new(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::TimeResponse::new(0, 1, 2, false)
+                .as_bytes()
+                .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ));
+
+        let ged_responses = vec![responses];
+
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let time_req = get.client.host_time();
+
+        let result = time_req.await;
+        assert_eq!(result.utc, 1);
+        assert_eq!(result.time_zone, 2);
+    }
+
+    #[async_test]
+    async fn host_send_mismatched_multiple_request_response(driver: DefaultDriver) {
+        let responses = TestGetResponses::new(Event::Response(
+            get_protocol::TimeResponse::new(0, 1, 2, false)
+                .as_bytes()
+                .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::TimeResponse::new(0, 1, 2, false)
+                .as_bytes()
+                .to_vec(),
+        ))
+        .add_response(Event::Response(
+            get_protocol::VpciDeviceControlResponse::new(
+                get_protocol::VpciDeviceControlStatus::SUCCESS,
+            )
+            .as_bytes()
+            .to_vec(),
+        ));
+
+        let ged_responses = vec![responses];
+
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+
+        let time_req = get.client.host_time();
+        let mut vpci_req = std::pin::pin!(get.client.offer_vpci_device(guid::Guid::new_random()));
+
+        // Start the VPCI request going so it enters the queue.
+        assert!(futures::poll!(&mut vpci_req).is_pending());
+
+        // Run the full time request, ensuring it can handle the other responses.
+        let result = time_req.await;
+        assert_eq!(result.utc, 1);
+        assert_eq!(result.time_zone, 2);
+
+        // Now let the VPCI request finish with one of the responses.
+        vpci_req.await.unwrap();
     }
 
     #[async_test]
@@ -471,6 +602,8 @@ mod tests {
             driver.clone(),
             Some(ged_responses),
             ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
         )
         .await;
 
@@ -500,8 +633,14 @@ mod tests {
 
         let ged_responses = vec![power_off_check, reset_check, vmgs_device_info_response];
 
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
 
         get.client.send_power_off();
         get.client.send_reset();
@@ -538,6 +677,8 @@ mod tests {
             driver.clone(),
             Some(ged_responses),
             ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
         )
         .await;
 
@@ -604,8 +745,14 @@ mod tests {
             vpci_unbind_response,
         ];
 
-        let get =
-            new_transport_pair(driver, Some(ged_responses), ProtocolVersion::NICKEL_REV2).await;
+        let get = new_transport_pair(
+            driver,
+            Some(ged_responses),
+            ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
         get.client.offer_vpci_device(bus_id).await.unwrap();
         get.client.revoke_vpci_device(bus_id).await.unwrap();
         get.client
@@ -625,7 +772,8 @@ mod tests {
     #[ignore]
     #[async_test]
     async fn test_save_guest_vtl2_state(driver: DefaultDriver) {
-        let mut get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2).await;
+        let mut get =
+            new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
 
         get.test_ged_client.test_save_guest_vtl2_state().await;
     }

@@ -1,16 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod readwriteat;
 
 use self::readwriteat::ReadWriteAt;
 use blocking::unblock;
-use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
+use disk_backend::resolve::ResolveDiskParameters;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::FileDiskHandle;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -19,9 +20,9 @@ use scsi_buffers::RequestBuffers;
 use std::fs;
 use std::sync::Arc;
 use thiserror::Error;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
-use vm_resource::ResolveResource;
 
 pub struct FileDiskResolver;
 declare_static_resolver!(FileDiskResolver, (DiskHandleKind, FileDiskHandle));

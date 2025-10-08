@@ -13,8 +13,6 @@
 //! * heartbeat IC for reporting guest health
 //! * KVP IC for exchanging arbitrary key/value data between the host and guest
 
-#![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod shutdown;

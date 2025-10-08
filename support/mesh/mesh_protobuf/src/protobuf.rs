@@ -3,15 +3,15 @@
 
 //! Tools to encode and decode protobuf messages.
 
-use super::buffer;
-use super::buffer::Buf;
-use super::buffer::Buffer;
 use super::DecodeError;
 use super::InplaceOption;
 use super::MessageDecode;
 use super::MessageEncode;
 use super::RefCell;
 use super::Result;
+use super::buffer;
+use super::buffer::Buf;
+use super::buffer::Buffer;
 use crate::DefaultEncoding;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -38,7 +38,7 @@ const fn varint_size(n: u64) -> usize {
 }
 
 /// Reads a variable-length integer, advancing `v`.
-fn read_varint(v: &mut &[u8]) -> Result<u64> {
+pub(crate) fn read_varint(v: &mut &[u8]) -> Result<u64> {
     let mut shift = 0;
     let mut r = 0;
     loop {
@@ -666,7 +666,7 @@ impl<'a, 'b, R> MessageReader<'a, 'b, R> {
     }
 
     /// Returns an iterator to consume the resources for this message.
-    pub fn take_resources(&mut self) -> impl 'b + ExactSizeIterator<Item = Result<R>> {
+    pub fn take_resources(&mut self) -> impl ExactSizeIterator<Item = Result<R>> + use<'b, R> {
         let state = self.state;
         self.resources.clone().map(move |i| {
             state

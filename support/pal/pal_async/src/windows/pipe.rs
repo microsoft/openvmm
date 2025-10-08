@@ -12,15 +12,15 @@ use crate::wait::PollWait;
 use crate::wait::PolledWait;
 use futures::AsyncRead;
 use futures::AsyncWrite;
+use pal::windows::Overlapped;
 use pal::windows::chk_status;
-use pal::windows::pipe::new_named_pipe;
 use pal::windows::pipe::Disposition;
-use pal::windows::pipe::PipeExt;
-use pal::windows::pipe::PipeMode;
 use pal::windows::pipe::FILE_PIPE_DISCONNECTED;
 use pal::windows::pipe::FILE_PIPE_READ_READY;
 use pal::windows::pipe::FILE_PIPE_WRITE_READY;
-use pal::windows::Overlapped;
+use pal::windows::pipe::PipeExt;
+use pal::windows::pipe::PipeMode;
+use pal::windows::pipe::new_named_pipe;
 use pal_event::Event;
 use std::fs::File;
 use std::future::Future;
@@ -31,9 +31,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::ptr::null_mut;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use winapi::shared::winerror::ERROR_BROKEN_PIPE;
 use winapi::shared::winerror::ERROR_IO_PENDING;
 use winapi::shared::winerror::ERROR_NO_DATA;
@@ -62,7 +62,8 @@ pub struct PolledPipe {
 impl PolledPipe {
     /// Configures a pipe file for polled use.
     ///
-    /// Due to platform limitations, this will fail for unidirectional pipes and unbuffered pipes.
+    /// Due to platform limitations, this will fail for unidirectional pipes on
+    /// older versions of Windows and on unbuffered pipes.
     pub fn new(driver: &(impl ?Sized + Driver), file: File) -> io::Result<Self> {
         let message_mode = file.get_pipe_state()? & PIPE_READMODE_MESSAGE != 0;
         Self::new_internal(driver, file, message_mode)
@@ -143,11 +144,12 @@ impl PolledPipe {
             self.refresh_events()?;
         }
         while self.events & FILE_PIPE_DISCONNECTED == 0 {
-            ready!(self
-                .wakers
-                .poll_wrapped(cx, InterestSlot::Read as usize, |cx| self
-                    .wait
-                    .poll_wait(cx)))?;
+            ready!(
+                self.wakers
+                    .poll_wrapped(cx, InterestSlot::Read as usize, |cx| self
+                        .wait
+                        .poll_wait(cx))
+            )?;
 
             self.refresh_events()?;
         }
@@ -200,11 +202,12 @@ impl AsyncRead for PolledPipe {
         let this = self.get_mut();
         let n = loop {
             while !this.is_read_ready() {
-                ready!(this
-                    .wakers
-                    .poll_wrapped(cx, InterestSlot::Read as usize, |cx| this
-                        .wait
-                        .poll_wait(cx)))?;
+                ready!(
+                    this.wakers
+                        .poll_wrapped(cx, InterestSlot::Read as usize, |cx| this
+                            .wait
+                            .poll_wait(cx))
+                )?;
 
                 this.refresh_events()?;
             }
@@ -215,8 +218,27 @@ impl AsyncRead for PolledPipe {
                     }
                     break n;
                 }
-                Err(err) if err.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) => {
-                    // EOF.
+                Err(err)
+                    if matches!(
+                        err.raw_os_error().map(|v| v as u32),
+                        Some(ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED)
+                    ) =>
+                {
+                    // ERROR_BROKEN_PIPE is returned when the handle is closed.
+                    // ERROR_PIPE_NOT_CONNECTED is returned when the server
+                    // explicltly calls DisconnectNamedPipe. Either way, the
+                    // pipe is closed, so treat it as EOF.
+                    //
+                    // Note that in either case there may have been data loss,
+                    // since Windows named pipes drop all queued data when one
+                    // endpoint closes the pipe. It's not possible to detect
+                    // this, so there is no way to distinguish between clean and
+                    // unclean close.
+                    //
+                    // (Well, there is a trick, which is to put the pipe into
+                    // message mode and send a zero-length message to the other
+                    // end before closing. That operating mode not currently
+                    // supported by this crate.)
                     break 0;
                 }
                 Err(err) if err.raw_os_error() == Some(ERROR_NO_DATA as i32) => {
@@ -242,11 +264,12 @@ impl AsyncWrite for PolledPipe {
 
         let n = loop {
             while !this.is_write_ready() {
-                ready!(this
-                    .wakers
-                    .poll_wrapped(cx, InterestSlot::Write as usize, |cx| this
-                        .wait
-                        .poll_wait(cx)))?;
+                ready!(
+                    this.wakers
+                        .poll_wrapped(cx, InterestSlot::Write as usize, |cx| this
+                            .wait
+                            .poll_wait(cx))
+                )?;
                 this.refresh_events()?;
             }
             let n = this.file.write(buf)?;
@@ -397,8 +420,8 @@ impl Future for ListeningPipe {
 #[cfg(test)]
 mod tests {
     use super::PolledPipe;
-    use crate::sys::pipe::NamedPipeServer;
     use crate::DefaultDriver;
+    use crate::sys::pipe::NamedPipeServer;
     use futures::AsyncReadExt;
     use futures::AsyncWriteExt;
     use pal_async_test::async_test;
@@ -407,7 +430,7 @@ mod tests {
     #[async_test]
     async fn named_pipe_server(driver: DefaultDriver) {
         let mut path = [0; 16];
-        getrandom::getrandom(&mut path).unwrap();
+        getrandom::fill(&mut path).unwrap();
         let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(path));
         let server = NamedPipeServer::create(&path).unwrap();
         let mut c;

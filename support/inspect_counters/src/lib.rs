@@ -3,10 +3,9 @@
 
 //! Inspectable types for implementing performance counters.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 use inspect::Inspect;
-use inspect::Value;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -38,7 +37,7 @@ impl Counter {
 
 impl Inspect for Counter {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(Value::counter(self.0))
+        req.with_counter_format().value(self.0)
     }
 }
 
@@ -72,7 +71,8 @@ impl SharedCounter {
 
 impl Inspect for SharedCounter {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(Value::counter(self.0.load(Ordering::Relaxed)))
+        req.with_counter_format()
+            .value(self.0.load(Ordering::Relaxed))
     }
 }
 
@@ -113,8 +113,8 @@ static BUCKETS: &[&str] = &[
     "256-511",
     "512-1023",
     "1024-2047",
-    "2048-4195",
-    "4196-8191",
+    "2048-4095",
+    "4096-8191",
     "8192-16383",
     "16384-32767",
     "32768-65535",

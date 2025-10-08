@@ -3,18 +3,25 @@
 
 //! Hypercall infrastructure.
 
+#[cfg(target_arch = "x86_64")]
+use crate::arch::TdxHypercallPage;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::tdx::invoke_tdcall_hypercall;
 use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
+use cfg_if::cfg_if;
 use core::cell::RefCell;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
+use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
+#[cfg(target_arch = "x86_64")]
+use hvdef::hypercall::StartVirtualProcessorX64;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Page-aligned, page-sized buffer for use with hypercalls
 #[repr(C, align(4096))]
@@ -34,7 +41,7 @@ impl HvcallPage {
         let addr = self.buffer.as_ptr() as u64;
 
         // These should be page-aligned
-        assert!(addr % HV_PAGE_SIZE == 0);
+        assert!(addr.is_multiple_of(HV_PAGE_SIZE));
 
         addr
     }
@@ -51,6 +58,12 @@ static HVCALL_OUTPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
 static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvCall {
     initialized: false,
     vtl: Vtl::Vtl0,
+    // The hypercall page is 4KB in the standard setting, but we allocate a large page for
+    // TDX compatibility. This is because the underlying static page is mapped in the
+    // shim's virtual memory hieararchy as a large page, making 2-MB the minimum shareable
+    // memory size between the TDX-enabled shim and hypervisor
+    #[cfg(target_arch = "x86_64")]
+    tdx_io_page: None,
 }));
 
 /// Provides mechanisms to invoke hypercalls within the boot shim.
@@ -60,6 +73,8 @@ static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvC
 pub struct HvCall {
     initialized: bool,
     vtl: Vtl,
+    #[cfg(target_arch = "x86_64")]
+    tdx_io_page: Option<TdxHypercallPage>,
 }
 
 /// Returns an [`HvCall`] instance.
@@ -89,19 +104,20 @@ impl HvCall {
         core::ptr::addr_of!(minimal_rt::arch::hypercall::HYPERCALL_PAGE) as u64
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn init_if_needed(&mut self) {
         if !self.initialized {
             self.initialize();
         }
     }
 
+    /// Hypercall initialization.
     pub fn initialize(&mut self) {
         assert!(!self.initialized);
-
         // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
-        crate::arch::hypercall::initialize(guest_os_id.into());
 
+        crate::arch::hypercall::initialize(guest_os_id);
         self.initialized = true;
 
         self.vtl = self
@@ -117,13 +133,31 @@ impl HvCall {
     /// Call before jumping to kernel.
     pub fn uninitialize(&mut self) {
         if self.initialized {
-            crate::arch::hypercall::uninitialize();
             self.initialized = false;
+
+            // TODO: this unintuitive flow is a consequence of isolation-specific code
+            // being conditionally compiled for each architecture
+            //
+            // This should be revisited as more isolation-specific flows are added to
+            // the shim
+            cfg_if! {
+                if #[cfg(target_arch = "x86_64")] {
+                    if self.tdx_io_page.is_some() {
+                        self.uninitialize_tdx()
+                    }
+                    else {
+                        crate::arch::hypercall::uninitialize();
+                    }
+                }
+                else {
+                    crate::arch::hypercall::uninitialize();
+                }
+            }
         }
     }
 
     /// Returns the environment's VTL.
-    pub fn vtl(&self) -> Vtl {
+    pub fn vtl(&mut self) -> Vtl {
         assert!(self.initialized);
         self.vtl
     }
@@ -135,12 +169,16 @@ impl HvCall {
         code: hvdef::HypercallCode,
         rep_count: Option<usize>,
     ) -> hvdef::hypercall::HypercallOutput {
-        self.init_if_needed();
+        assert!(self.initialized);
 
         let control = hvdef::hypercall::Control::new()
             .with_code(code.0)
             .with_rep_count(rep_count.unwrap_or_default());
 
+        #[cfg(target_arch = "x86_64")]
+        if self.tdx_io_page.is_some() {
+            return invoke_tdcall_hypercall(control, self.tdx_io_page.as_ref().unwrap());
+        }
         // SAFETY: Invoking hypercall per TLFS spec
         unsafe {
             invoke_hypercall(
@@ -152,7 +190,6 @@ impl HvCall {
     }
 
     /// Hypercall for setting a register to a value.
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
     pub fn set_register(
         &mut self,
         name: hvdef::HvRegisterName,
@@ -167,7 +204,10 @@ impl HvCall {
             rsvd: [0; 3],
         };
 
-        header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
+        header
+            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+            .unwrap();
 
         let reg = hvdef::hypercall::HvRegisterAssoc {
             name,
@@ -175,7 +215,9 @@ impl HvCall {
             value,
         };
 
-        reg.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..]);
+        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
+        reg.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..])
+            .unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallSetVpRegisters, Some(1));
 
@@ -196,18 +238,24 @@ impl HvCall {
             rsvd: [0; 3],
         };
 
-        header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
-        name.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..]);
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
+        header
+            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+            .unwrap();
+        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
+        name.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..])
+            .unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallGetVpRegisters, Some(1));
         output.result()?;
-        let value = hvdef::HvRegisterValue::read_from_prefix(&Self::output_page().buffer).unwrap();
-
+        let value = hvdef::HvRegisterValue::read_from_prefix(&Self::output_page().buffer)
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         Ok(value)
     }
 
     /// Hypercall to apply vtl protections to the pages from address start to end
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     pub fn apply_vtl2_protections(&mut self, range: MemoryRange) -> Result<(), hvdef::HvError> {
         const HEADER_SIZE: usize = size_of::<hvdef::hypercall::ModifyVtlProtectionMask>();
         const MAX_INPUT_ELEMENTS: usize = (HV_PAGE_SIZE as usize - HEADER_SIZE) / size_of::<u64>();
@@ -222,25 +270,31 @@ impl HvCall {
         let mut current_page = range.start_4k_gpn();
         while current_page < range.end_4k_gpn() {
             let remaining_pages = range.end_4k_gpn() - current_page;
-            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64);
+            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
-            header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
+            // PANIC: Infallable, since the hypercall header is less than the size of a page
+            header
+                .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+                .unwrap();
 
             let mut input_offset = HEADER_SIZE;
             for i in 0..count {
-                let page_num = current_page + i;
-                page_num.write_to_prefix(&mut Self::input_page().buffer[input_offset..]);
+                let page_num = current_page + i as u64;
+                // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
+                page_num
+                    .write_to_prefix(&mut Self::input_page().buffer[input_offset..])
+                    .unwrap();
                 input_offset += size_of::<u64>();
             }
 
             let output = self.dispatch_hvcall(
                 hvdef::HypercallCode::HvCallModifyVtlProtectionMask,
-                Some(count as usize),
+                Some(count),
             );
 
             output.result()?;
 
-            current_page += count;
+            current_page += count as u64;
         }
 
         Ok(())
@@ -256,10 +310,13 @@ impl HvCall {
             // HvInputVtl value.
             target_vtl: Vtl::Vtl2.into(),
             reserved: [0; 3],
-            vp_vtl_context: zerocopy::FromZeroes::new_zeroed(),
+            vp_vtl_context: zerocopy::FromZeros::new_zeroed(),
         };
 
-        header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
+        header
+            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+            .unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
         match output.result() {
@@ -270,7 +327,7 @@ impl HvCall {
 
     /// Hypercall to accept vtl2 pages from address start to end with VTL 2
     /// protections and no host visibility
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     pub fn accept_vtl2_pages(
         &mut self,
         range: MemoryRange,
@@ -294,18 +351,19 @@ impl HvCall {
             };
 
             let remaining_pages = range.end_4k_gpn() - current_page;
-            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64);
+            let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
-            header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
+            // PANIC: Infallable, since the hypercall header is less than the size of a page
+            header
+                .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+                .unwrap();
 
-            let output = self.dispatch_hvcall(
-                hvdef::HypercallCode::HvCallAcceptGpaPages,
-                Some(count as usize),
-            );
+            let output =
+                self.dispatch_hvcall(hvdef::HypercallCode::HvCallAcceptGpaPages, Some(count));
 
             output.result()?;
 
-            current_page += count;
+            current_page += count as u64;
         }
 
         Ok(())
@@ -332,8 +390,17 @@ impl HvCall {
         const MAX_PER_CALL: usize = 512;
 
         for hw_ids in hw_ids.chunks(MAX_PER_CALL) {
-            header.write_to_prefix(Self::input_page().buffer.as_mut_slice());
-            hw_ids.write_to_prefix(&mut Self::input_page().buffer[header.as_bytes().len()..]);
+            // PANIC: Infallable, since the hypercall header is less than the size of a page
+            header
+                .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+                .unwrap();
+            // PANIC: Infallable, since the hypercall parameters are chunked to be less
+            // than the remaining size (after the header) of the input page.
+            // todo: This is *not true* for aarch64, where the hw_ids are u64s. Tracked via
+            // https://github.com/microsoft/openvmm/issues/745
+            hw_ids
+                .write_to_prefix(&mut Self::input_page().buffer[header.as_bytes().len()..])
+                .unwrap();
 
             // SAFETY: The input header and rep slice are the correct types for this hypercall.
             //         The hypercall output is validated right after the hypercall is issued.
@@ -342,9 +409,9 @@ impl HvCall {
                 Some(hw_ids.len()),
             );
 
-            let n = r.elements_processed() as usize;
+            let n = r.elements_processed();
             output.extend(
-                u32::slice_from(&Self::output_page().buffer[..n * 4])
+                <[u32]>::ref_from_bytes(&Self::output_page().buffer[..n * 4])
                     .unwrap()
                     .iter()
                     .copied(),
@@ -354,6 +421,101 @@ impl HvCall {
         }
 
         Ok(())
+    }
+}
+
+// TDX specific hypercall methods
+#[cfg(target_arch = "x86_64")]
+impl HvCall {
+    /// Initialize HvCall for use in a TDX CVM
+    pub fn initialize_tdx(&mut self, tdx_io_page: TdxHypercallPage) {
+        assert!(!self.initialized);
+        self.initialized = true;
+        self.vtl = Vtl::Vtl2;
+        self.tdx_io_page = Some(tdx_io_page);
+
+        // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
+        let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+
+        crate::arch::tdx::initialize_hypercalls(
+            guest_os_id.into(),
+            self.tdx_io_page.as_ref().unwrap(),
+        );
+    }
+
+    /// Uninitialize HvCall for TDX, unshare IO pages with the hypervisor
+    pub fn uninitialize_tdx(&mut self) {
+        crate::arch::tdx::uninitialize_hypercalls(
+            self.tdx_io_page
+                .take()
+                .expect("an initialized instance of HvCall on TDX must have an io page"),
+        );
+    }
+
+    /// Hypercall to enable VTL2 on a TDX VP
+    pub fn tdx_enable_vp_vtl2(&mut self, vp_index: u32) -> Result<(), hvdef::HvError> {
+        let header = hvdef::hypercall::EnableVpVtlX64 {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            vp_index,
+            // The VTL value here is just a u8 and not the otherwise usual
+            // HvInputVtl value.
+            target_vtl: Vtl::Vtl2.into(),
+            reserved: [0; 3],
+            // Context must be zeroed for the VP VTL startup hypercall on TDX
+            vp_vtl_context: zerocopy::FromZeros::new_zeroed(),
+        };
+        assert!(self.initialized);
+
+        let input_page_addr = self
+            .tdx_io_page
+            .as_ref()
+            .expect("an initialized instance of HvCall on TDX must have an io page")
+            .input();
+        // SAFETY: the input page passed into the initialization of HvCall is a
+        // free buffer that is not concurrently accessed because openhcl_boot
+        // is single threaded
+        let input_page = unsafe { &mut *(input_page_addr as *mut [u8; 4096]) };
+        header
+            .write_to_prefix(input_page)
+            .expect("unable to write to hypercall page");
+
+        let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
+        match output.result() {
+            Ok(()) | Err(hvdef::HvError::VtlAlreadyEnabled) => Ok(()),
+            err => err,
+        }
+    }
+
+    /// Hypercall to start VP on TDX
+    pub fn tdx_start_vp(&mut self, vp_index: u32) -> Result<(), hvdef::HvError> {
+        let header = StartVirtualProcessorX64 {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            vp_index,
+            target_vtl: Vtl::Vtl2.into(),
+            rsvd0: 0,
+            rsvd1: 0,
+            // Context must be zeroed for the AP startup hypercall on TDX
+            vp_context: zerocopy::FromZeros::new_zeroed(),
+        };
+        assert!(self.initialized);
+
+        let input_page_addr = self
+            .tdx_io_page
+            .as_ref()
+            .expect("an initialized instance of HvCall on TDX must have an io page")
+            .input();
+        // SAFETY: the input page passed into the initialization of HvCall is a
+        // free buffer that is not concurrently accessed
+        let input_page = unsafe { &mut *(input_page_addr as *mut [u8; 4096]) };
+        header
+            .write_to_prefix(input_page)
+            .expect("unable to write to hypercall page");
+
+        let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallStartVirtualProcessor, None);
+        match output.result() {
+            Ok(()) | Err(hvdef::HvError::VtlAlreadyEnabled) => Ok(()),
+            err => err,
+        }
     }
 }
 

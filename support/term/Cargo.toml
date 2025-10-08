@@ -3,7 +3,7 @@
 
 [package]
 name = "term"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies.winapi]
@@ -24,8 +24,11 @@ features = [
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
-crossterm.workspace = true
 libc.workspace = true
+
+[dependencies]
+crossterm = { workspace = true, features = ["windows"] }
+thiserror.workspace = true
 
 [lints]
 workspace = true

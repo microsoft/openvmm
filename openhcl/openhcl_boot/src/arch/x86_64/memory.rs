@@ -3,17 +3,19 @@
 
 //! Routines to prepare VTL2 memory for launching the kernel.
 
-use super::address_space::init_local_map;
 use super::address_space::LocalMap;
-use crate::host_params::shim_params::IsolationType;
-use crate::host_params::PartitionInfo;
-use crate::hypercall::hvcall;
+use super::address_space::init_local_map;
 use crate::ShimParams;
+use crate::arch::TdxHypercallPage;
+use crate::arch::x86_64::address_space::tdx_share_large_page;
+use crate::host_params::PartitionInfo;
+use crate::host_params::shim_params::IsolationType;
+use crate::hypercall::hvcall;
 use memory_range::MemoryRange;
 use sha2::Digest;
 use sha2::Sha384;
-use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::X64_LARGE_PAGE_SIZE;
+use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
 /// VTL permissions applied.
@@ -117,6 +119,21 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
         if !already_accepted {
             accept_pending_vtl2_memory(shim_params, &mut local_map, ram_buffer, imported_range);
         }
+    }
+
+    // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for
+    // hypercall IO pages. ram_buffer must not be used again beyond this point
+    // TODO: find an approach that does not require re-using the ram_buffer
+    if shim_params.isolation_type == IsolationType::Tdx {
+        let free_buffer = ram_buffer.as_mut_ptr() as u64;
+        assert!(free_buffer.is_multiple_of(X64_LARGE_PAGE_SIZE));
+        // SAFETY: The bottom 2MB region of the ram_buffer is unused by the shim
+        // The region is aligned to 2MB, and mapped as a large page
+        let tdx_io_page = unsafe {
+            tdx_share_large_page(free_buffer);
+            TdxHypercallPage::new(free_buffer)
+        };
+        hvcall().initialize_tdx(tdx_io_page);
     }
 }
 

@@ -4,7 +4,8 @@
 //! Infrastructure for spawning tasks and issuing async IO related to VM
 //! activity.
 
-#![warn(missing_docs)]
+// UNSAFETY: Needed to implement the unsafe new_dyn_overlapped_file method.
+#![cfg_attr(windows, expect(unsafe_code))]
 
 use inspect::Inspect;
 use pal_async::driver::Driver;
@@ -78,7 +79,7 @@ pub trait TargetedDriver: 'static + Send + Sync + Inspect {
         true
     }
     /// Waits for this driver's target VP to be ready for tasks and IO.
-    fn wait_target_vp_ready(&self) -> impl std::future::Future<Output = ()> + Send {
+    fn wait_target_vp_ready(&self) -> impl Future<Output = ()> + Send {
         std::future::ready(())
     }
 }
@@ -88,7 +89,7 @@ trait DynTargetedDriver: 'static + Send + Sync + Inspect {
     fn driver(&self) -> &dyn Driver;
     fn retarget_vp(&self, target_vp: u32);
     fn is_ready(&self) -> bool;
-    fn wait_ready(&self) -> Pin<Box<dyn '_ + std::future::Future<Output = ()> + Send>>;
+    fn wait_ready(&self) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>>;
 }
 
 impl<T: TargetedDriver> DynTargetedDriver for T {
@@ -108,7 +109,7 @@ impl<T: TargetedDriver> DynTargetedDriver for T {
         self.is_target_vp_ready()
     }
 
-    fn wait_ready(&self) -> Pin<Box<dyn '_ + std::future::Future<Output = ()> + Send>> {
+    fn wait_ready(&self) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>> {
         Box::pin(self.wait_target_vp_ready())
     }
 }
@@ -320,10 +321,10 @@ pub mod thread {
     use super::BuildVmTaskDriver;
     use super::TargetedDriver;
     use inspect::Inspect;
-    use pal_async::driver::Driver;
-    use pal_async::task::Spawn;
     use pal_async::DefaultDriver;
     use pal_async::DefaultPool;
+    use pal_async::driver::Driver;
+    use pal_async::task::Spawn;
 
     /// A backend for [`VmTaskDriverSource`](super::VmTaskDriverSource) based on
     /// individual threads.
@@ -355,13 +356,7 @@ pub mod thread {
         ) -> Self::Driver {
             // Build a standalone thread for this device if a target VP was specified.
             if target_vp.is_some() {
-                let pool = DefaultPool::new();
-                let driver = pool.driver();
-                std::thread::Builder::new()
-                    .name(name)
-                    .spawn(move || pool.run())
-                    .unwrap();
-
+                let (_, driver) = DefaultPool::spawn_on_thread(name);
                 ThreadDriver {
                     inner: driver,
                     has_dedicated_thread: true,

@@ -9,34 +9,34 @@ use super::core::ReadState;
 use super::core::WriteState;
 use crate::core::PollError;
 use futures::FutureExt;
-use guestmem::ranges::PagedRange;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use ring::OutgoingPacketType;
 use ring::TransferPageRange;
 use smallvec::smallvec;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::ops::Deref;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use thiserror::Error;
-use vmbus_channel::connected_async_channels;
 use vmbus_channel::RawAsyncChannel;
+use vmbus_channel::connected_async_channels;
 use vmbus_ring as ring;
-use vmbus_ring::gparange::zeroed_gpn_list;
-use vmbus_ring::gparange::GpnList;
-use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmbus_ring::FlatRingMem;
 use vmbus_ring::IncomingPacketType;
 use vmbus_ring::IncomingRing;
 use vmbus_ring::RingMem;
-use zerocopy::AsBytes;
+use vmbus_ring::gparange::GpnList;
+use vmbus_ring::gparange::MultiPagedRangeBuf;
+use vmbus_ring::gparange::zeroed_gpn_list;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// A queue error.
 #[derive(Debug, Error)]
@@ -230,7 +230,7 @@ impl<T: RingMem> DataPacket<'_, T> {
     /// N.B. This reads the payload in place, so multiple instantiations of the
     /// reader may see multiple different results if the (malicious) opposite
     /// endpoint is mutating the ring buffer.
-    pub fn reader(&self) -> impl MemoryRead + '_ {
+    pub fn reader(&self) -> vmbus_ring::RingRangeReader<'_, T> {
         self.payload.reader(self.ring)
     }
 
@@ -256,15 +256,17 @@ impl<T: RingMem> DataPacket<'_, T> {
             return Err(AccessError::OutOfRange(0, 0));
         }
 
-        let mut buf: GpnList = smallvec![FromZeroes::new_zeroed(); len];
-        reader.read(buf.as_bytes_mut())?;
+        let mut buf: GpnList = smallvec![FromZeros::new_zeroed(); len];
+        reader.read(buf.as_mut_bytes())?;
 
         // Construct an array of the form [#1 offset/length][page1][page2][...][#2 offset/length][page1][page2]...
         // See MultiPagedRangeIter for more details.
         let transfer_buf: GpnList = buf
             .iter()
             .map(|range| {
-                let range_data = TransferPageRange::read_from_prefix(range.as_bytes()).unwrap();
+                let range_data = TransferPageRange::read_from_prefix(range.as_bytes())
+                    .unwrap()
+                    .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 let sub_range = transfer_buf
                     .subrange(
                         range_data.byte_offset as usize,
@@ -297,7 +299,7 @@ impl<T: RingMem> DataPacket<'_, T> {
         let len = reader.len() / 8;
         let mut buf = zeroed_gpn_list(len);
         reader
-            .read(buf.as_bytes_mut())
+            .read(buf.as_mut_bytes())
             .map_err(ExternalDataError::Access)?;
         MultiPagedRangeBuf::new(self.external_data.0 as usize, buf)
             .map_err(ExternalDataError::GpaRange)
@@ -754,10 +756,10 @@ pub fn connected_queues(ring_size: usize) -> (Queue<FlatRingMem>, Queue<FlatRing
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use ring::OutgoingPacketType;
     use std::future::poll_fn;
     use std::time::Duration;
@@ -962,9 +964,11 @@ mod tests {
     async fn test_ring_full(driver: DefaultDriver) {
         let (mut host_queue, mut guest_queue) = connected_queues(4096);
 
-        assert!(poll_fn(|cx| host_queue.split().1.poll_ready(cx, 4000))
-            .now_or_never()
-            .is_some());
+        assert!(
+            poll_fn(|cx| host_queue.split().1.poll_ready(cx, 4000))
+                .now_or_never()
+                .is_some()
+        );
 
         host_queue
             .split()

@@ -6,7 +6,8 @@ use crate::tests::common::LockTestBehavior;
 use iced_x86::code_asm::asm_traits::*;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 /// The mask of flags that are changed by bt(x) operations.
 const RFLAGS_BT_MASK: RFlags = RFlags::new().with_carry(true);
@@ -48,13 +49,15 @@ fn btx<T: BtInstr>(mut instr: T) {
 
     // Immediate.
     for &(base, value, initial_carry, bit, _reg_gva, carry) in &variations[2..] {
-        let (state, cpu) = run_lockable_test(
+        let mut cpu = run_lockable_test(
             RFLAGS_BT_MASK,
             behavior,
             |asm| instr.instr(asm, dword_ptr(rax + 0x10), bit),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = base;
-                state.rflags.set_carry(initial_carry);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), base);
+                let mut rflags = cpu.rflags();
+                rflags.set_carry(initial_carry);
+                cpu.set_rflags(rflags);
                 // Note the % and regular division when using the imm form of these instructions
                 cpu.valid_gva = base
                     .wrapping_add(0x10)
@@ -64,27 +67,29 @@ fn btx<T: BtInstr>(mut instr: T) {
         );
 
         let mask = 1 << (bit % 8);
-        assert_eq!(state.rflags.carry(), carry);
+        assert_eq!(cpu.rflags().carry(), carry);
         assert_eq!(cpu.mem_val, (instr.op(value) & mask) | (value & !mask));
     }
 
     // Register.
     for &(base, value, initial_carry, bit, reg_gva, carry) in variations {
-        let (state, cpu) = run_lockable_test(
+        let mut cpu = run_lockable_test(
             RFLAGS_BT_MASK,
             behavior,
             |asm| instr.instr(asm, dword_ptr(rax + 0x10), ebx),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = base;
-                state.gps[CpuState::RBX] = bit as u64;
-                state.rflags.set_carry(initial_carry);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), base);
+                cpu.set_gp(Gp::RBX.into(), bit as u64);
+                let mut rflags = cpu.rflags();
+                rflags.set_carry(initial_carry);
+                cpu.set_rflags(rflags);
                 cpu.valid_gva = reg_gva;
                 cpu.mem_val = value;
             },
         );
 
         let mask = 1 << (bit.rem_euclid(32));
-        assert_eq!(state.rflags.carry(), carry);
+        assert_eq!(cpu.rflags().carry(), carry);
         assert_eq!(cpu.mem_val, (instr.op(value) & mask) | (value & !mask));
     }
 }

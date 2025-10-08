@@ -7,6 +7,7 @@ use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::pipeline::CheckMode;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
+use flowey_core::node::FlowArch;
 use flowey_core::node::FlowPlatform;
 use petgraph::visit::EdgeRef;
 use serde::Serialize;
@@ -56,17 +57,18 @@ pub(crate) fn job_flowey_bootstrap_source(
     // the first traversal builds a list of all ancestors of a give node
     let mut ancestors = BTreeMap::<
         petgraph::prelude::NodeIndex,
-        BTreeSet<(petgraph::prelude::NodeIndex, FlowPlatform)>,
+        BTreeSet<(petgraph::prelude::NodeIndex, FlowPlatform, FlowArch)>,
     >::new();
     for idx in order {
         for ancestor_idx in graph
             .edges_directed(*idx, petgraph::Direction::Incoming)
             .map(|e| e.source())
         {
-            ancestors
-                .entry(*idx)
-                .or_default()
-                .insert((ancestor_idx, graph[ancestor_idx].platform));
+            ancestors.entry(*idx).or_default().insert((
+                ancestor_idx,
+                graph[ancestor_idx].platform,
+                graph[ancestor_idx].arch,
+            ));
 
             if let Some(set) = ancestors.get(&ancestor_idx).cloned() {
                 ancestors.get_mut(idx).unwrap().extend(&set);
@@ -81,8 +83,8 @@ pub(crate) fn job_flowey_bootstrap_source(
 
         let mut elect_bootstrap = None;
 
-        for (ancestor_idx, platform) in ancestors {
-            if platform != graph[*idx].platform {
+        for (ancestor_idx, platform, arch) in ancestors {
+            if platform != graph[*idx].platform || arch != graph[*idx].arch {
                 continue;
             }
 
@@ -264,4 +266,93 @@ where
         pipeline_file,
         ado_post_process_yaml_cb,
     )
+}
+
+/// Merges a list of bash commands into a single YAML step.
+pub(crate) struct BashCommands {
+    commands: Vec<String>,
+    label: Option<String>,
+    can_merge: bool,
+    github: bool,
+}
+
+impl BashCommands {
+    pub fn new_github() -> Self {
+        Self {
+            commands: Vec::new(),
+            label: None,
+            can_merge: true,
+            github: true,
+        }
+    }
+
+    pub fn new_ado() -> Self {
+        Self {
+            commands: Vec::new(),
+            label: None,
+            can_merge: true,
+            github: false,
+        }
+    }
+
+    #[must_use]
+    pub fn push(
+        &mut self,
+        label: Option<String>,
+        can_merge: bool,
+        mut cmd: String,
+    ) -> Option<Value> {
+        let val = if !can_merge && !self.can_merge {
+            self.flush()
+        } else {
+            None
+        };
+        if !can_merge || self.label.is_none() {
+            self.label = label;
+        }
+        cmd.truncate(cmd.trim_end().len());
+        self.commands.push(cmd);
+        self.can_merge &= can_merge;
+        val
+    }
+
+    pub fn push_minor(&mut self, cmd: String) {
+        assert!(self.push(None, true, cmd).is_none());
+    }
+
+    #[must_use]
+    pub fn flush(&mut self) -> Option<Value> {
+        if self.commands.is_empty() {
+            return None;
+        }
+        let label = if self.commands.len() == 1 || !self.can_merge {
+            self.label.take()
+        } else {
+            None
+        };
+        let label = label.unwrap_or_else(|| "🦀 flowey rust steps".into());
+        let map = if self.github {
+            let commands = self.commands.join("\n");
+            serde_yaml::Mapping::from_iter([
+                ("name".into(), label.into()),
+                ("run".into(), commands.into()),
+                ("shell".into(), "bash".into()),
+            ])
+        } else {
+            let commands = if self.commands.len() == 1 {
+                self.commands.drain(..).next().unwrap()
+            } else {
+                // ADO doesn't automatically fail on error on multi-line scripts.
+                self.commands.insert(0, "set -e".into());
+                self.commands.join("\n")
+            };
+            serde_yaml::Mapping::from_iter([
+                ("bash".into(), commands.into()),
+                ("displayName".into(), label.into()),
+            ])
+        };
+        self.commands.clear();
+        self.can_merge = true;
+        Some(map.into())
+    }
 }

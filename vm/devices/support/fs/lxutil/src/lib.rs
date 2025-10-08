@@ -8,11 +8,8 @@
 //! This crate uses lxutil.dll, a library created for the Windows Subsystem for Linux to emulate
 //! Linux file system semantics on Windows.
 
-// Crate-specific lints
-#![allow(
-    clippy::field_reassign_with_default, // protocol code benefits from imperative field assignment
-)]
 #![cfg(any(windows, target_os = "linux"))]
+#![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
 
 mod path;
 #[cfg(unix)]
@@ -1037,9 +1034,9 @@ impl Default for LxVolumeOptions {
 #[derive(Default)]
 pub struct LxCreateOptions {
     mode: lx::mode_t,
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), expect(dead_code))]
     uid: lx::uid_t,
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), expect(dead_code))]
     gid: lx::gid_t,
 }
 

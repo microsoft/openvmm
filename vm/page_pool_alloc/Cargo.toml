@@ -1,0 +1,25 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "page_pool_alloc"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+user_driver.workspace = true
+sparse_mmap.workspace = true
+vmcore.workspace = true
+memory_range = { workspace = true, features = [ "inspect", "mesh" ] }
+
+inspect.workspace = true
+mesh.workspace = true
+safeatomic.workspace = true
+
+parking_lot.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

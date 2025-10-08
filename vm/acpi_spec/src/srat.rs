@@ -8,14 +8,15 @@ use super::Table;
 use crate::packed_nums::*;
 use core::mem::size_of;
 use static_assertions::const_assert_eq;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Ref;
 use zerocopy::Unaligned;
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct SratHeader {
     pub rsvd1: u32_ne,
     pub rsvd2: u64_ne,
@@ -37,7 +38,7 @@ impl Table for SratHeader {
 pub const SRAT_REVISION: u8 = 3;
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes, Unaligned)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
     pub enum SratType: u8 {
         APIC = 0,
         MEMORY = 1,
@@ -47,7 +48,7 @@ open_enum::open_enum! {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct SratApic {
     pub typ: SratType,
     pub length: u8,
@@ -84,7 +85,7 @@ impl SratApic {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct SratX2Apic {
     pub typ: SratType,
     pub length: u8,
@@ -114,7 +115,7 @@ impl SratX2Apic {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct SratGicc {
     pub typ: SratType,
     pub length: u8,
@@ -140,7 +141,7 @@ impl SratGicc {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes, Unaligned)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]
 pub struct SratMemory {
     pub typ: SratType,
     pub length: u8,
@@ -157,8 +158,9 @@ pub struct SratMemory {
 
 impl core::fmt::Debug for SratMemory {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let address = u64::read_from([self.low_address, self.high_address].as_bytes()).unwrap();
-        let length = u64::read_from([self.low_length, self.high_length].as_bytes()).unwrap();
+        let address =
+            u64::read_from_bytes([self.low_address, self.high_address].as_bytes()).unwrap();
+        let length = u64::read_from_bytes([self.low_length, self.high_length].as_bytes()).unwrap();
 
         f.debug_struct("SratMemory")
             .field("typ", &self.typ)
@@ -240,8 +242,8 @@ pub fn parse_srat<'a>(
     mut on_memory: impl FnMut(&'a SratMemory),
 ) -> Result<(&'a crate::Header, &'a SratHeader), ParseSratError> {
     let raw_srat_len = raw_srat.len();
-    let (acpi_header, buf) = Ref::<_, crate::Header>::new_from_prefix(raw_srat)
-        .ok_or(ParseSratError::MissingAcpiHeader)?;
+    let (acpi_header, buf) = Ref::<_, crate::Header>::from_prefix(raw_srat)
+        .map_err(|_| ParseSratError::MissingAcpiHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     if acpi_header.signature != *b"SRAT" {
         return Err(ParseSratError::InvalidSignature(acpi_header.signature));
@@ -255,27 +257,27 @@ pub fn parse_srat<'a>(
     }
 
     let (srat_header, mut buf) =
-        Ref::<_, SratHeader>::new_from_prefix(buf).ok_or(ParseSratError::MissingFixedHeader)?;
+        Ref::<_, SratHeader>::from_prefix(buf).map_err(|_| ParseSratError::MissingFixedHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     while !buf.is_empty() {
         buf = match SratType(buf[0]) {
             SratType::APIC => {
                 let (apic, rest) =
-                    Ref::<_, SratApic>::new_from_prefix(buf).ok_or(ParseSratError::BadApic)?;
-                on_apic(apic.into_ref());
+                    Ref::<_, SratApic>::from_prefix(buf).map_err(|_| ParseSratError::BadApic)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                on_apic(Ref::into_ref(apic));
                 rest
             }
             SratType::MEMORY => {
-                let (mem, rest) =
-                    Ref::<_, SratMemory>::new_from_prefix(buf).ok_or(ParseSratError::BadMemory)?;
-                on_memory(mem.into_ref());
+                let (mem, rest) = Ref::<_, SratMemory>::from_prefix(buf)
+                    .map_err(|_| ParseSratError::BadMemory)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                on_memory(Ref::into_ref(mem));
                 rest
             }
             _ => return Err(ParseSratError::UnknownType(buf[0])),
         }
     }
 
-    Ok((acpi_header.into_ref(), srat_header.into_ref()))
+    Ok((Ref::into_ref(acpi_header), Ref::into_ref(srat_header)))
 }
 
 #[cfg(feature = "alloc")]

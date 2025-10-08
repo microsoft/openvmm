@@ -8,9 +8,9 @@ use crate::new_pty;
 use anyhow::Context;
 use azure_profiler_proto::AzureProfiler;
 use azure_profiler_proto::ProfileRequest;
-use diag_proto::network_packet_capture_request::Operation;
 use diag_proto::ExecRequest;
 use diag_proto::ExecResponse;
+use diag_proto::FILE_LINE_MAX;
 use diag_proto::FileRequest;
 use diag_proto::KmsgRequest;
 use diag_proto::NetworkPacketCaptureRequest;
@@ -20,15 +20,15 @@ use diag_proto::StartRequest;
 use diag_proto::UnderhillDiag;
 use diag_proto::WaitRequest;
 use diag_proto::WaitResponse;
-use diag_proto::FILE_LINE_MAX;
-use futures::future::join_all;
-use futures::io::AllowStdIo;
+use diag_proto::network_packet_capture_request::Operation;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::join_all;
+use futures::io::AllowStdIo;
 use futures_concurrency::stream::Merge;
 use inspect::InspectionBuilder;
 use inspect_proto::InspectRequest;
@@ -36,9 +36,9 @@ use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
 use inspect_proto::UpdateRequest;
 use inspect_proto::UpdateResponse2;
+use mesh::CancelContext;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
 use mesh_rpc::server::RpcReceiver;
 use net_packet_capture::OperationData;
 use net_packet_capture::PacketCaptureOperation;
@@ -334,29 +334,18 @@ impl DiagServiceHandler {
 
         // HACK: A hack to fix segfault caused by glibc bug in L1 TDX VMM.
         // Should be removed after glibc update or a clean CPUID virtualization solution.
-        // Please refer to https://github.com/microsoft/HvLite/issues/872 for more information.
-        let tdx_isolated = if cfg!(guest_arch = "x86_64") {
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(target_arch = "x86_64")]
-            {
-                let result = safe_intrinsics::cpuid(
-                    hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
-                    0,
-                );
-                // Value 3 means TDX.
-                (result.ebx & 0xF) == 3
+        // Please refer to https://github.com/microsoft/openvmm-deps/issues/21 for more information.
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        {
+            let result =
+                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION, 0);
+            // Value 3 means TDX.
+            let tdx_isolated = (result.ebx & 0xF) == 3;
+            if tdx_isolated {
+                builder.env("GLIBC_TUNABLES", "glibc.cpu.x86_non_temporal_threshold=0x11a000:glibc.cpu.x86_rep_movsb_threshold=0x4000");
             }
-            // xtask-fmt allow-target-arch cpu-intrinsic
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                false
-            }
-        } else {
-            false
         };
-        if tdx_isolated {
-            builder.env("GLIBC_TUNABLES", "glibc.cpu.x86_non_temporal_threshold=0x11a000:glibc.cpu.x86_rep_movsb_threshold=0x4000");
-        }
 
         let mut stdin_relay = None;
         let mut stdout_relay = None;
@@ -478,7 +467,7 @@ impl DiagServiceHandler {
                 // sockets, but don't block the process exit notification.
                 driver
                     .spawn("socket-wait", async move {
-                        let await_output_relay = |task, raw| async {
+                        let await_output_relay = async |task, raw| {
                             let socket = if let Some(task) = task {
                                 Some(task.await)
                             } else {
@@ -546,7 +535,7 @@ impl DiagServiceHandler {
     }
 
     async fn handle_update(&self, request: &UpdateRequest) -> anyhow::Result<UpdateResponse2> {
-        tracing::info!(
+        tracing::debug!(
             path = request.path.as_str(),
             value = request.value.as_str(),
             "update request"
@@ -605,7 +594,7 @@ impl DiagServiceHandler {
 
                 match op_data {
                     diag_proto::network_packet_capture_request::OpData::StartData(start_data) => {
-                        let writers = join_all(start_data.conns.iter().map(|c| async move {
+                        let writers = join_all(start_data.conns.iter().map(async |c| {
                             let conn = self.take_connection(*c).await?;
                             Ok(conn.into_inner())
                         }))

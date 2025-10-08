@@ -8,8 +8,8 @@ use std::io;
 use std::io::Write;
 use tracing::field::Visit;
 use tracing_subscriber::field::RecordFields;
-use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::FormatFields;
+use tracing_subscriber::fmt::format::Writer;
 
 struct FieldFormatterVisitor<'a> {
     writer: Writer<'a>,

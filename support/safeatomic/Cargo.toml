@@ -3,11 +3,10 @@
 
 [package]
 name = "safeatomic"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 zerocopy.workspace = true
-
 [lints]
 workspace = true

@@ -10,15 +10,15 @@ mod vp_context_builder;
 
 use crate::file_loader::IgvmLoader;
 use crate::file_loader::LoaderIsolationType;
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use clap::Parser;
 use file_loader::IgvmLoaderRegister;
 use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
+use igvm_defs::IGVM_FIXED_HEADER;
 use igvm_defs::SnpPolicy;
 use igvm_defs::TdxPolicy;
-use igvm_defs::IGVM_FIXED_HEADER;
 use igvmfilegen_config::Config;
 use igvmfilegen_config::ConfigIsolationType;
 use igvmfilegen_config::Image;
@@ -38,11 +38,10 @@ use loader::paravisor::Vtl0Config;
 use loader::paravisor::Vtl0Linux;
 use std::io::Write;
 use std::path::PathBuf;
-use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
-use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
-use zerocopy::AsBytes;
+use tracing_subscriber::filter::LevelFilter;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Parser)]
 #[clap(name = "igvmfilegen", about = "Tool to generate IGVM files")]
@@ -92,7 +91,8 @@ fn main() -> anyhow::Result<()> {
         Options::Dump { file_path } => {
             let image = fs_err::read(file_path).context("reading input file")?;
             let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())
-                .expect("Invalid fixed header");
+                .expect("Invalid fixed header")
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
             let igvm_data = IgvmFile::new_from_binary(&image, None).expect("should be valid");
             println!("Total file size: {} bytes\n", fixed_header.total_file_size);
@@ -632,20 +632,10 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 }
             };
 
-            let command_line = if loader.loader().confidential_debug() {
-                tracing::info!("enabling underhill confidential debug environment flag");
-                format!(
-                    "{command_line} {}=1",
-                    OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
-                )
-            } else {
-                command_line.to_string()
-            };
-
             let command_line = if static_command_line {
-                CommandLineType::Static(&command_line)
+                CommandLineType::Static(command_line)
             } else {
-                CommandLineType::HostAppendable(&command_line)
+                CommandLineType::HostAppendable(command_line)
             };
 
             R::load_openhcl(

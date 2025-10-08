@@ -3,9 +3,9 @@
 
 //! Definitions and implementation related to masking CPUID results.
 
+use super::CPUID_LEAF_B_MAX_SUBLEAF_INDEX;
 use super::CpuidArchInitializer;
 use super::CpuidResults;
-use super::CPUID_LEAF_B_MAX_SUBLEAF_INDEX;
 use super::MAX_EXTENDED_STATE_ENUMERATION_SUBLEAF;
 use core::arch::x86_64::CpuidResult;
 use x86defs::cpuid;

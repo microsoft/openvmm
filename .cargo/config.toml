@@ -2,8 +2,8 @@
 # Licensed under the MIT License.
 
 [alias]
-xflowey = "run --quiet -p flowey_trampoline -- run -p flowey_hvlite --profile flowey -- pipeline run"
-xtask = "run -p xtask --profile xtask --"
+xflowey = "run -p flowey_hvlite -- pipeline run"
+xtask = "run -p xtask --profile light --"
 
 [env]
 # Use the packaged openssl libraries on musl targets.
@@ -89,6 +89,10 @@ rustflags = [
 rustflags = [
   # Use the musl from the sysroot, not from the Rust distribution.
   "-Clink-self-contained=n",
+  # Force musl to be statically linked in
+  "-Ctarget-feature=+crt-static",
+  # Use RELR relocation format, which is considerably smaller.
+  "-Clink-arg=-Wl,-z,pack-relative-relocs",
 ]
 
 [target.'cfg(all(target_arch = "aarch64", target_env = "musl"))']
@@ -109,6 +113,13 @@ rustflags = [
   # Enable v0 symbols to get better output from `perf` and related tools.
   "-Csymbol-mangling-version=v0",
 
+  # Treat warnings as errors in CI.
+### ENABLE_IN_CI "-Dwarnings",
+]
+
+# Specify a common set of rustdocflags for all targets.
+[build]
+rustdocflags = [
   # Treat warnings as errors in CI.
 ### ENABLE_IN_CI "-Dwarnings",
 ]

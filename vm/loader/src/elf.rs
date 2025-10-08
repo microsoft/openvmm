@@ -14,10 +14,10 @@ use crate::importer::GuestArch;
 use crate::importer::GuestArchKind;
 use crate::importer::ImageLoad;
 use hvdef::HV_PAGE_SIZE;
-use object::elf;
-use object::read::elf::FileHeader;
 use object::ReadCache;
 use object::ReadRef;
+use object::elf;
+use object::read::elf::FileHeader;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -35,7 +35,9 @@ pub enum Error {
     TargetMachineMismatch,
     #[error("unsupported ELF file byte order")]
     BigEndianElfOnLittle,
-    #[error("invalid entry address found in ELF header: {e_entry:#x}, start address: {start_address:#x}, load offset: {load_offset:#x}")]
+    #[error(
+        "invalid entry address found in ELF header: {e_entry:#x}, start address: {start_address:#x}, load offset: {load_offset:#x}"
+    )]
     InvalidEntryAddress {
         e_entry: u64,
         start_address: u64,
@@ -164,7 +166,7 @@ where
 
         // Read in each section pointed to by the program headers.
         for phdr in phdrs {
-            if phdr.p_type.get(LE) != elf::PT_LOAD || phdr.p_filesz.get(LE) == 0 {
+            if phdr.p_type.get(LE) != elf::PT_LOAD {
                 continue;
             }
 
@@ -206,7 +208,7 @@ where
     // During the second pass, read in each section pointed to by the program headers,
     // and import into the guest memory.
     for phdr in phdrs {
-        if phdr.p_type.get(LE) != elf::PT_LOAD || phdr.p_filesz.get(LE) == 0 {
+        if phdr.p_type.get(LE) != elf::PT_LOAD {
             continue;
         }
 
@@ -248,9 +250,11 @@ where
         let page_base = mem_offset / HV_PAGE_SIZE;
         let page_count =
             ((mem_offset & page_mask) + phdr.p_memsz.get(LE) + page_mask) / HV_PAGE_SIZE;
-        importer
-            .import_pages(page_base, page_count, tag, acceptance, &v)
-            .map_err(Error::ImportPages)?;
+        if page_count > 0 {
+            importer
+                .import_pages(page_base, page_count, tag, acceptance, &v)
+                .map_err(Error::ImportPages)?;
+        }
     }
 
     Ok(LoadInfo {

@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::BusIdPci;
 use crate::chipset::PciConflict;
 use crate::chipset::PciConflictReason;
-use crate::BusIdPci;
 use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use std::collections::HashMap;
@@ -65,10 +65,6 @@ impl BusResolverWeakMutexPci {
             }
         }
 
-        if !errs.is_empty() {
-            Err(errs)
-        } else {
-            Ok(())
-        }
+        if !errs.is_empty() { Err(errs) } else { Ok(()) }
     }
 }

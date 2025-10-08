@@ -9,8 +9,8 @@ use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::os::windows::prelude::*;
-use std::ptr::null_mut;
 use std::ptr::NonNull;
+use std::ptr::null_mut;
 use std::str::FromStr;
 use widestring::U16CStr;
 use widestring::U16CString;
@@ -31,8 +31,8 @@ use winapi::um::winnt::PHANDLE;
 use winapi::um::winnt::PSECURITY_DESCRIPTOR;
 use winapi::um::winnt::PSID;
 use winapi::um::winnt::SACL_SECURITY_INFORMATION;
-use winapi::um::winnt::SECURITY_CAPABILITIES;
 use winapi::um::winnt::SE_GROUP_ENABLED;
+use winapi::um::winnt::SECURITY_CAPABILITIES;
 use winapi::um::winnt::SID_AND_ATTRIBUTES;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
@@ -317,7 +317,11 @@ impl SecurityDescriptor {
     }
 }
 
-#[link(name = "api-ms-win-security-base-private-l1-1-1")]
+#[link(
+    name = "api-ms-win-security-base-private-l1-1-1.dll",
+    kind = "raw-dylib",
+    modifiers = "+verbatim"
+)]
 unsafe extern "C" {
     fn CreateAppContainerToken(
         token: HANDLE,

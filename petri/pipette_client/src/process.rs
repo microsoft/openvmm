@@ -5,9 +5,9 @@
 
 use crate::PipetteClient;
 use anyhow::Context;
+use futures::AsyncReadExt;
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
-use futures::AsyncReadExt;
 use futures_concurrency::future::Join;
 use mesh::pipe::ReadPipe;
 use mesh::pipe::WritePipe;

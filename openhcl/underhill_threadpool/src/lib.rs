@@ -1,17 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
 #![cfg(target_os = "linux")]
 
 //! The Underhill per-CPU thread pool used to run async tasks and IO.
 //!
 //! This is built on top of [`pal_uring`] and [`pal_async`].
 
-#![warn(missing_docs)]
-// UNSAFETY: needed for saving per-thread state.
-#![expect(unsafe_code)]
+#![forbid(unsafe_code)]
 
+use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
+use loan_cell::LoanCell;
 use pal::unix::affinity::CpuSet;
 use pal_async::fd::FdReadyDriver;
 use pal_async::task::Runnable;
@@ -30,16 +31,15 @@ use pal_uring::IoUringPool;
 use pal_uring::PoolClient;
 use pal_uring::Timer;
 use parking_lot::Mutex;
-use std::cell::Cell;
 use std::future::poll_fn;
 use std::io;
 use std::marker::PhantomData;
 use std::os::fd::RawFd;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::Arc;
-use std::sync::OnceLock;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
@@ -152,7 +152,7 @@ impl ThreadpoolBuilder {
             let online_cpus = fs_err::read_to_string("/sys/devices/system/cpu/online")?;
             affinity
                 .set_mask_list(&online_cpus)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                .map_err(io::Error::other)?;
         }
 
         // Set the current thread's affinity so that allocations for the worker
@@ -164,6 +164,7 @@ impl ThreadpoolBuilder {
                 // because the thread will probably get allocated with the wrong node,
                 // but it's recoverable.
                 tracing::warn!(
+                    CVM_ALLOWED,
                     cpu,
                     error = &err as &dyn std::error::Error,
                     "could not set package affinity for thread pool thread"
@@ -198,32 +199,32 @@ impl ThreadpoolBuilder {
                 };
 
                 let driver = driver;
-                {
+                let notifier = {
                     let mut state = driver.inner.state.lock();
                     state.spawned = true;
-                    if let Some(notifier) = state.notifier.take() {
-                        (notifier.0)();
-                    }
                     if online {
                         // There cannot be any waiters yet since they can only
                         // be registered from the current thread.
                         driver.inner.affinity_set.store(true, Relaxed);
                         state.affinity = AffinityState::Set;
                     }
-                }
+                    state.notifier.take()
+                };
 
                 send.send(Ok(pool.client().clone())).ok();
 
                 // Store the current thread's driver so that spawned tasks can
-                // find it via `Thread::current()`.
-                CURRENT_THREADPOOL_CPU.with(|current| {
-                    current.set(std::ptr::from_ref(&driver));
+                // find it via `Thread::current()`. Do this via a loan instead
+                // of storing it directly in TLS to avoid the overhead of
+                // registering a destructor.
+                CURRENT_THREAD_DRIVER.with(|current| {
+                    current.lend(&driver, || {
+                        if let Some(notifier) = notifier {
+                            (notifier.0)();
+                        }
+                        pool.run()
+                    });
                 });
-                pool.run();
-                CURRENT_THREADPOOL_CPU.with(|current| {
-                    current.set(std::ptr::null());
-                });
-                drop(driver);
             })?;
 
         // Wait for the pool to be initialized.
@@ -360,33 +361,27 @@ impl Initiate for AffinitizedThreadpool {
 /// The state for the thread pool thread for the currently running CPU.
 #[derive(Debug, Copy, Clone)]
 pub struct Thread {
-    driver: &'static ThreadpoolDriver,
     _not_send_sync: PhantomData<*const ()>,
 }
 
 impl Thread {
-    /// Returns a new driver for the current CPU.
+    /// Returns an instance for the current CPU.
     pub fn current() -> Option<Self> {
-        let inner = CURRENT_THREADPOOL_CPU.with(|current| {
-            let p = current.get();
-            // SAFETY: the `ThreadpoolDriver` is on the current thread's stack
-            // and so is guaranteed to be valid. And since `Thread` is not
-            // `Send` or `Sync`, this reference cannot be accessed after the
-            // driver has been dropped, since any task that can construct a
-            // `Thread` will have been completed by that time. So it's OK for
-            // this reference to live as long as `Thread`.
-            (!p.is_null()).then(|| unsafe { &*p })
-        })?;
+        if !CURRENT_THREAD_DRIVER.with(|current| current.is_lent()) {
+            return None;
+        }
         Some(Self {
-            driver: inner,
             _not_send_sync: PhantomData,
         })
     }
 
-    fn once(&self) -> &ThreadpoolDriverOnce {
-        // Since we are on the thread, the thread is guaranteed to have been
-        // initialized.
-        self.driver.inner.once.get().unwrap()
+    /// Calls `f` with the driver for the current thread.
+    pub fn with_driver<R>(&self, f: impl FnOnce(&ThreadpoolDriver) -> R) -> R {
+        CURRENT_THREAD_DRIVER.with(|current| current.borrow(|driver| f(driver.unwrap())))
+    }
+
+    fn with_once<R>(&self, f: impl FnOnce(&ThreadpoolDriver, &ThreadpoolDriverOnce) -> R) -> R {
+        self.with_driver(|driver| f(driver, driver.inner.once.get().unwrap()))
     }
 
     /// Sets the idle task to run. The task is returned by `f`, which receives
@@ -395,61 +390,56 @@ impl Thread {
     /// The idle task is run before waiting on the IO ring. The idle task can
     /// block synchronously by first calling [`IdleControl::pre_block`], and
     /// then by polling on the IO ring while the task blocks.
-    pub fn set_idle_task<F, Fut>(&self, f: F)
+    pub fn set_idle_task<F>(&self, f: F)
     where
-        F: 'static + Send + FnOnce(IdleControl) -> Fut,
-        Fut: std::future::Future<Output = ()>,
+        F: 'static + Send + AsyncFnOnce(IdleControl),
     {
-        self.once().client.set_idle_task(f)
-    }
-
-    /// Returns the driver for the current thread.
-    pub fn driver(&self) -> &ThreadpoolDriver {
-        self.driver
+        self.with_once(|_, once| once.client.set_idle_task(f))
     }
 
     /// Tries to set the affinity to this thread's intended CPU, if it has not
     /// already been set. Returns `Ok(false)` if the intended CPU is still
     /// offline.
     pub fn try_set_affinity(&self) -> Result<bool, SetAffinityError> {
-        let mut state = self.driver.inner.state.lock();
-        if matches!(state.affinity, AffinityState::Set) {
-            return Ok(true);
-        }
-        if !is_cpu_online(self.driver.inner.cpu).map_err(SetAffinityError::Online)? {
-            return Ok(false);
-        }
-
-        let mut affinity = CpuSet::new();
-        affinity.set(self.driver.inner.cpu);
-
-        pal::unix::affinity::set_current_thread_affinity(&affinity)
-            .map_err(SetAffinityError::Thread)?;
-        self.once()
-            .client
-            .set_iowq_affinity(&affinity)
-            .map_err(SetAffinityError::Ring)?;
-
-        let old_affinity_state = std::mem::replace(&mut state.affinity, AffinityState::Set);
-        self.driver.inner.affinity_set.store(true, Relaxed);
-        drop(state);
-
-        match old_affinity_state {
-            AffinityState::Waiting(wakers) => {
-                for waker in wakers {
-                    waker.wake();
-                }
+        self.with_once(|driver, once| {
+            let mut state = driver.inner.state.lock();
+            if matches!(state.affinity, AffinityState::Set) {
+                return Ok(true);
             }
-            AffinityState::Set => unreachable!(),
-        }
-        Ok(true)
+            if !is_cpu_online(driver.inner.cpu).map_err(SetAffinityError::Online)? {
+                return Ok(false);
+            }
+
+            let mut affinity = CpuSet::new();
+            affinity.set(driver.inner.cpu);
+
+            pal::unix::affinity::set_current_thread_affinity(&affinity)
+                .map_err(SetAffinityError::Thread)?;
+            once.client
+                .set_iowq_affinity(&affinity)
+                .map_err(SetAffinityError::Ring)?;
+
+            let old_affinity_state = std::mem::replace(&mut state.affinity, AffinityState::Set);
+            driver.inner.affinity_set.store(true, Relaxed);
+            drop(state);
+
+            match old_affinity_state {
+                AffinityState::Waiting(wakers) => {
+                    for waker in wakers {
+                        waker.wake();
+                    }
+                }
+                AffinityState::Set => unreachable!(),
+            }
+            Ok(true)
+        })
     }
 
     /// Returns the that caused this thread to spawn.
     ///
     /// Returns `None` if the thread was spawned to issue IO.
-    pub fn first_task(&self) -> Option<&TaskInfo> {
-        self.once().first_task.as_ref()
+    pub fn first_task(&self) -> Option<TaskInfo> {
+        self.with_once(|_, once| once.first_task.clone())
     }
 }
 
@@ -468,12 +458,12 @@ pub enum SetAffinityError {
 }
 
 thread_local! {
-    static CURRENT_THREADPOOL_CPU: Cell<*const ThreadpoolDriver> = const { Cell::new(std::ptr::null()) };
+    static CURRENT_THREAD_DRIVER: LoanCell<ThreadpoolDriver> = const { LoanCell::new() };
 }
 
 impl SpawnLocal for Thread {
     fn scheduler_local(&self, metadata: &TaskMetadata) -> Arc<dyn Schedule> {
-        self.driver.scheduler(metadata).clone()
+        self.with_driver(|driver| driver.scheduler(metadata).clone())
     }
 }
 
@@ -506,7 +496,7 @@ struct ThreadpoolDriverOnce {
 }
 
 /// Information about a task that caused a thread to spawn.
-#[derive(Debug, Inspect)]
+#[derive(Debug, Clone, Inspect)]
 pub struct TaskInfo {
     /// The name of the task.
     pub name: Arc<str>,
@@ -610,15 +600,14 @@ impl ThreadpoolDriver {
 
     /// Sets a function to be called when the thread gets spawned.
     ///
-    /// Return false if the thread is already spawned.
-    pub fn set_spawn_notifier(&self, f: impl 'static + Send + FnOnce()) -> bool {
-        let notifier = AffinityNotifier(Box::new(f));
+    /// Return `Err(f)` if the thread is already spawned.
+    pub fn set_spawn_notifier<F: 'static + Send + FnOnce()>(&self, f: F) -> Result<(), F> {
         let mut state = self.inner.state.lock();
         if !state.spawned {
-            state.notifier = Some(notifier);
-            true
+            state.notifier = Some(AffinityNotifier(Box::new(f)));
+            Ok(())
         } else {
-            false
+            Err(f)
         }
     }
 }

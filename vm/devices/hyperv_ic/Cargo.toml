@@ -3,7 +3,7 @@
 
 [package]
 name = "hyperv_ic"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -15,7 +15,12 @@ vmbus_channel.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
+pal_async.workspace = true
+tracelimit.workspace = true
+
+anyhow.workspace = true
 inspect.workspace = true
+jiff.workspace = true
 mesh.workspace = true
 task_control.workspace = true
 async-trait.workspace = true
@@ -24,9 +29,6 @@ futures-concurrency.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-zerocopy_helpers.workspace = true
-
-[dev-dependencies]
 
 [lints]
 workspace = true

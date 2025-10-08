@@ -4,7 +4,8 @@
 use crate::tests::common::run_wide_test;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 use x86emu::MAX_REP_LOOPS;
 
 #[test]
@@ -19,18 +20,20 @@ fn outs() {
 
     for (instruction, value, size) in variations.into_iter() {
         for direction in [false, true] {
-            let (state, cpu) = run_wide_test(
+            let mut cpu = run_wide_test(
                 RFlags::new(),
                 true,
                 |asm| instruction(asm),
-                |state, cpu| {
+                |cpu| {
                     let port = 0x3f9;
                     cpu.valid_io_port = port;
-                    state.gps[CpuState::RDX] = port.into();
+                    cpu.set_gp(Gp::RDX.into(), port.into());
 
-                    state.rflags.set_direction(direction);
+                    let mut rflags = cpu.rflags();
+                    rflags.set_direction(direction);
+                    cpu.set_rflags(rflags);
 
-                    state.gps[CpuState::RSI] = START_GVA;
+                    cpu.set_gp(Gp::RSI.into(), START_GVA);
                     cpu.valid_gva = START_GVA;
                     cpu.mem_val = vec![0xAA, 0xAA, 0xAA, 0xAA];
                 },
@@ -38,7 +41,7 @@ fn outs() {
 
             assert_eq!(cpu.io_val, value);
             assert_eq!(
-                state.gps[CpuState::RSI],
+                cpu.gp(Gp::RSI.into()),
                 START_GVA.wrapping_add(if direction { size.wrapping_neg() } else { size })
             );
         }
@@ -62,21 +65,24 @@ fn rep_outs() {
                 *val = (index as u8).wrapping_mul(index as u8); // Create a decently random pattern
             }
 
-            let (state, cpu) = run_wide_test(
+            let mut cpu = run_wide_test(
                 RFlags::new(),
                 len <= MAX_REP_LOOPS,
                 |asm| instr(asm.rep()),
-                |state, cpu| {
-                    cpu.valid_gva = state.gps[CpuState::RSI];
+                |cpu| {
+                    cpu.valid_gva = cpu.gp(Gp::RSI.into());
                     cpu.mem_val.clone_from(&input_vec);
                     cpu.valid_io_port = PORT;
-                    state.gps[CpuState::RDX] = PORT.into();
-                    state.gps[CpuState::RCX] = len;
-                    state.rflags.set_direction(false);
+                    cpu.set_gp(Gp::RDX.into(), PORT.into());
+                    cpu.set_gp(Gp::RCX.into(), len);
+
+                    let mut rflags = cpu.rflags();
+                    rflags.set_direction(false);
+                    cpu.set_rflags(rflags);
                 },
             );
 
-            assert_eq!(state.gps[CpuState::RCX], len.saturating_sub(MAX_REP_LOOPS));
+            assert_eq!(cpu.gp(Gp::RCX.into()), len.saturating_sub(MAX_REP_LOOPS));
             assert_eq!(
                 cpu.io_val.len() as u64,
                 std::cmp::min(len, MAX_REP_LOOPS) * width

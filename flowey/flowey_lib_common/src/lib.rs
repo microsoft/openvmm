@@ -6,8 +6,8 @@
 //! These nodes can be considered "building blocks" that project-specific flows
 //! can leverage to quickly get up and running.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![warn(missing_docs)] // TODO: lots to do here
 
 pub mod _util;
 pub mod ado_task_azure_key_vault;
@@ -23,6 +23,7 @@ pub mod copy_to_artifact_dir;
 pub mod download_azcopy;
 pub mod download_cargo_fuzz;
 pub mod download_cargo_nextest;
+pub mod download_gh_artifact;
 pub mod download_gh_cli;
 pub mod download_gh_release;
 pub mod download_mdbook;
@@ -30,10 +31,15 @@ pub mod download_mdbook_admonish;
 pub mod download_mdbook_mermaid;
 pub mod download_nuget_exe;
 pub mod download_protoc;
+pub mod gen_cargo_nextest_run_cmd;
 pub mod gh_download_azure_key_vault_secret;
+pub mod gh_latest_completed_workflow_id;
 pub mod gh_task_azure_login;
+pub mod gh_workflow_id;
 pub mod git_checkout;
+pub mod git_merge_commit;
 pub mod install_azure_cli;
+pub mod install_cargo_nextest;
 pub mod install_dist_pkg;
 pub mod install_git;
 pub mod install_nodejs;

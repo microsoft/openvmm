@@ -2,16 +2,16 @@
 // Licensed under the MIT License.
 
 use super::Error;
-use crate::regs::hv_register_to_whp;
-use crate::regs::ToWhpRegister;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
 use crate::WhpVpRef;
+use crate::regs::ToWhpRegister;
+use crate::regs::hv_register_to_whp;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
 use virt::state::HvRegisterState;
 use whp::abi::WHV_REGISTER_VALUE;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 pub struct WhpVpStateAccess<'a, 'b> {
     run: &'a mut WhpProcessor<'b>,
@@ -20,7 +20,7 @@ pub struct WhpVpStateAccess<'a, 'b> {
 
 impl<'a> WhpProcessor<'a> {
     pub(crate) fn access_state(&mut self, vtl: Vtl) -> WhpVpStateAccess<'_, 'a> {
-        self.reset_if_requested().unwrap();
+        self.reset_if_requested();
         WhpVpStateAccess { run: self, vtl }
     }
 }
@@ -75,8 +75,8 @@ mod x86 {
     use virt::state::StateElement;
     use virt::x86::vp;
     use virt::x86::vp::AccessVpState;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     impl AccessVpState for WhpVpStateAccess<'_, '_> {
         type Error = Error;
@@ -251,7 +251,7 @@ mod x86 {
                         .whp(self.vtl)
                         .get_state(
                             whp::abi::WHvVirtualProcessorStateTypeSynicTimerState,
-                            state.as_bytes_mut(),
+                            state.as_mut_bytes(),
                         )
                         .for_op("get synic timer state")?;
                     Ok(vp::SynicTimers::from_hv(state))

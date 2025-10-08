@@ -5,7 +5,6 @@
 //! [`disk_backend`] types.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use disk_backend::pr;
 use nvme_spec::nvm;

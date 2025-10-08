@@ -11,6 +11,9 @@ use vm_resource::CanResolveTo;
 pub enum TpmAkCertType {
     /// No Ak cert.
     None,
+    /// Expects an AK cert that is not hardware-attested
+    /// to be pre-provisioned. Used by TVM
+    TrustedPreProvisionedOnly,
     /// Authorized AK cert that is not hardware-attested.
     /// Used by TVM
     Trusted(Arc<dyn RequestAkCert>),
@@ -18,6 +21,10 @@ pub enum TpmAkCertType {
     /// a TEE attestation report).
     /// Used by CVM
     HwAttested(Arc<dyn RequestAkCert>),
+    /// Authorized and software-attested AK cert (backed by
+    /// a software-based VM attestation report).
+    /// Used by Vbs VM
+    SwAttested(Arc<dyn RequestAkCert>),
 }
 
 impl TpmAkCertType {
@@ -25,8 +32,19 @@ impl TpmAkCertType {
     pub fn get_ak_cert_helper(&self) -> Option<&Arc<dyn RequestAkCert>> {
         match self {
             TpmAkCertType::HwAttested(helper) => Some(helper),
+            TpmAkCertType::SwAttested(helper) => Some(helper),
             TpmAkCertType::Trusted(helper) => Some(helper),
+            TpmAkCertType::TrustedPreProvisionedOnly => None,
             TpmAkCertType::None => None,
+        }
+    }
+
+    pub fn attested(&self) -> bool {
+        match self {
+            TpmAkCertType::HwAttested(_) | TpmAkCertType::SwAttested(_) => true,
+            TpmAkCertType::Trusted(_)
+            | TpmAkCertType::TrustedPreProvisionedOnly
+            | TpmAkCertType::None => false,
         }
     }
 }
@@ -36,7 +54,7 @@ impl CanResolveTo<ResolvedRequestAkCert> for RequestAkCertKind {
     type Input<'a> = &'a ();
 }
 
-/// A resolved get attestation report helper resource.
+/// A resolved request AK cert helper resource.
 pub struct ResolvedRequestAkCert(pub Arc<dyn RequestAkCert>);
 
 impl<T: 'static + RequestAkCert> From<T> for ResolvedRequestAkCert {
@@ -56,6 +74,7 @@ pub trait RequestAkCert: Send + Sync {
         ek_pub_modulus: &[u8],
         ek_pub_exponent: &[u8],
         guest_input: &[u8],
+        is_attestation_report: bool,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Helper function to request an AK cert.

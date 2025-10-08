@@ -3,9 +3,9 @@
 
 //! Structs to parse aarch64 instructions.
 
+use crate::Cpu;
 use crate::emulator::EmulatorOperations;
 use crate::emulator::Error;
-use crate::Cpu;
 
 #[derive(Debug, PartialEq)]
 pub enum Aarch64DecodeGroup {
@@ -133,28 +133,28 @@ fn decode_load_store_group<E>(opcode: u32) -> Result<Aarch64DecodeLoadStoreGroup
             Aarch64DecodeLoadStoreGroup::RegisterUnsignedImmediate
         }
         3 | 7 | 11 | 15 if op4 == 0 => {
-            if (op3 & 0x60) != 0 {
+            if (op3 & 0x20) != 0 {
                 Aarch64DecodeLoadStoreGroup::Atomic
             } else {
                 Aarch64DecodeLoadStoreGroup::RegisterUnscaledImmediate
             }
         }
         3 | 7 | 11 | 15 if op4 == 1 => {
-            if (op3 & 0x60) != 0 {
+            if (op3 & 0x20) != 0 {
                 Aarch64DecodeLoadStoreGroup::RegisterPac
             } else {
                 Aarch64DecodeLoadStoreGroup::RegisterImmediatePostIndex
             }
         }
         3 | 7 | 11 | 15 if op4 == 2 => {
-            if (op3 & 0x60) != 0 {
+            if (op3 & 0x20) != 0 {
                 Aarch64DecodeLoadStoreGroup::RegisterOffset
             } else {
                 Aarch64DecodeLoadStoreGroup::RegisterUnprivileged
             }
         }
         3 | 7 | 11 | 15 => {
-            if (op3 & 0x60) != 0 {
+            if (op3 & 0x20) != 0 {
                 Aarch64DecodeLoadStoreGroup::RegisterPac
             } else {
                 Aarch64DecodeLoadStoreGroup::RegisterImmediatePreIndex
@@ -333,7 +333,7 @@ impl LoadStoreRegister {
                     let size = self.data_size()?;
                     match size {
                         LoadStoreRegisterByteCount::One => {
-                            return Err(Box::new(Error::UnsupportedInstruction(self.0)))
+                            return Err(Box::new(Error::UnsupportedInstruction(self.0)));
                         }
                         LoadStoreRegisterByteCount::Two => offset << 1,
                         LoadStoreRegisterByteCount::Four => offset << 2,
@@ -776,7 +776,7 @@ impl LoadStoreAtomic {
                     return Err(Box::new(Error::UnsupportedLoadStoreInstruction(
                         Aarch64DecodeLoadStoreGroup::Atomic,
                         self.0,
-                    )))
+                    )));
                 }
             };
             let new_value = value & !size_mask | new_value & size_mask;

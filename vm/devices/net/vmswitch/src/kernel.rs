@@ -28,7 +28,7 @@ impl KernelVmNic {
         friendly_name: &str,
         mac_address: [u8; 6],
         instance_id: &Guid,
-        vmbus_handle: &OwnedHandle,
+        vmbus_handle: BorrowedHandle<'_>,
     ) -> io::Result<Self> {
         let full_nic_name = format!("{}--{}", vm_id, nic_name);
         let path = format!(r#"\\.\VmSwitch\{}"#, &full_nic_name);
@@ -36,7 +36,7 @@ impl KernelVmNic {
         // BUGBUG: Generate a random partition ID since the switch relies on
         // this being unique or the machine will bugcheck. Fix the switch.
         let mut partition_id = [0; 8];
-        getrandom::getrandom(&mut partition_id).expect("rng failure");
+        getrandom::fill(&mut partition_id).expect("rng failure");
 
         let handle = unsafe {
             let mut raw_handle = null_mut();
@@ -116,7 +116,7 @@ impl KernelVmNic {
 
 #[derive(Debug)]
 // Just a newtype to give a better name and ergonomics, field needs to be held to keep handle alive.
-pub struct SwitchPort(#[allow(dead_code)] OwnedHandle);
+pub struct SwitchPort(#[expect(dead_code)] OwnedHandle);
 
 impl SwitchPort {
     pub fn new(id: &SwitchPortId) -> io::Result<Self> {

@@ -6,15 +6,16 @@ use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use hvlite_defs::config::UefiConsoleMode;
 use loader::importer::Register;
-use loader::uefi::config;
 use loader::uefi::IMAGE_SIZE;
+use loader::uefi::config;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ProcessorTopology;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -22,6 +23,8 @@ pub enum Error {
     Firmware(#[source] std::io::Error),
     #[error("uefi loader error")]
     Loader(#[source] loader::uefi::Error),
+    #[error("UEFI requires at least two MMIO ranges")]
+    UnsupportedMmio,
 }
 
 pub struct UefiLoadSettings {
@@ -34,6 +37,7 @@ pub struct UefiLoadSettings {
     pub vpci_boot: bool,
     pub serial: bool,
     pub uefi_console_mode: Option<UefiConsoleMode>,
+    pub default_boot_always_attempt: bool,
 }
 
 /// Loads the UEFI firmware.
@@ -44,12 +48,16 @@ pub fn load_uefi(
     gm: &GuestMemory,
     processor_topology: &ProcessorTopology,
     mem_layout: &MemoryLayout,
+    pcie_host_bridges: &Vec<PcieHostBridge>,
     load_settings: UefiLoadSettings,
     madt: &[u8],
     srat: &[u8],
+    mcfg: Option<&[u8]>,
     pptt: Option<&[u8]>,
 ) -> Result<Vec<Register>, Error> {
-    assert!(mem_layout.mmio().len() >= 2, "UEFI expects 2 MMIO gaps");
+    if mem_layout.mmio().len() < 2 {
+        return Err(Error::UnsupportedMmio);
+    }
 
     let mut loaded_image;
     let image = {
@@ -62,7 +70,7 @@ pub fn load_uefi(
     };
 
     let mut entropy = [0; 64];
-    getrandom::getrandom(&mut entropy).expect("rng failure");
+    getrandom::fill(&mut entropy).expect("rng failure");
 
     let memory_map: Vec<_> = mem_layout
         .ram()
@@ -107,7 +115,8 @@ pub fn load_uefi(
                 UefiConsoleMode::Com2 => config::ConsolePort::Com2,
                 UefiConsoleMode::None => config::ConsolePort::None,
             },
-        );
+        )
+        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {
@@ -149,8 +158,27 @@ pub fn load_uefi(
         });
     }
 
+    if let Some(mcfg) = mcfg {
+        cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);
+    }
+
     if let Some(pptt) = pptt {
         cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+    }
+
+    if !pcie_host_bridges.is_empty() {
+        let mut ssdt = acpi::ssdt::Ssdt::new();
+        for bridge in pcie_host_bridges {
+            ssdt.add_pcie(
+                bridge.index,
+                bridge.segment,
+                bridge.start_bus,
+                bridge.end_bus,
+                bridge.low_mmio,
+                bridge.high_mmio,
+            );
+        }
+        cfg.add_raw(config::BlobStructureType::Ssdt, &ssdt.to_bytes());
     }
 
     let mut loader = Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);

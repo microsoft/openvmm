@@ -3,7 +3,7 @@
 
 [package]
 name = "disklayer_sqlite"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -18,6 +18,7 @@ inspect = { workspace = true, features = ["filepath"] }
 
 anyhow.workspace = true
 blocking.workspace = true
+fs-err.workspace = true
 futures.workspace = true
 # NOTE: this crate does not rely on any particularly "modern" sqlite features at
 # the moment, and does not require the use of the "bundled" feature to build +

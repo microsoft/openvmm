@@ -51,7 +51,7 @@ impl FlowNode for Node {
             persist_credentials: false,
         });
 
-        ctx.emit_rust_step("resolve OpenVMM repo requests", move |ctx| {
+        ctx.emit_minor_rust_step("resolve OpenVMM repo requests", move |ctx| {
             let path = path.claim(ctx);
             let vars = reqs.claim(ctx);
             move |rt| {
@@ -59,8 +59,6 @@ impl FlowNode for Node {
                 for var in vars {
                     rt.write(var, &path)
                 }
-
-                Ok(())
             }
         });
 

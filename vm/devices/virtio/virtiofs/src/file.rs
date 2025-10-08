@@ -3,14 +3,14 @@
 
 use crate::inode::VirtioFsInode;
 use crate::util;
+use fuse::DirEntryWriter;
 use fuse::protocol::fuse_attr;
 use fuse::protocol::fuse_entry_out;
 use fuse::protocol::fuse_setattr_in;
-use fuse::DirEntryWriter;
 use lxutil::LxFile;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 /// Implements file callbacks for virtio-fs.
 pub struct VirtioFsFile {

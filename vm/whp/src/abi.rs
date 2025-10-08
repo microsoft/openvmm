@@ -1,12 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
-    clippy::upper_case_acronyms,
-    non_camel_case_types,
-    non_snake_case,
-    non_upper_case_globals
-)]
+#![expect(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
 mod arm64;
 mod x64;
@@ -254,7 +249,7 @@ pub const WHvPartitionPropertyCodeMsrActionList: WHV_PARTITION_PROPERTY_CODE =
 #[cfg(target_arch = "x86_64")]
 pub const WHvPartitionPropertyCodeUnimplementedMsrAction: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00001010);
-pub const WhvPartitionPropertyCodePhysicalAddressWidth: WHV_PARTITION_PROPERTY_CODE =
+pub const WHvPartitionPropertyCodePhysicalAddressWidth: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00001011);
 pub const WHvPartitionPropertyCodeArm64IcParameters: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00001012);

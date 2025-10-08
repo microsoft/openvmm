@@ -3,6 +3,9 @@
 
 //! A chipset for fuzz-testing devices.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 use chipset_arc_mutex_device::device::ArcMutexChipsetDeviceBuilder;
 use chipset_arc_mutex_device::device::ArcMutexChipsetServicesFinalize;
 use chipset_arc_mutex_device::services::ChipsetServices;
@@ -11,13 +14,13 @@ use chipset_arc_mutex_device::services::MmioInterceptServices;
 use chipset_arc_mutex_device::services::PciConfigSpaceServices;
 use chipset_arc_mutex_device::services::PollDeviceServices;
 use chipset_arc_mutex_device::services::PortIoInterceptServices;
-use chipset_device::io::deferred::DeferredToken;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
-use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use parking_lot::RwLock;
 use range_map_vec::RangeMap;
@@ -27,6 +30,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 use zerocopy::FromBytes;
 
 type InterceptRanges<U> =
@@ -155,7 +159,7 @@ impl FuzzChipset {
         let result = locked_dev
             .supports_pci()
             .expect("objects on the pci bus support pci")
-            .pci_cfg_read(offset, u32::mut_from(data).unwrap());
+            .pci_cfg_read(offset, u32::mut_from_bytes(data).unwrap());
         match result {
             IoResult::Ok => {}
             IoResult::Err(_) => {
@@ -190,7 +194,7 @@ impl FuzzChipset {
             .lock()
             .supports_poll_device()
             .expect("objects supporting polling support polling")
-            .poll_device(&mut Context::from_waker(futures::task::noop_waker_ref()));
+            .poll_device(&mut Context::from_waker(Waker::noop()));
         Some(())
     }
 
@@ -201,7 +205,7 @@ impl FuzzChipset {
         mut t: DeferredToken,
         data: &mut [u8],
     ) {
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut cx = Context::from_waker(Waker::noop());
         let dev = dev
             .supports_poll_device()
             .expect("objects returning a DeferredToken support polling");
@@ -218,7 +222,9 @@ impl FuzzChipset {
             }
         }
         if self.max_defer_poll_count == 0 {
-            panic!("Device operation returned a deferred read. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations.");
+            panic!(
+                "Device operation returned a deferred read. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations."
+            );
         } else {
             panic!(
                 "Device operation returned a deferred read that didn't complete after {} polls",
@@ -229,7 +235,7 @@ impl FuzzChipset {
 
     /// Poll a deferred write once, panic if it isn't complete afterwards.
     fn defer_write_now_or_never(&self, dev: &mut dyn ChipsetDevice, mut t: DeferredToken) {
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut cx = Context::from_waker(Waker::noop());
         let dev = dev
             .supports_poll_device()
             .expect("objects returning a DeferredToken support polling");
@@ -246,7 +252,9 @@ impl FuzzChipset {
             }
         }
         if self.max_defer_poll_count == 0 {
-            panic!("Device operation returned a deferred write. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations.");
+            panic!(
+                "Device operation returned a deferred write. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations."
+            );
         } else {
             panic!(
                 "Device operation returned a deferred write that didn't complete after {} polls",
@@ -453,7 +461,6 @@ macro_rules! impl_intercept {
             fn offset_of(&self, addr: $usize) -> Option<$usize> {
                 let base = self.addr?;
 
-                #[allow(clippy::unnecessary_lazy_evaluations)] // prevents underflow error
                 (base..(base + self.len))
                     .contains(&addr)
                     .then(|| addr - base)

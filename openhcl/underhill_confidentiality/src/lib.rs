@@ -3,7 +3,6 @@
 
 //! A source of information for Underhill confidentiality configuration.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 #![no_std]
 

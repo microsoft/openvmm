@@ -3,7 +3,7 @@
 
 [package]
 name = "generation_id"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

@@ -3,7 +3,6 @@
 
 #![cfg(with_encryption)]
 
-#[allow(unused_macros)]
 macro_rules! activate {
     ($plat:ident) => {
         mod $plat;

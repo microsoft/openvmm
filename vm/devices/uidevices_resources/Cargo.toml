@@ -3,7 +3,7 @@
 
 [package]
 name = "uidevices_resources"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

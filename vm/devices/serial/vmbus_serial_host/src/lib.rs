@@ -3,7 +3,7 @@
 
 //! The host (server) side implementation of a VMBUS based serial device.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod resolver;
 
@@ -17,28 +17,30 @@ use serial_core::SerialIo;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::future::poll_fn;
 use std::future::Future;
-use std::pin::pin;
+use std::future::poll_fn;
 use std::pin::Pin;
-use std::task::ready;
+use std::pin::pin;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use task_control::StopTask;
 use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmbus_serial_protocol as protocol;
 use vmcore::save_restore::SavedStateNotSupported;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// The error type returned by the serial device.
 #[derive(Debug, Error)]
@@ -241,7 +243,7 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
     async fn process_init(&mut self) -> Result<(), Error> {
         // Negotiate transport version with the client.
         let mut version_request = protocol::VersionRequestMessage::default();
-        self.read_pipe(version_request.as_bytes_mut()).await?;
+        self.read_pipe(version_request.as_mut_bytes()).await?;
         tracing::trace!(?version_request);
 
         if version_request.header != protocol::Header::new_host_request(HostRequests::VERSION) {
@@ -349,7 +351,10 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
     }
 
     /// Writes to the pipe. The caller must guarantee that there is enough space.
-    fn write_pipe(&mut self, message: impl AsBytes) -> Result<(), Error> {
+    fn write_pipe(
+        &mut self,
+        message: impl IntoBytes + Immutable + KnownLayout,
+    ) -> Result<(), Error> {
         self.channel
             .try_send(message.as_bytes())
             .map_err(Error::Io)?;
@@ -365,8 +370,9 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
         tracing::trace!(len = buf.len(), "read message len");
 
         // Extract header from read buf.
-        let header =
-            protocol::Header::read_from_prefix(buf).ok_or(Error::MessageSizeHeader(buf.len()))?;
+        let header = protocol::Header::read_from_prefix(buf)
+            .map_err(|_| Error::MessageSizeHeader(buf.len()))?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         tracing::trace!("read header {:?}", &header);
 
@@ -407,12 +413,15 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
                 todo!("clear rx buffer unimplemented")
             }
             HostNotifications::TX_DATA_AVAILABLE => {
-                let message = protocol::TxDataAvailableMessage::read_from_prefix(buf).ok_or(
-                    Error::MessageSizeHostNotification {
-                        len: buf.len(),
-                        notification,
-                    },
-                )?;
+                let message = protocol::TxDataAvailableMessage::read_from_prefix(buf)
+                    .map_err(|_| {
+                        // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                        Error::MessageSizeHostNotification {
+                            len: buf.len(),
+                            notification,
+                        }
+                    })?
+                    .0;
 
                 if self.state.tx_pending {
                     return Err(Error::TxInFlight);

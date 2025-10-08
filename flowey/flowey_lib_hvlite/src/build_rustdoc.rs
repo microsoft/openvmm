@@ -11,13 +11,21 @@ use flowey_lib_common::run_cargo_doc::DocPackageKind;
 new_flow_node!(struct Node);
 
 flowey_request! {
-    pub enum Request {
-        Doc {
-            target_triple: target_lexicon::Triple,
-            docs_dir: WriteVar<PathBuf>,
-        },
-        SetDenyWarnings(bool),
+    pub struct Request {
+        pub target_triple: target_lexicon::Triple,
+        pub docs: WriteVar<RustdocOutput>,
     }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RustdocOutput {
+    pub docs: PathBuf,
+}
+
+impl Artifact for RustdocOutput {
+    // The rustdoc output has too many files for Azure DevOps to handle,
+    // so we need to archive it before uploading.
+    const TAR_GZ_NAME: Option<&'static str> = Some("rustdoc.tar.gz");
 }
 
 impl FlowNode for Node {
@@ -31,24 +39,16 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut set_deny_warnings = None;
         let mut doc_requests = Vec::new();
 
-        for req in requests {
-            match req {
-                Request::SetDenyWarnings(v) => {
-                    same_across_all_reqs("SetDenyWarnings", &mut set_deny_warnings, v)?
-                }
-                Request::Doc {
-                    target_triple,
-                    docs_dir,
-                } => doc_requests.push((target_triple, docs_dir)),
-            }
+        for Request {
+            target_triple,
+            docs,
+        } in requests
+        {
+            doc_requests.push((target_triple, docs));
         }
 
-        let set_deny_warnings = set_deny_warnings.ok_or(anyhow::anyhow!(
-            "Missing essential request: SetDenyWarnings"
-        ))?;
         let doc_requests = doc_requests;
 
         // -- end of req processing -- //
@@ -64,7 +64,7 @@ impl FlowNode for Node {
         let no_deps = true;
         let document_private_items = false; // TODO: would be nice to turn this on
 
-        for (target_triple, docs_dir) in doc_requests {
+        for (target_triple, output) in doc_requests {
             let mut target_side_effects = side_effects.clone();
 
             // lxutil is required by certain build.rs scripts.
@@ -107,19 +107,14 @@ impl FlowNode for Node {
 
             ctx.emit_rust_step(format!("document repo for target {target_triple}"), |ctx| {
                 target_side_effects.to_vec().claim(ctx);
-                let docs_dir = docs_dir.claim(ctx);
+                let output = output.claim(ctx);
                 let cargo_cmd = cargo_cmd.claim(ctx);
                 move |rt| {
                     let cargo_cmd = rt.read(cargo_cmd);
                     let sh = xshell::Shell::new()?;
-                    let out_path = cargo_cmd.run_with(&sh, |mut cmd| {
-                        if set_deny_warnings {
-                            cmd = cmd.env("RUSTDOCFLAGS", "-D warnings")
-                        }
-                        cmd
-                    })?;
+                    let out_path = cargo_cmd.run(&sh)?;
 
-                    rt.write(docs_dir, &out_path);
+                    rt.write(output, &RustdocOutput { docs: out_path });
                     Ok(())
                 }
             });

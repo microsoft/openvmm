@@ -11,9 +11,10 @@ use sha2::Digest;
 use sha2::Sha384;
 use std::collections::HashMap;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -23,7 +24,7 @@ pub enum Error {
 
 /// Measure adding a page to TD.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdxPageAdd {
     /// MEM.PAGE.ADD
     pub operation: [u8; 16],
@@ -37,7 +38,7 @@ const TDX_EXTEND_CHUNK_SIZE: usize = 256;
 
 /// Measure adding a chunk of data to TD.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdxMrExtend {
     /// MR.EXTEND
     pub operation: [u8; 16],

@@ -3,36 +3,62 @@
 
 //! Types to access work, completion, and event queues.
 
-use gdma_defs::CqEqDoorbellValue;
-use gdma_defs::Cqe;
-use gdma_defs::Eqe;
-use gdma_defs::GdmaQueueType;
-use gdma_defs::Sge;
-use gdma_defs::WqDoorbellValue;
-use gdma_defs::WqeHeader;
-use gdma_defs::WqeParams;
+use crate::save_restore::CqEqSavedState;
+use crate::save_restore::DoorbellSavedState;
+use crate::save_restore::WqSavedState;
+use gdma_defs::CLIENT_OOB_8;
 use gdma_defs::CLIENT_OOB_24;
 use gdma_defs::CLIENT_OOB_32;
-use gdma_defs::CLIENT_OOB_8;
+use gdma_defs::CqEqDoorbellValue;
+use gdma_defs::Cqe;
 use gdma_defs::DB_CQ;
 use gdma_defs::DB_EQ;
 use gdma_defs::DB_RQ;
 use gdma_defs::DB_SQ;
+use gdma_defs::Eqe;
+use gdma_defs::GdmaQueueType;
 use gdma_defs::OWNER_BITS;
 use gdma_defs::OWNER_MASK;
+use gdma_defs::Sge;
 use gdma_defs::WQE_ALIGNMENT;
+use gdma_defs::WqDoorbellValue;
+use gdma_defs::WqeHeader;
+use gdma_defs::WqeParams;
 use inspect::Inspect;
 use std::marker::PhantomData;
-use std::sync::atomic::Ordering::Acquire;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Acquire;
 use user_driver::memory::MemoryBlock;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// An interface to write a doorbell value to signal the device.
 pub trait Doorbell: Send + Sync {
+    /// Returns the maximum page number.
+    fn page_count(&self) -> u32;
     /// Write a doorbell value at page `page`, offset `address`.
     fn write(&self, page: u32, address: u32, value: u64);
+    /// Save the doorbell state.
+    fn save(&self, doorbell_id: Option<u64>) -> DoorbellSavedState;
+}
+
+struct NullDoorbell;
+
+impl Doorbell for NullDoorbell {
+    fn page_count(&self) -> u32 {
+        0
+    }
+
+    fn write(&self, _page: u32, _address: u32, _value: u64) {}
+
+    fn save(&self, _doorbell_id: Option<u64>) -> DoorbellSavedState {
+        DoorbellSavedState {
+            doorbell_id: 0,
+            page_count: 0,
+        }
+    }
 }
 
 /// A single GDMA doorbell page.
@@ -43,12 +69,27 @@ pub struct DoorbellPage {
 }
 
 impl DoorbellPage {
-    /// Returns a doorbell page at `doorbell_id` the doorbell region.
-    pub fn new(doorbell: Arc<dyn Doorbell>, doorbell_id: u32) -> Self {
+    pub(crate) fn null() -> Self {
         Self {
+            doorbell: Arc::new(NullDoorbell),
+            doorbell_id: 0,
+        }
+    }
+
+    /// Returns a doorbell page at `doorbell_id` the doorbell region.
+    pub fn new(doorbell: Arc<dyn Doorbell>, doorbell_id: u32) -> anyhow::Result<Self> {
+        let page_count = doorbell.page_count();
+        if doorbell_id >= page_count {
+            anyhow::bail!(
+                "doorbell id {} exceeds page count {}",
+                doorbell_id,
+                page_count
+            );
+        }
+        Ok(Self {
             doorbell,
             doorbell_id,
-        }
+        })
     }
 
     /// Writes a doorbell value.
@@ -85,6 +126,11 @@ impl CqEq<Cqe> {
     pub fn new_cq(mem: MemoryBlock, doorbell: DoorbellPage, id: u32) -> Self {
         Self::new(GdmaQueueType::GDMA_CQ, DB_CQ, mem, doorbell, id)
     }
+
+    /// Restores an existing completion queue.
+    pub fn restore_cq(mem: MemoryBlock, state: CqEqSavedState, doorbell: DoorbellPage) -> Self {
+        Self::restore(GdmaQueueType::GDMA_CQ, mem, doorbell, state)
+    }
 }
 
 impl CqEq<Eqe> {
@@ -92,9 +138,14 @@ impl CqEq<Eqe> {
     pub fn new_eq(mem: MemoryBlock, doorbell: DoorbellPage, id: u32) -> Self {
         Self::new(GdmaQueueType::GDMA_EQ, DB_EQ, mem, doorbell, id)
     }
+
+    /// Restores an existing event queue.
+    pub fn restore_eq(mem: MemoryBlock, state: CqEqSavedState, doorbell: DoorbellPage) -> Self {
+        Self::restore(GdmaQueueType::GDMA_EQ, mem, doorbell, state)
+    }
 }
 
-impl<T: AsBytes + FromBytes> CqEq<T> {
+impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
     /// Creates a new queue.
     fn new(
         queue_type: GdmaQueueType,
@@ -118,6 +169,41 @@ impl<T: AsBytes + FromBytes> CqEq<T> {
         }
     }
 
+    /// Save the state of the queue for restoration after servicing.
+    pub fn save(&self) -> CqEqSavedState {
+        CqEqSavedState {
+            doorbell: DoorbellSavedState {
+                doorbell_id: self.doorbell.doorbell_id as u64,
+                page_count: self.doorbell.doorbell.page_count(),
+            },
+            doorbell_addr: self.doorbell_addr,
+            id: self.id,
+            next: self.next,
+            size: self.size,
+            shift: self.shift,
+        }
+    }
+
+    /// Restore a queue from saved state.
+    pub fn restore(
+        queue_type: GdmaQueueType,
+        mem: MemoryBlock,
+        doorbell: DoorbellPage,
+        state: CqEqSavedState,
+    ) -> Self {
+        Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type,
+            mem,
+            id: state.id,
+            next: state.next,
+            size: state.size,
+            shift: state.shift,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Updates the queue ID.
     pub(crate) fn set_id(&mut self, id: u32) {
         self.id = id;
@@ -133,7 +219,7 @@ impl<T: AsBytes + FromBytes> CqEq<T> {
         self.id
     }
 
-    fn read_next<U: FromBytes>(&self, offset: u32) -> U {
+    fn read_next<U: FromBytes + Immutable + KnownLayout>(&self, offset: u32) -> U {
         assert!((offset as usize & (size_of::<T>() - 1)) + size_of::<U>() <= size_of::<T>());
         self.mem
             .read_obj((self.next.wrapping_add(offset) & (self.size - 1)) as usize)
@@ -255,6 +341,59 @@ impl Wq {
         }
     }
 
+    /// Save the state of the Wq for restoration after servicing
+    pub fn save(&self) -> WqSavedState {
+        WqSavedState {
+            doorbell: DoorbellSavedState {
+                doorbell_id: self.doorbell.doorbell_id as u64,
+                page_count: self.doorbell.doorbell.page_count(),
+            },
+            doorbell_addr: self.doorbell_addr,
+            id: self.id,
+            head: self.head,
+            tail: self.tail,
+            mask: self.mask,
+        }
+    }
+
+    /// Restores an existing receive work queue.
+    pub fn restore_rq(
+        mem: MemoryBlock,
+        state: WqSavedState,
+        doorbell: DoorbellPage,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type: GdmaQueueType::GDMA_RQ,
+            mem,
+            id: state.id,
+            head: state.head,
+            tail: state.tail,
+            mask: state.mask,
+            uncommitted_count: 0,
+        })
+    }
+
+    /// Restores an existing send work queue.
+    pub fn restore_sq(
+        mem: MemoryBlock,
+        state: WqSavedState,
+        doorbell: DoorbellPage,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type: GdmaQueueType::GDMA_SQ,
+            mem,
+            id: state.id,
+            head: state.head,
+            tail: state.tail,
+            mask: state.mask,
+            uncommitted_count: 0,
+        })
+    }
+
     /// Returns the queue ID.
     pub fn id(&self) -> u32 {
         self.id
@@ -262,8 +401,20 @@ impl Wq {
 
     /// Advances the head, indicating that `n` more bytes are available in the ring.
     pub fn advance_head(&mut self, n: u32) {
-        assert!(n % WQE_ALIGNMENT as u32 == 0);
+        assert!(n.is_multiple_of(WQE_ALIGNMENT as u32));
         self.head = self.head.wrapping_add(n);
+    }
+
+    fn get_offset_in_buffer_in_bytes(&self, offset: u32) -> usize {
+        (offset as usize * WQE_ALIGNMENT) & self.mask as usize
+    }
+
+    /// Reads from the offset, the first `n` bytes.
+    pub fn read(&mut self, offset: u32, n: usize) -> Vec<u8> {
+        let mut buf = vec![0; n];
+        let offset_in_buffer = self.get_offset_in_buffer_in_bytes(offset);
+        self.mem.read_at(offset_in_buffer, &mut buf);
+        buf
     }
 
     fn write_tail(&self, offset: u32, data: &[u8]) {
@@ -292,7 +443,7 @@ impl Wq {
     /// external data via a scatter-gather list.
     pub fn push<I: IntoIterator<Item = Sge>>(
         &mut self,
-        oob: &impl AsBytes,
+        oob: &(impl IntoBytes + Immutable + KnownLayout),
         sgl: I,
         client_oob_in_sgl: Option<u8>,
         gd_client_unit_data: u16,

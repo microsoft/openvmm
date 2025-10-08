@@ -3,7 +3,7 @@
 
 [package]
 name = "virtio_p9"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

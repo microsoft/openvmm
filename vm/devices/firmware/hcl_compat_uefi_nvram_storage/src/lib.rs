@@ -14,23 +14,25 @@
 //! which means it's invalid to reference it as a `&[u16]`, or any similar
 //! wrapper type (e.g: `widestring::U16CStr`).
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod storage_backend;
 
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guid::Guid;
 use std::fmt::Debug;
 use storage_backend::StorageBackend;
 use ucs2::Ucs2LeSlice;
-use uefi_nvram_storage::in_memory;
+use uefi_nvram_storage::EFI_TIME;
 use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
-use uefi_nvram_storage::EFI_TIME;
-use zerocopy::AsBytes;
+use uefi_nvram_storage::in_memory;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const EFI_MAX_VARIABLE_NAME_SIZE: usize = 2 * 1024;
 const EFI_MAX_VARIABLE_DATA_SIZE: usize = 32 * 1024;
@@ -46,14 +48,14 @@ mod format {
     use static_assertions::const_assert_eq;
 
     open_enum! {
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum NvramHeaderType: u32 {
             VARIABLE = 0,
         }
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct NvramHeader {
         pub header_type: NvramHeaderType,
         pub length: u32, // Total length of the variable, in bytes. Includes the header.
@@ -62,7 +64,7 @@ mod format {
     const_assert_eq!(8, size_of::<NvramHeader>());
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct NvramVariable {
         pub header: NvramHeader, // Set to type NvramVariable
         pub attributes: u32,
@@ -92,6 +94,9 @@ pub struct HclCompatNvram<S> {
     // reduced allocator pressure
     #[cfg_attr(feature = "inspect", inspect(skip))] // internal bookkeeping - not worth inspecting
     nvram_buf: Vec<u8>,
+
+    // whether the NVRAM has been loaded, either from storage or saved state
+    loaded: bool,
 }
 
 /// "Quirks" to take into account when loading/storing nvram blob data.
@@ -127,24 +132,30 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             in_memory: in_memory::InMemoryNvram::new(),
 
             nvram_buf: Vec::new(),
+
+            loaded: false,
         }
     }
 
     async fn lazy_load_from_storage(&mut self) -> Result<(), NvramStorageError> {
         let res = self.lazy_load_from_storage_inner().await;
         if let Err(e) = &res {
+            tracing::error!(CVM_ALLOWED, "storage contains corrupt nvram state");
             tracing::error!(
+                CVM_CONFIDENTIAL,
                 error = e as &dyn std::error::Error,
                 "storage contains corrupt nvram state"
-            )
+            );
         }
         res
     }
 
     async fn lazy_load_from_storage_inner(&mut self) -> Result<(), NvramStorageError> {
-        if !self.nvram_buf.is_empty() {
+        if self.loaded {
             return Ok(());
         }
+
+        tracing::info!("loading uefi nvram from storage");
 
         let nvram_buf = self
             .storage
@@ -168,7 +179,8 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         self.in_memory.clear();
         self.nvram_buf = nvram_buf;
         let mut buf = self.nvram_buf.as_slice();
-        while let Some(header) = format::NvramHeader::read_from_prefix(buf) {
+        // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
+        while let Ok((header, _)) = format::NvramHeader::read_from_prefix(buf) {
             if buf.len() < header.length as usize {
                 return Err(NvramStorageError::Load(
                     format!(
@@ -191,7 +203,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                 _ => {
                     return Err(NvramStorageError::Load(
                         format!("unknown header type: {:?}", header.header_type).into(),
-                    ))
+                    ));
                 }
             }
 
@@ -199,14 +211,11 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             // corresponds to a VARIABLE entry
 
             let (var_header, var_name, var_data) = {
-                let (var_header, var_length_data) = {
-                    match format::NvramVariable::read_from_prefix_split(entry_buf) {
-                        Some(t) => t,
-                        None => {
-                            return Err(NvramStorageError::Load("variable entry too short".into()))
-                        }
-                    }
-                };
+                // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
+                // TODO: zerocopy: manual fix - review carefully! (https://github.com/microsoft/openvmm/issues/759)
+                let (var_header, var_length_data) =
+                    format::NvramVariable::read_from_prefix(entry_buf)
+                        .map_err(|_| NvramStorageError::Load("variable entry too short".into()))?;
 
                 if var_length_data.len()
                     != var_header.name_bytes as usize + var_header.data_bytes as usize
@@ -253,7 +262,15 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                             var.push(0);
                             ucs2::Ucs2LeVec::from_vec_with_nul(var)
                         };
-                        tracing::warn!(?var, "skipping corrupt nvram var (missing null term)");
+                        tracing::warn!(
+                            CVM_ALLOWED,
+                            "skipping corrupt nvram var (missing null term)"
+                        );
+                        tracing::warn!(
+                            CVM_CONFIDENTIAL,
+                            ?var,
+                            "skipping corrupt nvram var (missing null term)"
+                        );
                         continue;
                     } else {
                         return Err(NvramStorageError::Load(e.into()));
@@ -278,11 +295,13 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             ));
         }
 
+        self.loaded = true;
         Ok(())
     }
 
     /// Dump in-memory nvram to the underlying storage device.
     async fn flush_storage(&mut self) -> Result<(), NvramStorageError> {
+        tracing::info!("flushing uefi nvram to storage");
         self.nvram_buf.clear();
 
         for in_memory::VariableEntry {
@@ -463,6 +482,30 @@ impl<S: StorageBackend> NvramStorage for HclCompatNvram<S> {
     }
 }
 
+#[cfg(feature = "save_restore")]
+mod save_restore {
+    use super::*;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+
+    impl<S: StorageBackend> SaveRestore for HclCompatNvram<S> {
+        type SavedState = <in_memory::InMemoryNvram as SaveRestore>::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            self.in_memory.save()
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            if state.nvram.is_some() {
+                self.in_memory.restore(state)?;
+                self.loaded = true;
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::storage_backend::StorageBackend;
@@ -522,16 +565,14 @@ mod test {
         let timestamp = EFI_TIME::default();
 
         let name_ok = Ucs2LeVec::from_vec_with_nul(
-            std::iter::repeat([0, b'a'])
-                .take((EFI_MAX_VARIABLE_NAME_SIZE / 2) - 1)
+            std::iter::repeat_n([0, b'a'], (EFI_MAX_VARIABLE_NAME_SIZE / 2) - 1)
                 .chain(Some([0, 0]))
                 .flat_map(|x| x.into_iter())
                 .collect(),
         )
         .unwrap();
         let name_too_big = Ucs2LeVec::from_vec_with_nul(
-            std::iter::repeat([0, b'a'])
-                .take(EFI_MAX_VARIABLE_NAME_SIZE / 2)
+            std::iter::repeat_n([0, b'a'], EFI_MAX_VARIABLE_NAME_SIZE / 2)
                 .chain(Some([0, 0]))
                 .flat_map(|x| x.into_iter())
                 .collect(),

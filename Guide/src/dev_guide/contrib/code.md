@@ -142,7 +142,7 @@ project, and will fast-fail if it catches any warnings / errors.
 ### Suppressing Lints
 
 In general, lints should be fixed by modifying the code to satisfy the lint.
-However, there are cases where a lint may need to be `allow`'d inline.
+However, there are cases where a lint may need to be `expect`'d inline.
 
 In these cases, you _must_ provide a inline comment providing reasonable
 justification for the suppressed lint.
@@ -152,7 +152,7 @@ e.g:
 ```rust
 // x86_64-unknown-linux-musl targets have a different type defn for
 // `libc::cmsghdr`, hence why these lints are being suppressed.
-#[allow(clippy::needless_update, clippy::useless_conversion)]
+#[expect(clippy::needless_update, clippy::useless_conversion)]
 libc::cmsghdr {
     cmsg_level: libc::SOL_SOCKET,
     cmsg_type: libc::SCM_RIGHTS,
@@ -257,16 +257,18 @@ intrinsic (such as CPUID, or a SIMD instruction), or when implementing a
 
 ...otherwise, use `cfg(guest_arch = ...)`!
 
-## Avoid `Default` when using `zerocopy::FromZeroes`
+## Avoid `Default` when using `zerocopy::FromZeros`
 
 _Checked Automatically:_ **No**
 
 The rule:
 
-- A type can `derive(Default)` **XOR** `derive(FromZeroes)`.
-- A type that is `FromZeroes` can also `impl Default`, but it must be a
+- A type can `derive(Default)` **XOR** `derive(FromZeros)`.
+- A type that is `FromZeros` can also `impl Default`, but it must be a
   conscious, explicit choice, with justification (read: inline comment) as to
   why that particular default value was chosen.
+- N.B. `derive(IntoBytes)` or `derive(FromBytes)` imply `derive(FromZeros)`. That is:
+  this convention applies to those types as well.
 
 The why:
 
@@ -349,7 +351,7 @@ init a "uninitialized" struct in-memory is quite handy...
 In OpenVMM, we don't do this. Instead, we use a separate trait to init all-zero
 structs.
 
-**In OpenVMM, we use `FromZeroes` and `FromZeroes::new_zeroed()` to work with types
+**In OpenVMM, we use `FromZeros` and `FromZeros::new_zeroed()` to work with types
 that have valid all-zero representations, _without_ implying that those types
 also have valid all-zero _default_ values!**
 
@@ -357,7 +359,7 @@ So, for the example above:
 
 ```rust
 #[repr(C)]
-#[derive(zerocopy::FromZeroes)]
+#[derive(zerocopy::FromZeros)]
 struct Handle {
     opaque_handle: u16
 }
@@ -373,7 +375,7 @@ Now, it's impossible for code elsewhere to obtain a `Handle` via
 do so by _manually_ implementing `derive(Default)` ourselves:
 
 ```rust
-// Default + FromZeroes: `default` returns fully initialized handle
+// Default + FromZeros: `default` returns fully initialized handle
 impl Default for Handle {
     fn default() -> Handle {
         let mut handle = Handle::new_zeroed();
@@ -441,3 +443,38 @@ goes more in-depth as to why.
 
 Instead, name things based on what they logically provide, like functionality or
 data types.
+
+## Release Gates Workflow
+
+_Triggered Manually:_ **Yes** (via GitHub labels)
+
+In addition to the standard PR gates that run in debug mode, OpenVMM also provides
+a "Release Gates" workflow that runs the same checks but compiled in release mode.
+This workflow takes significantly longer to run but can catch issues that only
+manifest in optimized builds.
+
+### When to Use Release Gates
+
+The release gates workflow should be used when:
+
+- Making changes to performance-critical code paths
+- Modifying compiler flags or build configuration
+- Implementing low-level optimizations
+- Debugging issues that only appear in release builds
+- Before merging large refactoring changes
+
+### How to Trigger Release Gates
+
+To run the release gates on your PR:
+
+1. Ensure your PR is ready for review (not in draft mode)
+2. Add the `release-ci-required` label to your PR
+3. The workflow will automatically trigger and run all checks in release mode
+
+The workflow will only run when the specific label is present, so you have full
+control over when to use this more resource-intensive testing.
+
+### Label Management
+
+Only repository maintainers can add labels to PRs. If you need release gates
+run on your PR, ask a maintainer to add the `release-ci-required` label for you.

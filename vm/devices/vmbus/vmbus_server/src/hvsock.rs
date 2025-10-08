@@ -9,8 +9,8 @@
 //! [1]: <https://github.com/firecracker-microvm/firecracker/blob/7b2e87dc65fc45162303e5708b83c379cf1b0426/docs/vsock.md>
 
 use super::Guid;
-use crate::ring::RingMem;
 use crate::HvsockRelayChannelHalf;
+use crate::ring::RingMem;
 use anyhow::Context;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
@@ -39,7 +39,7 @@ use vmbus_core::HvsockConnectResult;
 
 pub struct HvsockRelay {
     inner: Arc<RelayInner>,
-    host_send: Arc<mesh::Sender<RelayRequest>>,
+    host_send: mesh::Sender<RelayRequest>,
     _relay_task: Task<()>,
     _listener_task: Option<Task<()>>,
 }
@@ -69,14 +69,13 @@ impl HvsockRelay {
         });
 
         let worker = HvsockRelayWorker {
-            guest_send: Arc::new(guest.response_send),
+            guest_send: guest.response_send,
             inner: inner.clone(),
             tasks: Default::default(),
             hybrid_vsock_path,
         };
 
         let (host_send, host_recv) = mesh::channel();
-        let host_send = Arc::new(host_send);
 
         let _listener_task = if let Some(listener) = hybrid_vsock_listener {
             let listener = PolledSocket::new(inner.driver.as_ref(), listener)?;
@@ -114,7 +113,7 @@ impl HvsockRelay {
         &self,
         ctx: &mut CancelContext,
         service_id: Guid,
-    ) -> impl std::future::Future<Output = anyhow::Result<UnixStream>> + Send {
+    ) -> impl Future<Output = anyhow::Result<UnixStream>> + Send + use<> {
         let inner = self.inner.clone();
         let host_send = self.host_send.clone();
         let (send, recv) = mesh::oneshot();
@@ -145,7 +144,7 @@ impl HvsockRelay {
 
 struct ListenerWorker {
     inner: Arc<RelayInner>,
-    host_send: Arc<mesh::Sender<RelayRequest>>,
+    host_send: mesh::Sender<RelayRequest>,
 }
 
 impl ListenerWorker {
@@ -291,7 +290,7 @@ async fn read_hybrid_vsock_connect(
 }
 
 struct PendingConnection {
-    send: Arc<mesh::Sender<HvsockConnectResult>>,
+    send: mesh::Sender<HvsockConnectResult>,
     request: HvsockConnectRequest,
 }
 
@@ -312,7 +311,7 @@ impl Drop for PendingConnection {
 
 // This GUID is an embedding of the AF_VSOCK port into an
 // AF_HYPERV service ID.
-static VSOCK_TEMPLATE: Guid = Guid::from_static_str("00000000-facb-11e6-bd58-64006a7986d3");
+static VSOCK_TEMPLATE: Guid = guid::guid!("00000000-facb-11e6-bd58-64006a7986d3");
 
 fn vsock_port(service_id: &Guid) -> Option<u32> {
     let stripped_id = Guid {
@@ -323,7 +322,7 @@ fn vsock_port(service_id: &Guid) -> Option<u32> {
 }
 
 struct HvsockRelayWorker {
-    guest_send: Arc<mesh::Sender<HvsockConnectResult>>,
+    guest_send: mesh::Sender<HvsockConnectResult>,
     tasks: FuturesUnordered<Task<()>>,
     inner: Arc<RelayInner>,
     hybrid_vsock_path: Option<PathBuf>,
@@ -585,15 +584,15 @@ mod tests {
     use crate::ring::FlatRingMem;
     use futures::AsyncReadExt;
     use futures::AsyncWriteExt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::Driver;
     use pal_async::socket::PolledSocket;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
-    use pal_async::DefaultDriver;
     use unix_socket::UnixStream;
-    use vmbus_async::pipe::connected_byte_pipes;
     use vmbus_async::pipe::BytePipe;
+    use vmbus_async::pipe::connected_byte_pipes;
 
     fn setup_relay<T: Driver + Spawn>(
         driver: &T,

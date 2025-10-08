@@ -10,14 +10,12 @@ use openssl::rsa::Rsa;
 use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum KbkdfError {
     #[error("KDF derivation failed")]
     Derive(#[from] openssl_kdf::kdf::KdfError),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
     #[error("expected wrapped AES key blob to be {0} bytes, but found {1} bytes")]
@@ -34,7 +32,6 @@ pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
     PkeyToRsa(#[from] openssl::error::ErrorStack),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum RsaOaepError {
     #[error("failed to convert an RSA key to PKey")]
@@ -55,7 +52,6 @@ pub(crate) enum RsaOaepError {
     Decrypt(#[source] openssl::error::ErrorStack, RsaOaepHashAlgorithm),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum AesKeyWrapWithPaddingError {
     #[error("invalid wrapping key size {0}")]
@@ -74,7 +70,6 @@ pub(crate) enum AesKeyWrapWithPaddingError {
     UnwrapUpdate(#[source] openssl::error::ErrorStack),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum Aes256CbcError {
     #[error("CipherCtx::new failed")]
@@ -89,7 +84,6 @@ pub(crate) enum Aes256CbcError {
     Decrypt(#[source] openssl::error::ErrorStack),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum HmacSha256Error {
     #[error("failed to convert an HMAC key to PKey")]

@@ -3,7 +3,7 @@
 
 //! Implementation of Generation ID services (shared across both PCAT and UEFI)
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 use guestmem::GuestMemory;
 use inspect::InspectMut;
@@ -13,7 +13,7 @@ use std::task::Poll;
 use vmcore::line_interrupt::LineInterrupt;
 
 /// Various runtime objects used by the GenerationId device.
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 pub struct GenerationIdRuntimeDeps {
     pub gm: GuestMemory,
     pub generation_id_recv: mesh::Receiver<[u8; 16]>,
@@ -41,7 +41,7 @@ impl GenerationId {
                 let update = update.parse()?;
                 if update {
                     let mut id = [0; 16];
-                    getrandom::getrandom(&mut id).unwrap();
+                    getrandom::fill(&mut id).unwrap();
                     self.set_and_update_generation_id(id);
                     tracing::info!("Force updated genid...");
                 }

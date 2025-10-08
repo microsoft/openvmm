@@ -4,20 +4,20 @@
 //! Implementation of the device driver core.
 
 use super::spec;
-use crate::driver::save_restore::IoQueueSavedState;
-use crate::queue_pair::admin_cmd;
-use crate::queue_pair::Issuer;
-use crate::queue_pair::QueuePair;
-use crate::registers::Bar0;
-use crate::registers::DeviceRegisters;
+use crate::NVME_PAGE_SHIFT;
 use crate::Namespace;
 use crate::NamespaceError;
 use crate::NvmeDriverSavedState;
 use crate::RequestError;
-use crate::NVME_PAGE_SHIFT;
+use crate::driver::save_restore::IoQueueSavedState;
+use crate::queue_pair::Issuer;
+use crate::queue_pair::QueuePair;
+use crate::queue_pair::admin_cmd;
+use crate::registers::Bar0;
+use crate::registers::DeviceRegisters;
 use anyhow::Context as _;
-use futures::future::join_all;
 use futures::StreamExt;
+use futures::future::join_all;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
@@ -31,18 +31,17 @@ use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::TaskControl;
 use thiserror::Error;
-use tracing::info_span;
 use tracing::Instrument;
+use tracing::info_span;
+use user_driver::DeviceBacking;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
-use user_driver::DeviceBacking;
-use user_driver::HostDmaAllocator;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// An NVMe driver.
 ///
@@ -71,6 +70,7 @@ pub struct NvmeDriver<T: DeviceBacking> {
     namespaces: Vec<Arc<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
+    bounce_buffer: bool,
 }
 
 #[derive(Inspect)]
@@ -85,6 +85,7 @@ struct DriverWorkerTask<T: DeviceBacking> {
     io_issuers: Arc<IoIssuers>,
     #[inspect(skip)]
     recv: mesh::Receiver<NvmeWorkerRequest>,
+    bounce_buffer: bool,
 }
 
 #[derive(Inspect)]
@@ -102,6 +103,23 @@ pub enum RestoreError {
     InvalidData,
 }
 
+#[derive(Debug, Error)]
+pub enum DeviceError {
+    #[error("no more io queues available, reached maximum {0}")]
+    NoMoreIoQueues(u16),
+    #[error("failed to map interrupt")]
+    InterruptMapFailure(#[source] anyhow::Error),
+    #[error("failed to create io queue pair {1}")]
+    IoQueuePairCreationFailure(#[source] anyhow::Error, u16),
+    #[error("failed to create io completion queue {1}")]
+    IoCompletionQueueFailure(#[source] anyhow::Error, u16),
+    #[error("failed to create io submission queue {1}")]
+    IoSubmissionQueueFailure(#[source] anyhow::Error, u16),
+    // Other device related errors
+    #[error(transparent)]
+    Other(anyhow::Error),
+}
+
 #[derive(Inspect)]
 struct IoQueue {
     queue: QueuePair,
@@ -113,7 +131,7 @@ impl IoQueue {
     pub async fn save(&self) -> anyhow::Result<IoQueueSavedState> {
         Ok(IoQueueSavedState {
             cpu: self.cpu,
-            msix: self.iv as u32,
+            iv: self.iv as u32,
             queue_data: self.queue.save().await?,
         })
     }
@@ -124,18 +142,25 @@ impl IoQueue {
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         mem_block: MemoryBlock,
         saved_state: &IoQueueSavedState,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         let IoQueueSavedState {
             cpu,
-            msix,
+            iv,
             queue_data,
         } = saved_state;
-        let queue =
-            QueuePair::restore(spawner, interrupt, registers.clone(), mem_block, queue_data)?;
+        let queue = QueuePair::restore(
+            spawner,
+            interrupt,
+            registers.clone(),
+            mem_block,
+            queue_data,
+            bounce_buffer,
+        )?;
 
         Ok(Self {
             queue,
-            iv: *msix as u16,
+            iv: *iv as u16,
             cpu: *cpu,
         })
     }
@@ -170,9 +195,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
         device: T,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         let pci_id = device.id().to_owned();
-        let mut this = Self::new_disabled(driver_source, cpu_count, device)
+        let mut this = Self::new_disabled(driver_source, cpu_count, device, bounce_buffer)
             .instrument(tracing::info_span!("nvme_new_disabled", pci_id))
             .await?;
         match this
@@ -198,6 +224,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         driver_source: &VmTaskDriverSource,
         cpu_count: u32,
         mut device: T,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0 = Bar0(
@@ -208,7 +235,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
 
         let cc = bar0.cc();
         if cc.en() || bar0.csts().rdy() {
-            if !bar0
+            if let Err(e) = bar0
                 .reset(&driver)
                 .instrument(tracing::info_span!(
                     "nvme_already_enabled",
@@ -216,7 +243,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 ))
                 .await
             {
-                anyhow::bail!("device is gone");
+                anyhow::bail!("device is gone, csts: {:#x}", e);
             }
         }
 
@@ -246,6 +273,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 io: Vec::new(),
                 io_issuers: io_issuers.clone(),
                 recv,
+                bounce_buffer,
             })),
             admin: None,
             identify: None,
@@ -254,6 +282,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             rescan_event: Default::default(),
             namespaces: vec![],
             nvme_keepalive: false,
+            bounce_buffer,
         })
     }
 
@@ -286,6 +315,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             admin_cqes,
             interrupt0,
             worker.registers.clone(),
+            self.bounce_buffer,
         )
         .context("failed to create admin queue pair")?;
 
@@ -315,12 +345,22 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let mut backoff = Backoff::new(&self.driver);
         loop {
             let csts = worker.registers.bar0.csts();
-            if u32::from(csts) == !0 {
-                anyhow::bail!("device is gone");
+            let csts_val: u32 = csts.into();
+            if csts_val == !0 {
+                anyhow::bail!("device is gone, csts: {:#x}", csts_val);
             }
             if csts.cfs() {
-                worker.registers.bar0.reset(&self.driver).await;
-                anyhow::bail!("device had fatal error");
+                // Attempt to leave the device in reset state CC.EN 1 -> 0.
+                let after_reset = if let Err(e) = worker.registers.bar0.reset(&self.driver).await {
+                    e
+                } else {
+                    0
+                };
+                anyhow::bail!(
+                    "device had fatal error, csts: {:#x}, after reset: {:#}",
+                    csts_val,
+                    after_reset
+                );
             }
             if csts.rdy() {
                 break;
@@ -343,7 +383,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                         .into(),
                     ..admin_cmd(spec::AdminOpcode::IDENTIFY)
                 },
-                Arc::get_mut(identify).unwrap().as_bytes_mut(),
+                Arc::get_mut(identify).unwrap().as_mut_bytes(),
             )
             .await
             .context("failed to identify controller")?;
@@ -399,8 +439,12 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         let max_io_queues = allocated_io_queue_count.min(requested_io_queue_count);
 
         let qsize = {
-            let io_cqsize = QueuePair::MAX_CQ_ENTRIES.min(worker.registers.cap.mqes_z() + 1);
-            let io_sqsize = QueuePair::MAX_SQ_ENTRIES.min(worker.registers.cap.mqes_z() + 1);
+            if worker.registers.cap.mqes_z() < 1 {
+                anyhow::bail!("bad device behavior. mqes cannot be 0");
+            }
+
+            let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
 
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)
@@ -452,7 +496,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         drop(self);
     }
 
-    fn reset(&mut self) -> impl 'static + Send + std::future::Future<Output = ()> {
+    fn reset(&mut self) -> impl Send + Future<Output = ()> + use<T> {
         let driver = self.driver.clone();
         let mut task = std::mem::take(&mut self.task).unwrap();
         async move {
@@ -468,7 +512,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             if let Some(admin) = worker.admin {
                 _admin_responses = admin.shutdown().await;
             }
-            worker.registers.bar0.reset(&driver).await;
+            if let Err(e) = worker.registers.bar0.reset(&driver).await {
+                tracing::info!(csts = e, "device reset failed");
+            }
         }
     }
 
@@ -518,7 +564,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 //     s.namespaces.push(ns.save()?);
                 // }
                 Ok(NvmeDriverSavedState {
-                    identify_ctrl: spec::IdentifyController::read_from(
+                    identify_ctrl: spec::IdentifyController::read_from_bytes(
                         self.identify.as_ref().unwrap().as_bytes(),
                     )
                     .unwrap(),
@@ -538,6 +584,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         cpu_count: u32,
         mut device: T,
         saved_state: &NvmeDriverSavedState,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         let driver = driver_source.simple();
         let bar0_mapping = device
@@ -545,9 +592,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .context("failed to map device registers")?;
         let bar0 = Bar0(bar0_mapping);
 
-        // It is expected the device to be alive when restoring.
-        if !bar0.csts().rdy() {
-            anyhow::bail!("device is gone");
+        // It is expected for the device to be alive when restoring.
+        let csts = bar0.csts();
+        if !csts.rdy() {
+            anyhow::bail!(
+                "device is not ready during restore, csts: {:#x}",
+                u32::from(csts)
+            );
         }
 
         let registers = Arc::new(DeviceRegisters::new(bar0));
@@ -568,17 +619,19 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 io: Vec::new(),
                 io_issuers: io_issuers.clone(),
                 recv,
+                bounce_buffer,
             })),
             admin: None, // Updated below.
             identify: Some(Arc::new(
-                spec::IdentifyController::read_from(saved_state.identify_ctrl.as_bytes())
-                    .ok_or(RestoreError::InvalidData)?,
+                spec::IdentifyController::read_from_bytes(saved_state.identify_ctrl.as_bytes())
+                    .map_err(|_| RestoreError::InvalidData)?, // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             )),
             driver: driver.clone(),
             io_issuers,
             rescan_event: Default::default(),
             namespaces: vec![],
             nvme_keepalive: true,
+            bounce_buffer,
         };
 
         let task = &mut this.task.as_mut().unwrap();
@@ -590,7 +643,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .map_interrupt(0, 0)
             .context("failed to map interrupt 0")?;
 
-        let dma_buffer = worker.device.host_allocator();
+        let dma_client = worker.device.dma_client();
+        let restored_memory = dma_client
+            .attach_pending_buffers()
+            .context("failed to restore allocations")?;
+
         // Restore the admin queue pair.
         let admin = saved_state
             .worker_data
@@ -598,11 +655,20 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .as_ref()
             .map(|a| {
                 // Restore memory block for admin queue pair.
-                let mem_block = dma_buffer
-                    .attach_dma_buffer(a.mem_len, a.base_pfn)
-                    .expect("unable to restore mem block");
-                QueuePair::restore(driver.clone(), interrupt0, registers.clone(), mem_block, a)
-                    .unwrap()
+                let mem_block = restored_memory
+                    .iter()
+                    .find(|mem| mem.len() == a.mem_len && a.base_pfn == mem.pfns()[0])
+                    .expect("unable to find restored mem block")
+                    .to_owned();
+                QueuePair::restore(
+                    driver.clone(),
+                    interrupt0,
+                    registers.clone(),
+                    mem_block,
+                    a,
+                    bounce_buffer,
+                )
+                .unwrap()
             })
             .unwrap();
 
@@ -639,12 +705,23 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .flat_map(|q| -> Result<IoQueue, anyhow::Error> {
                 let interrupt = worker
                     .device
-                    .map_interrupt(q.msix, q.cpu)
+                    .map_interrupt(q.iv, q.cpu)
                     .context("failed to map interrupt")?;
-                let mem_block =
-                    dma_buffer.attach_dma_buffer(q.queue_data.mem_len, q.queue_data.base_pfn)?;
-                let q =
-                    IoQueue::restore(driver.clone(), interrupt, registers.clone(), mem_block, q)?;
+                let mem_block = restored_memory
+                    .iter()
+                    .find(|mem| {
+                        mem.len() == q.queue_data.mem_len && q.queue_data.base_pfn == mem.pfns()[0]
+                    })
+                    .expect("unable to find restored mem block")
+                    .to_owned();
+                let q = IoQueue::restore(
+                    driver.clone(),
+                    interrupt,
+                    registers.clone(),
+                    mem_block,
+                    q,
+                    bounce_buffer,
+                )?;
                 let issuer = IoIssuer {
                     issuer: q.queue.issuer().clone(),
                     cpu: q.cpu,
@@ -707,7 +784,7 @@ async fn handle_asynchronous_events(
                                 .into(),
                             ..admin_cmd(spec::AdminOpcode::GET_LOG_PAGE)
                         },
-                        list.as_bytes_mut(),
+                        list.as_mut_bytes(),
                     )
                     .await
                     .context("failed to query changed namespace list")?;
@@ -772,9 +849,12 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
             loop {
                 match self.recv.next().await {
                     Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                        rpc.handle(|cpu| self.create_io_issuer(state, cpu)).await
+                        rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
+                            .await
                     }
-                    Some(NvmeWorkerRequest::Save(rpc)) => rpc.handle(|_| self.save(state)).await,
+                    Some(NvmeWorkerRequest::Save(rpc)) => {
+                        rpc.handle(async |_| self.save(state).await).await
+                    }
                     None => break,
                 }
             }
@@ -805,12 +885,27 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .find_map(|(i, issuer)| issuer.get().map(|issuer| (i, issuer)))
                     .unwrap();
 
-                tracing::error!(
-                    cpu,
-                    fallback_cpu,
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to create io queue, falling back"
-                );
+                // Log the error as informational only when there is a lack of
+                // hardware resources from the device.
+                match err {
+                    DeviceError::NoMoreIoQueues(_) => {
+                        tracing::info!(
+                            cpu,
+                            fallback_cpu,
+                            error = &err as &dyn std::error::Error,
+                            "failed to create io queue, falling back"
+                        );
+                    }
+                    _ => {
+                        tracing::error!(
+                            cpu,
+                            fallback_cpu,
+                            error = &err as &dyn std::error::Error,
+                            "failed to create io queue, falling back"
+                        );
+                    }
+                }
+
                 fallback.clone()
             }
         };
@@ -825,9 +920,9 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         &mut self,
         state: &mut WorkerState,
         cpu: u32,
-    ) -> anyhow::Result<IoIssuer> {
+    ) -> Result<IoIssuer, DeviceError> {
         if self.io.len() >= state.max_io_queues as usize {
-            anyhow::bail!("no more io queues available");
+            return Err(DeviceError::NoMoreIoQueues(state.max_io_queues));
         }
 
         let qid = self.io.len() as u16 + 1;
@@ -839,7 +934,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
         let interrupt = self
             .device
             .map_interrupt(iv.into(), cpu)
-            .context("failed to map interrupt")?;
+            .map_err(DeviceError::InterruptMapFailure)?;
 
         let queue = QueuePair::new(
             self.driver.clone(),
@@ -849,8 +944,9 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             state.qsize,
             interrupt,
             self.registers.clone(),
+            self.bounce_buffer,
         )
-        .with_context(|| format!("failed to create io queue pair {qid}"))?;
+        .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
 
         let io_sq_addr = queue.sq_addr();
         let io_cq_addr = queue.cq_addr();
@@ -879,7 +975,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE)
                 })
                 .await
-                .with_context(|| format!("failed to create io completion queue {qid}"))?;
+                .map_err(|err| DeviceError::IoCompletionQueueFailure(err.into(), qid))?;
 
             created_completion_queue = true;
 
@@ -897,7 +993,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE)
                 })
                 .await
-                .with_context(|| format!("failed to create io submission queue {qid}"))?;
+                .map_err(|err| DeviceError::IoSubmissionQueueFailure(err.into(), qid))?;
 
             Ok(())
         };
@@ -919,7 +1015,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             }
             let io = self.io.pop().unwrap();
             io.queue.shutdown().await;
-            return Err(err);
+            return Err(DeviceError::Other(err));
         }
 
         Ok(IoIssuer {
@@ -938,7 +1034,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             None => None,
         };
 
-        let io = join_all(self.io.drain(..).map(|q| async move { q.save().await }))
+        let io = join_all(self.io.drain(..).map(async |q| q.save().await))
             .await
             .into_iter()
             .flatten()
@@ -1041,7 +1137,7 @@ pub mod save_restore {
         pub cpu: u32,
         #[mesh(2)]
         /// Interrupt vector (MSI-X)
-        pub msix: u32,
+        pub iv: u32,
         #[mesh(3)]
         pub queue_data: QueuePairSavedState,
     }

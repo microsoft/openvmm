@@ -20,16 +20,18 @@ use aarch64defs::TranslationGranule1;
 use bitfield_struct::bitfield;
 use hvdef::HV_PAGE_SIZE;
 use loader_defs::linux as defs;
+use page_table::IdentityMapSize;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use page_table::x64::build_page_tables_64;
-use page_table::IdentityMapSize;
 use std::ffi::CString;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Construct a zero page from the following parameters.
 /// TODO: support different acpi_base other than 0xe0000
@@ -53,9 +55,9 @@ pub fn build_zero_page(
             ramdisk_image: initrd_base.into(),
             ramdisk_size: initrd_size.into(),
             kernel_alignment: 0x100000.into(),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         },
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     };
 
     let mut ram = mem_layout.ram().iter().cloned();
@@ -200,7 +202,7 @@ pub struct LoadInfo {
 
 /// Check if an address is aligned to a page.
 fn check_address_alignment(address: u64) -> Result<(), Error> {
-    if address % HV_PAGE_SIZE != 0 {
+    if !address.is_multiple_of(HV_PAGE_SIZE) {
         Err(Error::UnalignedAddress(address))
     } else {
         Ok(())
@@ -251,7 +253,7 @@ fn import_initrd<R: GuestArch>(
 /// * `importer` - The importer to use.
 /// * `kernel_image` - Uncompressed ELF image for the kernel.
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
-///     It cannot contain an entrypoint or program headers that refer to memory below this address.
+///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
 pub fn load_kernel_and_initrd_x64<F>(
     importer: &mut dyn ImageLoad<X86Register>,
@@ -335,7 +337,7 @@ pub fn load_config(
         IdentityMapSize::Size4Gb,
         None,
     );
-    assert!(page_table.len() as u64 % HV_PAGE_SIZE == 0);
+    assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
         .import_pages(
             registers.page_table_address / HV_PAGE_SIZE,
@@ -426,7 +428,7 @@ pub fn load_config(
 /// * `importer` - The importer to use.
 /// * `kernel_image` - Uncompressed ELF image for the kernel.
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
-///     It cannot contain an entrypoint or program headers that refer to memory below this address.
+///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
 /// * `command_line` - The kernel command line.
 /// * `zero_page` - The kernel zero page.
@@ -461,7 +463,7 @@ where
 }
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Aarch64ImagePageSize: u64 {
         UNSPECIFIED = 0,
         PAGE4_K = 1,
@@ -509,7 +511,7 @@ struct Aarch64ImageFlags {
 
 // Kernel boot protocol is specified in the Linux kernel
 // Documentation/arm64/booting.txt.
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(C)]
 struct Aarch64ImageHeader {
     /// Executable code
@@ -544,7 +546,7 @@ const AARCH64_MAGIC_NUMBER: &[u8] = b"ARM\x64";
 /// * `importer` - The importer to use.
 /// * `kernel_image` - Uncompressed ELF image for the kernel.
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
-///     It cannot contain an entrypoint or program headers that refer to memory below this address.
+///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
 /// * `device_tree_blob` - The device tree blob, optional.
 pub fn load_kernel_and_initrd_arm64<F>(
@@ -571,7 +573,7 @@ where
 
     let mut header = Aarch64ImageHeader::new_zeroed();
     kernel_image
-        .read_exact(header.as_bytes_mut())
+        .read_exact(header.as_mut_bytes())
         .map_err(|_| Error::FlatLoader(FlatLoaderError::ReadKernelImage))?;
 
     tracing::debug!("aarch64 kernel header {header:x?}");

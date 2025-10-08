@@ -7,10 +7,10 @@ mod tests;
 
 use core::num::NonZeroU8;
 use splash::Splashes;
+use uefi::Status;
 use uefi::entry;
 use uefi::println;
 use uefi::system;
-use uefi::Status;
 
 #[entry]
 fn uefi_main() -> Status {

@@ -97,7 +97,7 @@ impl IcmpConnection {
                 // set the destination address in the IP header.
                 let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
                 eth.set_ethertype(EthernetProtocol::Ipv4);
-                eth.set_src_addr(state.gateway_mac);
+                eth.set_src_addr(state.params.gateway_mac);
                 eth.set_dst_addr(self.guest_mac);
                 let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
                 ipv4.set_dst_addr(dst_addr.ip);
@@ -123,7 +123,7 @@ impl IcmpConnection {
     fn send_to(&mut self, dest: Ipv4Addr, buffer: &[u8], hop_limit: u8) -> std::io::Result<()> {
         let socket = self.socket.get();
         let dest = SocketAddr::new(IpAddr::V4(dest), 0);
-        socket.set_ttl(hop_limit as u32)?;
+        socket.set_ttl_v4(hop_limit as u32)?;
         socket.send_to(buffer, &(dest.into()))?;
         Ok(())
     }

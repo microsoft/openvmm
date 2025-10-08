@@ -3,7 +3,7 @@
 
 [package]
 name = "virtiofs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -28,7 +28,6 @@ futures.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 ntapi.workspace = true
 

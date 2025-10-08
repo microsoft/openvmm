@@ -3,7 +3,7 @@
 
 [package]
 name = "scsi_buffers"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -13,6 +13,9 @@ safeatomic.workspace = true
 smallvec.workspace = true
 zerocopy.workspace = true
 event-listener.workspace = true
+
+[dev-dependencies]
+sparse_mmap.workspace = true
 
 [lints]
 workspace = true

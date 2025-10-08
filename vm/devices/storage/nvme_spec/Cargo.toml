@@ -3,13 +3,14 @@
 
 [package]
 name = "nvme_spec"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 storage_string.workspace = true
 
 inspect.workspace = true
+mesh.workspace = true
 
 bitfield-struct.workspace = true
 open_enum.workspace = true

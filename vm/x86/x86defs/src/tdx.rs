@@ -6,12 +6,20 @@
 use crate::vmx;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const TDX_SHARED_GPA_BOUNDARY_BITS: u8 = 47;
 pub const TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT: u64 = 1 << TDX_SHARED_GPA_BOUNDARY_BITS;
+pub const RESET_VECTOR_PAGE: u64 = 0xfffff000;
+
+/// Size of the [`TdReport`].
+pub const TDX_REPORT_SIZE: usize = 0x400;
+
+/// Size of `report_data` member in [`ReportMac`].
+pub const TDX_REPORT_DATA_SIZE: usize = 64;
 
 open_enum! {
     /// TDCALL instruction leafs that are passed into the tdcall instruction
@@ -61,6 +69,7 @@ impl TdgMemPageLevel {
 
 /// Attributes for a single VM.
 #[bitfield(u16)]
+#[derive(PartialEq, Eq)]
 pub struct GpaVmAttributes {
     pub read: bool,
     pub write: bool,
@@ -84,28 +93,28 @@ impl GpaVmAttributes {
         .with_valid(true);
 }
 
-impl GpaVmAttributes {
-    /// Convert to the corresponding attributes mask. Note that `inv_ept` must
-    /// be set manually after the conversion, if desired.
-    pub fn to_mask(self) -> GpaVmAttributesMask {
-        GpaVmAttributesMask::from(u16::from(self)).with_inv_ept(false)
-    }
-}
-
 /// Attributes mask used to set which bits are updated in TDG.MEM.PAGE.ATTR.WR.
 #[bitfield(u16)]
 pub struct GpaVmAttributesMask {
-    read: bool,
-    write: bool,
-    kernel_execute: bool,
-    user_execute: bool,
+    pub read: bool,
+    pub write: bool,
+    pub kernel_execute: bool,
+    pub user_execute: bool,
     #[bits(3)]
     reserved: u8,
-    suppress_ve: bool,
+    pub suppress_ve: bool,
     #[bits(7)]
     reserved2: u8,
     /// invalidate ept for this vm
-    inv_ept: bool,
+    pub inv_ept: bool,
+}
+
+impl GpaVmAttributesMask {
+    pub const ALL_CHANGED: Self = Self::new()
+        .with_read(true)
+        .with_write(true)
+        .with_kernel_execute(true)
+        .with_user_execute(true);
 }
 
 /// Corresponds to GPA_ATTR, which is used as input to TDG.MEM.PAGE.ATTR.WR and
@@ -201,7 +210,7 @@ pub enum TdVmCallSubFunction {
 
 open_enum! {
     /// Result code for `tdcall` to the TDX module, returned in RAX.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum TdCallResultCode: u32 {
         SUCCESS = 0x00000000,
         NON_RECOVERABLE_VCPU = 0x40000001,
@@ -391,7 +400,7 @@ pub struct TdCallResult {
 
 open_enum! {
     /// The result returned by a tdg.vm.call in r10.
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum TdVmCallR10Result: u64 {
         SUCCESS = 0,
         RETRY = 1,
@@ -469,7 +478,7 @@ impl TdxContextCode {
 pub const TDX_FIELD_CODE_L2_CTLS_VM1: TdxExtendedFieldCode =
     TdxExtendedFieldCode(0xA020000300000051);
 pub const TDX_FIELD_CODE_L2_CTLS_VM2: TdxExtendedFieldCode =
-    TdxExtendedFieldCode(0xA020000300000051);
+    TdxExtendedFieldCode(0xA020000300000052);
 
 /// Extended field code for TDG.VP.WR and TDG.VP.RD
 #[bitfield(u64)]
@@ -502,7 +511,7 @@ pub struct TdxExtendedFieldCode {
 /// Instruction info returned in r11 for a TDG.VP.ENTER call.
 #[bitfield(u64)]
 pub struct TdxInstructionInfo {
-    pub info: u32, // TODO TDX: what is this
+    pub info: u32,
     pub length: u32,
 }
 
@@ -552,7 +561,7 @@ impl TdxExtendedExitQualificationType {
 /// The GPR list used for TDG.VP.ENTER. Specified in the TDX specification as
 /// L2_ENTER_GUEST_STATE.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdxL2EnterGuestState {
     /// GPs in the usual order.
     pub gps: [u64; 16],
@@ -560,11 +569,12 @@ pub struct TdxL2EnterGuestState {
     pub rip: u64,
     pub ssp: u64,
     pub rvi: u8, // GUEST_INTERRUPT_STATUS lower bits
-    pub svi: u8, // GUSET_INTERRUPT_STATUS upper bits
+    pub svi: u8, // GUEST_INTERRUPT_STATUS upper bits
     pub reserved: [u8; 6],
 }
 
-impl TdxL2EnterGuestState {
+pub enum TdxGp {}
+impl TdxGp {
     pub const RAX: usize = 0;
     pub const RCX: usize = 1;
     pub const RDX: usize = 2;
@@ -581,103 +591,6 @@ impl TdxL2EnterGuestState {
     pub const R13: usize = 13;
     pub const R14: usize = 14;
     pub const R15: usize = 15;
-
-    pub fn rax(&self) -> u64 {
-        self.gps[Self::RAX]
-    }
-    pub fn set_rax(&mut self, v: u64) {
-        self.gps[Self::RAX] = v
-    }
-    pub fn rcx(&self) -> u64 {
-        self.gps[Self::RCX]
-    }
-    pub fn set_rcx(&mut self, v: u64) {
-        self.gps[Self::RCX] = v
-    }
-    pub fn rdx(&self) -> u64 {
-        self.gps[Self::RDX]
-    }
-    pub fn set_rdx(&mut self, v: u64) {
-        self.gps[Self::RDX] = v
-    }
-    pub fn rbx(&self) -> u64 {
-        self.gps[Self::RBX]
-    }
-    pub fn set_rbx(&mut self, v: u64) {
-        self.gps[Self::RBX] = v
-    }
-    pub fn rsp(&self) -> u64 {
-        self.gps[Self::RSP]
-    }
-    pub fn set_rsp(&mut self, v: u64) {
-        self.gps[Self::RSP] = v
-    }
-    pub fn rbp(&self) -> u64 {
-        self.gps[Self::RBP]
-    }
-    pub fn set_rbp(&mut self, v: u64) {
-        self.gps[Self::RBP] = v
-    }
-    pub fn rsi(&self) -> u64 {
-        self.gps[Self::RSI]
-    }
-    pub fn set_rsi(&mut self, v: u64) {
-        self.gps[Self::RSI] = v
-    }
-    pub fn rdi(&self) -> u64 {
-        self.gps[Self::RDI]
-    }
-    pub fn set_rdi(&mut self, v: u64) {
-        self.gps[Self::RDI] = v
-    }
-    pub fn r8(&self) -> u64 {
-        self.gps[Self::R8]
-    }
-    pub fn set_r8(&mut self, v: u64) {
-        self.gps[Self::R8] = v
-    }
-    pub fn r9(&self) -> u64 {
-        self.gps[Self::R9]
-    }
-    pub fn set_r9(&mut self, v: u64) {
-        self.gps[Self::R9] = v
-    }
-    pub fn r10(&self) -> u64 {
-        self.gps[Self::R10]
-    }
-    pub fn set_r10(&mut self, v: u64) {
-        self.gps[Self::R10] = v
-    }
-    pub fn r11(&self) -> u64 {
-        self.gps[Self::R11]
-    }
-    pub fn set_r11(&mut self, v: u64) {
-        self.gps[Self::R11] = v
-    }
-    pub fn r12(&self) -> u64 {
-        self.gps[Self::R12]
-    }
-    pub fn set_r12(&mut self, v: u64) {
-        self.gps[Self::R12] = v
-    }
-    pub fn r13(&self) -> u64 {
-        self.gps[Self::R13]
-    }
-    pub fn set_r13(&mut self, v: u64) {
-        self.gps[Self::R13] = v
-    }
-    pub fn r14(&self) -> u64 {
-        self.gps[Self::R14]
-    }
-    pub fn set_r14(&mut self, v: u64) {
-        self.gps[Self::R14] = v
-    }
-    pub fn r15(&self) -> u64 {
-        self.gps[Self::R15]
-    }
-    pub fn set_r15(&mut self, v: u64) {
-        self.gps[Self::R15] = v
-    }
 }
 
 #[bitfield(u64)]
@@ -706,7 +619,7 @@ pub struct TdGlaVmAndFlags {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TdxVmFlags {
     #[bits(2)]
     pub invd_translations: u8,
@@ -725,3 +638,176 @@ pub struct TdxVmFlags {
 pub const TDX_VP_ENTER_INVD_INVEPT: u8 = 1;
 pub const TDX_VP_ENTER_INVD_INVVPID: u8 = 2;
 pub const TDX_VP_ENTER_INVD_INVVPID_NON_GLOBAL: u8 = 3;
+
+/// Report structure.
+/// See `TDREPORT_STRUCT` in Table 3.29, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TdReport {
+    /// An instance of [`ReportMac`]
+    pub report_mac_struct: ReportMac,
+    /// An instance of [`TeeTcbInfo`].
+    pub tee_tcb_info: TeeTcbInfo,
+    /// Reserved
+    pub _reserved: [u8; 17],
+    /// An instance of [`TdInfo`].
+    pub td_info: TdInfo,
+}
+
+static_assertions::const_assert_eq!(TDX_REPORT_SIZE, size_of::<TdReport>());
+
+/// See `REPORTMACSTRUCT` in Table 3.31, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ReportMac {
+    /// Type header structure
+    pub report_type: ReportType,
+    /// Must be zero
+    pub _reserved0: [u8; 12],
+    /// CPU SVN
+    pub cpu_svn: [u8; 16],
+    /// SHA384 of [`TeeTcbInfo`]
+    pub tee_tcb_info_hash: [u8; 48],
+    /// SHA384 of [`TdInfo`] for TDX
+    pub tee_info_hash: [u8; 48],
+    /// A set of data used for communication between the caller and the target
+    pub report_data: [u8; TDX_REPORT_DATA_SIZE],
+    /// Must be zero
+    pub _reserved1: [u8; 32],
+    /// The MAC over above data.
+    pub mac: [u8; 32],
+}
+
+/// See `REPORTTYPE` in Table 3.32, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ReportType {
+    /// TEE type
+    /// 0x00: SGX
+    /// 0x81: TDX
+    pub tee_type: u8,
+    /// TEE type-specific subtype
+    /// 0: Standard TDX report
+    pub sub_type: u8,
+    /// TEE type-specific version
+    /// For TDX
+    ///    0: `TDINFO_STRUCT.SERVTD_HASH` is not used (all 0's)
+    ///    1: `TDINFO_STRUCT.SERVTD_HASH` is used
+    pub version: u8,
+    /// Must be zero
+    pub _reserved: u8,
+}
+
+/// See `TEE_TCB_INFO` in Table 3.29, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TeeTcbInfo {
+    /// Indicates which fields are valid.
+    /// Set to 0x301ff.
+    pub valid: [u8; 8],
+    /// [`TeeTcbSvn`] of the TDX module that created the TD on the current
+    /// platform.
+    pub tee_tcb_svn: TeeTcbSvn,
+    /// The measurement of the TDX module that created the TD on the
+    /// current platform.
+    pub mr_seam: [u8; 48],
+    /// Set to all 0's.
+    pub mr_signer_seam: [u8; 48],
+    /// Set to all 0's.
+    pub attributes: [u8; 8],
+    /// [`TeeTcbSvn`] of the current TDX module on the current platform.
+    pub tee_tcb_svn2: TeeTcbSvn,
+    /// Reserved
+    pub reserved: [u8; 95],
+}
+
+/// See `TEE_TCB_SVN` in Section 3.9.4, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TeeTcbSvn {
+    /// TDX module minor SVN
+    pub tdx_module_svn_minor: u8,
+    /// TDX module major SVN
+    pub tdx_module_svn_major: u8,
+    /// Microcode SE_SVN at the time the TDX module was loaded
+    pub seam_last_patch_svn: u8,
+    /// Reserved
+    pub _reserved: [u8; 13],
+}
+
+/// See `TDINFO_STRUCT` in Table 3.33, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TdInfo {
+    /// An instance of [`TdInfoBase`]
+    pub td_info_base: TdInfoBase,
+    /// Must be zero when `version` in [`ReportType`] is 0 or 1.
+    pub td_info_extension: [u8; 64],
+}
+
+/// Run-time extendable measurement register.
+pub type Rtmr = [u8; 48];
+
+/// See `ATTRIBUTES` in Table 3.9, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TdAttributes {
+    #[bits(1)]
+    pub debug: bool,
+    #[bits(3)]
+    _reserved1: u8,
+    #[bits(1)]
+    pub hgs_plus_prof: bool,
+    #[bits(1)]
+    pub perf_prof: bool,
+    #[bits(1)]
+    pub pmt_prof: bool,
+    #[bits(9)]
+    _reserved2: u16,
+    #[bits(7)]
+    _reserved_p: u8,
+    #[bits(4)]
+    _reserved_n: u8,
+    #[bits(1)]
+    pub lass: bool,
+    #[bits(1)]
+    pub sept_ve_disable: bool,
+    #[bits(1)]
+    pub migratable: bool,
+    #[bits(1)]
+    pub pks: bool,
+    #[bits(1)]
+    pub kl: bool,
+    #[bits(24)]
+    _reserved3: u32,
+    #[bits(6)]
+    _reserved4: u32,
+    #[bits(1)]
+    pub tpa: bool,
+    #[bits(1)]
+    pub perfmon: bool,
+}
+
+/// See `TDINFO_BASE` in Table 3.34, "Intel TDX Module v1.5 ABI specification", March 2024.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TdInfoBase {
+    /// TD's attributes
+    pub attributes: TdAttributes,
+    /// TD's XFAM
+    pub xfam: [u8; 8],
+    /// Measurement of the initial contents of the TDX in SHA384
+    pub mr_td: [u8; 48],
+    /// Software-defined ID for non-owner-defined configuration of the guest TD
+    /// in SHA384
+    pub mr_config_id: [u8; 48],
+    /// Software-defined ID for the guest TD's owner in SHA384
+    pub mr_owner: [u8; 48],
+    /// Software-defined ID for owner-defined configuration of the guest TD
+    /// in SHA384
+    pub mr_owner_config: [u8; 48],
+    /// Array of 4 [`Rtmr`]
+    pub rtmr: [Rtmr; 4],
+    /// SHA384 of the `TDINFO_STRUCTs` of bound service TDs if there is any.
+    pub servd_hash: [u8; 48],
+}

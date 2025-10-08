@@ -3,7 +3,7 @@
 
 [package]
 name = "mesh_remote"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -23,7 +23,6 @@ thiserror.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 ntapi.workspace = true
 
@@ -32,6 +31,7 @@ libc.workspace = true
 socket2.workspace = true
 
 [dev-dependencies]
+event-listener.workspace = true
 test_with_tracing.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]

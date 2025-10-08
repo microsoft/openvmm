@@ -3,7 +3,7 @@
 
 [package]
 name = "disklayer_ram"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -24,7 +24,6 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 inspect = { workspace = true, features = ["initiate"] }
 test_with_tracing.workspace = true

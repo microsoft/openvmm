@@ -1,27 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::UnicodeString;
 use super::chk_status;
 use super::dos_to_nt_path;
 use super::status_to_error;
-use super::UnicodeString;
 use namedpipeapi::GetNamedPipeHandleStateW;
 use namedpipeapi::SetNamedPipeHandleState;
 use ntapi::ntioapi;
-use ntapi::ntioapi::FilePipeLocalInformation;
-use ntapi::ntioapi::NtQueryInformationFile;
 use ntapi::ntioapi::FILE_OPEN;
 use ntapi::ntioapi::FILE_PIPE_CLOSING_STATE;
 use ntapi::ntioapi::FILE_PIPE_CONNECTED_STATE;
 use ntapi::ntioapi::FILE_PIPE_DISCONNECTED_STATE;
 use ntapi::ntioapi::FILE_PIPE_LISTENING_STATE;
 use ntapi::ntioapi::FILE_PIPE_LOCAL_INFORMATION;
+use ntapi::ntioapi::FilePipeLocalInformation;
+use ntapi::ntioapi::NtQueryInformationFile;
 use ntdef::LARGE_INTEGER;
-use ntdef::OBJECT_ATTRIBUTES;
 use ntdef::OBJ_CASE_INSENSITIVE;
-use ntioapi::NtCreateNamedPipeFile;
-use ntioapi::NtFsControlFile;
-use ntioapi::NtOpenFile;
+use ntdef::OBJECT_ATTRIBUTES;
 use ntioapi::FILE_CREATE;
 use ntioapi::FILE_NON_DIRECTORY_FILE;
 use ntioapi::FILE_PIPE_BYTE_STREAM_MODE;
@@ -30,6 +27,9 @@ use ntioapi::FILE_PIPE_MESSAGE_MODE;
 use ntioapi::FILE_PIPE_MESSAGE_TYPE;
 use ntioapi::FILE_PIPE_QUEUE_OPERATION;
 use ntioapi::FILE_SYNCHRONOUS_IO_NONALERT;
+use ntioapi::NtCreateNamedPipeFile;
+use ntioapi::NtFsControlFile;
+use ntioapi::NtOpenFile;
 use pal_event::Event;
 use std::fs::File;
 use std::io;
@@ -314,19 +314,30 @@ impl PipeExt for File {
         };
         unsafe {
             let mut iosb = zeroed();
-            chk_status(NtFsControlFile(
-                self.as_raw_handle(),
-                null_mut(),
-                None,
-                null_mut(),
-                &mut iosb,
-                FSCTL_PIPE_EVENT_SELECT,
-                std::ptr::from_mut::<FILE_PIPE_EVENT_SELECT_BUFFER>(&mut input)
-                    .cast::<std::ffi::c_void>(),
-                size_of_val(&input) as u32,
-                null_mut(),
-                0,
-            ))?;
+            let mut status = !0;
+            // Newer versions of Windows support FSCTL_PIPE_EVENT_SELECT, which
+            // works on unidirectional pipes. Older versions require
+            // FSCTL_PIPE_EVENT_SELECT_OLD, which only works on bidirectional
+            // pipes.
+            for fsctl in [FSCTL_PIPE_EVENT_SELECT, FSCTL_PIPE_EVENT_SELECT_OLD] {
+                status = NtFsControlFile(
+                    self.as_raw_handle(),
+                    null_mut(),
+                    None,
+                    null_mut(),
+                    &mut iosb,
+                    fsctl,
+                    std::ptr::from_mut::<FILE_PIPE_EVENT_SELECT_BUFFER>(&mut input)
+                        .cast::<std::ffi::c_void>(),
+                    size_of_val(&input) as u32,
+                    null_mut(),
+                    0,
+                );
+                if status != winapi::shared::ntstatus::STATUS_NOT_SUPPORTED {
+                    break;
+                }
+            }
+            chk_status(status)?;
         }
         Ok(())
     }
@@ -397,6 +408,12 @@ const FSCTL_PIPE_EVENT_SELECT: u32 = ctl_code(
     winioctl::FILE_DEVICE_NAMED_PIPE,
     3071,
     winioctl::METHOD_BUFFERED,
+    winioctl::FILE_ANY_ACCESS,
+);
+const FSCTL_PIPE_EVENT_SELECT_OLD: u32 = ctl_code(
+    winioctl::FILE_DEVICE_NAMED_PIPE,
+    3071,
+    winioctl::METHOD_BUFFERED,
     winnt::FILE_WRITE_DATA,
 );
 const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
@@ -407,7 +424,6 @@ const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
 );
 
 #[repr(C)]
-#[allow(clippy::upper_case_acronyms)] // C type
 struct FILE_PIPE_EVENT_SELECT_BUFFER {
     event_types: u32,
     event_handle: u64,

@@ -7,14 +7,14 @@ use gdma_defs::Cqe;
 use gdma_defs::CqeParams;
 use gdma_defs::Eqe;
 use gdma_defs::EqeParams;
-use gdma_defs::WqDoorbellValue;
-use gdma_defs::Wqe;
-use gdma_defs::WqeHeader;
 use gdma_defs::GDMA_EQE_COMPLETION;
 use gdma_defs::OWNER_BITS;
 use gdma_defs::OWNER_MASK;
 use gdma_defs::PAGE_SIZE64;
 use gdma_defs::WQE_ALIGNMENT;
+use gdma_defs::WqDoorbellValue;
+use gdma_defs::Wqe;
+use gdma_defs::WqeHeader;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -31,8 +31,10 @@ use std::task::Waker;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // Offset the queue IDs seen by the guest.
 const ID_OFFSET: usize = 24;
@@ -65,13 +67,13 @@ pub enum QueueAllocError {
     NoMoreQueues,
 }
 
-impl<T: AsBytes> CqEq<T> {
+impl<T: IntoBytes + Immutable + KnownLayout> CqEq<T> {
     fn new(region: DmaRegion) -> Result<Self, QueueAllocError> {
         if !region.is_aligned_to(size_of::<T>()) {
             return Err(QueueAllocError::InvalidAlignment);
         }
         let len = region.len();
-        if !len < PAGE_SIZE64 as usize || len > u32::MAX as usize || !region.len().is_power_of_two()
+        if len < PAGE_SIZE64 as usize || len > u32::MAX as usize || !region.len().is_power_of_two()
         {
             return Err(QueueAllocError::InvalidLen);
         }
@@ -99,13 +101,16 @@ impl<T: AsBytes> CqEq<T> {
         let mut writer = range.writer(gm);
         let (entry, last) = entry.as_bytes().split_at(entry.as_bytes().len() - 1);
         if let Err(err) = writer.write(entry) {
-            tracing::warn!(err = &err as &dyn std::error::Error, "failed to write");
+            tracing::warn!(
+                err = &err as &dyn std::error::Error,
+                "failed to write entry"
+            );
         }
         // Write the final byte last after a release fence to ensure that the
         // guest sees the entire entry before the owner count is updated.
         std::sync::atomic::fence(Release);
         if let Err(err) = writer.write(last) {
-            tracing::warn!(err = &err as &dyn std::error::Error, "failed to write");
+            tracing::warn!(err = &err as &dyn std::error::Error, "failed to write last");
         }
         // Ensure the write is flushed before sending the interrupt.
         std::sync::atomic::fence(Release);
@@ -229,7 +234,7 @@ impl Wq {
 
         let mut wqe = Wqe {
             header,
-            data: FromZeroes::new_zeroed(),
+            data: FromZeros::new_zeroed(),
         };
 
         if let Err(err) = reader.read(&mut wqe.data[..wqe.header.data_len()]) {
@@ -249,7 +254,10 @@ impl Wq {
         let old_len = self.available();
         assert!(old_len <= self.cap);
         let new_len = val.wrapping_sub(self.head);
-        if self.head % WQE_ALIGNMENT as u32 == 0 && new_len > old_len && new_len <= self.cap {
+        if self.head.is_multiple_of(WQE_ALIGNMENT as u32)
+            && new_len > old_len
+            && new_len <= self.cap
+        {
             self.tail = val;
             self.waker.take()
         } else {
@@ -453,7 +461,7 @@ impl Queues {
     pub fn post_cq(&self, cq_id: u32, data: &[u8], wq_id: u32, is_send: bool) {
         let post_to_eq = self.cq(cq_id).and_then(|mut cq| {
             let mut cqe = Cqe {
-                data: FromZeroes::new_zeroed(),
+                data: FromZeros::new_zeroed(),
                 params: CqeParams::new()
                     .with_is_send_wq(is_send)
                     .with_wq_number(wq_id)
@@ -472,7 +480,7 @@ impl Queues {
     pub fn post_eq(&self, eq_id: u32, ty: u8, data: &[u8]) {
         let post_msi = self.eq(eq_id).and_then(|mut eq| {
             let mut eqe = Eqe {
-                data: FromZeroes::new_zeroed(),
+                data: FromZeros::new_zeroed(),
                 params: EqeParams::new()
                     .with_event_type(ty)
                     .with_owner_count(eq.q.owner_count()),

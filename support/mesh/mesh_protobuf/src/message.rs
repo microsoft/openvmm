@@ -3,6 +3,12 @@
 
 //! Type-erased protobuf message support.
 
+use crate::DefaultEncoding;
+use crate::DescribedProtobuf;
+use crate::Error;
+use crate::MessageDecode;
+use crate::MessageEncode;
+use crate::Protobuf;
 use crate::decode;
 use crate::encode;
 use crate::encoding::MessageEncoding;
@@ -14,12 +20,6 @@ use crate::protofile::DescribeField;
 use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
 use crate::table::DescribeTable;
-use crate::DefaultEncoding;
-use crate::DescribedProtobuf;
-use crate::Error;
-use crate::MessageDecode;
-use crate::MessageEncode;
-use crate::Protobuf;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -135,10 +135,12 @@ impl ProtobufAny {
 mod tests {
     extern crate std;
 
+    use crate::Protobuf;
     use crate::encode;
     use crate::message::ProtobufAny;
     use crate::message::ProtobufMessage;
-    use crate::Protobuf;
+    use crate::tests::as_expect_str;
+    use expect_test::expect;
     use std::println;
 
     #[test]
@@ -151,8 +153,14 @@ mod tests {
             message
         );
 
+        let expected = expect!([r#"
+            1: varint 5
+            raw: 0805"#]);
+        let actual = encode(ProtobufMessage::new(message));
+        expected.assert_eq(&as_expect_str(&actual));
+
         // Is transparent.
-        assert_eq!(encode(ProtobufMessage::new(message)), encode(message));
+        assert_eq!(actual, encode(message));
     }
 
     #[test]

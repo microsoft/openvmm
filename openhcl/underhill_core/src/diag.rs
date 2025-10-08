@@ -6,8 +6,8 @@
 use anyhow::Context;
 use diag_server::DiagServer;
 use futures::FutureExt;
-use mesh::error::RemoteError;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
@@ -55,7 +55,7 @@ impl Worker for DiagWorker {
     }
 
     fn run(self, mut recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let (_cancel_send, cancel) = mesh::oneshot();
             let mut serve = pin!(self.server.serve(&driver, cancel, self.request_send).fuse());
             loop {

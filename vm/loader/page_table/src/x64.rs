@@ -4,9 +4,11 @@
 //! Methods to construct page tables on x64.
 
 use crate::IdentityMapSize;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const X64_PTE_PRESENT: u64 = 1;
 const X64_PTE_READ_WRITE: u64 = 1 << 1;
@@ -28,7 +30,7 @@ pub const X64_LARGE_PAGE_SIZE: u64 = 0x200000;
 /// Number of bytes in a 1GB page for X64.
 pub const X64_1GB_PAGE_SIZE: u64 = 0x40000000;
 
-#[derive(Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(transparent)]
 pub struct PageTableEntry {
     pub(crate) entry: u64,
@@ -194,7 +196,7 @@ impl PageTableEntry {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PageTable {
     entries: [PageTableEntry; PAGE_TABLE_ENTRY_COUNT],
 }
@@ -345,12 +347,12 @@ impl PageTableBuilder {
             panic!("more than 512 gb size not supported");
         }
 
-        if self.size % X64_LARGE_PAGE_SIZE != 0 {
+        if !self.size.is_multiple_of(X64_LARGE_PAGE_SIZE) {
             panic!("size not 2mb aligned");
         }
 
         // start_gpa and size must be 2MB aligned.
-        if self.start_gpa % X64_LARGE_PAGE_SIZE != 0 {
+        if !self.start_gpa.is_multiple_of(X64_LARGE_PAGE_SIZE) {
             panic!("start_gpa not 2mb aligned");
         }
 
@@ -608,10 +610,10 @@ fn flatten_page_table(page_table: Vec<PageTable>) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::X64_1GB_PAGE_SIZE;
     use super::align_up_to_large_page_size;
     use super::align_up_to_page_size;
     use super::calculate_pde_table_count;
-    use super::X64_1GB_PAGE_SIZE;
 
     #[test]
     fn test_align_up() {

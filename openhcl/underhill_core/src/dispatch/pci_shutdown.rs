@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use blocking::unblock;
+use cvm_tracing::CVM_ALLOWED;
 use fs_err::PathExt;
 use futures::future::try_join_all;
 use std::os::unix::prelude::*;
@@ -28,7 +29,7 @@ pub enum ShutdownError {
 /// vfio from them won't help.
 pub async fn shutdown_pci_devices() -> Result<(), ShutdownError> {
     let dir = fs_err::read_dir("/sys/bus/pci/devices").map_err(ShutdownError::SysFs)?;
-    let ops = try_join_all(dir.map(|entry| async {
+    let ops = try_join_all(dir.map(async |entry| {
         let entry = entry.map_err(ShutdownError::SysFs)?;
         let driver_link = entry.path().join("driver");
         match driver_link.fs_err_read_link() {
@@ -47,6 +48,7 @@ pub async fn shutdown_pci_devices() -> Result<(), ShutdownError> {
                 unblock(move || fs_err::write(driver_link.join("unbind"), pci_id.as_bytes()))
                     .instrument(tracing::info_span!(
                         "unbind_pci_device",
+                        CVM_ALLOWED,
                         driver = driver_name.as_ref(),
                         pci_id = pci_id_str.as_str(),
                     ))

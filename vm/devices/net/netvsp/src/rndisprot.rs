@@ -1,14 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use static_assertions::const_assert_eq;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 //
 //  Basic types
@@ -106,7 +107,7 @@ pub const STATUS_TOKEN_RING_OPEN_ERROR: Status = 0xC0011000;
 //
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Oid: u32 {
         OID_GEN_SUPPORTED_LIST = 0x00010101,
         OID_GEN_HARDWARE_STATUS = 0x00010102,
@@ -207,7 +208,7 @@ open_enum! {
 
 /// Response to OID_GEN_FRIENDLY_NAME.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+#[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct FriendlyName {
     pub name: [u16; 255],
     pub null: u16,
@@ -290,7 +291,7 @@ pub const MAC_OPTION_RECEIVE_AT_DPC: u32 = 0x00000100;
 pub const MAC_OPTION_8021Q_VLAN: u32 = 0x00000200;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct LinkState {
     pub header: NdisObjectHeader,
     pub media_connect_state: u32,
@@ -303,7 +304,7 @@ pub struct LinkState {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct LinkSpeed {
     pub xmit: u64,
     pub rcv: u64,
@@ -313,7 +314,7 @@ pub struct LinkSpeed {
 //  NdisInitialize message
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct InitializeRequest {
     pub request_id: RequestId,
     pub major_version: u32,
@@ -325,7 +326,7 @@ pub struct InitializeRequest {
 //  Response to NdisInitialize
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct InitializeComplete {
     pub request_id: RequestId,
     pub status: Status,
@@ -345,7 +346,7 @@ pub struct InitializeComplete {
 //  supported by the device is appended to the response to NdisInitialize.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CoAddressFamily {
     pub address_family: AddressFamily,
     pub major_version: u32,
@@ -356,7 +357,7 @@ pub struct CoAddressFamily {
 //  NdisHalt message
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HaltRequest {
     pub request_id: RequestId,
 }
@@ -365,7 +366,7 @@ pub struct HaltRequest {
 // NdisQueryRequest message
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueryRequest {
     pub request_id: RequestId,
     pub oid: Oid,
@@ -378,7 +379,7 @@ pub struct QueryRequest {
 //  Response to NdisQueryRequest
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct QueryComplete {
     pub request_id: RequestId,
     pub status: Status,
@@ -390,7 +391,7 @@ pub struct QueryComplete {
 //  NdisSetRequest message
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetRequest {
     pub request_id: RequestId,
     pub oid: Oid,
@@ -403,7 +404,7 @@ pub struct SetRequest {
 //  Response to NdisSetRequest
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetComplete {
     pub request_id: RequestId,
     pub status: Status,
@@ -413,7 +414,7 @@ pub struct SetComplete {
 //  NdisSetExRequest message
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetExRequest {
     pub request_id: RequestId,
     pub oid: Oid,
@@ -426,7 +427,7 @@ pub struct SetExRequest {
 //  Response to NdisSetExRequest
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetExComplete {
     pub request_id: RequestId,
     pub status: Status,
@@ -438,7 +439,7 @@ pub struct SetExComplete {
 //  NdisReset message
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ResetRequest {
     pub reserved: u32,
 }
@@ -447,7 +448,7 @@ pub struct ResetRequest {
 //  Response to NdisReset
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ResetComplete {
     pub status: Status,
     pub addressing_reset: u32,
@@ -457,7 +458,7 @@ pub struct ResetComplete {
 //  NdisMIndicateStatus message
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IndicateStatus {
     pub status: Status,
     pub status_buffer_length: u32,
@@ -469,7 +470,7 @@ pub struct IndicateStatus {
 //  RNDIS_INDICATE_STATUS messages signifying error conditions.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DiagnosticInfo {
     pub diag_status: Status,
     pub error_offset: u32,
@@ -479,7 +480,7 @@ pub struct DiagnosticInfo {
 //  NdisKeepAlive message
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct KeepaliveRequest {
     pub request_id: RequestId,
 }
@@ -488,7 +489,7 @@ pub struct KeepaliveRequest {
 // Response to NdisKeepAlive
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct KeepaliveComplete {
     pub request_id: RequestId,
     pub status: Status,
@@ -501,7 +502,7 @@ pub struct KeepaliveComplete {
 //  contains the VC handle.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Packet {
     pub data_offset: u32,
     pub data_length: u32,
@@ -518,7 +519,7 @@ pub struct Packet {
 //  Optional Out of Band data associated with a Data message.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Oobd {
     pub size: u32,
     pub typ: ClassId,
@@ -532,7 +533,7 @@ pub const PACKET_INFO_FLAGS_MULTI_SUBALLOC_LAST_FRAGMENT: u8 = 1 << 2;
 pub const PACKET_INFO_ID_VERSION_V1: u8 = 1;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PacketIdInfo {
     pub version: u8,
     pub flags: u8,
@@ -545,7 +546,7 @@ const PACKET_INFO_ID: u16 = 1;
 //  Packet extension field contents associated with a Data message.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PerPacketInfo {
     pub size: u32,
     pub typ: u32, // high bit means internal
@@ -553,7 +554,7 @@ pub struct PerPacketInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TxTcpIpChecksumInfo(pub u32);
 
 impl TxTcpIpChecksumInfo {
@@ -608,7 +609,7 @@ impl TxTcpIpChecksumInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct RxTcpIpChecksumInfo(pub u32);
 
 impl RxTcpIpChecksumInfo {
@@ -687,7 +688,7 @@ impl RxTcpIpChecksumInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TcpLsoInfo(pub u32);
 
 impl TcpLsoInfo {
@@ -716,7 +717,7 @@ pub const PPI_LSO: u32 = 2;
 //  OID_GEN_RNDIS_CONFIG_PARAMETER.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ConfigParameterInfo {
     pub parameter_name_offset: u32,
     pub parameter_name_length: u32,
@@ -735,7 +736,7 @@ pub const CONFIG_PARAM_TYPE_STRING: u32 = 2;
 // Remote NDIS message format
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageHeader {
     pub message_type: u32,
 
@@ -745,18 +746,19 @@ pub struct MessageHeader {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum NdisObjectType: u8 {
         DEFAULT = 0x80,
         RSS_CAPABILITIES = 0x88,
         RSS_PARAMETERS = 0x89,
+        OID_REQUEST = 0x96,
         OFFLOAD = 0xA7,
         OFFLOAD_ENCAPSULATION = 0xA8,
     }
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NdisObjectHeader {
     pub object_type: NdisObjectType,
     pub revision: u8,
@@ -764,7 +766,7 @@ pub struct NdisObjectHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NdisReceiveScaleCapabilities {
     pub header: NdisObjectHeader,
     pub capabilities_flags: u32,
@@ -777,7 +779,7 @@ pub struct NdisReceiveScaleCapabilities {
 pub const NDIS_SIZEOF_RECEIVE_SCALE_CAPABILITIES_REVISION_2: usize = 18;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NdisReceiveScaleParameters {
     pub header: NdisObjectHeader,
 
@@ -861,7 +863,7 @@ pub const NDIS_RSS_CAPS_SUPPORTS_MSI_X: u32 = 0x20000000;
 pub const NDIS_RSS_CAPS_SUPPORTS_INDEPENDENT_ENTRY_MOVE: u32 = 0x40000000;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NdisOffload {
     pub header: NdisObjectHeader,
 
@@ -907,7 +909,7 @@ pub const NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_3: usize =
 const_assert_eq!(NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_3, 156);
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TcpIpChecksumOffload {
     pub ipv4_tx_encapsulation: u32,
     pub ipv4_tx_flags: Ipv4ChecksumOffload,
@@ -920,7 +922,7 @@ pub struct TcpIpChecksumOffload {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Ipv4ChecksumOffload {
     #[bits(2)]
     pub ip_options_supported: u32,
@@ -937,7 +939,7 @@ pub struct Ipv4ChecksumOffload {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Ipv6ChecksumOffload {
     #[bits(2)]
     pub ip_extension_headers_supported: u32,
@@ -954,7 +956,7 @@ pub struct Ipv6ChecksumOffload {
 pub const NDIS_ENCAPSULATION_IEEE_802_3: u32 = 2;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TcpLargeSendOffloadV2 {
     pub ipv4_encapsulation: u32,
     pub ipv4_max_offload_size: u32,
@@ -966,7 +968,7 @@ pub struct TcpLargeSendOffloadV2 {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Ipv6LsoFlags {
     #[bits(2)]
     pub ip_extension_headers_supported: u32,
@@ -977,7 +979,7 @@ pub struct Ipv6LsoFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NdisOffloadEncapsulation {
     pub header: NdisObjectHeader,
     pub ipv4_enabled: u32,
@@ -998,7 +1000,7 @@ pub const NDIS_OFFLOAD_SET_ON: u32 = 1;
 pub const NDIS_OFFLOAD_SET_OFF: u32 = 2;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NdisOffloadParameters {
     pub header: NdisObjectHeader,
     pub ipv4_checksum: OffloadParametersChecksum,
@@ -1019,7 +1021,7 @@ pub struct NdisOffloadParameters {
 pub const NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_1: usize = 20;
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum OffloadParametersChecksum: u8 {
         NO_CHANGE = 0,
         TX_RX_DISABLED = 1,
@@ -1042,7 +1044,7 @@ impl OffloadParametersChecksum {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum OffloadParametersSimple: u8 {
         NO_CHANGE = 0,
         DISABLED = 1,
@@ -1062,7 +1064,7 @@ impl OffloadParametersSimple {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct RndisConfigParameterInfo {
     pub name_offset: u32,
     pub name_length: u32,
@@ -1072,7 +1074,7 @@ pub struct RndisConfigParameterInfo {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum NdisParameterType: u32 {
         INTEGER = 0,
         HEX_INTEGER = 1,
@@ -1081,3 +1083,14 @@ open_enum! {
         BINARY = 4,
     }
 }
+
+pub type RndisPacketFilterOidValue = u32;
+
+// Rndis Packet Filter Flags (OID_GEN_CURRENT_PACKET_FILTER)
+pub const NDIS_PACKET_TYPE_NONE: u32 = 0x00000000;
+pub const NDIS_PACKET_TYPE_DIRECTED: u32 = 0x00000001;
+pub const NDIS_PACKET_TYPE_MULTICAST: u32 = 0x00000002;
+pub const NDIS_PACKET_TYPE_ALL_MULTICAST: u32 = 0x00000004;
+pub const NDIS_PACKET_TYPE_BROADCAST: u32 = 0x00000008;
+pub const NPROTO_PACKET_FILTER: u32 =
+    NDIS_PACKET_TYPE_DIRECTED | NDIS_PACKET_TYPE_ALL_MULTICAST | NDIS_PACKET_TYPE_BROADCAST;

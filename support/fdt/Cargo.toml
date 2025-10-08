@@ -3,13 +3,11 @@
 
 [package]
 name = "fdt"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true
 zerocopy.workspace = true
-zerocopy_helpers.workspace = true
-
 [lints]
 workspace = true

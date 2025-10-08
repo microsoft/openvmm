@@ -5,31 +5,31 @@
 
 use super::spec;
 use super::spec::nvm;
-use crate::driver::save_restore::SavedNamespaceData;
+use crate::NVME_PAGE_SHIFT;
 use crate::driver::IoIssuers;
-use crate::queue_pair::admin_cmd;
+use crate::driver::save_restore::SavedNamespaceData;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::RequestError;
-use crate::NVME_PAGE_SHIFT;
-use guestmem::ranges::PagedRange;
+use crate::queue_pair::admin_cmd;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use mesh::CancelContext;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use vmcore::vm_task::VmTaskDriver;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// An error getting a namespace.
 #[derive(Debug, Error)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum NamespaceError {
     #[error("namespace not found")]
     NotFound,
@@ -404,7 +404,9 @@ impl Namespace {
                 )
                 .await?;
 
-            let header = nvm::ReservationReportExtended::read_from_prefix(&data[..]).unwrap();
+            let header = nvm::ReservationReportExtended::read_from_prefix(&data[..])
+                .unwrap()
+                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
             let len = size_of_val(&header)
                 + header.report.regctl.get() as usize
                     * size_of::<nvm::RegisteredControllerExtended>();
@@ -420,7 +422,7 @@ impl Namespace {
             ];
 
             controllers
-                .as_bytes_mut()
+                .as_mut_bytes()
                 .copy_from_slice(&data[size_of_val(&header)..len]);
 
             break Ok((header, controllers));
@@ -527,7 +529,6 @@ impl Namespace {
     /// during servicing.
     /// TODO: Re-enable namespace save/restore once we confirm
     /// that we can process namespace change AEN.
-    #[allow(dead_code)]
     pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
         Ok(SavedNamespaceData {
             nsid: self.nsid,
@@ -623,7 +624,7 @@ async fn identify_namespace(
                     .into(),
                 ..admin_cmd(spec::AdminOpcode::IDENTIFY)
             },
-            identify.as_bytes_mut(),
+            identify.as_mut_bytes(),
         )
         .await?;
     Ok(identify)
@@ -633,6 +634,6 @@ fn nvm_cmd(opcode: nvm::NvmOpcode, nsid: u32) -> spec::Command {
     spec::Command {
         cdw0: spec::Cdw0::new().with_opcode(opcode.0),
         nsid,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     }
 }

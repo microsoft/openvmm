@@ -48,7 +48,7 @@ pub mod publish {
                 done,
             } = request;
 
-            let files = ctx.emit_rust_stepv("describe OpenHCL igvm extras artifact", |ctx| {
+            let files = ctx.emit_minor_rust_stepv("describe OpenHCL igvm extras artifact", |ctx| {
                 let extras = extras.claim(ctx);
                 |rt| {
                     let mut files = Vec::new();
@@ -66,9 +66,9 @@ pub mod publish {
 
                         {
                             let OpenvmmHclOutput { bin, dbg } = openvmm_hcl_bin;
-                            files.push((format!("{folder_name}/openhcl").into(), bin));
+                            files.push((format!("{folder_name}/openvmm_hcl").into(), bin));
                             if let Some(dbg) = dbg {
-                                files.push((format!("{folder_name}/openhcl.dbg").into(), dbg));
+                                files.push((format!("{folder_name}/openvmm_hcl.dbg").into(), dbg));
                             }
                         }
 
@@ -87,7 +87,7 @@ pub mod publish {
                             files.push((format!("{folder_name}/sidecar.dbg").into(), dbg));
                         }
                     }
-                    Ok(files)
+                    files
                 }
             });
 
@@ -167,7 +167,7 @@ pub mod resolve {
                             openvmm_hcl_bin: OpenvmmHclOutput {
                                 bin: folder_name.join("openhcl"),
                                 dbg: {
-                                    let p = folder_name.join("openhcl.dbg");
+                                    let p = folder_name.join("openvmm_hcl.dbg");
                                     p.exists().then_some(p)
                                 },
                             },

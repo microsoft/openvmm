@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Implements a tracing filter to restrict logging of events to only those
-//! that are marked as [`CVM_ALLOWED`].
+//! Implements a tracing filter to restrict logging of events that are marked
+//! as [`CVM_CONFIDENTIAL`].
 
 // How it works:
 // The magic value [`tracing::field::Empty`] will cause that field to be omitted
@@ -10,10 +10,9 @@
 // metadata tag on individual events without polluting the output.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
-use tracing::field::Empty;
 use tracing::Subscriber;
+use tracing::field::Empty;
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::layer::Filter;
 
@@ -25,20 +24,20 @@ pub const CVM_ALLOWED: Empty = Empty;
 /// not be logged out of a confidential environment.
 pub const CVM_CONFIDENTIAL: Empty = Empty;
 
-/// A tracing filter that will only allow events that are marked as [`CVM_ALLOWED`].
+/// A tracing filter that will block events that are marked as [`CVM_CONFIDENTIAL`].
 pub fn confidential_event_filter<S: Subscriber>() -> impl Filter<S> {
-    FilterFn::new(move |m| m.fields().field("CVM_ALLOWED").is_some())
+    FilterFn::new(move |m| m.fields().field("CVM_CONFIDENTIAL").is_none())
 }
 
 #[cfg(test)]
 mod test {
     use crate::CVM_ALLOWED;
     use crate::CVM_CONFIDENTIAL;
-    use std::sync::atomic::AtomicU32;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
     use tracing::Subscriber;
-    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
 
     struct TestLayer {
         count: Arc<AtomicU32>,
@@ -97,6 +96,6 @@ mod test {
     fn it_works() {
         let (count, subscriber) = create_test_subscriber();
         log_test_events(subscriber);
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 5);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 10);
     }
 }

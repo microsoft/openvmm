@@ -65,7 +65,7 @@ impl UefiDevice {
                 }
 
                 let random_number = &mut [0; MAXIMUM_RNG_SIZE][..buffer_size];
-                getrandom::getrandom(random_number).expect("rng failure");
+                getrandom::fill(random_number).expect("rng failure");
 
                 self.gm
                     .write_at(command.buffer_address.into(), random_number)?;

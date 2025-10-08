@@ -10,14 +10,16 @@ mod line_sets;
 
 pub use self::builder::ChipsetBuilder;
 pub use self::builder::ChipsetDevices;
+pub use self::builder::DynamicDeviceUnit;
 
 use self::io_ranges::IoRanges;
 use self::io_ranges::LookupResult;
 use crate::DebugEventHandler;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
-use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use inspect::Inspect;
 use std::future::poll_fn;
 use std::sync::Arc;
@@ -104,6 +106,7 @@ impl Chipset {
                         // Fill data with !0 to indicate an error to the guest.
                         bytes.fill(!0);
                         tracelimit::warn_ratelimited!(
+                            CVM_CONFIDENTIAL,
                             device = &*lookup.dev_name,
                             address,
                             len,
@@ -113,6 +116,7 @@ impl Chipset {
                         );
                     }
                     IoType::Write(bytes) => tracelimit::warn_ratelimited!(
+                        CVM_CONFIDENTIAL,
                         device = &*lookup.dev_name,
                         address,
                         len,
@@ -147,7 +151,8 @@ impl Chipset {
                 }
             }
             Err(err) => {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
+                    CVM_CONFIDENTIAL,
                     device = &*lookup.dev_name,
                     ?kind,
                     address,

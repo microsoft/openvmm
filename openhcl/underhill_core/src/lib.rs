@@ -5,6 +5,7 @@
 //! for the underhill environment.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod diag;
@@ -13,6 +14,7 @@ mod emuplat;
 mod get_tracing;
 mod inspect_internal;
 mod inspect_proc;
+mod livedump;
 mod loader;
 mod nvme_manager;
 mod options;
@@ -20,6 +22,7 @@ mod reference_time;
 mod servicing;
 mod threadpool_vm_task_backend;
 mod vmbus_relay_unit;
+mod vmgs_logger;
 mod vp;
 mod vpci;
 mod worker;
@@ -38,40 +41,39 @@ use crate::worker::UnderhillWorkerParameters;
 use anyhow::Context;
 use bootloader_fdt_parser::BootTimes;
 use cvm_tracing::CVM_ALLOWED;
-use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
+use framebuffer::FramebufferAccess;
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use get_tracing::init_tracing;
 use get_tracing::init_tracing_backend;
 use inspect::Inspect;
 use inspect::SensitivityLevel;
-use mesh::error::RemoteError;
-use mesh::rpc::Rpc;
-use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use mesh::CancelReason;
 use mesh::MeshPayload;
-use mesh_process::try_run_mesh_host;
+use mesh::error::RemoteError;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
+use mesh_process::try_run_mesh_host;
 use mesh_tracing::RemoteTracer;
 use mesh_tracing::TracingBackend;
-use mesh_worker::launch_local_worker;
-use mesh_worker::register_workers;
 use mesh_worker::RegisteredWorkers;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
 use mesh_worker::WorkerHost;
 use mesh_worker::WorkerHostRunner;
-use pal_async::task::Spawn;
+use mesh_worker::launch_local_worker;
+use mesh_worker::register_workers;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
+use pal_async::task::Spawn;
 #[cfg(feature = "profiler")]
 use profiler_worker::ProfilerWorker;
 #[cfg(feature = "profiler")]
 use profiler_worker::ProfilerWorkerParameters;
-use std::sync::Arc;
 use std::time::Duration;
 use vmsocket::VmAddress;
 use vmsocket::VmListener;
@@ -106,7 +108,7 @@ fn new_underhill_remote_console_cfg(
                 synth_keyboard: true,
                 synth_mouse: true,
                 synth_video: true,
-                input: mesh::MpscReceiver::new(),
+                input: mesh::Receiver::new(),
                 framebuffer: Some(fb),
             },
             Some(fba),
@@ -117,7 +119,7 @@ fn new_underhill_remote_console_cfg(
                 synth_keyboard: false,
                 synth_mouse: false,
                 synth_video: false,
-                input: mesh::MpscReceiver::new(),
+                input: mesh::Receiver::new(),
                 framebuffer: None,
             },
             None,
@@ -145,12 +147,7 @@ pub fn main() -> anyhow::Result<()> {
     }
 
     // FUTURE: create and use the affinitized threadpool here.
-    let tracing_pool = DefaultPool::new();
-    let tracing_driver = tracing_pool.driver();
-    std::thread::Builder::new()
-        .name("tracing".to_owned())
-        .spawn(|| tracing_pool.run())
-        .unwrap();
+    let (_, tracing_driver) = DefaultPool::spawn_on_thread("tracing");
 
     // Try to run as a worker host, sending a remote tracer that will forward
     // tracing events back to the initial process for logging to the host. See
@@ -160,7 +157,7 @@ pub fn main() -> anyhow::Result<()> {
     // not return). Any worker host setup errors are return and bubbled up.
     try_run_mesh_host("underhill", {
         let tracing_driver = tracing_driver.clone();
-        |params: MeshHostParams| async move {
+        async |params: MeshHostParams| {
             if let Some(remote_tracer) = params.tracer {
                 init_tracing(tracing_driver, remote_tracer).context("failed to init tracing")?;
             }
@@ -209,7 +206,11 @@ async fn do_main(driver: DefaultDriver, mut tracing: TracingBackend) -> anyhow::
 
     let r = run_control(driver, &mesh, opt, &mut tracing).await;
     if let Err(err) = &r {
-        tracing::error!(error = err.as_ref() as &dyn std::error::Error, "VM failure");
+        tracing::error!(
+            CVM_ALLOWED,
+            error = err.as_ref() as &dyn std::error::Error,
+            "VM failure"
+        );
     }
 
     // Wait a few seconds for child processes to terminate and tracing to finish.
@@ -241,6 +242,7 @@ fn log_boot_times() -> anyhow::Result<()> {
         sidecar_end,
     } = BootTimes::new().context("failed to parse boot times")?;
     tracing::info!(
+        CVM_ALLOWED,
         start,
         end,
         sidecar_start,
@@ -308,6 +310,8 @@ async fn launch_workers(
         vmbus_max_version: opt.vmbus_max_version,
         vmbus_enable_mnf: opt.vmbus_enable_mnf,
         vmbus_force_confidential_external_memory: opt.vmbus_force_confidential_external_memory,
+        vmbus_channel_unstick_delay: (opt.vmbus_channel_unstick_delay_ms != 0)
+            .then(|| Duration::from_millis(opt.vmbus_channel_unstick_delay_ms)),
         cmdline_append: opt.cmdline_append.clone(),
         reformat_vmgs: opt.reformat_vmgs,
         vtl0_starts_paused: opt.vtl0_starts_paused,
@@ -315,14 +319,18 @@ async fn launch_workers(
         force_load_vtl0_image: opt.force_load_vtl0_image,
         nvme_vfio: opt.nvme_vfio,
         mcr: opt.mcr,
-        emulate_apic: opt.emulate_apic,
         enable_shared_visibility_pool: opt.enable_shared_visibility_pool,
-        cvm_guest_vsm: opt.cvm_guest_vsm,
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
+        nvme_always_flr: opt.nvme_always_flr,
+        test_configuration: opt.test_configuration,
+        disable_uefi_frontpage: opt.disable_uefi_frontpage,
+        guest_state_encryption_policy: opt.guest_state_encryption_policy,
+        attempt_ak_cert_callback: opt.attempt_ak_cert_callback,
+        enable_vpci_relay: opt.enable_vpci_relay,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
@@ -355,7 +363,7 @@ async fn launch_workers(
 
     #[cfg(feature = "gdb")]
     let mut gdbstub_worker = None;
-    #[cfg_attr(not(feature = "gdb"), allow(unused_mut))]
+    #[cfg_attr(not(feature = "gdb"), expect(unused_mut))]
     let mut debugger_rpc = None;
     #[cfg(feature = "gdb")]
     if opt.gdbstub {
@@ -446,10 +454,15 @@ async fn run_control(
     let (control_send, mut control_recv) = mesh::channel();
     let mut control_send = Some(control_send);
 
+    if opt.signal_vtl0_started {
+        signal_vtl0_started(&driver)
+            .await
+            .context("failed to signal vtl0 started")?;
+    }
+
     let mut diag = DiagState::new().await?;
 
     let (diag_reinspect_send, mut diag_reinspect_recv) = mesh::channel();
-    let diag_reinspect_send = Arc::new(diag_reinspect_send);
     #[cfg(feature = "profiler")]
     let mut profiler_host = None;
     let mut state;
@@ -492,7 +505,7 @@ async fn run_control(
             Event::Diag(request) => {
                 match request {
                     diag_server::DiagRequest::Start(rpc) => {
-                        rpc.handle_failable(|params| async {
+                        rpc.handle_failable(async |params| {
                             if workers.is_some() {
                                 Err(anyhow::anyhow!("workers have already been started"))?;
                             }
@@ -704,10 +717,10 @@ async fn run_control(
             Event::Worker(event) => match event {
                 WorkerEvent::Started => {
                     if let Some(response) = restart_rpc.take() {
-                        tracing::info!("restart complete");
+                        tracing::info!(CVM_ALLOWED, "restart complete");
                         response.complete(Ok(()));
                     } else {
-                        tracing::info!("vm worker started");
+                        tracing::info!(CVM_ALLOWED, "vm worker started");
                     }
                     state = ControlState::Started;
                 }
@@ -718,20 +731,21 @@ async fn run_control(
                     return Err(anyhow::Error::from(err)).context("vm worker failed");
                 }
                 WorkerEvent::RestartFailed(err) => {
-                    tracing::error!(error = &err as &dyn std::error::Error, "restart failed");
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        error = &err as &dyn std::error::Error,
+                        "restart failed"
+                    );
                     restart_rpc.take().unwrap().complete(Err(err));
                     state = ControlState::Started;
                 }
             },
             Event::Control(req) => match req {
                 ControlRequest::FlushLogs(rpc) => {
-                    rpc.handle(|mut ctx| {
-                        let tracing = &mut tracing;
-                        async move {
-                            tracing::info!("flushing logs");
-                            ctx.until_cancelled(tracing.flush()).await?;
-                            Ok(())
-                        }
+                    rpc.handle(async |mut ctx| {
+                        tracing::info!(CVM_ALLOWED, "flushing logs");
+                        ctx.until_cancelled(tracing.flush()).await?;
+                        Ok(())
                     })
                     .await
                 }
@@ -739,6 +753,19 @@ async fn run_control(
         }
     }
 
+    Ok(())
+}
+
+async fn signal_vtl0_started(driver: &DefaultDriver) -> anyhow::Result<()> {
+    tracing::info!(CVM_ALLOWED, "signaling vtl0 started early");
+    let (client, task) = guest_emulation_transport::spawn_get_worker(driver.clone())
+        .await
+        .context("failed to spawn GET")?;
+    client.complete_start_vtl0(None).await;
+    // Disconnect the GET so that it can be reused.
+    drop(client);
+    task.await.unwrap();
+    tracing::info!(CVM_ALLOWED, "signaled vtl0 start");
     Ok(())
 }
 

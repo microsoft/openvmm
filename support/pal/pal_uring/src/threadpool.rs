@@ -16,11 +16,11 @@
 use super::ioring::IoCompletionRing;
 use super::ioring::IoMemory;
 use super::ioring::IoRing;
-use futures::task::noop_waker;
 use futures::FutureExt;
 use inspect::Inspect;
 use io_uring::opcode;
 use io_uring::squeue;
+use loan_cell::LoanCell;
 use pal_async::task::Runnable;
 use pal_async::task::Schedule;
 use pal_async::task::Scheduler;
@@ -31,12 +31,12 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt::Debug;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::io;
 use std::os::unix::prelude::*;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
 use std::process::abort;
 use std::sync::Arc;
 use std::task::Context;
@@ -73,10 +73,10 @@ impl IoUringPool {
         &self.client
     }
 
-    /// Runs the pool until it is shut down.
-    ///
-    /// Typically this is called on a dedicated thread.
+    /// Runs the pool until all clients have been dropped and any registered idle
+    /// tasks have completed.
     pub fn run(mut self) {
+        drop(self.client);
         self.worker.run(self.completion_ring, self.queue.run())
     }
 }
@@ -95,21 +95,30 @@ impl PoolClient {
     /// then by polling on the IO ring while the task blocks.
     //
     // TODO: move this functionality into underhill_threadpool.
-    pub fn set_idle_task<F, Fut>(&self, f: F)
+    pub fn set_idle_task<F>(&self, f: F)
     where
-        F: 'static + Send + FnOnce(IdleControl) -> Fut,
-        Fut: Future<Output = ()>,
+        F: 'static + Send + AsyncFnOnce(IdleControl),
     {
-        let f =
-            Box::new(|fd| Box::pin(async move { f(fd).await }) as Pin<Box<dyn Future<Output = _>>>)
-                as Box<dyn Send + FnOnce(IdleControl) -> Pin<Box<dyn Future<Output = ()>>>>;
+        // Keep the pool alive as long as the idle task is running by keeping a
+        // clone of this client.
+        let keep_pool_alive = self.clone();
+        let f = Box::new(|fd| {
+            Box::pin(async move {
+                let _keep_pool_alive = keep_pool_alive;
+                f(fd).await
+            }) as Pin<Box<dyn Future<Output = _>>>
+        })
+            as Box<dyn Send + FnOnce(IdleControl) -> Pin<Box<dyn Future<Output = ()>>>>;
 
         // Spawn a short-lived task to update the idle task.
         let worker_id = Arc::as_ptr(&self.0.client.worker) as usize; // cast because pointers are not Send
         let task = self.0.spawn("set_idle_task", async move {
             THREADPOOL_WORKER_STATE.with(|state| {
-                assert_eq!(state.worker.get(), Some(worker_id as *const _));
-                state.new_idle_task.set(Some(f));
+                state.borrow(|state| {
+                    let state = state.unwrap();
+                    assert_eq!(Arc::as_ptr(&state.worker), worker_id as *const _);
+                    state.new_idle_task.set(Some(f));
+                })
             })
         });
 
@@ -160,31 +169,34 @@ pub(crate) struct Worker {
 type IdleTask = Pin<Box<dyn Future<Output = ()>>>;
 type IdleTaskSpawn = Box<dyn Send + FnOnce(IdleControl) -> IdleTask>;
 
-#[derive(Default)]
 struct AffinitizedWorkerState {
-    worker: Cell<Option<*const Worker>>,
+    worker: Arc<Worker>,
     wake: Cell<bool>,
     new_idle_task: Cell<Option<IdleTaskSpawn>>,
-    completion_ring: RefCell<Option<IoCompletionRing>>,
+    completion_ring: RefCell<IoCompletionRing>,
 }
 
 thread_local! {
-    static THREADPOOL_WORKER_STATE: AffinitizedWorkerState = Default::default();
+    static THREADPOOL_WORKER_STATE: LoanCell<AffinitizedWorkerState> = const { LoanCell::new() };
 }
 
 impl Wake for Worker {
     fn wake_by_ref(self: &Arc<Self>) {
         THREADPOOL_WORKER_STATE.with(|state| {
-            if state.worker.get() == Some(Arc::as_ptr(self)) {
-                state.wake.set(true);
-            } else {
+            state.borrow(|state| {
+                if let Some(state) = state {
+                    if Arc::ptr_eq(self, &state.worker) {
+                        state.wake.set(true);
+                        return;
+                    }
+                }
                 // Submit a nop request to wake up the worker.
                 //
                 // SAFETY: nop opcode does not reference any data.
                 unsafe {
                     self.io_ring.push(opcode::Nop::new().build(), true);
                 }
-            }
+            })
         })
     }
 
@@ -211,7 +223,7 @@ impl Worker {
     }
 
     pub fn run<Fut: Future>(
-        self: &Arc<Self>,
+        self: Arc<Self>,
         completion_ring: IoCompletionRing,
         fut: Fut,
     ) -> Fut::Output {
@@ -224,56 +236,53 @@ impl Worker {
         let mut cx = Context::from_waker(&waker);
         let mut fut = pin!(fut);
         let mut idle_task = None;
+        let state = AffinitizedWorkerState {
+            worker: self,
+            wake: Cell::new(false),
+            new_idle_task: Cell::new(None),
+            completion_ring: RefCell::new(completion_ring),
+        };
 
-        THREADPOOL_WORKER_STATE.with(|state| {
-            state.worker.set(Some(Arc::as_ptr(self)));
-            *state.completion_ring.borrow_mut() = Some(completion_ring);
-            loop {
-                // Wake tasks due to IO completion.
-                state
-                    .completion_ring
-                    .borrow_mut()
-                    .as_mut()
-                    .unwrap()
-                    .process();
+        THREADPOOL_WORKER_STATE.with(|slot| {
+            slot.lend(&state, || {
+                loop {
+                    // Wake tasks due to IO completion.
+                    state.completion_ring.borrow_mut().process();
 
-                match fut.poll_unpin(&mut cx) {
-                    Poll::Ready(r) => {
-                        tracing::debug!("AffinitizedWorker exiting");
-                        state.worker.take();
-                        state.wake.take();
-                        state.completion_ring.take();
-                        state.new_idle_task.take();
-                        break r;
-                    }
-                    Poll::Pending => {}
-                }
-
-                if !state.wake.take() {
-                    if let Some(new_idle_task) = state.new_idle_task.take() {
-                        idle_task = Some(new_idle_task(IdleControl {
-                            inner: self.clone(),
-                        }));
-                        tracing::debug!("new idle task");
+                    match fut.poll_unpin(&mut cx) {
+                        Poll::Ready(r) => {
+                            tracing::debug!("AffinitizedWorker exiting");
+                            break r;
+                        }
+                        Poll::Pending => {}
                     }
 
-                    if let Some(task) = &mut idle_task {
-                        match task.poll_unpin(&mut cx) {
-                            Poll::Ready(()) => {
-                                tracing::debug!("idle task done");
-                                idle_task = None;
+                    if !state.wake.take() {
+                        if let Some(new_idle_task) = state.new_idle_task.take() {
+                            idle_task = Some(new_idle_task(IdleControl {
+                                inner: state.worker.clone(),
+                            }));
+                            tracing::debug!("new idle task");
+                        }
+
+                        if let Some(task) = &mut idle_task {
+                            match task.poll_unpin(&mut cx) {
+                                Poll::Ready(()) => {
+                                    tracing::debug!("idle task done");
+                                    idle_task = None;
+                                }
+                                Poll::Pending => {}
                             }
-                            Poll::Pending => {}
+
+                            if state.wake.take() {
+                                continue;
+                            }
                         }
 
-                        if state.wake.take() {
-                            continue;
-                        }
+                        state.worker.io_ring.submit_and_wait();
                     }
-
-                    self.io_ring.submit_and_wait();
                 }
-            }
+            })
         })
     }
 }
@@ -291,16 +300,19 @@ impl IdleControl {
     /// immediately yield instead of blocking.
     pub fn pre_block(&mut self) -> bool {
         THREADPOOL_WORKER_STATE.with(|state| {
-            assert_eq!(state.worker.get(), Some(Arc::as_ptr(&self.inner)));
+            state.borrow(|state| {
+                let state = state.unwrap();
+                assert!(Arc::ptr_eq(&state.worker, &self.inner));
 
-            // Issue IOs.
-            //
-            // FUTURE: get the idle task to do this. This will require an
-            // io-uring change to allow other drivers to call submit.
-            self.inner.io_ring.submit();
-            // If the thread was woken or there are completed IOs, ask the idle
-            // task to yield.
-            !state.wake.get() && state.completion_ring.borrow().as_ref().unwrap().is_empty()
+                // Issue IOs.
+                //
+                // FUTURE: get the idle task to do this. This will require an
+                // io-uring change to allow other drivers to call submit.
+                self.inner.io_ring.submit();
+                // If the thread was woken or there are completed IOs, ask the idle
+                // task to yield.
+                !state.wake.get() && state.completion_ring.borrow().is_empty()
+            })
         })
     }
 
@@ -436,11 +448,17 @@ impl IoInitiator {
         (result, io_mem)
     }
 
+    /// # Safety
+    ///
+    /// The caller must guarantee that the given io_mem is compatible with the given sqe.
     unsafe fn submit_io(&self, sqe: squeue::Entry, io_mem: IoMemory, waker: Waker) -> usize {
         // Only submit if the worker is not currently running on this thread--if it is, the
         // IO will be submitted soon.
-        let needs_submit = THREADPOOL_WORKER_STATE
-            .with(|state| state.worker.get() != Some(Arc::as_ptr(&self.client.worker)));
+        let needs_submit = THREADPOOL_WORKER_STATE.with(|state| {
+            state.borrow(|state| {
+                state.is_none_or(|state| !Arc::ptr_eq(&state.worker, &self.client.worker))
+            })
+        });
 
         // SAFETY: caller guarantees sqe and io_mem are compatible.
         unsafe {
@@ -523,14 +541,16 @@ impl<T: 'static + Send + Sync + Unpin, Init: Borrow<IoInitiator> + Unpin> Io<T, 
         }
     }
 
-    /// # Safety: caller must ensure that `f` produces a safe sqe entry.
+    /// # Safety
+    ///
+    /// Caller must ensure that `f` produces a safe sqe entry.
     unsafe fn cancel_inner(&self, f: impl FnOnce(u64) -> squeue::Entry) {
         let sqe = f(self.user_data().unwrap());
         // SAFETY: guaranteed by caller
         let idx = unsafe {
             self.initiator
                 .borrow()
-                .submit_io(sqe, IoMemory::new(()), noop_waker())
+                .submit_io(sqe, IoMemory::new(()), Waker::noop().clone())
         };
         self.initiator.borrow().drop_io(idx);
     }
@@ -608,8 +628,14 @@ impl<T, Init: Borrow<IoInitiator>> Drop for Io<T, Init> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_methods,
+        reason = "test code using futures channels"
+    )]
+
     use super::Io;
     use super::IoRing;
+    use crate::IoUringPool;
     use crate::uring::tests::SingleThreadPool;
     use futures::executor::block_on;
     use io_uring::opcode;
@@ -620,6 +646,8 @@ mod tests {
     use std::os::unix::prelude::*;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::task::Context;
     use std::task::Poll;
     use std::task::Waker;
@@ -965,5 +993,33 @@ mod tests {
                 assert_eq!(&write_buf[..], &read_buf[..]);
             })
             .detach();
+    }
+
+    #[test]
+    fn test_run_until_none() {
+        skip_if_no_io_uring_support!();
+        let (send, recv) = futures::channel::oneshot::channel();
+        let (send2, recv2) = futures::channel::oneshot::channel();
+        let pool = IoUringPool::new("test", 16).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        pool.client()
+            .initiator()
+            .spawn("hmm", {
+                async move {
+                    recv.await.unwrap();
+                    send2.send(()).unwrap();
+                }
+            })
+            .detach();
+        pool.client().set_idle_task({
+            let done = done.clone();
+            |_ctl| async move {
+                send.send(()).unwrap();
+                recv2.await.unwrap();
+                done.store(true, Ordering::SeqCst);
+            }
+        });
+        pool.run();
+        assert!(done.load(Ordering::SeqCst));
     }
 }

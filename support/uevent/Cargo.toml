@@ -3,7 +3,7 @@
 
 [package]
 name = "uevent"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

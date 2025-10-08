@@ -3,7 +3,7 @@
 
 [package]
 name = "vmbus_client_hcl"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -18,6 +18,5 @@ anyhow.workspace = true
 futures.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

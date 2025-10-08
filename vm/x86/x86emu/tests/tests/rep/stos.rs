@@ -4,7 +4,8 @@
 use crate::tests::common::run_wide_test;
 use iced_x86::code_asm::*;
 use x86defs::RFlags;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 use x86emu::MAX_REP_LOOPS;
 
 #[test]
@@ -19,21 +20,23 @@ fn stos() {
 
     for (instruction, value, size) in variations.into_iter() {
         for direction in [false, true] {
-            let (state, cpu) = run_wide_test(
+            let mut cpu = run_wide_test(
                 RFlags::new(),
                 true,
                 |asm| instruction(asm),
-                |state, cpu| {
-                    state.rflags.set_direction(direction);
-                    state.gps[CpuState::RAX] = 0xAAAAAAAAAAAAAAAA;
-                    state.gps[CpuState::RDI] = START_GVA;
+                |cpu| {
+                    let mut rflags = cpu.rflags();
+                    rflags.set_direction(direction);
+                    cpu.set_rflags(rflags);
+                    cpu.set_gp(Gp::RAX.into(), 0xAAAAAAAAAAAAAAAA);
+                    cpu.set_gp(Gp::RDI.into(), START_GVA);
                     cpu.valid_gva = START_GVA;
                 },
             );
 
             assert_eq!(cpu.mem_val, value);
             assert_eq!(
-                state.gps[CpuState::RDI],
+                cpu.gp(Gp::RDI.into()),
                 START_GVA.wrapping_add(if direction { size.wrapping_neg() } else { size })
             );
         }
@@ -52,20 +55,23 @@ fn rep_stos() {
         ];
 
         for (instr, width) in variations {
-            let (state, cpu) = run_wide_test(
+            let mut cpu = run_wide_test(
                 RFlags::new(),
                 len <= MAX_REP_LOOPS,
                 |asm| instr(asm.rep()),
-                |state, cpu| {
+                |cpu| {
                     cpu.valid_gva = START_GVA;
-                    state.gps[CpuState::RDI] = START_GVA;
-                    state.gps[CpuState::RAX] = 0xAAAAAAAAAAAAAAAA;
-                    state.gps[CpuState::RCX] = len;
-                    state.rflags.set_direction(false);
+                    cpu.set_gp(Gp::RDI.into(), START_GVA);
+                    cpu.set_gp(Gp::RAX.into(), 0xAAAAAAAAAAAAAAAA);
+                    cpu.set_gp(Gp::RCX.into(), len);
+
+                    let mut rflags = cpu.rflags();
+                    rflags.set_direction(false);
+                    cpu.set_rflags(rflags);
                 },
             );
 
-            assert_eq!(state.gps[CpuState::RCX], len.saturating_sub(MAX_REP_LOOPS));
+            assert_eq!(cpu.gp(Gp::RCX.into()), len.saturating_sub(MAX_REP_LOOPS));
             assert_eq!(
                 cpu.mem_val.len() as u64,
                 std::cmp::min(len, MAX_REP_LOOPS) * width

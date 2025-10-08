@@ -1,4 +1,0 @@
-LIBRARY ext-ms-win-cng-rng-l1-1-0
-
-EXPORTS
-    ProcessPrng

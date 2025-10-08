@@ -3,7 +3,7 @@
 
 [package]
 name = "serial_16550_resources"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

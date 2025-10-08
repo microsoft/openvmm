@@ -5,12 +5,13 @@
 
 use crate::memory::MappedDmaTarget;
 use anyhow::Context;
+use inspect::Inspect;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -66,7 +67,7 @@ impl Mapping {
         let n = self.len / PAGE_SIZE;
         let mut pfns = vec![0u64; n];
         pagemap
-            .read(pfns.as_bytes_mut())
+            .read(pfns.as_mut_bytes())
             .context("failed to read from pagemap")?;
         for pfn in &mut pfns {
             if *pfn & (1 << 63) == 0 {
@@ -89,7 +90,7 @@ impl Drop for Mapping {
 
 impl LockedMemory {
     pub fn new(len: usize) -> anyhow::Result<Self> {
-        if len % PAGE_SIZE != 0 {
+        if !len.is_multiple_of(PAGE_SIZE) {
             anyhow::bail!("not a page-size multiple");
         }
         let mapping = Mapping::new(len).context("failed to create mapping")?;
@@ -122,21 +123,15 @@ unsafe impl MappedDmaTarget for LockedMemory {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Inspect)]
 pub struct LockedMemorySpawner;
 
-#[cfg(feature = "vfio")]
-impl crate::vfio::VfioDmaBuffer for LockedMemorySpawner {
-    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
+impl crate::DmaClient for LockedMemorySpawner {
+    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
         Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
     }
 
-    /// Restore mapped DMA memory at the same physical location after servicing.
-    fn restore_dma_buffer(
-        &self,
-        _len: usize,
-        _base_pfn: u64,
-    ) -> anyhow::Result<crate::memory::MemoryBlock> {
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<crate::memory::MemoryBlock>> {
         anyhow::bail!("restore not supported for lockmem")
     }
 }

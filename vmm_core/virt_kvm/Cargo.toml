@@ -3,7 +3,7 @@
 
 [package]
 name = "virt_kvm"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -28,12 +28,13 @@ safe_intrinsics.workspace = true
 inspect.workspace = true
 pal_event.workspace = true
 
+anyhow.workspace = true
+jiff.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracelimit.workspace = true
 zerocopy.workspace = true
-
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

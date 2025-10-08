@@ -4,9 +4,9 @@
 use crate::GuestEmulationLog;
 use get_resources::gel::GuestEmulationLogHandle;
 use std::convert::Infallible;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_resource::ResolveResource;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
 use vmbus_channel::simple::SimpleDeviceWrapper;

@@ -3,7 +3,7 @@
 
 [package]
 name = "hyperv_secure_boot_templates"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]

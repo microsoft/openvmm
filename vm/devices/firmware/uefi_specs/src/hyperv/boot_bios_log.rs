@@ -6,9 +6,10 @@
 use crate::uefi::common::EfiStatus64;
 use open_enum::open_enum;
 use static_assertions::const_assert_eq;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Event Id for Device Boot Attempts
 pub const BOOT_DEVICE_EVENT_ID: u32 = 1;
@@ -29,7 +30,7 @@ open_enum! {
     /// in PlatformBdsString.uni must be updated
     ///
     /// reSearch query: `BOOT_DEVICE_STATUS`
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
     pub enum BootDeviceStatus: u32 {
         BOOT_PENDING = 0,
         BOOT_DEVICE_NO_FILESYSTEM               = DEVICE_STATUS_BOOT_GROUP,
@@ -77,7 +78,7 @@ impl BootDeviceStatus {
 
 /// reSearch query: `BOOTEVENT_DEVICE_ENTRY`
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct BootEventDeviceEntry {
     pub status: BootDeviceStatus,
     pub pad: u32,

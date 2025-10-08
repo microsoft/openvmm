@@ -30,7 +30,6 @@
 //!
 
 #![cfg(unix)]
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use filepath::FilePath;
@@ -53,7 +52,7 @@ use vmbus_channel::SignalVmbusChannel;
 use vmbus_ring::IncomingRing;
 use vmbus_ring::OutgoingRing;
 use vmbus_ring::RingMem;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Ring buffer memory backed by a memory mapped channel.
 #[derive(Debug)]

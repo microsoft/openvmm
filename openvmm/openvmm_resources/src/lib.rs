@@ -5,7 +5,6 @@
 //! in OpenVMM.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 // Resources.
 vm_resource::register_static_resolvers! {
@@ -47,6 +46,7 @@ vm_resource::register_static_resolvers! {
     disk_crypt::resolver::DiskCryptResolver,
     disk_file::FileDiskResolver,
     disk_prwrap::DiskWithReservationsResolver,
+    disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
     #[cfg(windows)]
     disk_vhdmp::VhdmpDiskResolver,
@@ -61,6 +61,7 @@ vm_resource::register_static_resolvers! {
     // PCI devices
     gdma::resolver::GdmaDeviceResolver,
     nvme::resolver::NvmeControllerResolver,
+    nvme_test::resolver::NvmeFaultControllerResolver,
     virtio::resolver::VirtioPciResolver,
 
     // SCSI
@@ -78,7 +79,9 @@ vm_resource::register_static_resolvers! {
     guest_crash_device::resolver::GuestCrashDeviceResolver,
     guest_emulation_device::resolver::GuestEmulationDeviceResolver,
     guest_emulation_log::resolver::GuestEmulationLogResolver,
-    hyperv_ic::resolver::IcResolver,
+    hyperv_ic::resolver::KvpIcResolver,
+    hyperv_ic::resolver::ShutdownIcResolver,
+    hyperv_ic::resolver::TimesyncIcResolver,
     netvsp::resolver::NetvspResolver,
     storvsp::resolver::StorvspResolver,
     uidevices::resolver::VmbusUiResolver,
@@ -94,7 +97,3 @@ mesh_worker::register_workers! {
     #[cfg(feature = "gdb")]
     debug_worker::DebuggerWorker<std::net::TcpListener>,
 }
-
-/// Call this to ensure the resolvers get linked on macos.
-/// <https://github.com/dtolnay/linkme/issues/61>
-pub fn ensure_linked_on_macos() {}

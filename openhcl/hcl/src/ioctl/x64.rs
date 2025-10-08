@@ -3,26 +3,27 @@
 
 //! Backing for non-hardware-isolated X64 partitions.
 
-use super::private::BackingPrivate;
 use super::BackingState;
 use super::Error;
 use super::GuestVtl;
+use super::Hcl;
 use super::HclVp;
 use super::NoRunner;
 use super::ProcessorRunner;
 use super::TranslateGvaToGpaError;
 use super::TranslateResult;
+use super::private::BackingPrivate;
 use crate::protocol::hcl_cpu_context_x64;
+use hvdef::HV_PARTITION_ID_SELF;
+use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
-use hvdef::HV_PARTITION_ID_SELF;
-use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
-use std::ptr::NonNull;
-use zerocopy::FromZeroes;
+use std::cell::UnsafeCell;
+use zerocopy::FromZeros;
 
 /// Result when the translate gva hypercall returns a code indicating
 /// the translation was unsuccessful.
@@ -37,7 +38,7 @@ pub struct TranslateErrorX64 {
 
 /// Result when the intercepted vtl is invalid.
 #[derive(Error, Debug)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum RegisterPageVtlError {
     #[error("no register page")]
     NoRegisterPage,
@@ -46,16 +47,16 @@ pub enum RegisterPageVtlError {
 }
 
 /// Runner backing for non-hardware-isolated X64 partitions.
-pub struct MshvX64 {
-    reg_page: Option<NonNull<HvX64RegisterPage>>,
-    cpu_context: NonNull<hcl_cpu_context_x64>,
+pub struct MshvX64<'a> {
+    reg_page: Option<&'a UnsafeCell<HvX64RegisterPage>>,
+    cpu_context: &'a UnsafeCell<hcl_cpu_context_x64>,
 }
 
-impl ProcessorRunner<'_, MshvX64> {
+impl<'a> ProcessorRunner<'a, MshvX64<'a>> {
     fn reg_page(&self) -> Option<&HvX64RegisterPage> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-        let reg_page = unsafe { &*self.state.reg_page?.as_ptr() };
+        let reg_page = unsafe { &*self.state.reg_page?.get() };
         if reg_page.is_valid != 0 {
             Some(reg_page)
         } else {
@@ -66,8 +67,7 @@ impl ProcessorRunner<'_, MshvX64> {
     fn reg_page_mut(&mut self) -> Option<&mut HvX64RegisterPage> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-
-        let reg_page = unsafe { &mut *self.state.reg_page?.as_ptr() };
+        let reg_page = unsafe { &mut *self.state.reg_page?.get() };
         if reg_page.is_valid != 0 {
             Some(reg_page)
         } else {
@@ -91,14 +91,14 @@ impl ProcessorRunner<'_, MshvX64> {
     pub fn cpu_context(&self) -> &hcl_cpu_context_x64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // kernel while this VP is in user mode.
-        unsafe { self.state.cpu_context.as_ref() }
+        unsafe { &*self.state.cpu_context.get() }
     }
 
     /// Returns a mutable reference to the current VTL's CPU context.
     pub fn cpu_context_mut(&mut self) -> &mut hcl_cpu_context_x64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // kernel while this VP is in user mode.
-        unsafe { self.state.cpu_context.as_mut() }
+        unsafe { &mut *self.state.cpu_context.get() }
     }
 
     /// Translate the following gva to a gpa page in the context of the current
@@ -132,8 +132,7 @@ impl ProcessorRunner<'_, MshvX64> {
                 gva_page: gvn,
             };
 
-            let mut output: hypercall::TranslateVirtualAddressExOutputX64 =
-                FromZeroes::new_zeroed();
+            let mut output: hypercall::TranslateVirtualAddressExOutputX64 = FromZeros::new_zeroed();
 
             // SAFETY: The input header and slice are the correct types for this hypercall.
             //         The hypercall output is validated right after the hypercall is issued.
@@ -170,36 +169,36 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 }
 
-impl BackingPrivate for MshvX64 {
-    fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
-        let BackingState::Mshv { reg_page } = &vp.backing else {
+impl<'a> BackingPrivate<'a> for MshvX64<'a> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
+        let BackingState::MshvX64 { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
         };
-        let this = if let Some(sidecar) = sidecar {
-            // Sidecar always provides a register page, but it may not actually
-            // be mapped with the hypervisor. Use the sidecar's register page
-            // only if the mshv_vtl driver thinks there should be one.
-            Self {
-                reg_page: reg_page
-                    .is_some()
-                    .then(|| NonNull::new(sidecar.register_page()).unwrap()),
-                cpu_context: NonNull::new(sidecar.cpu_context().cast()).unwrap(),
-            }
-        } else {
-            Self {
-                reg_page: reg_page.as_ref().map(|p| p.0),
-                cpu_context: NonNull::new(
-                    // SAFETY: The run page is guaranteed to be mapped and valid.
-                    unsafe { std::ptr::addr_of_mut!((*vp.run.0.as_ptr()).context) }.cast(),
-                )
-                .unwrap(),
-            }
-        };
-        Ok(this)
+
+        // SAFETY: The run page and register page, whether provided locally
+        // or by sidecar, are guaranteed to be mapped and valid.
+        unsafe {
+            let this = if let Some(sidecar) = sidecar {
+                // Sidecar always provides a register page, but it may not actually
+                // be mapped with the hypervisor. Use the sidecar's register page
+                // only if the mshv_vtl driver thinks there should be one.
+                Self {
+                    reg_page: reg_page.is_some().then(|| &*sidecar.register_page().cast()),
+                    cpu_context: &*sidecar.cpu_context().cast(),
+                }
+            } else {
+                Self {
+                    reg_page: reg_page.as_ref().map(|x| x.as_ref()),
+                    cpu_context: &*(&raw mut (*vp.run.as_ptr()).context).cast(),
+                }
+            };
+
+            Ok(this)
+        }
     }
 
     fn try_set_reg(
-        runner: &mut ProcessorRunner<'_, Self>,
+        runner: &mut ProcessorRunner<'a, Self>,
         vtl: GuestVtl,
         name: HvRegisterName,
         value: HvRegisterValue,
@@ -260,17 +259,17 @@ impl BackingPrivate for MshvX64 {
                     HvX64RegisterName::Rsp => {
                         reg_page.gp_registers[(name.0 - HvX64RegisterName::Rax.0) as usize] =
                             value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_GENERAL;
+                        reg_page.dirty.set_general_purpose(true);
                         true
                     }
                     HvX64RegisterName::Rip => {
                         reg_page.rip = value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_IP;
+                        reg_page.dirty.set_instruction_pointer(true);
                         true
                     }
                     HvX64RegisterName::Rflags => {
                         reg_page.rflags = value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_FLAGS;
+                        reg_page.dirty.set_flags(true);
                         true
                     }
                     HvX64RegisterName::Es
@@ -281,7 +280,7 @@ impl BackingPrivate for MshvX64 {
                     | HvX64RegisterName::Gs => {
                         reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize] =
                             value.as_u128();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_SEGMENT;
+                        reg_page.dirty.set_segments(true);
                         true
                     }
 
@@ -303,7 +302,7 @@ impl BackingPrivate for MshvX64 {
         Ok(false)
     }
 
-    fn must_flush_regs_on(runner: &ProcessorRunner<'_, Self>, name: HvRegisterName) -> bool {
+    fn must_flush_regs_on(runner: &ProcessorRunner<'a, Self>, name: HvRegisterName) -> bool {
         // Updating rflags must be ordered with other registers in a batch,
         // since it may affect the validity other interrupt-related registers.
         matches!(HvX64RegisterName::from(name), HvX64RegisterName::Rflags)
@@ -311,7 +310,7 @@ impl BackingPrivate for MshvX64 {
     }
 
     fn try_get_reg(
-        runner: &ProcessorRunner<'_, Self>,
+        runner: &ProcessorRunner<'a, Self>,
         vtl: GuestVtl,
         name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, Error> {
@@ -403,5 +402,55 @@ impl BackingPrivate for MshvX64 {
         }
 
         Ok(None)
+    }
+
+    fn flush_register_page(runner: &mut ProcessorRunner<'a, Self>) {
+        let Some(reg_page) = runner.reg_page_mut() else {
+            return;
+        };
+
+        // Collect any dirty registers.
+        let mut regs: Vec<(HvX64RegisterName, HvRegisterValue)> = Vec::new();
+        if reg_page.dirty.instruction_pointer() {
+            regs.push((HvX64RegisterName::Rip, reg_page.rip.into()));
+        }
+        if reg_page.dirty.general_purpose() {
+            regs.push((
+                HvX64RegisterName::Rsp,
+                reg_page.gp_registers
+                    [(HvX64RegisterName::Rsp.0 - HvX64RegisterName::Rax.0) as usize]
+                    .into(),
+            ));
+        }
+        if reg_page.dirty.flags() {
+            regs.push((HvX64RegisterName::Rflags, reg_page.rflags.into()));
+        }
+        if reg_page.dirty.segments() {
+            let segment_regs = reg_page
+                .segment
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, val)| {
+                    (
+                        HvX64RegisterName::from(HvRegisterName(HvX64RegisterName::Es.0 + i as u32)),
+                        HvRegisterValue::from(val),
+                    )
+                });
+            regs.extend(segment_regs);
+        }
+
+        // Disable the reg page so future writes do not use it (until the state
+        // is reset at the next VTL transition).
+        reg_page.is_valid = 0;
+        reg_page.dirty = 0.into();
+
+        // Set the registers now that the register page is marked invalid.
+        if let Err(err) = runner.set_vp_registers(GuestVtl::Vtl0, regs.as_slice()) {
+            panic!(
+                "Failed to flush register page: {}",
+                &err as &dyn std::error::Error
+            );
+        }
     }
 }

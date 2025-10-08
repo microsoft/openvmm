@@ -232,7 +232,7 @@ impl AdjustGpaRange for GetBackedAdjustGpaRange {
         // the GET runs on a separate thread from the VP threads and has no
         // dependencies on tasks on the VP threads, and this will never be
         // called from the GET thread.
-        pal_async::local::block_with_io(|_| self.adjust(range, state))
+        pal_async::local::block_on(self.adjust(range, state))
     }
 }
 

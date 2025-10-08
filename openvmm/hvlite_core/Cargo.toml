@@ -3,7 +3,7 @@
 
 [package]
 name = "hvlite_core"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -22,6 +22,7 @@ vm_topology = { workspace = true, features = ["mesh"] }
 guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
+vmgs_resources.workspace = true
 
 aarch64defs.workspace = true
 acpi.workspace = true
@@ -51,16 +52,17 @@ disk_backend.workspace = true
 firmware_pcat.workspace = true
 firmware_uefi_custom_vars.workspace = true
 firmware_uefi.workspace = true
-uefi_nvram_storage.workspace = true
+uefi_nvram_storage = { workspace = true, features = ["save_restore"] }
 framebuffer.workspace = true
 get_resources.workspace = true
-hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect"] }
+hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }
 ide.workspace = true
 floppy.workspace = true
 input_core.workspace = true
 missing_dev.workspace = true
 pci_bus.workspace = true
 pci_core.workspace = true
+pcie.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 serial_16550_resources.workspace = true
@@ -72,7 +74,6 @@ vmbus_core.workspace = true
 vmbus_server.workspace = true
 vpci.workspace = true
 watchdog_core.workspace = true
-watchdog_vmgs_format.workspace = true
 
 cache_topology.workspace = true
 debug_ptr.workspace = true
@@ -97,7 +98,6 @@ getrandom.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true

@@ -8,11 +8,11 @@
 use self::v1::NAMESPACE_BASE;
 use self::v1::NAMESPACE_NETWORK_ACCELERATION;
 use self::v1::NAMESPACE_NETWORK_DEVICE;
+use crate::Vtl2SettingsErrorInfoVec;
 use crate::errors::ParseErrors;
 use crate::errors::ParseErrorsBase;
 use crate::errors::ParseResultExt;
 use crate::errors::ParsingStopped;
-use crate::Vtl2SettingsErrorInfoVec;
 use thiserror::Error;
 use vtl2_settings_proto::*;
 

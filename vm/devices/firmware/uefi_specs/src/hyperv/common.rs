@@ -5,9 +5,10 @@
 
 use crate::uefi::common::EfiStatus;
 use core::fmt::Debug;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::LittleEndian;
 use zerocopy::U64;
 
@@ -23,7 +24,7 @@ use zerocopy::U64;
 /// Luckily, such warnings statuses are rare in practice and are unused by
 /// Hyper-V UEFI protocols.
 #[repr(transparent)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct EfiStatus64NoErrorBit(pub U64<LittleEndian>);
 
 impl From<EfiStatus> for EfiStatus64NoErrorBit {

@@ -5,11 +5,11 @@ use crate::Nic;
 use async_trait::async_trait;
 use net_backend::resolve::ResolveEndpointParams;
 use netvsp_resources::NetvspHandle;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
 

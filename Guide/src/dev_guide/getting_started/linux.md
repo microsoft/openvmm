@@ -57,16 +57,18 @@ $ sudo apt install \
   binutils              \
   build-essential       \
   gcc-aarch64-linux-gnu \
-  libssl-dev
+  libssl-dev            \
+  pkg-config
 ```
 
 ## Cloning the OpenVMM source
 
 **If using WSL2:** Do NOT clone the repo into Windows then try to access said
-clone from Linux. It will result in serious performance issues.
+clone from Linux! It will result in serious performance issues, and may break
+certain functionality (e.g: cross-compiling Windows binaries).
 
 ```bash
-$ cd path/to/where/you/clone/repos
+$ cd ~/src/
 $ git clone https://github.com/microsoft/openvmm.git
 ```
 

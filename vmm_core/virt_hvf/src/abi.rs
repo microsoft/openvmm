@@ -38,9 +38,15 @@ impl Display for HvfError {
             Self::SUCCESS => "The operation completed successfully.",
             Self::ERROR => "The operation was unsuccessful.",
             Self::BUSY => "The operation was unsuccessful because the owning resource was busy.",
-            Self::BAD_ARGUMENT => "The operation was unsuccessful because the function call had an invalid argument.",
-            Self::NO_RESOURCES => "The operation was unsuccessful because the host had no resources available to complete the request.",
-            Self::NO_DEVICE => "The operation was unsuccessful because no VM or vCPU was available.",
+            Self::BAD_ARGUMENT => {
+                "The operation was unsuccessful because the function call had an invalid argument."
+            }
+            Self::NO_RESOURCES => {
+                "The operation was unsuccessful because the host had no resources available to complete the request."
+            }
+            Self::NO_DEVICE => {
+                "The operation was unsuccessful because no VM or vCPU was available."
+            }
             Self::DENIED => "The system didn’t allow the requested operation.",
             // Self::FAULT => "",
             Self::UNSUPPORTED => "The operation requested isn’t supported by the hypervisor.",
@@ -82,7 +88,7 @@ unsafe extern "C" {
     pub fn hv_vcpu_set_reg(vcpu: u64, reg: HvReg, value: u64) -> HvfResult;
     pub fn hv_vcpu_get_sys_reg(vcpu: u64, reg: HvSysReg, value: *mut u64) -> HvfResult;
     pub fn hv_vcpu_set_sys_reg(vcpu: u64, reg: HvSysReg, value: u64) -> HvfResult;
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub fn hv_vcpu_get_pending_interrupt(
         vcpu: u64,
         ty: HvInterruptType,
@@ -93,7 +99,7 @@ unsafe extern "C" {
         ty: HvInterruptType,
         pending: bool,
     ) -> HvfResult;
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub fn hv_vcpu_get_vtimer_mask(vcpu: u64, vtimer_is_masked: *mut bool) -> HvfResult;
     pub fn hv_vcpu_set_vtimer_mask(vcpu: u64, vtimer_is_masked: bool) -> HvfResult;
 }

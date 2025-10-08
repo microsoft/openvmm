@@ -3,7 +3,7 @@
 
 [package]
 name = "sidecar_defs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -12,6 +12,5 @@ open_enum.workspace = true
 x86defs.workspace = true
 
 zerocopy.workspace = true
-
 [lints]
 workspace = true

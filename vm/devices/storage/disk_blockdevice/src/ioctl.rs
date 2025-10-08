@@ -14,9 +14,10 @@ use nix::request_code_none;
 use open_enum::open_enum;
 use std::fs;
 use std::os::unix::prelude::*;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // Linux block device IOCTLs.
 const BLK_IOC_MAGIC: u8 = 0x12;
@@ -46,7 +47,7 @@ ioctl_none_bad!(blk_eject_ioctl, 0x5309);
 ioctl_write_int_bad!(blk_lockdoor_ioctl, 0x5329);
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     enum BlkStatus: u8 {
         BLK_STS_OK = 0,
         BLK_STS_NOTSUPP = 1,

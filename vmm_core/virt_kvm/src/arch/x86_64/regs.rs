@@ -5,7 +5,7 @@ use hvdef::HvX64RegisterName;
 
 #[derive(Debug)]
 // Field is stored solely for logging via debug, not actually dead.
-pub struct NoRegisterMapping(#[allow(dead_code)] HvX64RegisterName);
+pub struct NoRegisterMapping(#[expect(dead_code)] HvX64RegisterName);
 
 /// Converts a register name to an msr.
 pub const fn register_to_msr(name: HvX64RegisterName) -> Result<u32, NoRegisterMapping> {

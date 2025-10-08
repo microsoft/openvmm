@@ -4,10 +4,10 @@
 //! A thin wrapper around a `mesh::Sender<PipetteRequest>` that provides
 //! useful error handling semantics.
 
+use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
 use pipette_protocol::PipetteRequest;
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ impl PipetteSender {
 
     /// A wrapper around [`mesh::Sender::call`] that will sleep for 5 seconds on failure,
     /// allowing any additional work occurring on the system to hopefully complete.
-    /// See also [`petri::PetriVm::wait_for_halt_or`]
+    /// See also [`petri::PetriVmOpenVmm::wait_for_halt_or`]
     pub(crate) async fn call<F, I, R>(&self, f: F, input: I) -> Result<R, RpcError>
     where
         F: FnOnce(Rpc<I, R>) -> PipetteRequest,
@@ -28,7 +28,9 @@ impl PipetteSender {
     {
         let result = self.0.call(f, input).await;
         if result.is_err() {
-            tracing::warn!("Pipette request channel failed, sleeping for 5 seconds to let outstanding work finish");
+            tracing::warn!(
+                "Pipette request channel failed, sleeping for 5 seconds to let outstanding work finish"
+            );
             let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
             let _ = c.cancelled().await;
         }
@@ -37,7 +39,7 @@ impl PipetteSender {
 
     /// A wrapper around [`mesh::Sender::call_failable`] that will sleep for 5 seconds on failure,
     /// allowing any additional work occurring on the system to hopefully complete.
-    /// See also [`petri::PetriVm::wait_for_halt_or`]
+    /// See also [`petri::PetriVmOpenVmm::wait_for_halt_or`]
     pub(crate) async fn call_failable<F, I, T, E>(&self, f: F, input: I) -> Result<T, RpcError<E>>
     where
         F: FnOnce(Rpc<I, Result<T, E>>) -> PipetteRequest,
@@ -46,7 +48,9 @@ impl PipetteSender {
     {
         let result = self.0.call_failable(f, input).await;
         if result.is_err() {
-            tracing::warn!("Pipette request channel failed, sleeping for 5 seconds to let outstanding work finish");
+            tracing::warn!(
+                "Pipette request channel failed, sleeping for 5 seconds to let outstanding work finish"
+            );
             let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
             let _ = c.cancelled().await;
         }

@@ -50,13 +50,17 @@ where
     /// into a VTL2 initrd, what `igvmfilegen` manifest is being used, etc...
     pub recipe: Recipe,
 
-    /// Build using release variants of all constituent components.
+    /// Build using release variants of all constituent binary components.
     ///
     /// Uses --profile=boot-release for openhcl_boot, --profile=openhcl-ship
-    /// when building openvmm_hcl, `--min-interactive` vtl2 initrd
-    /// configuration, `-release.json` manifest variant, etc...
+    /// when building openvmm_hcl, etc...
     #[clap(long)]
     pub release: bool,
+
+    /// Configure the IGVM file with the appropriate `-release.json`
+    /// manifest variant, and disable debug-only features.
+    #[clap(long)]
+    pub release_cfg: bool,
 
     /// pass `--verbose` to cargo
     #[clap(long)]
@@ -197,11 +201,17 @@ pub fn bail_if_running_in_ci() -> anyhow::Result<()> {
             log::warn!("Detected that {ci_env} is set");
             log::warn!("");
             log::warn!("Do not use `build-igvm` in CI scripts!");
-            log::warn!("This is a local-only, inner-dev-loop tool to build IGVM files, with an UNSTABLE CLI.");
+            log::warn!(
+                "This is a local-only, inner-dev-loop tool to build IGVM files, with an UNSTABLE CLI."
+            );
             log::warn!("");
-            log::warn!("Automated pipelines should use the underlying `flowey` nodes that power build-igvm directly, _without_ relying on its CLI!");
+            log::warn!(
+                "Automated pipelines should use the underlying `flowey` nodes that power build-igvm directly, _without_ relying on its CLI!"
+            );
             log::warn!("");
-            log::warn!("If you _really_ know what you're doing, you can set {OVERRIDE_ENV} to disable this error.");
+            log::warn!(
+                "If you _really_ know what you're doing, you can set {OVERRIDE_ENV} to disable this error."
+            );
             anyhow::bail!("attempted to run `build-igvm` in CI")
         }
     }
@@ -224,6 +234,7 @@ impl IntoPipeline for BuildIgvmCli {
         let Self {
             recipe,
             release,
+            release_cfg,
             verbose,
             locked,
             install_missing_deps,
@@ -251,11 +262,7 @@ impl IntoPipeline for BuildIgvmCli {
         } = self;
 
         if with_perf_tools {
-            custom_extra_rootfs.push(
-                crate::repo_root()
-                    .join("openhcl/perftoolsfs.config")
-                    .clone(),
-            );
+            custom_extra_rootfs.push(crate::repo_root().join("openhcl/perftoolsfs.config"));
         }
 
         let mut pipeline = Pipeline::new();
@@ -303,6 +310,7 @@ impl IntoPipeline for BuildIgvmCli {
                     OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
                 },
                 release,
+                release_cfg,
 
                 customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
                     build_label,

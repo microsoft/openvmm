@@ -3,13 +3,13 @@
 
 //! Infrastructure to support line interrupts.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::borrow::Cow;
-use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::ops::RangeInclusive;
@@ -431,7 +431,7 @@ impl LineSet {
     }
 }
 
-#[allow(missing_docs)] // self explanatory struct/functions
+#[expect(missing_docs)] // self explanatory struct/functions
 pub mod test_helpers {
     use crate::line_interrupt::LineSetTarget;
     use parking_lot::Mutex;

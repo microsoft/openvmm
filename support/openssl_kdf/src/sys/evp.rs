@@ -14,7 +14,7 @@ use libc::c_uchar;
 use libc::size_t;
 use openssl_sys::EVP_MD;
 
-#[allow(clippy::upper_case_acronyms)]
+#[expect(clippy::upper_case_acronyms)]
 pub enum KDF {}
 
 pub enum KDF_CTX {}

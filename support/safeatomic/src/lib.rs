@@ -1,23 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![no_std]
 // UNSAFETY: Manual pointer manipulation and transmutes to/from atomic types.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 use core::mem;
 use core::sync::atomic;
 use core::sync::atomic::AtomicU8;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// A helper trait for types that can be safely transmuted to and from byte
 /// slices.
-pub trait AsAtomicBytes: AsBytes + FromBytes {
+pub trait AsAtomicBytes: IntoBytes + FromBytes + Immutable + KnownLayout {
     /// Casts the type to a slice of atomic bytes.
     fn as_atomic_bytes(&mut self) -> &[AtomicU8] {
-        // SAFETY: AsBytes guarantees that Self can be cast to a byte slice.
+        // SAFETY: IntoBytes guarantees that Self can be cast to a byte slice.
         // And since we have exclusive ownership of self, it should be safe to
         // cast to an atomic byte slice (which can then be used by multiple
         // threads safely).
@@ -32,7 +35,7 @@ pub trait AsAtomicBytes: AsBytes + FromBytes {
     }
 }
 
-impl<T> AsAtomicBytes for T where T: AsBytes + FromBytes + ?Sized {}
+impl<T> AsAtomicBytes for T where T: IntoBytes + FromBytes + ?Sized + Immutable + KnownLayout {}
 
 /// Marker trait for atomic primitives.
 ///
@@ -79,7 +82,7 @@ pub trait AtomicSliceOps {
     /// Reads an object from the slice.
     ///
     /// Panics if the slice is not the same size as `T`.
-    fn atomic_read_obj<T: FromBytes>(&self) -> T {
+    fn atomic_read_obj<T: FromBytes + Immutable + KnownLayout>(&self) -> T {
         let mut obj = mem::MaybeUninit::<T>::uninit();
         // SAFETY: `obj` is a valid target for writes, and will be initialized by
         // `atomic_read_ptr`.
@@ -100,7 +103,7 @@ pub trait AtomicSliceOps {
     /// Writes an object to the slice.
     ///
     /// Panics if the slice is not the same size as `T`.
-    fn atomic_write_obj<T: AsBytes>(&self, obj: &T) {
+    fn atomic_write_obj<T: IntoBytes + Immutable + KnownLayout>(&self, obj: &T) {
         self.atomic_write(obj.as_bytes());
     }
 

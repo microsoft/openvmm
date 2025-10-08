@@ -3,7 +3,7 @@
 
 //! A task + RPC client for interacting with a shared VMGS instance.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod broker;
 mod client;

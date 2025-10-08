@@ -2,12 +2,15 @@
 // Licensed under the MIT License.
 
 use crate::OfferInfo;
+use inspect::Inspect;
 use mesh::rpc::Rpc;
-use vmbus_core::protocol;
 use vmbus_core::HvsockConnectRequest;
+use vmbus_core::protocol;
 
 /// Tracks guest-to-host hvsocket requests that the host has not responded to yet.
+#[derive(Inspect)]
 pub(crate) struct HvsockRequestTracker {
+    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(|x| x.input())")]
     pending_requests: Vec<Request>,
 }
 
@@ -82,7 +85,7 @@ mod tests {
     use vmbus_core::protocol::HvsockUserDefinedParameters;
     use vmbus_core::protocol::OfferFlags;
     use vmbus_core::protocol::UserDefinedData;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
 
     #[test]
     fn test_check_result() {
@@ -91,6 +94,7 @@ mod tests {
             service_id: Guid::new_random(),
             endpoint_id: Guid::new_random(),
             silo_id: Guid::new_random(),
+            hosted_silo_unaware: false,
         };
 
         tracker.add_request(Rpc::detached(request));
@@ -133,6 +137,7 @@ mod tests {
             service_id: Guid::new_random(),
             endpoint_id: Guid::new_random(),
             silo_id: Guid::new_random(),
+            hosted_silo_unaware: false,
         };
 
         tracker.add_request(Rpc::detached(request));
@@ -183,7 +188,7 @@ mod tests {
                 .with_named_pipe_mode(true)
                 .with_tlnpi_provider(hvsock),
             user_defined,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }

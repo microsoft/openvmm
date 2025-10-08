@@ -59,10 +59,19 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         // ambient deps required by `update-rootfs.py`
+        let platform = ctx.platform();
+        let python_pkg = match platform {
+            FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => "python3",
+                FlowPlatformLinuxDistro::Arch => "python",
+                FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+            },
+            _ => anyhow::bail!("Unsupported platform"),
+        };
         let pydeps =
             ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: ["python3"].map(Into::into).into(),
+                    package_names: [python_pkg].map(Into::into).into(),
                     done: side_effect,
                 },
             );
@@ -116,11 +125,8 @@ impl FlowNode for Node {
                 let initrd = initrd.claim(ctx);
                 move |rt| {
                     let interactive_dep = rt.read(interactive_dep);
-                    let rootfs_config = rootfs_config
-                        .into_iter()
-                        .map(|x| rt.read(x))
-                        .collect::<Vec<_>>();
-                    let extra_env = extra_env.map(|x| rt.read(x));
+                    let rootfs_config = rt.read(rootfs_config);
+                    let extra_env = rt.read(extra_env);
                     let bin_openhcl = rt.read(bin_openhcl);
                     let openvmm_repo_path = rt.read(openvmm_repo_path);
                     let kernel_package_root = rt.read(kernel_package_root);

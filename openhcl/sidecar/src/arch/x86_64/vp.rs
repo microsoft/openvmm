@@ -4,15 +4,15 @@
 //! Sidecar code that runs on the APs, after initialization. This code all runs
 //! with per-AP page tables, concurrently with the main kernel.
 
+use super::CommandErrorWriter;
+use super::VSM_CAPABILITIES;
+use super::VTL_RETURN_OFFSET;
+use super::VpGlobals;
 use super::addr_space;
 use super::get_hv_vp_register;
 use super::hypercall;
 use super::log;
 use super::set_hv_vp_register;
-use super::CommandErrorWriter;
-use super::VpGlobals;
-use super::VSM_CAPABILITIES;
-use super::VTL_RETURN_OFFSET;
 use core::fmt::Write;
 use core::mem::size_of;
 use core::ptr::addr_of;
@@ -20,16 +20,16 @@ use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::Ordering::Release;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::TranslateVirtualAddressX64;
-use hvdef::HvError;
-use hvdef::HvVtlEntryReason;
-use hvdef::HvX64RegisterName;
-use hvdef::HypercallCode;
 use hvdef::HV_PAGE_SHIFT;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
+use hvdef::HvStatus;
+use hvdef::HvVtlEntryReason;
+use hvdef::HvX64RegisterName;
+use hvdef::HypercallCode;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HvRegisterAssoc;
+use hvdef::hypercall::TranslateVirtualAddressX64;
 use minimal_rt::arch::hypercall::HYPERCALL_PAGE;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
@@ -38,14 +38,15 @@ use sidecar_defs::ControlPage;
 use sidecar_defs::CpuContextX64;
 use sidecar_defs::CpuStatus;
 use sidecar_defs::GetSetVpRegisterRequest;
+use sidecar_defs::PAGE_SIZE;
 use sidecar_defs::RunVpResponse;
 use sidecar_defs::SidecarCommand;
 use sidecar_defs::TranslateGvaRequest;
 use sidecar_defs::TranslateGvaResponse;
 use x86defs::apic::ApicBase;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Entry point for an AP. Called with per-VP state (page tables, stack,
 /// globals) already initialized, and IDT and GDT set appropriately.
@@ -84,6 +85,25 @@ pub unsafe fn ap_entry() -> ! {
             x86defs::apic::ApicRegister::SVR.x2apic_msr(),
             u32::from(x86defs::apic::Svr::new().with_enable(true).with_vector(!0)).into(),
         )
+    }
+
+    // Zero the register page, since it has not yet been mapped (and may never
+    // be mapped if the hypervisor does not support it).
+    //
+    // Note that it is not safe to access the register page after this point,
+    // since it is owned by the VMM.
+    //
+    // SAFETY: we are still booting, so the VMM is not using this yet.
+    unsafe {
+        (*addr_space::register_page().cast::<[u8; PAGE_SIZE]>()).fill(0);
+    }
+
+    // Zero the command page, too, so that it doesn't leak data to the VMM from
+    // a previous boot.
+    //
+    // SAFETY: we are still booting, so the VMM is not using this yet.
+    unsafe {
+        (*addr_space::command_page().cast::<[u8; PAGE_SIZE]>()).fill(0);
     }
 
     // Notify the BSP that we are ready.
@@ -147,7 +167,7 @@ fn map_overlays(globals: &mut VpGlobals) {
         HvX64RegisterName::RegisterPage.into(),
         u64::from(
             hvdef::HvSynicSimpSiefp::new()
-                .with_base_gpn(globals.reg_page_pa >> HV_PAGE_SHIFT)
+                .with_base_gpn(addr_space::register_page_pa() >> HV_PAGE_SHIFT)
                 .with_enabled(true),
         )
         .into(),
@@ -252,7 +272,8 @@ fn run_vp(globals: &mut VpGlobals, command_page: &mut CommandPage, cpu_status: &
     RunVpResponse {
         intercept: intercept as u8,
     }
-    .write_to_prefix(command_page.request_data.as_bytes_mut());
+    .write_to_prefix(command_page.request_data.as_mut_bytes())
+    .unwrap(); // PANIC: will not panic, since sizeof(RunVpResponse) is 1, whereas the buffer is statically declared as 16 bytes long.
 }
 
 fn run_vp_once(command_page: &mut CommandPage) -> Result<bool, ()> {
@@ -394,18 +415,19 @@ fn get_debug_register(name: HvX64RegisterName) -> Option<u64> {
 fn get_vp_registers(command_page: &mut CommandPage) {
     let (request, regs) = command_page
         .request_data
-        .as_bytes_mut()
+        .as_mut_bytes()
         .split_at_mut(size_of::<GetSetVpRegisterRequest>());
     let &mut GetSetVpRegisterRequest {
         count,
         target_vtl,
         rsvd: _,
-        ref mut result,
+        ref mut status,
         rsvd2: _,
         regs: [],
-    } = FromBytes::mut_from(request).unwrap();
+    } = FromBytes::mut_from_bytes(request).unwrap();
 
-    let Some((regs, _)) = FromBytes::mut_slice_from_prefix(regs, count.into()) else {
+    let Ok((regs, _)) = <[HvRegisterAssoc]>::mut_from_prefix_with_elems(regs, count.into()) else {
+        // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         set_error(
             command_page,
             format_args!("invalid register name count: {count}"),
@@ -413,7 +435,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         return;
     };
 
-    *result = HvError(0);
+    *status = HvStatus::SUCCESS;
     for &mut HvRegisterAssoc {
         name,
         pad: _,
@@ -434,7 +456,7 @@ fn get_vp_registers(command_page: &mut CommandPage) {
         match r {
             Ok(v) => *value = v,
             Err(err) => {
-                *result = err;
+                *status = Err(err).into();
                 break;
             }
         };
@@ -444,18 +466,19 @@ fn get_vp_registers(command_page: &mut CommandPage) {
 fn set_vp_registers(command_page: &mut CommandPage) {
     let (request, regs) = command_page
         .request_data
-        .as_bytes_mut()
+        .as_mut_bytes()
         .split_at_mut(size_of::<GetSetVpRegisterRequest>());
     let &mut GetSetVpRegisterRequest {
         count,
         target_vtl,
         rsvd: _,
-        ref mut result,
+        ref mut status,
         rsvd2: _,
         regs: [],
-    } = FromBytes::mut_from(request).unwrap();
+    } = FromBytes::mut_from_bytes(request).unwrap();
 
-    let Some((assoc, _)) = FromBytes::slice_from_prefix(regs, count.into()) else {
+    let Ok((assoc, _)) = <[HvRegisterAssoc]>::ref_from_prefix_with_elems(regs, count.into()) else {
+        // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
         set_error(
             command_page,
             format_args!("invalid register count: {count}"),
@@ -463,7 +486,7 @@ fn set_vp_registers(command_page: &mut CommandPage) {
         return;
     };
 
-    *result = HvError(0);
+    *status = HvStatus::SUCCESS;
     for &HvRegisterAssoc {
         name,
         value,
@@ -482,8 +505,8 @@ fn set_vp_registers(command_page: &mut CommandPage) {
             set_hv_vp_register(target_vtl, name, value)
         };
 
-        if let Err(err) = r {
-            *result = err;
+        if r.is_err() {
+            *status = r.into();
             break;
         }
     }
@@ -491,8 +514,9 @@ fn set_vp_registers(command_page: &mut CommandPage) {
 
 fn translate_gva(command_page: &mut CommandPage) {
     let TranslateGvaRequest { gvn, control_flags } =
-        FromBytes::read_from_prefix(command_page.request_data.as_bytes()).unwrap();
-
+        FromBytes::read_from_prefix(command_page.request_data.as_bytes())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
     {
         // SAFETY: the input page is not concurrently accessed.
         let input = unsafe { &mut *addr_space::hypercall_input() };
@@ -509,21 +533,20 @@ fn translate_gva(command_page: &mut CommandPage) {
     }
 
     let result = hypercall(HypercallCode::HvCallTranslateVirtualAddressEx, 0);
-    let (result, output) = match result {
-        Ok(()) => {
-            // SAFETY: the output is not concurrently accessed
-            let output = unsafe { &*addr_space::hypercall_output() };
-            (HvError(0), FromBytes::read_from_prefix(output).unwrap())
-        }
-        Err(err) => (err, FromZeroes::new_zeroed()),
+    let output = if result.is_ok() {
+        // SAFETY: the output is not concurrently accessed
+        let output = unsafe { &*addr_space::hypercall_output() };
+        FromBytes::read_from_prefix(output).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+    } else {
+        FromZeros::new_zeroed()
     };
 
     TranslateGvaResponse {
-        result,
+        status: result.into(),
         rsvd: [0; 7],
         output,
     }
-    .write_to_prefix(command_page.request_data.as_bytes_mut())
+    .write_to_prefix(command_page.request_data.as_mut_bytes())
     .unwrap();
 }
 

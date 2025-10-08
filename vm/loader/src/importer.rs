@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 //! Common loader image loading traits and types used by all loaders.
-#![allow(dead_code)]
 
 #[cfg(guest_arch = "aarch64")]
 pub use Aarch64Register as Register;

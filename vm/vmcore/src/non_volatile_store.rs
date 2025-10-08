@@ -3,7 +3,6 @@
 
 //! Defines the [`NonVolatileStore`] trait.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use thiserror::Error;
@@ -98,11 +97,11 @@ pub mod resources {
     use super::NonVolatileStore;
     use mesh::MeshPayload;
     use std::convert::Infallible;
-    use vm_resource::declare_static_resolver;
-    use vm_resource::kind::NonVolatileStoreKind;
     use vm_resource::CanResolveTo;
     use vm_resource::ResolveResource;
     use vm_resource::ResourceId;
+    use vm_resource::declare_static_resolver;
+    use vm_resource::kind::NonVolatileStoreKind;
 
     impl CanResolveTo<ResolvedNonVolatileStore> for NonVolatileStoreKind {
         type Input<'a> = ();

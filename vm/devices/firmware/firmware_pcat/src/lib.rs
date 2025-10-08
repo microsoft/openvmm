@@ -10,7 +10,6 @@
 //! configuration, along with hooks into various VMM runtime services (e.g:
 //! event logging, efficient busy-waiting, generation ID, etc...).
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod bios_boot_order;
@@ -20,17 +19,17 @@ mod root_cpu_data;
 pub use default_cmos_values::default_cmos_values;
 
 use self::bios_boot_order::bios_boot_order;
-use chipset_device::io::deferred::defer_write;
-use chipset_device::io::deferred::DeferredToken;
-use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredToken;
+use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use guestmem::GuestMemory;
 use guestmem::MapRom;
 use guestmem::UnmapRom;
@@ -46,19 +45,19 @@ use vm_topology::processor::VpIndex;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Static config info which gets queried by the PCAT BIOS.
 pub mod config {
     use guid::Guid;
     use inspect::Inspect;
     use vm_topology::memory::MemoryLayout;
-    use vm_topology::processor::x86::X86Topology;
     use vm_topology::processor::ProcessorTopology;
+    use vm_topology::processor::x86::X86Topology;
 
     /// Subset of SMBIOS v2.4 CPU Information structure.
     #[derive(Debug, Inspect)]
-    #[allow(missing_docs)] // self-explanatory fields
+    #[expect(missing_docs)] // self-explanatory fields
     pub struct SmbiosProcessorInfoBundle {
         pub processor_family: u8,
         pub voltage: u8,
@@ -71,7 +70,7 @@ pub mod config {
     ///
     /// There is a lot of info here, but empirically, it's not _super_ important
     /// to make these values 100% accurate...
-    #[allow(missing_docs)] // self-explanatory fields
+    #[expect(missing_docs)] // self-explanatory fields
     #[derive(Debug, Inspect)]
     pub struct SmbiosConstants {
         pub bios_guid: Guid,
@@ -95,7 +94,7 @@ pub mod config {
 
     /// A particular kind of boot device PCAT understands.
     #[derive(Debug, Clone, Copy, Inspect)]
-    #[allow(missing_docs)] // self-explanatory variants
+    #[expect(missing_docs)] // self-explanatory variants
     pub enum BootDevice {
         Floppy = 0,
         Optical = 1,
@@ -172,7 +171,7 @@ struct PcatBiosState {
 impl PcatBiosState {
     fn new() -> Self {
         let mut entropy = [0; 64];
-        getrandom::getrandom(&mut entropy).expect("rng failure");
+        getrandom::fill(&mut entropy).expect("rng failure");
         Self {
             address: 0,
             read_count: 0,
@@ -187,7 +186,7 @@ impl PcatBiosState {
 }
 
 /// PCAT device runtime dependencies.
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 pub struct PcatBiosRuntimeDeps<'a> {
     pub gm: GuestMemory,
     pub logger: Box<dyn PcatLogger>,
@@ -242,7 +241,7 @@ const POST_IO_PORT: u16 = 0x80;
 
 /// Errors which may occur during PCAT BIOS helper device initialization.
 #[derive(Debug, Error)]
-#[allow(missing_docs)] // self-explanatory variants
+#[expect(missing_docs)] // self-explanatory variants
 pub enum PcatBiosDeviceInitError {
     #[error("expected exactly 2 mmio holes, found {0}")]
     IncorrectMmioHoles(usize),
@@ -536,7 +535,7 @@ impl PcatBiosDevice {
             PcatAddress::WAIT_NANO100 => {
                 return Ok(Some(
                     self.defer_wait(Duration::from_nanos(data as u64 * 100)),
-                ))
+                ));
             }
             PcatAddress::GENERATION_ID_PTR_LOW => self.generation_id.write_generation_id_low(data),
             PcatAddress::GENERATION_ID_PTR_HIGH => {
@@ -561,13 +560,13 @@ impl PcatBiosDevice {
         // register (so as to save an additional VMEXIT).
         match PcatAddress(addr) {
             PcatAddress::WAIT1_MILLISECOND => {
-                return Some(self.defer_wait(Duration::from_millis(1)))
+                return Some(self.defer_wait(Duration::from_millis(1)));
             }
             PcatAddress::WAIT10_MILLISECONDS => {
-                return Some(self.defer_wait(Duration::from_millis(10)))
+                return Some(self.defer_wait(Duration::from_millis(10)));
             }
             PcatAddress::WAIT2_MILLISECOND => {
-                return Some(self.defer_wait(Duration::from_millis(2)))
+                return Some(self.defer_wait(Duration::from_millis(2)));
             }
             PcatAddress::REPORT_BOOT_FAILURE => {
                 tracelimit::info_ratelimited!("pcat boot: failure");

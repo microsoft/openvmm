@@ -3,7 +3,7 @@
 
 [package]
 name = "virt_support_aarch64emu"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -15,9 +15,9 @@ virt.workspace = true
 aarch64emu.workspace = true
 
 thiserror.workspace = true
+tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 
 [lints]
