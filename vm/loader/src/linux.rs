@@ -3,7 +3,6 @@
 
 //! Linux specific loader definitions and implementation.
 
-use crate::common::VecPageTableBuffer;
 use crate::common::import_default_gdt;
 use crate::elf::load_static_elf;
 use crate::importer::Aarch64Register;
@@ -22,7 +21,8 @@ use bitfield_struct::bitfield;
 use hvdef::HV_PAGE_SIZE;
 use loader_defs::linux as defs;
 use page_table::IdentityMapSize;
-use page_table::PageTableBuffer;
+use page_table::x64::PAGE_TABLE_MAX_BYTES;
+use page_table::x64::PAGE_TABLE_MAX_COUNT;
 use page_table::x64::PageTable;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
@@ -334,16 +334,17 @@ pub fn load_config(
     check_address_alignment(registers.gdt_address)?;
     import_default_gdt(importer, registers.gdt_address / HV_PAGE_SIZE).map_err(Error::Importer)?;
     check_address_alignment(registers.page_table_address)?;
-    let mut page_table_work_buffer: VecPageTableBuffer<PageTable> = VecPageTableBuffer::new();
-    let mut page_table: VecPageTableBuffer<u8> = VecPageTableBuffer::new();
+    let mut page_table_work_buffer: Vec<PageTable> =
+        vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+    let mut page_table: Vec<u8> = vec![0 as u8; PAGE_TABLE_MAX_BYTES];
     build_page_tables_64(
         registers.page_table_address,
         0,
         IdentityMapSize::Size4Gb,
         None,
         false,
-        &mut page_table_work_buffer,
-        &mut page_table,
+        page_table_work_buffer.as_mut_slice(),
+        page_table.as_mut_slice(),
     );
     assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
     importer
