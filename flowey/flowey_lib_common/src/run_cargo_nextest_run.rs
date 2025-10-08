@@ -236,7 +236,6 @@ impl FlowNode for Node {
                     Some(list_cmd)
                 }
             };
-            let has_list_cmd = list_cmd.is_some();
 
             let cmd = ctx.reqv(|v| crate::gen_cargo_nextest_run_cmd::Request {
                 run_kind_deps,
@@ -265,12 +264,7 @@ impl FlowNode for Node {
                 let junit_xml_write = junit_xml_write.claim(ctx);
                 let list_cmd = list_cmd.claim(ctx);
                 let cmd = cmd.claim(ctx);
-
-                let nextest_list_output_file_write = if has_list_cmd {
-                    Some(nextest_list_output_file_write.claim(ctx))
-                } else {
-                    None
-                };
+                let nextest_list_output_file_write = nextest_list_output_file_write.claim(ctx);
 
                 move |rt| {
                     let working_dir = rt.read(working_dir);
@@ -396,10 +390,9 @@ impl FlowNode for Node {
                     rt.write(junit_xml_write, &junit_xml);
 
                     // run the list command to get all tests in the executable
-                    if let Some(list_cmd) = list_cmd {
+                    let nextest_list_output = if let Some(list_cmd) = list_cmd {
                         let (status, stdout_opt) = run_command(&list_cmd, &working_dir, true)?;
                         anyhow::ensure!(status.success(), "failed to list tests in executable");
-
                         let nextest_list_json =
                             get_nextest_list_output_from_stdout(&stdout_opt.unwrap())?;
                         if let Some(ref junit_xml_path) = junit_xml {
@@ -407,14 +400,15 @@ impl FlowNode for Node {
                             let output_path = containing_dir.join("nextest_list.json");
                             let mut file = fs_err::File::create_new(&output_path)?;
                             file.write_all(nextest_list_json.to_string().as_bytes())?;
-
-                            if let Some(nextest_list_output_file_write) =
-                                nextest_list_output_file_write
-                            {
-                                rt.write(nextest_list_output_file_write, &output_path.absolute()?);
-                            }
+                            Some(output_path.absolute()?)
+                        } else {
+                            None
                         }
-                    }
+                    } else {
+                        None
+                    };
+
+                    rt.write(nextest_list_output_file_write, &nextest_list_output);
 
                     Ok(())
                 }
@@ -423,18 +417,13 @@ impl FlowNode for Node {
             ctx.emit_minor_rust_step("write results", |ctx| {
                 let all_tests_passed = all_tests_passed_read.claim(ctx);
                 let junit_xml = junit_xml_read.claim(ctx);
-                let nextest_list_output = if has_list_cmd {
-                    Some(nextest_list_output_file_read.claim(ctx))
-                } else {
-                    None
-                };
+                let nextest_list_output_file_read = nextest_list_output_file_read.claim(ctx);
                 let results = results.claim(ctx);
 
                 move |rt| {
                     let all_tests_passed = rt.read(all_tests_passed);
                     let junit_xml = rt.read(junit_xml);
-
-                    let nextest_list_output = nextest_list_output.map(|v| rt.read(v));
+                    let nextest_list_output = rt.read(nextest_list_output_file_read);
 
                     rt.write(
                         results,
