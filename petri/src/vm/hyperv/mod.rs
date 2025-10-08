@@ -180,8 +180,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
         };
 
         let vmgs_path = {
-            let _lifetime_cli = match &vmgs {
-                PetriVmgsResource::Disk(_) => "DISK",
+            let lifetime_cli = match &vmgs {
+                PetriVmgsResource::Disk(_) => "DEFAULT",
                 PetriVmgsResource::ReprovisionOnFailure(_) => "REPROVISION_ON_FAILURE",
                 PetriVmgsResource::Reprovision(_) => "REPROVISION",
                 PetriVmgsResource::Ephemeral => "EPHEMERAL",
@@ -194,7 +194,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 PetriVmgsResource::Ephemeral => (None, GuestStateEncryptionPolicy::None(true)),
             };
 
-            let _strict = encryption.is_strict();
+            let strict = encryption.is_strict();
 
             let encryption_cli = match encryption {
                 GuestStateEncryptionPolicy::Auto => "AUTO",
@@ -206,22 +206,20 @@ impl PetriVmmBackend for HyperVPetriBackend {
             // TODO: Error for non-OpenHCL Hyper-V VMs if not supported
             // TODO: Use WMI interfaces when possible
             if let Some((_, config)) = openhcl_config.as_mut() {
-                // TODO: Re-enable when added to OpenHCL command line
-                // append_cmdline(
-                //     &mut config.command_line,
-                //     format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
-                // );
+                append_cmdline(
+                    &mut config.command_line,
+                    format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
+                );
                 append_cmdline(
                     &mut config.command_line,
                     format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
                 );
-                // TODO: Re-enable when added to OpenHCL command line
-                // if strict {
-                //     append_cmdline(
-                //         &mut config.command_line,
-                //         format!("HCL_STRICT_ENCRYPTION_POLICY=1"),
-                //     );
-                // }
+                if strict {
+                    append_cmdline(
+                        &mut config.command_line,
+                        format!("HCL_STRICT_ENCRYPTION_POLICY=1"),
+                    );
+                }
             };
 
             match disk {

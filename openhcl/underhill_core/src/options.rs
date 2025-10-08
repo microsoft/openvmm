@@ -34,6 +34,28 @@ impl std::str::FromStr for TestScenarioConfig {
 }
 
 #[derive(Clone, Debug, MeshPayload)]
+pub enum GuestStateLifetimeCli {
+    Default,
+    ReprovisionOnFailure,
+    Reprovision,
+    Ephemeral,
+}
+
+impl std::str::FromStr for GuestStateLifetimeCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<GuestStateLifetimeCli, anyhow::Error> {
+        match s {
+            "DEFAULT" | "0" => Ok(GuestStateLifetimeCli::Default),
+            "REPROVISION_ON_FAILURE" | "1" => Ok(GuestStateLifetimeCli::ReprovisionOnFailure),
+            "REPROVISION" | "2" => Ok(GuestStateLifetimeCli::Reprovision),
+            "EPHEMERAL" | "3" => Ok(GuestStateLifetimeCli::Ephemeral),
+            _ => Err(anyhow::anyhow!("Invalid lifetime: {}", s)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, MeshPayload)]
 pub enum GuestStateEncryptionPolicyCli {
     Auto,
     None,
@@ -178,11 +200,22 @@ pub struct Options {
     /// (OPENHCL_DISABLE_UEFI_FRONTPAGE=1) Disable the frontpage in UEFI which
     /// will result in UEFI terminating, shutting down the guest instead of
     /// showing the frontpage.
-    pub disable_uefi_frontpage: bool,
+    pub disable_uefi_frontpage: Option<bool>,
+
+    /// (HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=1) Instruct UEFI to always attempt a
+    /// default boot, even if existing boot entries fail.
+    pub default_boot_always_attempt: Option<bool>,
+
+    /// (HCL_GUEST_STATE_LIFETIME=\<GuestStateLifetimeCli\>)
+    /// Specify which guest state lifetime to use.
+    pub guest_state_lifetime: Option<GuestStateLifetimeCli>,
 
     /// (HCL_GUEST_STATE_ENCRYPTION_POLICY=\<GuestStateEncryptionPolicyCli\>)
     /// Specify which guest state encryption policy to use.
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+
+    /// (HCL_STRICT_ENCRYPTION_POLICY=1) Strict guest state encryption policy.
+    pub strict_encryption_policy: Option<bool>,
 
     /// (HCL_ATTEMPT_AK_CERT_CALLBACK=1) Attempt to renew the AK cert.
     /// If not specified, use the configuration in DPSv2 ManagementVtlFeatures.
@@ -310,8 +343,21 @@ impl Options {
                 })
                 .ok()
         });
-        let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
+        let disable_uefi_frontpage = parse_env_bool_opt("OPENHCL_DISABLE_UEFI_FRONTPAGE")
+            .map_err(|e| tracing::warn!("failed to parse OPENHCL_DISABLE_UEFI_FRONTPAGE: {:#}", e))
+            .ok()
+            .flatten();
         let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
+        let default_boot_always_attempt = parse_env_bool_opt("HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT")
+            .map_err(|e| tracing::warn!("failed to parse HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT: {:#}", e))
+            .ok()
+            .flatten();
+        let guest_state_lifetime = parse_env_string("HCL_GUEST_STATE_LIFETIME").and_then(|x| {
+            x.to_string_lossy()
+                .parse::<GuestStateLifetimeCli>()
+                .map_err(|e| tracing::warn!("failed to parse HCL_GUEST_STATE_LIFETIME: {:#}", e))
+                .ok()
+        });
         let guest_state_encryption_policy = parse_env_string("HCL_GUEST_STATE_ENCRYPTION_POLICY")
             .and_then(|x| {
                 x.to_string_lossy()
@@ -321,6 +367,10 @@ impl Options {
                     })
                     .ok()
             });
+        let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY")
+            .map_err(|e| tracing::warn!("failed to parse HCL_STRICT_ENCRYPTION_POLICY: {:#}", e))
+            .ok()
+            .flatten();
         let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK")
             .map_err(|e| tracing::warn!("failed to parse HCL_ATTEMPT_AK_CERT_CALLBACK: {:#}", e))
             .ok()
@@ -385,7 +435,10 @@ impl Options {
             nvme_always_flr,
             test_configuration,
             disable_uefi_frontpage,
+            default_boot_always_attempt,
+            guest_state_lifetime,
             guest_state_encryption_policy,
+            strict_encryption_policy,
             attempt_ak_cert_callback,
             enable_vpci_relay,
         })

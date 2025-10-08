@@ -46,6 +46,7 @@ use crate::nvme_manager::manager::NvmeDiskConfig;
 use crate::nvme_manager::manager::NvmeDiskResolver;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::GuestStateEncryptionPolicyCli;
+use crate::options::GuestStateLifetimeCli;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -291,9 +292,15 @@ pub struct UnderhillEnvCfg {
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
     /// Disable the UEFI front page.
-    pub disable_uefi_frontpage: bool,
+    pub disable_uefi_frontpage: Option<bool>,
+    /// Always attempt a default boot
+    pub default_boot_always_attempt: Option<bool>,
+    /// Guest state lifetime
+    pub guest_state_lifetime: Option<GuestStateLifetimeCli>,
     /// Guest state encryption policy
     pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+    /// Strict guest state encryption policy
+    pub strict_encryption_policy: Option<bool>,
     /// Attempt to renew the AK cert
     pub attempt_ak_cert_callback: Option<bool>,
     /// Enable the VPCI relay
@@ -1218,11 +1225,26 @@ async fn new_underhill_vm(
 
     // override dps values with env_cfg values as necessary
     let dps = {
-        if let Some(value) = env_cfg.attempt_ak_cert_callback {
-            tracing::info!("using HCL_ATTEMPT_AK_CERT_CALLBACK={value} from cmdline");
-            dps.general
-                .management_vtl_features
-                .set_attempt_ak_cert_callback(value);
+        if let Some(value) = env_cfg.disable_uefi_frontpage {
+            tracing::info!("using OPENHCL_DISABLE_UEFI_FRONTPAGE={value} from cmdline");
+            dps.general.disable_frontpage = value;
+        }
+
+        if let Some(value) = env_cfg.default_boot_always_attempt {
+            tracing::info!("using HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={value} from cmdline");
+            dps.general.default_boot_always_attempt = value;
+        }
+
+        if let Some(lifetime) = env_cfg.guest_state_lifetime {
+            tracing::info!("using HCL_GUEST_STATE_LIFETIME={lifetime:?} from cmdline");
+            dps.general.guest_state_lifetime = match lifetime {
+                GuestStateLifetimeCli::Default => GuestStateLifetime::Default,
+                GuestStateLifetimeCli::ReprovisionOnFailure => {
+                    GuestStateLifetime::ReprovisionOnFailure
+                }
+                GuestStateLifetimeCli::Reprovision => GuestStateLifetime::Reprovision,
+                GuestStateLifetimeCli::Ephemeral => GuestStateLifetime::Ephemeral,
+            };
         }
 
         if let Some(policy) = env_cfg.guest_state_encryption_policy {
@@ -1233,6 +1255,20 @@ async fn new_underhill_vm(
                 GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
                 GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
             };
+        }
+
+        if let Some(value) = env_cfg.strict_encryption_policy {
+            tracing::info!("using HCL_STRICT_ENCRYPTION_POLICY={value} from cmdline");
+            dps.general
+                .management_vtl_features
+                .set_strict_encryption_policy(value);
+        }
+
+        if let Some(value) = env_cfg.attempt_ak_cert_callback {
+            tracing::info!("using HCL_ATTEMPT_AK_CERT_CALLBACK={value} from cmdline");
+            dps.general
+                .management_vtl_features
+                .set_attempt_ak_cert_callback(value);
         }
 
         dps
@@ -3250,7 +3286,6 @@ async fn new_underhill_vm(
             load_kind,
             &dps,
             isolation.is_isolated(),
-            env_cfg.disable_uefi_frontpage,
         )
         .instrument(tracing::info_span!("load_firmware", CVM_ALLOWED))
         .await?;
@@ -3525,16 +3560,12 @@ async fn load_firmware(
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
     isolated: bool,
-    disable_uefi_frontpage: bool,
 ) -> Result<(), anyhow::Error> {
     let cmdline_append = match cmdline_append {
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
         None => CString::default(),
     };
-    let loader_config = crate::loader::Config {
-        cmdline_append,
-        disable_uefi_frontpage,
-    };
+    let loader_config = crate::loader::Config { cmdline_append };
     let caps = partition.caps();
     let vtl0_vp_context = crate::loader::load(
         gm,
