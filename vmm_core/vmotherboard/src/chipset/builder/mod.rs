@@ -10,11 +10,17 @@ use self::errors::ErrorListExt;
 use self::errors::FinalChipsetBuilderError;
 use super::backing::arc_mutex::device::ArcMutexChipsetDeviceBuilder;
 use super::backing::arc_mutex::pci::BusResolverWeakMutexPci;
+use super::backing::arc_mutex::pci::BusResolverWeakMutexPcie;
 use super::backing::arc_mutex::pci::RegisterWeakMutexPci;
+use super::backing::arc_mutex::pci::RegisterWeakMutexPcie;
 use super::backing::arc_mutex::pci::WeakMutexPciEntry;
+use super::backing::arc_mutex::pci::WeakMutexPcieDeviceEntry;
 use super::backing::arc_mutex::services::ArcMutexChipsetServices;
 use super::backing::arc_mutex::state_unit::ArcMutexChipsetDeviceUnit;
+use crate::BusId;
 use crate::BusIdPci;
+use crate::BusIdPcieDownstreamPort;
+use crate::BusIdPcieEnumerator;
 use crate::DebugEventHandler;
 use crate::VmmChipsetDevice;
 use crate::chipset::Chipset;
@@ -97,6 +103,7 @@ impl DynamicDeviceUnit {
 #[derive(Default)]
 pub(crate) struct BusResolver {
     pci: BusResolverWeakMutexPci,
+    pcie: BusResolverWeakMutexPcie,
 }
 
 /// A builder for [`Chipset`]
@@ -198,6 +205,55 @@ impl<'a> ChipsetBuilder<'a> {
             .push(WeakMutexPciEntry { bdf, name, dev });
     }
 
+    /// Register a PCIe enumerator (ex. root complex or switch), and all of
+    /// it's downstream ports.
+    pub fn register_weak_mutex_pcie_enumerator(
+        &mut self,
+        bus_id: BusIdPcieEnumerator,
+        enumerator: Box<dyn RegisterWeakMutexPcie>,
+    ) {
+        let downstream_ports = enumerator.downstream_ports();
+        let existing = self
+            .bus_resolver
+            .pcie
+            .enumerators
+            .insert(bus_id.clone(), enumerator);
+        assert!(
+            existing.is_none(),
+            "duplicate pcie enumerator ID: {:?}",
+            bus_id
+        );
+
+        for (port_number, port_name) in downstream_ports {
+            let existing = self
+                .bus_resolver
+                .pcie
+                .ports
+                .insert(BusId::new(&port_name), (port_number, bus_id.clone()));
+            assert!(
+                existing.is_none(),
+                "duplicate pcie port ID: {:?}",
+                port_name
+            );
+        }
+    }
+
+    pub(crate) fn register_weak_mutex_pcie_device(
+        &mut self,
+        bus_id_port: BusIdPcieDownstreamPort,
+        name: Arc<str>,
+        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+    ) {
+        self.bus_resolver
+            .pcie
+            .devices
+            .push(WeakMutexPcieDeviceEntry {
+                bus_id_port,
+                name,
+                dev,
+            });
+    }
+
     pub(crate) fn line_set(
         &mut self,
         id: LineSetId,
@@ -253,13 +309,22 @@ impl<'a> ChipsetBuilder<'a> {
         }
 
         {
-            let BusResolver { pci } = self.bus_resolver;
+            let BusResolver { pci, pcie } = self.bus_resolver;
 
             match pci.resolve() {
                 Ok(()) => {}
                 Err(conflicts) => {
                     for conflict in conflicts {
                         errs.append(ChipsetBuilderError::PciConflict(conflict));
+                    }
+                }
+            }
+
+            match pcie.resolve() {
+                Ok(()) => {}
+                Err(conflicts) => {
+                    for conflict in conflicts {
+                        errs.append(ChipsetBuilderError::PcieConflict(conflict));
                     }
                 }
             }

@@ -1796,6 +1796,9 @@ impl InitializedVm {
                     ),
                 });
 
+                let bus_id = vmotherboard::BusId::new(&rc.name);
+                chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
+
                 ecam_address += ecam_size;
                 low_mmio_address -= low_mmio_size;
                 high_mmio_address += rc.high_mmio_size;
