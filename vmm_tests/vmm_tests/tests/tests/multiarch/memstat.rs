@@ -3,6 +3,8 @@
 
 //! Memory Validation for VMM Tests
 
+#![cfg_attr(not(debug_assertions), expect(dead_code))]
+
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::IsolationType;
@@ -10,7 +12,6 @@ use petri::MemoryConfig;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
-use petri::ShutdownKind;
 use petri_artifacts_common::tags::MachineArch;
 use pipette_client::PipetteClient;
 use pipette_client::cmd;
@@ -45,13 +46,13 @@ struct PerProcessMemstat {
     /// Rss:               13300 kB
     /// Pss:                5707 kB
     /// Pss_Anon:           3608 kB
-    pub smaps_rollup: HashMap<String, u64>,
+    smaps_rollup: HashMap<String, u64>,
 
     /// HashMap generated from the contents of the /proc/{process ID}/statm file for an OpenHCL process
     /// sample output from /proc/{process ID}/statm:
     ///
     /// 5480 3325 2423 11 0 756 0
-    pub statm: HashMap<String, u64>,
+    statm: HashMap<String, u64>,
 }
 
 /// MemStat struct collects all relevant memory usage data from VTL2 in a VM
@@ -63,7 +64,7 @@ struct MemStat {
     /// MemTotal:       65820456 kB
     /// MemFree:        43453176 kB
     /// MemAvailable:   44322124 kB
-    pub meminfo: HashMap<String, u64>,
+    meminfo: HashMap<String, u64>,
 
     /// total_free_memory_per_zone is an integer calculated by aggregating the free memory from each CPU zone in the /proc/zoneinfo file
     /// sample content of /proc/zoneinfo:
@@ -77,16 +78,16 @@ struct MemStat {
     ///     cpu: 0
     ///               count: 10
     ///               high: 14
-    pub total_free_memory_per_zone: u64,
+    total_free_memory_per_zone: u64,
 
     /// underhill_init corresponds to the memory usage statistics for the underhill-init process
-    pub underhill_init: PerProcessMemstat,
+    underhill_init: PerProcessMemstat,
 
     /// openvmm_hcl corresponds to the memory usage statistics for the openvmm_hcl process
-    pub openvmm_hcl: PerProcessMemstat,
+    openvmm_hcl: PerProcessMemstat,
 
     /// underhill_vm corresponds to the memory usage statistics for the underhill-vm process
-    pub underhill_vm: PerProcessMemstat,
+    underhill_vm: PerProcessMemstat,
 
     /// baseline data to compare test results against
     baseline_json: Value,
@@ -94,7 +95,7 @@ struct MemStat {
 
 impl MemStat {
     /// Construction of a MemStat object takes the vtl2 Pipette agent to query OpenHCL for memory statistics for VTL2 as a whole and for VTL2's processes
-    pub async fn new(vtl2_agent: &PipetteClient) -> Self {
+    async fn new(vtl2_agent: &PipetteClient) -> Self {
         let sh = vtl2_agent.unix_shell();
         let meminfo = Self::parse_memfile(
             sh.read_file("/proc/meminfo")
@@ -195,7 +196,11 @@ impl MemStat {
     }
 
     /// Compares current statistics against baseline
-    pub fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
+    /// For all 2VP tests general usage and underhill_vm process memory usage are given a 1MiB threshold
+    /// For all large (32VP or 64VP) tests general usage and underhill_vm process memory usage are given a 3MiB threshold
+    /// All other processes have a usage threshold ~1.5x the variance observed in tests
+    /// Kernel reservation has a threshold of 0 since there is no run-to-run variance with that statistic
+    fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
         let baseline_usage = Self::get_upper_limit_value(&self.baseline_json[arch][vps]["usage"]);
         let cur_usage = self.meminfo["MemTotal"] - self.total_free_memory_per_zone;
         assert!(
@@ -232,6 +237,13 @@ impl MemStat {
             );
         }
 
+        /*
+            Note on reservation test:
+                - Kernel reservation does not experience run-to-run variance and is not expected to change frequently
+                - Therefore the threshold for kernel reservation is 0
+                - If a code change must increase the kernel reservation, then the "base" value for the "reservation" statistic can be updated in memstat_baseline.json
+                - Occasional increases in the kernel reservation are expected, but should be noted in such an event
+        */
         let baseline_reservation =
             Self::get_upper_limit_value(&self.baseline_json[arch][vps]["reservation"]);
         let cur_reservation =
@@ -359,7 +371,7 @@ fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: MachineArch
         .to_string()
 }
 
-pub async fn idle_test<T: PetriVmmBackend>(
+pub(crate) async fn idle_test<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     vps: TestVPCount,
     wait_time_sec: WaitPeriodSec,
@@ -378,7 +390,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
             }
         }
     };
-    let mut vm = config
+    let (mut vm, agent) = config
         .with_processor_topology({
             ProcessorTopology {
                 vp_count,
@@ -391,9 +403,12 @@ pub async fn idle_test<T: PetriVmmBackend>(
                 dynamic_memory_range: None,
             }
         })
-        .run_without_agent()
+        .run()
         .await?;
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
+
+    // Wait for the guest to be booted
+    agent.ping().await?;
 
     // This wait is needed to let the idle VM fully instantiate its memory - provides more accurate memory usage results
     PolledTimer::new(&driver)
@@ -402,7 +417,7 @@ pub async fn idle_test<T: PetriVmmBackend>(
 
     let memstat = MemStat::new(&vtl2_agent).await;
     tracing::info!("MEMSTAT_START:{}:MEMSTAT_END", to_string(&memstat).unwrap());
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    agent.power_off().await?;
     vm.wait_for_teardown().await?;
     memstat.compare_to_baseline(&arch_str, &format!("{}vp", vp_count))?;
 

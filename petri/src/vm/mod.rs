@@ -275,6 +275,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             vm.wait_for_reset_core().await?;
         }
 
+        vm.wait_for_expected_boot_event().await?;
+
         let client = if with_agent {
             Some(vm.wait_for_agent().await?)
         } else {
@@ -287,8 +289,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tracing::warn!("failed to set console loglevel: {}", result.unwrap_err());
             }
         }
-
-        vm.wait_for_expected_boot_event().await?;
 
         Ok((vm, client))
     }
@@ -834,7 +834,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         // ic comes online. give them a little extra time.
         // TODO: use a different method of determining whether the VM has booted
         // or debug and fix the shutdown IC.
-        let mut wait_time = Duration::from_secs(5);
+        let mut wait_time = Duration::from_secs(10);
 
         // some guests need even more time
         if let Some(duration) = self.guest_quirks.hyperv_shutdown_ic_sleep {

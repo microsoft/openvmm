@@ -3,6 +3,8 @@
 
 //! An executor backed by IO completion ports.
 
+#![expect(clippy::undocumented_unsafe_blocks)]
+
 use super::overlapped::IoOverlapped;
 use super::overlapped::OverlappedIoDriver;
 use super::socket::AfdHandle;
