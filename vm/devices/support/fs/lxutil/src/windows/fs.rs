@@ -1050,7 +1050,7 @@ pub fn get_lx_file_system_attributes(
             &mut iosb,
             std::ptr::from_mut(&mut size_info).cast(),
             size_of::<SystemServices::FILE_FS_FULL_SIZE_INFORMATION>() as u32,
-            FileSystem::FileFsSizeInformation,
+            FileSystem::FileFsFullSizeInformation,
         ))?;
 
         let _ = util::check_status(FileSystem::NtQueryVolumeInformationFile(
