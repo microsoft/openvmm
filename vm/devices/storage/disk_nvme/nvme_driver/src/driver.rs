@@ -1120,8 +1120,6 @@ pub mod save_restore {
         #[mesh(3)]
         pub pending_cmds: PendingCommandsSavedState,
         #[mesh(4)]
-        pub manages_aer: Option<bool>,
-        #[mesh(5)]
         pub pending_aen: Option<u32>,
     }
 
@@ -1161,8 +1159,6 @@ pub mod save_restore {
     pub struct PendingCommandSavedState {
         #[mesh(1, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
         pub command: spec::Command,
-        #[mesh(2)]
-        pub store_aen: Option<()>,
     }
 
     #[derive(Protobuf, Clone, Debug)]

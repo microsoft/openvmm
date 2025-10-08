@@ -13,6 +13,7 @@ use crate::queues::CompletionQueue;
 use crate::queues::SubmissionQueue;
 use crate::registers::DeviceRegisters;
 use anyhow::Context;
+use core::panic;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -94,7 +95,7 @@ impl PendingCommands {
     }
 
     /// Inserts a command into the pending list, updating it with a new CID.
-    fn insert(&mut self, command: &mut spec::Command, respond: CompletionAction) {
+    fn insert(&mut self, command: &mut spec::Command, respond: Rpc<(), spec::Completion>) {
         let entry = self.commands.vacant_entry();
         assert!(entry.key() < Self::MAX_CIDS);
         assert_eq!(self.next_cid_high_bits % Self::CID_SEQ_OFFSET, Wrapping(0));
@@ -107,7 +108,7 @@ impl PendingCommands {
         });
     }
 
-    fn remove(&mut self, cid: u16) -> CompletionAction {
+    fn remove(&mut self, cid: u16) -> Rpc<(), spec::Completion> {
         let command = self
             .commands
             .try_remove((cid & Self::CID_KEY_MASK) as usize)
@@ -129,10 +130,6 @@ impl PendingCommands {
             .iter()
             .map(|(_index, cmd)| PendingCommandSavedState {
                 command: cmd.command,
-                store_aen: match cmd.respond {
-                    CompletionAction::StoreAen => Some(()),
-                    CompletionAction::Respond(_) => None,
-                },
             })
             .collect();
         PendingCommandsSavedState {
@@ -163,10 +160,7 @@ impl PendingCommands {
                         (state.command.cdw0.cid() & Self::CID_KEY_MASK) as usize,
                         PendingCommand {
                             command: state.command,
-                            respond: match state.store_aen {
-                                Some(_) => CompletionAction::StoreAen,
-                                None => CompletionAction::Respond(Rpc::detached(())),
-                            },
+                            respond: Rpc::detached(()),
                         },
                     )
                 })
@@ -258,7 +252,6 @@ impl QueuePair {
                     drain_after_restore: false,
                     send_aen: None,
                     pending_aen: None,
-                    manages_aers: false,
                 }
             }
         };
@@ -634,17 +627,12 @@ struct PendingCommands {
     qid: u16,
 }
 
-enum CompletionAction {
-    Respond(Rpc<(), spec::Completion>),
-    StoreAen,
-}
-
 #[derive(Inspect)]
 struct PendingCommand {
     // Keep the command around for diagnostics.
     command: spec::Command,
     #[inspect(skip)]
-    respond: CompletionAction,
+    respond: Rpc<(), spec::Completion>,
 }
 
 enum Req {
@@ -665,7 +653,6 @@ struct QueueHandler {
     send_aen: Option<Rpc<(), AsynchronousEventRequestDw0>>, // Channel to return AENs on.
     #[inspect(skip)]
     pending_aen: Option<AsynchronousEventRequestDw0>, // Store the last seen AEN until someone asks for it.
-    manages_aers: bool,
 }
 
 #[derive(Inspect, Default)]
@@ -731,8 +718,10 @@ impl QueueHandler {
             match event {
                 Event::Request(req) => match req {
                     Req::Command(rpc) => {
-                        let (command, respond) = rpc.split();
-                        self.handle_command(command, CompletionAction::Respond(respond));
+                        let (mut command, respond) = rpc.split();
+                        self.commands.insert(&mut command, respond);
+                        self.sq.write(command).unwrap();
+                        self.stats.issued.increment();
                     }
                     Req::Inspect(deferred) => deferred.inspect(&self),
                     Req::Save(queue_state) => {
@@ -740,22 +729,10 @@ impl QueueHandler {
                         // Do not allow any more processing after save completed.
                         break;
                     }
-                    Req::NextAen(rpc) => {
-                        // If this is the first AER request, start the aer
-                        // processing loop.
-                        if !self.manages_aers {
-                            let command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
-                            self.handle_command(command, CompletionAction::StoreAen);
-
-                            self.manages_aers = true; // Also indicates this is the admin queue.
-                        }
-
-                        if let Some(aen) = self.pending_aen.take() {
-                            rpc.complete(aen);
-                            continue;
-                        } else {
-                            self.send_aen = Some(rpc); // Save driver request to be completed later.
-                        }
+                    Req::NextAen(_) => {
+                        panic!(
+                            "requesting next aen from an io queue. they are only managed by the admin queue"
+                        );
                     }
                 },
                 Event::Completion(completion) => {
@@ -766,37 +743,11 @@ impl QueueHandler {
                         self.drain_after_restore = false;
                     }
                     self.sq.update_head(completion.sqhd);
-
-                    // Handle completion logic.
-                    match respond {
-                        CompletionAction::StoreAen => {
-                            // Resend AER.
-                            let command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
-                            self.handle_command(command, CompletionAction::StoreAen);
-
-                            // Complete the AEN or pend it.
-                            let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
-                            if let Some(send_aen) = self.send_aen.take() {
-                                send_aen.complete(aen);
-                            } else {
-                                self.pending_aen = Some(aen);
-                            }
-                        }
-                        CompletionAction::Respond(respond) => {
-                            respond.complete(completion);
-                        }
-                    }
-
+                    respond.complete(completion);
                     self.stats.completed.increment();
                 }
             }
         }
-    }
-
-    fn handle_command(&mut self, mut command: spec::Command, respond: CompletionAction) {
-        self.commands.insert(&mut command, respond);
-        self.sq.write(command).unwrap();
-        self.stats.issued.increment();
     }
 
     /// Save queue data for servicing.
@@ -806,7 +757,6 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds: self.commands.save(),
-            manages_aer: Some(self.manages_aers),
             pending_aen: self.pending_aen.map(|aen| aen.into_bits()), // Save it as a u32 for clarity
         })
     }
@@ -821,7 +771,6 @@ impl QueueHandler {
             sq_state,
             cq_state,
             pending_cmds,
-            manages_aer,
             pending_aen,
         } = saved_state;
 
@@ -834,7 +783,6 @@ impl QueueHandler {
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
             send_aen: None,
-            manages_aers: manages_aer.unwrap_or(false),
             pending_aen: pending_aen.map(AsynchronousEventRequestDw0::from_bits), // Restore from u32
         })
     }
