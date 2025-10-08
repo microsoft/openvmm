@@ -86,7 +86,7 @@
         "vtl2_total": 524288,
         "2vp": {
             "usage": {
-                "base": 231334,
+                "base": 232418,
                 "threshold": 1024
             },
             "reservation": {
@@ -95,31 +95,31 @@
             },
             "underhill_init": {
                 "Pss": {
-                    "base": 4553,
+                    "base": 3819,
                     "threshold": 512
                 },
                 "Pss_Anon": {
-                    "base": 3767,
+                    "base": 2875,
                     "threshold": 512
                 }
             },
             "openvmm_hcl": {
                 "Pss": {
-                    "base": 15097,
+                    "base": 16001,
                     "threshold": 512
                 },
                 "Pss_Anon": {
-                    "base": 4824,
+                    "base": 3934,
                     "threshold": 512
                 }
             },
             "underhill_vm": {
                 "Pss": {
-                    "base": 29054,
+                    "base": 32801,
                     "threshold": 1024
                 },
                 "Pss_Anon": {
-                    "base": 8951,
+                    "base": 8044,
                     "threshold": 1024
                 }
             }
