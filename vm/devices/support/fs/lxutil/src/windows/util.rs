@@ -84,6 +84,7 @@ file_information_classes!(
     FileSystem::FILE_STAT_LX_INFORMATION = FileSystem::FileStatLxInformation;
     FileSystem::FILE_ALL_INFORMATION = FileSystem::FileAllInformation;
     FileSystem::FILE_CASE_SENSITIVE_INFORMATION = FileSystem::FileCaseSensitiveInformation;
+    SystemServices::FILE_END_OF_FILE_INFORMATION = FileSystem::FileEndOfFileInformation;
 );
 
 // Open a file using NtCreateFile.
@@ -956,10 +957,7 @@ pub fn set_attr_core(
 ) -> lx::Result<()> {
     unsafe {
         if let Some(size) = attr.size {
-            check_lx_error(api::LxUtilFsTruncate(
-                truncate_handle.as_raw_handle(),
-                size as u64,
-            ))?;
+            fs::truncate(truncate_handle, size as u64)?;
         }
 
         if state.options.metadata

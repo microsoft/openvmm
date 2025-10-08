@@ -6,12 +6,8 @@
 use ntapi::ntioapi;
 use std::ffi;
 use std::os::windows::prelude::*;
-use winapi::shared::basetsd;
 use winapi::shared::ntdef;
 use windows::Win32::Storage::FileSystem;
-
-// Maximum size needed for an EA buffer containing all metadata fields.
-pub const LX_UTIL_FS_METADATA_EA_BUFFER_SIZE: usize = 84;
 
 // NT constants missing from ntapi.
 pub const LX_FILE_METADATA_HAS_UID: ntdef::ULONG = 0x1;
@@ -123,17 +119,6 @@ pal::delayload!("lxutil.dll" {
         fs_type: usize,
         stat_fs: &mut lx::StatFs,
     ) -> i32;
-
-    pub fn LxUtilFsReadAppExecLink(offset:u64, buffer: ntdef::PVOID, buffer_size: basetsd::SIZE_T) -> basetsd::SIZE_T;
-
-    pub fn LxUtilFsSetTimes(
-        handle: RawHandle,
-        accessed_time: &lx::Timespec,
-        modified_time: &lx::Timespec,
-        change_time: &lx::Timespec,
-    ) -> i32;
-
-    pub fn LxUtilFsTruncate(handle: RawHandle, size: ntdef::ULONGLONG) -> i32;
 
     pub fn LxUtilFsUpdateLxAttributes(
         handle: RawHandle,
