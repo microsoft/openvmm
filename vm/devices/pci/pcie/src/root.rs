@@ -97,8 +97,11 @@ impl GenericPcieRootComplex {
         port: u8,
         name: impl AsRef<str>,
         dev: D,
-    ) -> Result<(), (D, Arc<str>)> {
-        let (_, root_port) = self.ports.get_mut(&port).unwrap();
+    ) -> Result<(), Arc<str>> {
+        let (_, root_port) = self
+            .ports
+            .get_mut(&port)
+            .expect("caller must pass port number returned by downstream_ports()");
         root_port.connect_device(name, dev)?;
         Ok(())
     }
@@ -152,22 +155,6 @@ impl GenericPcieRootComplex {
 
         DecodedEcamAccess::UnexpectedIntercept
     }
-}
-
-fn shift_read_value(cfg_offset: u16, len: usize, value: u32) -> u32 {
-    let shift = (cfg_offset & 0x3) * 8;
-    match len {
-        4 => value,
-        2 => value >> shift & 0xFFFF,
-        1 => value >> shift & 0xFF,
-        _ => unreachable!(),
-    }
-}
-
-fn combine_old_new_values(cfg_offset: u16, old_value: u32, new_value: u32, len: usize) -> u32 {
-    let shift = (cfg_offset & 0x3) * 8;
-    let mask = (1 << (len * 8)) - 1;
-    (old_value & !(mask << shift)) | (new_value << shift)
 }
 
 fn ecam_size_from_bus_numbers(start_bus: u8, end_bus: u8) -> u64 {
@@ -224,8 +211,15 @@ impl MmioIntercept for GenericPcieRootComplex {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         validate_ecam_intercept!(addr, data);
 
-        let mut value = !0;
-        match self.decode_ecam_access(addr) {
+        // N.B. Emulators internally only support 4-byte aligned accesses to
+        // 4-byte registers, but the guest can use 1-, 2-, or 4 byte memory
+        // instructions to access ECAM. This function reads the 4-byte aligned
+        // value then shifts it around as needed before copying the data into
+        // the intercept completion bytes.
+
+        let dword_aligned_addr = addr & !3;
+        let mut dword_value = !0;
+        match self.decode_ecam_access(dword_aligned_addr) {
             DecodedEcamAccess::UnexpectedIntercept => {
                 tracing::error!("unexpected intercept at address 0x{:16x}", addr);
             }
@@ -233,34 +227,58 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
-                check_result!(port.cfg_space.read_u32(cfg_offset & !3, &mut value));
-                value = shift_read_value(cfg_offset, data.len(), value);
+                check_result!(port.cfg_space.read_u32(cfg_offset, &mut dword_value));
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
                 check_result!(port.forward_cfg_read(
                     &bus_number,
                     &device_function,
                     cfg_offset & !3,
-                    &mut value,
+                    &mut dword_value,
                 ));
-                value = shift_read_value(cfg_offset, data.len(), value);
             }
         }
 
-        data.copy_from_slice(&value.as_bytes()[..data.len()]);
+        let byte_offset_within_dword = (addr & 3) as usize;
+        data.copy_from_slice(
+            &dword_value.as_bytes()
+                [byte_offset_within_dword..byte_offset_within_dword + data.len()],
+        );
         IoResult::Ok
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
         validate_ecam_intercept!(addr, data);
 
-        let write_value = {
-            let mut temp: u32 = 0;
-            temp.as_mut_bytes()[..data.len()].copy_from_slice(data);
-            temp
+        // N.B. Emulators internally only support 4-byte aligned accesses to
+        // 4-byte registers, but the guest can use 1-, 2-, or 4-byte memory
+        // instructions to access ECAM. If the guest is using a 1- or 2-byte
+        // instruction, this function reads the 4-byte aligned configuration
+        // register, masks in the new bytes being written by the guest, and
+        // uses the resulting value for write emulation.
+
+        let dword_aligned_addr = addr & !3;
+        let write_dword = match data.len() {
+            4 => {
+                let mut temp: u32 = 0;
+                temp.as_mut_bytes().copy_from_slice(data);
+                temp
+            }
+            _ => {
+                let mut temp_bytes: [u8; 4] = [0, 0, 0, 0];
+                check_result!(self.mmio_read(dword_aligned_addr, &mut temp_bytes));
+
+                let byte_offset_within_dword = (addr & 3) as usize;
+                temp_bytes[byte_offset_within_dword..byte_offset_within_dword + data.len()]
+                    .copy_from_slice(data);
+
+                let mut temp: u32 = 0;
+                temp.as_mut_bytes().copy_from_slice(&temp_bytes);
+                temp
+            }
         };
 
-        match self.decode_ecam_access(addr) {
+        match self.decode_ecam_access(dword_aligned_addr) {
             DecodedEcamAccess::UnexpectedIntercept => {
                 tracing::error!("unexpected intercept at address 0x{:16x}", addr);
             }
@@ -268,37 +286,14 @@ impl MmioIntercept for GenericPcieRootComplex {
                 tracelimit::warn_ratelimited!("unroutable config space access");
             }
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
-                let rounded_offset = cfg_offset & !3;
-                let merged_value = if data.len() == 4 {
-                    write_value
-                } else {
-                    let mut temp: u32 = 0;
-                    check_result!(port.cfg_space.read_u32(rounded_offset, &mut temp));
-                    combine_old_new_values(cfg_offset, temp, write_value, data.len())
-                };
-
-                check_result!(port.cfg_space.write_u32(rounded_offset, merged_value));
+                check_result!(port.cfg_space.write_u32(cfg_offset, write_dword));
             }
             DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
-                let rounded_offset = cfg_offset & !3;
-                let merged_value = if data.len() == 4 {
-                    write_value
-                } else {
-                    let mut temp: u32 = 0;
-                    check_result!(port.forward_cfg_read(
-                        &bus_number,
-                        &device_function,
-                        rounded_offset,
-                        &mut temp,
-                    ));
-                    combine_old_new_values(cfg_offset, temp, write_value, data.len())
-                };
-
                 check_result!(port.forward_cfg_write(
                     &bus_number,
                     &device_function,
-                    rounded_offset,
-                    merged_value,
+                    cfg_offset,
+                    write_dword,
                 ));
             }
         }
@@ -340,15 +335,15 @@ impl RootPort {
         }
     }
 
-    /// Try to connect a PCIe device, returning (device, existing_device_name) if the
+    /// Try to connect a PCIe device, returning an existing device name if the
     /// port is already occupied.
     fn connect_device<D: GenericPciBusDevice>(
         &mut self,
         name: impl AsRef<str>,
         dev: D,
-    ) -> Result<(), (D, Arc<str>)> {
+    ) -> Result<(), Arc<str>> {
         if let Some((name, _)) = &self.link {
-            return Err((dev, name.clone()));
+            return Err(name.clone());
         }
 
         self.link = Some((name.as_ref().into(), Box::new(dev)));
@@ -562,7 +557,7 @@ mod tests {
 
         match rc.add_pcie_device(0, "ep2", endpoint2) {
             Ok(()) => panic!("should have failed"),
-            Err((_dev, name)) => {
+            Err(name) => {
                 assert_eq!(name, "ep1".into());
             }
         }
