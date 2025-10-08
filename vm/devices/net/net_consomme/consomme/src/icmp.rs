@@ -1,11 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// Copyright (C) Microsoft Corporation. All rights reserved.
-
 // UNSAFETY: needed to cast the socket buffer to `MaybeUninit`.
 #![allow(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
 
 use super::Access;
 use super::Client;
@@ -19,20 +16,20 @@ use inspect::Inspect;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PolledSocket;
+use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
-use smoltcp::wire::Ipv4Packet;
-use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::Ipv4Packet;
 use socket2::Domain;
 use socket2::Protocol;
 use socket2::SockAddr;
 use socket2::Socket;
 use socket2::Type;
-use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::io::ErrorKind;
 use std::mem::MaybeUninit;
 use std::net::IpAddr;
@@ -112,10 +109,16 @@ impl IcmpConnection {
         }
     }
 
-    fn recv_from(socket: &mut Socket, buffer: *mut [u8]) -> std::io::Result<(usize, SockAddr)> {
-        // SAFETY: the underlying socket `recv` implementation promises
-        // not to write uninitialized bytes into the buffer.
-        let buf = unsafe { &mut *(buffer as *mut [MaybeUninit<u8>]) };
+    fn recv_from(socket: &mut Socket, buffer: &mut [u8]) -> std::io::Result<(usize, SockAddr)> {
+        // SAFETY: The underlying socket `recv` implementation promises
+        //   not to write uninitialized bytes into the buffer.
+        //   We use ptr::slice_from_raw_parts_mut to create a proper MaybeUninit slice.
+        let buf = unsafe {
+            std::slice::from_raw_parts_mut(
+                buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
+                buffer.len()
+            )
+        };
         let (read_count, addr) = socket.recv_from(buf)?;
         Ok((read_count, addr))
     }
