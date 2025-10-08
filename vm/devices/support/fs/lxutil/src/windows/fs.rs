@@ -34,6 +34,27 @@ const LX_UTIL_FS_ALLOCATION_BLOCK_SIZE: u64 = 512;
 
 const LX_UTIL_FS_NAME_LENGTH: usize = 16;
 
+const LX_FILE_METADATA_UID_EA_NAME: &str = "$LXUID";
+const LX_FILE_METADATA_GID_EA_NAME: &str = "$LXGID";
+const LX_FILE_METADATA_MODE_EA_NAME: &str = "$LXMOD";
+const LX_FILE_METADATA_DEVICE_ID_EA_NAME: &str = "$LXDEV";
+
+const LX_UTIL_FILE_METADATA_EA_NAME_LENGTH: usize = LX_FILE_METADATA_UID_EA_NAME.len();
+
+const LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE: usize = {
+    let base_size = offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName)
+        + LX_UTIL_FILE_METADATA_EA_NAME_LENGTH
+        + 1;
+    ((base_size + size_of::<u32>() - 1) & !(size_of::<u32>() - 1)) + size_of::<u32>()
+};
+
+const LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE: usize =
+    LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE + size_of::<u32>();
+
+// Maximum size needed for an EA buffer containing all metadata fields.
+pub const LX_UTIL_FS_METADATA_EA_BUFFER_SIZE: usize =
+    LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE * 3 + LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE;
+
 pub const LX_DRVFS_DISABLE_NONE: u32 = 0;
 pub const LX_DRVFS_DISABLE_QUERY_BY_NAME_AND_STAT_INFO: u32 = 2;
 
@@ -959,7 +980,7 @@ pub fn read_app_exec_link(offset: lx::off_t, buf: &mut [u8]) -> usize {
         return 0;
     }
 
-    // Copy PE_HEADER until either the end of PE_HEADER of buf
+    // Copy PE_HEADER until either the end of PE_HEADER or buf
     PE_HEADER
         .iter()
         .zip(buf.iter_mut())
@@ -1080,4 +1101,128 @@ pub fn get_lx_file_system_attributes(
         // Flags is filled out by VFS, not here.
         flags: 0,
     })
+}
+
+/// Truncates the suppllied file to the specified size.
+pub fn truncate(file_handle: &OwnedHandle, size: u64) -> lx::Result<()> {
+    let info = SystemServices::FILE_END_OF_FILE_INFORMATION {
+        EndOfFile: size.try_into().map_err(|_| lx::Error::EINVAL)?,
+    };
+
+    util::set_information_file(file_handle, &info)
+}
+
+/// Add an item to the EA buffer.
+fn add_ea(
+    name: &str,
+    value1: u32,
+    value2: Option<u32>,
+    buffer: &mut [u8; LX_UTIL_FS_METADATA_EA_BUFFER_SIZE],
+    offset: &mut usize,
+) -> lx::Result<usize> {
+    assert_eq!(name.len(), LX_UTIL_FILE_METADATA_EA_NAME_LENGTH);
+
+    // The rest of the buffer must be large enough to hold the EA.
+    let required_size = if value2.is_some() {
+        LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE
+    } else {
+        LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE
+    };
+
+    if *offset + required_size > buffer.len() {
+        return Err(lx::Error::EINVAL);
+    }
+
+    // SAFETY: Writing to a properly sized buffer.
+    let ea = unsafe {
+        &mut *buffer[*offset..]
+            .as_mut_ptr()
+            .cast::<FileSystem::FILE_FULL_EA_INFORMATION>()
+    };
+    ea.EaNameLength = LX_UTIL_FILE_METADATA_EA_NAME_LENGTH as u8;
+
+    // Copy the name and null terminator into the buffer
+    let name_offset = *offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName);
+    buffer[name_offset..name_offset + name.len()].copy_from_slice(name.as_bytes());
+    buffer[name_offset + name.len()] = 0;
+
+    // Copy value1 after the name and null terminator
+    let value_offset =
+        *offset + offset_of!(FileSystem::FILE_FULL_EA_INFORMATION, EaName) + name.len() + 1;
+    buffer[value_offset..value_offset + size_of::<u32>()].copy_from_slice(&value1.to_ne_bytes());
+
+    if let Some(value2) = value2 {
+        // Copy value2 after value1
+        let value2_offset = value_offset + size_of::<u32>();
+        buffer[value2_offset..value2_offset + size_of::<u32>()]
+            .copy_from_slice(&value2.to_ne_bytes());
+
+        ea.EaValueLength = (size_of::<u32>() * 2) as u16;
+        ea.NextEntryOffset = LX_UTIL_FS_METADATA_EA_BUFFER_DEVICE_ID_SIZE as u32;
+    } else {
+        ea.EaValueLength = size_of::<u32>() as u16;
+        ea.NextEntryOffset = LX_UTIL_FS_METADATA_EA_BUFFER_BASE_SIZE as u32;
+    }
+
+    Ok(*offset + ea.NextEntryOffset as usize)
+}
+
+/// Creates the EA buffer for LX metadata.
+pub fn create_metadata_ea_buffer(
+    uid: lx::uid_t,
+    gid: lx::gid_t,
+    mode: lx::mode_t,
+    device_id: lx::dev_t,
+    buffer: &mut [u8; LX_UTIL_FS_METADATA_EA_BUFFER_SIZE],
+) -> lx::Result<usize> {
+    let mut last_offset = 0;
+    let mut offset = 0;
+
+    if uid != lx::UID_INVALID {
+        offset = add_ea(LX_FILE_METADATA_UID_EA_NAME, uid, None, buffer, &mut offset)?;
+    }
+
+    if gid != lx::GID_INVALID {
+        last_offset = offset;
+        offset = add_ea(LX_FILE_METADATA_GID_EA_NAME, gid, None, buffer, &mut offset)?;
+    }
+
+    if mode != lx::MODE_INVALID {
+        last_offset = offset;
+        offset = add_ea(
+            LX_FILE_METADATA_MODE_EA_NAME,
+            mode,
+            None,
+            buffer,
+            &mut offset,
+        )?;
+    }
+
+    if device_id != 0 {
+        assert!(lx::s_ischr(mode) || lx::s_isblk(mode));
+        last_offset = offset;
+        let major = lx::major32(device_id);
+        let minor = lx::minor(device_id);
+
+        offset = add_ea(
+            LX_FILE_METADATA_DEVICE_ID_EA_NAME,
+            major,
+            Some(minor),
+            buffer,
+            &mut offset,
+        )?;
+    }
+
+    // The last EA added should have a NextEntryOffset of 0.
+    if offset > 0 {
+        // SAFETY: Writing to a properly sized buffer.
+        let ea = unsafe {
+            &mut *buffer[last_offset..]
+                .as_mut_ptr()
+                .cast::<FileSystem::FILE_FULL_EA_INFORMATION>()
+        };
+        ea.NextEntryOffset = 0;
+    }
+
+    Ok(offset)
 }

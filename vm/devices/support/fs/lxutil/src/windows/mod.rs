@@ -243,40 +243,38 @@ impl LxVolume {
             opt.mode = lx::S_IFREG | (opt.mode & 0o7777);
         }
 
-        unsafe {
-            // Try to open/create the file.
-            let (file, create_result) = self.create_file(
-                path,
-                desired_access,
-                disposition,
-                file_attributes,
-                create_options,
-                options,
-                0,
-            )?;
+        // Try to open/create the file.
+        let (file, create_result) = self.create_file(
+            path,
+            desired_access,
+            disposition,
+            file_attributes,
+            create_options,
+            options,
+            0,
+        )?;
 
-            // O_TRUNC can't be handled with FILE_OVERWRITE because that clears metadata, so handle
-            // it here.
-            if flags & lx::O_TRUNC != 0 && create_result != ntioapi::FILE_CREATED as usize {
-                util::check_lx_error(api::LxUtilFsTruncate(file.as_raw_handle(), 0))?;
-            }
-
-            let is_app_exec_alias = match self.state.get_attributes_by_handle(&file) {
-                Ok(info) => info.is_app_execution_alias,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to get attributes for newly opened file");
-                    false
-                }
-            };
-            Ok(LxFile {
-                handle: file,
-                state: Arc::clone(&self.state),
-                enumerator: None,
-                access: desired_access,
-                kill_priv: AtomicBool::new(true),
-                is_app_exec_alias: Mutex::new(is_app_exec_alias),
-            })
+        // O_TRUNC can't be handled with FILE_OVERWRITE because that clears metadata, so handle
+        // it here.
+        if flags & lx::O_TRUNC != 0 && create_result != ntioapi::FILE_CREATED as usize {
+            fs::truncate(&file, 0)?;
         }
+
+        let is_app_exec_alias = match self.state.get_attributes_by_handle(&file) {
+            Ok(info) => info.is_app_execution_alias,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to get attributes for newly opened file");
+                false
+            }
+        };
+        Ok(LxFile {
+            handle: file,
+            state: Arc::clone(&self.state),
+            enumerator: None,
+            access: desired_access,
+            kill_priv: AtomicBool::new(true),
+            is_app_exec_alias: Mutex::new(is_app_exec_alias),
+        })
     }
 
     pub fn mkdir(&self, path: &Path, options: super::LxCreateOptions) -> lx::Result<()> {
@@ -965,63 +963,62 @@ impl LxVolume {
         device_id: lx::dev_t,
     ) -> lx::Result<(OwnedHandle, basetsd::ULONG_PTR)> {
         self.check_sandbox_enforcement(path)?;
-        unsafe {
-            assert!(
-                disposition == ntioapi::FILE_OPEN
-                    || disposition == ntioapi::FILE_OPEN_IF
-                    || disposition == ntioapi::FILE_CREATE
-            );
 
-            // TODO: Async support.
-            let create_options = create_options | ntioapi::FILE_SYNCHRONOUS_IO_ALERT;
-            let desired_access = desired_access | winnt::SYNCHRONIZE;
+        assert!(
+            disposition == ntioapi::FILE_OPEN
+                || disposition == ntioapi::FILE_OPEN_IF
+                || disposition == ntioapi::FILE_CREATE
+        );
 
-            let mut ea_buffer = [0u8; api::LX_UTIL_FS_METADATA_EA_BUFFER_SIZE];
-            let mut ea = None;
-            if disposition != ntioapi::FILE_OPEN {
-                // If a new file is being created, create an EA buffer for Linux metadata.
-                let mut options = options.ok_or(lx::Error::EINVAL)?;
-                if self.state.options.metadata {
-                    util::apply_attr_overrides(
-                        &self.state,
-                        Some(&mut options.uid),
-                        Some(&mut options.gid),
-                        Some(&mut options.mode),
-                    );
-                    self.determine_creation_info(path, &mut options.mode, &mut options.gid)?;
-                    util::apply_attr_overrides(
-                        &self.state,
-                        Some(&mut options.uid),
-                        Some(&mut options.gid),
-                        Some(&mut options.mode),
-                    );
-                    let len = api::LxUtilFsCreateMetadataEaBuffer(
-                        options.uid,
-                        options.gid,
-                        options.mode,
-                        device_id,
-                        ea_buffer.as_mut_ptr().cast::<ffi::c_void>(),
-                    ) as usize;
+        // TODO: Async support.
+        let create_options = create_options | ntioapi::FILE_SYNCHRONOUS_IO_ALERT;
+        let desired_access = desired_access | winnt::SYNCHRONIZE;
 
-                    ea = Some(&ea_buffer[..len]);
-                }
+        let mut ea_buffer = [0u8; fs::LX_UTIL_FS_METADATA_EA_BUFFER_SIZE];
+        let mut ea = None;
+        if disposition != ntioapi::FILE_OPEN {
+            // If a new file is being created, create an EA buffer for Linux metadata.
+            let mut options = options.ok_or(lx::Error::EINVAL)?;
+            if self.state.options.metadata {
+                util::apply_attr_overrides(
+                    &self.state,
+                    Some(&mut options.uid),
+                    Some(&mut options.gid),
+                    Some(&mut options.mode),
+                );
+                self.determine_creation_info(path, &mut options.mode, &mut options.gid)?;
+                util::apply_attr_overrides(
+                    &self.state,
+                    Some(&mut options.uid),
+                    Some(&mut options.gid),
+                    Some(&mut options.mode),
+                );
+                let len = fs::create_metadata_ea_buffer(
+                    options.uid,
+                    options.gid,
+                    options.mode,
+                    device_id,
+                    &mut ea_buffer,
+                )?;
 
-                // Set the read-only attribute if no write bits are set.
-                if lx::s_isreg(options.mode) && options.mode & 0o222 == 0 {
-                    file_attributes |= winnt::FILE_ATTRIBUTE_READONLY;
-                }
+                ea = Some(&ea_buffer[..len]);
             }
 
-            util::open_relative_file(
-                Some(&self.root),
-                path,
-                desired_access,
-                disposition,
-                file_attributes,
-                create_options,
-                ea,
-            )
+            // Set the read-only attribute if no write bits are set.
+            if lx::s_isreg(options.mode) && options.mode & 0o222 == 0 {
+                file_attributes |= winnt::FILE_ATTRIBUTE_READONLY;
+            }
         }
+
+        util::open_relative_file(
+            Some(&self.root),
+            path,
+            desired_access,
+            disposition,
+            file_attributes,
+            create_options,
+            ea,
+        )
     }
 
     /// Helper to open existing files using a relative path from the root of this volume.
