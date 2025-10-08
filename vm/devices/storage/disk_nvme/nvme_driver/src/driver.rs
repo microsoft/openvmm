@@ -763,12 +763,11 @@ async fn handle_asynchronous_events(
     rescan_event: &event_listener::Event,
 ) -> anyhow::Result<()> {
     loop {
-        let completion = admin
-            .issue_neither(admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST))
+        let dw0 = admin
+            .issue_get_aen()
             .await
             .context("asynchronous event request failed")?;
 
-        let dw0 = spec::AsynchronousEventRequestDw0::from(completion.dw0);
         match spec::AsynchronousEventType(dw0.event_type()) {
             spec::AsynchronousEventType::NOTICE => {
                 tracing::info!("namespace attribute change event");
@@ -1152,6 +1151,10 @@ pub mod save_restore {
         pub cq_state: CompletionQueueSavedState,
         #[mesh(3)]
         pub pending_cmds: PendingCommandsSavedState,
+        #[mesh(4)]
+        pub manages_aer: Option<bool>,
+        #[mesh(5)]
+        pub pending_aen: Option<u32>,
     }
 
     #[derive(Protobuf, Clone, Debug)]
@@ -1190,6 +1193,8 @@ pub mod save_restore {
     pub struct PendingCommandSavedState {
         #[mesh(1, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
         pub command: spec::Command,
+        #[mesh(2)]
+        pub store_aen: Option<()>,
     }
 
     #[derive(Protobuf, Clone, Debug)]
