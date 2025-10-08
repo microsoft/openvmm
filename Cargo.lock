@@ -5192,7 +5192,7 @@ dependencies = [
  "serial_core",
  "serial_pl011",
  "storvsp",
- "tpm",
+ "tpm_device",
  "uidevices",
  "vm_resource",
  "vmbus_serial_guest",
@@ -5241,7 +5241,7 @@ dependencies = [
  "serial_pl011",
  "serial_socket",
  "storvsp",
- "tpm",
+ "tpm_device",
  "uidevices",
  "virtio",
  "virtio_net",
@@ -7415,11 +7415,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
-name = "tpm"
+name = "tpm_device"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "bitfield-struct 0.11.0",
  "chipset_device",
  "chipset_device_resources",
  "cvm_tracing",
@@ -7432,11 +7431,45 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "thiserror 2.0.16",
+ "tpm_lib",
+ "tpm_protocol",
  "tpm_resources",
  "tracelimit",
  "tracing",
  "vm_resource",
  "vmcore",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
+name = "tpm_guest_tests"
+version = "0.0.0"
+dependencies = [
+ "tpm_lib",
+ "tpm_protocol",
+]
+
+[[package]]
+name = "tpm_lib"
+version = "0.0.0"
+dependencies = [
+ "cvm_tracing",
+ "getrandom 0.3.3",
+ "inspect",
+ "ms-tpm-20-ref",
+ "thiserror 2.0.16",
+ "tpm_protocol",
+ "tracelimit",
+ "tracing",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
+name = "tpm_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "thiserror 2.0.16",
  "zerocopy 0.8.25",
 ]
 
@@ -7866,7 +7899,7 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "time",
- "tpm",
+ "tpm_device",
  "tpm_resources",
  "tracelimit",
  "tracing",

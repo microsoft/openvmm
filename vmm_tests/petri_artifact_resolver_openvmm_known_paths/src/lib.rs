@@ -86,6 +86,10 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == tmks::SIMPLE_TMK_X64 => simple_tmk_path(MachineArch::X86_64),
             _ if id == tmks::SIMPLE_TMK_AARCH64 => simple_tmk_path(MachineArch::Aarch64),
 
+            _ if id == guest_tools::TPM_GUEST_TESTS_WINDOWS_X64 => {
+                tpm_guest_tests_windows_path(MachineArch::X86_64)
+            }
+
             _ => anyhow::bail!("no support for given artifact type"),
         }
     }
@@ -122,6 +126,13 @@ fn target_arch_path(arch: MachineArch) -> &'static str {
     match arch {
         MachineArch::X86_64 => "x86_64",
         MachineArch::Aarch64 => "aarch64",
+    }
+}
+
+fn windows_msvc_target(arch: MachineArch) -> &'static str {
+    match arch {
+        MachineArch::X86_64 => "x86_64-pc-windows-msvc",
+        MachineArch::Aarch64 => "aarch64-pc-windows-msvc",
     }
 }
 
@@ -225,6 +236,18 @@ fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
 /// Path to the output location of the tmk_vmm executable.
 fn tmk_vmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("tmk_vmm")
+}
+
+fn tpm_guest_tests_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = windows_msvc_target(arch);
+    get_path(
+        format!("target/{target}/debug"),
+        "tpm_guest_tests.exe",
+        MissingCommand::Build {
+            package: "tpm_guest_tests",
+            target: Some(target),
+        },
+    )
 }
 
 fn tmk_vmm_paravisor_path(arch: MachineArch) -> anyhow::Result<PathBuf> {

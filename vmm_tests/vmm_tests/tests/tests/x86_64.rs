@@ -21,6 +21,8 @@ use petri::ShutdownKind;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
+use petri::ResolvedArtifact;
+use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
 use virtio_resources::VirtioPciDeviceHandle;
 use virtio_resources::net::VirtioNetHandle;
 use vm_resource::IntoResource;
@@ -205,38 +207,88 @@ async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
-/// VBS boot test with attestation enabled
-// TODO: Add in-guest tests to retrieve and verify the report.
-#[openvmm_test_no_agent(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
+/// Basic VBS boot test with TPM enabled.
+#[openvmm_test(
+    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    // openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
 )]
-async fn vbs_boot_with_attestation(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-) -> anyhow::Result<()> {
+async fn vbs_boot_with_agent(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config.modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
+    let config = config.modify_backend(|b| b.with_tpm());
 
-    let mut vm = match os_flavor {
-        OsFlavor::Windows => {
-            config
-                .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-                .run_without_agent()
-                .await?
-        }
+    let (vm, agent) = match os_flavor {
+        OsFlavor::Windows => config.run().await?,
         OsFlavor::Linux => {
             config
                 .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
                 // TODO: this shouldn't be needed once with_tpm() is
                 // backend-agnostic.
                 .with_expect_reset()
-                .run_without_agent()
+                .run()
                 .await?
         }
         _ => unreachable!(),
     };
 
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    // vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// VBS boot test with attestation enabled
+// TODO: Add in-guest tests to retrieve and verify the report.
+#[openvmm_test(
+    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
+    // openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
+)]
+async fn vbs_boot_with_attestation(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact,) = extra_deps;
+    let tpm_guest_tests_host_path = tpm_guest_tests_artifact.get();
+    let config = config
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
+
+    let (vm, agent) = match os_flavor {
+        OsFlavor::Windows => {
+            let (vm, agent) = config.run().await?;
+
+            let tpm_guest_tests_bytes =
+                std::fs::read(tpm_guest_tests_host_path).with_context(|| {
+                    format!("failed to read {}", tpm_guest_tests_host_path.display())
+                })?;
+
+            agent
+                .write_file("C:\\tpm_guest_tests.exe", tpm_guest_tests_bytes.as_slice())
+                .await
+                .context("failed to copy tpm_guest_tests.exe into the guest")?;
+
+            let sh = agent.windows_shell();
+            let output = cmd!(sh, "C:\\tpm_guest_tests.exe")
+                .args(["--ak-cert"])
+                .read()
+                .await
+                .context("failed to execute tpm_guest_tests.exe inside the guest")?;
+
+            assert!(
+                output.contains("AK certificate data"),
+                "tpm_guest_tests.exe --ak-cert did not report AK certificate data: {output}",
+            );
+
+            (vm, agent)
+        }
+        OsFlavor::Linux => {
+            // config.with_expect_reset().run().await?
+            unreachable!()
+        }
+        _ => unreachable!(),
+    };
+
+    agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }

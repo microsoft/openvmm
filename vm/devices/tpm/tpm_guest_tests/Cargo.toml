@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tpm_guest_tests"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tpm_lib.workspace = true
+tpm_protocol.workspace = true
+
+[lints]
+workspace = true

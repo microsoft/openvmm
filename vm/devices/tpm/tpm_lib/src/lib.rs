@@ -3,49 +3,51 @@
 
 //! The module includes the helper functions for sending TPM commands.
 
-use crate::TPM_AZURE_AIK_HANDLE;
-use crate::TPM_GUEST_SECRET_HANDLE;
-use crate::TPM_NV_INDEX_AIK_CERT;
-use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
-use crate::TPM_NV_INDEX_MITIGATED;
-use crate::TPM_RSA_SRK_HANDLE;
-use crate::TpmRsa2kPublic;
-use crate::expected_ak_attributes;
-use crate::tpm20proto;
-use crate::tpm20proto::AlgIdEnum;
-use crate::tpm20proto::CommandCodeEnum;
-use crate::tpm20proto::MAX_DIGEST_BUFFER_SIZE;
-use crate::tpm20proto::ReservedHandle;
-use crate::tpm20proto::ResponseCode;
-use crate::tpm20proto::ResponseValidationError;
-use crate::tpm20proto::SessionTagEnum;
-use crate::tpm20proto::TPM20_RH_ENDORSEMENT;
-use crate::tpm20proto::TPM20_RH_OWNER;
-use crate::tpm20proto::TPM20_RH_PLATFORM;
-use crate::tpm20proto::TPM20_RS_PW;
-use crate::tpm20proto::TpmProtoError;
-use crate::tpm20proto::TpmaNvBits;
-use crate::tpm20proto::TpmaObjectBits;
-use crate::tpm20proto::protocol::CreatePrimaryReply;
-use crate::tpm20proto::protocol::ImportReply;
-use crate::tpm20proto::protocol::LoadReply;
-use crate::tpm20proto::protocol::NvReadPublicReply;
-use crate::tpm20proto::protocol::PcrSelection;
-use crate::tpm20proto::protocol::ReadPublicReply;
-use crate::tpm20proto::protocol::StartupType;
-use crate::tpm20proto::protocol::Tpm2bBuffer;
-use crate::tpm20proto::protocol::Tpm2bPublic;
-use crate::tpm20proto::protocol::TpmCommand;
-use crate::tpm20proto::protocol::TpmsNvPublic;
-use crate::tpm20proto::protocol::TpmsRsaParams;
-use crate::tpm20proto::protocol::TpmtPublic;
-use crate::tpm20proto::protocol::TpmtRsaScheme;
-use crate::tpm20proto::protocol::TpmtSymDefObject;
-use crate::tpm20proto::protocol::common::CmdAuth;
 use cvm_tracing::CVM_ALLOWED;
+use inspect::Inspect;
 use inspect::InspectMut;
-use ms_tpm_20_ref::MsTpm20RefPlatform;
+use std::error::Error as StdError;
+use std::fmt;
 use thiserror::Error;
+
+use tpm_protocol::TPM_AZURE_AIK_HANDLE;
+use tpm_protocol::TPM_GUEST_SECRET_HANDLE;
+use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
+use tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
+use tpm_protocol::TPM_NV_INDEX_MITIGATED;
+use tpm_protocol::TPM_RSA_SRK_HANDLE;
+use tpm_protocol::expected_ak_attributes;
+use tpm_protocol::tpm20proto;
+use tpm_protocol::tpm20proto::AlgIdEnum;
+use tpm_protocol::tpm20proto::CommandCodeEnum;
+use tpm_protocol::tpm20proto::MAX_DIGEST_BUFFER_SIZE;
+use tpm_protocol::tpm20proto::ReservedHandle;
+use tpm_protocol::tpm20proto::ResponseCode;
+use tpm_protocol::tpm20proto::ResponseValidationError;
+use tpm_protocol::tpm20proto::SessionTagEnum;
+use tpm_protocol::tpm20proto::TPM20_RH_ENDORSEMENT;
+use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
+use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
+use tpm_protocol::tpm20proto::TPM20_RS_PW;
+use tpm_protocol::tpm20proto::TpmProtoError;
+use tpm_protocol::tpm20proto::TpmaNvBits;
+use tpm_protocol::tpm20proto::TpmaObjectBits;
+use tpm_protocol::tpm20proto::protocol::CreatePrimaryReply;
+use tpm_protocol::tpm20proto::protocol::ImportReply;
+use tpm_protocol::tpm20proto::protocol::LoadReply;
+use tpm_protocol::tpm20proto::protocol::NvReadPublicReply;
+use tpm_protocol::tpm20proto::protocol::PcrSelection;
+use tpm_protocol::tpm20proto::protocol::ReadPublicReply;
+use tpm_protocol::tpm20proto::protocol::StartupType;
+use tpm_protocol::tpm20proto::protocol::Tpm2bBuffer;
+use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
+use tpm_protocol::tpm20proto::protocol::TpmCommand;
+use tpm_protocol::tpm20proto::protocol::TpmsNvPublic;
+use tpm_protocol::tpm20proto::protocol::TpmsRsaParams;
+use tpm_protocol::tpm20proto::protocol::TpmtPublic;
+use tpm_protocol::tpm20proto::protocol::TpmtRsaScheme;
+use tpm_protocol::tpm20proto::protocol::TpmtSymDefObject;
+use tpm_protocol::tpm20proto::protocol::common::CmdAuth;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -63,6 +65,76 @@ const RSA_2K_MODULUS_BITS: u16 = 2048;
 const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
 const RSA_2K_EXPONENT_SIZE: usize = 3;
 
+/// RSA-2048 public key material exposed by the TPM helper utilities.
+#[derive(Copy, Clone, Inspect, Debug, PartialEq)]
+pub struct TpmRsa2kPublic {
+    /// Big-endian RSA modulus bytes (2048 bits).
+    pub modulus: [u8; RSA_2K_MODULUS_SIZE],
+    /// Big-endian exponent bytes (typically 0x01_00_01).
+    pub exponent: [u8; RSA_2K_EXPONENT_SIZE],
+}
+
+/// Error returned by TPM engine implementations.
+#[derive(Debug)]
+pub struct TpmEngineError {
+    inner: Box<dyn StdError + Send + Sync>,
+}
+
+impl TpmEngineError {
+    /// Creates a new [`TpmEngineError`] from the provided error.
+    pub fn new<E>(error: E) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        Self {
+            inner: Box::new(error),
+        }
+    }
+
+    /// Returns a reference to the wrapped error.
+    pub fn as_error(&self) -> &(dyn StdError + Send + Sync + 'static) {
+        &*self.inner
+    }
+
+    /// Creates a new [`TpmEngineError`] from the provided error.
+    pub fn from_error<E>(error: E) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        Self::new(error)
+    }
+
+    /// Attempts to downcast the wrapped error to the requested type.
+    pub fn downcast_ref<E>(&self) -> Option<&E>
+    where
+        E: StdError + 'static,
+    {
+        self.inner.downcast_ref::<E>()
+    }
+}
+
+impl fmt::Display for TpmEngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
+impl StdError for TpmEngineError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(&*self.inner)
+    }
+}
+
+/// Abstraction over the TPM execution engine.
+pub trait TpmEngine: Send {
+    /// Executes a TPM command.
+    fn execute_command(
+        &mut self,
+        command: &mut [u8],
+        response: &mut [u8],
+    ) -> Result<(), TpmEngineError>;
+}
+
 /// TPM command debug information used by error logs.
 #[derive(Debug)]
 pub struct CommandDebugInfo {
@@ -74,8 +146,10 @@ pub struct CommandDebugInfo {
     pub nv_index: Option<u32>,
 }
 
+/// Top-level error produced by TPM helper routines.
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Error, Debug)]
-pub enum TpmHelperError {
+pub enum Error {
     #[error("TPM command error - command code: {:?}, auth handle: {:#x?}, nv index: {:#x?}",
         {.command_debug_info.command_code}, {.command_debug_info.auth_handle}, {.command_debug_info.nv_index})]
     TpmCommandError {
@@ -119,10 +193,12 @@ pub enum TpmHelperError {
     DeserializeGuestSecretKey,
 }
 
+/// Error surface emitted while issuing commands to the TPM.
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Error, Debug)]
 pub enum TpmCommandError {
     #[error("failed to execute the TPM command")]
-    TpmExecuteCommand(#[source] ms_tpm_20_ref::Error),
+    TpmExecuteCommand(#[source] TpmEngineError),
     #[error("invalid response from the TPM command")]
     InvalidResponse(#[source] ResponseValidationError),
     #[error("invalid input parameter for the TPM command")]
@@ -133,6 +209,8 @@ pub enum TpmCommandError {
     TpmCommandCreationFailed(#[source] TpmProtoError),
 }
 
+/// Helper utilities encountered an unexpected condition during processing.
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Error, Debug)]
 pub enum TpmHelperUtilityError {
     #[error("the RSA exponent returned by TPM is unexpected")]
@@ -143,11 +221,12 @@ pub enum TpmHelperUtilityError {
     InvalidInputParameter(#[source] TpmProtoError),
 }
 
+/// Helper that wraps a TPM engine and cached response buffer.
 #[derive(InspectMut)]
-pub struct TpmEngineHelper {
-    /// An TPM engine instance.
+pub struct TpmEngineHelper<E> {
+    /// A TPM engine instance used to service requests.
     #[inspect(skip)]
-    pub tpm_engine: MsTpm20RefPlatform,
+    pub tpm_engine: E,
     /// Buffer used to hold the command response.
     pub reply_buffer: [u8; TPM_PAGE_SIZE],
 }
@@ -180,15 +259,23 @@ enum AkCertType {
     OwnerOwned,
 }
 
-impl TpmEngineHelper {
+impl<E: TpmEngine> TpmEngineHelper<E> {
+    /// Creates a new helper backed by the provided TPM engine implementation.
+    pub fn new(tpm_engine: E) -> Self {
+        Self {
+            tpm_engine,
+            reply_buffer: [0u8; TPM_PAGE_SIZE],
+        }
+    }
+
     // === Helper functions built on top of TPM commands === //
 
     /// Initialize the TPM instance and perform self-tests using Startup and SelfTest commands.
     /// This function should only be invoked after an TPM reset.
-    pub fn initialize_tpm_engine(&mut self) -> Result<(), TpmHelperError> {
+    pub fn initialize_tpm_engine(&mut self) -> Result<(), Error> {
         // Set TPM to the default state.
         self.startup(StartupType::Clear)
-            .map_err(|error| TpmHelperError::TpmCommandError {
+            .map_err(|error| Error::TpmCommandError {
                 command_debug_info: CommandDebugInfo {
                     command_code: CommandCodeEnum::Startup,
                     auth_handle: None,
@@ -199,7 +286,7 @@ impl TpmEngineHelper {
 
         // Perform capabilities test
         self.self_test(true)
-            .map_err(|error| TpmHelperError::TpmCommandError {
+            .map_err(|error| Error::TpmCommandError {
                 command_debug_info: CommandDebugInfo {
                     command_code: CommandCodeEnum::SelfTest,
                     auth_handle: None,
@@ -216,7 +303,7 @@ impl TpmEngineHelper {
     /// the HierarchyControl command).
     ///
     /// Returns the response code in `u32`.
-    pub fn clear_tpm_platform_context(&mut self) -> Result<u32, TpmHelperError> {
+    pub fn clear_tpm_platform_context(&mut self) -> Result<u32, Error> {
         // Use clear control to enable the execution of clear
         if let Err(error) = self.clear_control(TPM20_RH_PLATFORM, false) {
             if let TpmCommandError::TpmCommandFailed { response_code } = error {
@@ -230,7 +317,7 @@ impl TpmEngineHelper {
                 return Ok(response_code);
             } else {
                 // Unexpected failure
-                return Err(TpmHelperError::TpmCommandError {
+                return Err(Error::TpmCommandError {
                     command_debug_info: CommandDebugInfo {
                         command_code: CommandCodeEnum::ClearControl,
                         auth_handle: Some(TPM20_RH_PLATFORM),
@@ -255,7 +342,7 @@ impl TpmEngineHelper {
                     Ok(response_code)
                 } else {
                     // Unexpected failure
-                    Err(TpmHelperError::TpmCommandError {
+                    Err(Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::Clear,
                             auth_handle: Some(TPM20_RH_PLATFORM),
@@ -272,10 +359,10 @@ impl TpmEngineHelper {
 
     /// Refresh TPM endorsement primary seed (ESP) and platform primary seed (PPS) using ChangeEPS
     /// and ChangePPS commands.
-    pub fn refresh_tpm_seeds(&mut self) -> Result<(), TpmHelperError> {
+    pub fn refresh_tpm_seeds(&mut self) -> Result<(), Error> {
         // Refresh endorsement primary seed (EPS)
         self.change_seed(TPM20_RH_PLATFORM, CommandCodeEnum::ChangeEPS)
-            .map_err(|error| TpmHelperError::TpmCommandError {
+            .map_err(|error| Error::TpmCommandError {
                 command_debug_info: CommandDebugInfo {
                     command_code: CommandCodeEnum::ChangeEPS,
                     auth_handle: Some(TPM20_RH_PLATFORM),
@@ -286,7 +373,7 @@ impl TpmEngineHelper {
 
         // Refresh platform primary seed (PPS)
         self.change_seed(TPM20_RH_PLATFORM, CommandCodeEnum::ChangePPS)
-            .map_err(|error| TpmHelperError::TpmCommandError {
+            .map_err(|error| Error::TpmCommandError {
                 command_debug_info: CommandDebugInfo {
                     command_code: CommandCodeEnum::ChangePPS,
                     auth_handle: Some(TPM20_RH_PLATFORM),
@@ -305,10 +392,7 @@ impl TpmEngineHelper {
     ///
     /// Returns the AK public in `TpmRsa2kPublic`, and a bool indicating whether AKCert
     /// renewal is allowed.
-    pub fn create_ak_pub(
-        &mut self,
-        force_create: bool,
-    ) -> Result<(TpmRsa2kPublic, bool), TpmHelperError> {
+    pub fn create_ak_pub(&mut self, force_create: bool) -> Result<(TpmRsa2kPublic, bool), Error> {
         if let Some(res) = self.find_object(TPM_AZURE_AIK_HANDLE)? {
             if force_create {
                 // Remove existing key before creating a new one
@@ -329,7 +413,7 @@ impl TpmEngineHelper {
                 }
 
                 return export_rsa_public(&res.out_public)
-                    .map_err(|error| TpmHelperError::ExportRsaPublicFromAkHandle {
+                    .map_err(|error| Error::ExportRsaPublicFromAkHandle {
                         ak_handle: TPM_AZURE_AIK_HANDLE.0.get(),
                         error,
                     })
@@ -337,7 +421,7 @@ impl TpmEngineHelper {
             }
         }
 
-        let in_public = ak_pub_template().map_err(TpmHelperError::CreateAkPubTemplateFailed)?;
+        let in_public = ak_pub_template().map_err(Error::CreateAkPubTemplateFailed)?;
 
         self.create_key_object(in_public, Some(TPM_AZURE_AIK_HANDLE))
             .map(|res| (res, true))
@@ -348,8 +432,8 @@ impl TpmEngineHelper {
     /// using the same template by other software component during guest OS boot.
     ///
     /// Returns the EK public in `TpmRsa2kPublic`.
-    pub fn create_ek_pub(&mut self) -> Result<TpmRsa2kPublic, TpmHelperError> {
-        let in_public = ek_pub_template().map_err(TpmHelperError::CreateEkPubTemplateFailed)?;
+    pub fn create_ek_pub(&mut self) -> Result<TpmRsa2kPublic, Error> {
+        let in_public = ek_pub_template().map_err(Error::CreateEkPubTemplateFailed)?;
 
         self.create_key_object(in_public, None)
     }
@@ -365,7 +449,7 @@ impl TpmEngineHelper {
         &mut self,
         in_public: TpmtPublic,
         ak_handle: Option<ReservedHandle>,
-    ) -> Result<TpmRsa2kPublic, TpmHelperError> {
+    ) -> Result<TpmRsa2kPublic, Error> {
         let res = match self.create_primary(TPM20_RH_ENDORSEMENT, in_public) {
             Err(error) => {
                 if let TpmCommandError::TpmCommandFailed { response_code: _ } = error {
@@ -383,7 +467,7 @@ impl TpmEngineHelper {
                     });
                 } else {
                     // Unexpected failure
-                    return Err(TpmHelperError::TpmCommandError {
+                    return Err(Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::CreatePrimary,
                             auth_handle: Some(TPM20_RH_ENDORSEMENT),
@@ -422,7 +506,7 @@ impl TpmEngineHelper {
             // EK already exists, we just re-compute the public key
             export_rsa_public(&res.out_public)
         }
-        .map_err(TpmHelperError::ExportRsaPublicFromPrimaryObject)?;
+        .map_err(Error::ExportRsaPublicFromPrimaryObject)?;
 
         if let Err(error) = self.flush_context(res.object_handle) {
             if let TpmCommandError::TpmCommandFailed { response_code: _ } = error {
@@ -435,7 +519,7 @@ impl TpmEngineHelper {
                 );
             } else {
                 // Unexpected failure
-                return Err(TpmHelperError::TpmCommandError {
+                return Err(Error::TpmCommandError {
                     command_debug_info: CommandDebugInfo {
                         command_code: CommandCodeEnum::FlushContext,
                         auth_handle: None,
@@ -451,7 +535,7 @@ impl TpmEngineHelper {
 
     /// Evict a persistent object from or persist a transient object to nv ram using EvictControl
     /// command.
-    fn evict_or_persist_handle(&mut self, action: EvictOrPersist) -> Result<(), TpmHelperError> {
+    fn evict_or_persist_handle(&mut self, action: EvictOrPersist) -> Result<(), Error> {
         let (object_handle, persistent_handle) = match action {
             EvictOrPersist::Evict(handle) => (handle, handle),
             EvictOrPersist::Persist { from, to } => (from, to),
@@ -468,7 +552,7 @@ impl TpmEngineHelper {
                 );
             } else {
                 // Unexpected failure
-                return Err(TpmHelperError::TpmCommandError {
+                return Err(Error::TpmCommandError {
                     command_debug_info: CommandDebugInfo {
                         command_code: CommandCodeEnum::EvictControl,
                         auth_handle: Some(TPM20_RH_OWNER),
@@ -487,7 +571,7 @@ impl TpmEngineHelper {
     ///  - the nv index is present, but has no data
     ///
     /// Owner owned nv index is left as-is.
-    fn take_existing_ak_cert(&mut self) -> Result<AkCertType, TpmHelperError> {
+    fn take_existing_ak_cert(&mut self) -> Result<AkCertType, Error> {
         let mut output = vec![0; MAX_NV_INDEX_SIZE as usize];
 
         // Read the AK cert from the index. If the index is not owner owned, the
@@ -511,7 +595,7 @@ impl TpmEngineHelper {
                 if nv_bits.nv_platformcreate() {
                     tracing::info!("clearing platform owned AK cert");
                     self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
-                        .map_err(|error| TpmHelperError::TpmCommandError {
+                        .map_err(|error| Error::TpmCommandError {
                             command_debug_info: CommandDebugInfo {
                                 command_code: CommandCodeEnum::NV_UndefineSpace,
                                 auth_handle: Some(TPM20_RH_PLATFORM),
@@ -530,7 +614,7 @@ impl TpmEngineHelper {
                 tracing::info!("AK cert nv index allocated but uninitialized");
 
                 self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
-                    .map_err(|error| TpmHelperError::TpmCommandError {
+                    .map_err(|error| Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::NV_UndefineSpace,
                             auth_handle: Some(TPM20_RH_PLATFORM),
@@ -563,7 +647,7 @@ impl TpmEngineHelper {
         preserve_ak_cert: bool,
         support_attestation_report: bool,
         mitigate_legacy_akcert: bool,
-    ) -> Result<(), TpmHelperError> {
+    ) -> Result<(), Error> {
         if mitigate_legacy_akcert && self.has_mitigation_marker() {
             // VM has a small-vTPM mitigation marker. Don't touch anything, but
             // log whether the AK cert exists, as that previous write might have
@@ -596,7 +680,7 @@ impl TpmEngineHelper {
                                 cert.len() as u16,
                             )
                             .map_err(|error| {
-                                TpmHelperError::TpmCommandError {
+                                Error::TpmCommandError {
                                     command_debug_info: CommandDebugInfo {
                                         command_code: CommandCodeEnum::NV_DefineSpace,
                                         auth_handle: Some(TPM20_RH_OWNER),
@@ -607,7 +691,7 @@ impl TpmEngineHelper {
                             })?;
 
                             self.nv_write(TPM20_RH_OWNER, None, TPM_NV_INDEX_AIK_CERT, &cert)
-                                .map_err(|error| TpmHelperError::TpmCommandError {
+                                .map_err(|error| Error::TpmCommandError {
                                     command_debug_info: CommandDebugInfo {
                                         command_code: CommandCodeEnum::NV_Write,
                                         auth_handle: Some(TPM20_RH_OWNER),
@@ -646,7 +730,7 @@ impl TpmEngineHelper {
                 );
 
                 self.nv_define_space(TPM20_RH_PLATFORM, auth_value, TPM_NV_INDEX_AIK_CERT, size)
-                    .map_err(|error| TpmHelperError::TpmCommandError {
+                    .map_err(|error| Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::NV_DefineSpace,
                             auth_handle: Some(TPM20_RH_PLATFORM),
@@ -699,7 +783,7 @@ impl TpmEngineHelper {
 
                 let result = self
                     .nv_define_space(handle, auth.unwrap_or(0), TPM_NV_INDEX_AIK_CERT, size)
-                    .map_err(|error| TpmHelperError::TpmCommandError {
+                    .map_err(|error| Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::NV_DefineSpace,
                             auth_handle: Some(handle),
@@ -731,7 +815,7 @@ impl TpmEngineHelper {
                             tracing::info!("Preserve previous AK cert across boot");
 
                             self.nv_write(write_auth_handle, auth, TPM_NV_INDEX_AIK_CERT, &cert)
-                                .map_err(|error| TpmHelperError::TpmCommandError {
+                                .map_err(|error| Error::TpmCommandError {
                                     command_debug_info: CommandDebugInfo {
                                         command_code: CommandCodeEnum::NV_Write,
                                         auth_handle: Some(ReservedHandle(
@@ -758,7 +842,7 @@ impl TpmEngineHelper {
                 .is_some()
             {
                 self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_ATTESTATION_REPORT)
-                    .map_err(|error| TpmHelperError::TpmCommandError {
+                    .map_err(|error| Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::NV_UndefineSpace,
                             auth_handle: Some(TPM20_RH_PLATFORM),
@@ -780,7 +864,7 @@ impl TpmEngineHelper {
                 TPM_NV_INDEX_ATTESTATION_REPORT,
                 MAX_ATTESTATION_INDEX_SIZE,
             )
-            .map_err(|error| TpmHelperError::TpmCommandError {
+            .map_err(|error| Error::TpmCommandError {
                 command_debug_info: CommandDebugInfo {
                     command_code: CommandCodeEnum::NV_DefineSpace,
                     auth_handle: Some(TPM20_RH_PLATFORM),
@@ -816,10 +900,7 @@ impl TpmEngineHelper {
     ///
     /// Returns Ok(Some(NvReadPublicReply)) if nv index is present.
     /// Returns Ok(None) if nv index is not present.
-    fn find_nv_index(
-        &mut self,
-        nv_index: u32,
-    ) -> Result<Option<NvReadPublicReply>, TpmHelperError> {
+    pub fn find_nv_index(&mut self, nv_index: u32) -> Result<Option<NvReadPublicReply>, Error> {
         match self.nv_read_public(nv_index) {
             Err(error) => {
                 if let TpmCommandError::TpmCommandFailed { response_code } = error {
@@ -828,7 +909,7 @@ impl TpmEngineHelper {
                         Ok(None)
                     } else {
                         // Unexpected response code
-                        Err(TpmHelperError::TpmCommandError {
+                        Err(Error::TpmCommandError {
                             command_debug_info: CommandDebugInfo {
                                 command_code: CommandCodeEnum::NV_ReadPublic,
                                 auth_handle: None,
@@ -839,7 +920,7 @@ impl TpmEngineHelper {
                     }
                 } else {
                     // Unexpected failure
-                    Err(TpmHelperError::TpmCommandError {
+                    Err(Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::NV_ReadPublic,
                             auth_handle: None,
@@ -867,24 +948,24 @@ impl TpmEngineHelper {
         auth_value: u64,
         nv_index: u32,
         data: &[u8],
-    ) -> Result<(), TpmHelperError> {
-        let res =
-            self.nv_read_public(nv_index)
-                .map_err(|error| TpmHelperError::TpmCommandError {
-                    command_debug_info: CommandDebugInfo {
-                        command_code: CommandCodeEnum::NV_ReadPublic,
-                        auth_handle: None,
-                        nv_index: Some(nv_index),
-                    },
-                    error,
-                })?;
+    ) -> Result<(), Error> {
+        let res = self
+            .nv_read_public(nv_index)
+            .map_err(|error| Error::TpmCommandError {
+                command_debug_info: CommandDebugInfo {
+                    command_code: CommandCodeEnum::NV_ReadPublic,
+                    auth_handle: None,
+                    nv_index: Some(nv_index),
+                },
+                error,
+            })?;
 
         let nv_bits = TpmaNvBits::from(res.nv_public.nv_public.attributes.0.get());
         let nv_index_size = res.nv_public.nv_public.data_size.get();
 
         // Validate the input size against the nv index size
         let data = match data.len().cmp(&nv_index_size.into()) {
-            std::cmp::Ordering::Greater => Err(TpmHelperError::NvWriteInputTooLarge {
+            std::cmp::Ordering::Greater => Err(Error::NvWriteInputTooLarge {
                 nv_index,
                 input_size: data.len(),
                 allocated_size: nv_index_size.into(),
@@ -901,7 +982,7 @@ impl TpmEngineHelper {
         // Always expect nv index to be password-based and platform-created given that
         // the index is always created or re-created at boot-time.
         if !nv_bits.nv_authwrite() || !nv_bits.nv_platformcreate() {
-            return Err(TpmHelperError::InvalidPermission {
+            return Err(Error::InvalidPermission {
                 nv_index,
                 auth_write: nv_bits.nv_authwrite(),
                 platform_created: nv_bits.nv_platformcreate(),
@@ -914,7 +995,7 @@ impl TpmEngineHelper {
             nv_index,
             &data,
         )
-        .map_err(|error| TpmHelperError::TpmCommandError {
+        .map_err(|error| Error::TpmCommandError {
             command_debug_info: CommandDebugInfo {
                 command_code: CommandCodeEnum::NV_Write,
                 auth_handle: Some(ReservedHandle(nv_index.into())),
@@ -939,7 +1020,7 @@ impl TpmEngineHelper {
         &mut self,
         nv_index: u32,
         data: &mut [u8],
-    ) -> Result<NvIndexState, TpmHelperError> {
+    ) -> Result<NvIndexState, Error> {
         let Some(res) = self.find_nv_index(nv_index)? else {
             // nv index may not exist before guest makes a request
             return Ok(NvIndexState::Unallocated);
@@ -947,7 +1028,7 @@ impl TpmEngineHelper {
 
         let nv_bits = TpmaNvBits::from(res.nv_public.nv_public.attributes.0.get());
         if !nv_bits.nv_ownerread() {
-            Err(TpmHelperError::NoOwnerReadFlag(nv_index))?
+            Err(Error::NoOwnerReadFlag(nv_index))?
         }
 
         let nv_index_size = res.nv_public.nv_public.data_size.get();
@@ -958,7 +1039,7 @@ impl TpmEngineHelper {
                         Ok(NvIndexState::Uninitialized)
                     } else {
                         // Unexpected response code
-                        Err(TpmHelperError::TpmCommandError {
+                        Err(Error::TpmCommandError {
                             command_debug_info: CommandDebugInfo {
                                 command_code: CommandCodeEnum::NV_Read,
                                 auth_handle: Some(TPM20_RH_OWNER),
@@ -969,7 +1050,7 @@ impl TpmEngineHelper {
                     }
                 } else {
                     // Unexpected failure
-                    Err(TpmHelperError::TpmCommandError {
+                    Err(Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::NV_Read,
                             auth_handle: Some(TPM20_RH_OWNER),
@@ -990,7 +1071,7 @@ impl TpmEngineHelper {
     pub fn find_object(
         &mut self,
         object_handle: ReservedHandle,
-    ) -> Result<Option<ReadPublicReply>, TpmHelperError> {
+    ) -> Result<Option<ReadPublicReply>, Error> {
         match self.read_public(object_handle) {
             Err(error) => {
                 if let TpmCommandError::TpmCommandFailed { response_code } = error {
@@ -999,7 +1080,7 @@ impl TpmEngineHelper {
                         Ok(None)
                     } else {
                         // Unexpected response code
-                        Err(TpmHelperError::TpmCommandError {
+                        Err(Error::TpmCommandError {
                             command_debug_info: CommandDebugInfo {
                                 command_code: CommandCodeEnum::ReadPublic,
                                 auth_handle: None,
@@ -1010,7 +1091,7 @@ impl TpmEngineHelper {
                     }
                 } else {
                     // Unexpected failure
-                    Err(TpmHelperError::TpmCommandError {
+                    Err(Error::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
                             command_code: CommandCodeEnum::ReadPublic,
                             auth_handle: None,
@@ -1032,11 +1113,8 @@ impl TpmEngineHelper {
     ///   The format of the data blob is expected to be:
     ///   (TPM2B_PUBLIC || TPM2B_PRIVATE || TPM2B_ENCRYPTED_SECRET)
     ///
-    pub fn initialize_guest_secret_key(
-        &mut self,
-        guest_secret_key: &[u8],
-    ) -> Result<(), TpmHelperError> {
-        use crate::tpm20proto::protocol::ImportCmd;
+    pub fn initialize_guest_secret_key(&mut self, guest_secret_key: &[u8]) -> Result<(), Error> {
+        use tpm_protocol::tpm20proto::protocol::ImportCmd;
 
         if self.find_object(TPM_GUEST_SECRET_HANDLE)?.is_some() {
             // ECC key found, early return.
@@ -1045,12 +1123,12 @@ impl TpmEngineHelper {
 
         if self.find_object(TPM_RSA_SRK_HANDLE)?.is_none() {
             // SRK not found, return an error.
-            return Err(TpmHelperError::SrkNotFound(TPM_RSA_SRK_HANDLE.0.get()));
+            return Err(Error::SrkNotFound(TPM_RSA_SRK_HANDLE.0.get()));
         };
 
         // Deserialize the guest secret key data blob
         let import_command = ImportCmd::deserialize_no_wrapping_key(guest_secret_key)
-            .ok_or(TpmHelperError::DeserializeGuestSecretKey)?;
+            .ok_or(Error::DeserializeGuestSecretKey)?;
 
         // Import the key under `TPM_RSA_SRK_HANDLE`
         let import_reply = self
@@ -1060,7 +1138,7 @@ impl TpmEngineHelper {
                 &import_command.duplicate,
                 &import_command.in_sym_seed,
             )
-            .map_err(|error| TpmHelperError::TpmCommandError {
+            .map_err(|error| Error::TpmCommandError {
                 command_debug_info: CommandDebugInfo {
                     command_code: CommandCodeEnum::Import,
                     auth_handle: None,
@@ -1076,7 +1154,7 @@ impl TpmEngineHelper {
                 &import_reply.out_private,
                 &import_command.object_public,
             )
-            .map_err(|error| TpmHelperError::TpmCommandError {
+            .map_err(|error| Error::TpmCommandError {
                 command_debug_info: CommandDebugInfo {
                     command_code: CommandCodeEnum::Load,
                     auth_handle: None,
@@ -1309,7 +1387,7 @@ impl TpmEngineHelper {
         auth_handle: ReservedHandle,
         command_code: CommandCodeEnum,
     ) -> Result<(), TpmCommandError> {
-        use crate::tpm20proto::protocol::ChangeSeedCmd;
+        use tpm_protocol::tpm20proto::protocol::ChangeSeedCmd;
 
         assert!(matches!(
             command_code,
@@ -1808,7 +1886,7 @@ impl TpmEngineHelper {
 pub fn ak_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     let symmetric = TpmtSymDefObject::new(AlgIdEnum::NULL.into(), None, None);
     let scheme = TpmtRsaScheme::new(AlgIdEnum::RSASSA.into(), Some(AlgIdEnum::SHA256.into()));
-    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0);
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, RSA_2K_MODULUS_BITS, 0);
 
     let object_attributes = TpmaObjectBits::new()
         .with_fixed_tpm(true)
@@ -1825,7 +1903,7 @@ pub fn ak_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         object_attributes,
         &[],
         rsa_params,
-        &[0u8; crate::RSA_2K_MODULUS_SIZE],
+        &[0u8; RSA_2K_MODULUS_SIZE],
     )
     .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
 
@@ -1848,7 +1926,7 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         Some(AlgIdEnum::CFB.into()),
     );
     let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
-    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0);
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, RSA_2K_MODULUS_BITS, 0);
 
     let object_attributes = TpmaObjectBits::new()
         .with_fixed_tpm(true)
@@ -1864,7 +1942,7 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
         object_attributes,
         &AUTH_POLICY_A_SHA_256,
         rsa_params,
-        &[0u8; crate::RSA_2K_MODULUS_SIZE],
+        &[0u8; RSA_2K_MODULUS_SIZE],
     )
     .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
 
@@ -1899,25 +1977,23 @@ fn export_rsa_public(public: &Tpm2bPublic) -> Result<TpmRsa2kPublic, TpmHelperUt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TPM_AZURE_AIK_HANDLE;
-    use crate::TPM_NV_INDEX_AIK_CERT;
-    use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
-    use crate::Tpm;
-    use crate::ak_cert::RequestAkCert;
-    use crate::ak_cert::TpmAkCertType;
-    use crate::tpm20proto::ResponseCode;
-    use crate::tpm20proto::TPM20_HT_PERSISTENT;
-    use crate::tpm20proto::TPM20_RH_ENDORSEMENT;
-    use crate::tpm20proto::TPM20_RH_OWNER;
-    use crate::tpm20proto::TPM20_RH_PLATFORM;
-    use guestmem::GuestMemory;
     use ms_tpm_20_ref::DynResult;
-    use pal_async::async_test;
-    use std::sync::Arc;
+    use ms_tpm_20_ref::MsTpm20RefPlatform;
     use std::time::Instant;
-    use tpm_resources::TpmRegisterLayout;
-    use tpm20proto::AlgId;
-    use vmcore::non_volatile_store::EphemeralNonVolatileStore;
+    use tpm_protocol::AlgId;
+    use tpm_protocol::TPM20_HT_PERSISTENT;
+
+    impl TpmEngine for MsTpm20RefPlatform {
+        fn execute_command(
+            &mut self,
+            command: &mut [u8],
+            response: &mut [u8],
+        ) -> Result<(), TpmEngineError> {
+            MsTpm20RefPlatform::execute_command(self, command, response)
+                .map(|_| ())
+                .map_err(TpmEngineError::from_error)
+        }
+    }
 
     const TPM_AZURE_EK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x010001);
     const AUTH_VALUE: u64 = 0x7766554433221100;
@@ -1950,7 +2026,7 @@ mod tests {
         }
     }
 
-    fn create_tpm_engine_helper() -> TpmEngineHelper {
+    fn create_tpm_engine_helper() -> TpmEngineHelper<MsTpm20RefPlatform> {
         let result = MsTpm20RefPlatform::initialize(
             Box::new(TestPlatformCallbacks {
                 blob: vec![],
@@ -1969,7 +2045,7 @@ mod tests {
     }
 
     fn restart_tpm_engine(
-        tpm_engine_helper: &mut TpmEngineHelper,
+        tpm_engine_helper: &mut TpmEngineHelper<MsTpm20RefPlatform>,
         clear_context: bool,
         initialize: bool,
     ) {
@@ -2111,7 +2187,7 @@ mod tests {
     }
 
     fn create_ak_ek_pub(
-        tpm_engine_helper: &mut TpmEngineHelper,
+        tpm_engine_helper: &mut TpmEngineHelper<MsTpm20RefPlatform>,
     ) -> (TpmRsa2kPublic, TpmRsa2kPublic) {
         let result = tpm_engine_helper.create_ak_pub(false);
         assert!(result.is_ok());
@@ -2551,7 +2627,7 @@ mod tests {
             );
             assert!(result.is_err());
             let err = result.unwrap_err();
-            if let TpmHelperError::NvWriteInputTooLarge {
+            if let Error::NvWriteInputTooLarge {
                 nv_index,
                 input_size,
                 allocated_size,
@@ -2575,7 +2651,7 @@ mod tests {
             );
             assert!(result.is_err());
             let err = result.unwrap_err();
-            if let TpmHelperError::TpmCommandError {
+            if let Error::TpmCommandError {
                 command_debug_info,
                 error: command_error,
             } = err
@@ -2643,7 +2719,7 @@ mod tests {
             );
             assert!(result.is_err());
             let err = result.unwrap_err();
-            if let TpmHelperError::NvWriteInputTooLarge {
+            if let Error::NvWriteInputTooLarge {
                 nv_index,
                 input_size,
                 allocated_size,
@@ -2665,7 +2741,7 @@ mod tests {
             );
             assert!(result.is_err());
             let err = result.unwrap_err();
-            if let TpmHelperError::TpmCommandError {
+            if let Error::TpmCommandError {
                 command_debug_info,
                 error: command_error,
             } = err
@@ -2761,7 +2837,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            TpmHelperError::InvalidPermission {
+            Error::InvalidPermission {
                 platform_created: false,
                 ..
             }
@@ -2857,7 +2933,7 @@ mod tests {
         let result = tpm_engine_helper.initialize_guest_secret_key(&[]);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, TpmHelperError::DeserializeGuestSecretKey));
+        assert!(matches!(err, Error::DeserializeGuestSecretKey));
 
         // Positive test
 
@@ -2909,7 +2985,7 @@ mod tests {
         // Expect to fail due to SRK not found
         let result = tpm_engine_helper.initialize_guest_secret_key(&GUEST_SECRET_KEY_BLOB);
         assert!(result.is_err());
-        if let TpmHelperError::SrkNotFound(srk_handle) = result.unwrap_err() {
+        if let Error::SrkNotFound(srk_handle) = result.unwrap_err() {
             assert_eq!(srk_handle, TPM_RSA_SRK_HANDLE);
         } else {
             panic!()
@@ -3499,14 +3575,14 @@ mod tests {
 
         let symmetric = TpmtSymDefObject::new(AlgIdEnum::NULL.into(), None, None);
         let scheme = TpmtRsaScheme::new(AlgIdEnum::RSASSA.into(), Some(AlgIdEnum::SHA256.into()));
-        let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0);
+        let rsa_params = TpmsRsaParams::new(symmetric, scheme, RSA_2K_MODULUS_BITS, 0);
 
         let object_attributes = TpmaObjectBits::new()
             .with_user_with_auth(true)
             .with_sign_encrypt(true);
 
         let unique = {
-            let mut data = [0u8; crate::RSA_2K_MODULUS_SIZE];
+            let mut data = [0u8; RSA_2K_MODULUS_SIZE];
             data.copy_from_slice(&N);
 
             data
@@ -3549,7 +3625,7 @@ mod tests {
             Some(AlgIdEnum::CFB.into()),
         );
         let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
-        let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0);
+        let rsa_params = TpmsRsaParams::new(symmetric, scheme, RSA_2K_MODULUS_BITS, 0);
 
         let object_attributes = TpmaObjectBits::new()
             .with_fixed_tpm(true)
@@ -3566,7 +3642,7 @@ mod tests {
             object_attributes,
             &[],
             rsa_params,
-            &[0u8; crate::RSA_2K_MODULUS_SIZE],
+            &[0u8; RSA_2K_MODULUS_SIZE],
         )
         .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
 
@@ -3688,94 +3764,5 @@ mod tests {
             .expect("AKCert NV index present");
         let nv_bits = TpmaNvBits::from(result.nv_public.nv_public.attributes.0.get());
         assert!(!nv_bits.nv_platformcreate());
-    }
-
-    struct TestRequestAkCertHelper {}
-
-    #[async_trait::async_trait]
-    impl RequestAkCert for TestRequestAkCertHelper {
-        fn create_ak_cert_request(
-            &self,
-            _ak_pub_modulus: &[u8],
-            _ak_pub_exponent: &[u8],
-            _ek_pub_modulus: &[u8],
-            _ek_pub_exponent: &[u8],
-            _guest_input: &[u8],
-            _is_attestation_report: bool,
-        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(Vec::new())
-        }
-
-        async fn request_ak_cert(
-            &self,
-            _request: Vec<u8>,
-        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[async_test]
-    async fn test_fix_corrupted_vmgs() {
-        // Take a corrupt TPM NVRAM and go through OpenHCL TPM init. This should uncorrupt
-        // the vTPM state and resize the AKCert index to fit its contents.
-
-        // To generate a corrupted vTpmState blob:
-        // 1. Create a test VM with a VMGS file with a 16 kB vTPM blob
-        // 2. (Depending on how the vTPM blob was created, the AKCert NVRAM index may not
-        //     contain an actual certificate. If not, create some sort of cert and load it
-        //     into that index. Do the following steps in the test VM. Note that it should
-        //     be a DER-encoded X.509 certificate.)
-        //   a. openssl req -x509 -newkey rsa:4096 -keyout key.der -out cert.der -outform DER -sha256 -days 3650 -nodes -subj "/C=XX/ST=StateName/L=CityName/O=CompanyName/OU=CompanySectionName/CN=CommonNameOrHostname"
-        //   b. tpm2_nvwrite -C o -i cert.der 0x1c101d0
-        // 3. Boot the VM with a version of OpenHCL that does not include PR 1452.
-        // 4. In the guest, fill up the TPM NVRAM space:
-        //   a. tpm2_nvdefine -s 2048 0x1000001
-        //   b. tpm2_nvdefine -s 2048 0x1000002
-        //   c. (repeat until the VM crashes)
-        // 5. Extract the TPM state from the VMGS file:
-        //   vmgstool dump -f test.vmgs -i 3 --raw-stdout > vTpmState-corrupt.blob
-
-        let tpm_state_blob = include_bytes!("../test_data/vTpmState-corrupt.blob");
-        let tpm_state_vec = tpm_state_blob.to_vec();
-        let mut store = EphemeralNonVolatileStore::new_boxed();
-        store.persist(tpm_state_vec).await.unwrap();
-
-        let ppi_store = EphemeralNonVolatileStore::new_boxed();
-        let gm = GuestMemory::allocate(0x10000);
-        let monotonic_timer = Box::new(move || std::time::Duration::new(0, 0));
-
-        let mut tpm = Tpm::new(
-            TpmRegisterLayout::IoPort,
-            gm,
-            ppi_store,
-            store,
-            monotonic_timer,
-            false,
-            false,
-            TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper {})),
-            None,
-            None,
-            false,
-        )
-        .await
-        .unwrap();
-
-        // Check that the AKCert exists
-        let result = tpm
-            .tpm_engine_helper
-            .find_nv_index(TPM_NV_INDEX_AIK_CERT)
-            .expect("find_nv_index should succeed")
-            .expect("AKCert NV index present");
-
-        // AKCert should be owner-defined and resized to fit its contents (1419 bytes, in this example)
-        let nv_bits = TpmaNvBits::from(result.nv_public.nv_public.attributes.0.get());
-        assert!(!nv_bits.nv_platformcreate());
-        assert!(result.nv_public.nv_public.data_size.get() == 1419);
-
-        // Mitigation marker should be there
-        tpm.tpm_engine_helper
-            .find_nv_index(TPM_NV_INDEX_MITIGATED)
-            .expect("find_nv_index should succeed")
-            .expect("mitigation marker NV index present");
     }
 }
