@@ -350,7 +350,7 @@ pub mod artifacts {
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_X64 {
-            const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-amd64.vhd";
+            const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-amd64-20251001.vhd";
             const SIZE: u64 = 3758211584;
         }
 
