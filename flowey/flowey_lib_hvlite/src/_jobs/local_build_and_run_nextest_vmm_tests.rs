@@ -689,6 +689,7 @@ impl SimpleFlowNode for Node {
                 target: target.clone(),
                 profile: CommonProfile::from_release(release),
                 with_crypto: true,
+                with_test_helpers: true,
                 vmgstool: v,
             });
             if copy_extras {

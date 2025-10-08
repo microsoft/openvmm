@@ -6,8 +6,6 @@
 //! At this time - `petri` supports testing OpenVMM, OpenHCL,
 //! and Hyper-V based VMs.
 
-#![forbid(unsafe_code)]
-
 pub mod disk_image;
 mod linux_direct_serial_agent;
 // TODO: Add docs and maybe a trait interface for this, or maybe this can

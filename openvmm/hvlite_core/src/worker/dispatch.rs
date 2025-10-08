@@ -125,6 +125,7 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 use vmgs_broker::resolver::VmgsFileResolver;
+use vmgs_resources::GuestStateEncryptionPolicy;
 use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
 use vmm_core::input_distributor::InputDistributor;
@@ -1030,10 +1031,18 @@ impl InitializedVm {
             }
         }
 
+        if cfg
+            .vmgs
+            .as_ref()
+            .is_some_and(|x| !matches!(x.encryption_policy(), GuestStateEncryptionPolicy::None(_)))
+        {
+            unimplemented!("guest state encryption not supported on openvmm");
+        }
+
         let vmgs = match cfg.vmgs {
             Some(VmgsResource::Disk(disk)) => Some(
                 vmgs::Vmgs::try_open(
-                    open_simple_disk(&resolver, disk, false, &driver_source).await?,
+                    open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
                     None,
                     true,
                     false,
@@ -1043,7 +1052,7 @@ impl InitializedVm {
             ),
             Some(VmgsResource::ReprovisionOnFailure(disk)) => Some(
                 vmgs::Vmgs::try_open(
-                    open_simple_disk(&resolver, disk, false, &driver_source).await?,
+                    open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
                     None,
                     true,
                     true,
@@ -1053,7 +1062,7 @@ impl InitializedVm {
             ),
             Some(VmgsResource::Reprovision(disk)) => Some(
                 vmgs::Vmgs::format_new(
-                    open_simple_disk(&resolver, disk, false, &driver_source).await?,
+                    open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
                     None,
                 )
                 .await

@@ -9309,6 +9309,7 @@ dependencies = [
  "unix_socket",
  "virtio_resources",
  "vm_resource",
+ "vmgs_resources",
  "vmm_test_macros",
  "zerocopy 0.8.25",
 ]
