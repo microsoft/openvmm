@@ -85,6 +85,8 @@ impl FlowNode for Node {
             let junit_xml = junit_xml.map(ctx, |p| p.unwrap_or_default());
 
             match ctx.backend() {
+                // Since ADO supports native JUnit test result publishing,
+                // we don't need to copy the XML file to an artifact directory.
                 FlowBackend::Ado => {
                     use_side_effects.push(ctx.reqv(|v| {
                         crate::ado_task_publish_test_results::Request {
@@ -139,10 +141,13 @@ impl FlowNode for Node {
                 let step_name = format!(
                     "copy attachments to artifacts directory: {label} ({attachment_label})"
                 );
-                let artifact_name = format!("{label}-{attachment_label}");
+                let mut artifact_name = format!("{label}-{attachment_label}");
                 let attachment_path_opt = match &attachment_kind {
                     Attachments::Logs(p) => p.clone().map(ctx, Some),
-                    Attachments::NextestListJson(p) => p.clone(),
+                    Attachments::NextestListJson(p) => {
+                        artifact_name += ".json";
+                        p.clone()
+                    }
                 };
 
                 let attachment_exists = attachment_path_opt.map(ctx, |opt| {
