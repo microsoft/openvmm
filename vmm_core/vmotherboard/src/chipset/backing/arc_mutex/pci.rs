@@ -77,7 +77,7 @@ impl BusResolverWeakMutexPci {
 /// is able to route accesses to `Weak<CloseableMutex<dyn ChipsetDevice>>`
 /// devices via downstream ports.
 pub trait RegisterWeakMutexPcie: Send {
-    /// Try to add a PCIe device to the enumerator at the sepcified port,
+    /// Try to add a PCIe device to the enumerator at the specified port,
     /// reporting any conflicts.
     fn add_pcie_device(
         &mut self,

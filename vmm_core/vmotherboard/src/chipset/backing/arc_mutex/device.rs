@@ -170,7 +170,9 @@ where
                         "wiring error: invoked both `on_pci_bus` and `on_pcie_port` for `{}`",
                         self.dev_name
                     );
-                } else if let Some(bus_id_port) = self.pcie_port {
+                }
+
+                if let Some(bus_id_port) = self.pcie_port {
                     self.services.register_static_pcie(bus_id_port);
                 } else {
                     // static pci registration
