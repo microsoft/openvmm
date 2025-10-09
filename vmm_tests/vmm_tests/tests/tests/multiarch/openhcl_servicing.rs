@@ -11,6 +11,7 @@ use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
+use mesh::Cell;
 use mesh::CellUpdater;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
@@ -281,29 +282,39 @@ async fn servicing_keepalive_with_nvme_fault(
             ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
-
-    agent.ping().await?;
-    let sh = agent.unix_shell();
-
-    // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?;
-
-    // CREATE_IO_COMPLETION_QUEUE is blocked. This will panic out without keepalive enabled.
-    fault_start_updater.set(true).await;
-    vm.restart_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
+    apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        (igvm_file,),
     )
-    .await?;
+    .await
+}
 
-    fault_start_updater.set(false).await;
-    agent.ping().await?;
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_check_duplicate_aers(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
 
-    Ok(())
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new().match_cdw0_opcode(nvme_spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0).build(),
+                QueueFaultBehavior::Panic("Received a duplicate ASYNCHRONOUS_EVENT_REQUEST command during servicing with keepalive enabled. THERE IS A BUG SOMEWHERE.".to_string()),
+            ),
+        );
+
+    apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        (igvm_file,),
+    )
+    .await
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself with NVMe keepalive support
@@ -321,7 +332,6 @@ async fn servicing_keepalive_with_nvme_identify_fault(
     // Reduce the reported size of the namespace to 256 blocks instead of the original 512.
     let mut buf: u64 = 256;
     let buf = buf.as_mut_bytes();
-
     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
         .with_admin_queue_fault(
             AdminQueueFaultConfig::new().with_completion_queue_fault(
@@ -338,41 +348,27 @@ async fn servicing_keepalive_with_nvme_identify_fault(
             ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
-
-    agent.ping().await?;
-    let sh = agent.unix_shell();
-
-    // Make sure the disk showed up.
-    cmd!(sh, "ls /dev/sda").run().await?;
-
-    // IDENTIFY:NAMESPACE is faulty. It will report a changed namespace size. The driver is still expected to make progress.
-    fault_start_updater.set(true).await;
-    vm.restart_openhcl(
-        igvm_file.clone(),
-        OpenHclServicingFlags {
-            enable_nvme_keepalive: true,
-            ..Default::default()
-        },
+    apply_fault_with_keepalive(
+        config,
+        fault_configuration,
+        fault_start_updater,
+        (igvm_file,),
     )
-    .await?;
-
-    fault_start_updater.set(false).await;
-    agent.ping().await?;
-
-    Ok(())
+    .await
 }
 
-async fn create_keepalive_test_config(
+async fn apply_fault_with_keepalive(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
-) -> Result<(petri::PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
+    mut fault_start_updater: CellUpdater<bool>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl0_nvme_lun = 1;
     let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
     let scsi_instance = Guid::new_random();
 
-    config
+    let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .modify_backend(move |b| {
@@ -417,5 +413,26 @@ async fn create_keepalive_test_config(
             })
         })
         .run()
-        .await
+        .await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+    vm.restart_openhcl(
+        igvm_file.clone(),
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
 }
