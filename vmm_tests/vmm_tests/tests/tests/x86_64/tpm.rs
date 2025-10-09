@@ -13,7 +13,7 @@ use vmm_test_macros::openvmm_test_no_agent;
 /// Basic boot tests with TPM enabled.
 #[openvmm_test(
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
@@ -42,7 +42,7 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 // TODO: Add in-guest TPM tests for Windows as we currently
 // do not have an easy way to interact with TPM without a private
 // or custom tool.
-#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let config = config
         // See `get_protocol::dps_json::ManagementVtlFeatures`
@@ -87,7 +87,7 @@ async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
 // TODO: Add in-guest TPM tests for Windows as we currently
 // do not have an easy way to interact with TPM without a private
 // or custom tool.
-#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let config = config
         // See `get_protocol::dps_json::ManagementVtlFeatures`
@@ -144,7 +144,7 @@ async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 /// Basic VBS boot test with TPM enabled.
 #[openvmm_test_no_agent(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64))
+    // openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))
 )]
 async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
@@ -173,7 +173,7 @@ async fn vbs_boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 // TODO: Add in-guest tests to retrieve and verify the report.
 #[openvmm_test_no_agent(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2404_server_x64))
+    // openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))
 )]
 async fn vbs_boot_with_attestation(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

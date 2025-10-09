@@ -35,7 +35,7 @@ async fn nvme_relay_test_core(
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2404_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(config, "").await
 }
@@ -44,7 +44,7 @@ async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), a
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 ///
 /// Use the shared pool override to test the shared pool dma path.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2404_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_shared_pool(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
@@ -55,7 +55,7 @@ async fn nvme_relay_shared_pool(
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 ///
 /// Use the private pool override to test the private pool dma path.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2404_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_private_pool(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
