@@ -13,6 +13,8 @@ use crate::ChecksumState;
 use crate::Ipv4Addresses;
 
 use inspect::Inspect;
+use inspect::InspectMut;
+use inspect_counters::Counter;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PolledSocket;
@@ -61,9 +63,21 @@ impl Inspect for Icmp {
     }
 }
 
+#[derive(InspectMut)]
 struct IcmpConnection {
+    #[inspect(skip)]
     socket: PolledSocket<Socket>,
+    #[inspect(display)]
     guest_mac: EthernetAddress,
+    stats: Stats,
+}
+
+#[derive(Inspect, Default)]
+struct Stats {
+    tx_packets: Counter,
+    tx_dropped: Counter,
+    tx_errors: Counter,
+    rx_packets: Counter,
 }
 
 impl Inspect for IcmpConnection {
@@ -101,6 +115,7 @@ impl IcmpConnection {
                 ipv4.fill_checksum();
                 let len = ETHERNET_HEADER_LEN + n;
                 client.recv(&state.buffer[..len], &ChecksumState::IPV4_ONLY);
+                self.stats.rx_packets.increment();
             }
             Poll::Ready(Err(err)) => {
                 tracing::error!(error = &err as &dyn std::error::Error, "recv error");
@@ -116,7 +131,7 @@ impl IcmpConnection {
         let buf = unsafe {
             std::slice::from_raw_parts_mut(
                 buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
-                buffer.len()
+                buffer.len(),
             )
         };
         let (read_count, addr) = socket.recv_from(buf)?;
@@ -180,6 +195,7 @@ impl<T: Client> Access<'_, T> {
                 let conn = IcmpConnection {
                     socket,
                     guest_mac: frame.src_addr,
+                    stats: Default::default(),
                 };
                 e.insert(conn)
             }
