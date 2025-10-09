@@ -54,32 +54,46 @@ impl FlowNode for Node {
 
             if !native(&target) {
                 let platform = ctx.platform();
-                let gcc_arch_str = match target.architecture {
-                    Architecture::X86_64 => match platform {
-                        FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                            FlowPlatformLinuxDistro::Fedora => "x86_64",
-                            FlowPlatformLinuxDistro::Ubuntu => "x86-64",
-                            FlowPlatformLinuxDistro::Unknown => {
-                                anyhow::bail!("Unknown Linux distribution")
-                            }
-                        },
-                        _ => anyhow::bail!("Unsupported platform"),
-                    },
-                    Architecture::Aarch64(_) => "aarch64",
-                    arch => anyhow::bail!("unsupported arch {arch}"),
-                };
 
                 match (platform, target.operating_system) {
                     (FlowPlatform::Linux(_), target_lexicon::OperatingSystem::Linux) => {
                         let (gcc_pkg, bin) = match target.architecture {
-                            Architecture::Aarch64(_) => (
-                                format!("gcc-{gcc_arch_str}-linux-gnu"),
-                                "aarch64-linux-gnu-gcc".to_string(),
-                            ),
-                            Architecture::X86_64 => (
-                                format!("gcc-{gcc_arch_str}-linux-gnu"),
-                                "x86_64-linux-gnu-gcc".to_string(),
-                            ),
+                            Architecture::X86_64 => match platform {
+                                FlowPlatform::Linux(linux_distribution) => {
+                                    let pkg = match linux_distribution {
+                                        FlowPlatformLinuxDistro::Fedora => "gcc-x86_64-linux-gnu",
+                                        FlowPlatformLinuxDistro::Ubuntu => "gcc-x86-64-linux-gnu",
+                                        FlowPlatformLinuxDistro::Arch => {
+                                            match_arch!(host_arch, FlowArch::X86_64, "gcc")
+                                        }
+                                        FlowPlatformLinuxDistro::Unknown => {
+                                            anyhow::bail!("Unknown Linux distribution")
+                                        }
+                                    };
+                                    (pkg.to_string(), "x86_64-linux-gnu-gcc".to_string())
+                                }
+                                _ => anyhow::bail!("Unsupported platform"),
+                            },
+                            Architecture::Aarch64(_) => match platform {
+                                FlowPlatform::Linux(linux_distribution) => {
+                                    let pkg = match linux_distribution {
+                                        FlowPlatformLinuxDistro::Fedora
+                                        | FlowPlatformLinuxDistro::Ubuntu => {
+                                            "gcc-aarch64-linux-gnu"
+                                        }
+                                        FlowPlatformLinuxDistro::Arch => match_arch!(
+                                            host_arch,
+                                            FlowArch::X86_64,
+                                            "aarch64-linux-gnu-gcc"
+                                        ),
+                                        FlowPlatformLinuxDistro::Unknown => {
+                                            anyhow::bail!("Unknown Linux distribution")
+                                        }
+                                    };
+                                    (pkg.to_string(), "aarch64-linux-gnu-gcc".to_string())
+                                }
+                                _ => anyhow::bail!("Unsupported platform"),
+                            },
                             arch => anyhow::bail!("unsupported arch {arch}"),
                         };
 

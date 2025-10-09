@@ -75,6 +75,8 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
+use pcie::root::GenericPcieRootComplex;
+use pcie::root::GenericPcieRootPortDefinition;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -1758,11 +1760,31 @@ impl InitializedVm {
             let mut high_mmio_address = cfg.memory.mmio_gaps[1].end();
 
             for rc in cfg.pcie_root_complexes {
-                let bus_count = (rc.end_bus as u16) - (rc.start_bus as u16) + 1;
-                let ecam_size = (bus_count as u64) * 256 * 4096;
-                let low_mmio_size = rc.low_mmio_size as u64;
+                let device_name = format!("pcie-root:{}", rc.name);
+                let root_complex =
+                    chipset_builder
+                        .arc_mutex_device(device_name)
+                        .add(|services| {
+                            let root_port_definitions = rc
+                                .ports
+                                .into_iter()
+                                .map(|rp_cfg| GenericPcieRootPortDefinition {
+                                    name: rp_cfg.name.into(),
+                                })
+                                .collect();
 
-                let host_bridge = PcieHostBridge {
+                            GenericPcieRootComplex::new(
+                                &mut services.register_mmio(),
+                                rc.start_bus,
+                                rc.end_bus,
+                                ecam_address,
+                                root_port_definitions,
+                            )
+                        })?;
+
+                let ecam_size = root_complex.lock().ecam_size();
+                let low_mmio_size = rc.low_mmio_size as u64;
+                pcie_host_bridges.push(PcieHostBridge {
                     index: rc.index,
                     segment: rc.segment,
                     start_bus: rc.start_bus,
@@ -1772,9 +1794,7 @@ impl InitializedVm {
                     high_mmio: MemoryRange::new(
                         high_mmio_address..high_mmio_address + rc.high_mmio_size,
                     ),
-                };
-
-                pcie_host_bridges.push(host_bridge);
+                });
 
                 ecam_address += ecam_size;
                 low_mmio_address -= low_mmio_size;
@@ -2699,9 +2719,8 @@ impl LoadedVm {
                 while let Some(rpc) = worker_rpc.next().await {
                     match rpc {
                         WorkerRpc::Inspect(req) => req.respond(|resp| {
-                            resp.merge(&state_units).merge(inspect::adhoc(|req| {
-                                worker_rpc_send.send(WorkerRpc::Inspect(req.defer()));
-                            }));
+                            resp.merge(&state_units)
+                                .merge(inspect::send(&worker_rpc_send, WorkerRpc::Inspect));
                         }),
                         rpc => worker_rpc_send.send(rpc),
                     }
