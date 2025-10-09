@@ -33,7 +33,7 @@ use vmm_test_macros::vmm_test_no_agent;
 #[openvmm_test(
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
@@ -47,9 +47,9 @@ async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
 
 /// Boot with a battery and check the OS-reported capacity.
 #[openvmm_test(
-    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_x64(vhd(ubuntu_2504_server_x64)),
     uefi_x64(vhd(windows_datacenter_core_2022_x64))
 )]
 async fn battery_capacity(
@@ -145,8 +145,8 @@ async fn sidecar_aps_unused<T: PetriVmmBackend>(
 }
 
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
