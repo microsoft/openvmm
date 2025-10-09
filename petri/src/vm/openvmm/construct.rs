@@ -656,6 +656,7 @@ impl PetriVmConfigSetupCore<'_> {
                             secure_boot_enabled: _,  // new
                             secure_boot_template: _, // new
                             disable_frontpage,
+                            default_boot_always_attempt,
                         },
                 },
             ) => {
@@ -672,7 +673,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_serial: true,
                     enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                     uefi_console_mode: Some(hvlite_defs::config::UefiConsoleMode::Com1),
-                    default_boot_always_attempt: false,
+                    default_boot_always_attempt: *default_boot_always_attempt,
                 }
             }
             (
@@ -962,6 +963,7 @@ impl PetriVmConfigSetupCore<'_> {
                 secure_boot_enabled,
                 secure_boot_template,
                 disable_frontpage,
+                default_boot_always_attempt,
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -988,7 +990,7 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage: *disable_frontpage,
                 enable_vpci_boot: matches!(self.boot_device_type, BootDeviceType::Nvme),
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,
-                default_boot_always_attempt: false,
+                default_boot_always_attempt: *default_boot_always_attempt,
             },
             com1: true,
             com2: true,

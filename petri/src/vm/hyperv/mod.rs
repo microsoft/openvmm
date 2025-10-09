@@ -282,6 +282,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             secure_boot_enabled,
             secure_boot_template,
             disable_frontpage,
+            default_boot_always_attempt,
         }) = uefi_config
         {
             vm.set_secure_boot(
@@ -301,6 +302,15 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 // TODO: Disable frontpage for non-OpenHCL Hyper-V VMs
                 if let Some((_, config)) = openhcl_config.as_mut() {
                     append_cmdline(&mut config.command_line, "OPENHCL_DISABLE_UEFI_FRONTPAGE=1");
+                };
+            }
+
+            if *default_boot_always_attempt {
+                if let Some((_, config)) = openhcl_config.as_mut() {
+                    append_cmdline(
+                        &mut config.command_line,
+                        "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=1",
+                    );
                 };
             }
         }
