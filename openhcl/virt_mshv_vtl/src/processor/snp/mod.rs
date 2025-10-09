@@ -679,6 +679,8 @@ fn init_vmsa(
     vmsa.sev_features_mut()
         .set_snp_btb_isolation(sev_status.snp_btb_isolation());
     vmsa.sev_features_mut()
+        .set_ibpb_on_entry(sev_status.ibpb_on_entry());
+    vmsa.sev_features_mut()
         .set_prevent_host_ibs(sev_status.prevent_host_ibs());
     vmsa.sev_features_mut()
         .set_vmsa_reg_prot(sev_status.vmsa_reg_prot());

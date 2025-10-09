@@ -108,11 +108,17 @@ const VMBUS_MESSAGE_TYPE: u32 = 1;
 
 const MAX_CONCURRENT_HVSOCK_REQUESTS: usize = 16;
 
+#[derive(Inspect)]
 pub struct VmbusServer {
+    #[inspect(flatten, send = "VmbusRequest::Inspect")]
     task_send: mesh::Sender<VmbusRequest>,
+    #[inspect(skip)]
     control: Arc<VmbusServerControl>,
+    #[inspect(skip)]
     _message_port: Box<dyn Sync + Send>,
+    #[inspect(skip)]
     _multiclient_message_port: Option<Box<dyn Sync + Send>>,
+    #[inspect(skip)]
     task: Task<ServerTask>,
 }
 
@@ -255,12 +261,6 @@ pub struct OfferInfo {
 pub(crate) enum OfferRequest {
     Offer(FailableRpc<OfferInfo, ()>),
     ForceReset(Rpc<(), ()>),
-}
-
-impl Inspect for VmbusServer {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(VmbusRequest::Inspect(req.defer()));
-    }
 }
 
 struct ChannelEvent(Interrupt);

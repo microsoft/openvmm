@@ -60,6 +60,9 @@ impl PackageManager {
                 let fmt = "%{NAME}\n";
                 xshell::cmd!(sh, "rpm -q --queryformat={fmt} {packages_to_check...}")
             }
+            FlowPlatformLinuxDistro::Arch => {
+                xshell::cmd!(sh, "pacman -Qq {packages_to_check...}")
+            }
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }
         .ignore_status()
@@ -85,6 +88,8 @@ impl PackageManager {
         match distro {
             FlowPlatformLinuxDistro::Ubuntu => xshell::cmd!(sh, "sudo apt-get update").run()?,
             FlowPlatformLinuxDistro::Fedora => xshell::cmd!(sh, "sudo dnf update").run()?,
+            // Running `pacman -Sy` without a full system update can break everything; do nothing
+            FlowPlatformLinuxDistro::Arch => (),
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }
 
@@ -108,6 +113,10 @@ impl PackageManager {
             FlowPlatformLinuxDistro::Fedora => {
                 let auto_accept = (!interactive).then_some("-y");
                 xshell::cmd!(sh, "sudo dnf install {auto_accept...} {packages...}").run()?;
+            }
+            FlowPlatformLinuxDistro::Arch => {
+                let auto_accept = (!interactive).then_some("--noconfirm");
+                xshell::cmd!(sh, "sudo pacman -S {auto_accept...} {packages...}").run()?;
             }
             FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
         }

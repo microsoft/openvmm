@@ -107,9 +107,13 @@ pub trait PollPostMessage: Send {
     ) -> Poll<()>;
 }
 
+#[derive(Inspect)]
 pub struct VmbusClient {
+    #[inspect(flatten, send = "TaskRequest::Inspect")]
     task_send: mesh::Sender<TaskRequest>,
+    #[inspect(skip)]
     access: VmbusClientAccess,
+    #[inspect(skip)]
     task: Task<ClientTask>,
 }
 
@@ -274,12 +278,6 @@ impl VmbusClient {
             msg_source: task.msg_source,
             msg_client: task.inner.messages.poster,
         }
-    }
-}
-
-impl Inspect for VmbusClient {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(TaskRequest::Inspect(req.defer()));
     }
 }
 

@@ -3059,6 +3059,7 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "pcie",
  "range_map_vec",
  "scsi_core",
  "scsidisk",
@@ -5504,6 +5505,21 @@ dependencies = [
  "pci_core",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "pcie"
+version = "0.0.0"
+dependencies = [
+ "chipset_device",
+ "inspect",
+ "pal_async",
+ "pci_bus",
+ "pci_core",
+ "tracelimit",
+ "tracing",
+ "vmcore",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
@@ -9299,6 +9315,7 @@ dependencies = [
  "unix_socket",
  "virtio_resources",
  "vm_resource",
+ "vmgs_resources",
  "vmm_test_macros",
  "zerocopy 0.8.25",
 ]

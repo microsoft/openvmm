@@ -55,6 +55,7 @@ impl HyperVVM {
         generation: powershell::HyperVGeneration,
         guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
         memory: u64,
+        vmgs_path: Option<&Path>,
         log_file: PetriLogFile,
         driver: DefaultDriver,
     ) -> anyhow::Result<Self> {
@@ -106,6 +107,7 @@ impl HyperVVM {
             memory_startup_bytes: Some(memory),
             path: None,
             vhd_path: None,
+            source_guest_state_path: vmgs_path,
         })
         .await?;
 
@@ -481,7 +483,7 @@ impl HyperVVM {
         Ok(())
     }
 
-    /// Sets the VM firmware  command line.
+    /// Sets the VM firmware command line.
     pub async fn set_vm_firmware_command_line(
         &self,
         openhcl_command_line: &str,
@@ -507,6 +509,11 @@ impl HyperVVM {
             temp_bin_path: self.temp_dir.path().join("screenshot.bin"),
             ps_mod: self.ps_mod.clone(),
         }
+    }
+
+    /// Get the VM's guest state file
+    pub async fn get_guest_state_file(&self) -> anyhow::Result<PathBuf> {
+        powershell::run_get_guest_state_file(&self.vmid, &self.ps_mod).await
     }
 }
 

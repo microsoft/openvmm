@@ -412,6 +412,10 @@ flags:
     #[clap(long)]
     pub vmgs: Option<VmgsCli>,
 
+    /// Use GspById guest state encryption policy with a test seed
+    #[clap(long, requires("vmgs"))]
+    pub test_gsp_by_id: bool,
+
     /// VGA firmware file
     #[clap(long, requires("pcat"), value_name = "FILE")]
     pub vga_firmware: Option<PathBuf>,

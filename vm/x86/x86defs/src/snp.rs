@@ -124,7 +124,10 @@ pub struct SevFeatures {
     pub vmsa_reg_prot: bool,
     pub smt_prot: bool,
     pub secure_avic: bool,
-    #[bits(47)]
+    #[bits(4)]
+    _reserved: u64,
+    pub ibpb_on_entry: bool,
+    #[bits(42)]
     _unused: u64,
 }
 
@@ -779,7 +782,10 @@ pub struct SevStatusMsr {
     pub _rsvd4: bool,
     pub _rsvd5: bool,
     pub vmsa_reg_prot: bool,
-    #[bits(47)]
+    #[bits(6)]
+    _reserved: u64,
+    pub ibpb_on_entry: bool,
+    #[bits(40)]
     _unused: u64,
 }
 
