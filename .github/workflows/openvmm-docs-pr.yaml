@@ -177,7 +177,6 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish guide
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: guide
         path: ${{ runner.temp }}/publish_artifacts/guide/
@@ -343,7 +342,6 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-windows-rustdoc
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-rustdoc/
@@ -515,7 +513,6 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-linux-rustdoc
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-rustdoc/

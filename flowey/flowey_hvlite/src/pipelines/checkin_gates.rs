@@ -1019,6 +1019,7 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_artifact(format!("{label}-vmm-tests-results-junit-xml"));
 
             pipeline.force_publish_artifact(&pub_vmm_tests_results_full);
+            pipeline.force_publish_artifact(&pub_vmm_tests_results_light);
 
             vmm_tests_results_artifacts.push((label.to_string(), use_vmm_tests_results_light));
 

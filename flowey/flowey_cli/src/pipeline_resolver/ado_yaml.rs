@@ -435,21 +435,21 @@ EOF
             force_upload,
         } in artifacts_published
         {
-            let force_upload = if *force_upload {
-                "always()"
-            } else {
-                "succeeded()"
-            };
             ado_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
+                let mut map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/{name}
                         displayName: '🌼📦 Publish {name}'
                         artifact: {name}
-                        condition: {force_upload}
                     "#
                 ))
                 .unwrap();
+                if *force_upload {
+                    map.insert(
+                        "condition".into(),
+                        serde_yaml::Value::String("always()".into()),
+                    );
+                }
                 map.into()
             });
         }

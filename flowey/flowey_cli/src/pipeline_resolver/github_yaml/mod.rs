@@ -439,17 +439,11 @@ EOF
             force_upload,
         } in artifacts_published
         {
-            let force_upload = if *force_upload {
-                "always()"
-            } else {
-                "success()"
-            };
             gh_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
+                let mut map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         name: 🌼📦 Publish {name}
                         uses: actions/upload-artifact@v4
-                        if: {force_upload}
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
@@ -457,6 +451,9 @@ EOF
                     "#
                 ))
                 .unwrap();
+                if *force_upload {
+                    map.insert("if".into(), serde_yaml::Value::String("always()".into()));
+                }
                 map.into()
             });
         }

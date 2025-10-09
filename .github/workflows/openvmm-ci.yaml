@@ -1682,18 +1682,18 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-windows-intel-vmm-tests-results
       uses: actions/upload-artifact@v4
-      if: always()
       with:
         name: x64-windows-intel-vmm-tests-results
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-intel-vmm-tests-results/
         include-hidden-files: true
+      if: always()
     - name: 🌼📦 Publish x64-windows-intel-vmm-tests-results-junit-xml
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-intel-vmm-tests-results-junit-xml
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-intel-vmm-tests-results-junit-xml/
         include-hidden-files: true
+      if: always()
   job15:
     name: run vmm-tests [x64-windows-intel-tdx]
     runs-on:
@@ -1976,18 +1976,18 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-windows-intel-tdx-vmm-tests-results
       uses: actions/upload-artifact@v4
-      if: always()
       with:
         name: x64-windows-intel-tdx-vmm-tests-results
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-intel-tdx-vmm-tests-results/
         include-hidden-files: true
+      if: always()
     - name: 🌼📦 Publish x64-windows-intel-tdx-vmm-tests-results-junit-xml
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-intel-tdx-vmm-tests-results-junit-xml
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-intel-tdx-vmm-tests-results-junit-xml/
         include-hidden-files: true
+      if: always()
   job16:
     name: run vmm-tests [x64-windows-amd]
     runs-on:
@@ -2263,18 +2263,18 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-windows-amd-vmm-tests-results
       uses: actions/upload-artifact@v4
-      if: always()
       with:
         name: x64-windows-amd-vmm-tests-results
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-amd-vmm-tests-results/
         include-hidden-files: true
+      if: always()
     - name: 🌼📦 Publish x64-windows-amd-vmm-tests-results-junit-xml
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-amd-vmm-tests-results-junit-xml
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-amd-vmm-tests-results-junit-xml/
         include-hidden-files: true
+      if: always()
   job17:
     name: run vmm-tests [x64-windows-amd-snp]
     runs-on:
@@ -2557,18 +2557,18 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-windows-amd-snp-vmm-tests-results
       uses: actions/upload-artifact@v4
-      if: always()
       with:
         name: x64-windows-amd-snp-vmm-tests-results
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-amd-snp-vmm-tests-results/
         include-hidden-files: true
+      if: always()
     - name: 🌼📦 Publish x64-windows-amd-snp-vmm-tests-results-junit-xml
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-amd-snp-vmm-tests-results-junit-xml
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-amd-snp-vmm-tests-results-junit-xml/
         include-hidden-files: true
+      if: always()
   job18:
     name: run vmm-tests [x64-linux]
     runs-on:
@@ -2844,18 +2844,18 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-linux-vmm-tests-results
       uses: actions/upload-artifact@v4
-      if: always()
       with:
         name: x64-linux-vmm-tests-results
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-results/
         include-hidden-files: true
+      if: always()
     - name: 🌼📦 Publish x64-linux-vmm-tests-results-junit-xml
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-vmm-tests-results-junit-xml
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-results-junit-xml/
         include-hidden-files: true
+      if: always()
   job19:
     name: run vmm-tests [aarch64-windows]
     runs-on:
@@ -3180,18 +3180,18 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-vmm-tests-results
       uses: actions/upload-artifact@v4
-      if: always()
       with:
         name: aarch64-windows-vmm-tests-results
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-results/
         include-hidden-files: true
+      if: always()
     - name: 🌼📦 Publish aarch64-windows-vmm-tests-results-junit-xml
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-vmm-tests-results-junit-xml
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-results-junit-xml/
         include-hidden-files: true
+      if: always()
   job2:
     name: build artifacts (not for VMM tests) [aarch64-windows]
     runs-on:
@@ -3383,28 +3383,24 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-hypestv
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-hypestv
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-hypestv/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-igvmfilegen
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-ohcldiag-dev
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgs_lib
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgs_lib/
@@ -3823,42 +3819,36 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-openvmm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-pipette
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-prep_steps
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-prep_steps
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-prep_steps/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-tmk_vmm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgstool
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmm-tests-archive
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-archive/
@@ -4058,28 +4048,24 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-windows-hypestv
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-hypestv
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-hypestv/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-igvmfilegen
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-ohcldiag-dev
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgs_lib
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgs_lib/
@@ -4333,42 +4319,36 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-windows-openvmm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-pipette
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-prep_steps
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-prep_steps
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-prep_steps/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-tmk_vmm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgstool
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmm-tests-archive
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmm-tests-archive/
@@ -4644,49 +4624,42 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish aarch64-guest_test_uefi
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-guest_test_uefi
         path: ${{ runner.temp }}/publish_artifacts/aarch64-guest_test_uefi/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-igvmfilegen
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-linux-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-ohcldiag-dev
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-linux-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-openvmm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-linux-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgs_lib
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-linux-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgs_lib/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgstool
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-linux-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-tmks
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-tmks
         path: ${{ runner.temp }}/publish_artifacts/aarch64-tmks/
@@ -5004,56 +4977,48 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-guest_test_uefi
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-guest_test_uefi
         path: ${{ runner.temp }}/publish_artifacts/x64-guest_test_uefi/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-igvmfilegen
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-ohcldiag-dev
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-openvmm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgs_lib
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgs_lib/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgstool
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmm-tests-archive
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-archive/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-tmks
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-tmks
         path: ${{ runner.temp }}/publish_artifacts/x64-tmks/
@@ -5381,35 +5346,30 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish aarch64-linux-musl-pipette
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-tmk_vmm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-linux-musl-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-baseline
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-openhcl-baseline
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-baseline/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-igvm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-igvm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-igvm-extras
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: aarch64-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-igvm-extras/
@@ -5831,35 +5791,30 @@ jobs:
       shell: bash
     - name: 🌼📦 Publish x64-linux-musl-pipette
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-tmk_vmm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-linux-musl-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-baseline
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-openhcl-baseline
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-baseline/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-extras
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: x64-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-extras/
