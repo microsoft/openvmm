@@ -90,6 +90,9 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == guest_tools::TPM_GUEST_TESTS_WINDOWS_X64 => {
                 tpm_guest_tests_windows_path(MachineArch::X86_64)
             }
+            _ if id == guest_tools::TPM_GUEST_TESTS_LINUX_X64 => {
+                tpm_guest_tests_linux_path(MachineArch::X86_64)
+            }
 
             _ => anyhow::bail!("no support for given artifact type"),
         }
@@ -250,6 +253,22 @@ fn tpm_guest_tests_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
     get_path(
         format!("target/{target}/debug"),
         "tpm_guest_tests.exe",
+        MissingCommand::Build {
+            package: "tpm_guest_tests",
+            target: Some(target),
+        },
+    )
+}
+
+fn tpm_guest_tests_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = match arch {
+        MachineArch::X86_64 => "x86_64-unknown-linux-gnu",
+        MachineArch::Aarch64 => "aarch64-unknown-linux-gnu",
+    };
+
+    get_path(
+        format!("target/{target}/debug"),
+        "tpm_guest_tests",
         MissingCommand::Build {
             package: "tpm_guest_tests",
             target: Some(target),

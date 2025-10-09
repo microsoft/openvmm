@@ -49,6 +49,8 @@ pub mod artifacts {
         declare_artifacts! {
             /// Windows x86_64 build of the `tpm_guest_tests` utility.
             TPM_GUEST_TESTS_WINDOWS_X64,
+            /// Linux x86_64 build of the `tpm_guest_tests` utility.
+            TPM_GUEST_TESTS_LINUX_X64,
         }
     }
 

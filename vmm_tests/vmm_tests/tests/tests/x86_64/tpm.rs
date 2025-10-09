@@ -1,14 +1,37 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use anyhow::Context;
+use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVmBuilder;
+use petri::ResolvedArtifact;
 use petri::ShutdownKind;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
+use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
+use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
+
+const AK_CERT_NONZERO_BYTES: usize = 2500;
+const AK_CERT_TOTAL_BYTES: usize = 4096;
+
+fn expected_ak_cert_hex() -> String {
+    use std::fmt::Write as _;
+
+    let mut data = vec![0xab; AK_CERT_NONZERO_BYTES];
+    data.resize(AK_CERT_TOTAL_BYTES, 0);
+
+    let mut hex = String::with_capacity(data.len() * 2 + 2);
+    hex.push_str("0x");
+    for byte in data {
+        write!(&mut hex, "{:02x}", byte).expect("write! to String should not fail");
+    }
+
+    hex
+}
 
 /// Basic boot tests with TPM enabled.
 #[openvmm_test(
@@ -38,12 +61,19 @@ async fn boot_with_tpm(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
     Ok(())
 }
 
-/// Test AK cert is persistent across boots on Linux.
-// TODO: Add in-guest TPM tests for Windows as we currently
-// do not have an easy way to interact with TPM without a private
-// or custom tool.
-#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)))]
-async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+/// Test AK cert is persistent across boots on Linux and Windows.
+#[openvmm_test(
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TPM_GUEST_TESTS_WINDOWS_X64],
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_LINUX_X64, TPM_GUEST_TESTS_WINDOWS_X64]
+)]
+async fn tpm_ak_cert_persisted(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (
+        ResolvedArtifact<TPM_GUEST_TESTS_LINUX_X64>,
+        ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,
+    ),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
     let config = config
         // See `get_protocol::dps_json::ManagementVtlFeatures`
         // Enables attempt ak cert callback
@@ -57,38 +87,104 @@ async fn tpm_ak_cert_persisted(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
                 )
         });
 
-    // First boot - AK cert request will be served by GED
-    // Second boot - Ak cert request will be bypassed by GED
-    // TODO: with_expect_reset shouldn't be needed once with_tpm() is
-    // backend-agnostic.
-    let (vm, agent) = config.with_expect_reset().run().await?;
+    let (vm, agent) = match (os_flavor, extra_deps) {
+        (OsFlavor::Windows, (_, windows_artifact)) => {
+            // First boot - AK cert request will be served by GED
+            let (mut vm, agent) = config.run().await?;
+            
+            // Second boot - Ak cert request will be bypassed by GED
+            agent.reboot().await?;
+            let agent = vm.wait_for_reset().await?;
 
-    // Use the python script to read AK cert from TPM nv index
-    // and verify that the AK cert preserves across boot.
-    // TODO: Replace the script with tpm2-tools
-    const TEST_FILE: &str = "tpm.py";
-    const TEST_CONTENT: &str = include_str!("../../../test_data/tpm.py");
+            let host_binary = windows_artifact.get();
+            let guest_binary = std::fs::read(host_binary)
+                .with_context(|| format!("failed to read {}", host_binary.display()))?;
+            let guest_binary_path = "C:\\tpm_guest_tests.exe";
 
-    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
-    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+            agent
+                .write_file(guest_binary_path, guest_binary.as_slice())
+                .await
+                .context("failed to copy tpm_guest_tests.exe into the guest")?;
 
-    let sh = agent.unix_shell();
-    let output = cmd!(sh, "python3 tpm.py").read().await?;
+            let sh = agent.windows_shell();
+            let expected_hex = expected_ak_cert_hex();
 
-    // Check if the content preserves as expected
-    assert!(output.contains("succeeded"));
+            let output = cmd!(sh, "{guest_binary_path}")
+                .args([
+                    "--ak-cert",
+                    "--expected-data-hex",
+                    expected_hex.as_str(),
+                ])
+                .read()
+                .await
+                .context("failed to execute tpm_guest_tests.exe inside the guest")?;
+
+            ensure!(
+                output.contains("AK certificate matches expected value"),
+                format!("{output}")
+            );
+
+            (vm, agent)
+        }
+        (OsFlavor::Linux, (linux_artifact, _)) => {
+            // First boot - AK cert request will be served by GED
+            // Second boot - Ak cert request will be bypassed by GED
+            // TODO: with_expect_reset shouldn't be needed once with_tpm() is
+            // backend-agnostic.
+            let (vm, agent) = config.with_expect_reset().run().await?;
+
+            let host_binary = linux_artifact.get();
+            let guest_binary_path = "/tmp/tpm_guest_tests";
+
+            let guest_binary = std::fs::read(host_binary)
+                .with_context(|| format!("failed to read {}", host_binary.display()))?;
+            agent
+                .write_file(guest_binary_path, guest_binary.as_slice())
+                .await?;
+
+            let sh = agent.unix_shell();
+            cmd!(sh, "chmod +x {guest_binary_path}").run().await?;
+
+            let expected_hex = expected_ak_cert_hex();
+
+            let output = cmd!(sh, "{guest_binary_path}")
+                .args([
+                    "--ak-cert",
+                    "--expected-data-hex",
+                    expected_hex.as_str(),
+                ])
+                .read()
+                .await?;
+
+            ensure!(
+                output.contains("AK certificate matches expected value"),
+                format!("{output}")
+            );
+
+            (vm, agent)
+        }
+        _ => unreachable!(),
+    };
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+
     Ok(())
 }
 
-/// Test AK cert retry logic on Linux.
-// TODO: Add in-guest TPM tests for Windows as we currently
-// do not have an easy way to interact with TPM without a private
-// or custom tool.
-#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)))]
-async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+/// Test AK cert retry logic on Linux and Windows.
+#[openvmm_test(
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TPM_GUEST_TESTS_WINDOWS_X64],
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_LINUX_X64, TPM_GUEST_TESTS_WINDOWS_X64]
+)]
+async fn tpm_ak_cert_retry(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (
+        ResolvedArtifact<TPM_GUEST_TESTS_LINUX_X64>,
+        ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,
+    ),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
     let config = config
         // See `get_protocol::dps_json::ManagementVtlFeatures`
         // Enables attempt ak cert callback
@@ -102,42 +198,111 @@ async fn tpm_ak_cert_retry(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
                 )
         });
 
-    // First boot - expect no AK cert from GED
-    // Second boot - except get AK cert from GED on the second attempts
-    // TODO: with_expect_reset shouldn't be needed once with_tpm() is
-    // backend-agnostic.
-    let (vm, agent) = config.with_expect_reset().run().await?;
+    let (vm, agent) = match (os_flavor, extra_deps) {
+        (OsFlavor::Windows, (_, windows_artifact)) => {
+            let (vm, agent) = config.run().await?;
 
-    // Use the python script to read AK cert from TPM nv index
-    // and verify that the AK cert preserves across boot.
-    // TODO: Replace the script with tpm2-tools
-    const TEST_FILE: &str = "tpm.py";
-    const TEST_CONTENT: &str = include_str!("../../../test_data/tpm.py");
+            let host_binary = windows_artifact.get();
+            let guest_binary = std::fs::read(host_binary)
+                .with_context(|| format!("failed to read {}", host_binary.display()))?;
+            let guest_binary_path = "C:\\tpm_guest_tests.exe";
 
-    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
-    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+            agent
+                .write_file(guest_binary_path, guest_binary.as_slice())
+                .await
+                .context("failed to copy tpm_guest_tests.exe into the guest")?;
 
-    // The first AK cert request made during boot is expected to
-    // get invalid response from GED such that no data is set
-    // to nv index. The script should return failure. Also, the nv
-    // read made by the script is expected to trigger another AK cert
-    // request.
-    let sh = agent.unix_shell();
-    let output = cmd!(sh, "python3 tpm.py").read().await?;
+            let sh = agent.windows_shell();
 
-    // Check if there is no content yet
-    assert!(!output.contains("succeeded"));
+            // At this point, two AK cert requests are made. One is during tpm
+            // initialization, another one is during boot triggering by a NV read (Windows-specific).
+            // Both requests are expected to fail due to the GED configuration.
 
-    // Run the script again to test if the AK cert triggered by nv read
-    // succeeds and the data is written into the nv index.
-    let sh = agent.unix_shell();
-    let output = cmd!(sh, "python3 tpm.py").read().await?;
+            // The read attempt is expected to fail and trigger an AK cert renewal request.
+            let attempt = cmd!(sh, "{guest_binary_path}")
+                .args(["--ak-cert"])
+                .read()
+                .await;
+            assert!(
+                attempt.is_err(),
+                "AK certificate read unexpectedly succeeded"
+            );
 
-    // Check if the content is now available
-    assert!(output.contains("succeeded"));
+            let expected_hex = expected_ak_cert_hex();
+
+            let output = cmd!(sh, "{guest_binary_path}")
+                .args([
+                    "--ak-cert",
+                    "--expected-data-hex",
+                    expected_hex.as_str(),
+                    "--retry",
+                    "3",
+                ])
+                .read()
+                .await
+                .context("failed to execute tpm_guest_tests.exe inside the guest")?;
+
+            ensure!(
+                output.contains("AK certificate matches expected value"),
+                format!("{output}")
+            );
+
+            (vm, agent)
+        }
+        (OsFlavor::Linux, (linux_artifact, _)) => {
+            // First boot - expect no AK cert from GED
+            // Second boot - expect get AK cert from GED on the second attempts
+            // TODO: with_expect_reset shouldn't be needed once with_tpm() is
+            // backend-agnostic.
+            let (vm, agent) = config.with_expect_reset().run().await?;
+
+            let host_binary = linux_artifact.get();
+            let guest_binary_path = "/tmp/tpm_guest_tests";
+
+            let guest_binary = std::fs::read(host_binary)
+                .with_context(|| format!("failed to read {}", host_binary.display()))?;
+            agent
+                .write_file(guest_binary_path, guest_binary.as_slice())
+                .await?;
+
+            let sh = agent.unix_shell();
+            cmd!(sh, "chmod +x {guest_binary_path}").run().await?;
+
+            // The read attempt is expected to fail and trigger an AK cert renewal request.
+            let first_attempt = cmd!(sh, "{guest_binary_path}")
+                .args(["--ak-cert"])
+                .read()
+                .await;
+            assert!(
+                first_attempt.is_err(),
+                "AK certificate read unexpectedly succeeded"
+            );
+
+            let expected_hex = expected_ak_cert_hex();
+            let output = cmd!(sh, "{guest_binary_path}")
+                .args([
+                    "--ak-cert",
+                    "--expected-data-hex",
+                    expected_hex.as_str(),
+                    "--retry",
+                    "3",
+                ])
+                .read()
+                .await?;
+
+            ensure!(
+                output.contains("AK certificate matches expected value"),
+                format!("{output}")
+            );
+
+            (vm, agent)
+        }
+        _ => unreachable!(),
+    };
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+
     Ok(())
 }
 
@@ -205,13 +370,13 @@ async fn vbs_boot_with_attestation(
     Ok(())
 }
 
-/// VBS boot test with attestation enabled
-// TODO: Add in-guest tests to retrieve and verify the report.
+/// VBS attestation test with agent
+// TODO: Enable linux test when agent is supported. 
 #[openvmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64],
     // openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
 )]
-async fn vbs_boot_with_attestation_and_agent(
+async fn vbs_attestation_with_agent(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<TPM_GUEST_TESTS_WINDOWS_X64>,),
 ) -> anyhow::Result<()> {
@@ -251,7 +416,6 @@ async fn vbs_boot_with_attestation_and_agent(
             (vm, agent)
         }
         OsFlavor::Linux => {
-            // config.with_expect_reset().run().await?
             unreachable!()
         }
         _ => unreachable!(),

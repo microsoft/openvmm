@@ -21,8 +21,6 @@ use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
-use petri::ResolvedArtifact;
-use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
 use virtio_resources::VirtioPciDeviceHandle;
 use virtio_resources::net::VirtioNetHandle;
 use vm_resource::IntoResource;

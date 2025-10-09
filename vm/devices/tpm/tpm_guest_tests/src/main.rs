@@ -9,27 +9,32 @@ mod tpm;
 
 use std::env;
 use std::error::Error;
+use std::thread;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use tpm_lib::TpmEngine;
 use tpm_lib::TpmEngineHelper;
-use tpm_protocol::TPM20_RH_OWNER;
+use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
 
 use tpm::Tpm;
 
-const NV_INDEX_AK_CERT: u32 = 0x01c1_01d0;
-const NV_INDEX_ATTESTATION_REPORT: u32 = 0x0140_0001;
-const NV_INDEX_GUEST_INPUT: u32 = 0x0140_0002;
+const NV_INDEX_AK_CERT: u32 = tpm_protocol::TPM_NV_INDEX_AIK_CERT;
+const NV_INDEX_ATTESTATION_REPORT: u32 = tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
+const NV_INDEX_GUEST_INPUT: u32 = tpm_protocol::TPM_NV_INDEX_GUEST_ATTESTATION_INPUT;
 
 const MAX_NV_READ_SIZE: usize = 4096;
 const MAX_ATTESTATION_READ_SIZE: usize = 2600;
 const GUEST_INPUT_SIZE: u16 = 64;
 const GUEST_INPUT_AUTH: u64 = 0;
+const AK_CERT_RETRY_DELAY_MS: u64 = 200;
 
 #[derive(Debug, Default)]
 struct Config {
     ak_cert: bool,
+    ak_cert_expected: Option<Vec<u8>>,
+    ak_cert_retry_attempts: u32,
     report: bool,
     user_data: Option<Vec<u8>>,
 }
@@ -71,7 +76,11 @@ fn run(config: &Config) -> Result<(), Box<dyn Error>> {
     let mut helper = tpm.into_engine_helper();
 
     if config.ak_cert {
-        handle_ak_cert(&mut helper)?;
+        handle_ak_cert(
+            &mut helper,
+            config.ak_cert_expected.as_deref(),
+            config.ak_cert_retry_attempts,
+        )?;
     }
 
     if config.report {
@@ -82,22 +91,54 @@ fn run(config: &Config) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn handle_ak_cert<E: TpmEngine>(helper: &mut TpmEngineHelper<E>) -> Result<(), Box<dyn Error>> {
-    println!("Reading AK certificate from NV index {NV_INDEX_AK_CERT:#x}…");
-    let data = read_nv_index(helper, NV_INDEX_AK_CERT)?;
+fn handle_ak_cert<E: TpmEngine>(
+    helper: &mut TpmEngineHelper<E>,
+    expected: Option<&[u8]>,
+    retry_attempts: u32,
+) -> Result<(), Box<dyn Error>> {
+    for attempt in 0..=retry_attempts {
+        if attempt > 0 {
+            println!(
+                "AK certificate mismatch; retrying after {} ms ({}/{})…",
+                AK_CERT_RETRY_DELAY_MS,
+                attempt,
+                retry_attempts
+            );
+            thread::sleep(Duration::from_millis(AK_CERT_RETRY_DELAY_MS));
+        }
 
-    if data.len() > MAX_NV_READ_SIZE {
-        return Err(format!(
-            "AK certificate size {} exceeds maximum {} bytes",
-            data.len(),
-            MAX_NV_READ_SIZE
-        )
-        .into());
+        println!("Reading AK certificate from NV index {NV_INDEX_AK_CERT:#x}…");
+        let data = read_nv_index(helper, NV_INDEX_AK_CERT)?;
+
+        if data.len() > MAX_NV_READ_SIZE {
+            return Err(format!(
+                "AK certificate size {} exceeds maximum {} bytes",
+                data.len(),
+                MAX_NV_READ_SIZE
+            )
+            .into());
+        }
+
+        print_nv_summary("AK certificate", &data);
+
+        if let Some(expected) = expected {
+            if data == expected {
+                println!(
+                    "AK certificate matches expected value ({} bytes).",
+                    data.len()
+                );
+                return Ok(());
+            }
+
+            if attempt == retry_attempts {
+                return Err("AK certificate contents did not match expected value".into());
+            }
+        } else {
+            return Ok(());
+        }
     }
 
-    print_nv_summary("AK certificate", &data);
-
-    Ok(())
+    unreachable!("loop must exit via success or error");
 }
 
 fn handle_report<E: TpmEngine>(
@@ -206,6 +247,7 @@ where
     // Skip program name
     iter.next();
 
+    let mut iter = iter.peekable();
     let mut config = Config::default();
 
     while let Some(arg) = iter.next() {
@@ -215,6 +257,60 @@ where
             }
             "--report" => {
                 config.report = true;
+            }
+            "--expected-data" => {
+                if config.ak_cert_expected.is_some() {
+                    return ArgsOutcome::Error(
+                        "--expected-data or --expected-data-hex specified multiple times".into(),
+                    );
+                }
+                let value = match iter.next() {
+                    Some(v) => v.into_bytes(),
+                    None => {
+                        return ArgsOutcome::Error("--expected-data requires an argument".into());
+                    }
+                };
+                config.ak_cert_expected = Some(value);
+            }
+            "--expected-data-hex" => {
+                if config.ak_cert_expected.is_some() {
+                    return ArgsOutcome::Error(
+                        "--expected-data or --expected-data-hex specified multiple times".into(),
+                    );
+                }
+                let value = match iter.next() {
+                    Some(v) => v,
+                    None => {
+                        return ArgsOutcome::Error(
+                            "--expected-data-hex requires an argument".into(),
+                        );
+                    }
+                };
+                match parse_hex_bytes(&value) {
+                    Ok(bytes) => config.ak_cert_expected = Some(bytes),
+                    Err(e) => return ArgsOutcome::Error(e),
+                }
+            }
+            "--retry" => {
+                if config.ak_cert_retry_attempts != 0 {
+                    return ArgsOutcome::Error("--retry specified multiple times".into());
+                }
+                let value = match iter.next() {
+                    Some(v) => v,
+                    None => return ArgsOutcome::Error("--retry requires an argument".into()),
+                };
+                let retries = match value.parse::<u32>() {
+                    Ok(0) => {
+                        return ArgsOutcome::Error("--retry requires a positive integer".into());
+                    }
+                    Ok(n) => n,
+                    Err(_) => {
+                        return ArgsOutcome::Error(format!(
+                            "invalid retry count '{value}'"
+                        ));
+                    }
+                };
+                config.ak_cert_retry_attempts = retries;
             }
             "--user-data" => {
                 if config.user_data.is_some() {
@@ -254,6 +350,18 @@ where
         return ArgsOutcome::Error("--user-data requires --report".into());
     }
 
+    if config.ak_cert_expected.is_some() && !config.ak_cert {
+        return ArgsOutcome::Error("--expected-data requires --ak-cert".into());
+    }
+
+    if config.ak_cert_retry_attempts > 0 && !config.ak_cert {
+        return ArgsOutcome::Error("--retry requires --ak-cert".into());
+    }
+
+    if config.ak_cert_retry_attempts > 0 && config.ak_cert_expected.is_none() {
+        return ArgsOutcome::Error("--retry requires expected AK certificate data".into());
+    }
+
     if !config.ak_cert && !config.report {
         return ArgsOutcome::Error("no action specified".into());
     }
@@ -287,7 +395,12 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
 fn print_usage() {
     println!("Usage: tpm_guest_tests [OPTIONS]\n");
     println!("Options:");
-    println!("  --ak-cert                 Read the AK certificate NV index and display it");
+    println!("  --ak-cert                 Read the AK certificate NV index");
+    println!("      --expected-data <utf8>   Compare AK certificate to provided UTF-8 data");
+    println!("      --expected-data-hex <0x..> Compare AK certificate to provided hex data");
+    println!(
+        "      --retry <times>          Retry AK certificate comparison up to <times> times"
+    );
     println!("  --report                  Write guest input and read the attestation report");
     println!(
         "  --user-data <text>        Provide UTF-8 user data for --report (max {} bytes)",

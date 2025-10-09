@@ -8,6 +8,7 @@ pub mod tpm20proto;
 use tpm20proto::NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER;
 use tpm20proto::NV_INDEX_RANGE_BASE_TCG_ASSIGNED;
 use tpm20proto::ReservedHandle;
+use tpm20proto::TPM20_HT_PERSISTENT;
 use tpm20proto::TpmaObject;
 use tpm20proto::TpmaObjectBits;
 
@@ -46,11 +47,3 @@ pub fn expected_ak_attributes() -> TpmaObject {
         .with_sign_encrypt(true)
         .into()
 }
-
-pub use tpm20proto::AlgId;
-pub use tpm20proto::ResponseCode;
-pub use tpm20proto::TPM20_HT_PERSISTENT;
-pub use tpm20proto::TPM20_RH_ENDORSEMENT;
-pub use tpm20proto::TPM20_RH_OWNER;
-pub use tpm20proto::TPM20_RH_PLATFORM;
-pub use tpm20proto::TPM20_RS_PW;

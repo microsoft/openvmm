@@ -10,6 +10,7 @@ use crate::build_pipette::PipetteOutput;
 use crate::build_prep_steps::PrepStepsOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
+use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
 use crate::run_cargo_nextest_run::NextestProfile;
@@ -29,6 +30,7 @@ pub struct VmmTestsDepArtifacts {
     pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
     pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
     pub vmgstool: Option<ReadVar<VmgstoolOutput>>,
+    pub tpm_guest_tests: Option<ReadVar<TpmGuestTestsOutput>>,
 }
 
 flowey_request! {
@@ -107,6 +109,7 @@ impl SimpleFlowNode for Node {
             tmk_vmm: register_tmk_vmm,
             tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
             vmgstool: register_vmgstool,
+            tpm_guest_tests: register_tpm_guest_tests,
         } = dep_artifact_dirs;
 
         let register_openhcl_igvm_files = artifact_dir_openhcl_igvm_files.map(|artifact_dir| {
@@ -169,6 +172,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_tpm_guest_tests,
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
