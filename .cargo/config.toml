@@ -103,7 +103,6 @@ rustflags = [
   "-Ctarget-feature=-sve,-sve2",
 ]
 
-# Specify a common set of rustflags for all targets.
 [target.'cfg(all())']
 rustflags = [
   # Disable FPO to get full call stack as the '--call-graph=dwarf' option
@@ -112,14 +111,13 @@ rustflags = [
 
   # Enable v0 symbols to get better output from `perf` and related tools.
   "-Csymbol-mangling-version=v0",
-
-  # Treat warnings as errors in CI.
-### ENABLE_IN_CI "-Dwarnings",
 ]
 
-# Specify a common set of rustdocflags for all targets.
+# Treat warnings as errors in CI.
 [build]
+rustflags = [
+### ENABLE_IN_CI "-Dwarnings",
+]
 rustdocflags = [
-  # Treat warnings as errors in CI.
 ### ENABLE_IN_CI "-Dwarnings",
 ]
