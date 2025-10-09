@@ -98,8 +98,6 @@ pub(crate) enum FatalError {
         response_size: usize,
         maximum_size: usize,
     },
-    #[error("debug interrupt requested for unsupported VTL")]
-    InjectDebugInterruptError { vtl: u8 },
 }
 
 type HostRequestQueue = VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>;
@@ -1512,15 +1510,16 @@ impl<T: RingMem> ProcessLoop<T> {
         );
 
         if notification.vtl != 0 {
-            return Err(FatalError::InjectDebugInterruptError {
-                vtl: notification.vtl,
-            });
+            tracing::error!(
+                ?notification.vtl,
+                "Debug interrupts can only be injected into VTL 0",
+            );
+        } else {
+            // Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
+            self.set_debug_interrupt
+                .as_ref()
+                .map(|callback| callback(notification.vtl));
         }
-
-        // Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
-        self.set_debug_interrupt
-            .as_ref()
-            .map(|callback| callback(notification.vtl));
 
         Ok(())
     }

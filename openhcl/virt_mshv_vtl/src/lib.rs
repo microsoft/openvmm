@@ -1931,12 +1931,10 @@ impl UhPartition {
     }
 
     /// Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
+    #[cfg(guest_arch = "x86_64")]
     pub fn assert_debug_interrupt(&self, _vtl: u8) {
-        #[cfg(guest_arch = "x86_64")]
-        {
-            let bsp_index = VpIndex::new(0);
-            self.pulse_lint(bsp_index, Vtl::Vtl0, 1)
-        }
+        let bsp_index = VpIndex::new(0);
+        self.pulse_lint(bsp_index, Vtl::Vtl0, 1)
     }
 
     /// Enables or disables the PM timer assist.

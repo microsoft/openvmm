@@ -2300,7 +2300,7 @@ async fn new_underhill_vm(
         );
     }
 
-    // Set the the callback in GET to trigger the debug interrupt.
+    // Set the callback in GET to trigger the debug interrupt.
     let p = partition.clone();
     let debug_interrupt_callback = move |vtl: u8| p.assert_debug_interrupt(vtl);
     get_client.set_debug_interrupt_callback(Box::new(debug_interrupt_callback));
