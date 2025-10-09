@@ -6,6 +6,7 @@ use super::fs;
 use super::macros::file_information_classes;
 use crate::SetAttributes;
 use crate::SetTime;
+use crate::windows::path;
 use ::windows::Wdk;
 use ::windows::Wdk::Storage::FileSystem;
 use ::windows::Wdk::System::SystemServices;
@@ -21,6 +22,7 @@ use ntapi::ntrtl::RtlIsDosDeviceName_U;
 use pal::windows;
 use std::ffi;
 use std::mem;
+use std::mem::offset_of;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr;
@@ -54,6 +56,8 @@ const LX_POSIX_EPOCH_OFFSET: i64 = 0xd53e8000 + (0x019db1de << 32);
 const LX_UTIL_NT_UNIT_PER_SEC: i64 = 10000000;
 const LX_UTIL_NANO_SEC_PER_NT_UNIT: i64 = 100;
 
+const LX_UTIL_NT_SYMLINK_ESCAPE_TARGET: u32 = 0x1;
+
 /// A trait that maps a file information struct for calling into `NtSetInformationFile`, `NtQueryInformationFile` and
 /// other methods that accept a `FileInformationClass`.
 pub trait FileInformationClass: Default {
@@ -77,6 +81,7 @@ pub trait FileInformationClass: Default {
 
 file_information_classes!(
     FileSystem::FILE_BASIC_INFORMATION = FileSystem::FileBasicInformation;
+    FileSystem::FILE_STANDARD_INFORMATION = FileSystem::FileStandardInformation;
     SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION = FileSystem::FileAttributeTagInformation;
     FileSystem::FILE_DISPOSITION_INFORMATION = FileSystem::FileDispositionInformation;
     FileSystem::FILE_DISPOSITION_INFORMATION_EX = FileSystem::FileDispositionInformationEx;
@@ -596,24 +601,74 @@ pub fn file_info_to_stat(
 }
 
 // Create the reparse buffer for an LX symlink.
-pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<windows::RtlHeapBuffer> {
+pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<Vec<u8>> {
     let link_target = create_ansi_string(target)?;
 
     fs::create_link_reparse_buffer(link_target)
 }
 
 // Create the reparse buffer for an NT symlink.
-pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr) -> lx::Result<windows::RtlHeapBuffer> {
-    let link_target: windows::UnicodeString = target.try_into().map_err(|_| lx::Error::EINVAL)?;
+pub fn create_nt_link_reparse_buffer(target: &ffi::OsStr, flags: u32) -> lx::Result<Vec<u8>> {
+    let mut link_target: windows::UnicodeString =
+        target.try_into().map_err(|_| lx::Error::EINVAL)?;
 
-    let mut size = 0;
-    unsafe {
-        let data = api::LxUtilFsCreateNtLinkReparseBuffer(link_target.as_ptr(), 0, &mut size);
-        Ok(windows::RtlHeapBuffer::from_raw(
-            data.cast::<u8>(),
-            size as usize,
-        ))
+    // The buffer contains the target name twice, once for the actual target name
+    // and once for the display name.
+    let local_size = offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous)
+        + offset_of!(FileSystem::REPARSE_DATA_BUFFER_0_0, PathBuffer)
+        + (link_target.length() * 2);
+
+    if local_size > u16::MAX as usize {
+        return Err(lx::Error::ENAMETOOLONG);
     }
+
+    let mut reparse = vec![0; local_size];
+
+    // SAFETY: The buffer is large enough to hold the reparse data.
+    // This is necessary because unfortunately the Windows types don't
+    // implement the necessary traits to use zerocopy.
+    unsafe {
+        *(reparse.as_mut_ptr().cast()) = FileSystem::REPARSE_DATA_BUFFER {
+            ReparseTag: W32Ss::IO_REPARSE_TAG_SYMLINK,
+            ReparseDataLength: ((local_size
+                - offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous))
+                as u16),
+            Reserved: 0,
+            Anonymous: FileSystem::REPARSE_DATA_BUFFER_0 {
+                SymbolicLinkReparseBuffer: FileSystem::REPARSE_DATA_BUFFER_0_0 {
+                    SubstituteNameOffset: link_target.length() as u16,
+                    SubstituteNameLength: link_target.length() as u16,
+                    PrintNameOffset: 0,
+                    PrintNameLength: link_target.length() as u16,
+                    Flags: FileSystem::SYMLINK_FLAG_RELATIVE,
+                    PathBuffer: [0; 1], // Actual data follows
+                },
+            },
+        };
+
+        if flags & LX_UTIL_NT_SYMLINK_ESCAPE_TARGET != 0 {
+            path::unescape_path_in_place(link_target.as_mut_slice());
+        }
+
+        // Copy the target name twice into the buffer.
+        let path_buffer = reparse
+            .as_mut_ptr()
+            .add(offset_of!(FileSystem::REPARSE_DATA_BUFFER, Anonymous))
+            .add(offset_of!(FileSystem::REPARSE_DATA_BUFFER_0_0, PathBuffer))
+            .cast();
+        ptr::copy_nonoverlapping(
+            link_target.as_slice().as_ptr(),
+            path_buffer,
+            link_target.length() / 2,
+        );
+        ptr::copy_nonoverlapping(
+            link_target.as_slice().as_ptr(),
+            path_buffer.add(link_target.length() / 2),
+            link_target.length() / 2,
+        );
+    }
+
+    Ok(reparse)
 }
 
 // Applies a reparse point to a file.
@@ -955,49 +1010,40 @@ pub fn set_attr_core(
     state: &super::VolumeState,
     attr: &SetAttributes,
 ) -> lx::Result<()> {
-    unsafe {
-        if let Some(size) = attr.size {
-            fs::truncate(truncate_handle, size as u64)?;
-        }
-
-        if state.options.metadata
-            && (attr.mode.is_some() || attr.uid.is_some() || attr.gid.is_some())
-        {
-            let mode = match attr.mode {
-                Some(mode) => {
-                    if mode & lx::S_IFMT == 0 {
-                        return Err(lx::Error::EINVAL);
-                    }
-
-                    mode
-                }
-                None => lx::MODE_INVALID,
-            };
-
-            let uid = attr.uid.unwrap_or(lx::UID_INVALID);
-            let gid = attr.gid.unwrap_or(lx::GID_INVALID);
-            check_lx_error(api::LxUtilFsUpdateLxAttributes(
-                handle.as_raw_handle(),
-                uid,
-                gid,
-                mode,
-            ))?;
-        }
-
-        // Read-only flag update is done with or without metadata.
-        if let Some(mode) = attr.mode {
-            fs::chmod(handle, mode)?;
-        }
-
-        if !attr.atime.is_omit() || !attr.mtime.is_omit() || !attr.ctime.is_omit() {
-            let atime = set_time_to_timespec(&attr.atime);
-            let mtime = set_time_to_timespec(&attr.mtime);
-            let ctime = set_time_to_timespec(&attr.ctime);
-            fs::set_file_times(handle, &atime, &mtime, &ctime)?;
-        }
-
-        Ok(())
+    if let Some(size) = attr.size {
+        fs::truncate(truncate_handle, size as u64)?;
     }
+
+    if state.options.metadata && (attr.mode.is_some() || attr.uid.is_some() || attr.gid.is_some()) {
+        let mode = match attr.mode {
+            Some(mode) => {
+                if mode & lx::S_IFMT == 0 {
+                    return Err(lx::Error::EINVAL);
+                }
+
+                mode
+            }
+            None => lx::MODE_INVALID,
+        };
+
+        let uid = attr.uid.unwrap_or(lx::UID_INVALID);
+        let gid = attr.gid.unwrap_or(lx::GID_INVALID);
+        fs::update_lx_attributes(handle, uid, gid, mode)?;
+    }
+
+    // Read-only flag update is done with or without metadata.
+    if let Some(mode) = attr.mode {
+        fs::chmod(handle, mode)?;
+    }
+
+    if !attr.atime.is_omit() || !attr.mtime.is_omit() || !attr.ctime.is_omit() {
+        let atime = set_time_to_timespec(&attr.atime);
+        let mtime = set_time_to_timespec(&attr.mtime);
+        let ctime = set_time_to_timespec(&attr.ctime);
+        fs::set_file_times(handle, &atime, &mtime, &ctime)?;
+    }
+
+    Ok(())
 }
 
 /// Returns the permissions required to change attributes.
@@ -1022,6 +1068,23 @@ pub fn permissions_for_set_attr(attr: &SetAttributes, metadata: bool) -> winnt::
     }
 
     access
+}
+
+/// Set the EAs on a file.
+pub fn set_extended_attr(handle: &OwnedHandle, ea_buffer: &[u8]) -> lx::Result<()> {
+    let mut iosb = Default::default();
+
+    // SAFETY: Calling NtSetEaFile as documented.
+    unsafe {
+        let _ = check_status(FileSystem::NtSetEaFile(
+            Foundation::HANDLE(handle.as_raw_handle()),
+            &mut iosb,
+            ea_buffer.as_ptr() as *mut ffi::c_void,
+            ea_buffer.len() as u32,
+        ))?;
+
+        Ok(())
+    }
 }
 
 /// Create a hard link for a file.
@@ -1118,7 +1181,7 @@ pub fn rename(
 ) -> lx::Result<()> {
     // If necessary, escape the path, then convert it into a Vec<u16>
     let target_name: Vec<u16> = if flags.escape_name() {
-        super::path::path_from_lx(target_path.as_os_str().as_encoded_bytes())?
+        path::path_from_lx(target_path.as_os_str().as_encoded_bytes())?
             .as_os_str()
             .encode_wide()
             .collect()

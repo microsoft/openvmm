@@ -21,7 +21,6 @@ use ::windows::Wdk::System::SystemServices;
 use ::windows::Win32::Foundation;
 use ntapi::ntioapi;
 use pal::windows;
-use pal::windows::UnicodeString;
 use parking_lot::Mutex;
 use std::ffi;
 use std::mem;
@@ -313,36 +312,20 @@ impl LxVolume {
 
         // Open the file to read its reparse data.
         let mut handle = self.open_file(path, winnt::FILE_READ_ATTRIBUTES, 0)?;
-        let mut target = String::new();
-        unsafe {
-            // Try to read the link target from the reparse data.
-            let target_string = self.state.read_reparse_link(&handle)?;
-            // TODO: Remove this once LxUtilSymlinkRead is implemented and re-work to just use the Option
-            if let Some(target_string) = target_string {
-                target = target_string;
-            }
+        let target_string = self.state.read_reparse_link(&handle)?;
 
-            // If the function succeeded but returned a NULL buffer, this is a V1 LX symlink which must be
-            // opened for read to read the target.
-            // N.B. The initial open above does not use FILE_READ_DATA because some symlinks (notably the
-            //      back-compat symlinks that Windows creates for things like "C:\Documents and Settings")
-            //      deny this permission.
-            if target.is_empty() {
-                handle = util::reopen_file(
-                    &handle,
-                    winnt::FILE_READ_ATTRIBUTES | winnt::FILE_READ_DATA,
-                )?;
-
-                let mut wide_target = UnicodeString::empty();
-
-                util::check_lx_error(api::LxUtilSymlinkRead(
-                    handle.as_raw_handle(),
-                    wide_target.as_mut_ptr(),
-                ))?;
-
-                target = String::from_utf16(wide_target.as_slice()).map_err(|_| lx::Error::EIO)?;
-            }
-        }
+        // If the function succeeded but returned None, this is a V1 LX symlink which must be
+        // opened for read to read the target.
+        // N.B. The initial open above does not use FILE_READ_DATA because some symlinks (notably the
+        //      back-compat symlinks that Windows creates for things like "C:\Documents and Settings")
+        //      deny this permission.
+        let target = if let Some(target_string) = target_string {
+            target_string
+        } else {
+            handle =
+                util::reopen_file(&handle, winnt::FILE_READ_ATTRIBUTES | winnt::FILE_READ_DATA)?;
+            symlink::read(&handle)?
+        };
 
         Ok(target.into())
     }
@@ -798,7 +781,7 @@ impl LxVolume {
                 }
 
                 // In this path, win_target cannot be an error.
-                util::create_nt_link_reparse_buffer(win_target.unwrap().as_os_str())?
+                util::create_nt_link_reparse_buffer(win_target.unwrap().as_os_str(), 0)?
             }
         };
 
