@@ -23,6 +23,7 @@ use std::ops::IndexMut;
 use std::time::Duration;
 
 #[repr(u32)]
+#[derive(PartialEq)]
 pub enum TestVPCount {
     SmallVPCount,
     LargeVPCount,
@@ -403,12 +404,15 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
         })
         .run()
         .await;
-    if vm_boot_result.is_err() {
+
+    // The VM is expected to fail to boot on the internal Intel pipeline only for the large VM size. We still want the AMD test to execute so
+    // we will keep the test and gracefully exit in case of a failure. Any other type of boot failure should still produce an error
+    if vm_boot_result.is_err() && arch_str == "gp-x64" && vps == TestVPCount::LargeVPCount {
         tracing::warn!("VM failed to start with the given topology");
         return Ok(());
     }
 
-    let (mut vm, agent) = vm_boot_result.unwrap();
+    let (mut vm, agent) = vm_boot_result?;
 
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
 
