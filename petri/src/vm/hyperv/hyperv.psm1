@@ -103,8 +103,6 @@ function Set-VmSystemSettings {
     $result = $vmms | Invoke-CimMethod -Name "ModifySystemSettings" -Arguments @{
         "SystemSettings" = ($Vssd | ConvertTo-CimEmbeddedString)
     }
-
-    $result | Trace-CimMethodExecution -CimInstance $vmms -MethodName "ModifySystemSettings" -TimeoutSeconds 15
 }
 
 function Set-VmResourceSettings {
