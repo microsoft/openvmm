@@ -292,9 +292,9 @@ async fn servicing_keepalive_with_nvme_fault(
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
-/// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
+/// with NVMe keepalive support. No AERs are processed.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_keepalive_check_duplicate_aers(
+async fn servicing_keepalive_verify_no_duplicate_aers(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
