@@ -793,6 +793,7 @@ impl SimpleFlowNode for Node {
             register_tmk_vmm,
             register_tmk_vmm_linux_musl,
             register_vmgstool,
+            register_tpm_guest_tests: None,
             disk_images_dir: Some(test_artifacts_dir),
             register_openhcl_igvm_files,
             get_test_log_path: None,

@@ -22,6 +22,7 @@ mod packed_nums {
     pub type u64_be = zerocopy::U64<zerocopy::BigEndian>;
 }
 
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum InvalidInput {
     #[error("input data size too large for buffer - input size > upper bound: {0} > {1}")]
@@ -32,6 +33,8 @@ pub enum InvalidInput {
     NvPublicPayloadTooLarge(usize, usize),
 }
 
+/// Errors returned when TPM protocol helper builders receive invalid inputs.
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum TpmProtoError {
     #[error("input user_auth to TpmsSensitiveCreate is invalid")]
@@ -44,22 +47,22 @@ pub enum TpmProtoError {
     TpmtPublicUnique(#[source] InvalidInput),
     #[error("input auth_policy to TpmsNvPublic is invalid")]
     TpmsNvPublicAuthPolicy(#[source] InvalidInput),
-    #[error("input outside_info to CreatePrimary is invalid")]
-    CreatePrimaryOutsideInfo(#[source] InvalidInput),
-    #[error("input creation_pcr to CreatePrimary is invalid")]
-    CreatePrimaryCreationPcr(#[source] InvalidInput),
-    #[error("input auth to NvDefineSpace is invalid")]
-    NvDefineSpaceAuth(#[source] InvalidInput),
-    #[error("input public_info to NvDefineSpace is invalid")]
-    NvDefineSpacePublicInfo(#[source] InvalidInput),
-    #[error("input data to NvWrite is invalid")]
-    NvWriteData(#[source] InvalidInput),
-    #[error("input pcr_allocation to PcrAllocate is invalid")]
+    #[error("input PCR allocation to PcrAllocateCmd is invalid")]
     PcrAllocatePcrAllocation(#[source] InvalidInput),
-    #[error("input data to Import is invalid")]
-    ImportData(#[source] InvalidInput),
+    #[error("input outside_info to CreatePrimaryCmd is invalid")]
+    CreatePrimaryOutsideInfo(#[source] InvalidInput),
+    #[error("input creation PCR to CreatePrimaryCmd is invalid")]
+    CreatePrimaryCreationPcr(#[source] InvalidInput),
+    #[error("input auth to NvDefineSpaceCmd is invalid")]
+    NvDefineSpaceAuth(#[source] InvalidInput),
+    #[error("input public_info to NvDefineSpaceCmd is invalid")]
+    NvDefineSpacePublicInfo(#[source] InvalidInput),
+    #[error("input data to NvWriteCmd is invalid")]
+    NvWriteData(#[source] InvalidInput),
 }
 
+/// Errors surfaced when validating TPM replies against expected invariants.
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum ResponseValidationError {
     #[error("response size is too small to fit into the buffer")]
@@ -82,6 +85,7 @@ pub enum ResponseValidationError {
     },
 }
 
+/// Wrapper around TPM reserved handle values (`TPMI_RH_PROVISION`).
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct ReservedHandle(pub u32_be);
@@ -93,31 +97,38 @@ impl PartialEq<ReservedHandle> for u32 {
 }
 
 impl ReservedHandle {
+    /// Builds a reserved handle from a handle type and offset.
     pub const fn new(kind: u8, offset: u32) -> ReservedHandle {
         ReservedHandle(new_u32_be((kind as u32) << 24 | offset))
     }
 }
 
+/// Handle type identifying NV indexes.
 pub const TPM20_HT_NV_INDEX: u8 = 0x01;
+/// Handle type identifying permanent handles.
 pub const TPM20_HT_PERMANENT: u8 = 0x40;
+/// Handle type identifying persistent handles.
 pub const TPM20_HT_PERSISTENT: u8 = 0x81;
 
+/// Reserved handle for the owner hierarchy (`TPM_RH_OWNER`).
 pub const TPM20_RH_OWNER: ReservedHandle = ReservedHandle::new(TPM20_HT_PERMANENT, 0x01);
+/// Reserved handle for the platform hierarchy (`TPM_RH_PLATFORM`).
 pub const TPM20_RH_PLATFORM: ReservedHandle = ReservedHandle::new(TPM20_HT_PERMANENT, 0x0c);
+/// Reserved handle for the endorsement hierarchy (`TPM_RH_ENDORSEMENT`).
 pub const TPM20_RH_ENDORSEMENT: ReservedHandle = ReservedHandle::new(TPM20_HT_PERMANENT, 0x0b);
-// `TPM_RS_PW` (not `TPM_RH_PW`)
-// See Table 28, Section 7.4, "Trusted Platform Module Library Part 2: Structures", revision 1.38.
+/// Reserved handle used for password sessions (`TPM_RS_PW`).
 pub const TPM20_RS_PW: ReservedHandle = ReservedHandle::new(TPM20_HT_PERMANENT, 0x09);
 
-// Based on Section 2.2, "Registry of Reserved TPM 2.0 Handles and Localities", version 1.1.
+/// Base NV index reserved for platform manufacturers.
 pub const NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER: u32 =
     (TPM20_HT_NV_INDEX as u32) << 24 | 0x400000;
+/// Base NV index reserved for TCG-assigned use.
 pub const NV_INDEX_RANGE_BASE_TCG_ASSIGNED: u32 = (TPM20_HT_NV_INDEX as u32) << 24 | 0xc00000;
 
-// The suggested minimal size for the buffer in `TPM2B_MAX_BUFFER`.
-// See Table 79, Section 10.4.8, "Trusted Platform Module Library Part 2: Structures", revision 1.38.
+/// Suggested maximum size for `TPM2B_MAX_BUFFER` payloads, in bytes.
 pub const MAX_DIGEST_BUFFER_SIZE: usize = 1024;
 
+/// Wrapper around TPM session tag values.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SessionTag(pub u16_be);
@@ -134,6 +145,8 @@ impl SessionTag {
     }
 }
 
+/// Enumerates well-known TPM session tags.
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Copy, Clone)]
 #[repr(u16)]
 pub enum SessionTagEnum {
@@ -165,8 +178,6 @@ pub enum SessionTagEnum {
     Verified = 0x8022,
     Auth = 0x8023,
     Hashcheck = 0x8024,
-
-    // Structure describing a Field Upgrade Policy
     FuManifest = 0x8029,
 }
 
@@ -177,6 +188,7 @@ impl From<SessionTagEnum> for SessionTag {
 }
 
 impl SessionTagEnum {
+    /// Converts a raw session tag value into a `SessionTagEnum`.
     pub fn from_u16(val: u16) -> Option<SessionTagEnum> {
         let ret = match val {
             0x8000 => Self::Null,
@@ -199,10 +211,12 @@ impl SessionTagEnum {
             0x8029 => Self::FuManifest,
             _ => return None,
         };
+
         Some(ret)
     }
 }
 
+/// Wrapper around TPM command codes (`TPM_CC`).
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct CommandCode(pub u32_be);
@@ -218,12 +232,13 @@ impl CommandCode {
         CommandCode(new_u32_be(val))
     }
 
+    /// Attempts to map this command code into a known enum variant.
     pub fn into_enum(self) -> Option<CommandCodeEnum> {
         CommandCodeEnum::from_u32(self.0.get())
     }
 }
 
-#[expect(non_camel_case_types, clippy::upper_case_acronyms)]
+#[expect(non_camel_case_types, clippy::upper_case_acronyms, missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u32)]
 pub enum CommandCodeEnum {
@@ -353,6 +368,7 @@ impl From<CommandCodeEnum> for CommandCode {
 }
 
 impl CommandCodeEnum {
+    /// Create a CommandCodeEnum from a u32 value.
     pub fn from_u32(val: u32) -> Option<CommandCodeEnum> {
         let ret = match val {
             0x0000011f => Self::NV_UndefineSpaceSpecial,
@@ -483,8 +499,10 @@ const FLAG_FMT1: u32 = 0x0080;
 const FLAG_VER1: u32 = 0x0100;
 const FLAG_WARN: u32 = 0x0800 + FLAG_VER1;
 
+/// TPM response codes returned in a `ReplyHeader`.
 #[repr(u32)]
 pub enum ResponseCode {
+    /// Success
     Success = 0x000,
     /// The given handle value is not valid or cannot be used for this
     /// command.
@@ -551,6 +569,7 @@ pub enum ResponseCode {
 }
 
 impl ResponseCode {
+    /// Converts a raw TPM response code into a `ResponseCode` value.
     pub fn from_u32(val: u32) -> Option<ResponseCode> {
         let ret = match val {
             x if x == ResponseCode::Success as u32 => ResponseCode::Success,
@@ -585,6 +604,7 @@ impl ResponseCode {
     }
 }
 
+/// Wrapper around a TPM algorithm identifier (`TPM_ALG_ID`).
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct AlgId(pub u16_be);
@@ -601,19 +621,30 @@ impl AlgId {
     }
 }
 
+/// Individual algorithm identifiers recognized by the TPM.
 #[expect(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 #[repr(u16)]
 pub enum AlgIdEnum {
+    /// `$TPM_ALG_RSA` - RSA asymmetric algorithm family.
     RSA = 0x0001,
+    /// `$TPM_ALG_SHA1` - SHA-1 hashing algorithm.
     SHA = 0x0004,
+    /// `$TPM_ALG_AES` - AES symmetric cipher family.
     AES = 0x0006,
+    /// `$TPM_ALG_SHA256` - SHA-256 hashing algorithm.
     SHA256 = 0x000b,
+    /// `$TPM_ALG_SHA384` - SHA-384 hashing algorithm.
     SHA384 = 0x000c,
+    /// `$TPM_ALG_SHA512` - SHA-512 hashing algorithm.
     SHA512 = 0x000d,
+    /// `$TPM_ALG_NULL` - indicates the absence of an algorithm.
     NULL = 0x0010,
+    /// `$TPM_ALG_SM3_256` - SM3-256 hashing algorithm.
     SM3_256 = 0x0012,
+    /// `$TPM_ALG_RSASSA` - RSA signature scheme.
     RSASSA = 0x0014,
+    /// `$TPM_ALG_CFB` - Cipher feedback mode for symmetric ciphers.
     CFB = 0x0043,
 }
 
@@ -624,6 +655,7 @@ impl From<AlgIdEnum> for AlgId {
 }
 
 impl AlgIdEnum {
+    /// Converts a raw algorithm identifier into an `AlgIdEnum`.
     pub fn from_u16(val: u16) -> Option<AlgIdEnum> {
         let ret = match val {
             0x0004 => Self::SHA,
@@ -662,6 +694,7 @@ impl From<u32> for TpmaObject {
     }
 }
 
+/// Bitfield representation of the `TPMA_OBJECT` attribute mask.
 #[bitfield(u32)]
 pub struct TpmaObjectBits {
     _reserved0: bool,
@@ -709,6 +742,7 @@ impl From<u32> for TpmaNv {
     }
 }
 
+/// Bitfield representation of the `TPMA_NV` attribute mask.
 #[bitfield(u32)]
 pub struct TpmaNvBits {
     pub nv_ppwrite: bool,
@@ -771,16 +805,20 @@ pub mod protocol {
     pub mod common {
         use super::*;
 
+        /// Wire-level header that precedes every TPM command buffer.
         #[repr(C)]
         #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct CmdHeader {
+            /// Identifies whether a command includes one or more sessions.
             pub session_tag: SessionTag,
+            /// Total size in bytes of the serialized command structure.
             pub size: u32_be,
+            /// Numeric identifier of the TPM command being invoked.
             pub command_code: CommandCode,
         }
 
         impl CmdHeader {
-            /// Construct a header for a fixed-size command
+            /// Constructs a header for a fixed-size command payload.
             pub fn new<Cmd: Sized>(
                 session_tag: SessionTag,
                 command_code: CommandCode,
@@ -793,11 +831,15 @@ pub mod protocol {
             }
         }
 
+        /// Wire-level header returned with every TPM command response.
         #[repr(C)]
         #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct ReplyHeader {
+            /// Session tag echoed by the TPM for the response.
             pub session_tag: u16_be,
+            /// Total size in bytes of the serialized response buffer.
             pub size: u32_be,
+            /// Result code describing success or failure of the command.
             pub response_code: u32_be,
         }
 
@@ -854,16 +896,22 @@ pub mod protocol {
             }
         }
 
+        /// Authorization block accompanying a TPM command.
         #[repr(C)]
         #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct CmdAuth {
+            /// Handle being used to authorize the command.
             handle: ReservedHandle,
+            /// Size of the caller-provided nonce.
             nonce_2b: u16_be,
+            /// Session attributes associated with the authorization.
             session: u8,
+            /// Size of the authorization buffer.
             auth_2b: u16_be,
         }
 
         impl CmdAuth {
+            /// Builds a command authorization descriptor from raw pieces.
             pub fn new(handle: ReservedHandle, nonce_2b: u16, session: u8, auth_2b: u16) -> Self {
                 CmdAuth {
                     handle,
@@ -874,11 +922,15 @@ pub mod protocol {
             }
         }
 
+        /// Authorization block returned with a TPM command response.
         #[repr(C)]
         #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub struct ReplyAuth {
+            /// Size of the TPM-provided nonce.
             pub nonce_2b: u16_be,
+            /// Session attributes echoed by the TPM.
             pub session: u8,
+            /// Size of the returned authorization buffer.
             pub auth_2b: u16_be,
         }
     }
@@ -888,8 +940,10 @@ pub mod protocol {
 
     /// Marker trait for a struct that corresponds to a TPM Command
     pub trait TpmCommand: IntoBytes + FromBytes + Sized + Immutable + KnownLayout {
+        /// Reply type returned when the command is executed.
         type Reply: TpmReply;
 
+        /// Validates and deserializes a raw reply buffer into the strongly typed reply.
         fn base_validate_reply(
             reply_buf: &[u8],
             session_tag: impl Into<SessionTag>,
@@ -904,8 +958,10 @@ pub mod protocol {
 
     /// Marker trait for a struct that corresponds to a TPM Reply
     pub trait TpmReply: IntoBytes + FromBytes + Sized + Immutable + KnownLayout {
+        /// Command type that produced this reply.
         type Command: TpmCommand;
 
+        /// Performs generic validation of the reply header.
         fn base_validation(
             &self,
             session_tag: SessionTag,
@@ -916,7 +972,9 @@ pub mod protocol {
                 .0; // TODO: zerocopy: error (https://github.com/microsoft/openvmm/issues/759)
             header.base_validation(session_tag, self.payload_size() as u32)
         }
+        /// Attempts to parse a reply structure from raw bytes.
         fn deserialize(bytes: &[u8]) -> Option<Self>;
+        /// Returns the size of the payload area (bytes after the reply header).
         fn payload_size(&self) -> usize;
     }
 
@@ -924,9 +982,11 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct Tpm2bBuffer {
+        /// Length of data stored in `buffer`.
         pub size: u16_be,
         // Use value that is large enough as the buffer size so that we
         // only need to define one struct.
+        /// Raw bytes backing the buffer.
         pub buffer: [u8; MAX_DIGEST_BUFFER_SIZE],
     }
 
@@ -950,6 +1010,7 @@ pub mod protocol {
             })
         }
 
+        /// Serializes the buffer into the TPM 2B wire format.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -959,6 +1020,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Parses a TPM 2B buffer from bytes.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<u16_be>();
@@ -985,6 +1047,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of payload bytes occupied by this structure.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -999,11 +1062,14 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmlPcrSelection {
+        /// Number of valid `PcrSelection` entries in `pcr_selections`.
         pub count: u32_be,
+        /// Fixed array containing individual PCR selection descriptors.
         pub pcr_selections: [PcrSelection; 5],
     }
 
     impl TpmlPcrSelection {
+        /// Builds a PCR selection list from a slice of PCR selections.
         pub fn new(pcr_selections: &[PcrSelection]) -> Result<Self, InvalidInput> {
             let count = pcr_selections.len();
             if count > 5 {
@@ -1019,6 +1085,7 @@ pub mod protocol {
             })
         }
 
+        /// Serializes the PCR selection list into bytes.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1030,6 +1097,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Attempts to parse a PCR selection list from bytes.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<u32_be>();
@@ -1056,6 +1124,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of bytes occupied by the serialized structure.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
             let count = self.count;
@@ -1078,6 +1147,7 @@ pub mod protocol {
     }
 
     impl TpmsSensitiveCreate {
+        /// Builds the sensitive payload using caller-provided auth and seed material.
         pub fn new(user_auth: &[u8], data: &[u8]) -> Result<Self, TpmProtoError> {
             let user_auth =
                 Tpm2bBuffer::new(user_auth).map_err(TpmProtoError::TpmsSensitiveCreateUserAuth)?;
@@ -1085,6 +1155,7 @@ pub mod protocol {
             Ok(Self { user_auth, data })
         }
 
+        /// Serializes the structure into a TPM buffer.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1094,6 +1165,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Returns the payload length of the serialized structure.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1113,6 +1185,7 @@ pub mod protocol {
     }
 
     impl Tpm2bSensitiveCreate {
+        /// Wraps a sensitive payload with its serialized size.
         pub fn new(sensitive: TpmsSensitiveCreate) -> Self {
             let size = sensitive.payload_size() as u16;
             Self {
@@ -1121,6 +1194,7 @@ pub mod protocol {
             }
         }
 
+        /// Serializes the wrapped sensitive payload.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1130,6 +1204,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Returns the size in bytes of the encoded structure.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
             let size = self.size;
@@ -1150,12 +1225,14 @@ pub mod protocol {
     }
 
     impl TpmtRsaScheme {
+        /// Create a TpmtRsaScheme from its components.
         pub fn new(scheme: AlgId, hash_alg: Option<AlgId>) -> Self {
             let hash_alg = hash_alg.map_or_else(|| AlgId::new(0), |v| v);
 
             Self { scheme, hash_alg }
         }
 
+        /// Serializes the structure into a byte buffer.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1170,6 +1247,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Deserializes the structure from a byte buffer.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<AlgId>();
@@ -1191,6 +1269,7 @@ pub mod protocol {
             Some(Self { scheme, hash_alg })
         }
 
+        /// Returns the size in bytes of the encoded structure.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1214,6 +1293,7 @@ pub mod protocol {
     }
 
     impl TpmtSymDefObject {
+        /// Creates a new TpmtSymDefObject.
         pub fn new(algorithm: AlgId, key_bits: Option<u16>, mode: Option<AlgId>) -> Self {
             let key_bits = key_bits.map_or_else(|| new_u16_be(0), |v| v.into());
             let mode = mode.map_or_else(|| AlgId::new(0), |v| v);
@@ -1225,6 +1305,7 @@ pub mod protocol {
             }
         }
 
+        /// Serializes the structure into a byte buffer.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1239,6 +1320,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Deserializes the structure from a byte buffer.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<AlgId>();
@@ -1270,6 +1352,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the size in bytes of the encoded structure.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1284,17 +1367,19 @@ pub mod protocol {
         }
     }
 
-    /// `TPMS_RSA_PARMS`
+    /// Parameters describing an RSA key (`TPMS_RSA_PARAMS`).
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmsRsaParams {
         symmetric: TpmtSymDefObject,
         scheme: TpmtRsaScheme,
         key_bits: u16_be,
+        /// Public exponent value (`0` encodes $65537$).
         pub exponent: u32_be,
     }
 
     impl TpmsRsaParams {
+        /// Creates RSA parameters with the provided symmetric definition and scheme.
         pub fn new(
             symmetric: TpmtSymDefObject,
             scheme: TpmtRsaScheme,
@@ -1309,6 +1394,7 @@ pub mod protocol {
             }
         }
 
+        /// Serializes the parameters into TPM wire format.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1320,6 +1406,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Deserializes parameters from TPM wire format.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = 0;
@@ -1357,6 +1444,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of bytes emitted by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1369,21 +1457,25 @@ pub mod protocol {
         }
     }
 
-    /// `TPMT_PUBLIC`
+    /// Public area describing a TPM object (`TPMT_PUBLIC`).
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmtPublic {
         my_type: AlgId,
         name_alg: AlgId,
+        /// Attributes that define object capabilities.
         pub object_attributes: TpmaObject,
         auth_policy: Tpm2bBuffer,
         // `TPMS_RSA_PARAMS`
+        /// Algorithm-specific parameters associated with the object.
         pub parameters: TpmsRsaParams,
         // `TPM2B_PUBLIC_KEY_RSA`
+        /// Unique data that identifies the object.
         pub unique: Tpm2bBuffer,
     }
 
     impl TpmtPublic {
+        /// Builds a public area from individual components.
         pub fn new(
             my_type: AlgId,
             name_alg: AlgId,
@@ -1405,6 +1497,7 @@ pub mod protocol {
             })
         }
 
+        /// Serializes the public area into TPM wire format.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1418,6 +1511,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Parses the public area from TPM wire format.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<AlgId>();
@@ -1464,6 +1558,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of bytes emitted by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1478,15 +1573,18 @@ pub mod protocol {
         }
     }
 
-    /// `TPM2B_PUBLIC`
+    /// Size-prefixed wrapper for [`TpmtPublic`] (`TPM2B_PUBLIC`).
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct Tpm2bPublic {
+        /// Size of the serialized public area.
         pub size: u16_be,
+        /// Embedded public area contents.
         pub public_area: TpmtPublic,
     }
 
     impl Tpm2bPublic {
+        /// Wraps the given public area and records its serialized size.
         pub fn new(public_area: TpmtPublic) -> Self {
             let size = public_area.payload_size() as u16;
             Self {
@@ -1495,6 +1593,7 @@ pub mod protocol {
             }
         }
 
+        /// Serializes the wrapper into TPM wire format.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1504,6 +1603,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Parses the wrapper from TPM wire format.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let end = size_of::<u16_be>();
@@ -1520,6 +1620,7 @@ pub mod protocol {
             Some(Self { size, public_area })
         }
 
+        /// Returns the number of bytes emitted by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1544,6 +1645,7 @@ pub mod protocol {
     }
 
     impl TpmsCreationData {
+        /// Attempts to parse a creation data structure from the TPM wire representation.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = 0;
@@ -1591,6 +1693,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of bytes required to encode this structure.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1615,6 +1718,7 @@ pub mod protocol {
     }
 
     impl Tpm2bCreationData {
+        /// Parses a size-prefixed creation data blob from the TPM wire format.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let end = size_of::<u16_be>();
@@ -1634,6 +1738,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of bytes required to encode this structure.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1654,6 +1759,7 @@ pub mod protocol {
     }
 
     impl TpmtTkCreation {
+        /// Parses a creation ticket (`TPMT_TK_CREATION`) from the TPM wire encoding.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<SessionTag>();
@@ -1679,6 +1785,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of bytes required to encode this ticket.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1690,18 +1797,21 @@ pub mod protocol {
         }
     }
 
-    /// `TPMS_NV_PUBLIC`
+    /// Description of a TPM NV index (`TPMS_NV_PUBLIC`).
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmsNvPublic {
         nv_index: u32_be,
         name_alg: AlgId,
+        /// Attribute flags controlling NV behavior.
         pub attributes: TpmaNv,
         auth_policy: Tpm2bBuffer,
+        /// Size of the stored NV data in bytes.
         pub data_size: u16_be,
     }
 
     impl TpmsNvPublic {
+        /// Constructs an NV public description from discrete fields.
         pub fn new(
             nv_index: u32,
             name_alg: AlgId,
@@ -1721,6 +1831,7 @@ pub mod protocol {
             })
         }
 
+        /// Serializes the NV public structure into TPM wire format.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1733,6 +1844,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Deserializes an NV public structure from TPM wire format.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<u32_be>();
@@ -1775,6 +1887,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of bytes emitted by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1788,15 +1901,17 @@ pub mod protocol {
         }
     }
 
-    /// `TPM2B_NV_PUBLIC`
+    /// Size-prefixed wrapper for [`TpmsNvPublic`] (`TPM2B_NV_PUBLIC`).
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct Tpm2bNvPublic {
         size: u16_be,
+        /// Wrapped NV index description.
         pub nv_public: TpmsNvPublic,
     }
 
     impl Tpm2bNvPublic {
+        /// Wraps the given NV public information and records its serialized size.
         pub fn new(nv_public: TpmsNvPublic) -> Result<Self, InvalidInput> {
             let size = nv_public.payload_size();
             if size > u16::MAX.into() {
@@ -1809,6 +1924,7 @@ pub mod protocol {
             })
         }
 
+        /// Serializes the wrapper into TPM wire format.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -1818,6 +1934,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Parses the wrapper from TPM wire format.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let end = size_of::<u16_be>();
@@ -1834,6 +1951,7 @@ pub mod protocol {
             Some(Self { size, nv_public })
         }
 
+        /// Returns the number of bytes emitted by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -1846,6 +1964,7 @@ pub mod protocol {
 
     // === ClearControl === //
 
+    /// Command body for `TPM2_ClearControl`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ClearControlCmd {
@@ -1857,6 +1976,7 @@ pub mod protocol {
     }
 
     impl ClearControlCmd {
+        /// Creates a `ClearControl` command that toggles the disable flag.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -1873,11 +1993,15 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_ClearControl`.
     #[repr(C)]
     #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ClearControlReply {
+        /// Common reply header preceding parameter data.
         pub header: ReplyHeader,
+        /// Size of the authorization area that follows.
         pub param_size: u32_be,
+        /// Authorization block returned by the TPM.
         pub auth: common::ReplyAuth,
     }
 
@@ -1899,6 +2023,7 @@ pub mod protocol {
 
     // === Clear === //
 
+    /// Command body for `TPM2_Clear`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ClearCmd {
@@ -1910,6 +2035,7 @@ pub mod protocol {
     }
 
     impl ClearCmd {
+        /// Creates a `Clear` command targeting the provided hierarchy handle.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -1924,11 +2050,15 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_Clear`.
     #[repr(C)]
     #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ClearReply {
+        /// Common reply header preceding parameter data.
         pub header: ReplyHeader,
+        /// Size of the authorization area that follows.
         pub param_size: u32_be,
+        /// Authorization block returned by the TPM.
         pub auth: common::ReplyAuth,
     }
 
@@ -1950,12 +2080,15 @@ pub mod protocol {
 
     // === Startup === //
 
-    #[expect(dead_code)]
+    /// Identifies the type of TPM startup being requested.
     pub enum StartupType {
+        /// Initialize state as though coming from a powered-off state.
         Clear,
+        /// Resume from previously saved state.
         State,
     }
 
+    /// Command body for `TPM2_Startup`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct StartupCmd {
@@ -1964,6 +2097,7 @@ pub mod protocol {
     }
 
     impl StartupCmd {
+        /// Creates a TPM startup command with the given startup type.
         pub fn new(session_tag: SessionTag, startup_type: StartupType) -> StartupCmd {
             StartupCmd {
                 header: CmdHeader::new::<Self>(session_tag, CommandCodeEnum::Startup.into()),
@@ -1976,9 +2110,11 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_Startup`.
     #[repr(C)]
     #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct StartupReply {
+        /// Common reply header preceding parameter data.
         pub header: ReplyHeader,
     }
 
@@ -2000,6 +2136,7 @@ pub mod protocol {
 
     // === Self Test === //
 
+    /// Command body for `TPM2_SelfTest`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SelfTestCmd {
@@ -2008,6 +2145,7 @@ pub mod protocol {
     }
 
     impl SelfTestCmd {
+        /// Creates a self-test command optionally requesting a full diagnostic.
         pub fn new(session_tag: SessionTag, full_test: bool) -> SelfTestCmd {
             SelfTestCmd {
                 header: CmdHeader::new::<Self>(session_tag, CommandCodeEnum::SelfTest.into()),
@@ -2016,9 +2154,11 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_SelfTest`.
     #[repr(C)]
     #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SelfTestReply {
+        /// Common reply header preceding parameter data.
         pub header: ReplyHeader,
     }
 
@@ -2040,20 +2180,20 @@ pub mod protocol {
 
     // === Hierarchy Control === //
 
+    /// Command body for `TPM2_HierarchyControl`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HierarchyControlCmd {
         header: CmdHeader,
-
         auth_handle: ReservedHandle,
         auth_size: u32_be,
         auth: common::CmdAuth,
-
         hierarchy: ReservedHandle,
         state: u8,
     }
 
     impl HierarchyControlCmd {
+        /// Creates a hierarchy control command to enable or disable a hierarchy.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -2072,11 +2212,15 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_HierarchyControl`.
     #[repr(C)]
     #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HierarchyControlReply {
+        /// Common reply header preceding parameter data.
         pub header: ReplyHeader,
+        /// Size of the authorization area that follows.
         pub param_size: u32_be,
+        /// Authorization block returned by the TPM.
         pub auth: common::ReplyAuth,
     }
 
@@ -2096,17 +2240,20 @@ pub mod protocol {
         }
     }
 
-    // === Pcr Allocate === //
-
+    /// Selection mask used when addressing PCR banks.
     #[repr(C)]
     #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PcrSelection {
+        /// Hash algorithm that identifies the PCR bank.
         pub hash: AlgId,
+        /// Number of significant bytes in the selection bitmap.
         pub size_of_select: u8,
+        /// Bitmap describing the selected PCR indices.
         pub bitmap: [u8; 3],
     }
 
     impl PcrSelection {
+        /// Serializes the selection into TPM wire format.
         pub fn serialize(self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -2117,6 +2264,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Parses a selection from TPM wire format.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<AlgId>();
@@ -2150,6 +2298,7 @@ pub mod protocol {
             })
         }
 
+        /// Returns the number of bytes emitted by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -2161,6 +2310,7 @@ pub mod protocol {
         }
     }
 
+    /// Command payload for `TPM2_PCR_Allocate`.
     #[repr(C)]
     #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PcrAllocateCmd {
@@ -2174,6 +2324,7 @@ pub mod protocol {
     }
 
     impl PcrAllocateCmd {
+        /// Maps bit positions in the PCR allocation request to the corresponding hashing algorithm identifiers.
         pub const HASH_ALG_TO_ID: [(u32, AlgId); 5] = [
             (1 << 0, AlgId::new(AlgIdEnum::SHA as u16)),
             (1 << 1, AlgId::new(AlgIdEnum::SHA256 as u16)),
@@ -2182,9 +2333,7 @@ pub mod protocol {
             (1 << 4, AlgId::new(AlgIdEnum::SM3_256 as u16)),
         ];
 
-        /// # Panics
-        ///
-        /// `pcr_selections` must be have a len less than `TCG_BOOT_HASH_COUNT`
+        /// Builds a new PCR allocation command targeting the supplied hierarchy and PCR selections.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -2207,6 +2356,7 @@ pub mod protocol {
             Ok(cmd)
         }
 
+        /// Serializes the command into TPM wire format.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -2219,6 +2369,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Returns the total number of bytes emitted by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -2232,16 +2383,24 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload returned from `TPM2_PCR_Allocate`.
     #[repr(C)]
     #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PcrAllocateReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
+        /// Size in bytes of the authorization area.
         pub auth_size: u32_be,
+        /// Indicates whether the TPM accepted the allocation request.
         pub allocation_success: u8,
+        /// Maximum number of PCR slots supported after allocation.
         pub max_pcr: u32_be,
+        /// Additional space required to satisfy the allocation.
         pub size_needed: u32_be,
+        /// Remaining space available after allocation.
         pub size_available: u32_be,
 
+        /// Authorization data returned alongside the reply.
         pub auth: common::ReplyAuth,
     }
 
@@ -2263,6 +2422,7 @@ pub mod protocol {
 
     // === ChangeSeed === //
 
+    /// Command payload shared by `TPM2_ChangeEPS` and `TPM2_ChangePPS`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ChangeSeedCmd {
@@ -2273,6 +2433,7 @@ pub mod protocol {
     }
 
     impl ChangeSeedCmd {
+        /// Creates a change-seed command for the target hierarchy.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -2288,12 +2449,16 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for change-seed commands.
     #[repr(C)]
     #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ChangeSeedReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
+        /// Size in bytes of the parameter area that follows the header.
         pub param_size: u32_be,
 
+        /// Authorization data returned alongside the reply.
         pub auth: common::ReplyAuth,
     }
 
@@ -2315,9 +2480,11 @@ pub mod protocol {
 
     // === CreatePrimary === //
 
+    /// Command payload for `TPM2_CreatePrimary`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct CreatePrimaryCmd {
+        /// Command metadata and transport header.
         pub header: CmdHeader,
         primary_handle: ReservedHandle,
         // Authorization area
@@ -2331,6 +2498,7 @@ pub mod protocol {
     }
 
     impl CreatePrimaryCmd {
+        /// Builds a primary key creation command with the provided template and authorization.
         pub fn new(
             session: SessionTag,
             primary_handle: ReservedHandle,
@@ -2366,6 +2534,7 @@ pub mod protocol {
             Ok(cmd)
         }
 
+        /// Serializes the command payload into TPM wire format.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -2381,6 +2550,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Returns the number of bytes that [`Self::serialize`] will emit.
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -2397,14 +2567,18 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload returned from `TPM2_CreatePrimary`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct CreatePrimaryReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
+        /// Handle assigned to the created primary object.
         pub object_handle: ReservedHandle,
         // Parameter size
         param_size: u32_be,
         // Parameters
+        /// Public portion of the created primary object.
         pub out_public: Tpm2bPublic,
         creation_data: Tpm2bCreationData,
         creation_hash: Tpm2bBuffer,
@@ -2503,15 +2677,18 @@ pub mod protocol {
 
     // === FlushContext === //
 
+    /// Command payload for `TPM2_FlushContext`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct FlushContextCmd {
+        /// Command metadata and transport header.
         pub header: CmdHeader,
         // Parameter
         flush_handle: ReservedHandle,
     }
 
     impl FlushContextCmd {
+        /// Creates a flush context command targeting the specified handle.
         pub fn new(flush_handle: ReservedHandle) -> Self {
             Self {
                 header: CmdHeader::new::<Self>(
@@ -2523,9 +2700,11 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload returned from `TPM2_FlushContext`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct FlushContextReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
     }
 
@@ -2547,6 +2726,7 @@ pub mod protocol {
 
     // === EvictControl === //
 
+    /// Command payload for `TPM2_EvictControl`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EvictControlCmd {
@@ -2561,6 +2741,7 @@ pub mod protocol {
     }
 
     impl EvictControlCmd {
+        /// Creates an evict control command that persists or evicts the specified object handle.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -2579,9 +2760,11 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_EvictControl`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct EvictControlReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
     }
 
@@ -2603,6 +2786,7 @@ pub mod protocol {
 
     // === ReadPublic === //
 
+    /// Command payload for `TPM2_ReadPublic`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ReadPublicCmd {
@@ -2611,6 +2795,7 @@ pub mod protocol {
     }
 
     impl ReadPublicCmd {
+        /// Builds a read-public command for the given object handle.
         pub fn new(session: SessionTag, object_handle: ReservedHandle) -> Self {
             Self {
                 header: CmdHeader::new::<Self>(session, CommandCodeEnum::ReadPublic.into()),
@@ -2619,10 +2804,13 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload returned from `TPM2_ReadPublic`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct ReadPublicReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
+        /// Public portion of the requested object.
         pub out_public: Tpm2bPublic,
         name: Tpm2bBuffer,
         qualified_name: Tpm2bBuffer,
@@ -2689,6 +2877,7 @@ pub mod protocol {
 
     // === Nv DefineSpace === //
 
+    /// Command payload for `TPM2_NV_DefineSpace`.
     #[repr(C)]
     #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvDefineSpaceCmd {
@@ -2703,6 +2892,7 @@ pub mod protocol {
     }
 
     impl NvDefineSpaceCmd {
+        /// Creates an NV index definition command with the provided attributes and authorization data.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -2730,6 +2920,7 @@ pub mod protocol {
             Ok(cmd)
         }
 
+        /// Serializes the command into TPM wire format.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -2743,6 +2934,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Returns the number of bytes produced by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -2757,9 +2949,11 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_NV_DefineSpace`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvDefineSpaceReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
     }
 
@@ -2781,6 +2975,7 @@ pub mod protocol {
 
     // === Nv UndefineSpace === //
 
+    /// Command payload for `TPM2_NV_UndefineSpace`.
     #[repr(C)]
     #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvUndefineSpaceCmd {
@@ -2793,6 +2988,7 @@ pub mod protocol {
     }
 
     impl NvUndefineSpaceCmd {
+        /// Creates an NV undefine command targeting the specified index.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -2809,9 +3005,11 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_NV_UndefineSpace`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvUndefineSpaceReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
     }
 
@@ -2833,6 +3031,7 @@ pub mod protocol {
 
     // === Nv ReadPublic === //
 
+    /// Command payload for `TPM2_NV_ReadPublic`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct NvReadPublicCmd {
@@ -2841,6 +3040,7 @@ pub mod protocol {
     }
 
     impl NvReadPublicCmd {
+        /// Builds an NV read-public command targeting the requested index.
         pub fn new(session: SessionTag, nv_index: u32) -> Self {
             Self {
                 header: CmdHeader::new::<Self>(session, CommandCodeEnum::NV_ReadPublic.into()),
@@ -2849,11 +3049,14 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_NV_ReadPublic`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvReadPublicReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
         // Parameters
+        /// Public information describing the NV index.
         pub nv_public: Tpm2bNvPublic,
         nv_name: Tpm2bBuffer,
     }
@@ -2912,22 +3115,27 @@ pub mod protocol {
 
     // === Nv Write === //
 
+    /// Command payload for `TPM2_NV_Write`.
     #[repr(C)]
     #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvWriteCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
+        /// NV index being written.
         pub nv_index: u32_be,
         // Authorization area
         auth_size: u32_be,
         auth: common::CmdAuth,
         auth_value: u64_be,
         // Parameters
+        /// Buffer containing the data to write.
         pub data: Tpm2bBuffer,
+        /// Offset within the NV index at which the write begins.
         pub offset: u16_be,
     }
 
     impl NvWriteCmd {
+        /// Constructs an NV write command with the provided payload and authorization information.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -2961,6 +3169,7 @@ pub mod protocol {
             Ok(cmd)
         }
 
+        /// Updates the data payload and offset while recomputing the payload size.
         pub fn update_write_data(&mut self, data: &[u8], offset: u16) -> Result<(), TpmProtoError> {
             let data = Tpm2bBuffer::new(data).map_err(TpmProtoError::NvWriteData)?;
 
@@ -2971,6 +3180,7 @@ pub mod protocol {
             Ok(())
         }
 
+        /// Serializes the command into TPM wire format.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -2988,6 +3198,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Returns the number of bytes emitted by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -3006,9 +3217,11 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_NV_Write`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvWriteReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
     }
 
@@ -3030,21 +3243,25 @@ pub mod protocol {
 
     // === Nv Read === //
 
+    /// Command payload for `TPM2_NV_Read`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct NvReadCmd {
         header: CmdHeader,
         auth_handle: ReservedHandle,
+        /// NV index being read.
         pub nv_index: u32_be,
         // Authorization area
         auth_size: u32_be,
         auth: common::CmdAuth,
         // Parameters
         size: u16_be,
+        /// Offset within the NV index that the read should start from.
         pub offset: u16_be,
     }
 
     impl NvReadCmd {
+        /// Constructs an NV read command for the specified index and range.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -3064,11 +3281,13 @@ pub mod protocol {
             }
         }
 
+        /// Updates the read size and offset used by the command payload.
         pub fn update_read_parameters(&mut self, size: u16, offset: u16) {
             self.size = size.into();
             self.offset = offset.into();
         }
 
+        /// Attempts to parse an NV read command from raw TPM command bytes.
         pub fn deserialize(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = size_of::<CmdHeader>();
@@ -3131,14 +3350,19 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_NV_Read`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct NvReadReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
+        /// Size in bytes of the parameter area contained in the reply.
         pub parameter_size: u32_be,
         // Parameter
+        /// Buffer containing the data read from NV storage.
         pub data: Tpm2bBuffer,
         // Authorization area
+        /// Authorization data returned alongside the reply.
         pub auth: common::ReplyAuth,
     }
 
@@ -3209,28 +3433,39 @@ pub mod protocol {
 
     // === Import === //
 
+    /// Command payload for `TPM2_Import`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ImportCmd {
+        /// Command metadata and transport header.
         pub header: CmdHeader,
+        /// Handle that authorizes the import operation.
         pub auth_handle: ReservedHandle,
         // Authorization area
+        /// Size of the authorization area.
         pub auth_size: u32_be,
+        /// Authorization area contents.
         pub auth: common::CmdAuth,
         // Parameters
         // `TPM2B_DATA`
+        /// Optional symmetric key used to wrap the duplicate blob.
         pub encryption_key: Tpm2bBuffer,
         // `TPM2B_PUBLIC`
+        /// Public area of the object being imported.
         pub object_public: Tpm2bPublic,
         // `TPM2B_PRIVATE`
+        /// Encrypted private area of the object.
         pub duplicate: Tpm2bBuffer,
         // `TPM2B_ENCRYPTED_SECRET`
+        /// Encrypted seed for symmetric protection.
         pub in_sym_seed: Tpm2bBuffer,
         // `TPMT_SYM_DEF_OBJECT`
+        /// Symmetric algorithm definition used during import.
         pub symmetric_alg: TpmtSymDefObject,
     }
 
     impl ImportCmd {
+        /// Builds an import command using the provided buffers and authorization context.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -3258,7 +3493,7 @@ pub mod protocol {
             cmd
         }
 
-        /// Deserialize the command payload assuming no inner wrapping key
+        /// Deserializes the command parameters assuming no inner wrapping key (`TPM_ALG_NULL`).
         pub fn deserialize_no_wrapping_key(bytes: &[u8]) -> Option<Self> {
             let mut start = 0;
             let mut end = 0;
@@ -3298,6 +3533,7 @@ pub mod protocol {
             })
         }
 
+        /// Serializes the command into TPM wire format.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -3314,6 +3550,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Returns the number of bytes produced by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -3331,15 +3568,20 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_Import`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct ImportReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
+        /// Size in bytes of the parameter area contained in the reply.
         pub parameter_size: u32_be,
         // Parameter
         // `TPM2B_PRIVATE`
+        /// Private portion of the imported object encrypted for the TPM.
         pub out_private: Tpm2bBuffer,
         // Authorization area
+        /// Authorization data returned alongside the reply.
         pub auth: common::ReplyAuth,
     }
 
@@ -3414,6 +3656,7 @@ pub mod protocol {
 
     // === Load === //
 
+    /// Command payload for `TPM2_Load`.
     #[repr(C)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct LoadCmd {
@@ -3430,6 +3673,7 @@ pub mod protocol {
     }
 
     impl LoadCmd {
+        /// Creates a load command for importing an object into the provided hierarchy.
         pub fn new(
             session: SessionTag,
             auth_handle: ReservedHandle,
@@ -3451,6 +3695,7 @@ pub mod protocol {
             cmd
         }
 
+        /// Serializes the command into TPM wire format.
         pub fn serialize(&self) -> Vec<u8> {
             let mut buffer = Vec::new();
 
@@ -3464,6 +3709,7 @@ pub mod protocol {
             buffer
         }
 
+        /// Returns the number of bytes produced by [`Self::serialize`].
         pub fn payload_size(&self) -> usize {
             let mut payload_size = 0;
 
@@ -3478,16 +3724,22 @@ pub mod protocol {
         }
     }
 
+    /// Reply payload for `TPM2_Load`.
     #[repr(C)]
     #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct LoadReply {
+        /// Standard TPM reply header and status.
         pub header: ReplyHeader,
+        /// Object handle assigned by the TPM once the object is loaded.
         pub object_handle: ReservedHandle,
+        /// Size in bytes of the parameter area contained in the reply.
         pub parameter_size: u32_be,
         // Parameter
         // `TPM2B_NAME`
+        /// Qualified name of the loaded object.
         pub name: Tpm2bBuffer,
         // Authorization area
+        /// Authorization data returned alongside the reply.
         pub auth: common::ReplyAuth,
     }
 

@@ -258,6 +258,9 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_vmgstool, use_vmgstool) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
 
+            let (pub_tpm_guest_tests, use_tpm_guest_tests) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-tpm_guest_tests"));
+
             // filter off interesting artifacts required by the VMM tests job
             match arch {
                 CommonArch::X86_64 => {
@@ -269,6 +272,8 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_windows_x86.use_tmk_vmm = Some(use_tmk_vmm.clone());
                     vmm_tests_artifacts_windows_x86.use_prep_steps = Some(use_prep_steps.clone());
                     vmm_tests_artifacts_windows_x86.use_vmgstool = Some(use_vmgstool.clone());
+                    vmm_tests_artifacts_windows_x86.use_tpm_guest_tests =
+                        Some(use_tpm_guest_tests.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_openvmm = Some(use_openvmm.clone());
@@ -400,6 +405,14 @@ impl IntoPipeline for CheckinGatesCli {
                     with_crypto: true,
                     with_test_helpers: true,
                     vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    tpm_guest_tests: ctx.publish_typed_artifact(pub_tpm_guest_tests),
                 });
 
             // Hang building the windows VMM tests off this big windows job.
@@ -450,6 +463,8 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_ohcldiag_dev, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
             let (pub_tmks, use_tmks) = pipeline.new_typed_artifact(format!("{arch_tag}-tmks"));
+            let (pub_tpm_guest_tests, use_tpm_guest_tests) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-tpm_guest_tests"));
 
             // NOTE: the choice to build it as part of this linux job was pretty
             // arbitrary. It could just as well hang off the windows job.
@@ -470,6 +485,8 @@ impl IntoPipeline for CheckinGatesCli {
                         Some(use_guest_test_uefi.clone());
                     vmm_tests_artifacts_windows_x86.use_tmks = Some(use_tmks.clone());
                     vmm_tests_artifacts_linux_x86.use_tmks = Some(use_tmks.clone());
+                    vmm_tests_artifacts_linux_x86.use_tpm_guest_tests =
+                        Some(use_tpm_guest_tests.clone());
                 }
                 CommonArch::Aarch64 => {
                     vmm_tests_artifacts_windows_aarch64.use_guest_test_uefi =
@@ -547,6 +564,14 @@ impl IntoPipeline for CheckinGatesCli {
                     arch,
                     profile: CommonProfile::from_release(release),
                     tmks: ctx.publish_typed_artifact(pub_tmks),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_tpm_guest_tests::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    tpm_guest_tests: ctx.publish_typed_artifact(pub_tpm_guest_tests),
                 });
 
             // Hang building the linux VMM tests off this big linux job.
@@ -1131,6 +1156,7 @@ mod vmm_tests_artifact_builders {
     use flowey_lib_hvlite::build_prep_steps::PrepStepsOutput;
     use flowey_lib_hvlite::build_tmk_vmm::TmkVmmOutput;
     use flowey_lib_hvlite::build_tmks::TmksOutput;
+    use flowey_lib_hvlite::build_tpm_guest_tests::TpmGuestTestsOutput;
     use flowey_lib_hvlite::build_vmgstool::VmgstoolOutput;
 
     pub type ResolveVmmTestsDepArtifacts =
@@ -1147,6 +1173,7 @@ mod vmm_tests_artifact_builders {
         // any machine
         pub use_guest_test_uefi: Option<UseTypedArtifact<GuestTestUefiOutput>>,
         pub use_tmks: Option<UseTypedArtifact<TmksOutput>>,
+        pub use_tpm_guest_tests: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
     }
 
     impl VmmTestsArtifactsBuilderLinuxX86 {
@@ -1158,6 +1185,7 @@ mod vmm_tests_artifact_builders {
                 use_pipette_linux_musl,
                 use_tmk_vmm,
                 use_tmks,
+                use_tpm_guest_tests,
             } = self;
 
             let use_guest_test_uefi = use_guest_test_uefi.ok_or("guest_test_uefi")?;
@@ -1166,6 +1194,7 @@ mod vmm_tests_artifact_builders {
             let use_pipette_windows = use_pipette_windows.ok_or("pipette_windows")?;
             let use_tmk_vmm = use_tmk_vmm.ok_or("tmk_vmm")?;
             let use_tmks = use_tmks.ok_or("tmks")?;
+            let use_tpm_guest_tests = use_tpm_guest_tests.ok_or("tpm_guest_tests")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1179,6 +1208,7 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm_linux_musl: None,
                 prep_steps: None,
                 vmgstool: None,
+                tpm_guest_tests: Some(ctx.use_typed_artifact(&use_tpm_guest_tests)),
             }))
         }
     }
@@ -1191,6 +1221,7 @@ mod vmm_tests_artifact_builders {
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         pub use_prep_steps: Option<UseTypedArtifact<PrepStepsOutput>>,
         pub use_vmgstool: Option<UseTypedArtifact<VmgstoolOutput>>,
+        pub use_tpm_guest_tests: Option<UseTypedArtifact<TpmGuestTestsOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
@@ -1213,6 +1244,7 @@ mod vmm_tests_artifact_builders {
                 use_tmks,
                 use_prep_steps,
                 use_vmgstool,
+                use_tpm_guest_tests,
             } = self;
 
             let use_openvmm = use_openvmm.ok_or("openvmm")?;
@@ -1225,6 +1257,7 @@ mod vmm_tests_artifact_builders {
             let use_tmks = use_tmks.ok_or("tmks")?;
             let use_prep_steps = use_prep_steps.ok_or("prep_steps")?;
             let use_vmgstool = use_vmgstool.ok_or("vmgstool")?;
+            let use_tpm_guest_tests = use_tpm_guest_tests.ok_or("tpm_guest_tests")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
@@ -1237,6 +1270,7 @@ mod vmm_tests_artifact_builders {
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: Some(ctx.use_typed_artifact(&use_prep_steps)),
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
+                tpm_guest_tests: Some(ctx.use_typed_artifact(&use_tpm_guest_tests)),
             }))
         }
     }
@@ -1292,6 +1326,7 @@ mod vmm_tests_artifact_builders {
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 prep_steps: None,
                 vmgstool: Some(ctx.use_typed_artifact(&use_vmgstool)),
+                tpm_guest_tests: None,
             }))
         }
     }
