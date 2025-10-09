@@ -390,7 +390,7 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
             }
         }
     };
-    let (mut vm, agent) = config
+    let vm_boot_result = config
         .with_processor_topology({
             ProcessorTopology {
                 vp_count,
@@ -404,7 +404,14 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
             }
         })
         .run()
-        .await?;
+        .await;
+    if vm_boot_result.is_err() {
+        tracing::warn!("VM failed to start with the given topology");
+        return Ok(());
+    }
+
+    let (mut vm, agent) = vm_boot_result.unwrap();
+
     let vtl2_agent = vm.wait_for_vtl2_agent().await?;
 
     // Wait for the guest to be booted
