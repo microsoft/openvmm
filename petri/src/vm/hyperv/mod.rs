@@ -170,7 +170,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
                     Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
                     Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
-                    None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
+                    None => powershell::HyperVGuestStateIsolationType::OpenHCL,
                 },
                 powershell::HyperVGeneration::Two,
                 guest.artifact(),
