@@ -21,7 +21,6 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::OwnedHandle;
 use std::path::Path;
 use windows::Win32::System;
-use windows::Win32::System::Memory;
 
 const LX_UTIL_DEFAULT_PERMISSIONS: u32 = 0o777;
 
@@ -1014,9 +1013,7 @@ pub fn set_file_times(
 }
 
 /// Create the reparse buffer for an LX symlink. The size of the buffer is returned in `size`.
-pub fn create_link_reparse_buffer(
-    target: AnsiStringRef<'_>,
-) -> lx::Result<pal::windows::RtlHeapBuffer> {
+pub fn create_link_reparse_buffer(target: AnsiStringRef<'_>) -> lx::Result<Vec<u8>> {
     let target_length = target.as_slice().len();
     let reparse_size =
         REPARSE_DATA_BUFFER_HEADER_SIZE + LX_UTIL_SYMLINK_TARGET_OFFSET as usize + target_length;
@@ -1026,18 +1023,12 @@ pub fn create_link_reparse_buffer(
         return Err(lx::Error::ENAMETOOLONG);
     }
 
+    let mut buf = vec![0u8; reparse_size];
     // SAFETY: Calling Win32 API to allocate heap memory, writing to the buffer,
     // accessing union fields, and constructing an RtlHeapBuffer. The buffer is guaranteed
     // large enough to write to all members.
     unsafe {
-        let buf = FileSystem::RtlAllocateHeap(
-            Memory::GetProcessHeap().map_err(|_| lx::Error::ENOMEM)?.0,
-            Some(Memory::HEAP_ZERO_MEMORY.0),
-            reparse_size,
-        );
-        assert!(!buf.is_null(), "out of memory");
-
-        let reparse: *mut SymlinkReparse = buf.cast();
+        let reparse: *mut SymlinkReparse = buf.as_mut_ptr().cast();
         (*reparse).header.ReparseTag = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
         (*reparse).header.ReparseDataLength =
             LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16;
@@ -1048,10 +1039,7 @@ pub fn create_link_reparse_buffer(
             target_length,
         );
 
-        Ok(pal::windows::RtlHeapBuffer::from_raw(
-            buf.cast(),
-            reparse_size,
-        ))
+        Ok(buf)
     }
 }
 
@@ -1225,4 +1213,21 @@ pub fn create_metadata_ea_buffer(
     }
 
     Ok(offset)
+}
+
+/// Update the metadata EAs for a file
+pub fn update_lx_attributes(
+    file_handle: &OwnedHandle,
+    uid: lx::uid_t,
+    gid: lx::gid_t,
+    mode: lx::mode_t,
+) -> lx::Result<()> {
+    if uid == lx::UID_INVALID && gid == lx::GID_INVALID && mode == lx::MODE_INVALID {
+        return Err(lx::Error::EINVAL);
+    }
+
+    let mut ea_buffer = [0u8; LX_UTIL_FS_METADATA_EA_BUFFER_SIZE];
+    let ea_size = create_metadata_ea_buffer(uid, gid, mode, 0, &mut ea_buffer)?;
+
+    util::set_extended_attr(file_handle, &ea_buffer[..ea_size])
 }

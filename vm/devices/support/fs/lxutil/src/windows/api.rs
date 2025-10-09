@@ -3,8 +3,6 @@
 
 #![expect(non_snake_case, dead_code)]
 
-use ntapi::ntioapi;
-use std::ffi;
 use std::os::windows::prelude::*;
 use winapi::shared::ntdef;
 use windows::Win32::Storage::FileSystem;
@@ -100,35 +98,6 @@ pub fn delay_load_lxutil() -> std::io::Result<()> {
 }
 
 pal::delayload!("lxutil.dll" {
-    pub fn LxUtilFsCreateMetadataEaBuffer(
-        uid: lx::uid_t,
-        gid: lx::gid_t,
-        mode: lx::mode_t,
-        device_id: lx::dev_t,
-        ea_buffer: *mut ffi::c_void,
-    ) -> ntdef::ULONG;
-
-    pub fn LxUtilFsCreateNtLinkReparseBuffer(
-        link_target: *const ntdef::UNICODE_STRING,
-        flags: ntdef::ULONG,
-        size: &mut ntdef::USHORT,
-    ) -> ntioapi::PREPARSE_DATA_BUFFER;
-
-    pub fn LxUtilFsGetLxFileSystemAttributes(
-        handle: RawHandle,
-        fs_type: usize,
-        stat_fs: &mut lx::StatFs,
-    ) -> i32;
-
-    pub fn LxUtilFsUpdateLxAttributes(
-        handle: RawHandle,
-        uid: lx::uid_t,
-        gid: lx::gid_t,
-        mode: lx::mode_t,
-    ) -> i32;
-
-    pub fn LxUtilSymlinkRead(link_file: RawHandle, link_target: *mut ntdef::UNICODE_STRING) -> i32;
-
     pub fn LxUtilXattrGet(
         handle: RawHandle,
         name: &ntdef::ANSI_STRING,

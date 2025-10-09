@@ -1,8 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::windows::path;
+use crate::windows::util;
 use pal::windows::UnicodeString;
+use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::OwnedHandle;
 use windows::Wdk::Storage::FileSystem;
+use windows::Win32::Foundation;
 use windows::Win32::System::SystemServices as W32Ss;
 
 // TODO: Remove the need for `unsafe` by enlightening this function of the full
@@ -123,7 +128,7 @@ pub unsafe fn read_nt_symlink(
     } else {
         let mut name = UnicodeString::new(substitute_name).map_err(|_| lx::Error::EIO)?;
 
-        super::path::unescape_path(name.as_mut_slice())
+        path::unescape_path(name.as_mut_slice())
     }
 }
 
@@ -136,4 +141,49 @@ pub unsafe fn read_nt_symlink_length(
     // The length is just the target's UTF-8 length.
     // SAFETY: The validity of the reparse buffer is guaranteed by the caller.
     Ok(unsafe { read_nt_symlink(reparse, state) }?.len() as _)
+}
+
+pub fn read(link_file: &OwnedHandle) -> lx::Result<String> {
+    let standard_info: FileSystem::FILE_STANDARD_INFORMATION =
+        util::query_information_file(link_file)?;
+
+    let high_part = (standard_info.EndOfFile & (i32::MAX as i64) << 32) >> 32;
+    let low_part = standard_info.EndOfFile & i32::MAX as i64;
+    if high_part != 0 || low_part == 0 || low_part > i16::MAX as i64 {
+        return Err(lx::Error::EIO);
+    }
+
+    let mut lx_target = vec![0u8; low_part as usize];
+
+    let mut iosb = Default::default();
+
+    // SAFETY: Calling Win32 API with valid parameters.
+    let status = unsafe {
+        FileSystem::NtReadFile(
+            Foundation::HANDLE(link_file.as_raw_handle()),
+            None,
+            None,
+            None,
+            &mut iosb,
+            lx_target.as_mut_ptr().cast(),
+            lx_target.capacity() as u32,
+            None,
+            None,
+        )
+    };
+
+    if status != Foundation::STATUS_SUCCESS {
+        return Err(lx::Error::EIO);
+    }
+
+    path::path_from_lx(&lx_target).and_then(|cow_path| {
+        let path = match cow_path {
+            std::borrow::Cow::Borrowed(p) => p,
+            std::borrow::Cow::Owned(ref s) => s.as_ref(),
+        };
+        if !path.is_absolute() {
+            return Err(lx::Error::EINVAL);
+        }
+        Ok(path.to_string_lossy().into_owned())
+    })
 }
