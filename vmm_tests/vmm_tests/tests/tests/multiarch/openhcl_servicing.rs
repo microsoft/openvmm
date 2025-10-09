@@ -11,6 +11,7 @@ use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
+use mesh::Cell;
 use mesh::CellUpdater;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
@@ -377,67 +378,5 @@ async fn apply_fault_with_keepalive(
             ..Default::default()
         },
     )
-    .await?;
-
-    fault_start_updater.set(false).await;
-    agent.ping().await?;
-
-    Ok(())
-}
-
-async fn create_keepalive_test_config(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
-    fault_configuration: FaultConfiguration,
-) -> Result<(petri::PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
-    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    let vtl0_nvme_lun = 1;
-    let vtl2_nsid = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
-    let scsi_instance = Guid::new_random();
-
-    config
-        .with_vmbus_redirect(true)
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
-        .modify_backend(move |b| {
-            b.with_custom_config(|c| {
-                // Add a fault controller to test the nvme controller functionality
-                c.vpci_devices.push(VpciDeviceConfig {
-                    vtl: DeviceVtl::Vtl2,
-                    instance_id: NVME_INSTANCE,
-                    resource: NvmeFaultControllerHandle {
-                        subsystem_id: Guid::new_random(),
-                        msix_count: 10,
-                        max_io_queues: 10,
-                        namespaces: vec![NamespaceDefinition {
-                            nsid: vtl2_nsid,
-                            read_only: false,
-                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                len: Some(256 * 1024),
-                            })
-                            .into_resource(),
-                        }],
-                        fault_config: fault_configuration,
-                    }
-                    .into_resource(),
-                })
-            })
-            // Assign the fault controller to VTL2
-            .with_custom_vtl2_settings(|v| {
-                v.dynamic.as_mut().unwrap().storage_controllers.push(
-                    Vtl2StorageControllerBuilder::scsi()
-                        .with_instance_id(scsi_instance)
-                        .add_lun(
-                            Vtl2LunBuilder::disk()
-                                .with_location(vtl0_nvme_lun)
-                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                                    ControllerType::Nvme,
-                                    NVME_INSTANCE,
-                                    vtl2_nsid,
-                                )),
-                        )
-                        .build(),
-                );
-            })
-        })
-        .run()
-        .await
+    .await
 }
