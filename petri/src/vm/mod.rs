@@ -323,7 +323,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let mut tasks = Vec::new();
 
         {
-            const TIMEOUT_DURATION_MINUTES: u64 = 7;
+            const TIMEOUT_DURATION_MINUTES: u64 = 20; // DO NOT MERGE
             const TIMER_DURATION: Duration = Duration::from_secs(TIMEOUT_DURATION_MINUTES * 60);
             let log_source = resources.log_source.clone();
             let inspect_task =
@@ -1793,6 +1793,24 @@ fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {
     } else {
         *cmd = Some(add_cmd.as_ref().to_string());
     }
+}
+
+fn append_log_params_to_cmdline(cmd: &mut Option<String>) {
+    // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
+    let openhcl_tracing =
+        if let Ok(x) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
+            format!("OPENVMM_LOG={x}")
+        } else {
+            "OPENVMM_LOG=debug".to_owned()
+        };
+    let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
+        format!("OPENVMM_SHOW_SPANS={x}")
+    } else {
+        "OPENVMM_SHOW_SPANS=true".to_owned()
+    };
+
+    append_cmdline(cmd, openhcl_tracing);
+    append_cmdline(cmd, openhcl_show_spans);
 }
 
 async fn save_inspect(

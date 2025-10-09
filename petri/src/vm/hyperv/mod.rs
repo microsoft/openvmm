@@ -30,6 +30,7 @@ use crate::hyperv::powershell::HyperVSecureBootTemplate;
 use crate::kmsg_log_task;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::vm::append_cmdline;
+use crate::vm::append_log_params_to_cmdline;
 use anyhow::Context;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
@@ -69,9 +70,37 @@ pub struct HyperVPetriRuntime {
     is_isolated: bool,
 }
 
+pub struct HyperVPetriConfig {
+    pub initial_vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+}
+
+impl HyperVPetriRuntime {
+    pub async fn add_openhcl_nvme_storage<P: AsRef<Path>>(
+        &self,
+        instance_id: Option<&guid::Guid>,
+        vhd_paths: &[P],
+    ) -> anyhow::Result<()> {
+        for vhd_path in vhd_paths {
+            acl_for_vm(vhd_path, Some(*self.vm.vmid()), VmFileAccess::FullControl)
+                .context("grant VM access to VHD")?;
+        }
+
+        self.vm
+            .add_openhcl_nvme_storage(instance_id, vhd_paths)
+            .await
+    }
+
+    pub async fn set_base_vtl2_settings(
+        &self,
+        settings: &vtl2_settings_proto::Vtl2Settings,
+    ) -> anyhow::Result<()> {
+        self.vm.set_base_vtl2_settings(settings).await
+    }
+}
+
 #[async_trait]
 impl PetriVmmBackend for HyperVPetriBackend {
-    type VmmConfig = ();
+    type VmmConfig = HyperVPetriConfig;
     type VmRuntime = HyperVPetriRuntime;
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
@@ -94,10 +123,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
         modify_vmm_config: Option<impl FnOnce(Self::VmmConfig) -> Self::VmmConfig + Send>,
         resources: &PetriVmResources,
     ) -> anyhow::Result<Self::VmRuntime> {
-        if modify_vmm_config.is_some() {
-            panic!("specified modify_vmm_config, but that is not supported for hyperv");
-        }
-
         let PetriVmConfig {
             name,
             arch,
@@ -394,7 +419,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             // Hyper-V (e.g., if it is in a WSL filesystem).
             let igvm_file = temp_dir.path().join("igvm.bin");
             fs_err::copy(src_igvm_file, &igvm_file).context("failed to copy igvm file")?;
-            acl_read_for_vm(&igvm_file, Some(*vm.vmid()))
+            acl_for_vm(&igvm_file, Some(*vm.vmid()), VmFileAccess::Read)
                 .context("failed to set ACL for igvm file")?;
 
             // TODO: only increase VTL2 memory on debug builds
@@ -410,9 +435,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
             )
             .await?;
 
-            if let Some(command_line) = command_line {
-                vm.set_vm_firmware_command_line(command_line).await?;
-            }
+            let mut command_line = command_line.clone();
+            append_log_params_to_cmdline(&mut command_line);
+
+            vm.set_vm_firmware_command_line(command_line.unwrap())
+                .await?;
 
             vm.set_vmbus_redirect(*vmbus_redirect).await?;
 
@@ -491,6 +518,21 @@ impl PetriVmmBackend for HyperVPetriBackend {
             "guest-log",
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
         ));
+
+        // todo mattkur
+        let initial_vtl2_settings = if let Some(f) = modify_vmm_config {
+            f(HyperVPetriConfig {
+                initial_vtl2_settings: None,
+            })
+            .initial_vtl2_settings
+        } else {
+            None
+        };
+
+        if let Some(settings) = initial_vtl2_settings {
+            tracing::info!(?settings, "applying initial VTL2 settings");
+            vm.set_base_vtl2_settings(&settings).await?;
+        }
 
         vm.start().await?;
 
@@ -616,17 +658,36 @@ impl PetriVmRuntime for HyperVPetriRuntime {
     }
 }
 
-fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {
+/// The type of access to grant the VM for a file.
+#[expect(missing_docs)]
+enum VmFileAccess {
+    Read,
+    FullControl,
+}
+
+/// The Hyper-V security model requires that the VM be granted explicit access to any
+/// resources assigned. Hyper-V takes care of this when you use the admin facing
+/// PowerShell cmdlets and some WMI flows. But, some tests use lower level APIs that don't
+/// do this automatically.
+fn acl_for_vm<P: AsRef<Path>>(
+    path: P,
+    id: Option<guid::Guid>,
+    access: VmFileAccess,
+) -> anyhow::Result<()> {
     let sid_arg = format!(
-        "NT VIRTUAL MACHINE\\{name}:R",
+        "NT VIRTUAL MACHINE\\{name}:{perm}",
         name = if let Some(id) = id {
             format!("{id:X}")
         } else {
             "Virtual Machines".to_string()
+        },
+        perm = match access {
+            VmFileAccess::Read => "R",
+            VmFileAccess::FullControl => "F",
         }
     );
     let output = std::process::Command::new("icacls.exe")
-        .arg(path)
+        .arg(path.as_ref())
         .arg("/grant")
         .arg(sid_arg)
         .output()
@@ -635,6 +696,7 @@ fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("icacls failed: {stderr}");
     }
+
     Ok(())
 }
 

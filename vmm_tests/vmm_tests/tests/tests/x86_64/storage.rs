@@ -18,6 +18,8 @@ use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use petri::PetriVmBuilder;
+#[cfg(windows)]
+use petri::hyperv::HyperVPetriBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
@@ -36,7 +38,11 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
+#[cfg(windows)]
+use vmm_test_macros::hyperv_test;
 use vmm_test_macros::openvmm_test;
+#[cfg(windows)]
+use vtl2_settings_proto::Vtl2Settings;
 
 /// Create a VPCI device config for an NVMe controller assigned to VTL2, with a single namespace.
 /// The namespace will be backed by either a file or a ramdisk, depending on whether
@@ -613,6 +619,106 @@ async fn openhcl_linux_storvsp_dvd_nvme(
         b.len()
     );
     assert_eq!(b[..], bytes[..], "content mismatch");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+#[hyperv_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
+pub async fn add_openhcl_nvme_storage(
+    config: PetriVmBuilder<HyperVPetriBackend>,
+) -> anyhow::Result<()> {
+    let vtl0_instance_id = Guid::new_random();
+    let vtl2_instance_id = Guid::new_random();
+    const VHD_SIZE: u64 = 200 * 1024 * 1024; // 200 MiB
+
+    // todo: generate a better temp file name
+    let temp_dir = tempfile::tempdir()?;
+    let vhd_path = temp_dir.path().join("test.vhd");
+    let file = File::options()
+        .create(true)
+        .create_new(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&vhd_path)
+        .context("create file")?;
+
+    file.set_len(VHD_SIZE).context("set file length")?;
+    disk_vhd1::Vhd1Disk::make_fixed(&file).context("make fixed")?;
+
+    let initial_vtl2_settings = Vtl2Settings {
+        version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
+        dynamic: Some(vtl2_settings_proto::Vtl2SettingsDynamic {
+            storage_controllers: vec![
+                Vtl2StorageControllerBuilder::scsi()
+                    .with_instance_id(vtl0_instance_id)
+                    .build(),
+            ],
+            ..Default::default()
+        }),
+        fixed: None,
+        namespace_settings: Default::default(),
+    };
+
+    // This is a bit ugly; ideally the HyperV backend would munge and set any
+    // VTL2 settings to the modify call (just like happens for OpenVMM).
+    // For now, just take the expedient path to get this test stood up.
+    let mut vtl2_settings = initial_vtl2_settings.clone();
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            assert!(b.initial_vtl2_settings.is_none());
+            petri::hyperv::HyperVPetriConfig {
+                initial_vtl2_settings: Some(initial_vtl2_settings),
+            }
+        })
+        .run()
+        .await?;
+
+    // Runtime add the NVMe device and update the VTL2 settings to
+    // include it.
+    //
+    // This _could_ happen before the VM is started, but do it at runtime
+    // for test simplicity.
+
+    vm.backend()
+        .add_openhcl_nvme_storage(Some(&vtl2_instance_id), &[vhd_path.to_str().unwrap()])
+        .await?;
+
+    vtl2_settings.dynamic.as_mut().unwrap().storage_controllers[0]
+        .luns
+        .push(
+            Vtl2LunBuilder::disk()
+                .with_location(0)
+                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                    ControllerType::Nvme,
+                    vtl2_instance_id,
+                    1,
+                ))
+                .build(),
+        );
+    vm.backend().set_base_vtl2_settings(&vtl2_settings).await?;
+
+    match vm.inspect_openhcl("vm/nvme/devices", None, None).await {
+        Err(e) => tracing::error!(?e, "Failed to inspect NVMe devices"),
+        Ok(devices) => tracing::info!(devices = %devices.json(), "NVMe devices"),
+    }
+
+    test_storage_linux(
+        &agent,
+        vec![ExpectedGuestDevice {
+            controller_guid: vtl0_instance_id,
+            lun: 0,
+            disk_size_sectors: (VHD_SIZE / 512) as usize,
+            friendly_name: "nvme".to_string(),
+        }],
+    )
+    .await?;
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

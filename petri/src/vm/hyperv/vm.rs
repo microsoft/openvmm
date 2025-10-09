@@ -484,11 +484,12 @@ impl HyperVVM {
     }
 
     /// Sets the VM firmware command line.
-    pub async fn set_vm_firmware_command_line(
+    pub async fn set_vm_firmware_command_line<S: AsRef<str>>(
         &self,
-        openhcl_command_line: &str,
+        openhcl_command_line: S,
     ) -> anyhow::Result<()> {
-        powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line).await
+        powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line.as_ref())
+            .await
     }
 
     /// Enable VMBusRelay
@@ -514,6 +515,27 @@ impl HyperVVM {
     /// Get the VM's guest state file
     pub async fn get_guest_state_file(&self) -> anyhow::Result<PathBuf> {
         powershell::run_get_guest_state_file(&self.vmid, &self.ps_mod).await
+    }
+
+    pub async fn add_openhcl_nvme_storage<P: AsRef<Path>>(
+        &self,
+        instance_id: Option<&Guid>,
+        vhd_paths: &[P],
+    ) -> anyhow::Result<()> {
+        powershell::run_configure_microsoft_internal_nvme_storage(
+            &self.vmid,
+            instance_id,
+            2,
+            vhd_paths,
+        )
+        .await
+    }
+
+    pub async fn set_base_vtl2_settings(
+        &self,
+        settings: &vtl2_settings_proto::Vtl2Settings,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_base_vtl2_settings(&self.vmid, &self.ps_mod, settings).await
     }
 }
 
