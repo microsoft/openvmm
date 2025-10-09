@@ -299,6 +299,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             interrupt0,
             worker.registers.clone(),
             self.bounce_buffer,
+            true,
         )
         .context("failed to create admin queue pair")?;
 
@@ -912,6 +913,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             interrupt,
             self.registers.clone(),
             self.bounce_buffer,
+            false,
         )
         .with_context(|| format!("failed to create io queue pair {qid}"))?;
 
@@ -1093,6 +1095,8 @@ pub mod save_restore {
         /// QueueHandler task data.
         #[mesh(6)]
         pub handler_data: QueueHandlerSavedState,
+        #[mesh(7)]
+        pub is_admin: Option<()>,
     }
 
     /// Save/restore state for IoQueue.
@@ -1120,7 +1124,9 @@ pub mod save_restore {
         #[mesh(3)]
         pub pending_cmds: PendingCommandsSavedState,
         #[mesh(4)]
-        pub pending_aen: Option<u32>,
+        pub saved_aen: Option<u32>,
+        #[mesh(5)]
+        pub await_aen_cid: Option<u16>,
     }
 
     #[derive(Protobuf, Clone, Debug)]

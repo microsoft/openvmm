@@ -55,6 +55,7 @@ pub(crate) struct QueuePair {
     qid: u16,
     sq_entries: u16,
     cq_entries: u16,
+    is_admin: bool,
 }
 
 impl Inspect for QueuePair {
@@ -67,6 +68,7 @@ impl Inspect for QueuePair {
             qid: _,
             sq_entries: _,
             cq_entries: _,
+            is_admin: _,
         } = self;
         issuer.send.send(Req::Inspect(req.defer()));
     }
@@ -194,6 +196,7 @@ impl QueuePair {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         bounce_buffer: bool,
+        is_admin: bool,
     ) -> anyhow::Result<Self> {
         let total_size = QueuePair::SQ_SIZE
             + QueuePair::CQ_SIZE
@@ -220,6 +223,7 @@ impl QueuePair {
             mem,
             None,
             bounce_buffer,
+            is_admin,
         )
     }
 
@@ -234,6 +238,7 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
+        is_admin: bool,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
@@ -251,7 +256,8 @@ impl QueuePair {
                     stats: Default::default(),
                     drain_after_restore: false,
                     send_aen: None,
-                    pending_aen: None,
+                    saved_aen: None,
+                    await_aen_cid: None,
                 }
             }
         };
@@ -261,7 +267,13 @@ impl QueuePair {
         let task = spawner.spawn("nvme-queue", {
             async move {
                 ctx.until_cancelled(async {
-                    queue_handler.run(&registers, recv, &mut interrupt).await;
+                    if is_admin {
+                        queue_handler
+                            .run_as_admin(&registers, recv, &mut interrupt)
+                            .await;
+                    } else {
+                        queue_handler.run(&registers, recv, &mut interrupt).await;
+                    }
                 })
                 .await
                 .ok();
@@ -302,6 +314,7 @@ impl QueuePair {
             qid,
             sq_entries,
             cq_entries,
+            is_admin,
         })
     }
 
@@ -322,7 +335,7 @@ impl QueuePair {
         self.task.await
     }
 
-    /// Save queue pair state for servicing.
+    /// Save queue pair state for servicing.1
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
         // Return error if the queue does not have any memory allocated.
         if self.mem.pfns().is_empty() {
@@ -339,6 +352,7 @@ impl QueuePair {
             sq_entries: self.sq_entries,
             cq_entries: self.cq_entries,
             handler_data,
+            is_admin: self.is_admin.then_some(()),
         })
     }
 
@@ -358,6 +372,7 @@ impl QueuePair {
             sq_entries,
             cq_entries,
             handler_data,
+            is_admin,
         } = saved_state;
 
         QueuePair::new_or_restore(
@@ -370,6 +385,7 @@ impl QueuePair {
             mem,
             Some(handler_data),
             bounce_buffer,
+            is_admin.is_some(),
         )
     }
 }
@@ -639,6 +655,7 @@ enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
+    SendAer(),
     NextAen(Rpc<(), AsynchronousEventRequestDw0>),
 }
 
@@ -650,9 +667,10 @@ struct QueueHandler {
     stats: QueueStats,
     drain_after_restore: bool,
     #[inspect(skip)]
-    send_aen: Option<Rpc<(), AsynchronousEventRequestDw0>>, // Channel to return AENs on.
+    saved_aen: Option<AsynchronousEventRequestDw0>, // TODO: Could inspect this but I am not sure how useful that would be.
+    await_aen_cid: Option<u16>, // The CID of the currently outstanding AER command.
     #[inspect(skip)]
-    pending_aen: Option<AsynchronousEventRequestDw0>, // Store the last seen AEN until someone asks for it.
+    send_aen: Option<Rpc<(), AsynchronousEventRequestDw0>>, // Channel to return AENs on.
 }
 
 #[derive(Inspect, Default)]
@@ -729,10 +747,8 @@ impl QueueHandler {
                         // Do not allow any more processing after save completed.
                         break;
                     }
-                    Req::NextAen(_) => {
-                        panic!(
-                            "requesting next aen from an io queue. they are only managed by the admin queue"
-                        );
+                    _ => {
+                        panic!("unexpected request on IO queue. Only admin queues support AERs");
                     }
                 },
                 Event::Completion(completion) => {
@@ -750,6 +766,125 @@ impl QueueHandler {
         }
     }
 
+    async fn run_as_admin(
+        &mut self,
+        registers: &DeviceRegisters<impl DeviceBacking>,
+        mut recv: mesh::Receiver<Req>,
+        interrupt: &mut DeviceInterrupt,
+    ) {
+        loop {
+            enum Event {
+                Request(Req),
+                Completion(spec::Completion),
+            }
+
+            let event = if !self.drain_after_restore {
+                // Normal processing of the requests and completions.
+                poll_fn(|cx| {
+                    if !self.sq.is_full() && !self.commands.is_full() {
+                        // Prioritize sending AERs to keep the cycle going
+                        if self.await_aen_cid.is_none() {
+                            return Poll::Ready(Event::Request(Req::SendAer()));
+                        }
+                        if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
+                            return Event::Request(req).into();
+                        }
+                    }
+                    while !self.commands.is_empty() {
+                        if let Some(completion) = self.cq.read() {
+                            return Event::Completion(completion).into();
+                        }
+                        if interrupt.poll(cx).is_pending() {
+                            break;
+                        }
+                        self.stats.interrupts.increment();
+                    }
+                    self.sq.commit(registers);
+                    self.cq.commit(registers);
+                    Poll::Pending
+                })
+                .await
+            } else {
+                // Only process in-flight completions.
+                poll_fn(|cx| {
+                    while !self.commands.is_empty() {
+                        if let Some(completion) = self.cq.read() {
+                            return Event::Completion(completion).into();
+                        }
+                        if interrupt.poll(cx).is_pending() {
+                            break;
+                        }
+                        self.stats.interrupts.increment();
+                    }
+                    self.cq.commit(registers);
+                    Poll::Pending
+                })
+                .await
+            };
+
+            match event {
+                Event::Request(req) => match req {
+                    Req::Command(rpc) => {
+                        let (mut command, respond) = rpc.split();
+                        self.commands.insert(&mut command, respond);
+                        self.sq.write(command).unwrap();
+                        self.stats.issued.increment();
+                    }
+                    Req::SendAer() => {
+                        self.send_aer_command();
+                    }
+                    Req::Inspect(deferred) => deferred.inspect(&self),
+                    Req::Save(queue_state) => {
+                        queue_state.complete(self.save().await);
+                        // Do not allow any more processing after save completed.
+                        break;
+                    }
+                    Req::NextAen(rpc) => {
+                        if let Some(aen) = self.saved_aen.take() {
+                            rpc.complete(aen);
+                            continue;
+                        } else {
+                            self.send_aen = Some(rpc); // Save driver request to be completed later.
+                        }
+                    }
+                },
+                Event::Completion(completion) => {
+                    assert_eq!(completion.sqid, self.sq.id());
+                    let respond = self.commands.remove(completion.cid);
+                    if self.drain_after_restore && self.commands.is_empty() {
+                        // Switch to normal processing mode once all in-flight commands completed.
+                        self.drain_after_restore = false;
+                    }
+                    self.sq.update_head(completion.sqhd);
+                    if let Some(await_aen_cid) = self.await_aen_cid
+                        && completion.cid == await_aen_cid
+                    {
+                        self.await_aen_cid = None;
+                        // Complete the AEN or pend it.
+                        let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
+                        if let Some(send_aen) = self.send_aen.take() {
+                            send_aen.complete(aen);
+                        } else {
+                            self.saved_aen = Some(aen);
+                        }
+                    }
+                    respond.complete(completion);
+                    self.stats.completed.increment();
+                }
+            }
+        }
+    }
+
+    // Writes an AER command to the submission queue and saves the CID of the
+    // command sent.
+    fn send_aer_command(&mut self) {
+        let mut command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
+        self.commands.insert(&mut command, Rpc::detached(()));
+        self.await_aen_cid = Some(command.cdw0.cid());
+        self.sq.write(command).unwrap();
+        self.stats.issued.increment();
+    }
+
     /// Save queue data for servicing.
     pub async fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
         // The data is collected from both QueuePair and QueueHandler.
@@ -757,7 +892,8 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds: self.commands.save(),
-            pending_aen: self.pending_aen.map(|aen| aen.into_bits()), // Save it as a u32 for clarity
+            saved_aen: self.saved_aen.map(|aen| aen.into_bits()), // Save it as a u32 for clarity
+            await_aen_cid: self.await_aen_cid,
         })
     }
 
@@ -771,7 +907,8 @@ impl QueueHandler {
             sq_state,
             cq_state,
             pending_cmds,
-            pending_aen,
+            saved_aen,
+            await_aen_cid,
         } = saved_state;
 
         Ok(Self {
@@ -783,7 +920,8 @@ impl QueueHandler {
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
             send_aen: None,
-            pending_aen: pending_aen.map(AsynchronousEventRequestDw0::from_bits), // Restore from u32
+            saved_aen: saved_aen.map(AsynchronousEventRequestDw0::from_bits), // Restore from u32
+            await_aen_cid: *await_aen_cid,
         })
     }
 }
