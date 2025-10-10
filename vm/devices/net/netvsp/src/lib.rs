@@ -5275,6 +5275,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
                                 err = &err as &dyn std::error::Error,
                                 "failed to handle RNDIS packet"
                             );
+                            // Drop any segments generated prior to the error.
+                            data.tx_segments.clear();
                             self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
                             continue;
                         }
