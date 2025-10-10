@@ -3,6 +3,9 @@
 
 //! Types to access work, completion, and event queues.
 
+use crate::save_restore::CqEqSavedState;
+use crate::save_restore::DoorbellSavedState;
+use crate::save_restore::WqSavedState;
 use gdma_defs::CLIENT_OOB_8;
 use gdma_defs::CLIENT_OOB_24;
 use gdma_defs::CLIENT_OOB_32;
@@ -37,6 +40,8 @@ pub trait Doorbell: Send + Sync {
     fn page_count(&self) -> u32;
     /// Write a doorbell value at page `page`, offset `address`.
     fn write(&self, page: u32, address: u32, value: u64);
+    /// Save the doorbell state.
+    fn save(&self, doorbell_id: Option<u64>) -> DoorbellSavedState;
 }
 
 struct NullDoorbell;
@@ -47,6 +52,13 @@ impl Doorbell for NullDoorbell {
     }
 
     fn write(&self, _page: u32, _address: u32, _value: u64) {}
+
+    fn save(&self, _doorbell_id: Option<u64>) -> DoorbellSavedState {
+        DoorbellSavedState {
+            doorbell_id: 0,
+            page_count: 0,
+        }
+    }
 }
 
 /// A single GDMA doorbell page.
@@ -114,12 +126,22 @@ impl CqEq<Cqe> {
     pub fn new_cq(mem: MemoryBlock, doorbell: DoorbellPage, id: u32) -> Self {
         Self::new(GdmaQueueType::GDMA_CQ, DB_CQ, mem, doorbell, id)
     }
+
+    /// Restores an existing completion queue.
+    pub fn restore_cq(mem: MemoryBlock, state: CqEqSavedState, doorbell: DoorbellPage) -> Self {
+        Self::restore(GdmaQueueType::GDMA_CQ, mem, doorbell, state)
+    }
 }
 
 impl CqEq<Eqe> {
     /// Creates a new event queue.
     pub fn new_eq(mem: MemoryBlock, doorbell: DoorbellPage, id: u32) -> Self {
         Self::new(GdmaQueueType::GDMA_EQ, DB_EQ, mem, doorbell, id)
+    }
+
+    /// Restores an existing event queue.
+    pub fn restore_eq(mem: MemoryBlock, state: CqEqSavedState, doorbell: DoorbellPage) -> Self {
+        Self::restore(GdmaQueueType::GDMA_EQ, mem, doorbell, state)
     }
 }
 
@@ -143,6 +165,41 @@ impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
             next: size as u32,
             size: size as u32,
             shift: size.trailing_zeros(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Save the state of the queue for restoration after servicing.
+    pub fn save(&self) -> CqEqSavedState {
+        CqEqSavedState {
+            doorbell: DoorbellSavedState {
+                doorbell_id: self.doorbell.doorbell_id as u64,
+                page_count: self.doorbell.doorbell.page_count(),
+            },
+            doorbell_addr: self.doorbell_addr,
+            id: self.id,
+            next: self.next,
+            size: self.size,
+            shift: self.shift,
+        }
+    }
+
+    /// Restore a queue from saved state.
+    pub fn restore(
+        queue_type: GdmaQueueType,
+        mem: MemoryBlock,
+        doorbell: DoorbellPage,
+        state: CqEqSavedState,
+    ) -> Self {
+        Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type,
+            mem,
+            id: state.id,
+            next: state.next,
+            size: state.size,
+            shift: state.shift,
             _phantom: PhantomData,
         }
     }
@@ -282,6 +339,59 @@ impl Wq {
             mask: size - 1,
             uncommitted_count: 0,
         }
+    }
+
+    /// Save the state of the Wq for restoration after servicing
+    pub fn save(&self) -> WqSavedState {
+        WqSavedState {
+            doorbell: DoorbellSavedState {
+                doorbell_id: self.doorbell.doorbell_id as u64,
+                page_count: self.doorbell.doorbell.page_count(),
+            },
+            doorbell_addr: self.doorbell_addr,
+            id: self.id,
+            head: self.head,
+            tail: self.tail,
+            mask: self.mask,
+        }
+    }
+
+    /// Restores an existing receive work queue.
+    pub fn restore_rq(
+        mem: MemoryBlock,
+        state: WqSavedState,
+        doorbell: DoorbellPage,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type: GdmaQueueType::GDMA_RQ,
+            mem,
+            id: state.id,
+            head: state.head,
+            tail: state.tail,
+            mask: state.mask,
+            uncommitted_count: 0,
+        })
+    }
+
+    /// Restores an existing send work queue.
+    pub fn restore_sq(
+        mem: MemoryBlock,
+        state: WqSavedState,
+        doorbell: DoorbellPage,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type: GdmaQueueType::GDMA_SQ,
+            mem,
+            id: state.id,
+            head: state.head,
+            tail: state.tail,
+            mask: state.mask,
+            uncommitted_count: 0,
+        })
     }
 
     /// Returns the queue ID.

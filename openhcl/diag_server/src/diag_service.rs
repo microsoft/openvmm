@@ -522,9 +522,7 @@ impl DiagServiceHandler {
         let mut inspection = InspectionBuilder::new(&request.path)
             .depth(Some(request.depth as usize))
             .sensitivity(self.inspect_sensitivity_level)
-            .inspect(inspect::adhoc(|req| {
-                self.request_send.send(DiagRequest::Inspect(req.defer()));
-            }));
+            .inspect(inspect::send(&self.request_send, DiagRequest::Inspect));
 
         // Don't return early on cancel, as we want to return the partial
         // inspection results.
@@ -544,9 +542,7 @@ impl DiagServiceHandler {
             .sensitivity(self.inspect_sensitivity_level)
             .update(
                 &request.value,
-                inspect::adhoc(|req| {
-                    self.request_send.send(DiagRequest::Inspect(req.defer()));
-                }),
+                inspect::send(&self.request_send, DiagRequest::Inspect),
             )
             .await?;
         Ok(UpdateResponse2 { new_value })

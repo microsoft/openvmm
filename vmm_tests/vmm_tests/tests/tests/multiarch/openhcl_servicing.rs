@@ -26,6 +26,10 @@ use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
+use petri::vtl2_settings::ControllerType;
+use petri::vtl2_settings::Vtl2LunBuilder;
+use petri::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
+use petri::vtl2_settings::Vtl2StorageControllerBuilder;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 #[allow(unused_imports)]
@@ -47,45 +51,6 @@ use zerocopy::IntoBytes;
 
 const DEFAULT_SERVICING_COUNT: u8 = 3;
 
-// TODO: Move this host query logic into common code so that we can instead
-// filter tests based on host capabilities.
-pub(crate) fn host_supports_servicing() -> bool {
-    cfg_if::cfg_if! {
-        // xtask-fmt allow-target-arch cpu-intrinsic
-        if #[cfg(all(target_arch = "x86_64", target_os = "windows"))] {
-            // Check if this is a nested host and AMD. WHP partition scrub has a bug
-            // on AMD nested which can result in flakey tests. Query this via CPUID.
-            !is_amd_nested_via_cpuid()
-        } else {
-            true
-        }
-    }
-}
-
-// xtask-fmt allow-target-arch cpu-intrinsic
-#[cfg(all(target_arch = "x86_64", target_os = "windows"))]
-fn is_amd_nested_via_cpuid() -> bool {
-    let is_nested = {
-        let result =
-            safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-        hvdef::HvEnlightenmentInformation::from(
-            result.eax as u128
-                | (result.ebx as u128) << 32
-                | (result.ecx as u128) << 64
-                | (result.edx as u128) << 96,
-        )
-        .nested()
-    };
-
-    let vendor = {
-        let result =
-            safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VendorAndMaxFunction.0, 0);
-        x86defs::cpuid::Vendor::from_ebx_ecx_edx(result.ebx, result.ecx, result.edx)
-    };
-
-    is_nested && vendor.is_amd_compatible()
-}
-
 async fn openhcl_servicing_core<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     openhcl_cmdline: &str,
@@ -93,11 +58,6 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
     flags: OpenHclServicingFlags,
     servicing_count: u8,
 ) -> anyhow::Result<()> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .run()
@@ -128,10 +88,10 @@ async fn openhcl_servicing_core<T: PetriVmmBackend>(
 /// N.B. These Hyper-V tests fail in CI for x64. Tracked by #1652.
 #[vmm_test(
     openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64],
-    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64],
+    //hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64]
 )]
-async fn basic<T: PetriVmmBackend>(
+async fn basic_servicing<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
@@ -151,7 +111,7 @@ async fn basic<T: PetriVmmBackend>(
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and no vmbus redirect.
 #[openvmm_test(openhcl_linux_direct_x64[LATEST_LINUX_DIRECT_TEST_X64])]
-async fn keepalive_no_device<T: PetriVmmBackend>(
+async fn servicing_keepalive_no_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
@@ -170,8 +130,8 @@ async fn keepalive_no_device<T: PetriVmmBackend>(
 
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
-async fn keepalive_with_device<T: PetriVmmBackend>(
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64])]
+async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
@@ -237,14 +197,10 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn shutdown_ic(
+async fn servicing_shutdown_ic(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> anyhow::Result<()> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .modify_backend(move |b| {
@@ -311,15 +267,10 @@ async fn shutdown_ic(
 /// Test servicing an OpenHCL VM from the current version to itself
 /// with NVMe keepalive support and a faulty controller that drops CREATE_IO_COMPLETION_QUEUE commands
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn keepalive_with_nvme_fault(
+async fn servicing_keepalive_with_nvme_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
     let mut fault_start_updater = CellUpdater::new(false);
 
     let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
@@ -360,15 +311,10 @@ async fn keepalive_with_nvme_fault(
 /// TODO: For now this test will succeed because the driver currently requeries the namespace size and only checks that the size is non-zero.
 /// Once AER support is added to the driver the checks will be more stringent and this test will need updating
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn keepalive_with_nvme_identify_namespace_fault(
+async fn servicing_keepalive_with_nvme_identify_fault(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    if !host_supports_servicing() {
-        tracing::info!("skipping OpenHCL servicing test on unsupported host");
-        return Ok(());
-    }
-
     let mut fault_start_updater = CellUpdater::new(false);
 
     // The first 8bytes of the response buffer correspond to the nsze field of the Identify Namespace data structure.
@@ -455,35 +401,19 @@ async fn create_keepalive_test_config(
             // Assign the fault controller to VTL2
             .with_custom_vtl2_settings(|v| {
                 v.dynamic.as_mut().unwrap().storage_controllers.push(
-                    vtl2_settings_proto::StorageController {
-                        instance_id: scsi_instance.to_string(),
-                        protocol: vtl2_settings_proto::storage_controller::StorageProtocol::Scsi
-                            .into(),
-                        luns: vec![vtl2_settings_proto::Lun {
-                            location: vtl0_nvme_lun,
-                            device_id: Guid::new_random().to_string(),
-                            vendor_id: "OpenVMM".to_string(),
-                            product_id: "Disk".to_string(),
-                            product_revision_level: "1.0".to_string(),
-                            serial_number: "0".to_string(),
-                            model_number: "1".to_string(),
-                            physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
-                                r#type: vtl2_settings_proto::physical_devices::BackingType::Single
-                                    .into(),
-                                device: Some(vtl2_settings_proto::PhysicalDevice {
-                                    device_type:
-                                        vtl2_settings_proto::physical_device::DeviceType::Nvme
-                                            .into(),
-                                    device_path: NVME_INSTANCE.to_string(),
-                                    sub_device_path: vtl2_nsid,
-                                }),
-                                devices: Vec::new(),
-                            }),
-                            ..Default::default()
-                        }],
-                        io_queue_depth: None,
-                    },
-                )
+                    Vtl2StorageControllerBuilder::scsi()
+                        .with_instance_id(scsi_instance)
+                        .add_lun(
+                            Vtl2LunBuilder::disk()
+                                .with_location(vtl0_nvme_lun)
+                                .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                                    ControllerType::Nvme,
+                                    NVME_INSTANCE,
+                                    vtl2_nsid,
+                                )),
+                        )
+                        .build(),
+                );
             })
         })
         .run()

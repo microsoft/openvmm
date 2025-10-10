@@ -135,6 +135,7 @@ where
             VpHaltReason::Cancel => Ok(StopReason::Cancel),
             VpHaltReason::PowerOff => Err(HaltReason::PowerOff),
             VpHaltReason::Reset => Err(HaltReason::Reset),
+            VpHaltReason::Hibernate => Err(HaltReason::Hibernate),
             VpHaltReason::TripleFault { vtl } => {
                 let registers = self.vp.access_state(vtl).registers().ok().map(Arc::new);
 
@@ -709,21 +710,14 @@ pub struct VpSet {
     started: bool,
 }
 
+#[derive(Inspect)]
 struct Vp {
+    #[inspect(flatten, send = "|req| VpEvent::State(StateEvent::Inspect(req))")]
     send: mesh::Sender<VpEvent>,
+    #[inspect(skip)]
     done: mesh::OneshotReceiver<()>,
+    #[inspect(flatten)]
     vp_info: TargetVpInfo,
-}
-
-impl Inspect for Vp {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond()
-            .merge(&self.vp_info)
-            .merge(inspect::adhoc(|req| {
-                self.send
-                    .send(VpEvent::State(StateEvent::Inspect(req.defer())))
-            }));
-    }
 }
 
 impl VpSet {

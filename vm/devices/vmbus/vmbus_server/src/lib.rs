@@ -108,11 +108,17 @@ const VMBUS_MESSAGE_TYPE: u32 = 1;
 
 const MAX_CONCURRENT_HVSOCK_REQUESTS: usize = 16;
 
+#[derive(Inspect)]
 pub struct VmbusServer {
+    #[inspect(flatten, send = "VmbusRequest::Inspect")]
     task_send: mesh::Sender<VmbusRequest>,
+    #[inspect(skip)]
     control: Arc<VmbusServerControl>,
+    #[inspect(skip)]
     _message_port: Box<dyn Sync + Send>,
+    #[inspect(skip)]
     _multiclient_message_port: Option<Box<dyn Sync + Send>>,
+    #[inspect(skip)]
     task: Task<ServerTask>,
 }
 
@@ -257,12 +263,6 @@ pub(crate) enum OfferRequest {
     ForceReset(Rpc<(), ()>),
 }
 
-impl Inspect for VmbusServer {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(VmbusRequest::Inspect(req.defer()));
-    }
-}
-
 struct ChannelEvent(Interrupt);
 
 impl EventPort for ChannelEvent {
@@ -279,12 +279,12 @@ impl EventPort for ChannelEvent {
 #[mesh(package = "vmbus.server")]
 pub struct SavedState {
     #[mesh(1)]
-    server: channels::SavedState,
+    pub server: channels::SavedState,
     // Indicates if the lost synic bug is fixed or not. By default it's false.
     // During the restore process, we check if the field is not true then
     // unstick_channels() function will be called to mitigate the issue.
     #[mesh(2)]
-    lost_synic_bug_fixed: bool,
+    pub lost_synic_bug_fixed: bool,
 }
 
 const MESSAGE_CONNECTION_ID: u32 = 1;

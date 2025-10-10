@@ -154,6 +154,8 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
+use vmgs_resources::GuestStateEncryptionPolicy;
+use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsFileHandle;
 use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
@@ -917,7 +919,14 @@ fn vm_config_from_command_line(
     }
 
     let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
-        let disk = disk_open(kind, false).context("failed to open vmgs disk")?;
+        let disk = VmgsDisk {
+            disk: disk_open(kind, false).context("failed to open vmgs disk")?,
+            encryption_policy: if opt.test_gsp_by_id {
+                GuestStateEncryptionPolicy::GspById(true)
+            } else {
+                GuestStateEncryptionPolicy::None(true)
+            },
+        };
         match provision {
             ProvisionVmgs::OnEmpty => VmgsResource::Disk(disk),
             ProvisionVmgs::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
@@ -1013,6 +1022,7 @@ fn vm_config_from_command_line(
                     enable_battery: opt.battery,
                     no_persistent_secrets: true,
                     igvm_attest_test_config: None,
+                    test_gsp_by_id: opt.test_gsp_by_id,
                 }
                 .into_resource(),
             ),
@@ -2798,11 +2808,16 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         let path = igvm.context("no igvm file loaded")?;
                         let file = fs_err::File::open(path)?;
                         start = Instant::now();
-                        hvlite_helpers::underhill::service_underhill(
+                        hvlite_helpers::underhill::save_underhill(
                             &vm_rpc,
                             ged_rpc.as_ref().context("no GED")?,
                             GuestServicingFlags::default(),
                             file.into(),
+                        )
+                        .await?;
+                        hvlite_helpers::underhill::restore_underhill(
+                            &vm_rpc,
+                            ged_rpc.as_ref().context("no GED")?,
                         )
                         .await?;
                     }

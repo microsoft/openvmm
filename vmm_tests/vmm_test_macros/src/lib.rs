@@ -402,11 +402,20 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
                 ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64
             )),
         },
-        "ubuntu_2204_server_x64" => Ok(image_info!(
-            ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64
-        )),
+        "windows_datacenter_core_2025_x64_prepped" => match generation {
+            Generation::Gen1 => Err(Error::new(
+                word.span(),
+                "Windows Server 2025 is not available for PCAT",
+            )),
+            Generation::Gen2 => Ok(image_info!(
+                ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED
+            )),
+        },
         "ubuntu_2404_server_x64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64
+        )),
+        "ubuntu_2504_server_x64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64
         )),
         "ubuntu_2404_server_aarch64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
@@ -557,10 +566,12 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `none`: No guest
 ///
 /// Valid x64 VHD options are:
-/// - `ubuntu_2204_server_x64`: Ubuntu Linux 22.04 cloudimg from Canonical
 /// - `ubuntu_2404_server_x64`: Ubuntu Linux 24.04 cloudimg from Canonical
+/// - `ubuntu_2504_server_x64`: Ubuntu Linux 25.04 cloudimg from Canonical
 /// - `windows_datacenter_core_2022_x64`: Windows Server Datacenter Core 2022 from the Azure Marketplace
 /// - `windows_datacenter_core_2025_x64`: Windows Server Datacenter Core 2025 from the Azure Marketplace
+/// - `windows_datacenter_core_2025_x64_prepped`: Windows Server Datacenter Core 2025 from the Azure Marketplace,
+///   pre-prepped with the pipette guest agent configured.
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
 ///
 /// Valid aarch64 VHD options are:
@@ -653,6 +664,15 @@ fn make_vmm_test(
     for config in args.configs {
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
+        // Build requirements based on the configuration
+        let requirements = build_requirements(&config, &name);
+        let requirements = if let Some(req) = requirements {
+            quote! { Some(#req) }
+        } else {
+            quote! { None }
+        };
+
+        // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
 
         let firmware = FirmwareAndArch {
@@ -699,7 +719,8 @@ fn make_vmm_test(
                         let config = #petri_vm_config;
                         #original_name(#original_args).await
                     })
-                }
+                },
+                #requirements
             ).into(),
         };
 
@@ -710,4 +731,87 @@ fn make_vmm_test(
         ::petri::multitest!(vec![#tests]);
         #item
     })
+}
+
+// Helper to build requirements TokenStream for a config and specific_vmm
+fn build_requirements(config: &Config, name: &str) -> Option<TokenStream> {
+    let mut requirement_expr: Option<TokenStream> = None;
+    let mut is_vbs = false;
+    // Add isolation requirement if specified
+    if let Firmware::OpenhclUefi(
+        OpenhclUefiOptions {
+            isolation: Some(isolation),
+            ..
+        },
+        _,
+    ) = &config.firmware
+    {
+        let isolation_requirement = match isolation {
+            IsolationType::Vbs => {
+                is_vbs = true;
+                quote!(::petri::requirements::TestRequirement::Isolation(
+                    ::petri::requirements::IsolationType::Vbs
+                ))
+            }
+            IsolationType::Snp => quote!(::petri::requirements::TestRequirement::Isolation(
+                ::petri::requirements::IsolationType::Snp
+            )),
+            IsolationType::Tdx => quote!(::petri::requirements::TestRequirement::Isolation(
+                ::petri::requirements::IsolationType::Tdx
+            )),
+        };
+
+        requirement_expr = Some(isolation_requirement);
+    }
+
+    // Special case for "servicing" tests
+    if name.contains("servicing") {
+        let servicing_expr = quote!(::petri::requirements::TestRequirement::Not(Box::new(
+            ::petri::requirements::TestRequirement::And(
+                Box::new(::petri::requirements::TestRequirement::Vendor(
+                    ::petri::requirements::Vendor::Amd
+                )),
+                Box::new(
+                    ::petri::requirements::TestRequirement::ExecutionEnvironment(
+                        ::petri::requirements::ExecutionEnvironment::Nested
+                    )
+                )
+            )
+        )));
+
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#servicing_expr)
+                )
+            )),
+            None => Some(servicing_expr),
+        };
+    }
+
+    let is_hyperv = config.vmm.is_some() && config.vmm == Some(Vmm::HyperV);
+
+    if is_hyperv && is_vbs {
+        let hyperv_vbs_requirement_expr = quote!(
+            ::petri::requirements::TestRequirement::ExecutionEnvironment(
+                ::petri::requirements::ExecutionEnvironment::Baremetal
+            )
+        );
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#hyperv_vbs_requirement_expr)
+                )
+            )),
+            None => Some(hyperv_vbs_requirement_expr),
+        };
+    }
+
+    if requirement_expr.is_some() {
+        Some(quote!(::petri::requirements::TestCaseRequirements::new(#requirement_expr)))
+    } else {
+        None
+    }
 }

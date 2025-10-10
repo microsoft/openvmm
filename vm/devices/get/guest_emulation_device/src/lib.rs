@@ -20,6 +20,9 @@ pub mod test_utilities;
 mod test_igvm_agent;
 
 #[cfg(feature = "test_igvm_agent")]
+mod test_crypto;
+
+#[cfg(feature = "test_igvm_agent")]
 use crate::test_igvm_agent::TestIgvmAgent;
 
 use async_trait::async_trait;
@@ -269,6 +272,8 @@ pub struct GuestEmulationDevice {
     /// Test agent implementation for `handle_igvm_attest`
     #[inspect(skip)]
     igvm_agent: TestIgvmAgent,
+
+    test_gsp_by_id: bool,
 }
 
 #[derive(Inspect)]
@@ -289,6 +294,7 @@ impl GuestEmulationDevice {
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
         igvm_agent_setting: Option<IgvmAgentTestSetting>,
+        test_gsp_by_id: bool,
     ) -> Self {
         Self {
             config,
@@ -306,6 +312,7 @@ impl GuestEmulationDevice {
             igvm_agent_setting,
             #[cfg(feature = "test_igvm_agent")]
             igvm_agent: TestIgvmAgent::new(),
+            test_gsp_by_id,
         }
     }
 
@@ -652,7 +659,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 self.handle_guest_state_protection(message_buf)?
             }
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
-                self.handle_guest_state_protection_by_id()?;
+                self.handle_guest_state_protection_by_id(state.test_gsp_by_id)?;
             }
             HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf, state)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
@@ -880,12 +887,25 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         Ok(())
     }
 
-    fn handle_guest_state_protection_by_id(&mut self) -> Result<(), Error> {
-        let response = get_protocol::GuestStateProtectionByIdResponse {
+    fn handle_guest_state_protection_by_id(&mut self, test_gsp_by_id: bool) -> Result<(), Error> {
+        let mut response = get_protocol::GuestStateProtectionByIdResponse {
             message_header: HeaderGeneric::new(HostRequests::GUEST_STATE_PROTECTION_BY_ID),
             seed: GspCleartextContent::new_zeroed(),
-            extended_status_flags: GspExtendedStatusFlags::new().with_no_registry_file(true),
+            extended_status_flags: GspExtendedStatusFlags::new()
+                .with_no_registry_file(!test_gsp_by_id),
         };
+
+        if test_gsp_by_id {
+            const TEST_GSP_SEED_LEN: usize = 32;
+            const TEST_GSP_SEED: [u8; TEST_GSP_SEED_LEN] = [
+                0x94, 0xBD, 0x3A, 0xA5, 0xF4, 0x51, 0x97, 0x9F, 0x1A, 0x8B, 0x29, 0x41, 0x91, 0x90,
+                0x73, 0x1B, 0x30, 0xB0, 0x76, 0xEA, 0x6E, 0xDC, 0x1F, 0x8F, 0x22, 0xC7, 0x07, 0x57,
+                0x67, 0xCD, 0x87, 0x5B,
+            ];
+            response.seed.length = TEST_GSP_SEED_LEN as u32;
+            response.seed.buffer[..TEST_GSP_SEED_LEN].copy_from_slice(&TEST_GSP_SEED);
+        }
+
         self.channel
             .try_send(response.as_bytes())
             .map_err(Error::Vmbus)?;
@@ -1347,6 +1367,11 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 },
                 enable_battery: state.config.enable_battery,
                 console_mode: uefi_console_mode.unwrap_or(UefiConsoleMode::DEFAULT).0,
+                bios_guid: if state.test_gsp_by_id {
+                    guid::guid!("2b701019-2816-4a85-9692-3981f1af4423")
+                } else {
+                    Default::default()
+                },
                 ..Default::default()
             },
             v2: get_protocol::dps_json::HclDevicePlatformSettingsV2 {

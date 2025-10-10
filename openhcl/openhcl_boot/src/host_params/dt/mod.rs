@@ -34,6 +34,8 @@ use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
 use thiserror::Error;
 
+mod bump_alloc;
+
 /// Errors when reading the host device tree.
 #[derive(Debug, Error)]
 pub enum DtError {
@@ -311,6 +313,30 @@ fn parse_host_vtl2_ram(
     vtl2_ram
 }
 
+fn init_heap(params: &ShimParams) {
+    // Initialize the temporary heap.
+    //
+    // This is only to be enabled for mesh decode.
+    //
+    // SAFETY: The heap range is reserved at file build time, and is
+    // guaranteed to be unused by anything else.
+    unsafe {
+        bump_alloc::ALLOCATOR.init(params.heap);
+    }
+
+    // TODO: test using heap, as no mesh decode yet.
+    {
+        use alloc::boxed::Box;
+        bump_alloc::ALLOCATOR.enable_alloc();
+
+        let box_int = Box::new(42);
+        log!("box int {box_int}");
+        drop(box_int);
+        bump_alloc::ALLOCATOR.disable_alloc();
+        bump_alloc::ALLOCATOR.log_stats();
+    }
+}
+
 impl PartitionInfo {
     // Read the IGVM provided DT for the vtl2 partition info.
     pub fn read_from_dt<'a>(
@@ -382,6 +408,8 @@ impl PartitionInfo {
 
         storage.vmbus_vtl2 = parsed.vmbus_vtl2.clone().ok_or(DtError::Vtl2Vmbus)?;
         storage.vmbus_vtl0 = parsed.vmbus_vtl0.clone().ok_or(DtError::Vtl0Vmbus)?;
+
+        init_heap(params);
 
         // The host is responsible for allocating MMIO ranges for non-isolated
         // guests when it also provides the ram VTL2 should use.
