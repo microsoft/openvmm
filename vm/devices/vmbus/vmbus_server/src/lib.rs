@@ -1156,6 +1156,7 @@ impl ServerTask {
     }
 
     fn handle_tl_connect_result(&mut self, result: HvsockConnectResult) {
+        tracing::debug!(?result, "hvsock connect result");
         assert_ne!(self.inner.hvsock_requests, 0);
         self.inner.hvsock_requests -= 1;
 
@@ -1725,6 +1726,7 @@ impl Notifier for ServerTaskInner {
     }
 
     fn notify_hvsock(&mut self, request: &HvsockConnectRequest) {
+        tracing::debug!(?request, "received hvsock connect request");
         self.hvsock_requests += 1;
         self.hvsock_send.send(*request);
     }
