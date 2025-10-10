@@ -7,8 +7,8 @@
                 "threshold": 1024
             },
             "reservation": {
-                "base": 18360,
-                "threshold": 0
+                "base": 18440,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -47,8 +47,8 @@
                 "threshold": 3072
             },
             "reservation": {
-                "base": 23884,
-                "threshold": 0
+                "base": 23964,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -91,7 +91,7 @@
             },
             "reservation": {
                 "base": 17668,
-                "threshold": 0
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -131,7 +131,7 @@
             },
             "reservation": {
                 "base": 24668,
-                "threshold": 0
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -173,8 +173,8 @@
                 "threshold": 1024
             },
             "reservation": {
-                "base": 28952,
-                "threshold": 0
+                "base": 29036,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -213,8 +213,8 @@
                 "threshold": 3072
             },
             "reservation": {
-                "base": 41676,
-                "threshold": 0
+                "base": 41764,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -256,8 +256,8 @@
                 "threshold": 1024
             },
             "reservation": {
-                "base": 28884,
-                "threshold": 0
+                "base": 28972,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -296,8 +296,8 @@
                 "threshold": 3072
             },
             "reservation": {
-                "base": 42356,
-                "threshold": 0
+                "base": 42440,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
