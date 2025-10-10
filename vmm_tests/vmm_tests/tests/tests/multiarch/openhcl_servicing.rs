@@ -345,7 +345,6 @@ async fn servicing_keepalive_with_nvme_identify_fault(
 
     // Make sure the disk showed up.
     cmd!(sh, "ls /dev/sda").run().await?;
-
     // IDENTIFY:NAMESPACE is faulty. It will report a changed namespace size. The driver is still expected to make progress.
     fault_start_updater.set(true).await;
     vm.restart_openhcl(

@@ -4,6 +4,7 @@
 //! Implementation of an admin or IO queue pair.
 
 use super::spec;
+use crate::driver::save_restore::AerHandlerSavedState;
 use crate::driver::save_restore::Error;
 use crate::driver::save_restore::PendingCommandSavedState;
 use crate::driver::save_restore::PendingCommandsSavedState;
@@ -239,9 +240,10 @@ impl QueuePair {
 
         let aer_handler: Box<dyn AerHandler> = if is_admin {
             Box::new(AdminAerHandler {
-                saved_aen: None,
+                last_aen: None,
                 await_aen_cid: None,
                 send_aen: None,
+                failed: false,
             })
         } else {
             Box::new(NoOpAerHandler)
@@ -653,15 +655,6 @@ enum Req {
     NextAen(Rpc<(), AsynchronousEventRequestDw0>),
 }
 
-#[derive(Clone, Debug, Protobuf)]
-#[mesh(package = "nvme_driver")]
-pub struct AerHandlerSavedState {
-    #[mesh(1)]
-    saved_aen: Option<u32>, // Saved AEN as u32 for clarity.
-    #[mesh(2)]
-    await_aen_cid: Option<u16>,
-}
-
 pub trait AerHandler: Send + Sync + 'static {
     /// Given a completion command, if the command pertains to a pending AEN,
     /// process it.
@@ -684,29 +677,32 @@ pub trait AerHandler: Send + Sync + 'static {
 }
 
 pub struct AdminAerHandler {
-    saved_aen: Option<AsynchronousEventRequestDw0>,
+    last_aen: Option<AsynchronousEventRequestDw0>,
     await_aen_cid: Option<u16>,
     send_aen: Option<Rpc<(), AsynchronousEventRequestDw0>>, // Channel to return AENs on.
+    failed: bool, // If the failed state is reached, it will stop looping until save/restore.
 }
 
 impl AerHandler for AdminAerHandler {
     fn handle_completion(&mut self, completion: &nvme_spec::Completion) {
         if let Some(await_aen_cid) = self.await_aen_cid
             && completion.cid == await_aen_cid
+            && !self.failed
         {
+            self.failed = completion.status.status() != 0;
             self.await_aen_cid = None;
             // Complete the AEN or pend it.
             let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
             if let Some(send_aen) = self.send_aen.take() {
                 send_aen.complete(aen);
             } else {
-                self.saved_aen = Some(aen);
+                self.last_aen = Some(aen);
             }
         }
     }
 
     fn handle_aen_request(&mut self, rpc: Rpc<(), AsynchronousEventRequestDw0>) {
-        if let Some(aen) = self.saved_aen.take() {
+        if let Some(aen) = self.last_aen.take() {
             rpc.complete(aen);
         } else {
             self.send_aen = Some(rpc); // Save driver request to be completed later.
@@ -714,19 +710,22 @@ impl AerHandler for AdminAerHandler {
     }
 
     fn poll_send_aer(&self) -> bool {
-        self.await_aen_cid.is_none()
+        self.await_aen_cid.is_none() && !self.failed
     }
 
     fn update_awaiting_cid(&mut self, cid: u16) {
         if self.await_aen_cid.is_some() {
-            panic!("already awaiting on AEN with cid {}", self.await_aen_cid.unwrap());
+            panic!(
+                "already awaiting on AEN with cid {}",
+                self.await_aen_cid.unwrap()
+            );
         }
         self.await_aen_cid = Some(cid);
     }
 
     fn save(&self) -> Option<AerHandlerSavedState> {
         Some(AerHandlerSavedState {
-            saved_aen: self.saved_aen.map(AsynchronousEventRequestDw0::into_bits), // Save as u32
+            last_aen: self.last_aen.map(AsynchronousEventRequestDw0::into_bits), // Save as u32
             await_aen_cid: self.await_aen_cid,
         })
     }
@@ -734,10 +733,10 @@ impl AerHandler for AdminAerHandler {
     fn restore(&mut self, state: &Option<AerHandlerSavedState>) {
         if let Some(state) = state {
             let AerHandlerSavedState {
-                saved_aen,
+                last_aen,
                 await_aen_cid,
             } = state;
-            self.saved_aen = saved_aen.map(AsynchronousEventRequestDw0::from_bits); // Restore from u32
+            self.last_aen = last_aen.map(AsynchronousEventRequestDw0::from_bits); // Restore from u32
             self.await_aen_cid = *await_aen_cid;
         }
     }

@@ -1057,8 +1057,6 @@ impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
 }
 
 pub mod save_restore {
-    use crate::queue_pair::AerHandlerSavedState;
-
     use super::*;
 
     /// Save and Restore errors for this module.
@@ -1218,5 +1216,14 @@ pub mod save_restore {
         pub nsid: u32,
         #[mesh(2, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
         pub identify_ns: nvme_spec::nvm::IdentifyNamespace,
+    }
+
+    #[derive(Clone, Debug, Protobuf)]
+    #[mesh(package = "nvme_driver")]
+    pub struct AerHandlerSavedState {
+        #[mesh(1)]
+        pub last_aen: Option<u32>, // Saved AEN as u32 for clarity.
+        #[mesh(2)]
+        pub await_aen_cid: Option<u16>,
     }
 }

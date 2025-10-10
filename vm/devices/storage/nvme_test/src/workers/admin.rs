@@ -63,7 +63,7 @@ use zerocopy::IntoBytes;
 
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
-const MAX_ASYNC_EVENT_REQUESTS: u8 = 4; // minimum recommended by spec
+const MAX_ASYNC_EVENT_REQUESTS: u8 = 1; // minimum recommended by spec
 const ERROR_LOG_PAGE_ENTRIES: u8 = 1;
 
 #[derive(Inspect)]
@@ -1069,7 +1069,7 @@ impl AdminHandler {
         state: &mut AdminState,
         command: &spec::Command,
     ) -> Result<Option<CommandResult>, NvmeError> {
-        if state.asynchronous_event_requests.len() >= MAX_ASYNC_EVENT_REQUESTS as usize {
+        if state.asynchronous_event_requests.len() >= (MAX_ASYNC_EVENT_REQUESTS - 1) as usize {
             return Err(spec::Status::ASYNCHRONOUS_EVENT_REQUEST_LIMIT_EXCEEDED.into());
         }
         state.asynchronous_event_requests.push(command.cdw0.cid());
