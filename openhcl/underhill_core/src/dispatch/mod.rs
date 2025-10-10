@@ -160,7 +160,6 @@ pub(crate) struct LoadedVm {
     pub host_vmbus_relay: Option<VmbusRelayHandle>,
     // channels are revoked when dropped, so make sure to keep them alive
     pub _vmbus_devices: Vec<SpawnedUnit<ChannelUnit<dyn VmbusDevice>>>,
-    pub _vmbus_intercept_devices: Vec<mesh::OneshotSender<()>>,
     pub _ide_accel_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     pub network_settings: Option<Box<dyn LoadedVmNetworkSettings>>,
     pub shutdown_relay: Option<(
