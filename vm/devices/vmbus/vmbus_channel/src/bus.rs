@@ -255,6 +255,16 @@ impl Display for OfferKey {
     }
 }
 
+impl From<&protocol::OfferChannel> for OfferKey {
+    fn from(offer: &protocol::OfferChannel) -> Self {
+        Self {
+            interface_id: offer.interface_id,
+            instance_id: offer.instance_id,
+            subchannel_index: offer.subchannel_index,
+        }
+    }
+}
+
 /// Channel offer parameters.
 #[derive(Debug, Clone, Default, mesh::MeshPayload)]
 pub struct OfferParams {
