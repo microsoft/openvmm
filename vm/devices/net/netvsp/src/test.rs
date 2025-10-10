@@ -981,26 +981,22 @@ impl<'a> TestNicChannel<'a> {
         &mut self,
         timeout: Duration,
     ) -> Option<protocol::Message1SendRndisPacketComplete> {
-        let message = self
-            .read_with_timeout(timeout, |packet| match packet {
-                IncomingPacket::Completion(completion) => {
-                    let mut reader = completion.reader();
-                    let header: protocol::MessageHeader = reader.read_plain().unwrap();
-                    assert_eq!(
-                        header.message_type,
-                        protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE
-                    );
-                    let completion_data: protocol::Message1SendRndisPacketComplete =
-                        reader.read_plain().unwrap();
-                    Some(completion_data)
-                }
-                _ => panic!("Unexpected packet!"),
-            })
-            .await
-            .or_else(|_| Ok::<Option<protocol::Message1SendRndisPacketComplete>, ()>(None))
-            .unwrap();
-
-        message
+        self.read_with_timeout(timeout, |packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE
+                );
+                let completion_data: protocol::Message1SendRndisPacketComplete =
+                    reader.read_plain().unwrap();
+                Some(completion_data)
+            }
+            _ => panic!("Unexpected packet!"),
+        })
+        .await
+        .unwrap_or(None)
     }
 
     pub async fn read_rndis_packet_complete_message(
@@ -4688,7 +4684,7 @@ async fn rndis_send_single_packet_message(driver: DefaultDriver) {
 
     assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
 
-    let frame = vec![0xCC as u8; 60];
+    let frame = vec![0xCC; 60];
     channel
         .send_rndis_control_message_no_completion(
             rndisprot::MESSAGE_TYPE_PACKET_MSG,
@@ -4754,30 +4750,31 @@ async fn rndis_send_multiple_packet_message(driver: DefaultDriver) {
 
     assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
 
-    let extras = vec![vec![0xAA as u8; 20], vec![0xBB as u8; 20]];
-    let mut packets = Vec::new();
-    packets.push(rndisprot::Packet {
-        data_offset: size_of::<rndisprot::MessageHeader>() as u32,
-        data_length: extras[0].len() as u32,
-        oob_data_offset: 0,
-        oob_data_length: 0,
-        num_oob_data_elements: 0,
-        per_packet_info_offset: 0,
-        per_packet_info_length: 0,
-        vc_handle: 0,
-        reserved: 0,
-    });
-    packets.push(rndisprot::Packet {
-        data_offset: size_of::<rndisprot::MessageHeader>() as u32,
-        data_length: extras[1].len() as u32,
-        oob_data_offset: 0,
-        oob_data_length: 0,
-        num_oob_data_elements: 0,
-        per_packet_info_offset: 0,
-        per_packet_info_length: 0,
-        vc_handle: 0,
-        reserved: 0,
-    });
+    let extras = vec![vec![0xAA; 20], vec![0xBB; 20]];
+    let mut packets = vec![
+        rndisprot::Packet {
+            data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+            data_length: extras[0].len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset: 0,
+            per_packet_info_length: 0,
+            vc_handle: 0,
+            reserved: 0,
+        },
+        rndisprot::Packet {
+            data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+            data_length: extras[1].len() as u32,
+            oob_data_offset: 0,
+            oob_data_length: 0,
+            num_oob_data_elements: 0,
+            per_packet_info_offset: 0,
+            per_packet_info_length: 0,
+            vc_handle: 0,
+            reserved: 0,
+        },
+    ];
     channel
         .send_rndis_multiplepacket_no_completion(packets.clone(), extras.clone())
         .await;
