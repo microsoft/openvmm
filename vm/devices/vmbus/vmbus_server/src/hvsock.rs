@@ -234,6 +234,8 @@ impl ListenerWorker {
                         error = &err as &dyn std::error::Error,
                         "connection relay failed"
                     );
+                } else {
+                    tracing::debug!(%service_id, "connection relay finished");
                 }
             });
 
@@ -440,13 +442,25 @@ impl RelayInner {
         .await
         .context("failed to offer channel")?;
 
+        tracing::debug!(?request, "connected guest to host");
+        let service_id = request.service_id;
+
         // Now that the channel is offered, report that the connection operation is
         // done.
         pending.done(true);
 
         let channel = offer.accept(self.driver.as_ref()).await?.channel;
         let channel = BytePipe::new(channel)?;
-        relay_connected(channel, socket).await?;
+        if let Err(err) = relay_connected(channel, socket).await {
+            tracing::error!(
+                %service_id,
+                error = &err as &dyn std::error::Error,
+                "guest to host connection relay failed"
+            );
+        } else {
+            tracing::debug!(%service_id, "guest to host connection relay finished");
+        }
+
         // N.B. offer needs to stay alive until here to avoid revoking the channel
         // before the relay is done.
         drop(offer);
