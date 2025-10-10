@@ -1025,6 +1025,8 @@ impl<T: DeviceBacking> InspectTask<WorkerState> for DriverWorkerTask<T> {
 }
 
 pub mod save_restore {
+    use crate::queue_pair::AerHandlerSavedState;
+
     use super::*;
 
     /// Save and Restore errors for this module.
@@ -1124,9 +1126,7 @@ pub mod save_restore {
         #[mesh(3)]
         pub pending_cmds: PendingCommandsSavedState,
         #[mesh(4)]
-        pub saved_aen: Option<u32>,
-        #[mesh(5)]
-        pub await_aen_cid: Option<u16>,
+        pub aer_handler: Option<AerHandlerSavedState>,
     }
 
     #[derive(Protobuf, Clone, Debug)]

@@ -22,6 +22,8 @@ use inspect::Inspect;
 use inspect_counters::Counter;
 use mesh::Cancel;
 use mesh::CancelContext;
+use mesh::MeshPayload;
+use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -245,8 +247,18 @@ impl QueuePair {
         let cq_mem_block = mem.subblock(QueuePair::SQ_SIZE, QueuePair::CQ_SIZE);
         let data_offset = QueuePair::SQ_SIZE + QueuePair::CQ_SIZE;
 
+        let aer_handler: Box<dyn AerHandler> = if is_admin {
+            Box::new(AdminAerHandler {
+                saved_aen: None,
+                await_aen_cid: None,
+                send_aen: None,
+            })
+        } else {
+            Box::new(NoOpAerHandler)
+        };
+
         let mut queue_handler = match saved_state {
-            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s)?,
+            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler)?,
             None => {
                 // Create a new one.
                 QueueHandler {
@@ -255,9 +267,7 @@ impl QueuePair {
                     commands: PendingCommands::new(qid),
                     stats: Default::default(),
                     drain_after_restore: false,
-                    send_aen: None,
-                    saved_aen: None,
-                    await_aen_cid: None,
+                    aer_handler,
                 }
             }
         };
@@ -267,13 +277,7 @@ impl QueuePair {
         let task = spawner.spawn("nvme-queue", {
             async move {
                 ctx.until_cancelled(async {
-                    if is_admin {
-                        queue_handler
-                            .run_as_admin(&registers, recv, &mut interrupt)
-                            .await;
-                    } else {
-                        queue_handler.run(&registers, recv, &mut interrupt).await;
-                    }
+                    queue_handler.run(&registers, recv, &mut interrupt).await;
                 })
                 .await
                 .ok();
@@ -659,6 +663,91 @@ enum Req {
     NextAen(Rpc<(), AsynchronousEventRequestDw0>),
 }
 
+#[derive(Clone, Debug, Protobuf)]
+#[mesh(package = "nvme_driver")]
+pub struct AerHandlerSavedState {
+    #[mesh(1)]
+    saved_aen: Option<u32>, // Saved AEN as u32 for clarity.
+    #[mesh(2)]
+    await_aen_cid: Option<u16>,
+}
+
+pub trait AerHandler: Send + Sync + 'static {
+    fn handle_completion(&mut self, _completion: &nvme_spec::Completion) {}
+    fn handle_aen_request(&mut self, _rpc: Rpc<(), AsynchronousEventRequestDw0>) {}
+    fn update_awaiting_cid(&mut self, _cid: u16) {}
+    fn poll_send_aen(&self) -> bool {
+        false
+    }
+    fn save(&self) -> Option<AerHandlerSavedState> {
+        None
+    }
+    fn restore(&mut self, _state: &Option<AerHandlerSavedState>) {}
+}
+
+pub struct AdminAerHandler {
+    saved_aen: Option<AsynchronousEventRequestDw0>,
+    await_aen_cid: Option<u16>,
+    send_aen: Option<Rpc<(), AsynchronousEventRequestDw0>>, // Channel to return AENs on.
+}
+
+impl AerHandler for AdminAerHandler {
+    fn handle_completion(&mut self, completion: &nvme_spec::Completion) {
+        if let Some(await_aen_cid) = self.await_aen_cid
+            && completion.cid == await_aen_cid
+        {
+            self.await_aen_cid = None;
+            // Complete the AEN or pend it.
+            let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
+            if let Some(send_aen) = self.send_aen.take() {
+                send_aen.complete(aen);
+            } else {
+                self.saved_aen = Some(aen);
+            }
+        }
+    }
+
+    fn handle_aen_request(&mut self, rpc: Rpc<(), AsynchronousEventRequestDw0>) {
+        if let Some(aen) = self.saved_aen.take() {
+            rpc.complete(aen);
+        } else {
+            self.send_aen = Some(rpc); // Save driver request to be completed later.
+        }
+    }
+
+    fn poll_send_aen(&self) -> bool {
+        self.await_aen_cid.is_none()
+    }
+
+    fn update_awaiting_cid(&mut self, cid: u16) {
+        if let Some(cid) = self.await_aen_cid {
+            panic!("already awaiting on AEN with cid {}", cid);
+        }
+        self.await_aen_cid = Some(cid);
+    }
+
+    fn save(&self) -> Option<AerHandlerSavedState> {
+        Some(AerHandlerSavedState {
+            saved_aen: self.saved_aen.map(AsynchronousEventRequestDw0::into_bits), // Save as u32
+            await_aen_cid: self.await_aen_cid,
+        })
+    }
+
+    fn restore(&mut self, state: &Option<AerHandlerSavedState>) {
+        if let Some(state) = state {
+            let AerHandlerSavedState {
+                saved_aen,
+                await_aen_cid,
+            } = state;
+            self.saved_aen = saved_aen.map(AsynchronousEventRequestDw0::from_bits); // Restore from u32
+            self.await_aen_cid = *await_aen_cid;
+        }
+    }
+}
+
+pub struct NoOpAerHandler;
+impl AerHandler for NoOpAerHandler {}
+
 #[derive(Inspect)]
 struct QueueHandler {
     sq: SubmissionQueue,
@@ -667,10 +756,7 @@ struct QueueHandler {
     stats: QueueStats,
     drain_after_restore: bool,
     #[inspect(skip)]
-    saved_aen: Option<AsynchronousEventRequestDw0>, // TODO: Could inspect this but I am not sure how useful that would be.
-    await_aen_cid: Option<u16>, // The CID of the currently outstanding AER command.
-    #[inspect(skip)]
-    send_aen: Option<Rpc<(), AsynchronousEventRequestDw0>>, // Channel to return AENs on.
+    aer_handler: Box<dyn AerHandler>,
 }
 
 #[derive(Inspect, Default)]
@@ -697,93 +783,8 @@ impl QueueHandler {
                 // Normal processing of the requests and completions.
                 poll_fn(|cx| {
                     if !self.sq.is_full() && !self.commands.is_full() {
-                        if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
-                            return Event::Request(req).into();
-                        }
-                    }
-                    while !self.commands.is_empty() {
-                        if let Some(completion) = self.cq.read() {
-                            return Event::Completion(completion).into();
-                        }
-                        if interrupt.poll(cx).is_pending() {
-                            break;
-                        }
-                        self.stats.interrupts.increment();
-                    }
-                    self.sq.commit(registers);
-                    self.cq.commit(registers);
-                    Poll::Pending
-                })
-                .await
-            } else {
-                // Only process in-flight completions.
-                poll_fn(|cx| {
-                    while !self.commands.is_empty() {
-                        if let Some(completion) = self.cq.read() {
-                            return Event::Completion(completion).into();
-                        }
-                        if interrupt.poll(cx).is_pending() {
-                            break;
-                        }
-                        self.stats.interrupts.increment();
-                    }
-                    self.cq.commit(registers);
-                    Poll::Pending
-                })
-                .await
-            };
-
-            match event {
-                Event::Request(req) => match req {
-                    Req::Command(rpc) => {
-                        let (mut command, respond) = rpc.split();
-                        self.commands.insert(&mut command, respond);
-                        self.sq.write(command).unwrap();
-                        self.stats.issued.increment();
-                    }
-                    Req::Inspect(deferred) => deferred.inspect(&self),
-                    Req::Save(queue_state) => {
-                        queue_state.complete(self.save().await);
-                        // Do not allow any more processing after save completed.
-                        break;
-                    }
-                    _ => {
-                        panic!("unexpected request on IO queue. Only admin queues support AERs");
-                    }
-                },
-                Event::Completion(completion) => {
-                    assert_eq!(completion.sqid, self.sq.id());
-                    let respond = self.commands.remove(completion.cid);
-                    if self.drain_after_restore && self.commands.is_empty() {
-                        // Switch to normal processing mode once all in-flight commands completed.
-                        self.drain_after_restore = false;
-                    }
-                    self.sq.update_head(completion.sqhd);
-                    respond.complete(completion);
-                    self.stats.completed.increment();
-                }
-            }
-        }
-    }
-
-    async fn run_as_admin(
-        &mut self,
-        registers: &DeviceRegisters<impl DeviceBacking>,
-        mut recv: mesh::Receiver<Req>,
-        interrupt: &mut DeviceInterrupt,
-    ) {
-        loop {
-            enum Event {
-                Request(Req),
-                Completion(spec::Completion),
-            }
-
-            let event = if !self.drain_after_restore {
-                // Normal processing of the requests and completions.
-                poll_fn(|cx| {
-                    if !self.sq.is_full() && !self.commands.is_full() {
                         // Prioritize sending AERs to keep the cycle going
-                        if self.await_aen_cid.is_none() {
+                        if self.aer_handler.poll_send_aen() {
                             return Poll::Ready(Event::Request(Req::SendAer()));
                         }
                         if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
@@ -830,9 +831,6 @@ impl QueueHandler {
                         self.sq.write(command).unwrap();
                         self.stats.issued.increment();
                     }
-                    Req::SendAer() => {
-                        self.send_aer_command();
-                    }
                     Req::Inspect(deferred) => deferred.inspect(&self),
                     Req::Save(queue_state) => {
                         queue_state.complete(self.save().await);
@@ -840,12 +838,14 @@ impl QueueHandler {
                         break;
                     }
                     Req::NextAen(rpc) => {
-                        if let Some(aen) = self.saved_aen.take() {
-                            rpc.complete(aen);
-                            continue;
-                        } else {
-                            self.send_aen = Some(rpc); // Save driver request to be completed later.
-                        }
+                        self.aer_handler.handle_aen_request(rpc);
+                    }
+                    Req::SendAer() => {
+                        let mut command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
+                        self.commands.insert(&mut command, Rpc::detached(()));
+                        self.aer_handler.update_awaiting_cid(command.cdw0.cid());
+                        self.sq.write(command).unwrap();
+                        self.stats.issued.increment();
                     }
                 },
                 Event::Completion(completion) => {
@@ -856,33 +856,12 @@ impl QueueHandler {
                         self.drain_after_restore = false;
                     }
                     self.sq.update_head(completion.sqhd);
-                    if let Some(await_aen_cid) = self.await_aen_cid
-                        && completion.cid == await_aen_cid
-                    {
-                        self.await_aen_cid = None;
-                        // Complete the AEN or pend it.
-                        let aen = AsynchronousEventRequestDw0::from_bits(completion.dw0);
-                        if let Some(send_aen) = self.send_aen.take() {
-                            send_aen.complete(aen);
-                        } else {
-                            self.saved_aen = Some(aen);
-                        }
-                    }
+                    self.aer_handler.handle_completion(&completion);
                     respond.complete(completion);
                     self.stats.completed.increment();
                 }
             }
         }
-    }
-
-    // Writes an AER command to the submission queue and saves the CID of the
-    // command sent.
-    fn send_aer_command(&mut self) {
-        let mut command = admin_cmd(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST);
-        self.commands.insert(&mut command, Rpc::detached(()));
-        self.await_aen_cid = Some(command.cdw0.cid());
-        self.sq.write(command).unwrap();
-        self.stats.issued.increment();
     }
 
     /// Save queue data for servicing.
@@ -892,8 +871,7 @@ impl QueueHandler {
             sq_state: self.sq.save(),
             cq_state: self.cq.save(),
             pending_cmds: self.commands.save(),
-            saved_aen: self.saved_aen.map(|aen| aen.into_bits()), // Save it as a u32 for clarity
-            await_aen_cid: self.await_aen_cid,
+            aer_handler: self.aer_handler.save(),
         })
     }
 
@@ -902,14 +880,16 @@ impl QueueHandler {
         sq_mem_block: MemoryBlock,
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
+        mut aer_handler: Box<dyn AerHandler>,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,
             cq_state,
             pending_cmds,
-            saved_aen,
-            await_aen_cid,
+            aer_handler: aer_handler_saved_state,
         } = saved_state;
+
+        aer_handler.restore(aer_handler_saved_state);
 
         Ok(Self {
             sq: SubmissionQueue::restore(sq_mem_block, sq_state)?,
@@ -919,9 +899,7 @@ impl QueueHandler {
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
-            send_aen: None,
-            saved_aen: saved_aen.map(AsynchronousEventRequestDw0::from_bits), // Restore from u32
-            await_aen_cid: *await_aen_cid,
+            aer_handler,
         })
     }
 }
