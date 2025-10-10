@@ -1247,6 +1247,10 @@ async fn new_underhill_vm(
             };
         }
 
+        if env_cfg.reformat_vmgs {
+            dps.general.guest_state_lifetime = GuestStateLifetime::Reprovision;
+        }
+
         if let Some(policy) = env_cfg.guest_state_encryption_policy {
             tracing::info!("using HCL_GUEST_STATE_ENCRYPTION_POLICY={policy:?} from cmdline");
             dps.general.guest_state_encryption_policy = match policy {
@@ -1516,13 +1520,11 @@ async fn new_underhill_vm(
             let disk = Disk::new(disk).context("invalid vmgs disk")?;
             let logger = Arc::new(GetVmgsLogger::new(get_client.clone()));
 
-            let vmgs = if env_cfg.reformat_vmgs
-                || matches!(
-                    dps.general.guest_state_lifetime,
-                    GuestStateLifetime::Reprovision
-                ) {
-                tracing::info!(CVM_ALLOWED, "formatting vmgs file on request");
-                Vmgs::format_new(disk, Some(logger))
+            let vmgs = if matches!(
+                dps.general.guest_state_lifetime,
+                GuestStateLifetime::Reprovision
+            ) {
+                Vmgs::request_format(disk, Some(logger))
                     .instrument(tracing::info_span!("vmgs_format", CVM_ALLOWED))
                     .await
                     .context("failed to format vmgs")?
@@ -2608,7 +2610,8 @@ async fn new_underhill_vm(
         });
 
     if dps.general.tpm_enabled {
-        let no_persistent_secrets = dps.general.suppress_attestation.unwrap_or(false);
+        let no_persistent_secrets =
+            vmgs_client.is_none() || dps.general.suppress_attestation.unwrap_or(false);
         let (ppi_store, nvram_store) = if no_persistent_secrets {
             (
                 EphemeralNonVolatileStoreHandle.into_resource(),

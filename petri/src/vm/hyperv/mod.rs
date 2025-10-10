@@ -19,6 +19,7 @@ use crate::PetriHaltReason;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
+use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::SecureBootTemplate;
@@ -170,7 +171,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
                     Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
                     Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
-                    None => powershell::HyperVGuestStateIsolationType::OpenHCL,
+                    None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
                 },
                 powershell::HyperVGeneration::Two,
                 guest.artifact(),
@@ -180,6 +181,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
         };
 
         let vmgs_path = {
+            // TODO: add support for configuring the TPM in Hyper-V
+            // For now, use a persistent vmgs, since Ubuntu VMs with TPM
+            // try to install a boot entry and reboot.
+            let vmgs = match vmgs {
+                PetriVmgsResource::Ephemeral => PetriVmgsResource::Disk(PetriVmgsDisk::default()),
+                vmgs => vmgs,
+            };
+
             let lifetime_cli = match &vmgs {
                 PetriVmgsResource::Disk(_) => "DEFAULT",
                 PetriVmgsResource::ReprovisionOnFailure(_) => "REPROVISION_ON_FAILURE",

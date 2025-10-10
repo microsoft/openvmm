@@ -27,6 +27,12 @@ pub enum StorageError {
     /// The access was not aligned to a sector boundary.
     #[error("access is not aligned to a sector boundary")]
     Unaligned,
+    /// The storage has an invalid sector count
+    #[error("invalid sector count {0}")]
+    InvalidSectorCount(u64),
+    /// The storage has an invalid sector size
+    #[error("invalid sector size {0}")]
+    InvalidSectorSize(u32),
 }
 
 impl VmgsStorage {
@@ -41,6 +47,34 @@ impl VmgsStorage {
             sector_shift: sector_size.trailing_zeros(),
             disk,
         }
+    }
+
+    pub fn new_validated(disk: Disk) -> Result<Self, StorageError> {
+        let storage = VmgsStorage::new(disk);
+        // Errors from validate are fatal, as they involve invalid device metadata
+        storage.validate()?;
+        Ok(storage)
+    }
+
+    pub fn validate(&self) -> Result<(), StorageError> {
+        let sector_count = self.sector_count();
+        let sector_size = self.sector_size();
+
+        // Don't need to parse MBR/GPT table, VMGS uses RAW file format
+
+        // Validate capacity and max transfer size. This also enesures that there are no arithmetic
+        // overflows when converting from sector counts to byte counts.
+        if sector_count == 0 || sector_count > u64::MAX / 4096 {
+            return Err(StorageError::InvalidSectorCount(sector_count));
+        }
+
+        // Any power-of-2 sector size up to 4096 bytes works, but in practice only 512 and 4096
+        // indicate a supported (tested) device configuration.
+        if sector_size != 512 && sector_size != 4096 {
+            return Err(StorageError::InvalidSectorSize(sector_size));
+        }
+
+        Ok(())
     }
 
     /// Read from the block device.
