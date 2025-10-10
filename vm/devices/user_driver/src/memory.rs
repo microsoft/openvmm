@@ -18,6 +18,9 @@ pub const PAGE_SIZE64: u64 = PAGE_SIZE as u64;
 
 /// A mapped buffer that can be accessed by the host or the device.
 ///
+/// Question for reviewers: Would it make sense to _also_ store whether the underlying
+/// memory is persistent here as well, rather than only in MemoryBlock?
+///
 /// # Safety
 /// The implementor must ensure that the VA region from `base()..base() + len()`
 /// remains mapped for the lifetime.
@@ -51,14 +54,21 @@ struct RestrictedView {
     mem: Arc<dyn MappedDmaTarget>,
     len: usize,
     offset: usize,
+    /// See [`MemoryBlock::persistent`].
+    persistent: bool,
 }
 
 impl RestrictedView {
     /// Wraps `mem` and provides a restricted view of it.
-    fn new(mem: Arc<dyn MappedDmaTarget>, offset: usize, len: usize) -> Self {
+    fn new(mem: Arc<dyn MappedDmaTarget>, offset: usize, len: usize, persistent: bool) -> Self {
         let mem_len = mem.len();
         assert!(mem_len >= offset && mem_len - offset >= len);
-        Self { len, offset, mem }
+        Self {
+            len,
+            offset,
+            mem,
+            persistent,
+        }
     }
 }
 
@@ -86,11 +96,15 @@ unsafe impl MappedDmaTarget for RestrictedView {
     }
 
     fn view(&self, offset: usize, len: usize) -> Option<MemoryBlock> {
-        Some(MemoryBlock::new(RestrictedView::new(
-            self.mem.clone(),
-            self.offset.checked_add(offset).unwrap(),
-            len,
-        )))
+        Some(MemoryBlock::new(
+            RestrictedView::new(
+                self.mem.clone(),
+                self.offset.checked_add(offset).unwrap(),
+                len,
+                self.persistent,
+            ),
+            self.persistent,
+        ))
     }
 }
 
@@ -100,6 +114,8 @@ pub struct MemoryBlock {
     base: *const u8,
     len: usize,
     mem: Arc<dyn MappedDmaTarget>,
+    /// If true, the PFNs are guaranteed to be stable across OpenHCL servicing events.
+    persistent: bool,
 }
 
 impl std::fmt::Debug for MemoryBlock {
@@ -109,6 +125,7 @@ impl std::fmt::Debug for MemoryBlock {
             .field("len", &self.len)
             .field("pfns", &self.pfns())
             .field("pfn_bias", &self.pfn_bias())
+            .field("persistent", &self.persistent)
             .finish()
     }
 }
@@ -120,11 +137,12 @@ unsafe impl Sync for MemoryBlock {}
 
 impl MemoryBlock {
     /// Creates a new memory block backed by `mem`.
-    pub fn new<T: 'static + MappedDmaTarget>(mem: T) -> Self {
+    pub fn new<T: 'static + MappedDmaTarget>(mem: T, persistent: bool) -> Self {
         Self {
             base: mem.base(),
             len: mem.len(),
             mem: Arc::new(mem),
+            persistent,
         }
     }
 
@@ -132,7 +150,10 @@ impl MemoryBlock {
     pub fn subblock(&self, offset: usize, len: usize) -> Self {
         match self.mem.view(offset, len) {
             Some(view) => view,
-            None => Self::new(RestrictedView::new(self.mem.clone(), offset, len)),
+            None => Self::new(
+                RestrictedView::new(self.mem.clone(), offset, len, self.persistent),
+                self.persistent,
+            ),
         }
     }
 
@@ -154,6 +175,12 @@ impl MemoryBlock {
     /// Gets the pfn_bias of the underlying memory.
     pub fn pfn_bias(&self) -> u64 {
         self.mem.pfn_bias()
+    }
+
+    /// Returns true if the PFNs are guaranteed to be stable across OpenHCL
+    /// servicing events.
+    pub fn persistent(&self) -> bool {
+        self.persistent
     }
 
     /// Gets the buffer as an atomic slice.

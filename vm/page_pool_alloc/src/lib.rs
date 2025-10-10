@@ -400,10 +400,13 @@ impl PagePoolHandle {
     /// Create a memory block from this allocation.
     fn into_memory_block(self) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         let pfns: Vec<_> = (self.base_pfn()..self.base_pfn() + self.size_pages).collect();
-        Ok(user_driver::memory::MemoryBlock::new(PagePoolDmaBuffer {
-            alloc: self,
-            pfns,
-        }))
+        Ok(user_driver::memory::MemoryBlock::new(
+            PagePoolDmaBuffer { alloc: self, pfns },
+            // While it is perhaps a bit simplistic to return `true` here, the `PagePool` is designed
+            // and used only for memory regions that are allocated externally to the VTL2 kernel
+            // control. Thus, the memory is persistent across OpenHCL servicing events.
+            true,
+        ))
     }
 }
 

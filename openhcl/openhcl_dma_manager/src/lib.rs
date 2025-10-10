@@ -133,9 +133,9 @@ pub enum LowerVtlPermissionPolicy {
 /// The CVM page visibility required for DMA allocations.
 #[derive(Copy, Clone, Inspect)]
 pub enum AllocationVisibility {
-    /// Allocations must be shared aka host visible.
+    /// Allocations must be shared with the host (aka host visible).
     Shared,
-    /// Allocations must be private.
+    /// Allocations must be private to the guest (but is allowed to be visible to the VTL0 guest).
     Private,
 }
 
@@ -148,7 +148,8 @@ pub struct DmaClientParameters {
     pub lower_vtl_policy: LowerVtlPermissionPolicy,
     /// The required CVM page visibility for allocations.
     pub allocation_visibility: AllocationVisibility,
-    /// Whether allocations must be persistent.
+    /// Whether allocations should be persistent. Persistent allocations can
+    /// survive save/restore.
     pub persistent_allocations: bool,
 }
 

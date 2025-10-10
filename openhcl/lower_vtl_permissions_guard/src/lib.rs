@@ -99,10 +99,13 @@ impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
             PagesAccessibleToLowerVtl::new_from_pages(self.vtl_protect.clone(), mem.pfns())
                 .context("failed to lower VTL permissions on memory block")?;
 
-        Ok(MemoryBlock::new(LowerVtlDmaBuffer {
-            block: mem,
-            _vtl_guard: vtl_guard,
-        }))
+        Ok(MemoryBlock::new(
+            LowerVtlDmaBuffer {
+                block: mem,
+                _vtl_guard: vtl_guard,
+            },
+            mem.persistent(),
+        ))
     }
 
     fn attach_pending_buffers(&self) -> Result<Vec<MemoryBlock>> {

@@ -123,12 +123,18 @@ unsafe impl MappedDmaTarget for LockedMemory {
     }
 }
 
+/// A DMA client spawner that allocates memory at arbitrary locations in VTL2's
+/// address space. Use this spawner when you don't care about the PFNs being
+/// contiguous or able to survive an OpenHCL servicing event.
 #[derive(Clone, Inspect)]
 pub struct LockedMemorySpawner;
 
 impl crate::DmaClient for LockedMemorySpawner {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
-        Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
+        Ok(crate::memory::MemoryBlock::new(
+            LockedMemory::new(len)?,
+            false,
+        ))
     }
 
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<crate::memory::MemoryBlock>> {

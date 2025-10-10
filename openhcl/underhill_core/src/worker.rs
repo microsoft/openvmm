@@ -1975,6 +1975,8 @@ async fn new_underhill_vm(
                 nvme_always_flr: env_cfg.nvme_always_flr,
                 is_isolated: isolation.is_isolated(),
                 dma_client_spawner: dma_manager.client_spawner(),
+                warn_no_private_pool: !private_pool_available,
+                warn_no_save_restore: !save_restore_supported,
             }),
         );
 

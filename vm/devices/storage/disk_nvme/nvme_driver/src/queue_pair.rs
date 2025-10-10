@@ -21,6 +21,7 @@ use inspect::Inspect;
 use inspect_counters::Counter;
 use mesh::Cancel;
 use mesh::CancelContext;
+use mesh::rpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -197,6 +198,9 @@ impl QueuePair {
         let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
+        if !mem.persistent() {
+            tracing::warn!(qid, "allocated non-persistent memory for queue pair");
+        }
 
         assert!(sq_entries <= Self::MAX_SQ_ENTRIES);
         assert!(cq_entries <= Self::MAX_CQ_ENTRIES);
@@ -241,6 +245,7 @@ impl QueuePair {
                     commands: PendingCommands::new(qid),
                     stats: Default::default(),
                     drain_after_restore: false,
+                    memory_persistent: mem.persistent(),
                 }
             }
         };
@@ -621,6 +626,7 @@ enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
+    QueryPersistence(Rpc<(), bool>),
 }
 
 #[derive(Inspect)]
@@ -630,6 +636,7 @@ struct QueueHandler {
     commands: PendingCommands,
     stats: QueueStats,
     drain_after_restore: bool,
+    memory_persistent: bool,
 }
 
 #[derive(Inspect, Default)]
@@ -706,6 +713,7 @@ impl QueueHandler {
                         // Do not allow any more processing after save completed.
                         break;
                     }
+                    Req::QueryPersistence(rpc) => rpc.complete(self.memory_persistent),
                 },
                 Event::Completion(completion) => {
                     assert_eq!(completion.sqid, self.sq.id());
@@ -752,6 +760,7 @@ impl QueueHandler {
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
+            memory_persistent: true, // Assume that memory is persistent after restore (we wouldn't be able to restore otherwise)
         })
     }
 }
