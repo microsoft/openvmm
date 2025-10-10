@@ -280,7 +280,6 @@ pub struct PageTableBuilder {
     confidential_bit: Option<u32>,
     map_reset_vector: bool,
     read_only: bool,
-    debug: bool,
 }
 
 impl PteOps for PageTableBuilder {
@@ -307,7 +306,6 @@ impl PageTableBuilder {
             local_map: None,
             confidential_bit: None,
             read_only: false,
-            debug: false,
             map_reset_vector: false,
         }
     }
@@ -325,11 +323,6 @@ impl PageTableBuilder {
 
     pub fn with_confidential_bit(mut self, bit_position: u32) -> Self {
         self.confidential_bit = Some(bit_position);
-        self
-    }
-
-    pub fn with_debug(mut self, debug: bool) -> Self {
-        self.debug = debug;
         self
     }
 
@@ -353,6 +346,8 @@ impl PageTableBuilder {
         page_table: &mut [PageTable],
         flattened_page_table: &'a mut [u8],
     ) -> &'a [u8] {
+        assert!(flattened_page_table.len() == (page_table.len() * PAGE_TABLE_SIZE));
+
         const SIZE_512_GB: u64 = 0x8000000000;
 
         if self.size == 0 {
@@ -497,97 +492,131 @@ impl PageTableBuilder {
     }
 }
 
-/// Build a set of X64 page tables identity mapping the bottom address
-/// space with an optional address bias.
-///
-/// An optional PML4E entry may be linked, with arguments being (link_target_gpa, linkage_gpa).
-/// link_target_gpa represents the GPA of the PML4E to link into the built page table.
-/// linkage_gpa represents the GPA at which the linked PML4E should be linked.
-pub fn build_page_tables_64<'a>(
+#[derive(Debug, Clone)]
+pub struct IdentityMapBuilder {
     page_table_gpa: u64,
-    address_bias: u64,
     identity_map_size: IdentityMapSize,
+    address_bias: u64,
     pml4e_link: Option<(u64, u64)>,
     read_only: bool,
-    page_table: &mut [PageTable],
-    flattened_page_table: &'a mut [u8],
-) -> &'a [u8] {
-    // Allocate page tables. There are up to 6 total page tables:
-    //      1 PML4E (Level 4) (omitted if the address bias is non-zero)
-    //      1 PDPTE (Level 3)
-    //      4 or 8 PDE tables (Level 2)
-    // Note that there are no level 1 page tables, as 2MB pages are used.
-    let leaf_page_table_count = match identity_map_size {
-        IdentityMapSize::Size4Gb => 4,
-        IdentityMapSize::Size8Gb => 8,
-    };
-    let page_table_count = leaf_page_table_count + if address_bias == 0 { 2 } else { 1 };
-    let mut page_table_allocator = page_table.iter_mut().enumerate();
+}
 
-    // Allocate single PDPTE table.
-    let pdpte_table = if address_bias == 0 {
-        // Allocate single PML4E page table.
-        let (_, pml4e_table) = page_table_allocator
-            .next()
-            .expect("pagetable should always be available, code bug if not");
-
-        // PDPTE table is the next pagetable.
-        let (pdpte_table_index, pdpte_table) = page_table_allocator
-            .next()
-            .expect("pagetable should always be available, code bug if not");
-
-        // Set PML4E entry linking PML4E to PDPTE.
-        let output_address = page_table_gpa + pdpte_table_index as u64 * X64_PAGE_SIZE;
-        pml4e_table.entries[0].set_entry(PageTableEntryType::Pde(output_address), read_only);
-
-        // Set PML4E entry to link the additional entry if specified.
-        if let Some((link_target_gpa, linkage_gpa)) = pml4e_link {
-            assert!((linkage_gpa & 0x7FFFFFFFFF) == 0);
-            pml4e_table.entries[linkage_gpa as usize >> 39]
-                .set_entry(PageTableEntryType::Pde(link_target_gpa), read_only);
-        }
-
-        pdpte_table
-    } else {
-        // PDPTE table is the first table, if no PML4E.
-        page_table_allocator
-            .next()
-            .expect("pagetable should always be available, code bug if not")
-            .1
-    };
-
-    // Build PDEs that point to 2 MB pages.
-    let top_address = match identity_map_size {
-        IdentityMapSize::Size4Gb => 0x100000000u64,
-        IdentityMapSize::Size8Gb => 0x200000000u64,
-    };
-    let mut current_va = 0;
-
-    while current_va < top_address {
-        // Allocate a new PDE table
-        let (pde_table_index, pde_table) = page_table_allocator
-            .next()
-            .expect("pagetable should always be available, code bug if not");
-
-        // Link PDPTE table to PDE table (L3 to L2)
-        let pdpte_index = get_amd64_pte_index(current_va, 2);
-        let output_address = page_table_gpa + pde_table_index as u64 * X64_PAGE_SIZE;
-        let pdpte_entry = &mut pdpte_table.entries[pdpte_index as usize];
-        assert!(!pdpte_entry.is_present());
-        pdpte_entry.set_entry(PageTableEntryType::Pde(output_address), read_only);
-
-        // Set all 2MB entries in this PDE table.
-        for entry in pde_table.iter_mut() {
-            entry.set_entry(
-                PageTableEntryType::Leaf2MbPage(current_va + address_bias),
-                read_only,
-            );
-            current_va += X64_LARGE_PAGE_SIZE;
+impl IdentityMapBuilder {
+    pub fn new(page_table_gpa: u64, identity_map_size: IdentityMapSize) -> Self {
+        IdentityMapBuilder {
+            page_table_gpa,
+            identity_map_size,
+            address_bias: 0,
+            pml4e_link: None,
+            read_only: false,
         }
     }
 
-    // Flatten page table vec into u8 vec
-    flatten_page_table(page_table, flattened_page_table, page_table_count)
+    pub fn with_address_bias(mut self, address_bias: u64) -> Self {
+        self.address_bias = address_bias;
+        self
+    }
+
+    pub fn with_pml4e_link(mut self, pml4e_link: (u64, u64)) -> Self {
+        self.pml4e_link = Some(pml4e_link);
+        self
+    }
+
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Build a set of X64 page tables identity mapping the bottom address
+    /// space with an optional address bias.
+    ///
+    /// An optional PML4E entry may be linked, with arguments being (link_target_gpa, linkage_gpa).
+    /// link_target_gpa represents the GPA of the PML4E to link into the built page table.
+    /// linkage_gpa represents the GPA at which the linked PML4E should be linked.
+    pub fn build<'a>(
+        self,
+        page_table: &mut [PageTable],
+        flattened_page_table: &'a mut [u8],
+    ) -> &'a [u8] {
+        assert!(flattened_page_table.len() == (page_table.len() * PAGE_TABLE_SIZE));
+        // Allocate page tables. There are up to 6 total page tables:
+        //      1 PML4E (Level 4) (omitted if the address bias is non-zero)
+        //      1 PDPTE (Level 3)
+        //      4 or 8 PDE tables (Level 2)
+        // Note that there are no level 1 page tables, as 2MB pages are used.
+        let leaf_page_table_count = match self.identity_map_size {
+            IdentityMapSize::Size4Gb => 4,
+            IdentityMapSize::Size8Gb => 8,
+        };
+        let page_table_count = leaf_page_table_count + if self.address_bias == 0 { 2 } else { 1 };
+        let mut page_table_allocator = page_table.iter_mut().enumerate();
+
+        // Allocate single PDPTE table.
+        let pdpte_table = if self.address_bias == 0 {
+            // Allocate single PML4E page table.
+            let (_, pml4e_table) = page_table_allocator
+                .next()
+                .expect("pagetable should always be available, code bug if not");
+
+            // PDPTE table is the next pagetable.
+            let (pdpte_table_index, pdpte_table) = page_table_allocator
+                .next()
+                .expect("pagetable should always be available, code bug if not");
+
+            // Set PML4E entry linking PML4E to PDPTE.
+            let output_address = self.page_table_gpa + pdpte_table_index as u64 * X64_PAGE_SIZE;
+            pml4e_table.entries[0]
+                .set_entry(PageTableEntryType::Pde(output_address), self.read_only);
+
+            // Set PML4E entry to link the additional entry if specified.
+            if let Some((link_target_gpa, linkage_gpa)) = self.pml4e_link {
+                assert!((linkage_gpa & 0x7FFFFFFFFF) == 0);
+                pml4e_table.entries[linkage_gpa as usize >> 39]
+                    .set_entry(PageTableEntryType::Pde(link_target_gpa), self.read_only);
+            }
+
+            pdpte_table
+        } else {
+            // PDPTE table is the first table, if no PML4E.
+            page_table_allocator
+                .next()
+                .expect("pagetable should always be available, code bug if not")
+                .1
+        };
+
+        // Build PDEs that point to 2 MB pages.
+        let top_address = match self.identity_map_size {
+            IdentityMapSize::Size4Gb => 0x100000000u64,
+            IdentityMapSize::Size8Gb => 0x200000000u64,
+        };
+        let mut current_va = 0;
+
+        while current_va < top_address {
+            // Allocate a new PDE table
+            let (pde_table_index, pde_table) = page_table_allocator
+                .next()
+                .expect("pagetable should always be available, code bug if not");
+
+            // Link PDPTE table to PDE table (L3 to L2)
+            let pdpte_index = get_amd64_pte_index(current_va, 2);
+            let output_address = self.page_table_gpa + pde_table_index as u64 * X64_PAGE_SIZE;
+            let pdpte_entry = &mut pdpte_table.entries[pdpte_index as usize];
+            assert!(!pdpte_entry.is_present());
+            pdpte_entry.set_entry(PageTableEntryType::Pde(output_address), self.read_only);
+
+            // Set all 2MB entries in this PDE table.
+            for entry in pde_table.iter_mut() {
+                entry.set_entry(
+                    PageTableEntryType::Leaf2MbPage(current_va + self.address_bias),
+                    self.read_only,
+                );
+                current_va += X64_LARGE_PAGE_SIZE;
+            }
+        }
+
+        // Flatten page table vec into u8 vec
+        flatten_page_table(page_table, flattened_page_table, page_table_count)
+    }
 }
 
 /// Align an address up to the start of the next page.
