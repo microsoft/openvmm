@@ -1063,7 +1063,7 @@ impl InitializedVm {
                 .context("failed to open vmgs file")?,
             ),
             Some(VmgsResource::Reprovision(disk)) => Some(
-                vmgs::Vmgs::format_new(
+                vmgs::Vmgs::request_format(
                     open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
                     None,
                 )

@@ -167,34 +167,6 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Specifies whether the UEFI will always attempt a default boot
-    pub fn with_default_boot_always_attempt(mut self, val: bool) -> Self {
-        match self.config.load_mode {
-            LoadMode::Uefi {
-                ref mut default_boot_always_attempt,
-                ..
-            } => {
-                *default_boot_always_attempt = val;
-            }
-            LoadMode::Igvm { .. } => {
-                let ged = self.ged.as_mut().expect("no GED to configure DPS");
-                match ged.firmware {
-                    get_resources::ged::GuestFirmwareConfig::Uefi {
-                        ref mut default_boot_always_attempt,
-                        ..
-                    } => {
-                        *default_boot_always_attempt = val;
-                    }
-                    _ => {
-                        panic!("not a UEFI boot");
-                    }
-                }
-            }
-            _ => panic!("not a UEFI boot"),
-        }
-        self
-    }
-
     /// Add custom VTL 2 settings.
     // TODO: At some point we want to replace uses of this with nicer with_disk,
     // with_nic, etc. methods.

@@ -43,9 +43,9 @@ pub enum Error {
     /// Trying to allocate too many blocks.
     #[error("trying to allocate too many blocks")]
     WriteFileBlocks,
-    /// Fatal initialization failures
-    #[error("Fatal initialization error: {0}")]
-    Initialization(String),
+    /// Fatal storage initialization failures
+    #[error("Fatal storage initialization error: {0}")]
+    Initialization(#[source] StorageError),
     /// Invalid VMGS file format.
     #[error("VMGS_INVALID_FORMAT: {0}")]
     InvalidFormat(String),
