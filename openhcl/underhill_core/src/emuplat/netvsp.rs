@@ -422,22 +422,7 @@ impl HclNetworkVFManagerWorker {
     }
 
     pub async fn shutdown_vtl2_device(&mut self, keep_vf_alive: bool) {
-        futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
-            match control.disconnect().await {
-                Ok(Some(mut endpoint)) => {
-                    tracing::info!("Network endpoint disconnected");
-                    endpoint.stop().await;
-                }
-                Ok(None) => (),
-                Err(err) => {
-                    tracing::error!(
-                        err = err.as_ref() as &dyn std::error::Error,
-                        "Failed to disconnect endpoint"
-                    );
-                }
-            }
-        }))
-        .await;
+        self.disconnect_all_endpoints().await;
         if let Some(device) = self.mana_device.take() {
             let (result, device) = device.shutdown().await;
             // Closing the VFIO device handle can take a long time. Leak the handle by
@@ -488,6 +473,25 @@ impl HclNetworkVFManagerWorker {
                 }
             }
         }
+    }
+
+    async fn disconnect_all_endpoints(&mut self) {
+        futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
+            match control.disconnect().await {
+                Ok(Some(mut endpoint)) => {
+                    tracing::info!("Network endpoint disconnected");
+                    endpoint.stop().await;
+                }
+                Ok(None) => (),
+                Err(err) => {
+                    tracing::error!(
+                        err = err.as_ref() as &dyn std::error::Error,
+                        "Failed to disconnect endpoint"
+                    );
+                }
+            }
+        }))
+        .await;
     }
 
     pub async fn run(&mut self) {
@@ -676,25 +680,13 @@ impl HclNetworkVFManagerWorker {
                     assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
                     rpc.handle(async |_| {
-                        futures::future::join_all(self.endpoint_controls.iter_mut().map(
-                            async |control| match control.disconnect().await {
-                                Ok(Some(mut endpoint)) => {
-                                    tracing::info!("Network endpoint disconnected");
-                                    endpoint.stop().await;
-                                }
-                                Ok(None) => (),
-                                Err(err) => {
-                                    tracing::error!(
-                                        err = err.as_ref() as &dyn std::error::Error,
-                                        "Failed to disconnect endpoint"
-                                    );
-                                }
-                            },
-                        ))
-                        .await;
+                        self.disconnect_all_endpoints().await;
 
                         if let Some(device) = self.mana_device.take() {
                             let (saved_state, device) = device.save().await;
+
+                            // Closing the VFIO device handle can take a long time.
+                            // Leak the handle by stashing it away.
                             std::mem::forget(device);
 
                             if let Ok(saved_state) = saved_state {
