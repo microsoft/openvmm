@@ -230,7 +230,7 @@ impl OpenRequest {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf)]
+#[derive(Debug, Default, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Protobuf, Inspect)]
 /// The identifying IDs for a channel offer.
 #[mesh(package = "vmbus")]
 pub struct OfferKey {
