@@ -134,7 +134,7 @@ impl IcmpConnection {
         //   We use ptr::slice_from_raw_parts_mut to create a proper MaybeUninit slice.
         let buf = unsafe {
             std::slice::from_raw_parts_mut(
-                buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
+                buffer.as_mut_ptr().cast::<MaybeUninit<u8>>(),
                 buffer.len(),
             )
         };
