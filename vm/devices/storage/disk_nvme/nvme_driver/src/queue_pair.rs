@@ -668,7 +668,7 @@ pub trait AerHandler: Send + Sync + 'static {
     /// Given a completion command, if the command pertains to a pending AEN,
     /// process it.
     fn handle_completion(&mut self, _completion: &nvme_spec::Completion) {}
-    /// Handle a request from the driver to get the most-recent underlivered AEN
+    /// Handle a request from the driver to get the most-recent undelivered AEN
     /// or wait for the next one.
     fn handle_aen_request(&mut self, _rpc: Rpc<(), AsynchronousEventRequestDw0>) {}
     /// Update the CID that the handler is awaiting an AEN on.
