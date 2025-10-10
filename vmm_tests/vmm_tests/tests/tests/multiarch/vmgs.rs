@@ -67,14 +67,12 @@ async fn clear_vmgs<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
 ) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config
+    let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Reprovision)
         .with_initial_vmgs(initial_vmgs)
         .run()
         .await?;
 
-    agent.reboot().await?;
-    let agent = vm.wait_for_reset().await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 

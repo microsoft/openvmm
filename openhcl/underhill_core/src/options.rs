@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Clone, Debug, MeshPayload)]
 pub enum TestScenarioConfig {
@@ -20,7 +21,7 @@ pub enum TestScenarioConfig {
     SaveStuck,
 }
 
-impl std::str::FromStr for TestScenarioConfig {
+impl FromStr for TestScenarioConfig {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<TestScenarioConfig, anyhow::Error> {
@@ -41,7 +42,7 @@ pub enum GuestStateLifetimeCli {
     Ephemeral,
 }
 
-impl std::str::FromStr for GuestStateLifetimeCli {
+impl FromStr for GuestStateLifetimeCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<GuestStateLifetimeCli, anyhow::Error> {
@@ -63,7 +64,7 @@ pub enum GuestStateEncryptionPolicyCli {
     GspKey,
 }
 
-impl std::str::FromStr for GuestStateEncryptionPolicyCli {
+impl FromStr for GuestStateEncryptionPolicyCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<GuestStateEncryptionPolicyCli, anyhow::Error> {
@@ -241,7 +242,7 @@ impl Options {
 
         // Reads an environment variable, falling back to a legacy variable (replacing
         // "OPENHCL_" with "UNDERHILL_") if the original is not set.
-        let legacy_openhcl_env = |name: &str| -> Option<&OsString> {
+        let read_legacy_openhcl_env = |name: &str| -> Option<&OsString> {
             env.get::<OsStr>(name.as_ref()).or_else(|| {
                 env.get::<OsStr>(
                     format!(
@@ -254,8 +255,7 @@ impl Options {
         };
 
         // Reads an environment variable strings.
-        let parse_env_string =
-            |name: &str| -> Option<&OsString> { env.get::<OsStr>(name.as_ref()) };
+        let read_env = |name: &str| -> Option<&OsString> { env.get::<OsStr>(name.as_ref()) };
 
         fn parse_bool_opt(value: Option<&OsString>) -> anyhow::Result<Option<bool>> {
             value
@@ -278,9 +278,14 @@ impl Options {
             parse_bool_opt(value).ok().flatten().unwrap_or_default()
         }
 
-        let parse_legacy_env_bool = |name| parse_bool(legacy_openhcl_env(name));
-        let parse_env_bool = |name: &str| parse_bool(parse_env_string(name));
-        let parse_env_bool_opt = |name: &str| parse_bool_opt(parse_env_string(name));
+        let parse_legacy_env_bool = |name| parse_bool(read_legacy_openhcl_env(name));
+        let parse_env_bool = |name: &str| parse_bool(read_env(name));
+        let parse_env_bool_opt = |name: &str| {
+            parse_bool_opt(read_env(name))
+                .map_err(|e| tracing::warn!("failed to parse {name}: {e:#}"))
+                .ok()
+                .flatten()
+        };
 
         fn parse_number(value: Option<&OsString>) -> anyhow::Result<Option<u64>> {
             value
@@ -293,29 +298,29 @@ impl Options {
         }
 
         let parse_legacy_env_number = |name| {
-            parse_number(legacy_openhcl_env(name))
+            parse_number(read_legacy_openhcl_env(name))
                 .context(format!("parsing legacy env number: {name}"))
         };
 
         let mut wait_for_start = parse_legacy_env_bool("OPENHCL_WAIT_FOR_START");
         let mut reformat_vmgs = parse_legacy_env_bool("OPENHCL_REFORMAT_VMGS");
-        let mut pid = legacy_openhcl_env("OPENHCL_PID_FILE_PATH")
+        let mut pid = read_legacy_openhcl_env("OPENHCL_PID_FILE_PATH")
             .map(|x| x.to_string_lossy().into_owned().into());
-        let vmbus_max_version = legacy_openhcl_env("OPENHCL_VMBUS_MAX_VERSION")
+        let vmbus_max_version = read_legacy_openhcl_env("OPENHCL_VMBUS_MAX_VERSION")
             .map(|x| {
                 vmbus_core::parse_vmbus_version(&(x.to_string_lossy()))
                     .map_err(|x| anyhow::anyhow!("Error parsing vmbus max version: {}", x))
             })
             .transpose()?;
         let vmbus_enable_mnf =
-            legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
+            read_legacy_openhcl_env("OPENHCL_VMBUS_ENABLE_MNF").map(|v| parse_bool(Some(v)));
         let vmbus_force_confidential_external_memory =
             parse_env_bool("OPENHCL_VMBUS_FORCE_CONFIDENTIAL_EXTERNAL_MEMORY");
         let vmbus_channel_unstick_delay_ms =
             parse_legacy_env_number("OPENHCL_VMBUS_CHANNEL_UNSTICK_DELAY_MS")?;
-        let cmdline_append =
-            legacy_openhcl_env("OPENHCL_CMDLINE_APPEND").map(|x| x.to_string_lossy().into_owned());
-        let force_load_vtl0_image = legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")
+        let cmdline_append = read_legacy_openhcl_env("OPENHCL_CMDLINE_APPEND")
+            .map(|x| x.to_string_lossy().into_owned());
+        let force_load_vtl0_image = read_legacy_openhcl_env("OPENHCL_FORCE_LOAD_VTL0_IMAGE")
             .map(|x| x.to_string_lossy().into_owned());
         let mut vnc_port = parse_legacy_env_number("OPENHCL_VNC_PORT")?.map(|x| x as u32);
         let framebuffer_gpa_base = parse_legacy_env_number("OPENHCL_FRAMEBUFFER_GPA_BASE")?;
@@ -332,7 +337,7 @@ impl Options {
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
         let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
         let nvme_always_flr = parse_env_bool("OPENHCL_NVME_ALWAYS_FLR");
-        let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
+        let test_configuration = read_env("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
                 .map_err(|e| {
@@ -343,23 +348,17 @@ impl Options {
                 })
                 .ok()
         });
-        let disable_uefi_frontpage = parse_env_bool_opt("OPENHCL_DISABLE_UEFI_FRONTPAGE")
-            .map_err(|e| tracing::warn!("failed to parse OPENHCL_DISABLE_UEFI_FRONTPAGE: {:#}", e))
-            .ok()
-            .flatten();
+        let disable_uefi_frontpage = parse_env_bool_opt("OPENHCL_DISABLE_UEFI_FRONTPAGE");
         let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
-        let default_boot_always_attempt = parse_env_bool_opt("HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT")
-            .map_err(|e| tracing::warn!("failed to parse HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT: {:#}", e))
-            .ok()
-            .flatten();
-        let guest_state_lifetime = parse_env_string("HCL_GUEST_STATE_LIFETIME").and_then(|x| {
+        let default_boot_always_attempt = parse_env_bool_opt("HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT");
+        let guest_state_lifetime = read_env("HCL_GUEST_STATE_LIFETIME").and_then(|x| {
             x.to_string_lossy()
                 .parse::<GuestStateLifetimeCli>()
                 .map_err(|e| tracing::warn!("failed to parse HCL_GUEST_STATE_LIFETIME: {:#}", e))
                 .ok()
         });
-        let guest_state_encryption_policy = parse_env_string("HCL_GUEST_STATE_ENCRYPTION_POLICY")
-            .and_then(|x| {
+        let guest_state_encryption_policy =
+            read_env("HCL_GUEST_STATE_ENCRYPTION_POLICY").and_then(|x| {
                 x.to_string_lossy()
                     .parse::<GuestStateEncryptionPolicyCli>()
                     .map_err(|e| {
@@ -367,17 +366,9 @@ impl Options {
                     })
                     .ok()
             });
-        let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY")
-            .map_err(|e| tracing::warn!("failed to parse HCL_STRICT_ENCRYPTION_POLICY: {:#}", e))
-            .ok()
-            .flatten();
-        let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK")
-            .map_err(|e| tracing::warn!("failed to parse HCL_ATTEMPT_AK_CERT_CALLBACK: {:#}", e))
-            .ok()
-            .flatten();
-        let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY")
-            .ok()
-            .flatten();
+        let strict_encryption_policy = parse_env_bool_opt("HCL_STRICT_ENCRYPTION_POLICY");
+        let attempt_ak_cert_callback = parse_env_bool_opt("HCL_ATTEMPT_AK_CERT_CALLBACK");
+        let enable_vpci_relay = parse_env_bool_opt("OPENHCL_ENABLE_VPCI_RELAY");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
