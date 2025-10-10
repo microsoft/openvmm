@@ -406,7 +406,9 @@ pub(crate) async fn idle_test<T: PetriVmmBackend>(
         && isolation_type.is_none()
         && vps == TestVPCount::LargeVPCount
     {
-        tracing::warn!("VM failed to start with the given topology");
+        tracing::warn!(
+            "VM failed to start with the given topology, this is expected for the internal Intel runner only"
+        );
         return Ok(());
     }
 
