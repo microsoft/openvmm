@@ -224,10 +224,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
                 );
                 if strict {
-                    append_cmdline(
-                        &mut config.command_line,
-                        format!("HCL_STRICT_ENCRYPTION_POLICY=1"),
-                    );
+                    append_cmdline(&mut config.command_line, "HCL_STRICT_ENCRYPTION_POLICY=1");
                 }
             };
 
