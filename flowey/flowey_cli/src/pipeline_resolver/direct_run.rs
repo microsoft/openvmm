@@ -275,7 +275,10 @@ fn direct_run_do_work(
             serde_json::to_string(&persist_dir).unwrap().into(),
         );
 
-        for ResolvedJobArtifact { flowey_var, name } in artifacts_published {
+        for ResolvedJobArtifact {
+            flowey_var, name, ..
+        } in artifacts_published
+        {
             let path = out_dir.join("artifacts").join(name);
             fs_err::create_dir_all(&path)?;
 
@@ -291,7 +294,10 @@ fn direct_run_do_work(
         }
         fs_err::create_dir_all(out_dir.join(".job_artifacts"))?;
 
-        for ResolvedJobArtifact { flowey_var, name } in artifacts_used {
+        for ResolvedJobArtifact {
+            flowey_var, name, ..
+        } in artifacts_used
+        {
             let path = out_dir.join(".job_artifacts").join(name);
             fs_err::create_dir_all(&path)?;
             copy_dir_all(out_dir.join("artifacts").join(name), &path)?;
