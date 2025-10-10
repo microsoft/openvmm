@@ -34,6 +34,7 @@ use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
+use mana_driver::save_restore::ManaSavedState;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
@@ -114,6 +115,8 @@ pub trait LoadedVmNetworkSettings: Inspect {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        save_restore_supported: bool,
+        mana_state: Option<&ManaSavedState>,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -127,6 +130,9 @@ pub trait LoadedVmNetworkSettings: Inspect {
         &self,
         mut params: PacketCaptureParams<Socket>,
     ) -> anyhow::Result<PacketCaptureParams<Socket>>;
+
+    /// Save the network state for restoration after servicing.
+    async fn save(&mut self) -> Vec<ManaSavedState>;
 }
 
 /// A VM that has been loaded and can be run.
@@ -187,6 +193,7 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub nvme_keep_alive: bool,
+    pub mana_keep_alive: bool,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
 }
@@ -298,7 +305,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None, false).await {
+                            match self.save(None, false, false).await {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -363,7 +370,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self.save(None, false).await;
+                            let r = self.save(None, false, false).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -565,6 +572,7 @@ impl LoadedVm {
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
+        let mana_keepalive = self.mana_keep_alive && capabilities_flags.enable_mana_keepalive();
 
         // Do everything before the log flush under a span.
         let r = async {
@@ -579,7 +587,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
+            let mut state = self.save(Some(deadline), nvme_keepalive, mana_keepalive).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -741,16 +749,30 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
-        vf_keepalive_flag: bool,
+        nvme_keepalive_flag: bool,
+        mana_keepalive_flag: bool,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
+        // Only save dma manager state if we are expected to keep VF devices
+        // alive across save. Otherwise, don't persist the state at all, as
+        // there should be no live DMA across save.
+        //
+        // This has to happen before saving the network state, otherwise its allocations
+        // are marked as Free and are unable to be restored.
+        let dma_manager_state = if nvme_keepalive_flag || mana_keepalive_flag {
+            use vmcore::save_restore::SaveRestore;
+            Some(self.dma_manager.save().context("dma_manager save failed")?)
+        } else {
+            None
+        };
+
         // Only save NVMe state when there are NVMe controllers and keep alive
         // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
-            n.save(vf_keepalive_flag)
+            n.save(nvme_keepalive_flag)
                 .instrument(tracing::info_span!("nvme_manager_save", CVM_ALLOWED))
                 .await
                 .map(|s| NvmeSavedState { nvme_state: s })
@@ -759,21 +781,20 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
+
+        let mana_state = if let Some(network_settings) = &mut self.network_settings
+            && mana_keepalive_flag
+        {
+            Some(network_settings.save().await)
+        } else {
+            None
+        };
+
         let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
             Some((
                 vmgs_thin_client.save().await.context("vmgs save failed")?,
                 vmgs_disk_metadata.clone(),
             ))
-        } else {
-            None
-        };
-
-        // Only save dma manager state if we are expected to keep VF devices
-        // alive across save. Otherwise, don't persist the state at all, as
-        // there should be no live DMA across save.
-        let dma_manager_state = if vf_keepalive_flag {
-            use vmcore::save_restore::SaveRestore;
-            Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
             None
         };
@@ -797,6 +818,7 @@ impl LoadedVm {
                 nvme_state,
                 dma_manager_state,
                 vmbus_client,
+                mana_state,
             },
             units,
         };
@@ -863,6 +885,8 @@ impl LoadedVm {
                 &self.vmbus_server,
                 self.dma_manager.client_spawner(),
                 self.isolation.is_isolated(),
+                self.mana_keep_alive,
+                None, // No existing mana state
             )
             .await?;
 

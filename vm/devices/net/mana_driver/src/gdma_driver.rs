@@ -514,8 +514,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    #[allow(dead_code)]
-    pub async fn save(mut self) -> anyhow::Result<GdmaDriverSavedState> {
+    pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
         if self.hwc_failure {
             anyhow::bail!("cannot save/restore after HWC failure");
         }
@@ -594,7 +593,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok((bar0_mapping, map))
     }
 
-    #[allow(dead_code)]
     pub async fn restore(
         saved_state: GdmaDriverSavedState,
         mut device: T,

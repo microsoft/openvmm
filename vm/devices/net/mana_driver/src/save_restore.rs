@@ -5,6 +5,28 @@
 
 use mesh::payload::Protobuf;
 
+/// Mana saved state
+#[derive(Debug, Protobuf, Clone)]
+#[mesh(package = "mana_driver")]
+pub struct ManaSavedState {
+    /// The saved state of the MANA device driver
+    #[mesh(1)]
+    pub mana_device: ManaDeviceSavedState,
+
+    /// Id of the device
+    #[mesh(2)]
+    pub pci_id: String,
+}
+
+/// Mana device saved state
+#[derive(Debug, Protobuf, Clone)]
+#[mesh(package = "mana_driver")]
+pub struct ManaDeviceSavedState {
+    /// Saved state for restoration of the GDMA driver
+    #[mesh(1)]
+    pub gdma: GdmaDriverSavedState,
+}
+
 /// Top level saved state for the GDMA driver's saved state
 #[derive(Protobuf, Clone, Debug)]
 #[mesh(package = "mana_driver")]
