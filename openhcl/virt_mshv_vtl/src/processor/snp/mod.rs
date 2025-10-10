@@ -1671,7 +1671,7 @@ impl UhProcessor<'_, SnpBacked> {
         let [mut eax, mut ebx, mut ecx, mut edx] = self.cvm_cpuid_result(vtl, leaf, subleaf);
 
         // Apply SNP specific fixups. These must be runtime changes only, for
-        // parts of cpuid that are dynamic (either beccause it's a function of
+        // parts of cpuid that are dynamic (either because it's a function of
         // the current VP's identity or the current VP or partition state).
         //
         // We rely on the cpuid set being accurate during partition startup,
