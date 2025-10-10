@@ -1583,6 +1583,7 @@ mod tests {
             vec![VportConfig {
                 mac_address: [1, 2, 3, 4, 5, 6].into(),
                 endpoint: Box::new(LoopbackEndpoint::new()),
+                queue_pairs: 1,
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
@@ -1684,6 +1685,7 @@ mod tests {
             vec![VportConfig {
                 mac_address: [1, 2, 3, 4, 5, 6].into(),
                 endpoint: Box::new(LoopbackEndpoint::new()),
+                queue_pairs: 1,
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
