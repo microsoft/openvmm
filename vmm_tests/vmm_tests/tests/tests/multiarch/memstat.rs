@@ -3,8 +3,6 @@
 
 //! Memory Validation for VMM Tests
 
-#![cfg_attr(not(debug_assertions), expect(dead_code))]
-
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::IsolationType;
@@ -198,7 +196,7 @@ impl MemStat {
     /// Compares current statistics against baseline
     /// For all 2VP tests general usage and underhill_vm process memory usage are given a 1MiB threshold
     /// For all large (32VP or 64VP) tests general usage and underhill_vm process memory usage are given a 3MiB threshold
-    /// All other processes have a usage threshold ~1.5x the variance observed in tests
+    /// All other processes have a usage threshold of 512kB
     /// Kernel reservation has a threshold of 0 since there is no run-to-run variance with that statistic
     fn compare_to_baseline(self, arch: &str, vps: &str) -> anyhow::Result<()> {
         let baseline_usage = Self::get_upper_limit_value(&self.baseline_json[arch][vps]["usage"]);

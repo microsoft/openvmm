@@ -59,10 +59,19 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         // ambient deps required by `update-rootfs.py`
+        let platform = ctx.platform();
+        let python_pkg = match platform {
+            FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => "python3",
+                FlowPlatformLinuxDistro::Arch => "python",
+                FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+            },
+            _ => anyhow::bail!("Unsupported platform"),
+        };
         let pydeps =
             ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: ["python3"].map(Into::into).into(),
+                    package_names: [python_pkg].map(Into::into).into(),
                     done: side_effect,
                 },
             );

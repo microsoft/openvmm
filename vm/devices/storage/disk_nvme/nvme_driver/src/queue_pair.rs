@@ -49,31 +49,23 @@ use zerocopy::FromZeros;
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
 const INVALID_PAGE_ADDR: u64 = !(PAGE_SIZE as u64 - 1);
 
+#[derive(Inspect)]
 pub(crate) struct QueuePair {
+    #[inspect(skip)]
     task: Task<QueueHandler>,
+    #[inspect(skip)]
     cancel: Cancel,
+    #[inspect(flatten, with = "|x| inspect::send(&x.send, Req::Inspect)")]
     issuer: Arc<Issuer>,
+    #[inspect(skip)]
     mem: MemoryBlock,
+    #[inspect(skip)]
     qid: u16,
+    #[inspect(skip)]
     sq_entries: u16,
+    #[inspect(skip)]
     cq_entries: u16,
     is_admin: bool,
-}
-
-impl Inspect for QueuePair {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let Self {
-            task: _,
-            cancel: _,
-            issuer,
-            mem: _,
-            qid: _,
-            sq_entries: _,
-            cq_entries: _,
-            is_admin: _,
-        } = self;
-        issuer.send.send(Req::Inspect(req.defer()));
-    }
 }
 
 impl PendingCommands {
