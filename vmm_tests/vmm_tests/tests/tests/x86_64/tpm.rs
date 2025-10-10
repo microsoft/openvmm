@@ -204,3 +204,38 @@ async fn vbs_boot_with_attestation(
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Test that TPM platform hierarchy is disabled for guest access on Linux.
+/// The platform hierarchy should only be accessible by the host/hypervisor.
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
+async fn tpm_test_platform_hierarchy_disabled(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let config = config
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .modify_backend(|b| b.with_tpm())
+        // TODO: this shouldn't be needed once with_tpm() is
+        // backend-agnostic.
+        .with_expect_reset();
+
+    let (vm, agent) = config.run().await?;
+
+    // Use the python script to test that platform hierarchy operations fail
+    const TEST_FILE: &str = "tpm_platform_hierarchy.py";
+    const TEST_CONTENT: &str = include_str!("../../../test_data/tpm_platform_hierarchy.py");
+
+    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm_platform_hierarchy.py").read().await?;
+
+    println!("TPM platform hierarchy test output: {}", output);
+
+    // Check if platform hierarchy operations properly failed as expected
+    assert!(output.contains("succeeded"));
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
