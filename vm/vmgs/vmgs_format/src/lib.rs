@@ -46,6 +46,9 @@ open_enum! {
         GUEST_WATCHDOG = 10,
         HW_KEY_PROTECTOR = 11,
         GUEST_SECRET_KEY = 13,
+        FILE_ID_HIBERNATION_FIRMWARE = 14,
+        FILE_ID_PLATFORM_SEED = 15,
+        FILE_ID_PROVENANCE_DOC = 16,
 
         EXTENDED_FILE_TABLE = 63,
     }
