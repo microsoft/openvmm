@@ -934,12 +934,11 @@ impl SimpleFlowNode for Node {
                     junit_xml,
                     test_label,
                     attachments: BTreeMap::new(), // the logs are already there
-                    output_dirs: Some(
-                        flowey_lib_common::publish_test_results::VmmTestResultsArtifacts {
-                            test_results_light: None,
-                            test_results_full: Some(ReadVar::from_static(test_content_dir)),
-                        },
-                    ),
+                    output_dirs: flowey_lib_common::publish_test_results::VmmTestResultsArtifacts {
+                        junit_xml: None,
+                        nextest_list_json: None,
+                        test_results_full: Some(ReadVar::from_static(test_content_dir)),
+                    },
                     done: v,
                 });
 

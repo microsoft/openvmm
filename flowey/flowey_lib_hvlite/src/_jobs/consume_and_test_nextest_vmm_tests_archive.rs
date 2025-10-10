@@ -244,7 +244,7 @@ impl SimpleFlowNode for Node {
                     ),
                 ),
             ]),
-            output_dirs: Some(artifact_dirs),
+            output_dirs: artifact_dirs,
             done: v,
         });
 

@@ -21,8 +21,10 @@ pub enum Attachments {
 
 #[derive(Serialize, Deserialize)]
 pub struct VmmTestResultsArtifacts {
-    /// Light test results (junit.xml, nextest-list.json)
-    pub test_results_light: Option<ReadVar<PathBuf>>,
+    /// Path to junit.xml
+    pub junit_xml: Option<ReadVar<PathBuf>>,
+    /// Path to nextest-list.json
+    pub nextest_list_json: Option<ReadVar<PathBuf>>,
     /// Full test results (all logs, dumps, etc)
     pub test_results_full: Option<ReadVar<PathBuf>>,
 }
@@ -49,7 +51,7 @@ flowey_request! {
         /// will instead be uploaded via the JUnit integration.
         pub attachments: BTreeMap<String, (Attachments, bool)>,
         /// Copy the xml file and attachments to the provided directory.
-        pub output_dirs: Option<VmmTestResultsArtifacts>,
+        pub output_dirs: VmmTestResultsArtifacts,
         /// Side-effect confirming that the publish has succeeded
         pub done: WriteVar<SideEffect>,
     }
@@ -103,33 +105,27 @@ impl FlowNode for Node {
                 FlowBackend::Github | FlowBackend::Local => {
                     // Copy the junit XML into the "light" results directory if one
                     // was provided. This covers both GitHub and local runs.
-                    if let Some(output_dirs_ref) = output_dirs.as_ref() {
-                        if let Some(test_results_light) = output_dirs_ref.test_results_light.clone()
-                        {
-                            use_side_effects.push(ctx.emit_rust_step(step_name, move |ctx| {
-                                let output_dir = test_results_light.claim(ctx);
-                                let has_junit_xml = has_junit_xml.claim(ctx);
-                                let junit_xml = junit_xml.claim(ctx);
+                    if let Some(junit_xml_dst) = output_dirs.junit_xml {
+                        use_side_effects.push(ctx.emit_rust_step(step_name, move |ctx| {
+                            let output_dir = junit_xml_dst.claim(ctx);
+                            let has_junit_xml = has_junit_xml.claim(ctx);
+                            let junit_xml = junit_xml.claim(ctx);
 
-                                move |rt| {
-                                    let output_dir = rt.read(output_dir);
-                                    let has_junit_xml = rt.read(has_junit_xml);
-                                    let junit_xml = rt.read(junit_xml);
+                            move |rt| {
+                                let output_dir = rt.read(output_dir);
+                                let has_junit_xml = rt.read(has_junit_xml);
+                                let junit_xml = rt.read(junit_xml);
 
-                                    if has_junit_xml {
-                                        fs_err::copy(
-                                            junit_xml,
-                                            output_dir.join(format!("{artifact_name}.xml")),
-                                        )?;
-                                    }
-
-                                    Ok(())
+                                if has_junit_xml {
+                                    fs_err::copy(
+                                        junit_xml,
+                                        output_dir.join(format!("{artifact_name}.xml")),
+                                    )?;
                                 }
-                            }));
-                        } else {
-                            use_side_effects.push(has_junit_xml.into_side_effect());
-                            use_side_effects.push(junit_xml.into_side_effect());
-                        }
+
+                                Ok(())
+                            }
+                        }));
                     } else {
                         use_side_effects.push(has_junit_xml.into_side_effect());
                         use_side_effects.push(junit_xml.into_side_effect());
@@ -170,13 +166,10 @@ impl FlowNode for Node {
                 }
 
                 // Decide which output directory to use based on the attachment kind.
-                let maybe_output_dir =
-                    output_dirs
-                        .as_ref()
-                        .and_then(|dirs| match &attachment_kind {
-                            Attachments::Logs(_) => dirs.test_results_full.clone(),
-                            Attachments::NextestListJson(_) => dirs.test_results_light.clone(),
-                        });
+                let maybe_output_dir = match &attachment_kind {
+                    Attachments::Logs(_) => output_dirs.test_results_full.clone(),
+                    Attachments::NextestListJson(_) => output_dirs.nextest_list_json.clone(),
+                };
 
                 if let Some(output_dir) = maybe_output_dir {
                     use_side_effects.push(ctx.emit_rust_step(step_name, move |ctx| {

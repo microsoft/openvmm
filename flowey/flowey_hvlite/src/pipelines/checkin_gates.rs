@@ -1015,13 +1015,19 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_vmm_tests_results_full, _) =
                 pipeline.new_artifact(format!("{label}-vmm-tests-results"));
 
-            let (pub_vmm_tests_results_light, use_vmm_tests_results_light) =
+            let (pub_vmm_tests_junit_xml, use_vmm_tests_junit_xml) =
                 pipeline.new_artifact(format!("{label}-vmm-tests-results-junit-xml"));
+            let (pub_vmm_tests_nextest_list_json, use_vmm_tests_nextest_list_json) =
+                pipeline.new_artifact(format!("{label}-vmm-tests-results-nextest-list-json"));
 
             pipeline.force_publish_artifact(&pub_vmm_tests_results_full);
-            pipeline.force_publish_artifact(&pub_vmm_tests_results_light);
+            pipeline.force_publish_artifact(&pub_vmm_tests_junit_xml);
+            pipeline.force_publish_artifact(&pub_vmm_tests_nextest_list_json);
 
-            vmm_tests_results_artifacts.push((label.to_string(), use_vmm_tests_results_light));
+            vmm_tests_results_artifacts.push((
+                label.to_string(),
+                (use_vmm_tests_junit_xml, use_vmm_tests_nextest_list_json),
+            ));
 
             let use_vmm_tests_archive = match target {
                 CommonTriple::X86_64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_x86,
@@ -1046,8 +1052,9 @@ impl IntoPipeline for CheckinGatesCli {
                         fail_job_on_test_fail: true,
                         artifact_dirs:
                             flowey_lib_common::publish_test_results::VmmTestResultsArtifacts {
-                                test_results_light: Some(
-                                    ctx.publish_artifact(pub_vmm_tests_results_light),
+                                junit_xml: Some(ctx.publish_artifact(pub_vmm_tests_junit_xml)),
+                                nextest_list_json: Some(
+                                    ctx.publish_artifact(pub_vmm_tests_nextest_list_json),
                                 ),
                                 test_results_full: Some(
                                     ctx.publish_artifact(pub_vmm_tests_results_full),
@@ -1088,7 +1095,15 @@ impl IntoPipeline for CheckinGatesCli {
                     |ctx| flowey_lib_hvlite::_jobs::verify_all_tests_run::Request {
                         test_artifacts: vmm_tests_results_artifacts
                             .iter()
-                            .map(|elem| (elem.0.clone(), ctx.use_artifact(&elem.1)))
+                            .map(|elem| {
+                                (
+                                    elem.0.clone(),
+                                    flowey_lib_hvlite::_jobs::verify_all_tests_run::VmmTestResultsArtifacts {
+                                        junit_xml: ctx.use_artifact(&elem.1.0),
+                                        nextest_list_json: ctx.use_artifact(&elem.1.1),
+                                    },
+                                )
+                            })
                             .collect(),
                         done: ctx.new_done_handle(),
                     },

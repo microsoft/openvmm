@@ -20,9 +20,15 @@ struct Suite {
     testcases: HashMap<String, serde_json::Value>, // we don't care about contents
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct VmmTestResultsArtifacts {
+    pub junit_xml: ReadVar<PathBuf>,
+    pub nextest_list_json: ReadVar<PathBuf>,
+}
+
 flowey_request! {
     pub struct Request {
-        pub test_artifacts: Vec<(String, ReadVar<PathBuf>)>,
+        pub test_artifacts: Vec<(String, VmmTestResultsArtifacts)>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -56,23 +62,32 @@ impl SimpleFlowNode for Node {
                 // not meet the test case requirements. For example, TDX/SNP tests are skipped on non-compatible hardware.
                 let artifacts: Vec<_> = test_artifacts
                     .into_iter()
-                    .map(|(prefix, path)| (prefix, path.claim(ctx)))
+                    .map(|(prefix, artifacts)| {
+                        (
+                            prefix,
+                            artifacts.junit_xml.claim(ctx),
+                            artifacts.nextest_list_json.claim(ctx),
+                        )
+                    })
                     .collect();
 
                 move |rt| {
                     let mut combined_junit_testcases: HashSet<String> = HashSet::new();
                     let mut combined_nextest_testcases: HashSet<String> = HashSet::new();
 
-                    for (prefix, path) in artifacts {
-                        let artifact_dir = rt.read(path);
-                        println!("Artifact dir: {}", artifact_dir.display());
-                        assert!(artifact_dir.exists(), "expected artifact dir to exist");
+                    for (prefix, junit_xml_dir, nextest_list_json_dir) in artifacts {
+                        let junit_xml_dir = rt.read(junit_xml_dir);
+                        let nextest_list_dir = rt.read(nextest_list_json_dir);
+                        println!("Artifact dir: {}", junit_xml_dir.display());
+                        println!("Artifact dir: {}", nextest_list_dir.display());
+                        assert!(junit_xml_dir.exists(), "expected artifact dir to exist");
+                        assert!(nextest_list_dir.exists(), "expected artifact dir to exist");
 
                         let junit_xml = prefix.clone() + "-vmm-tests-junit-xml.xml";
                         let nextest_list = prefix.clone() + "-vmm-tests-nextest-list.json";
 
-                        let junit_xml = artifact_dir.clone().join(&junit_xml);
-                        let nextest_list = artifact_dir.clone().join(&nextest_list);
+                        let junit_xml = junit_xml_dir.clone().join(&junit_xml);
+                        let nextest_list = nextest_list_dir.clone().join(&nextest_list);
 
                         get_testcase_names_from_junit_xml(
                             &junit_xml,

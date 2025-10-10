@@ -1697,6 +1697,8 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-intel-vmm-tests-results" | flowey.exe v 15 'artifact_publish_from_x64-windows-intel-vmm-tests-results' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-intel-vmm-tests-results-junit-xml"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-intel-vmm-tests-results-junit-xml" | flowey.exe v 15 'artifact_publish_from_x64-windows-intel-vmm-tests-results-junit-xml' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-intel-vmm-tests-results-nextest-list-json"
+        echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-intel-vmm-tests-results-nextest-list-json" | flowey.exe v 15 'artifact_publish_from_x64-windows-intel-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 15 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 15 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-tmk_vmm" | flowey.exe v 15 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
@@ -1977,6 +1979,13 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-intel-vmm-tests-results-junit-xml/
         include-hidden-files: true
       if: always()
+    - name: 🌼📦 Publish x64-windows-intel-vmm-tests-results-nextest-list-json
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-windows-intel-vmm-tests-results-nextest-list-json
+        path: ${{ runner.temp }}/publish_artifacts/x64-windows-intel-vmm-tests-results-nextest-list-json/
+        include-hidden-files: true
+      if: always()
   job16:
     name: run vmm-tests [x64-windows-intel-tdx]
     runs-on:
@@ -2020,6 +2029,8 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-intel-tdx-vmm-tests-results" | flowey.exe v 16 'artifact_publish_from_x64-windows-intel-tdx-vmm-tests-results' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-intel-tdx-vmm-tests-results-junit-xml"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-intel-tdx-vmm-tests-results-junit-xml" | flowey.exe v 16 'artifact_publish_from_x64-windows-intel-tdx-vmm-tests-results-junit-xml' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-intel-tdx-vmm-tests-results-nextest-list-json"
+        echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-intel-tdx-vmm-tests-results-nextest-list-json" | flowey.exe v 16 'artifact_publish_from_x64-windows-intel-tdx-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 16 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 16 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-tmk_vmm" | flowey.exe v 16 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
@@ -2305,6 +2316,13 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-intel-tdx-vmm-tests-results-junit-xml/
         include-hidden-files: true
       if: always()
+    - name: 🌼📦 Publish x64-windows-intel-tdx-vmm-tests-results-nextest-list-json
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-windows-intel-tdx-vmm-tests-results-nextest-list-json
+        path: ${{ runner.temp }}/publish_artifacts/x64-windows-intel-tdx-vmm-tests-results-nextest-list-json/
+        include-hidden-files: true
+      if: always()
   job17:
     name: run vmm-tests [x64-windows-amd]
     runs-on:
@@ -2346,6 +2364,8 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-amd-vmm-tests-results" | flowey.exe v 17 'artifact_publish_from_x64-windows-amd-vmm-tests-results' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-amd-vmm-tests-results-junit-xml"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-amd-vmm-tests-results-junit-xml" | flowey.exe v 17 'artifact_publish_from_x64-windows-amd-vmm-tests-results-junit-xml' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-amd-vmm-tests-results-nextest-list-json"
+        echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-amd-vmm-tests-results-nextest-list-json" | flowey.exe v 17 'artifact_publish_from_x64-windows-amd-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 17 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 17 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-tmk_vmm" | flowey.exe v 17 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
@@ -2626,6 +2646,13 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-amd-vmm-tests-results-junit-xml/
         include-hidden-files: true
       if: always()
+    - name: 🌼📦 Publish x64-windows-amd-vmm-tests-results-nextest-list-json
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-windows-amd-vmm-tests-results-nextest-list-json
+        path: ${{ runner.temp }}/publish_artifacts/x64-windows-amd-vmm-tests-results-nextest-list-json/
+        include-hidden-files: true
+      if: always()
   job18:
     name: run vmm-tests [x64-windows-amd-snp]
     runs-on:
@@ -2669,6 +2696,8 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-amd-snp-vmm-tests-results" | flowey.exe v 18 'artifact_publish_from_x64-windows-amd-snp-vmm-tests-results' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-amd-snp-vmm-tests-results-junit-xml"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-amd-snp-vmm-tests-results-junit-xml" | flowey.exe v 18 'artifact_publish_from_x64-windows-amd-snp-vmm-tests-results-junit-xml' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-amd-snp-vmm-tests-results-nextest-list-json"
+        echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-amd-snp-vmm-tests-results-nextest-list-json" | flowey.exe v 18 'artifact_publish_from_x64-windows-amd-snp-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 18 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 18 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-tmk_vmm" | flowey.exe v 18 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
@@ -2954,6 +2983,13 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-amd-snp-vmm-tests-results-junit-xml/
         include-hidden-files: true
       if: always()
+    - name: 🌼📦 Publish x64-windows-amd-snp-vmm-tests-results-nextest-list-json
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-windows-amd-snp-vmm-tests-results-nextest-list-json
+        path: ${{ runner.temp }}/publish_artifacts/x64-windows-amd-snp-vmm-tests-results-nextest-list-json/
+        include-hidden-files: true
+      if: always()
   job19:
     name: run vmm-tests [x64-linux]
     runs-on:
@@ -2995,6 +3031,8 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-results" | flowey v 19 'artifact_publish_from_x64-linux-vmm-tests-results' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-results-junit-xml"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-results-junit-xml" | flowey v 19 'artifact_publish_from_x64-linux-vmm-tests-results-junit-xml' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-results-nextest-list-json"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-vmm-tests-results-nextest-list-json" | flowey v 19 'artifact_publish_from_x64-linux-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-guest_test_uefi" | flowey v 19 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-pipette" | flowey v 19 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-tmk_vmm" | flowey v 19 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
@@ -3273,6 +3311,13 @@ jobs:
       with:
         name: x64-linux-vmm-tests-results-junit-xml
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-results-junit-xml/
+        include-hidden-files: true
+      if: always()
+    - name: 🌼📦 Publish x64-linux-vmm-tests-results-nextest-list-json
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-linux-vmm-tests-results-nextest-list-json
+        path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-results-nextest-list-json/
         include-hidden-files: true
       if: always()
   job2:
@@ -3579,6 +3624,8 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-vmm-tests-results" | flowey.exe v 20 'artifact_publish_from_aarch64-windows-vmm-tests-results' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-vmm-tests-results-junit-xml"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-vmm-tests-results-junit-xml" | flowey.exe v 20 'artifact_publish_from_aarch64-windows-vmm-tests-results-junit-xml' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-vmm-tests-results-nextest-list-json"
+        echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-vmm-tests-results-nextest-list-json" | flowey.exe v 20 'artifact_publish_from_aarch64-windows-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-guest_test_uefi" | flowey.exe v 20 'artifact_use_from_aarch64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-linux-musl-pipette" | flowey.exe v 20 'artifact_use_from_aarch64-linux-musl-pipette' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-linux-musl-tmk_vmm" | flowey.exe v 20 'artifact_use_from_aarch64-linux-musl-tmk_vmm' --is-raw-string update
@@ -3858,6 +3905,13 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-results-junit-xml/
         include-hidden-files: true
       if: always()
+    - name: 🌼📦 Publish aarch64-windows-vmm-tests-results-nextest-list-json
+      uses: actions/upload-artifact@v4
+      with:
+        name: aarch64-windows-vmm-tests-results-nextest-list-json
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-results-nextest-list-json/
+        include-hidden-files: true
+      if: always()
   job21:
     name: verify all tests run at least once
     runs-on:
@@ -3879,7 +3933,7 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-7,aarch64-windows-vmm-tests-results-junit-xml,x64-linux-vmm-tests-results-junit-xml,x64-windows-amd-snp-vmm-tests-results-junit-xml,x64-windows-amd-vmm-tests-results-junit-xml,x64-windows-intel-tdx-vmm-tests-results-junit-xml,x64-windows-intel-vmm-tests-results-junit-xml}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-7,aarch64-windows-vmm-tests-results-junit-xml,aarch64-windows-vmm-tests-results-nextest-list-json,x64-linux-vmm-tests-results-junit-xml,x64-linux-vmm-tests-results-nextest-list-json,x64-windows-amd-snp-vmm-tests-results-junit-xml,x64-windows-amd-snp-vmm-tests-results-nextest-list-json,x64-windows-amd-vmm-tests-results-junit-xml,x64-windows-amd-vmm-tests-results-nextest-list-json,x64-windows-intel-tdx-vmm-tests-results-junit-xml,x64-windows-intel-tdx-vmm-tests-results-nextest-list-json,x64-windows-intel-vmm-tests-results-junit-xml,x64-windows-intel-vmm-tests-results-nextest-list-json}'
         path: ${{ runner.temp }}/used_artifacts/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-7" >> $GITHUB_PATH
       shell: bash
@@ -3899,11 +3953,17 @@ jobs:
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         echo "$AgentTempDirNormal/used_artifacts/aarch64-windows-vmm-tests-results-junit-xml" | flowey v 21 'artifact_use_from_aarch64-windows-vmm-tests-results-junit-xml' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/aarch64-windows-vmm-tests-results-nextest-list-json" | flowey v 21 'artifact_use_from_aarch64-windows-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-vmm-tests-results-junit-xml" | flowey v 21 'artifact_use_from_x64-linux-vmm-tests-results-junit-xml' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-linux-vmm-tests-results-nextest-list-json" | flowey v 21 'artifact_use_from_x64-linux-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-amd-snp-vmm-tests-results-junit-xml" | flowey v 21 'artifact_use_from_x64-windows-amd-snp-vmm-tests-results-junit-xml' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-windows-amd-snp-vmm-tests-results-nextest-list-json" | flowey v 21 'artifact_use_from_x64-windows-amd-snp-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-amd-vmm-tests-results-junit-xml" | flowey v 21 'artifact_use_from_x64-windows-amd-vmm-tests-results-junit-xml' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-windows-amd-vmm-tests-results-nextest-list-json" | flowey v 21 'artifact_use_from_x64-windows-amd-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-intel-tdx-vmm-tests-results-junit-xml" | flowey v 21 'artifact_use_from_x64-windows-intel-tdx-vmm-tests-results-junit-xml' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-windows-intel-tdx-vmm-tests-results-nextest-list-json" | flowey v 21 'artifact_use_from_x64-windows-intel-tdx-vmm-tests-results-nextest-list-json' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-intel-vmm-tests-results-junit-xml" | flowey v 21 'artifact_use_from_x64-windows-intel-vmm-tests-results-junit-xml' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-windows-intel-vmm-tests-results-nextest-list-json" | flowey v 21 'artifact_use_from_x64-windows-intel-vmm-tests-results-nextest-list-json' --is-raw-string update
       shell: bash
     - name: parse and analyze junit logs and nextest list output
       run: flowey e 21 flowey_lib_hvlite::_jobs::verify_all_tests_run 0
