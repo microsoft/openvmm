@@ -100,7 +100,7 @@ function Set-VmSystemSettings {
     )
 
     $vmms = Get-Vmms
-    $result = $vmms | Invoke-CimMethod -Name "ModifySystemSettings" -Arguments @{
+    $vmms | Invoke-CimMethod -Name "ModifySystemSettings" -Arguments @{
         "SystemSettings" = ($Vssd | ConvertTo-CimEmbeddedString)
     }
 }
