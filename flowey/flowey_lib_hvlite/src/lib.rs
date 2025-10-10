@@ -53,6 +53,7 @@ pub mod install_git_credential_manager;
 pub mod install_openvmm_rust_build_essential;
 pub mod install_vmm_tests_deps;
 pub mod run_cargo_build;
+pub mod run_cargo_nextest_list;
 pub mod run_cargo_nextest_run;
 pub mod run_igvmfilegen;
 pub mod run_prep_steps;

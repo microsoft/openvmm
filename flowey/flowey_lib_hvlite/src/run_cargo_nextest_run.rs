@@ -11,8 +11,80 @@ use flowey_lib_common::run_cargo_nextest_run::NextestRunKind;
 use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use std::collections::BTreeMap;
 
+/// Shared helpers for resolving nextest-related paths and environment for HvLite flowey nodes.
+pub fn get_openvmm_repo_path(ctx: &mut NodeCtx<'_>) -> ReadVar<PathBuf> {
+    ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir)
+}
+
+pub fn default_nextest_config_file(
+    openvmm_repo_path: ReadVar<PathBuf>,
+    ctx: &mut NodeCtx<'_>,
+) -> ReadVar<PathBuf> {
+    openvmm_repo_path.map(ctx, |p| p.join(".config").join("nextest.toml"))
+}
+
+pub fn base_env() -> BTreeMap<String, String> {
+    [
+        // Used by the test_with_tracing macro in test runners
+        ("RUST_LOG", "trace,mesh_node=info"),
+        // Used by the process spawned for VMM tests
+        ("OPENVMM_LOG", "debug,mesh_node=info"),
+    ]
+    .into_iter()
+    .map(|(a, b)| (a.to_owned(), b.to_owned()))
+    .collect::<BTreeMap<_, _>>()
+}
+
+/// Merge optional extra_env with the base env. Returns a ReadVar containing the merged map.
+pub fn merged_extra_env(
+    extra_env: Option<ReadVar<BTreeMap<String, String>>>,
+    base_env: BTreeMap<String, String>,
+    ctx: &mut NodeCtx<'_>,
+) -> ReadVar<BTreeMap<String, String>> {
+    if let Some(with_env) = extra_env {
+        let base_env = base_env.clone();
+        with_env.map(ctx, move |mut m| {
+            m.extend(base_env);
+            m
+        })
+    } else {
+        ReadVar::from_static(base_env.clone())
+    }
+}
+
+/// Resolve the working directory: if an explicit working dir is provided, add a side-effect
+/// on the repo path to `pre_run_deps` and return the provided value, otherwise return the repo path.
+pub fn resolve_working_dir(
+    nextest_working_dir: Option<ReadVar<PathBuf>>,
+    openvmm_repo_path: ReadVar<PathBuf>,
+    pre_run_deps: &mut Vec<ReadVar<SideEffect>>,
+) -> ReadVar<PathBuf> {
+    if let Some(nextest_working_dir) = nextest_working_dir {
+        pre_run_deps.push(openvmm_repo_path.clone().into_side_effect());
+        nextest_working_dir
+    } else {
+        openvmm_repo_path.clone()
+    }
+}
+
+/// Resolve the config file: if an explicit config file is provided, add a side-effect
+/// on the default config file to `pre_run_deps` and return the provided value, otherwise
+/// return the default config file.
+pub fn resolve_config_file(
+    nextest_config_file: Option<ReadVar<PathBuf>>,
+    default_nextest_config_file: ReadVar<PathBuf>,
+    pre_run_deps: &mut Vec<ReadVar<SideEffect>>,
+) -> ReadVar<PathBuf> {
+    if let Some(nextest_config_file) = nextest_config_file {
+        pre_run_deps.push(default_nextest_config_file.clone().into_side_effect());
+        nextest_config_file
+    } else {
+        default_nextest_config_file.clone()
+    }
+}
+
 /// Nextest profiles defined in HvLite's `.config/nextest.toml`
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum NextestProfile {
     Default,
     Ci,
@@ -65,20 +137,12 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+        let openvmm_repo_path = get_openvmm_repo_path(ctx);
 
         let default_nextest_config_file =
-            openvmm_repo_path.map(ctx, |p| p.join(".config").join("nextest.toml"));
+            default_nextest_config_file(openvmm_repo_path.clone(), ctx);
 
-        let base_env = [
-            // Used by the test_with_tracing macro in test runners
-            ("RUST_LOG", "trace,mesh_node=info"),
-            // Used by the process spawned for VMM tests
-            ("OPENVMM_LOG", "debug,mesh_node=info"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_owned(), b.to_owned()))
-        .collect::<BTreeMap<_, _>>();
+        let base_env = base_env();
 
         for Request {
             friendly_name,
@@ -93,29 +157,19 @@ impl FlowNode for Node {
             extra_env,
         } in requests
         {
-            let extra_env = if let Some(with_env) = extra_env {
-                let base_env = base_env.clone();
-                with_env.map(ctx, move |mut m| {
-                    m.extend(base_env);
-                    m
-                })
-            } else {
-                ReadVar::from_static(base_env.clone())
-            };
+            let extra_env = merged_extra_env(extra_env, base_env.clone(), ctx);
 
-            let working_dir = if let Some(nextest_working_dir) = nextest_working_dir {
-                pre_run_deps.push(openvmm_repo_path.clone().into_side_effect());
-                nextest_working_dir
-            } else {
-                openvmm_repo_path.clone()
-            };
+            let working_dir = resolve_working_dir(
+                nextest_working_dir,
+                openvmm_repo_path.clone(),
+                &mut pre_run_deps,
+            );
 
-            let config_file = if let Some(nextest_config_file) = nextest_config_file {
-                pre_run_deps.push(default_nextest_config_file.clone().into_side_effect());
-                nextest_config_file
-            } else {
-                default_nextest_config_file.clone()
-            };
+            let config_file = resolve_config_file(
+                nextest_config_file,
+                default_nextest_config_file.clone(),
+                &mut pre_run_deps,
+            );
 
             ctx.req(flowey_lib_common::run_cargo_nextest_run::Request::Run(
                 flowey_lib_common::run_cargo_nextest_run::Run {

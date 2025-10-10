@@ -49,6 +49,11 @@ impl SimpleFlowNode for Node {
         let parse = ctx.emit_rust_step(
             "parse and analyze junit logs and nextest list output",
             |ctx| {
+                // This step takes all of the junit XML files (i.e. the tests that were run) and the nextest list output (i.e. the tests that were built)
+                // and verifies that the set of all tests that were built is the same as the set of all tests that were run.
+                // If these sets were to differ it would be because a test was built but not run, which indicates a test gap.
+                // We have automation in the test run step that will automatically skip tests that are not meant to run on a given host because the host does
+                // not meet the test case requirements. For example, TDX/SNP tests are skipped on non-compatible hardware.
                 let artifacts: Vec<_> = test_artifacts
                     .into_iter()
                     .map(|(prefix, path)| (prefix, path.claim(ctx)))
@@ -69,13 +74,15 @@ impl SimpleFlowNode for Node {
                         let junit_xml = artifact_dir.clone().join(&junit_xml);
                         let nextest_list = artifact_dir.clone().join(&nextest_list);
 
-                        let junit_test_names = get_testcase_names_from_junit_xml(&junit_xml)?;
+                        get_testcase_names_from_junit_xml(
+                            &junit_xml,
+                            &mut combined_junit_testcases,
+                        )?;
 
-                        let nextest_test_names =
-                            get_testcase_names_from_nextest_list_json(&nextest_list)?;
-
-                        combined_junit_testcases.extend(junit_test_names.into_iter());
-                        combined_nextest_testcases.extend(nextest_test_names.into_iter());
+                        get_testcase_names_from_nextest_list_json(
+                            &nextest_list,
+                            &mut combined_nextest_testcases,
+                        )?;
                     }
 
                     assert!(
@@ -102,11 +109,13 @@ impl SimpleFlowNode for Node {
     }
 }
 
-fn get_testcase_names_from_junit_xml(junit_path: &PathBuf) -> anyhow::Result<Vec<String>> {
+fn get_testcase_names_from_junit_xml(
+    junit_path: &PathBuf,
+    test_names: &mut HashSet<String>,
+) -> anyhow::Result<()> {
     let mut reader = Reader::from_file(junit_path)?;
 
     let mut buf = Vec::new();
-    let mut test_names = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf)? {
@@ -123,7 +132,7 @@ fn get_testcase_names_from_junit_xml(junit_path: &PathBuf) -> anyhow::Result<Vec
                     }
                 }
 
-                test_names.push(classname.unwrap() + "::" + &name.unwrap());
+                test_names.insert(classname.unwrap() + "::" + &name.unwrap());
             }
 
             Event::Eof => break,
@@ -131,21 +140,21 @@ fn get_testcase_names_from_junit_xml(junit_path: &PathBuf) -> anyhow::Result<Vec
         }
     }
 
-    Ok(test_names)
+    Ok(())
 }
 
 fn get_testcase_names_from_nextest_list_json(
     nextest_list_output_path: &PathBuf,
-) -> anyhow::Result<Vec<String>> {
+    test_names: &mut HashSet<String>,
+) -> anyhow::Result<()> {
     let data = fs_err::read_to_string(nextest_list_output_path)?;
     let root: Root = serde_json::from_str(&data)?;
-    let mut test_names = Vec::new();
 
     for (suite_name, suite) in root.rust_suites {
         for test_name in suite.testcases.keys() {
-            test_names.push(format!("{}::{}", suite_name, test_name));
+            test_names.insert(format!("{}::{}", suite_name, test_name));
         }
     }
 
-    Ok(test_names)
+    Ok(())
 }

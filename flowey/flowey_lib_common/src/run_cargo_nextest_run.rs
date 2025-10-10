@@ -6,7 +6,6 @@
 use crate::gen_cargo_nextest_run_cmd::RunKindDeps;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::process::ExitStatus;
 use std::process::Stdio;
 
@@ -15,8 +14,6 @@ pub struct TestResults {
     pub all_tests_passed: bool,
     /// Path to JUnit XML output (if enabled by the nextest profile)
     pub junit_xml: Option<PathBuf>,
-    /// Path to JSON file containing output of `cargo nextest list` command (if running in ci)
-    pub nextest_list_output: Option<PathBuf>,
 }
 
 /// Parameters related to building nextest tests
@@ -213,30 +210,6 @@ impl FlowNode for Node {
                 }
             };
 
-            let list_cmd = match &run_kind_deps {
-                RunKindDeps::BuildAndRun { .. } => None,
-                RunKindDeps::RunFromArchive {
-                    archive_file,
-                    nextest_bin,
-                    target,
-                } => {
-                    let list_cmd = ctx.reqv(|v| crate::gen_cargo_nextest_list_cmd::Request {
-                        run_kind_deps: RunKindDeps::RunFromArchive {
-                            archive_file: archive_file.clone(),
-                            nextest_bin: nextest_bin.clone(),
-                            target: target.clone(),
-                        },
-                        working_dir: working_dir.clone(),
-                        config_file: config_file.clone(),
-                        nextest_profile: nextest_profile.clone(),
-                        nextest_filter_expr: None, // Ignored
-                        extra_env: extra_env.clone(),
-                        command: v,
-                    });
-                    Some(list_cmd)
-                }
-            };
-
             let cmd = ctx.reqv(|v| crate::gen_cargo_nextest_run_cmd::Request {
                 run_kind_deps,
                 working_dir: working_dir.clone(),
@@ -253,7 +226,6 @@ impl FlowNode for Node {
 
             let (all_tests_passed_read, all_tests_passed_write) = ctx.new_var();
             let (junit_xml_read, junit_xml_write) = ctx.new_var();
-            let (nextest_list_output_file_read, nextest_list_output_file_write) = ctx.new_var();
 
             ctx.emit_rust_step(format!("run '{friendly_name}' nextest tests"), |ctx| {
                 pre_run_deps.claim(ctx);
@@ -262,15 +234,12 @@ impl FlowNode for Node {
                 let config_file = config_file.claim(ctx);
                 let all_tests_passed_var = all_tests_passed_write.claim(ctx);
                 let junit_xml_write = junit_xml_write.claim(ctx);
-                let list_cmd = list_cmd.claim(ctx);
                 let cmd = cmd.claim(ctx);
-                let nextest_list_output_file_write = nextest_list_output_file_write.claim(ctx);
 
                 move |rt| {
                     let working_dir = rt.read(working_dir);
                     let config_file = rt.read(config_file);
                     let cmd = rt.read(cmd);
-                    let list_cmd = rt.read(list_cmd);
 
                     // first things first - determine if junit is supported by
                     // the profile, and if so, where the output if going to be.
@@ -389,27 +358,6 @@ impl FlowNode for Node {
 
                     rt.write(junit_xml_write, &junit_xml);
 
-                    // run the list command to get all tests in the executable
-                    let nextest_list_output = if let Some(list_cmd) = list_cmd {
-                        let (status, stdout_opt) = run_command(&list_cmd, &working_dir, true)?;
-                        anyhow::ensure!(status.success(), "failed to list tests in executable");
-                        let nextest_list_json =
-                            get_nextest_list_output_from_stdout(&stdout_opt.unwrap())?;
-                        if let Some(ref junit_xml_path) = junit_xml {
-                            let containing_dir = junit_xml_path.parent().unwrap().to_path_buf();
-                            let output_path = containing_dir.join("nextest_list.json");
-                            let mut file = fs_err::File::create_new(&output_path)?;
-                            file.write_all(nextest_list_json.to_string().as_bytes())?;
-                            Some(output_path.absolute()?)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    rt.write(nextest_list_output_file_write, &nextest_list_output);
-
                     Ok(())
                 }
             });
@@ -417,20 +365,17 @@ impl FlowNode for Node {
             ctx.emit_minor_rust_step("write results", |ctx| {
                 let all_tests_passed = all_tests_passed_read.claim(ctx);
                 let junit_xml = junit_xml_read.claim(ctx);
-                let nextest_list_output_file_read = nextest_list_output_file_read.claim(ctx);
                 let results = results.claim(ctx);
 
                 move |rt| {
                     let all_tests_passed = rt.read(all_tests_passed);
                     let junit_xml = rt.read(junit_xml);
-                    let nextest_list_output = rt.read(nextest_list_output_file_read);
 
                     rt.write(
                         results,
                         &TestResults {
                             all_tests_passed,
                             junit_xml,
-                            nextest_list_output,
                         },
                     );
                 }
@@ -495,15 +440,4 @@ fn run_command(
         let status = child.wait()?;
         Ok((status, None))
     }
-}
-
-fn get_nextest_list_output_from_stdout(output: &str) -> anyhow::Result<serde_json::Value> {
-    // nextest list prints a few lines of non-json output before the actual
-    // JSON output, so we need to find the first line that is valid JSON
-    for line in output.lines() {
-        if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(line) {
-            return Ok(json_value);
-        }
-    }
-    anyhow::bail!("failed to find JSON output in nextest list command output");
 }

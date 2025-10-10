@@ -72,6 +72,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
+        ctx.import::<crate::run_cargo_nextest_list::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
@@ -189,14 +190,14 @@ impl SimpleFlowNode for Node {
         }
 
         let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
-            nextest_archive_file: nextest_vmm_tests_archive,
-            nextest_profile,
-            nextest_filter_expr,
+            nextest_archive_file: nextest_vmm_tests_archive.clone(),
+            nextest_profile: nextest_profile.clone(),
+            nextest_filter_expr: nextest_filter_expr.clone(),
             nextest_working_dir: None,
             nextest_config_file: None,
             nextest_bin: None,
             target: None,
-            extra_env,
+            extra_env: extra_env.clone(),
             pre_run_deps,
             results: v,
         });
@@ -206,7 +207,21 @@ impl SimpleFlowNode for Node {
         let test_log_path = test_log_path.depending_on(ctx, &results);
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
-        let nextest_list_json = results.map(ctx, |r| r.nextest_list_output);
+        let output_dir = junit_xml.map(ctx, |p| p.map(|p| p.parent().unwrap().to_path_buf()));
+        let archive_file = nextest_vmm_tests_archive.map(ctx, |x| x.archive_file);
+        let nextest_list_json = ctx.reqv(|v| crate::run_cargo_nextest_list::Request {
+            archive_file,
+            nextest_bin: None,
+            target: None,
+            working_dir: None,
+            config_file: None,
+            nextest_profile: nextest_profile.as_str().to_owned(),
+            nextest_filter_expr: nextest_filter_expr.clone(),
+            extra_env: Some(extra_env),
+            output_dir,
+            pre_run_deps: vec![],
+            output_file: v,
+        });
 
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
             junit_xml,

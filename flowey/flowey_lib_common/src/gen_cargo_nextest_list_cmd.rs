@@ -8,8 +8,12 @@ use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
-        /// What kind of test run this is (inline build vs. from nextest archive).
-        pub run_kind_deps: gen_cargo_nextest_run_cmd::RunKindDeps,
+        /// Path to nextest archive file
+        pub archive_file: ReadVar<PathBuf>,
+        /// Path to nextest binary
+        pub nextest_bin: ReadVar<PathBuf>,
+        /// Target triple for the build
+        pub target: ReadVar<target_lexicon::Triple>,
         /// Working directory the test archive was created from.
         pub working_dir: ReadVar<PathBuf>,
         /// Path to `.config/nextest.toml`
@@ -36,7 +40,9 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         for Request {
-            run_kind_deps,
+            archive_file,
+            nextest_bin,
+            target,
             working_dir,
             config_file,
             nextest_profile,
@@ -45,18 +51,12 @@ impl FlowNode for Node {
             command: list_cmd,
         } in requests
         {
-            if let gen_cargo_nextest_run_cmd::RunKindDeps::BuildAndRun {
-                params: _,
-                nextest_installed: _,
-                rust_toolchain: _,
-                cargo_flags: _,
-            } = run_kind_deps
-            {
-                anyhow::bail!("BuildAndRun is not supported.")
-            }
-
             let run_cmd = ctx.reqv(|v| gen_cargo_nextest_run_cmd::Request {
-                run_kind_deps,
+                run_kind_deps: gen_cargo_nextest_run_cmd::RunKindDeps::RunFromArchive {
+                    archive_file,
+                    nextest_bin,
+                    target,
+                },
                 working_dir,
                 config_file,
                 tool_config_files: Vec::new(), // Ignored
