@@ -103,6 +103,7 @@ use user_driver::DmaClient;
 use virt::IsolationType;
 use virt::PartitionCapabilities;
 use virt::VpIndex;
+use virt::X86Partition;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
@@ -858,7 +859,7 @@ impl virt::Partition for UhPartition {
     }
 }
 
-impl virt::X86Partition for UhPartition {
+impl X86Partition for UhPartition {
     fn ioapic_routing(&self) -> Arc<dyn IoApicRouting> {
         self.inner.clone()
     }
@@ -1941,6 +1942,13 @@ impl UhPartition {
             begin: *range.start(),
             end: *range.end(),
         }
+    }
+
+    /// Trigger the LINT1 interrupt vector on the LAPIC of the BSP.
+    #[cfg(guest_arch = "x86_64")]
+    pub fn assert_debug_interrupt(&self, vtl: u8) {
+        let bsp_index = VpIndex::new(0);
+        self.pulse_lint(bsp_index, Vtl::try_from(vtl).unwrap(), 1)
     }
 
     /// Enables or disables the PM timer assist.

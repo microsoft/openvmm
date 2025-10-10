@@ -154,12 +154,21 @@ impl VtlsTlbLocked {
     }
 }
 
+// NMI suppression state to prevent duplicate NMI
+#[cfg(guest_arch = "x86_64")]
+const NMI_SUPPRESS_LINT1_DELIVERED: u32 = 1;
+#[cfg(guest_arch = "x86_64")]
+const NMI_SUPPRESS_LINT1_REQUESTED: u32 = 1 << 1;
+
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 pub(crate) struct LapicState {
     lapic: LocalApic,
     activity: MpState,
     nmi_pending: bool,
+    lint1_pending: bool,
+    nmi_suppression: u32,
+    cross_vtl_nmi_requested: bool,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -169,6 +178,9 @@ impl LapicState {
             lapic,
             activity,
             nmi_pending: false,
+            lint1_pending: false,
+            nmi_suppression: 0,
+            cross_vtl_nmi_requested: false,
         }
     }
 }
