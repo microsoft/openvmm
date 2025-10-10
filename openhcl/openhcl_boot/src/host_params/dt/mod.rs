@@ -382,6 +382,8 @@ fn topology_from_host_dt(
     options: &BootCommandLineOptions,
     address_space: &mut AddressSpaceManager,
 ) -> Result<PartitionTopology, DtError> {
+    log!("reading topology from host device tree");
+
     let mut vtl2_ram =
         off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
 
@@ -492,7 +494,7 @@ fn topology_from_host_dt(
     let (persisted_state_region, remainder) = params
         .persisted_state
         .split_at_offset(PERSISTED_REGION_SIZE);
-    log!("persisted state region {persisted_state_region:#x?}, remainder {remainder:#x?}");
+    log!("persisted state region sized to {persisted_state_region:#x?}, remainder {remainder:#x?}");
 
     let mut address_space_builder = AddressSpaceManagerBuilder::new(
         address_space,
@@ -550,6 +552,8 @@ fn topology_from_persisted_state(
     parsed: &ParsedDt,
     address_space: &mut AddressSpaceManager,
 ) -> Result<PartitionTopology, DtError> {
+    log!("reading topology from persisted state");
+
     // Verify the header describes a protobuf region within the bootshim
     // persisted region. We expect it to live there as today we rely on the
     // build time generated pagetable to identity map the protobuf region.
@@ -578,14 +582,10 @@ fn topology_from_persisted_state(
         )
     };
 
-    ALLOCATOR.enable_alloc();
-
-    log!("decoding protobuf of size {}", protobuf_raw.len());
-    let parsed_protobuf: loader_defs::shim::SavedState =
-        mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf");
-
-    ALLOCATOR.disable_alloc();
-    ALLOCATOR.log_stats();
+    let parsed_protobuf: loader_defs::shim::SavedState = bump_alloc::with_global_alloc(|| {
+        log!("decoding protobuf of size {}", protobuf_raw.len());
+        mesh_protobuf::decode(protobuf_raw).expect("failed to decode protobuf")
+    });
 
     let loader_defs::shim::SavedState {
         partition_memory,
@@ -629,6 +629,9 @@ fn topology_from_persisted_state(
 
     // If the host was responsible for allocating VTL2 ram, verify the ram
     // parsed from the previous instance matches.
+    //
+    // FUTURE: When VTL2 itself did allocation, we should verify that all ranges
+    // are still within the provided memory map.
     if matches!(memory_allocation_mode, MemoryAllocationMode::Host) {
         let host_vtl2_ram = parse_host_vtl2_ram(params, &parsed.memory);
         assert_eq!(
