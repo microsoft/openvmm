@@ -23,6 +23,7 @@ test_helpers = []
 disk_backend.workspace = true
 guestmem.workspace = true
 scsi_buffers.workspace = true
+telemetry.workspace = true
 vmgs_format.workspace = true
 
 inspect = { workspace = true, optional = true }

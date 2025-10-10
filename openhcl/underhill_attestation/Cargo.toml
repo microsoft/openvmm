@@ -23,6 +23,7 @@ tee_call.workspace = true
 pal_async.workspace = true
 tracing.workspace = true
 cvm_tracing.workspace = true
+telemetry.workspace = true
 
 base64.workspace = true
 base64-serde.workspace = true

@@ -350,6 +350,7 @@ igvmfilegen_config = { path = "vm/loader/igvmfilegen_config" }
 loader_defs = { path = "vm/loader/loader_defs" }
 page_table = { path = "vm/loader/page_table" }
 page_pool_alloc = { path = "vm/page_pool_alloc" }
+telemetry = { path = "vm/telemetry" }
 vbs_defs = { path = "vm/vbs_defs" }
 vmgs = { path = "vm/vmgs/vmgs" }
 vmgs_broker = { path = "vm/vmgs/vmgs_broker" }

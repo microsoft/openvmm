@@ -2678,6 +2678,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_resources",
+ "cvm_tracing",
  "futures",
  "futures-concurrency",
  "get_protocol",
@@ -2693,6 +2694,7 @@ dependencies = [
  "parking_lot",
  "power_resources",
  "serde_json",
+ "telemetry",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
@@ -7114,6 +7116,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "telemetry"
+version = "0.0.0"
+
+[[package]]
 name = "tempfile"
 version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7435,18 +7441,22 @@ name = "tpm"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bitfield-struct 0.11.0",
  "chipset_device",
  "chipset_device_resources",
  "cvm_tracing",
  "getrandom 0.3.3",
  "guestmem",
+ "guid",
  "inspect",
  "mesh",
  "ms-tpm-20-ref",
  "open_enum",
  "pal_async",
  "parking_lot",
+ "sha2",
+ "telemetry",
  "thiserror 2.0.16",
  "tpm_resources",
  "tracelimit",
@@ -7460,6 +7470,7 @@ dependencies = [
 name = "tpm_resources"
 version = "0.0.0"
 dependencies = [
+ "guid",
  "inspect",
  "mesh",
  "vm_resource",
@@ -7752,6 +7763,7 @@ dependencies = [
  "serde_json",
  "static_assertions",
  "tee_call",
+ "telemetry",
  "test_with_tracing",
  "thiserror 2.0.16",
  "time",
@@ -9109,6 +9121,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "scsi_buffers",
+ "telemetry",
  "thiserror 2.0.16",
  "tracing",
  "vmgs_format",

@@ -18,6 +18,8 @@ use inspect_counters::Counter;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use telemetry::LogOpType;
+use telemetry::log_op;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileAttribute;
 use vmgs_format::FileId;
@@ -47,6 +49,17 @@ pub struct VmgsFileInfo {
     pub valid_bytes: u64,
     /// Whether this file is encrypted.
     pub encrypted: bool,
+}
+
+/// GSP types that can be used to encrypt a VMGS file.
+#[derive(Debug, Clone, Copy)]
+pub enum GspType {
+    /// No GSP
+    None,
+    /// GSP by ID
+    GspById,
+    /// GSP key
+    GspKey,
 }
 
 // Aggregates fully validated data from the FILE_TABLE and EXTENDED_FILE_TABLE
@@ -181,7 +194,10 @@ impl Vmgs {
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
         let mut storage = VmgsStorage::new(disk);
-        tracing::debug!(CVM_ALLOWED, "formatting and initializing VMGS datastore");
+        log_op!(
+            LogOpType::VmgsProvision,
+            "formatting and initializing VMGS datastore"
+        );
         // Errors from validate_file are fatal, as they involve invalid device metadata
         Vmgs::validate_file(&storage)?;
 

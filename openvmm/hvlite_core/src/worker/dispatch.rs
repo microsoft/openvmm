@@ -2558,6 +2558,7 @@ impl LoadedVmInner {
                 enable_vpci_boot,
                 uefi_console_mode,
                 default_boot_always_attempt,
+                bios_guid,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -2574,6 +2575,7 @@ impl LoadedVmInner {
                     serial: enable_serial,
                     uefi_console_mode,
                     default_boot_always_attempt,
+                    bios_guid,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,
