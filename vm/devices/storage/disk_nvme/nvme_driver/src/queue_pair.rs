@@ -13,7 +13,6 @@ use crate::queues::CompletionQueue;
 use crate::queues::SubmissionQueue;
 use crate::registers::DeviceRegisters;
 use anyhow::Context;
-use core::panic;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
