@@ -331,7 +331,7 @@ impl QueuePair {
         self.task.await
     }
 
-    /// Save queue pair state for servicing.1
+    /// Save queue pair state for servicing.
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
         // Return error if the queue does not have any memory allocated.
         if self.mem.pfns().is_empty() {
@@ -665,10 +665,18 @@ pub struct AerHandlerSavedState {
 }
 
 pub trait AerHandler: Send + Sync + 'static {
+    /// Given a completion command, if the command pertains to a pending AEN,
+    /// process it.
     fn handle_completion(&mut self, _completion: &nvme_spec::Completion) {}
+    /// Handle a request from the driver to get the most-recent underlivered AEN
+    /// or wait for the next one.
     fn handle_aen_request(&mut self, _rpc: Rpc<(), AsynchronousEventRequestDw0>) {}
+    /// Update the CID that the handler is awaiting an AEN on.
     fn update_awaiting_cid(&mut self, _cid: u16) {}
-    fn poll_send_aen(&self) -> bool {
+    /// Returns whether an AER needs to sent to the controller or not. Since
+    /// this is the only function on the critical path, attempt to inline it.
+    #[inline]
+    fn poll_send_aer(&self) -> bool {
         false
     }
     fn save(&self) -> Option<AerHandlerSavedState> {
@@ -707,7 +715,7 @@ impl AerHandler for AdminAerHandler {
         }
     }
 
-    fn poll_send_aen(&self) -> bool {
+    fn poll_send_aer(&self) -> bool {
         self.await_aen_cid.is_none()
     }
 
@@ -776,7 +784,7 @@ impl QueueHandler {
                 poll_fn(|cx| {
                     if !self.sq.is_full() && !self.commands.is_full() {
                         // Prioritize sending AERs to keep the cycle going
-                        if self.aer_handler.poll_send_aen() {
+                        if self.aer_handler.poll_send_aer() {
                             return Poll::Ready(Event::Request(Req::SendAer()));
                         }
                         if let Poll::Ready(Some(req)) = recv.poll_next_unpin(cx) {
