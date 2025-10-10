@@ -1607,7 +1607,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             self.partition.cpuid.result(leaf, subleaf, &[0, 0, 0, 0]);
 
         // Apply fixups. These must be runtime changes only, for parts of cpuid
-        // that are dynamic (either beccause it's a function of the current VP's
+        // that are dynamic (either because it's a function of the current VP's
         // identity or the current VP or partition state).
         //
         // We rely on the cpuid set being accurate during partition startup,
