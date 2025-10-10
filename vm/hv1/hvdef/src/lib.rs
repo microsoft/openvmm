@@ -201,7 +201,12 @@ pub struct HvEnlightenmentInformation {
     pub use_hypercall_for_mmio_access: bool,
     pub use_gpa_pinning_hypercall: bool,
     pub wake_vps: bool,
-    _reserved: u8,
+    #[bits(3)]
+    _reserved3: u32,
+    // TODO: Currently a placeholder.
+    pub posted_interrupt_redirection_support: bool,
+    #[bits(4)]
+    _reserved: u32,
     pub long_spin_wait_count: u32,
     #[bits(7)]
     pub implemented_physical_address_bits: u32,
@@ -1060,8 +1065,16 @@ pub mod hypercall {
         pub partition_id: u64,
         pub device_id: u64,
         pub entry: InterruptEntry,
-        pub rsvd: u64,
+        pub flags: RetargetDeviceInterruptFlags,
         pub target_header: InterruptTarget,
+    }
+
+    #[bitfield(u64)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct RetargetDeviceInterruptFlags {
+        pub posted_redirect: bool,
+        #[bits(63)]
+        pub rsvd: u64,
     }
 
     #[bitfield(u8)]
