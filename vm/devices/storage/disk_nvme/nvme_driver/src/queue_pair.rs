@@ -21,7 +21,6 @@ use inspect::Inspect;
 use inspect_counters::Counter;
 use mesh::Cancel;
 use mesh::CancelContext;
-use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
