@@ -2038,64 +2038,6 @@ pub mod protocol {
         }
     }
 
-    // === Hierarchy Control === //
-
-    #[repr(C)]
-    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-    pub struct HierarchyControlCmd {
-        header: CmdHeader,
-
-        auth_handle: ReservedHandle,
-        auth_size: u32_be,
-        auth: common::CmdAuth,
-
-        hierarchy: ReservedHandle,
-        state: u8,
-    }
-
-    impl HierarchyControlCmd {
-        pub fn new(
-            session: SessionTag,
-            auth_handle: ReservedHandle,
-            auth: common::CmdAuth,
-            hierarchy: ReservedHandle,
-            state: bool,
-        ) -> Self {
-            Self {
-                header: CmdHeader::new::<Self>(session, CommandCodeEnum::HierarchyControl.into()),
-                auth_handle,
-                auth_size: (size_of::<common::CmdAuth>() as u32).into(),
-                auth,
-                hierarchy,
-                state: state as u8,
-            }
-        }
-    }
-
-    #[repr(C)]
-    #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-    pub struct HierarchyControlReply {
-        pub header: ReplyHeader,
-        pub param_size: u32_be,
-        pub auth: common::ReplyAuth,
-    }
-
-    impl TpmCommand for HierarchyControlCmd {
-        type Reply = HierarchyControlReply;
-    }
-
-    impl TpmReply for HierarchyControlReply {
-        type Command = HierarchyControlCmd;
-
-        fn deserialize(bytes: &[u8]) -> Option<Self> {
-            Some(Self::read_from_prefix(bytes).ok()?.0) // TODO: zerocopy: tpm better error? (https://github.com/microsoft/openvmm/issues/759)
-        }
-
-        fn payload_size(&self) -> usize {
-            size_of::<Self>()
-        }
-    }
-
     // === Pcr Allocate === //
 
     #[repr(C)]
