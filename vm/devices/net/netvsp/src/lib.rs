@@ -210,6 +210,7 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                     "outstanding_tx_packets",
                     state.state.pending_tx_packets.len() - state.state.free_tx_packets.len(),
                 )
+                .field("pending_rx_packets", state.state.pending_rx_packets.len())
                 .field(
                     "pending_tx_completions",
                     state.state.pending_tx_completions.len(),
@@ -217,6 +218,8 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
                 .field("free_tx_packets", state.state.free_tx_packets.len())
                 .merge(&state.state.stats);
             }
+
+            resp.field("packet_filter", worker.channel.packet_filter);
         }
 
         if let Some(queue_state) = &mut self.queue_state {

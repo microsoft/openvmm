@@ -1201,7 +1201,7 @@ async fn new_underhill_vm(
 ) -> anyhow::Result<LoadedVm> {
     let UhVmParams {
         mut get_client,
-        dps,
+        mut dps,
         servicing_state,
         boot_init,
         env_cfg,
@@ -1216,15 +1216,27 @@ async fn new_underhill_vm(
         }
     }
 
-    let management_vtl_features = {
-        let mut features = dps.general.management_vtl_features;
+    // override dps values with env_cfg values as necessary
+    let dps = {
         if let Some(value) = env_cfg.attempt_ak_cert_callback {
             tracing::info!("using HCL_ATTEMPT_AK_CERT_CALLBACK={value} from cmdline");
-            features.set_attempt_ak_cert_callback(value);
+            dps.general
+                .management_vtl_features
+                .set_attempt_ak_cert_callback(value);
         }
-        features
+
+        if let Some(policy) = env_cfg.guest_state_encryption_policy {
+            tracing::info!("using HCL_GUEST_STATE_ENCRYPTION_POLICY={policy:?} from cmdline");
+            dps.general.guest_state_encryption_policy = match policy {
+                GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
+                GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
+                GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
+                GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+            };
+        }
+
+        dps
     };
-    tracing::info!(management_vtl_features = management_vtl_features.into_bits());
 
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
@@ -1694,20 +1706,6 @@ async fn new_underhill_vm(
         virt::IsolationType::None => None,
     };
 
-    // use the encryption policy from the command line if it is provided
-    let guest_state_encryption_policy = env_cfg
-        .guest_state_encryption_policy
-        .map(|p| {
-            tracing::info!("using guest state encryption policy from command line");
-            match p {
-                GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
-                GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
-                GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
-                GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
-            }
-        })
-        .unwrap_or(dps.general.guest_state_encryption_policy);
-
     // Decrypt VMGS state before the VMGS file is used for anything.
     //
     // `refresh_tpm_seeds` is a host side GSP service configuration
@@ -1747,8 +1745,10 @@ async fn new_underhill_vm(
                 tee_call.as_deref(),
                 suppress_attestation,
                 early_init_driver,
-                guest_state_encryption_policy,
-                management_vtl_features.strict_encryption_policy(),
+                dps.general.guest_state_encryption_policy,
+                dps.general
+                    .management_vtl_features
+                    .strict_encryption_policy(),
             )
             .instrument(tracing::info_span!(
                 "initialize_platform_security",
@@ -2606,7 +2606,12 @@ async fn new_underhill_vm(
                     TpmAkCertTypeResource::HwAttested(request_ak_cert)
                 }
                 AttestationType::Vbs => TpmAkCertTypeResource::SwAttested(request_ak_cert),
-                AttestationType::Host if management_vtl_features.attempt_ak_cert_callback() => {
+                AttestationType::Host
+                    if dps
+                        .general
+                        .management_vtl_features
+                        .attempt_ak_cert_callback() =>
+                {
                     TpmAkCertTypeResource::Trusted(request_ak_cert)
                 }
                 AttestationType::Host => TpmAkCertTypeResource::TrustedPreProvisionedOnly,
@@ -3310,7 +3315,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         com1_vmbus_redirector: _,
         com2_enabled: _,
         com2_vmbus_redirector: _,
-        suppress_attestation,
+        suppress_attestation: _,
         bios_guid: _,
         vpci_boot_enabled: _,
 
@@ -3326,7 +3331,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         firmware_mode_is_pcat,
         psp_enabled,
         default_boot_always_attempt,
-        guest_state_encryption_policy,
 
         // Minimum level enforced by UEFI loader
         memory_protection_mode: _,
@@ -3355,6 +3359,9 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         watchdog_enabled: _,
         vtl2_settings: _,
         cxl_memory_enabled: _,
+
+        // TODO: decide whether these need to be validated here
+        guest_state_encryption_policy: _,
         guest_state_lifetime: _,
         management_vtl_features: _,
     } = &dps.general;
@@ -3391,20 +3398,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *default_boot_always_attempt {
         anyhow::bail!("default_boot_always_attempt is not supported");
-    }
-    // TODO: don't allow auto once all CVMs are configured to require GspKey
-    if !(matches!(
-        guest_state_encryption_policy,
-        GuestStateEncryptionPolicy::GspKey | GuestStateEncryptionPolicy::Auto
-    ) || (matches!(
-        guest_state_encryption_policy,
-        GuestStateEncryptionPolicy::None,
-    ) && suppress_attestation.unwrap_or(false)))
-    {
-        anyhow::bail!(
-            "encryption policy not supported: {:?}",
-            guest_state_encryption_policy
-        );
     }
 
     Ok(())
