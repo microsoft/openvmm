@@ -7,8 +7,8 @@
                 "threshold": 1024
             },
             "reservation": {
-                "base": 18360,
-                "threshold": 0
+                "base": 18440,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -47,8 +47,8 @@
                 "threshold": 3072
             },
             "reservation": {
-                "base": 23884,
-                "threshold": 0
+                "base": 23964,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -86,12 +86,12 @@
         "vtl2_total": 524288,
         "2vp": {
             "usage": {
-                "base": 231334,
+                "base": 232418,
                 "threshold": 1024
             },
             "reservation": {
-                "base": 17664,
-                "threshold": 0
+                "base": 17668,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -105,7 +105,7 @@
             },
             "openvmm_hcl": {
                 "Pss": {
-                    "base": 15097,
+                    "base": 16541,
                     "threshold": 512
                 },
                 "Pss_Anon": {
@@ -115,7 +115,7 @@
             },
             "underhill_vm": {
                 "Pss": {
-                    "base": 29054,
+                    "base": 32801,
                     "threshold": 1024
                 },
                 "Pss_Anon": {
@@ -126,12 +126,12 @@
         },
         "32vp": {
             "usage": {
-                "base": 254748,
+                "base": 255386,
                 "threshold": 3072
             },
             "reservation": {
-                "base": 24664,
-                "threshold": 0
+                "base": 24668,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -145,7 +145,7 @@
             },
             "openvmm_hcl": {
                 "Pss": {
-                    "base": 15170,
+                    "base": 16116,
                     "threshold": 512
                 },
                 "Pss_Anon": {
@@ -155,7 +155,7 @@
             },
             "underhill_vm": {
                 "Pss": {
-                    "base": 37262,
+                    "base": 41883,
                     "threshold": 3072
                 },
                 "Pss_Anon": {
@@ -173,8 +173,8 @@
                 "threshold": 1024
             },
             "reservation": {
-                "base": 28952,
-                "threshold": 0
+                "base": 29036,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -213,8 +213,8 @@
                 "threshold": 3072
             },
             "reservation": {
-                "base": 41676,
-                "threshold": 0
+                "base": 41764,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -256,8 +256,8 @@
                 "threshold": 1024
             },
             "reservation": {
-                "base": 28884,
-                "threshold": 0
+                "base": 28972,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
@@ -296,8 +296,8 @@
                 "threshold": 3072
             },
             "reservation": {
-                "base": 42356,
-                "threshold": 0
+                "base": 42440,
+                "threshold": 512
             },
             "underhill_init": {
                 "Pss": {
