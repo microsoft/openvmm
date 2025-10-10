@@ -10,7 +10,9 @@ use crate::NamespaceError;
 use crate::NvmeDriverSavedState;
 use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
+use crate::queue_pair::AdminAerHandler;
 use crate::queue_pair::Issuer;
+use crate::queue_pair::NoOpAerHandler;
 use crate::queue_pair::QueuePair;
 use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
@@ -79,7 +81,7 @@ struct DriverWorkerTask<T: DeviceBacking> {
     #[inspect(skip)]
     driver: VmTaskDriver,
     registers: Arc<DeviceRegisters<T>>,
-    admin: Option<QueuePair>,
+    admin: Option<QueuePair<AdminAerHandler>>,
     #[inspect(iter_by_index)]
     io: Vec<IoQueue>,
     io_issuers: Arc<IoIssuers>,
@@ -122,7 +124,7 @@ pub enum DeviceError {
 
 #[derive(Inspect)]
 struct IoQueue {
-    queue: QueuePair,
+    queue: QueuePair<NoOpAerHandler>,
     iv: u16,
     cpu: u32,
 }
@@ -156,6 +158,7 @@ impl IoQueue {
             mem_block,
             queue_data,
             bounce_buffer,
+            NoOpAerHandler,
         )?;
 
         Ok(Self {
@@ -297,7 +300,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         // device bugs where differing sizes might be a less common scenario
         //
         // Namely: using differing sizes revealed a bug in the initial NvmeDirectV2 implementation
-        let admin_len = std::cmp::min(QueuePair::MAX_SQ_ENTRIES, QueuePair::MAX_CQ_ENTRIES);
+        let admin_len = std::cmp::min(
+            crate::queue_pair::MAX_SQ_ENTRIES,
+            crate::queue_pair::MAX_CQ_ENTRIES,
+        );
         let admin_sqes = admin_len;
         let admin_cqes = admin_len;
 
@@ -316,7 +322,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             interrupt0,
             worker.registers.clone(),
             self.bounce_buffer,
-            true,
+            AdminAerHandler::new(),
         )
         .context("failed to create admin queue pair")?;
 
@@ -444,8 +450,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                 anyhow::bail!("bad device behavior. mqes cannot be 0");
             }
 
-            let io_cqsize = (QueuePair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
-            let io_sqsize = (QueuePair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_cqsize =
+                (crate::queue_pair::MAX_CQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
+            let io_sqsize =
+                (crate::queue_pair::MAX_SQ_ENTRIES - 1).min(worker.registers.cap.mqes_z()) + 1;
 
             // Some hardware (such as ASAP) require that the sq and cq have the same size.
             io_cqsize.min(io_sqsize)
@@ -668,6 +676,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     mem_block,
                     a,
                     bounce_buffer,
+                    AdminAerHandler::new(),
                 )
                 .unwrap()
             })
@@ -945,7 +954,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             interrupt,
             self.registers.clone(),
             self.bounce_buffer,
-            false,
+            NoOpAerHandler,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
 
@@ -1127,8 +1136,6 @@ pub mod save_restore {
         /// QueueHandler task data.
         #[mesh(6)]
         pub handler_data: QueueHandlerSavedState,
-        #[mesh(7)]
-        pub is_admin: Option<()>,
     }
 
     /// Save/restore state for IoQueue.

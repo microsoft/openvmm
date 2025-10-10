@@ -49,9 +49,9 @@ use zerocopy::FromZeros;
 const INVALID_PAGE_ADDR: u64 = !(PAGE_SIZE as u64 - 1);
 
 #[derive(Inspect)]
-pub(crate) struct QueuePair {
+pub(crate) struct QueuePair<T: AerHandler> {
     #[inspect(skip)]
-    task: Task<QueueHandler>,
+    task: Task<QueueHandler<T>>,
     #[inspect(skip)]
     cancel: Cancel,
     #[inspect(flatten, with = "|x| inspect::send(&x.send, Req::Inspect)")]
@@ -64,7 +64,6 @@ pub(crate) struct QueuePair {
     sq_entries: u16,
     #[inspect(skip)]
     cq_entries: u16,
-    is_admin: bool,
 }
 
 impl PendingCommands {
@@ -166,20 +165,20 @@ impl PendingCommands {
     }
 }
 
-impl QueuePair {
-    /// Maximum SQ size in entries.
-    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
-    /// Maximum CQ size in entries.
-    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
-    /// Submission Queue size in bytes.
-    const SQ_SIZE: usize = PAGE_SIZE;
-    /// Completion Queue size in bytes.
-    const CQ_SIZE: usize = PAGE_SIZE;
-    /// Number of pages per queue if bounce buffering.
-    const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
-    /// Number of pages per queue if not bounce buffering.
-    const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
+/// Maximum SQ size in entries.
+pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
+/// Maximum CQ size in entries.
+pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
+/// Submission Queue size in bytes.
+const SQ_SIZE: usize = PAGE_SIZE;
+/// Completion Queue size in bytes.
+const CQ_SIZE: usize = PAGE_SIZE;
+/// Number of pages per queue if bounce buffering.
+const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
+/// Number of pages per queue if not bounce buffering.
+const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 
+impl<T: AerHandler> QueuePair<T> {
     pub fn new(
         spawner: impl SpawnDriver,
         device: &impl DeviceBacking,
@@ -189,22 +188,22 @@ impl QueuePair {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         bounce_buffer: bool,
-        is_admin: bool,
+        aer_handler: T,
     ) -> anyhow::Result<Self> {
-        let total_size = QueuePair::SQ_SIZE
-            + QueuePair::CQ_SIZE
+        let total_size = SQ_SIZE
+            + CQ_SIZE
             + if bounce_buffer {
-                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE
+                PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE
             } else {
-                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
+                PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
             };
         let dma_client = device.dma_client();
         let mem = dma_client
             .allocate_dma_buffer(total_size)
             .context("failed to allocate memory for queues")?;
 
-        assert!(sq_entries <= Self::MAX_SQ_ENTRIES);
-        assert!(cq_entries <= Self::MAX_CQ_ENTRIES);
+        assert!(sq_entries <= MAX_SQ_ENTRIES);
+        assert!(cq_entries <= MAX_CQ_ENTRIES);
 
         QueuePair::new_or_restore(
             spawner,
@@ -216,7 +215,7 @@ impl QueuePair {
             mem,
             None,
             bounce_buffer,
-            is_admin,
+            aer_handler,
         )
     }
 
@@ -231,23 +230,12 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
-        is_admin: bool,
+        aer_handler: T,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
-        let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
-        let cq_mem_block = mem.subblock(QueuePair::SQ_SIZE, QueuePair::CQ_SIZE);
-        let data_offset = QueuePair::SQ_SIZE + QueuePair::CQ_SIZE;
-
-        let aer_handler: Box<dyn AerHandler> = if is_admin {
-            Box::new(AdminAerHandler {
-                last_aen: None,
-                await_aen_cid: None,
-                send_aen: None,
-                failed: false,
-            })
-        } else {
-            Box::new(NoOpAerHandler)
-        };
+        let sq_mem_block = mem.subblock(0, SQ_SIZE);
+        let cq_mem_block = mem.subblock(SQ_SIZE, CQ_SIZE);
+        let data_offset = SQ_SIZE + CQ_SIZE;
 
         let mut queue_handler = match saved_state {
             Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler)?,
@@ -295,9 +283,9 @@ impl QueuePair {
         // NOTE: Do not remove the `const` blocks below. This is to force
         // compile time evaluation of the assertion described above.
         let alloc_len = if bounce_buffer {
-            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER) }
+            const { pages_to_size_bytes(PER_QUEUE_PAGES_BOUNCE_BUFFER) }
         } else {
-            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER) }
+            const { pages_to_size_bytes(PER_QUEUE_PAGES_NO_BOUNCE_BUFFER) }
         };
 
         let alloc = PageAllocator::new(mem.subblock(data_offset, alloc_len));
@@ -310,7 +298,6 @@ impl QueuePair {
             qid,
             sq_entries,
             cq_entries,
-            is_admin,
         })
     }
 
@@ -348,7 +335,6 @@ impl QueuePair {
             sq_entries: self.sq_entries,
             cq_entries: self.cq_entries,
             handler_data,
-            is_admin: self.is_admin.then_some(()),
         })
     }
 
@@ -360,6 +346,7 @@ impl QueuePair {
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
+        aer_handler: T,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -368,7 +355,6 @@ impl QueuePair {
             sq_entries,
             cq_entries,
             handler_data,
-            is_admin,
         } = saved_state;
 
         QueuePair::new_or_restore(
@@ -381,7 +367,7 @@ impl QueuePair {
             mem,
             Some(handler_data),
             bounce_buffer,
-            is_admin.is_some(),
+            aer_handler,
         )
     }
 }
@@ -683,6 +669,17 @@ pub struct AdminAerHandler {
     failed: bool, // If the failed state is reached, it will stop looping until save/restore.
 }
 
+impl AdminAerHandler {
+    pub fn new() -> Self {
+        Self {
+            last_aen: None,
+            await_aen_cid: None,
+            send_aen: None,
+            failed: false,
+        }
+    }
+}
+
 impl AerHandler for AdminAerHandler {
     fn handle_completion(&mut self, completion: &nvme_spec::Completion) {
         if let Some(await_aen_cid) = self.await_aen_cid
@@ -746,14 +743,14 @@ pub struct NoOpAerHandler;
 impl AerHandler for NoOpAerHandler {}
 
 #[derive(Inspect)]
-struct QueueHandler {
+struct QueueHandler<T: AerHandler> {
     sq: SubmissionQueue,
     cq: CompletionQueue,
     commands: PendingCommands,
     stats: QueueStats,
     drain_after_restore: bool,
     #[inspect(skip)]
-    aer_handler: Box<dyn AerHandler>,
+    aer_handler: T,
 }
 
 #[derive(Inspect, Default)]
@@ -763,7 +760,7 @@ struct QueueStats {
     interrupts: Counter,
 }
 
-impl QueueHandler {
+impl<T: AerHandler> QueueHandler<T> {
     async fn run(
         &mut self,
         registers: &DeviceRegisters<impl DeviceBacking>,
@@ -877,7 +874,7 @@ impl QueueHandler {
         sq_mem_block: MemoryBlock,
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
-        mut aer_handler: Box<dyn AerHandler>,
+        mut aer_handler: T,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,
