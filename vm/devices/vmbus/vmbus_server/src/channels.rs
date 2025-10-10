@@ -1880,9 +1880,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Completes an open operation with `result`.
     pub fn open_complete(&mut self, offer_id: OfferId, result: i32) {
-        tracing::debug!(offer_id = offer_id.0, result, "open complete");
-
         let channel = &mut self.inner.channels[offer_id];
+        tracing::debug!(offer_id = offer_id.0, key = %channel.offer.key(), result, "open complete");
+
         match channel.state {
             ChannelState::Opening {
                 request,
@@ -1893,6 +1893,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     tracelimit::info_ratelimited!(
                         offer_id = offer_id.0,
                         channel_id = channel_id.0,
+                        key = %channel.offer.key(),
                         result,
                         "opened channel"
                     );
@@ -1901,6 +1902,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     tracelimit::error_ratelimited!(
                         offer_id = offer_id.0,
                         channel_id = channel_id.0,
+                        key = %channel.offer.key(),
                         result,
                         "failed to open channel"
                     );
@@ -1928,6 +1930,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             ChannelState::OpeningClientRelease => {
                 tracing::info!(
                     offer_id = offer_id.0,
+                    key = %channel.offer.key(),
                     result,
                     "opened channel (client released)"
                 );
@@ -1949,7 +1952,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Revoked
             | ChannelState::Reoffered
             | ChannelState::ClosingClientRelease => {
-                tracing::error!(?offer_id, state = ?channel.state, "invalid open complete")
+                tracing::error!(?offer_id, key = %channel.offer.key(), state = ?channel.state, "invalid open complete")
             }
         }
     }
@@ -2024,7 +2027,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// Completes a channel close operation.
     pub fn close_complete(&mut self, offer_id: OfferId) {
         let channel = &mut self.inner.channels[offer_id];
-        tracing::info!(offer_id = offer_id.0, "closed channel");
+        tracing::info!(offer_id = offer_id.0, key = %channel.offer.key(), "closed channel");
         match channel.state {
             ChannelState::Closing {
                 reserved_state: Some(reserved_state),
@@ -2075,7 +2078,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Revoked
             | ChannelState::Reoffered
             | ChannelState::OpeningClientRelease => {
-                tracing::error!(?offer_id, state = ?channel.state, "invalid close complete")
+                tracing::error!(?offer_id, key = %channel.offer.key(), state = ?channel.state, "invalid close complete")
             }
         }
     }
@@ -2204,10 +2207,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         if request.target_sint != SINT {
             tracelimit::warn_ratelimited!(
-                "unsupported multiclient request for VTL {} SINT {}, version {:#x}",
-                request.target_vtl,
-                request.target_sint,
-                request.version_requested,
+                target_vtl = request.target_vtl,
+                target_sint = request.target_sint,
+                version = request.version_requested,
+                "unsupported multiclient request",
             );
 
             // Send an unsupported response to the requested SINT.
@@ -2784,6 +2787,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             tracelimit::warn_ratelimited!(
                 err = &err as &dyn std::error::Error,
                 channel_id = ?input.channel_id,
+                key = %self.inner.channels.get_by_channel_id(&self.inner.assigned_channels, input.channel_id).map(|(_, c)| c.offer.key()).unwrap_or_default(),
                 gpadl_id = ?input.gpadl_id,
                 "error handling gpadl header"
             );
@@ -2846,6 +2850,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 tracelimit::warn_ratelimited!(
                     err = &err as &dyn std::error::Error,
                     channel_id = channel_id.0,
+                    key = %channel.offer.key(),
                     gpadl_id = input.gpadl_id.0,
                     "error handling gpadl body"
                 );
@@ -2865,16 +2870,17 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         &mut self,
         input: &protocol::GpadlTeardown,
     ) -> Result<(), ChannelError> {
-        tracing::debug!(
-            channel_id = input.channel_id.0,
-            gpadl_id = input.gpadl_id.0,
-            "Received GPADL teardown request"
-        );
-
         let (offer_id, channel) = self
             .inner
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, input.channel_id)?;
+
+        tracing::debug!(
+            channel_id = input.channel_id.0,
+            key = %channel.offer.key(),
+            gpadl_id = input.gpadl_id.0,
+            "Received GPADL teardown request"
+        );
 
         let gpadl = self
             .inner
@@ -2904,6 +2910,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 if channel.state.is_revoked() {
                     tracing::trace!(
                         channel_id = input.channel_id.0,
+                        key = %channel.offer.key(),
                         gpadl_id = input.gpadl_id.0,
                         "Gpadl teardown for revoked channel"
                     );
@@ -3032,6 +3039,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             } => {
                 if modify_state.is_modifying() {
                     tracelimit::warn_ratelimited!(
+                        key = %channel.offer.key(),
                         ?modify_state,
                         "Client is closing the channel with a modify in progress"
                     )
@@ -3362,6 +3370,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 // On Iron or later, the client isn't allowed to send a ModifyChannel
                 // request while another one is still in progress.
                 tracelimit::warn_ratelimited!(
+                    key = %channel.offer.key(),
                     "Client sent new ModifyChannel before receiving ModifyChannelResponse."
                 );
             } else {
@@ -3410,6 +3419,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
             // Send the ModifyChannelResponse message if the protocol supports it.
             let channel_id = channel.info.as_ref().expect("assigned").channel_id;
+            let key = channel.offer.key();
             self.send_modify_channel_response(channel_id, status);
 
             // Handle a pending ModifyChannel request if there is one.
@@ -3420,7 +3430,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 };
 
                 if let Err(error) = self.handle_modify_channel(&request) {
-                    tracelimit::warn_ratelimited!(?error, "Pending ModifyChannel request failed.")
+                    tracelimit::warn_ratelimited!(?error, %key, "Pending ModifyChannel request failed.")
                 }
             }
         }
@@ -3621,24 +3631,15 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         Ok(())
     }
 
-    fn get_gpadl(
-        gpadls: &mut GpadlMap,
-        offer_id: OfferId,
-        gpadl_id: GpadlId,
-    ) -> Option<&mut Gpadl> {
-        let gpadl = gpadls.get_mut(&(gpadl_id, offer_id));
-        if gpadl.is_none() {
-            tracelimit::error_ratelimited!(?offer_id, ?gpadl_id, "invalid gpadl ID for channel");
-        }
-        gpadl
-    }
-
     /// Completes a GPADL creation, accepting it if `status >= 0`, rejecting it otherwise.
     pub fn gpadl_create_complete(&mut self, offer_id: OfferId, gpadl_id: GpadlId, status: i32) {
-        let gpadl = if let Some(gpadl) = Self::get_gpadl(&mut self.inner.gpadls, offer_id, gpadl_id)
-        {
-            gpadl
-        } else {
+        let Some(gpadl) = self.inner.gpadls.get_mut(&(gpadl_id, offer_id)) else {
+            tracelimit::error_ratelimited!(
+                ?offer_id,
+                key = %self.inner.channels[offer_id].offer.key(),
+                ?gpadl_id,
+                "invalid gpadl ID for channel"
+            );
             return;
         };
         let retain = match gpadl.state {
@@ -3692,25 +3693,28 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Releases a GPADL that is being torn down.
     pub fn gpadl_teardown_complete(&mut self, offer_id: OfferId, gpadl_id: GpadlId) {
+        let channel = &mut self.inner.channels[offer_id];
+        let Some(gpadl) = self.inner.gpadls.get_mut(&(gpadl_id, offer_id)) else {
+            tracelimit::error_ratelimited!(
+                ?offer_id,
+                key = %channel.offer.key(),
+                ?gpadl_id,
+                "invalid gpadl ID for channel"
+            );
+            return;
+        };
         tracing::debug!(
             offer_id = offer_id.0,
+            key = %channel.offer.key(),
             gpadl_id = gpadl_id.0,
             "Gpadl teardown complete"
         );
-
-        let gpadl = if let Some(gpadl) = Self::get_gpadl(&mut self.inner.gpadls, offer_id, gpadl_id)
-        {
-            gpadl
-        } else {
-            return;
-        };
-        let channel = &mut self.inner.channels[offer_id];
         match gpadl.state {
             GpadlState::InProgress
             | GpadlState::Offered
             | GpadlState::OfferedTearingDown
             | GpadlState::Accepted => {
-                tracelimit::error_ratelimited!(?offer_id, ?gpadl_id, ?gpadl, "invalid gpadl state");
+                tracelimit::error_ratelimited!(?offer_id, key = %channel.offer.key(), ?gpadl_id, ?gpadl, "invalid gpadl state");
             }
             GpadlState::TearingDown => {
                 if !channel.state.is_released() {
