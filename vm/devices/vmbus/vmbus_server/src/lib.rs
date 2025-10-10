@@ -957,6 +957,7 @@ impl ServerTask {
 
         match &mut channel.state {
             ChannelState::Closing => {
+                tracing::debug!(?offer_id, key = %channel.key, "closing channel");
                 channel.state = ChannelState::Closed;
                 self.server
                     .with_notifier(&mut self.inner)

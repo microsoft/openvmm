@@ -3180,6 +3180,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         assigned_monitors: &mut AssignedMonitors,
         info: Option<&ConnectionInfo>,
     ) -> bool {
+        tracelimit::info_ratelimited!(?offer_id, key = %channel.offer.key(), "client released channel");
         // Release any GPADLs that remain for this channel.
         gpadls.retain(|&(gpadl_id, gpadl_offer_id), gpadl| {
             if gpadl_offer_id != offer_id {
