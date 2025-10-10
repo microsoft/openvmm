@@ -94,37 +94,41 @@ impl IcmpConnection {
         state: &mut ConsommeState,
         client: &mut impl Client,
     ) {
-        match self
-            .socket
-            .poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
-                Self::recv_from(socket.get_mut(), &mut state.buffer[ETHERNET_HEADER_LEN..])
-            }) {
-            Poll::Ready(Ok((n, _))) => {
-                if n < IPV4_HEADER_LEN + ICMPV4_HEADER_LEN {
-                    tracing::warn!("dropping malformed ICMP incoming packet");
-                    return;
+        let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
+        loop {
+            match self
+                .socket
+                .poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
+                    Self::recv_from(socket.get(), &mut eth.payload_mut()[..])
+                }) {
+                Poll::Ready(Ok((n, _))) => {
+                    if n < IPV4_HEADER_LEN + ICMPV4_HEADER_LEN {
+                        tracing::warn!("dropping malformed ICMP incoming packet");
+                        continue;
+                    }
+
+                    // What is received is a raw IPV4 packet. Add the Ethernet frame and
+                    // set the destination address in the IP header.
+                    eth.set_ethertype(EthernetProtocol::Ipv4);
+                    eth.set_src_addr(state.params.gateway_mac);
+                    eth.set_dst_addr(self.guest_mac);
+                    let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
+                    ipv4.set_dst_addr(dst_addr.ip);
+                    ipv4.fill_checksum();
+                    let len = ETHERNET_HEADER_LEN + n;
+                    client.recv(&eth.as_ref()[..len], &ChecksumState::IPV4_ONLY);
+                    self.stats.rx_packets.increment();
                 }
-                // What is received is a raw IPV4 packet. Add the Ethernet frame and
-                // set the destination address in the IP header.
-                let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
-                eth.set_ethertype(EthernetProtocol::Ipv4);
-                eth.set_src_addr(state.params.gateway_mac);
-                eth.set_dst_addr(self.guest_mac);
-                let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
-                ipv4.set_dst_addr(dst_addr.ip);
-                ipv4.fill_checksum();
-                let len = ETHERNET_HEADER_LEN + n;
-                client.recv(&state.buffer[..len], &ChecksumState::IPV4_ONLY);
-                self.stats.rx_packets.increment();
+                Poll::Ready(Err(err)) => {
+                    tracing::error!(error = &err as &dyn std::error::Error, "recv error");
+                    break;
+                }
+                Poll::Pending => break,
             }
-            Poll::Ready(Err(err)) => {
-                tracing::error!(error = &err as &dyn std::error::Error, "recv error");
-            }
-            Poll::Pending => {}
         }
     }
 
-    fn recv_from(socket: &mut Socket, buffer: &mut [u8]) -> std::io::Result<(usize, SockAddr)> {
+    fn recv_from(socket: &Socket, buffer: &mut [u8]) -> std::io::Result<(usize, SockAddr)> {
         // SAFETY: The underlying socket `recv` implementation promises
         //   not to write uninitialized bytes into the buffer.
         //   We use ptr::slice_from_raw_parts_mut to create a proper MaybeUninit slice.
