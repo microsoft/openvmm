@@ -1901,6 +1901,8 @@ enum WorkerError {
     RndisMessageTooSmall,
     #[error("unsupported rndis behavior")]
     UnsupportedRndisBehavior,
+    #[error("invalid lso packet")]
+    InvalidLsoPacket(&'static str),
     #[error("vmbus queue error")]
     Queue(#[from] queue::Error),
     #[error("too many control messages")]
@@ -2475,6 +2477,20 @@ impl<T: RingMem> NetChannel<T> {
                 gpa: range.start,
                 len: range.len() as u32,
             });
+        }
+
+        if metadata.offload_tcp_segmentation {
+            if segments.len() < 2 {
+                return Err(WorkerError::InvalidLsoPacket(
+                    "LSO requires at least two SGEs",
+                ));
+            }
+            let first_segment_size = segments.first().unwrap().len;
+            if first_segment_size > 256 {
+                return Err(WorkerError::InvalidLsoPacket(
+                    "LSO requires first SGE to be <= 256 bytes",
+                ));
+            }
         }
 
         metadata.segment_count = segments.len() - start;
